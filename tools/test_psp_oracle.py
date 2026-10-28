@@ -2444,12 +2444,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 99)
+        self.assertEqual(len(routes), 100)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
+        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108}
                          | {110, 111, 112, 113, 114, 115}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -3096,6 +3096,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-GE-TIMING-001",
                 # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
                 "PSP-CPU-TIMING-001",
+                # The 2026-10-28 acceptance-eligible vfpu-forms run of 781ccd34 (#326).
+                "PSP-VFPU-FORMS-001",
             },
         )
         self.assertEqual(
@@ -6368,9 +6370,10 @@ class HleIssuesProbeTests(unittest.TestCase):
         spec, _counts = CAMPAIGN_PROBE_CASES["hle-issues-batch"]
         self.assertEqual(spec.test_id, "PSP-HLE-ISSUES-001")
 
-    def test_only_the_vfpu_case_runs_its_main_thread_with_the_vfpu_attribute(self) -> None:
-        self.assertIn("#if PSP_ORACLE_CASE == 106\n", self.probe)
-        attr = self.probe[self.probe.index("#if PSP_ORACLE_CASE == 106\n"):]
+    def test_only_the_vfpu_cases_run_their_main_thread_with_the_vfpu_attribute(self) -> None:
+        head = "#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108\n"
+        self.assertIn(head, self.probe)
+        attr = self.probe[self.probe.index(head):]
         attr = attr[:attr.index("#endif") + len("#endif")]
         self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);\n#else\n"
                       "PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);\n#endif", attr)
@@ -7316,6 +7319,97 @@ class VramMirrorParserTests(unittest.TestCase):
         self.assertIn("0x3333u, 208u, 101u, 0x3333u", probe)
         self.assertIn("sceGeDrawSync(1)", probe)
         self.assertIn("base_words[scan_offset / sizeof(uint32_t)] == marker", probe)
+
+
+class VfpuFormsProbeTests(unittest.TestCase):
+    """CASE=vfpu-forms (108, PSP-VFPU-FORMS-001) in probe_hle_issues.c: the #326 VFPU form
+    words. Register-only: no system call beyond the shared writer and lifecycle, bounded
+    loops, one step per group, and a fixed-shape stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                              .read_text(encoding="utf-8"))
+        cls.rows = []
+        stack = [manifest]
+        for _ in range(100000):
+            if not stack:
+                break
+            node = stack.pop()
+            if isinstance(node, dict):
+                if node.get("id") == "PSP-VFPU-FORMS-001":
+                    cls.rows.append(node)
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        start = cls.probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS\n")
+        end = cls.probe.index("#endif /* HLE_CASE_VFPU_FORMS */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),vfpu-forms)\nCASE_ID = 108\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),vfpu-forms)\nTARGET = $(BUILD_DIR)/vfpu_forms\n"
+                      "OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define HLE_CASE_VFPU_FORMS 108\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "vfpu-forms"\n#define HLE_TEST_ID "PSP-VFPU-FORMS-001"\n'
+                      '#define HLE_LOG "host0:/vfpu_forms_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vfpu-forms").name,
+                         "vfpu_forms_log.txt")
+        self.assertEqual(_campaign_completeness_contract("vfpu-forms"), "strict-golden-sequence")
+        self.assertNotIn("vfpu-forms", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("vfpu-forms", parse_golden.HLE_OBSERVATION_CASES)
+
+    def test_section_is_register_only_and_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), set())
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "kuKernel", "sctrl"):
+            self.assertNotIn(banned, self.section)
+        headers = re.findall(r"\bfor \(([^)]*)\)", self.section)
+        self.assertGreaterEqual(len(headers), 15)
+        for header in headers:
+            with self.subTest(loop=header):
+                self.assertRegex(header, r"^unsigned (\w+) = 0; \1 < (?:\d+u|TN_IMAGE_WORDS); \1\+\+$")
+
+    def test_each_group_writes_its_step_before_its_cells(self) -> None:
+        functions = _c_function_bodies(self.section)
+        for name in ("vf_h2f", "vf_uc2i", "vf_socp", "vf_wbn", "vf_rndf"):
+            with self.subTest(function=name):
+                body = functions[name]
+                cell = "vf_cell(" if name != "vf_rndf" else "vf_rndf1_step("
+                self.assertLess(body.index("hle_step(name);"), body.index(cell))
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["vfpu-forms"]
+        self.assertEqual(spec.test_id, "PSP-VFPU-FORMS-001")
+        self.assertEqual(spec.terminal_case, "vfpu-forms-done")
+        self.assertEqual(len(parse_golden.VFPU_FORMS_CASES), 950)
+        self.assertEqual(counts["h2f-p0-s-0-none"], 13)
+        self.assertEqual(counts["rndf2-p1-16"], 17)
+        self.assertIn('hle_record(name, "PASS", word, w, 13);', self.section)
+        self.assertIn('hle_record(name, "PASS", out[0], w, 17);', self.section)
+        grid = parse_golden.VFPU_FORMS_GRID
+        for fragment in (f"s_vf_halves[{grid['h2f-s']}]", f"i < {grid['h2f-p']}u",
+                         f"s_vf_bytes[{grid['uc2i']}]", f"s_vf_socp[{grid['socp-s']}]",
+                         f"i < {grid['socp-p']}u", f"s_vf_wbn[{grid['wbn']}]",
+                         f"k < {grid['rndf']}u",
+                         f"s_vf_wbn_forms[{len(parse_golden.VFPU_FORMS_WBN_FORMS)}]",
+                         f"pass < {parse_golden.VFPU_FORMS_PASSES}u"):
+            self.assertIn(fragment, self.section)
+        for form in parse_golden.VFPU_FORMS_WBN_FORMS:
+            self.assertIn(f'{{"{form}", vf_wbn_', self.section)
+
+    def test_manifest_row_is_a_single_launch_case(self) -> None:
+        self.assertEqual(len(self.rows), 1)
+        row = self.rows[0]
+        self.assertEqual(row["prx"], "vfpu_forms.prx")
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+        self.assertEqual(row["diagnostic_case_ids"], ["vfpu-forms"])
+        self.assertEqual(row["issues"], [326])
 
 
 if __name__ == "__main__":

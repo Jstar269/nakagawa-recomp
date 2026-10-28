@@ -1354,9 +1354,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
             self.assertIn(record["id"], report)
 
 
-#: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c
-#: rather than copied from a report. They are pinned here so a silent edit to the
-#: handler shows up as a test failure and not as a quietly shrinking census.
+#: The eight addresses ensure_runtime_sync_callbacks carried, re-derived from src/rt/hle.c
+#: before the seeding was retired (#363) rather than copied from a report. They stay pinned
+#: so a literal that returns to the handler shows up as a test failure, and so the retired
+#: inventory entry is checked against the exact set it recorded.
 RUNTIME_SYNC_CALLBACK_SITES = {
     0x00333138: "configuration block base",
     0x002BDF38: "semaphore name pointer handed to the guest in $a0",
@@ -1375,9 +1376,9 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     Historically the census reported complete at 38/38 while an entire title
     coupling (runtime_sync) was invisible to the direct regex. The grammar was
-    added to catch it. Those 8 addresses are now typed title configuration
-    (issue #98) and must NOT appear in hle.c at all; the grammar itself remains
-    load-bearing for future indirect sites.
+    added to catch it. Those 8 addresses were typed title configuration (issue #98)
+    until the seeding was retired (#363); they must NOT appear in hle.c at all, and
+    the grammar itself remains load-bearing for future indirect sites.
 
     Evidence tier: SOURCE_SHAPE / STATICALLY_SUPPORTED throughout. These tests
     read source, they do not run a guest.
@@ -1386,21 +1387,21 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
     def setUp(self) -> None:
         self.source = HLE_C.read_text(encoding="utf-8")
 
-    # ---- A: the migrated sites must be absent from hle.c -------------------
+    # ---- A: the retired sites must be absent from hle.c -------------------
     def test_the_real_runtime_sync_sites_are_detected(self) -> None:
-        """The 8 runtime_sync addresses were migrated to title_config and must
+        """The 8 runtime_sync addresses belonged to a retired mechanism and must
         NOT be found in hle.c any more (wrong-title safety). The indirect
         grammar is still exercised by the synthetic snippets below."""
         found = extract_hle_guest_sites(self.source)
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
             with self.subTest(address=hex(address), role=role):
                 self.assertNotIn(address, found,
-                                 f"0x{address:08x} ({role}) migrated to title_config; "
-                                 "it must not appear in hle.c any more")
+                                 f"0x{address:08x} ({role}) belonged to the retired "
+                                 "runtime-sync seeding; it must not appear in hle.c any more")
 
     def test_the_real_runtime_sync_sites_are_inventoried(self) -> None:
-        """Migrated sites are inventoried in HLE_TITLE_CONFIGURED_COMPAT, not in
-        the live HLE_GUEST_ADDRESS_GROUPS."""
+        """Retired sites stay inventoried as historical evidence in
+        HLE_TITLE_CONFIGURED_COMPAT, not in the live HLE_GUEST_ADDRESS_GROUPS."""
         live = hle_inventoried_addresses()
         configured = hle_title_configured_addresses()
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
@@ -1408,21 +1409,21 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
                 self.assertNotIn(address, live,
                                  f"0x{address:08x} must not be in live HLE census")
                 self.assertIn(address, configured,
-                              f"0x{address:08x} must be in title-configured inventory")
+                              f"0x{address:08x} must stay in the retired title inventory")
 
     def test_the_sites_are_attributed_to_their_real_enclosing_function(self) -> None:
-        """After migration this is a negative control: the addresses must not be
+        """After retirement this is a negative control: the addresses must not be
         attributed to any function in hle.c."""
         found = extract_hle_guest_sites(self.source)
         for address in RUNTIME_SYNC_CALLBACK_SITES:
             self.assertNotIn(address, found,
-                             f"0x{address:08x} should not be in any hle.c function after migration")
+                             f"0x{address:08x} should not be in any hle.c function after retirement")
 
     def test_the_direct_regex_alone_finds_none_of_them(self) -> None:
         """The 8 addresses must be absent from both direct and indirect scans."""
         found = extract_hle_guest_addresses(self.source)
         self.assertEqual(found.keys() & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
-                         "migrated runtime_sync addresses must not appear in hle.c")
+                         "retired runtime_sync addresses must not appear in hle.c")
 
     # ---- B: const-local address propagation --------------------------------
     def test_a_const_local_used_as_an_address_base_is_detected(self) -> None:
@@ -1519,8 +1520,13 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         spans = hle_function_spans(self.source.splitlines())
         self.assertGreater(len(spans), 100, "function-span detection collapsed")
         names = {name for name, _s, _e in spans}
-        self.assertIn("ensure_runtime_sync_callbacks", names)
+        # The retired seeding helper is gone, and the handler that used to call it is
+        # now a few lines: a collapsed span would swallow the functions around it.
+        self.assertNotIn("ensure_runtime_sync_callbacks", names)
         self.assertIn("h_DisplaySetMode", names)
+        for name, first, last in spans:
+            if name == "h_DisplaySetMode":
+                self.assertLess(last - first, 20, "h_DisplaySetMode span swallowed its neighbours")
 
     # ---- H: no false-positive explosion ------------------------------------
     def test_unrelated_constants_do_not_become_coupling(self) -> None:
@@ -1557,31 +1563,47 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         self.assertIn(0x08123400, extract_hle_guest_sites(aligned))
         self.assertEqual(extract_hle_guest_sites(unaligned), {})
 
-    # ---- I: a ninth hidden callback must fail the gate ---------------------
-    def test_a_ninth_hidden_callback_literal_fails_the_gate(self) -> None:
-        """MUTATION: add a new direct MEM_W32 at a fresh address; the gate must refuse it."""
+    # ---- I: a hidden callback literal returning to the handler must fail the gate ----
+    def test_a_new_hidden_callback_literal_fails_the_gate(self) -> None:
+        """MUTATION: the runtime-sync seeding is retired, so hle.c holds none of its
+        literals. Add a fresh direct MEM_W32 to the handler that used to carry them; the
+        gate must see exactly that one address."""
         contaminated = self.source.replace(
-            "DISPLAY_SET_MODE: display bringup not configured",
-            "DISPLAY_SET_MODE: display bringup not configured\n    MEM_W32(0x0009abc0u, 1u);",
+            "    return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */",
+            "    MEM_W32(0x0009abc0u, 1u);\n    return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */",
             1,
         )
         self.assertNotEqual(contaminated, self.source, "mutation anchor not found")
         found = extract_hle_guest_addresses(contaminated)
-        self.assertIn(0x0009ABC0, found)
         self.assertIn(0x0009ABC0, found,
                       "the address extractor stopped detecting a new guest-memory access")
+        self.assertEqual(set(found) - set(extract_hle_guest_addresses(self.source)),
+                         {0x0009ABC0})
 
     # ---- the inventory entry itself ----------------------------------------
     def test_the_inventory_entry_states_its_retirement_shape(self) -> None:
-        """The eight migrated groups are now PROFILE_OWNED_CONFIGURATION via
-        title_config; the entry must say so and that pairs are not flattened."""
+        """The runtime-sync seeding, display bring-up replay and frame-latch assist were
+        retired (#363). Each entry stays as historical evidence with its addresses, says it
+        is retired and names the migration error, is out of the active census, and has no
+        literal left in hle.c."""
+        retired_entries = ("frame_ready_latch_assist", "runtime_sync_callback_config",
+                           "display_setmode_guest_init")
+        active = {patch["name"] for patch in _active_census()}
+        for name in retired_entries:
+            with self.subTest(entry=name):
+                group = next(g for g in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
+                             if g["name"] == name)
+                self.assertEqual(group["title2_bucket"], "PROFILE_OWNED_CONFIGURATION")
+                self.assertTrue(group["retirement"].startswith("retired (2026-10-27)"))
+                self.assertIn("HLE_TITLE_ASSIST_RETIRED", group["retirement"])
+                self.assertNotIn(name, active, "a retired entry must leave the active census")
+                self.assertEqual(
+                    _runtime_title_diagnostic_literals(self.source, set(group["addresses"])),
+                    set(), "a retired entry's address is back in hle.c")
         group = next(g for g in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
                      if g["name"] == "runtime_sync_callback_config")
-        self.assertEqual(group["title2_bucket"], "PROFILE_OWNED_CONFIGURATION")
         self.assertEqual(set(group["addresses"]), set(RUNTIME_SYNC_CALLBACK_SITES))
-        self.assertIn("typed", group["retirement"].lower())
-        self.assertIn("not be flattened", group["retirement"].replace("NOT", "not"))
-        # The migrated entry's evidence is now title_config gated, not a direct hle.c shape
+        # The entry's evidence still records the title_config-gated shape it had
         self.assertEqual(group["evidence_tier"], "SOURCE_SHAPE")
         self.assertIn("title_config", group["evidence"].lower())
 
