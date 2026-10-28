@@ -6526,6 +6526,7 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR, 0x600u);
     MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
     expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
@@ -6733,6 +6734,11 @@ static void test_utility_dialog_single_slot(void) {
            "the message dialog finishes with its own result");
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
            "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, 0x601u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110004u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "savedata rejects an unknown parameter version without claiming the slot");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
