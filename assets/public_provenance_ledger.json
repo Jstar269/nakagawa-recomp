@@ -9418,7 +9418,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8b95e7c0aa72be3eb73ace82613b932ced546c953bdbf780a33dfc409b225431"
+      "sha256": "ef91edee7e98d16cd1c9d3407d5003ad51bac9406b0798e4852cd8190cffd106"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -9430,7 +9430,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a34c7a7039ca26997204a65235ebdb57b1826923478c0c5ef14f0d129dc39741"
+      "sha256": "3bcf13282e1a8e7ff6dd118a895e9b546b08a33cbadb60d1ce4b88af25dd1731"
     },
     {
       "path": "src/rt/scripted_input.h",
