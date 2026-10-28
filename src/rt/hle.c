@@ -2894,7 +2894,7 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
-static void hle_record_unsupported_import_stop(uint32_t nid, const char *name);
+static void hle_record_unsupported_import_stop(uint32_t, const char *);
 
 /* A handler that meets an argument shape this runtime does not model stops the run by name,
  * exactly as an import with no handler does: one UNSUPPORTED_IMPORT line, the player's
