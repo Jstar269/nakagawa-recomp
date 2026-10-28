@@ -7229,24 +7229,37 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - a one-byte tail past an allocator-proven valid prefix returns success
  *     after copying exactly that prefix, for both APIs and both directions;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
- *   - concurrent Try calls report BUSY while another DMA is active and a
- *     concurrent blocking call waits for that operation.
+ *   - both APIs block their caller for the whole transfer; a Try made while
+ *     another thread's transfer is pending returns BUSY (0x80000021) and a
+ *     blocking call made then waits for it and returns 0 (PSP-3000 / 6.6.1,
+ *     64/64 for each of the three dma-concurrency combinations, #303).
  *
  * RUNTIME_IMPLEMENTED:
  *   - fully valid spans are copied at their requested size (there is no
  *     API-wide 0xC000 ceiling);
  *   - the measured one-byte arena-end tail is copied only through its valid
  *     prefix, while larger or ambiguous overruns remain fail-closed;
- *   - both registered NIDs share the measured single-caller copy path.
+ *   - both registered NIDs share one copy path;
+ *   - the active transfer: a guest thread that starts one stays blocked in
+ *     the call while the scheduler's transfer window is open; another
+ *     thread's Try returns BUSY without copying, and its blocking call waits
+ *     through the scheduler, then performs its own transfer and returns 0.
  *
- * RUNTIME_UNIMPLEMENTED:
- *   - the scheduler has no active-DMA operation state, so cross-thread BUSY and
- *     blocking semantics remain outside this synchronous helper.
+ * UNMEASURED (explicit runtime choices, not PSP facts):
+ *   - the transfer's guest-time duration: the probes recorded caller wall time
+ *     only (~376-382 us for an earlier large call, 4.43-4.55 ms for 1 MiB
+ *     VRAM-to-VRAM) and no rate law is inferred from either, so the window
+ *     carries no time; it closes at the scheduling decision after one other
+ *     thread has been dispatched, or at once when none is runnable
+ *     (sched_transfer_begin in sched.c);
+ *   - callers that cannot block (interrupt context, suspended interrupts or
+ *     dispatch, no guest thread) keep the synchronous copy and open no window;
+ *   - a BUSY Try copies nothing; more than two callers queue by priority;
+ *   - BUSY and the wait are decided after the size/NULL checks and before
+ *     span validation, which runs when the copy happens.
  *
  * The size-before-address ordering below is a runtime ordering; the combined
  * size-zero-plus-invalid-pointer case was not part of the probe.
- * The measured ~376–382 us observation for a large call is caller wall time;
- * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
  * does not currently translate guest self-modifying code or maintain a separate
  * instruction-cache/dispatch-table invalidation layer. DMA therefore exposes
@@ -7255,14 +7268,43 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
+#define SCE_DMAC_ERROR_BUSY 0x80000021u
+/* The active transfer's owner and every blocking caller queued behind it park
+ * on this object until the scheduler closes the transfer window. */
+#define DMAC_TRANSFER_WAIT_OBJ 0x444d4143u /* "DMAC" */
+
+static uint32_t dmac_transfer(CpuState *s, int try_only);
 
 static uint32_t h_DmacMemcpy(CpuState *s) {
+    return dmac_transfer(s, 0);
+}
+
+static uint32_t h_DmacTryMemcpy(CpuState *s) {
+    return dmac_transfer(s, 1);
+}
+
+/* Only a guest thread on its own coroutine, with interrupts and dispatch
+ * enabled, can genuinely block; any other caller keeps the synchronous copy,
+ * so no caller that copies today starts waiting. */
+static int dmac_caller_can_wait(void) {
+    return sched_guest_thread_running() && sched_wait_permitted();
+}
+
+static uint32_t dmac_transfer(CpuState *s, int try_only) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
     /* Validate size and null pointers before touching guest memory. */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
+
+    /* Another thread's transfer is pending: Try reports BUSY without copying,
+     * and the blocking form waits for it through the scheduler. */
+    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {
+        if (try_only) return SCE_DMAC_ERROR_BUSY;
+        while (dmac_caller_can_wait() && sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL))
+            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+    }
 
     /* The physical PSP completed the one-byte invalid-tail case through the
      * valid prefix.  Compute both prefixes with overflow-safe arena arithmetic
@@ -7292,14 +7334,16 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     memmove(SR_HOST(dst), SR_HOST(src), effective);
     sr_guest_vram_write_commit_bytes(dst, effective);
     if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
-    return 0;
-}
 
-/* sceDmacTryMemcpy shares the measured single-caller copy path.  Its
- * cross-thread BUSY behavior remains a separate scheduler/DMAC operation to
- * implement once the runtime has explicit active-transfer state. */
-static uint32_t h_DmacTryMemcpy(CpuState *s) {
-    return h_DmacMemcpy(s);
+    /* This call's own transfer: the caller stays blocked in the call until the
+     * scheduler closes its window. */
+    if (dmac_caller_can_wait() && sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)) {
+        const uint32_t self = sched_current_uid();
+        uint32_t owner = 0u;
+        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self)
+            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+    }
+    return 0;
 }
 static uint32_t h_Memset(CpuState *s) {
     /* a0=dst, a1=byte_val, a2=size */

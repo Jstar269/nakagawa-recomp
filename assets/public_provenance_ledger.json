@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2c6e923505c74c6ab705ab34590d0d65882c5d0dfcfe85e98cc4f1130cbcc48d"
+      "sha256": "fe7922a7d1cb8d1f191586e8a3c115c47ead0ce8ea4851f64497a2f435528521"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4cf0e1d28d54466c60bf90dc066a9d8da805c16e4fe4f1ecf2e31a2c1d9097a6"
+      "sha256": "348e472f655977a1b9abcb5e155727561fb259b8761d36254661536bde551b09"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "0d8b6d9313274587903518f0c07f521ef1494ce4d980712733ddfaa8201b08df"
+      "sha256": "13504ddac682a827f2483862528936159a84a566f8cc333a1efd229564d0fd38"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1885,7 +1885,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "61dff287e3b40449c2d0e77e2e9c657b5fdbf9ec2da7f27471c99e5815390256"
+      "sha256": "b13dd4f8f14b06f9556032071934018fb36a3b8171d0225973df2737d46cede9"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "21db2f2bddc606c15afc1337fb6005011959bdae96df89425995828f7ab64b3b"
+      "sha256": "d77403f2b6a0bd9a2d04753d937b831b49ca76b689b430b09e54eda267075801"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b751ecfeb3b64237a10a93c08614ac1763f7623ec605ffbaf8cec3fb9d8acbaa"
+      "sha256": "e81bac61d66879b308d64ec284fd688b6770299badd10fcab309c22800457d33"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9392,7 +9392,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1a3fb42a004c611977bc824c410586edf58fb42ebf3e83d6ff1c10cd177d7c58"
+      "sha256": "4eb8410f4183ba5ee37ba0fb3808d5678dbbf7c0ae46614ad44fd3d0b2342212"
     },
     {
       "path": "src/rt/savedata.c",
@@ -9418,7 +9418,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "05252fac5a4b432aab1d06741088c734b8b15b15443d93395a704c5747d75f49"
+      "sha256": "534147f6edee9949d1d4e215a3a2d2483d793563485bf8433522cd287f44f43c"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -9430,7 +9430,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac31361cbe2d889a69ac13d18844ce1833a588da3e76f99ef01220b3fb1fb843"
+      "sha256": "a34c7a7039ca26997204a65235ebdb57b1826923478c0c5ef14f0d129dc39741"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -12061,7 +12061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7137603ac52d03d60aac99cde8893cf47961a1a1d52900f0d5fd21e9c723b8d"
+      "sha256": "899a08fb96fb2c35c0fcd71e827d9a7e5d5f4d0238fbdd777c17ffbe62929c94"
     },
     {
       "path": "tools/host_stubs.py",
@@ -13700,7 +13700,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd8dc40dc5b76d3668d4a3f738bbe358fc4fd1102d43b5ad6d9f032bc16d380d"
+      "sha256": "c48a0181ded794a8c5226f8db6833b5ddf9130452332b8dbd6ef7eefafbca087"
     },
     {
       "path": "tools/test_domain_mode.py",

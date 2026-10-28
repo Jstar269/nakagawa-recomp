@@ -1754,6 +1754,12 @@ int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake r
 int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
 int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+/* Device transfer window (#303): the current thread starts a transfer whose guest-time
+ * duration is unmeasured; the scheduler closes the window at the decision after one
+ * other thread was dispatched (at once when none is runnable) and wakes obj's waiters.
+ * begin returns 0 when a window is already open or no thread is current. */
+int      sched_transfer_begin(uint32_t obj);
+int      sched_transfer_pending(uint32_t obj, uint32_t *owner_uid); /* 1 while obj's window is open */
 /* Semantic wait lifetime, independent of SrCoro's executable stack. Only the
  * innermost block attaches to the TCB; callback-parked parents remain live.
  * Detach hooks are object policy and MUST NOT preempt during owner teardown. */

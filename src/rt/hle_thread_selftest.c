@@ -7031,6 +7031,7 @@ static void reset_fixture(void) {
     sr_hle_test_mutex_reset();
     sr_hle_test_volatile_mem_reset();
     sched_alarm_reset();
+    sched_transfer_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -20720,12 +20721,156 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
 }
 
 /* Hardware measured sceDmacTryMemcpy matching the blocking form for every
- * single-caller size tested, while the multi-threaded campaign observed BUSY
- * during active DMA. The production runtime still has no active-transfer
- * state, so no BUSY result is fabricated here. */
+ * single-caller size tested. These calls have no current guest thread, so they
+ * take the synchronous copy; the cross-thread BUSY and wait cells are covered
+ * by test_dmac_active_transfer_across_threads below. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");
+}
+
+/* ---- sceDmac active transfer across two guest threads (#303) ----------------
+ *
+ * The PSP-3000 / 6.6.1 dma-concurrency probe (PSP-DMAC-001, 64/64 for each
+ * combination): a priority-0x10 thread starts a transfer and, outranking the
+ * priority-0x20 main thread, runs at once and blocks inside the call; the main
+ * thread then makes the second call. A Try made while the first transfer is
+ * pending returns BUSY (0x80000021); a blocking call made then waits for it and
+ * returns 0; the first call returns 0 in every combination.
+ *
+ * The production scheduler loop (sched_run) runs both guest threads, created
+ * and started through the production ThreadMan NIDs, so every wait here is a
+ * real scheduler block and wake. The transfer's guest-time duration is
+ * unmeasured, so only the measured ordering is asserted. */
+enum {
+    DMAC_CC_MAIN_ENTRY = 0x08a30000u,
+    DMAC_CC_FIRST_ENTRY = 0x08a30040u,
+    DMAC_CC_FIRST_NAME = 0x08a30100u,
+    DMAC_CC_SRC = 0x08600000u,
+    DMAC_CC_DST_FIRST = 0x08640000u,
+    DMAC_CC_DST_SECOND = 0x08680000u,
+    DMAC_CC_SIZE = 0x10000u,
+};
+#define SCE_DMAC_BUSY 0x80000021u
+
+static uint32_t s_dmac_cc_first_nid;
+static uint32_t s_dmac_cc_second_nid;
+static uint32_t s_dmac_cc_first_uid;
+static uint32_t s_dmac_cc_first_ret;
+static uint32_t s_dmac_cc_second_ret;
+static uint32_t s_dmac_cc_join_ret;
+static int s_dmac_cc_first_entered;
+static int s_dmac_cc_first_returned;
+static int s_dmac_cc_pending_at_second;     /* first entered, not returned, at the second call */
+static int s_dmac_cc_first_done_at_second;  /* first had returned when the second call returned */
+static int s_dmac_cc_main_finished;
+
+static uint32_t dmac_cc_call(uint32_t nid, uint32_t dst) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = dst;
+    c.r[5] = DMAC_CC_SRC;
+    c.r[6] = DMAC_CC_SIZE;
+    return sr_syscall(&c, nid);
+}
+
+static void dmac_cc_first_fn(CpuState *cpu) {
+    s_dmac_cc_first_entered = 1;
+    s_dmac_cc_first_ret = dmac_cc_call(s_dmac_cc_first_nid, DMAC_CC_DST_FIRST);
+    s_dmac_cc_first_returned = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_main_fn(CpuState *cpu) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    title_hle_write_cstr(DMAC_CC_FIRST_NAME, "dmac-first");
+    c.r[4] = DMAC_CC_FIRST_NAME;
+    c.r[5] = DMAC_CC_FIRST_ENTRY;
+    c.r[6] = 0x10u;
+    c.r[7] = 0x4000u;
+    s_dmac_cc_first_uid = sr_syscall(&c, NID_SCE_KERNEL_CREATE_THREAD);
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    (void)sr_syscall(&c, NID_SCE_KERNEL_START_THREAD);   /* the stronger thread runs at once */
+
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_entered && !s_dmac_cc_first_returned;
+    s_dmac_cc_second_ret = dmac_cc_call(s_dmac_cc_second_nid, DMAC_CC_DST_SECOND);
+    s_dmac_cc_first_done_at_second = s_dmac_cc_first_returned;
+
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    s_dmac_cc_join_ret = sr_syscall(&c, hle_selftest_nid("sceKernelWaitThreadEnd"));
+    s_dmac_cc_main_finished = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_run(uint32_t first_nid, uint32_t second_nid, int second_blocks,
+                        const char *label) {
+    char msg[256];
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(DMAC_CC_MAIN_ENTRY, dmac_cc_main_fn);
+    sr_test_register_guest_fn(DMAC_CC_FIRST_ENTRY, dmac_cc_first_fn);
+    s_dmac_cc_first_nid = first_nid;
+    s_dmac_cc_second_nid = second_nid;
+    s_dmac_cc_first_uid = 0u;
+    s_dmac_cc_first_ret = s_dmac_cc_second_ret = s_dmac_cc_join_ret = 0xffffffffu;
+    s_dmac_cc_first_entered = s_dmac_cc_first_returned = 0;
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_done_at_second = 0;
+    s_dmac_cc_main_finished = 0;
+    dmac_fill(DMAC_CC_SRC, DMAC_CC_SIZE);
+    dmac_clear(DMAC_CC_DST_FIRST, DMAC_CC_SIZE + 1u, 0u);
+    dmac_clear(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(DMAC_CC_MAIN_ENTRY, 0u, 0u);
+
+    snprintf(msg, sizeof msg, "%s: both guest threads ran to completion under sched_run", label);
+    expect(s_dmac_cc_main_finished && s_dmac_cc_first_uid >= 0x110u &&
+               s_dmac_cc_first_uid < 0x80000000u && s_dmac_cc_join_ret == 0u, msg);
+    snprintf(msg, sizeof msg,
+             "PSP %s: the first caller had entered and not returned when the second call began",
+             label);
+    expect(s_dmac_cc_pending_at_second, msg);
+    if (second_blocks) {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a blocking call made while another thread's transfer is pending returns 0",
+                 label);
+        expect(s_dmac_cc_second_ret == 0u, msg);
+        snprintf(msg, sizeof msg,
+                 "PSP %s: the blocking call waits and returns only after the first transfer", label);
+        expect(s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "PSP %s: the waiting call then performs its own full copy", label);
+        expect(dmac_span_matches(DMAC_CC_DST_SECOND, DMAC_CC_SIZE, 0u) &&
+                   MEM_R8(DMAC_CC_DST_SECOND + DMAC_CC_SIZE) == 0u, msg);
+    } else {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a Try made while another thread's transfer is pending returns BUSY "
+                 "(0x80000021)", label);
+        expect(s_dmac_cc_second_ret == SCE_DMAC_BUSY, msg);
+        snprintf(msg, sizeof msg, "PSP %s: BUSY is returned while the first transfer is pending",
+                 label);
+        expect(!s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "runtime %s: a BUSY Try copies nothing (unmeasured on PSP)",
+                 label);
+        expect(dmac_span_is(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u), msg);
+    }
+    snprintf(msg, sizeof msg, "PSP %s: the first call returns 0 after its full copy", label);
+    expect(s_dmac_cc_first_returned && s_dmac_cc_first_ret == 0u &&
+               dmac_span_matches(DMAC_CC_DST_FIRST, DMAC_CC_SIZE, 0u) &&
+               MEM_R8(DMAC_CC_DST_FIRST + DMAC_CC_SIZE) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: no transfer window outlives its threads", label);
+    expect(s_xfer_obj == 0u, msg);
+    sr_test_guest_fn_reset();
+}
+
+static void test_dmac_active_transfer_across_threads(void) {
+    dmac_cc_run(NID_SCE_DMAC_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-memcpy-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-try-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_MEMCPY, 1, "concurrent-try-memcpy");
 }
 
 static void test_display_framebuf_latch(void) {
@@ -35585,6 +35730,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_handler_runs_under_interrupt_context_rules();
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
+    test_dmac_active_transfer_across_threads();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
