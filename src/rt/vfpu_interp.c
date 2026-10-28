@@ -579,7 +579,22 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 sr_vwrite(s, di, (float *)d, oz, s->vfpuCtrl[2]);
                 eat_prefix(s); return SR_VFPU_COMPUTE;
             }
-            return SR_VFPU_OTHER;  /* vrnds/vrndi/vrndf/vf2h/vh2f: no static emitter either */
+            if (idx7 == 1 && n == 1) {  /* vrndi.s: one draw of the random unit */
+                /* PSP-HLE-ISSUES-001 (issue #326) measured vrndi.s with identity S/T/D
+                 * prefixes only: the step itself is sr_vfpu_rnd_step (recomp.h). How a
+                 * pending prefix acts on it (consumed or not, D mask and saturation) is
+                 * unmeasured, so a non-identity prefix fails closed with no state change,
+                 * as do vrndi.p/.t/.q (which lane draws first is unmeasured). VFPU_CC is
+                 * not written. The generated code (tools/codegen.py) does the same. */
+                if (s->vfpuCtrl[0] != 0xe4u || s->vfpuCtrl[1] != 0xe4u || s->vfpuCtrl[2] != 0u)
+                    return SR_VFPU_OTHER;
+                vreg_idx(vd, 1, di);
+                s->vi[di[0]] = sr_vfpu_rnd_step(&s->vfpuCtrl[8]);
+                return SR_VFPU_COMPUTE;
+            }
+            /* vrnds (seeding) and vrndf1/vrndf2 (float draws): docs/HARDWARE_ORACLE.md
+             * records no rule for them yet. vf2h/vh2f have no emitter either. */
+            return SR_VFPU_OTHER;
         }
         if (sub21 >= 16 && sub21 <= 19) {  /* vf2in / vf2iz / vf2iu / vf2id: float -> s32
                                             * with 2^imm scale and explicit PSP rounding. */

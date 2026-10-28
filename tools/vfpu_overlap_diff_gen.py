@@ -97,6 +97,12 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     # PSP-3000 returned.
     cases.append((_vv2_word(28, 1, 0x40, 0x00), "vrexp2-s-measured", 1))
 
+    # vrndi.s (issue #326): the PSP-HLE-ISSUES-001 probe word vrndi.s S000, and the same draw
+    # into S323 (vd=0x6E) so the destination decode is exercised off lane 0.
+    # check_vrndi_rule_cells() finds them by name and steps both lanes from the probe's states.
+    cases.append((0xD0210000, "vrndi-s-issues", 1))
+    cases.append((0xD021006E, "vrndi-s-s323", 1))
+
     # vmscl.t (op 0x3C sub 4 size 3): scalar inside destination matrix
     cases.append((_bin_word(0x3C, 4, 3, 0x20, 0x20, 0x00), "vmscl-t-scalar-in-dest", 2))
 

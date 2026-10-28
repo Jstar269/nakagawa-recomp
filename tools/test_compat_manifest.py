@@ -999,10 +999,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         self.assertTrue(patches, "temporary compatibility debt census is empty")
         ids = [patch["id"] for patch in patches]
         self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
-        # The #363 subject: the forced branch and the remaining static-success
-        # HST_SIMPLE_STUBS must all be inventoried.
+        # The #363 subject: the remaining static-success HST_SIMPLE_STUBS must all
+        # be inventoried.
         anchors = {patch["id"].split(":")[1] for patch in patches}
-        for address in ("0x00010950", "0x0001c010", "0x0001c604"):
+        for address in ("0x0001c010", "0x0001c604"):
             self.assertIn(address, anchors, f"census lost {address}")
 
     def test_every_temporary_patch_has_owner_retirement_and_test(self):
@@ -1604,15 +1604,18 @@ class GenericRuntimeTitleAddressGuardTests(unittest.TestCase):
                 contaminated, inventory[relative_path])
             self.assertIn(address, found, relative_path)
 
-    def test_init_walker_guard_is_title_gated_not_generic(self) -> None:
+    def test_init_walker_guard_and_its_restore_are_retired(self) -> None:
         inventory = compat_overrides.RETIRED_INIT_WALKER_GUARD
         self.assertEqual(inventory["decision"], "b")
         self.assertIn("HST only", inventory["reason"])
         source = RECOMP_C.read_text(encoding="utf-8")
         self.assertNotIn("INIT_WALKER_GUARD", source)
-        # The restore in generic dispatch is armed only through the title configuration.
-        self.assertIn("sr_title_config_preserve_callee_saved_at_calls()", source)
-        self.assertIn("s->r[reg] = callee_saved", source)
+        # #363: no title configuration restores callee-saved registers at a CALL any more.
+        self.assertNotIn("sr_title_config_preserve_callee_saved_at_calls", source)
+        self.assertNotIn("callee_saved[", source)
+        for header in ("title_config.c", "title_config.h"):
+            text = (ROOT / "src" / "rt" / header).read_text(encoding="utf-8")
+            self.assertNotIn("sr_title_config_preserve_callee_saved_at_calls", text, header)
 
 
 class DiagnosticGroupConsistencyTests(unittest.TestCase):

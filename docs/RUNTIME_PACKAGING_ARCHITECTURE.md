@@ -84,7 +84,7 @@ list is not evidence that a distributable installer or title package exists:
 * `src/core/nk_platform_win32.c`: Win32 `CreateProcessW` with UTF-16 executable/command-line conversion, environment block generation, and wait handles.
 * `src/core/nk_platform_posix.c`: POSIX `fork` + `execv` with environment configuration.
 * `src/core/nk_launch.h` & `src/core/nk_launch.c`: typed `NkLaunchSession` candidate resolution, environment construction, and process lifecycle management.
-* `src/player/ui/player_ui_nk.c`: the default launcher's "PLAY" / "STOP GAME" action triggers; the older `src/player/ui_renderer.c` (`--ui=legacy`) keeps its "PLAY NOW" trigger and active PID indicators.
+* `src/player/ui/player_ui_nk.c`: the default launcher's "PLAY" / "STOP GAME" action triggers; the older `src/player/ui_renderer.c`, kept only in the regression-test build (`--ui=legacy`), keeps its "PLAY NOW" trigger and active PID indicators.
 
 ---
 
@@ -146,6 +146,14 @@ the player's `build-package` action. The command refuses to reuse an existing
 package directory when its manifest, executable, selected PRXs, or PSP header
 hashes differ. The manifest remains unchanged. Make's `all` target still runs the generation and
 compile phases separately so generated chunks are linked on a clean build.
+A package build chunks generated C by size: `CHUNK_TARGET_BYTES` defaults to 4,000,000
+bytes of C per translation unit (a value the caller sets wins, and the cache key names
+it). Every function's C text, its order and the compile flags stay the same; only the
+boundaries between translation units move (gcc inlines the runtime header's static inline
+helpers into more functions of a smaller unit). Each compile job is then given memory in
+proportion to the target (256 bytes per byte, at least 1 GiB, at most the 3 GiB that
+count-based chunks need), so a host with little free memory still compiles several chunks
+at once.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
 `<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory

@@ -51,29 +51,10 @@ def _fake_stager(target: Path) -> list[str]:
 
 
 class IconTests(unittest.TestCase):
-    def test_icon_is_a_png_ico_with_every_size(self):
-        data = stage_install.build_icon((16, 32))
-        reserved, kind, count = struct.unpack_from("<HHH", data, 0)
-        self.assertEqual((reserved, kind, count), (0, 1, 2))
-        for index, size in enumerate((16, 32)):
-            width, height, _, _, planes, bits, length, offset = struct.unpack_from(
-                "<BBBBHHII", data, 6 + 16 * index)
-            self.assertEqual((width, height, planes, bits), (size, size, 1, 32))
-            self.assertEqual(data[offset:offset + 8], b"\x89PNG\r\n\x1a\n")
-            self.assertLessEqual(offset + length, len(data))
-
-    def test_icon_draws_the_mark_on_a_dark_tile(self):
-        size = 64
-        rgba = stage_install.render_icon_rgba(size, samples=1)
-        self.assertEqual(len(rgba), size * size * 4)
-
-        def pixel(x, y):
-            return tuple(rgba[(y * size + x) * 4:(y * size + x) * 4 + 4])
-
-        self.assertEqual(pixel(0, 0)[3], 0, "rounded corner stays transparent")
-        self.assertEqual(pixel(size // 2, 3), (0x10, 0x15, 0x1C, 255))
-        self.assertEqual(pixel(14, 14), (0xD7, 0xF2, 0x4A, 255), "lime block, top left")
-        self.assertEqual(pixel(size - 14, size // 2), (0xF5, 0xF7, 0xFA, 255))
+    # The picture itself is tested in tools/test_app_icon.py.
+    def test_install_icon_is_the_app_icon_the_executables_carry(self):
+        committed = (stage_install.ROOT / "assets" / "brand" / "nakagawa.ico").read_bytes()
+        self.assertEqual(stage_install.app_icon(), committed)
 
 
 class InstallTests(unittest.TestCase):
@@ -211,6 +192,7 @@ class LinuxInstallTests(unittest.TestCase):
         data = icon.read_bytes()
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(struct.unpack_from(">II", data, 16), (256, 256))
+        self.assertIn(data, stage_install.app_icon(), "the app icon's own 256 px image")
 
     def test_exec_escapes_quotes_and_field_codes(self):
         self.assertEqual(stage_install._exec_quote('a"b$c`d\\e%f'), '"a\\"b\\$c\\`d\\\\e%%f"')

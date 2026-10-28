@@ -19,8 +19,10 @@ enum {
     NK_UI_FOCUS_DISABLED = 1u << 0,   /* registered (keeps its rect) but never focusable */
     NK_UI_FOCUS_ROW_MEMBER = 1u << 1, /* left/right stay in this entry's row: a move
                                          never jumps to another row, it just fails at the end */
-    NK_UI_FOCUS_DEFAULT = 1u << 2     /* preferred first focus when its scope activates
+    NK_UI_FOCUS_DEFAULT = 1u << 2,    /* preferred first focus when its scope activates
                                          with no remembered id */
+    NK_UI_FOCUS_NO_DEFAULT = 1u << 3  /* never taken as a scope's first focus (a destructive
+                                         action): reached only by moving to it */
 };
 
 /* Scopes stack from the bottom: root, overlay, drawer, dialog. The highest scope that

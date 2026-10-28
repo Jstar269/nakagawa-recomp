@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "pspdev-phase5-v1",
-  "display_name": "PSPDEV Phase 5 Source-Owned Fixture",
+  "display_name": "Nakagawa Test Program",
   "kind": "synthetic",
   "executable": {
     "base": 142622720,

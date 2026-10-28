@@ -1,6 +1,6 @@
 # Title Profile and Launch Session Architecture
 
-> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. Private title manifests, game-derived bindings, and acceptance evidence stay outside the public repository.
+> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. The HST manifest is public (`assets/titles/hst-ucus98701.json`); game inputs, other private title manifests and acceptance evidence stay outside the repository.
 
 ## 1. Goal and current evidence
 
@@ -83,8 +83,8 @@ guest namespace:
 ]
 ```
 
-The private flagship manifest expresses its roots with these same typed entries;
-its local manifest and inputs remain outside this repository. A manifest that
+The flagship manifest, `assets/titles/hst-ucus98701.json`, expresses its roots
+with these same typed entries; its game inputs stay outside this repository. A manifest that
 omits `loose_content_roots` still loads and normalizes to an empty list. That is
 the explicit migration default: no neighboring-directory discovery occurs, so
 profiles that need extra roots must add the field before expecting those files
@@ -137,10 +137,8 @@ Unsupported interpreter forms remain fail-closed. HST-specific diagnostic probes
 HLE, scheduler, and recompiler were removed; use generic SR_TRACE_PC or SR_WATCH
 instrumentation when those observations are needed. The init-walker r16 save/restore
 no longer names caller addresses in generic dispatch. Real hardware does not restore
-$s0-$s7 or $fp/$s8 for a callee, so a generic title keeps every register write its
-callee makes. Only the HST title configuration arms a restore of those registers at a
-returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
-until the flagship's clobber is root-caused.
+$s0-$s7 or $fp/$s8 for a callee, so every title keeps every register write its callee
+makes. The HST-only restore of those registers at a returning CALL was retired under #363.
 
 No title profile supplies Newlib master or guest thread-table addresses: the HST reent
 bindings were retired under #363, and the runtime performs no guest-table seeding for any
@@ -184,5 +182,5 @@ For the native player’s current implementation boundary and process lifecycle,
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
 - HST reent-table configuration remains title-gated compatibility debt under #363; generic
   dispatch rejection and diagnostic cleanup do not establish full second-title support.
-- The first release is v0.0.1 (#333); reconciling the root release metadata at the approved candidate is #513.
+- The first release is v0.0.1 (#333); its root release metadata was set to 0.0.1 at the candidate freeze (#513).
 - Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.

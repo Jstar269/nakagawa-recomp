@@ -227,8 +227,8 @@ class TitleCatalogTests(unittest.TestCase):
         # Derived from the manifests, not a literal: adding a public title
         # should not require editing a number in a test harness.  Ask the same
         # policy-aware collector the catalog generator uses instead of listing
-        # the directory: assets/titles/ also holds the operator's
-        # publication-excluded retail manifest, which is never catalogued.
+        # the directory: assets/titles/ can also hold a developer's untracked
+        # private manifest, which is never catalogued.
         expected_titles = len(
             title_catalog_codegen.collect_public_manifests(ROOT / "assets" / "titles")[0]
         )
@@ -261,11 +261,19 @@ int main(void) {{
     assert(nk_title_catalog_find_by_disc_id("  TEST_00005  ", &t3));
     assert(strcmp(t3.entry.id, t_p5.entry.id) == 0);
 
-    /* Retail IDs must return NULL in public catalog */
+    /* The public HST manifest is the one catalogued retail title */
+    NkTitleEntrySnapshot t_hst = {{0}};
+    assert(nk_title_catalog_find_by_disc_id("UCUS-98701", &t_hst));
+    assert(strcmp(t_hst.entry.id, "hst-ucus98701-v1") == 0);
+    assert(t_hst.entry.kind == NK_TITLE_KIND_RETAIL);
+    assert(strcmp(t_hst.entry.codegen_profile, "hst") == 0);
+    assert(strcmp(t_hst.entry.hle_profile, "hst-current") == 0);
+    nk_title_catalog_snapshot_release(&t_hst);
+
+    /* Other retail IDs must return NULL in public catalog */
     NkTitleEntrySnapshot missing = {{0}};
-    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
     assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
-    assert(!nk_title_catalog_find_by_id("hst-ucus98701-v1", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("ULUS99999", &missing));
 
     /* Test in-memory private overlay */
     NkTitleEntry overlay;
@@ -273,7 +281,7 @@ int main(void) {{
     overlay.id = "private-test-v1";
     overlay.display_name = "Private Overlay Test";
     overlay.kind = NK_TITLE_KIND_RETAIL;
-    overlay.primary_disc_id = "UCUS98701";
+    overlay.primary_disc_id = "UCES01402";
 
     uint64_t start_epoch = nk_title_catalog_epoch();
     nk_title_catalog_register_overlay(&overlay);
@@ -283,13 +291,13 @@ int main(void) {{
     assert(nk_title_catalog_epoch() == overlay_epoch);
     NkTitleEntrySnapshot found_overlay = {{0}};
     NkTitleEntrySnapshot found_overlay_by_id = {{0}};
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701", &found_overlay));
+    assert(nk_title_catalog_find_by_disc_id("UCES01402", &found_overlay));
     assert(nk_title_catalog_find_by_id("private-test-v1", &found_overlay_by_id));
     assert(strcmp(found_overlay.entry.id, "private-test-v1") == 0);
 
     nk_title_catalog_clear_overlay();
     assert(strcmp(found_overlay.entry.display_name, "Private Overlay Test") == 0);
-    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
     assert(!nk_title_catalog_find_by_id("private-test-v1", &missing));
     uint64_t empty_epoch = nk_title_catalog_epoch();
     nk_title_catalog_clear_overlay();

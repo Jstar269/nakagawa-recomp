@@ -39,7 +39,7 @@ Each row is something you are about to do. Find yours and read what it points to
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
 | Touch provenance, notices, or attribution | [`NOTICE.md`](../NOTICE.md), [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json), [`provenance/INDEPENDENCE_MODEL.md`](provenance/INDEPENDENCE_MODEL.md) |
 | Decide whether a surface is title-specific or generic | [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) |
-| Operate an AI agent | [`AGENTS.md`](../AGENTS.md) (the policy authority), then [`REVIEW.md`](../REVIEW.md) when reviewing |
+| Work with an AI agent (yours or the maintainer's) | [`AGENTS.md`](../AGENTS.md) (the policy authority; its "Where to start" is the quick start), then [`REVIEW.md`](../REVIEW.md) when reviewing |
 | Contribute, sign off, or report a vulnerability | [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`DCO_POLICY.md`](DCO_POLICY.md) |
 
 ## Maintained engineering guides

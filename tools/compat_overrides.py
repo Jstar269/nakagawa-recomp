@@ -170,25 +170,12 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
     " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
 )
 
-#: The GUEST_PATCHES instruction override (0x10950) is pinned by a different test.
-#: The coupling differential does NOT catch it being switched off: its
-#: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
-#: same address, so a disabled patch still emits address-different text.
-#: The legacy-emission test asserts the patch's own marker text instead, and
-#: fails when the patch stops applying (verified the same way).
-CODEGEN_GUEST_PATCH_TEST = (
-    "tools/test_codegen_profile_isolation.py"
-    "::ProfileHstLegacyTests::test_legacy_hst_emission_is_unchanged"
-)
 
 # --- tools/codegen.py: GUEST_PATCHES (instruction-level overrides) ----------
+# 0x00048320 (force single-iteration pass) and 0x00010950 (bypass worker frame-init spin
+# loop) were retired under #363. 0x00010950 sat inside the retail allocator body that the
+# runtime host-bridges, so its patched branch was never emitted into the title C.
 GUEST_PATCHES = [
-    dict(address=0x00010950, layer="codegen_instruction", category="temporary_compatibility_patch",
-         source="tools/codegen.py:GUEST_PATCHES", name="bypass worker frame-init spin loop",
-         reason="force the branch condition to skip a spin loop at 0x10950 (worker frame init)",
-         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
-         retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
-                    "must terminate on its own guest-visible condition, then delete the entry"),
     dict(address=0x0004cdc8, layer="codegen_instruction", category="hle_boundary",
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
@@ -385,18 +372,18 @@ RETIRED_DISPATCH_TARGETS = [
 
 # The old INIT_WALKER_GUARD was attached to these caller PCs, but its r16 restore
 # changed guest-visible state. Decision (b): remove the title-address guard from
-# generic dispatch; only the HST title configuration arms a restore of $s0-$s7/$fp
-# at a returning CALL, and every other title keeps its callee's register writes.
+# generic dispatch. The HST-only restore of $s0-$s7/$fp at a returning CALL that
+# replaced it is retired too (#363, 2026-10-27): every title keeps its callee's
+# register writes.
 RETIRED_INIT_WALKER_GUARD = dict(
     caller_pcs=[0x00000f98, 0x00000fdc],
     decision="b",
-    source="src/rt/title_config.c:sr_title_config_preserve_callee_saved_at_calls",
-    reason="#363 debt, HST only: the flagship needs a returning dispatch CALL to restore "
-           "$s0-$s7/$fp (the old guard restored $s0 at these two caller PCs). Real hardware "
-           "does not restore them, so every other title keeps its callee's register writes; "
-           "the restore is armed only by the validated HST title configuration, and no "
-           "caller address remains in generic dispatch. Retire it once the flagship's "
-           "clobber is root-caused.",
+    source="src/rt/recomp.c:dispatch (retired)",
+    reason="#363 debt, HST only: a returning dispatch CALL used to restore $s0-$s7/$fp "
+           "(the old guard restored $s0 at these two caller PCs). Real hardware does not "
+           "restore them. The restore was armed only for a manifest id no local HST manifest "
+           "carries, so the private full-match route ran without it; it is retired and no "
+           "caller address remains in generic dispatch.",
     test="make dispatch-isolation-selftest (a generic title sees its callee's writes)",
 )
 
@@ -404,32 +391,12 @@ RETIRED_INIT_WALKER_GUARD = dict(
 # Documented manually (not mechanically cross-checked by test_compat_manifest.py --
 # see that file's header for why the automated gate is scoped to the two sources
 # above only).
+# Retired under #363 (2026-10-27): the two 0x000468c8 worker hooks. "worker thread reuse"
+# returned the existing thread for a repeat create at the configured worker entry, and
+# "worker relaunch trampoline" restarted a DORMANT worker at VBLANK. The title creates its
+# worker once and the worker's loop never returns, so neither fired on the private
+# full-match route. The worker binding itself remains (it names the role for diagnostics).
 SCHEDULER_HOOKS = [
-    dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker thread reuse",
-         source="src/rt/sched.c:sched_create_thread/tcb_by_entry",
-         reason="a new sceKernelCreateThread for the configured worker entry reuses an "
-                "existing dormant TCB instead of creating a fresh thread; opt-out via "
-                "SR_NO_THREAD_REUSE=1. The address above is no longer compiled into the "
-                "runtime: it reaches sched.c only as the runtime_bindings.worker_thread_entry "
-                "of a validated title manifest, so an unconfigured build never applies this "
-                 "override at all. Retire by proving the guest's create/exit sequence needs no "
-                 "reuse, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
-                    "binding with it"),
-    dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
-         source="src/rt/sched.c:deliver_vblank",
-         reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
-                "as a host surrogate for the GE list-complete callback that re-arms the "
-                "guest's frame loop on real hardware; opt-out via SR_NO_RELAUNCH=1. Reached "
-                "only through the captured worker role, so a build with no worker binding "
-                 "re-arms nothing. Retire by implementing the real list-complete callback "
-                 "path, which retires the surrogate.",
-         test="make sched-selftest (generic build asserts no role is captured, so no relaunch)",
-         owner_issue="#363",
-         retirement="implement the real GE list-complete callback path, which retires the "
-                    "VBLANK relaunch surrogate"),
     dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher reent ownership",
          source="src/rt/sched.c:register_libc_thread/init_guest_reent",
          reason="a thread holding the LAUNCHER role seeds g_master_reent for every later "

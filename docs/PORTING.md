@@ -27,12 +27,9 @@ python tools/title_manifest.py assets/titles/synthetic.json
 python tools/title_codegen_plan.py assets/titles/synthetic.json --print-protected-digest
 ```
 
-The retail HST manifest (`assets/titles/hst-ucus98701.json`) is intentionally
-not checked in and is publication-excluded (see
-[`assets/public_source_profile.json`](../assets/public_source_profile.json));
-a public clone has no copy. With a local copy plus private bindings, the same
-planner drives the HST lane — this second example is private-local-only, not
-runnable from a public clone:
+The HST manifest (`assets/titles/hst-ucus98701.json`) is in the repository.
+With your own game inputs in `place_game_here/`, the same planner drives the HST
+lane:
 
 ```powershell
 python tools/title_codegen_plan.py assets/titles/hst-ucus98701.json `
@@ -88,9 +85,8 @@ routes have distinct open order: a matching extracted-primary file wins a loose
 file, while a loose filesystem file is checked before an XB archive member.
 This migration, loose-content root binding, landed under [#289](https://github.com/Jstar269/nakagawa-recomp/issues/289).
 
-For the privately route-validated HST title, the opt-in manager path is
-(private-local-only: it requires a local, publication-excluded copy of the
-retail HST manifest, so it is not runnable from a public clone):
+For the HST title, the manager path is (it needs your own game inputs in
+`place_game_here/`):
 
 ```powershell
 .\nk_manager.ps1 -Action BuildFull -GameName hst `
@@ -416,7 +412,7 @@ title configuration; see `tools/test_hle_title_isolation.py` and
 The former HST doctor core previously defined `EXPECTED_DISC_ID = "UCUS98701"` independently
 of `manifest.disc.id`. The second source of truth has been retired: `tools/nk_doctor.py`
 and `tools/nk_doctor_checks.py` take disc identity from validated title configuration
-(`--title-manifest`, `TITLE_MANIFEST`, or local `assets/titles/hst-ucus98701.json`).
+(`--title-manifest`, `TITLE_MANIFEST`, or `assets/titles/hst-ucus98701.json`).
 When no manifest is supplied, the doctor operates in generic mode, performing ISO9660
 format validation without title-specific disc ID confirmation.
 `PROFILE_OWNED_CONFIGURATION` — retired for this surface.

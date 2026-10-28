@@ -456,9 +456,20 @@ class TitleManifestTests(unittest.TestCase):
             for path in directory.rglob("*")
             if path.is_file() and path.suffix.lower() in source_suffixes
         ]
+        def generic_text(path: Path) -> str:
+            text = path.read_text(encoding="utf-8")
+            if path == ROOT / "src" / "core" / "generated" / "nk_title_catalog.c":
+                # The entry table is data projected from the policy-included
+                # manifests (the public HST manifest's data_root among them);
+                # the rest of the generated catalog is generic code.
+                start = text.index("const NkTitleEntry nk_title_catalog_entries[] = {")
+                end = text.index("\n};\n", start)
+                text = text[:start] + text[end + 4:]
+            return text
+
         hits = [(path.relative_to(ROOT).as_posix(), token)
                 for path in sources for token in forbidden
-                if token.casefold() in path.read_text(encoding="utf-8").casefold()]
+                if token.casefold() in generic_text(path).casefold()]
         self.assertEqual(hits, [], f"title filesystem literals leaked into generic runtime: {hits}")
 
     def test_migration_documentation_uses_the_parent_root_contract(self) -> None:
@@ -698,9 +709,9 @@ class NativeTitleIdentityTests(unittest.TestCase):
         # Stage what the policy includes rather than a hardcoded subset: the
         # policy copied just above names every public manifest.  The policy, not
         # the directory listing, is the authority here -- assets/titles/ also
-        # holds the operator's publication-excluded retail manifest on any real
-        # working tree, and staging it made the projection under test count a
-        # manifest the policy never publishes.
+        # can hold a developer's untracked private manifest on any real working
+        # tree, and staging it made the projection under test count a manifest
+        # the policy never publishes.
         self.public_manifests = sorted(
             p.name
             for p in title_catalog_codegen.collect_public_manifests(
@@ -798,7 +809,8 @@ assert(!nk_title_identity_by_disc("TEST12345"));
 
     def test_private_and_unclassified_files_are_not_read(self) -> None:
         before = title_manifest.public_native_title_catalog(self.root)
-        for name in ("hst-ucus98701.json", "unclassified.json"):
+        self.assertIn("hst-ucus98701.json", self.public_manifests)
+        for name in ("private-retail-lookalike.json", "unclassified.json"):
             (self.titles / name).write_bytes(b"not JSON: private fixture marker")
         self.assertEqual(before, title_manifest.public_native_title_catalog(self.root))
         self.assertNotIn("private fixture marker", before)

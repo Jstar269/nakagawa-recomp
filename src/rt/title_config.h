@@ -108,9 +108,6 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr);
  * site follows ordinary generic dispatch behavior instead. */
 int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra);
 
-/* HST-only #363 compatibility debt: 1 when a returning dispatch CALL must restore
- * the callee-saved registers. Returns 0 for generic and fixture profiles. */
-int sr_title_config_preserve_callee_saved_at_calls(void);
 
 /* How a guest PRX module declared by the title manifest is placed in guest memory. */
 typedef enum SrGuestModulePlacement {
