@@ -34,6 +34,7 @@ from analyze import (
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
+import enhancement_package
 import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
@@ -77,6 +78,66 @@ STALE_DETECT = False
 # The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
 # they expand to ((void)0) and neither half changes behaviour on its own.
 NAN_TRAP = False
+
+# Active AOT enhancement package sites (addr -> resolved site dict with its "rewrite").
+# Empty (the default) keeps authentic emission byte-identical.
+ENHANCEMENT_SITES: dict[int, dict] = {}
+ENHANCEMENT_PKG_META: dict | None = None
+# The sites whose rewrite has been emitted. A package is refused unless every
+# verified site is in it when the translation is written.
+ENHANCEMENT_APPLIED: set[int] = set()
+
+
+def _enhancement_rewrite(addr: int) -> dict | None:
+    """The planned rewrite for a verified main-executable site, or None.
+
+    Callers emit the rewrite they are given, so the site is recorded as applied.
+    """
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return None
+    site = ENHANCEMENT_SITES.get(addr)
+    if site is None:
+        return None
+    ENHANCEMENT_APPLIED.add(addr)
+    return site["rewrite"]
+
+
+def _scaled_store_line(rw: dict, stock_line: str) -> str:
+    """A swc1 site that stores its FPR scaled: the store reads a scaled copy, and the
+    register is never written, so an access fault that leaves the statement early
+    (--lle-cpu) cannot leave it scaled."""
+    r = rw["reg"]
+    stored = f"s->fi[{r}]"
+    stock = stock_line.strip()
+    if stock.count(stored) != 1:
+        raise ValueError(f"scale_f_store: expected one read of {stored} in {stock!r}")
+    return (f"{{ float _nk_f = s->f[{r}] * {rw['factor']!r}f; uint32_t _nk_bits; "
+            f"memcpy(&_nk_bits, &_nk_f, sizeof _nk_bits); "
+            f"{stock.replace(stored, '_nk_bits')} }}")
+
+
+def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
+    """Both forms of one rewritten site: the stock statement runs unless the
+    experimental toggle is on at run time (nk_enhancement_on())."""
+    kind = rw["kind"]
+    if kind == "word":
+        enh = word_line
+    elif kind == "gate":
+        enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
+    elif kind == "scale_int_reg":
+        enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_f_reg":
+        enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind == "scale_f_store":
+        enh = _scaled_store_line(rw, stock_line)
+    elif kind == "scale_f_addend":
+        r = rw["reg"]
+        enh = (f"{{ float _nk_keep = s->f[{r}]; s->f[{r}] *= {rw['factor']!r}f; "
+               f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
+    else:
+        raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
+    return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
+            f"    else {{ {stock_line.strip()} }}")
 
 
 class RelocatedWord(int):
@@ -519,6 +580,23 @@ def load_symbol_map(path):
     return symbols
 
 
+def site_names_from_symbol_map(symbols):
+    """Turn a load_symbol_map result into {name: address} for enhancement-package sites.
+
+    A name the map gives to more than one address is left out, so a site that uses it
+    stays unresolved instead of silently taking one of them.
+    """
+    names = {}
+    ambiguous = set()
+    for addr, (name, _size) in symbols.items():
+        if name in names and names[name] != addr:
+            ambiguous.add(name)
+        names[name] = addr
+    for name in ambiguous:
+        del names[name]
+    return names
+
+
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -653,7 +731,8 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
-def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None):
+def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
+                       enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
     if resume_owners is None:
         resume_owners = {}
@@ -676,6 +755,13 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
             f.write(f"extern uint32_t {module.base_symbol};\n")
             for a, _nwords in module.functions:
                 f.write(f"void {module.prefix}_{a:08x}(CpuState *s);\n")
+        if enhancement:
+            # Enhancement-package builds only: rewritten sites run their stock form
+            # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
+            # even display vblanks (alternate updates of a once-per-vblank loop).
+            f.write("\nint nk_enhancement_on(void);\n")
+            f.write("static inline int nk_enhancement_gate_30hz(void) "
+                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -2214,7 +2300,7 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     try:
         eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
@@ -2227,8 +2313,21 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
     if saddr is SELF_TRACED:
-        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
-    return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+        return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
+    return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+
+def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+    line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                       delay_branch_pc=delay_branch_pc)
+    rw = _enhancement_rewrite(addr) if w is not None else None
+    if rw is None:
+        return line
+    word_line = None
+    if rw["kind"] == "word":
+        # The trace hook keeps the stock word: guest memory still holds it.
+        word_line = _plain_line(addr, rw["word"], w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                delay_branch_pc=delay_branch_pc)
+    return _enhanced_line(rw, line, word_line)
 
 def _cop0_fields(w):
     """Split a COP0 word into (rs, rt, rd, sel)."""
@@ -2464,6 +2563,8 @@ def sv_plan(elf, insns, labels, hst_profile=False):
     if not (insns and SV_ENABLED):
         return {}
     if hst_profile and (insns & _SV_SPECIAL):
+        return {}
+    if ENHANCEMENT_SITES and (insns & set(ENHANCEMENT_SITES.keys())):
         return {}
     points, total = {}, 0
     regs: list[int | None] = [None] * 32
@@ -2847,19 +2948,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
+            _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
-                out.append(
-                    f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
-                )
+                _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
-                    out.append(f"    {_flow_return(resumable)}")
+                    _call_stmt += f"\n    {_flow_return(resumable)}"
             else:
-                out.append(
+                _call_stmt = (
                     f"    dispatch_call(s, {G(target)}, "
                     f"{G((addr + 8) & 0xFFFFFFFF)});"
                 )
+            if _jal_rw is not None:
+                # gate_30hz on a call (the only rewrite a call site plans): the delay
+                # slot above always runs; the call is gated while the toggle is on.
+                out.append(
+                    f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
+                    f"{_call_stmt}\n"
+                    f"    }}"
+                )
+            else:
+                out.extend(_call_stmt.split("\n"))
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
             elif addr in dup_slot_skips:
@@ -3340,6 +3450,7 @@ def main(argv):
     cfg_gate = False
     stack_census = False
     omit_aot = _OmitAot()
+    enhancement_pkg_path = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
@@ -3347,6 +3458,11 @@ def main(argv):
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--enhancement-package="):
+            enhancement_pkg_path = o.split("=", 1)[1]
+            if not enhancement_pkg_path:
+                sys.stderr.write("--enhancement-package requires a path\n")
+                return 2
         elif o == "--name-imports":
             # Name each import stub after the function its NID imports (import_stub_names).
             # Default (absent) leaves every stub f_<address>: the output is unchanged.
@@ -3525,6 +3641,66 @@ def main(argv):
     resume_owners = {
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
+
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    ENHANCEMENT_SITES = {}
+    ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_APPLIED.clear()
+    if enhancement_pkg_path is not None:
+        import hashlib
+        from pathlib import Path
+        try:
+            pkg_raw = enhancement_package.load_package(enhancement_pkg_path)
+            pkg_validated = enhancement_package.validate_package(pkg_raw)
+            elf_sha256 = hashlib.sha256(elf.data).hexdigest()
+            sym_map = enhancement_package.extract_elf_func_symbols(elf)
+            if symbol_map_path is not None:
+                # The guest symbol map names the package's sites too, in place of the
+                # <package>.symbols.json sidecar.
+                sym_map.update(site_names_from_symbol_map(symbols))
+            else:
+                pkg_p = Path(enhancement_pkg_path)
+                sidecar = pkg_p.with_suffix(".symbols.json")
+                if sidecar.is_file():
+                    sym_map.update(enhancement_package.load_symbol_map(sidecar))
+
+            def _read_words(vaddr: int, count: int):
+                out_w = []
+                for idx_w in range(count):
+                    val = read32(elf, vaddr + idx_w * 4)
+                    if val is None:
+                        return None
+                    out_w.append(val)
+                return out_w
+
+            ENHANCEMENT_SITES = enhancement_package.verify_and_resolve_sites(
+                pkg_validated,
+                executable_sha256=elf_sha256,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            for site in ENHANCEMENT_SITES.values():
+                stock = site["stock_words"][0]
+                if is_control(stock) and not (
+                    (stock >> 26) == 3 and site["rewrite"]["kind"] == "gate"
+                ):
+                    raise enhancement_package.EnhancementPackageError(
+                        f"site {site['id']}: only a jal call site can be rewritten among "
+                        "control transfers (fail-closed refusal)"
+                    )
+            ENHANCEMENT_PKG_META = {
+                "id": pkg_validated["id"],
+                "version": pkg_validated["version"],
+                "epoch": enhancement_package.AOT_ENHANCEMENT_PACKAGE_EPOCH,
+                "digest": enhancement_package.compute_package_digest(pkg_validated),
+                "sites_count": len(ENHANCEMENT_SITES),
+            }
+        except enhancement_package.EnhancementPackageError as exc:
+            sys.stderr.write(
+                f"codegen: enhancement package refused (fail-closed): {exc}\n"
+            )
+            return 1
 
     impmap = {}
     if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
@@ -3773,6 +3949,7 @@ def main(argv):
             func_texts.append(text)
             emitted.append(a)
             continue
+        applied_before = set(ENHANCEMENT_APPLIED) if ENHANCEMENT_SITES else None
         try:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
@@ -3783,6 +3960,9 @@ def main(argv):
             if STALE_DETECT:
                 stale_funcs.append(a)
         except Unsupported as e:
+            if applied_before is not None:
+                # The stub replaces the body, so its rewrites were not emitted.
+                ENHANCEMENT_APPLIED.intersection_update(applied_before)
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
             text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
@@ -3938,6 +4118,22 @@ def main(argv):
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
+    if ENHANCEMENT_PKG_META is not None:
+        missing = sorted(
+            site["id"] for addr, site in ENHANCEMENT_SITES.items()
+            if addr not in ENHANCEMENT_APPLIED
+        )
+        if missing:
+            # A verified site that no emitted statement rewrites (an unreached address, a
+            # stubbed function, a fused fast path) would leave the epoch stamp claiming
+            # it: refuse before anything is written.
+            sys.stderr.write(
+                "codegen: enhancement package refused (fail-closed): "
+                f"{len(missing)} of {len(ENHANCEMENT_SITES)} sites were not emitted: "
+                + ", ".join(missing) + "\n"
+            )
+            return 1
+
     # Names from --symbol-map and --name-imports are applied as each file is
     # written, after the partition, so they change symbol spellings and nothing
     # else. A map's name for an address wins over the stub's NID name.
@@ -3993,7 +4189,8 @@ def main(argv):
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
-    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations, renames)
+    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations, renames,
+                       enhancement=ENHANCEMENT_PKG_META is not None)
 
     # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
     # Preserve its exact end-exclusive ranges in generated registration. Exact
@@ -4018,6 +4215,24 @@ def main(argv):
         "#include <stdio.h>",
         ""
     ]
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append(
+            f"/* AOT Enhancement Epoch: {ENHANCEMENT_PKG_META['epoch']} "
+            f"id={ENHANCEMENT_PKG_META['id']} v={ENHANCEMENT_PKG_META['version']} "
+            f"sites={ENHANCEMENT_PKG_META['sites_count']} "
+            f"sha256={ENHANCEMENT_PKG_META['digest']} */"
+        )
+        main_out += [
+            "int nk_enhancement_on(void) {",
+            "    static int on = -1;",
+            "    if (on < 0) {",
+            '        const char *v = getenv("SR_EXPERIMENTAL_60HZ");',
+            "        on = (v && v[0] == '1' && v[1] == '\\0') ? 1 : 0;",
+            "    }",
+            "    return on;",
+            "}",
+            "",
+        ]
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]
