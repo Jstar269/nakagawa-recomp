@@ -11941,7 +11941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a2479cf0fe996a06b64b2d42970ae7665e8d24b7fe87635fd6c7d3fc4b26c402"
+      "sha256": "a67576bec344d0340d3e312c7a9445aa46506d5e0be0632e7df2594866ba54c2"
     },
     {
       "path": "tools/generate_sbom.py",

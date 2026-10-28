@@ -107,7 +107,32 @@ def sync_database_from_progress(db_path, progress_path):
     """)
     conn.commit()
 
-    inserted_count = 0
+    cursor.execute('SELECT "timestamp" FROM "TelemetryRun"')
+    existing_exact = set()
+    existing_prefixes_19 = set()
+    existing_short = []
+
+    for (ts,) in cursor.fetchall():
+        if not ts:
+            continue
+        existing_exact.add(ts)
+        if len(ts) >= 19:
+            existing_prefixes_19.add(ts[:19])
+        else:
+            existing_short.append(ts)
+
+    def is_duplicate(ts_formatted):
+        if ts_formatted in existing_exact:
+            return True
+        if len(ts_formatted) >= 19 and ts_formatted[:19] in existing_prefixes_19:
+            return True
+        if len(ts_formatted) >= 19 and ts_formatted[:19] in existing_exact:
+            return True
+        if existing_short and any(ts_formatted.startswith(short) for short in existing_short):
+            return True
+        return False
+
+    rows_to_insert = []
     for entry in opengrip_progress:
         ts_str = entry.get("timestamp")
         if not ts_str:
@@ -119,8 +144,7 @@ def sync_database_from_progress(db_path, progress_path):
         except Exception:
             ts_formatted = ts_str
 
-        cursor.execute('SELECT COUNT(*) FROM "TelemetryRun" WHERE "timestamp" = ? OR "timestamp" LIKE ?', (ts_formatted, ts_formatted + "%"))
-        if cursor.fetchone()[0] > 0:
+        if is_duplicate(ts_formatted):
             continue
 
         run_id = f"cli_{uuid.uuid4().hex[:12]}"
@@ -130,7 +154,20 @@ def sync_database_from_progress(db_path, progress_path):
         matched_bytes = int(entry.get("matched_bytes", 0))
         byte_pct = float(entry.get("byte_completion_pct", 0.0))
 
-        cursor.execute("""
+        rows_to_insert.append((
+            run_id, ts_formatted, total_units, units_earned, units_regressed, completion_pct,
+            total_funcs, matched_funcs, total_bytes, matched_bytes, byte_pct,
+            json.dumps({"by_phase": progress_data.get("by_phase", {})})
+        ))
+
+        existing_exact.add(ts_formatted)
+        if len(ts_formatted) >= 19:
+            existing_prefixes_19.add(ts_formatted[:19])
+        else:
+            existing_short.append(ts_formatted)
+
+    if rows_to_insert:
+        cursor.executemany("""
             INSERT INTO "TelemetryRun" (
                 id, timestamp, totalUnits, unitsEarned, unitsRegressed, completionPct,
                 totalFunctions, matchedFunctions, totalBytes, matchedBytes, byteCompletionPct,
@@ -138,12 +175,9 @@ def sync_database_from_progress(db_path, progress_path):
                 fuzzCoveragePct, fuzzCurveJson, vrTotalFrames, vrPassedFrames, vrFailedFrames, vrPassRate,
                 rawJson
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '[]', 0, 0, 0, 0.0, '[]', 0, 0, 0, 0.0, ?)
-        """, (
-            run_id, ts_formatted, total_units, units_earned, units_regressed, completion_pct,
-            total_funcs, matched_funcs, total_bytes, matched_bytes, byte_pct,
-            json.dumps({"by_phase": progress_data.get("by_phase", {})})
-        ))
-        inserted_count += 1
+        """, rows_to_insert)
+
+    inserted_count = len(rows_to_insert)
 
     conn.commit()
     conn.close()
