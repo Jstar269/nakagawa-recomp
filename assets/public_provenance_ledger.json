@@ -6410,7 +6410,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b50969e48483dbb5c1c17cfabba4e96382ab3a409366f5ae1933be4e55aa80b2"
+      "sha256": "31ccd78aa0dbf6bdac687986a1cd6b1c55eb2df07c34190fad1d5f2696ecb104"
     },
     {
       "path": "src/rt/h264_ffmpeg_sub/libavcodec/decode.h",
@@ -11675,7 +11675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e5f2352c58ac4f7fd2192ebb672ea91433ee23262ea105d31191088863ace95"
+      "sha256": "886b1139ed99e35f9ee8ede771fd622d9b1d89850c59956744b921ea419adf5e"
     },
     {
       "path": "tools/contrib_refresh.py",

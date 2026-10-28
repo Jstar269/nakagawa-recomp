@@ -143,7 +143,7 @@ fail2:
     return 0;
 }
 
-#define IS_EMPTY(pkt) (!(pkt)->data)
+#define IS_EMPTY(pkt) (!(pkt)->data && !(pkt)->size && !(pkt)->side_data_elems)
 
 static int copy_packet_props(AVPacket *dst, const AVPacket *src)
 {
@@ -151,8 +151,7 @@ static int copy_packet_props(AVPacket *dst, const AVPacket *src)
     if (ret < 0)
         return ret;
 
-    dst->size = src->size; // HACK: Needed for ff_decode_frame_props().
-    dst->data = (void*)1;  // HACK: Needed for IS_EMPTY().
+    dst->size = src->size;
 
     return 0;
 }

@@ -63,6 +63,7 @@ STRICT_C_FLAGS = (
     # relative to the including file.
     "-Isrc/player",
     "-Isrc/rt/atrac3p", "-Isrc/rt/atrac3p/libavcodec", "-Isrc/rt/atrac3p/libavutil",
+    "-Isrc/rt/h264_ffmpeg_sub",
 )
 
 #: A shared tool is exercised by more than the module named after it.  These
@@ -243,7 +244,10 @@ def c_gate(paths: list[str]) -> Gate:
         return Gate("strict-c-compile", SKIP, "no C compiler on PATH (set CC)")
     failures = []
     for source in sources:
-        gate = _run(f"cc {source}", [compiler, *STRICT_C_FLAGS, source], timeout=600)
+        flags = list(STRICT_C_FLAGS)
+        if "src/rt/h264_ffmpeg_sub" in source:
+            flags = ["-Isrc/rt/h264_ffmpeg_sub", "-w", "-DHAVE_AV_CONFIG_H", "-include", "src/rt/h264_ffmpeg_sub/nk_h264_symbols.h"] + flags
+        gate = _run(f"cc {source}", [compiler, *flags, source], timeout=600)
         if gate.status != PASS:
             failures.append(f"{source}: {gate.detail}")
     if failures:
