@@ -195,11 +195,11 @@ class PreparationOutputError(RuntimeError):
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(65536):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class PreparationEngine:

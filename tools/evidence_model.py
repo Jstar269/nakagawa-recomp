@@ -78,7 +78,8 @@ class EvidenceIdentity:
         missing = sorted(required - set(value))
         if missing:
             raise EvidenceError(f"identity: missing required field(s): {', '.join(missing)}")
-        for key in required | ({"input_manifest_sha256"} if "input_manifest_sha256" in value else set()):
+        # The optional manifest hash is type-checked only when the identity carries it.
+        for key in required | ({"input_manifest_sha256"} & set(value)):
             if value[key] is not None and not isinstance(value[key], str):
                 raise EvidenceError(f"identity.{key}: must be a string")
         return cls(
