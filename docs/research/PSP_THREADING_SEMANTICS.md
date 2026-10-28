@@ -120,7 +120,7 @@ mistaken for public-header declarations in this table.
 | `PSP_THREAD_ATTR_USBWLAN` | `0xa0000000` | `PUBLIC_HEADER_FACT` | Public attribute declaration; exact acceptance and normalization remain an oracle question. |
 | `PSP_THREAD_ATTR_VSH` | `0xc0000000` | `PUBLIC_HEADER_FACT` | Public attribute declaration; exact acceptance and normalization remain an oracle question. |
 | `PSP_THREAD_ATTR_SCRATCH_SRAM` | `0x00008000` | `PUBLIC_HEADER_FACT` | Public attribute declaration; legality for the tested caller remains unknown. |
-| `PSP_THREAD_ATTR_NO_FILLSTACK` | `0x00100000` | `PUBLIC_HEADER_FACT` | Public attribute declaration; fill behavior requires an in-allocation observation. |
+| `PSP_THREAD_ATTR_NO_FILLSTACK` | `0x00100000` | `PUBLIC_HEADER_FACT` | Public attribute declaration: it disables the 0xFF stack fill at creation. The public PSPAutotests `threads/threads/stackfree` capture agrees (a no-fill thread's free size is 0, and 0xFF writes leave a filled thread's free size unchanged), and Nakagawa fills new stacks unless it is set ([#1388](https://github.com/Jstar269/nakagawa-recomp/issues/1388)). A project-owned in-allocation observation remains `HARDWARE_NOT_RUN`. |
 | `PSP_THREAD_ATTR_CLEAR_STACK` | `0x00200000` | `PUBLIC_HEADER_FACT` | Public attribute declaration; exact initialization pattern and precedence require measurement. |
 | `PSP_THREAD_ATTR_KERNEL` | `0x00001000` | `EMULATOR_CONSENSUS` | Modeled by PPSSPP/JPCSP; do not present it as a public-header fact. |
 | `PSP_THREAD_ATTR_LOW_STACK` | `0x00400000` | `EMULATOR_CONSENSUS` | Modeled by PPSSPP/JPCSP; allocation behavior requires hardware evidence. |

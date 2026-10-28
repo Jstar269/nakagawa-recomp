@@ -363,6 +363,17 @@ class StackAllocationTests(unittest.TestCase):
         self.assertIn("0x80020190", body, "a failed create must surface NO_MEMORY to the guest")
 
 
+class ThreadStateSeedingTests(unittest.TestCase):
+    def test_create_thread_seeds_pc_with_entry(self):
+        body = strip_comments(function_body(SCHED, "sched_create_thread_finish"))
+        self.assertIn("t->saved.pc = entry;", body, "sched_create_thread_finish must seed t->saved.pc = entry")
+
+    def test_restart_dormant_thread_seeds_pc_with_entry(self):
+        body = strip_comments(function_body(SCHED, "sched_start_thread"))
+        self.assertIn("t->saved.pc = t->entry;", body, "sched_start_thread must seed t->saved.pc = t->entry when restarting dormant threads")
+
+
+
 class PerCallPathsReadNoEnvironmentTests(unittest.TestCase):
     """Diagnostic switches on a per-call path are read once per process (#1296).
 
