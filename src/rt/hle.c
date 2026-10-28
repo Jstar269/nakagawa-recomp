@@ -10019,12 +10019,31 @@ static int atrac_log_on(void) {
     if (on < 0) on = getenv("SR_ATRACLOG") != NULL;
     return on;
 }
+/* Per-codec context capacity (#1379). sceAtracReinit(at3Count, at3plusCount)
+ * reserves each context slot for one codec: ATRAC3+ slots first, then ATRAC3,
+ * as ids 0, 1, ... in that order. sceAtracGetAtracID and every *AndGetID call
+ * take a free slot reserved for the codec they need, and report
+ * ATRAC_ERROR_NO_ATRACID once those are used up. Until the first successful
+ * Reinit every one of the eight slots serves either codec: the capacity a
+ * PSP's ATRAC library starts with is UNMEASURED here, so that earlier,
+ * permissive behaviour is kept rather than replaced with an invented split. */
+static int s_atrac_caps_configured;
+static uint32_t s_atrac_slot_codec[8];   /* 0 = reserved for no codec */
+static int atrac_alloc_slot(uint32_t codec) {
+    for (int i = 0; i < 8; i++) {
+        if (s_atrac[i].used) continue;
+        if (s_atrac_caps_configured && s_atrac_slot_codec[i] != codec) continue;
+        return i;
+    }
+    return -1;
+}
 static uint32_t h_AtracGetAtracID(CpuState *s) {
     uint32_t codecType = A0;
     if (codecType != ATRAC_CODEC_AT3PLUS && codecType != ATRAC_CODEC_AT3)
         return ATRAC_ERROR_INVALID_CODECTYPE;
-    for (int i = 0; i < 8; i++) {
-        if (s_atrac[i].used) continue;
+    {
+        int i = atrac_alloc_slot(codecType);
+        if (i < 0) return ATRAC_ERROR_NO_ATRACID;
         memset(&s_atrac[i], 0, sizeof(s_atrac[i]));
         s_atrac[i].used = 1;
         s_atrac[i].codecType = codecType;
@@ -10032,7 +10051,6 @@ static uint32_t h_AtracGetAtracID(CpuState *s) {
             fprintf(stderr, "ATRAC_GETID: id=%d codec=0x%08x\n", i, codecType);
         return (uint32_t)i;
     }
-    return ATRAC_ERROR_NO_ATRACID;
 }
 /* The sceAtracSet*Data and sceAtracSet*HalfwayBuffer family (PSPSDK
  * pspatrac3.h). A data call hands over a buffer whose bufSize bytes all hold
@@ -10093,7 +10111,7 @@ static uint32_t atrac_set_new(uint32_t buf, uint32_t readSize, uint32_t bufSize,
     int channels = codec ? atrac_riff_channels(codec, buf, readSize) : -1;
     if (channels < 0) return ATRAC_ERROR_UNKNOWN_FORMAT;
     if (mono && channels != 1) return ATRAC_ERROR_NOT_MONO;
-    int id = -1; for (int i = 0; i < 8; i++) if (!s_atrac[i].used) { id = i; break; }
+    int id = atrac_alloc_slot(codec);
     if (id < 0) return ATRAC_ERROR_NO_ATRACID;
     Atrac *a = &s_atrac[id];
     memset(a, 0, sizeof(*a));
@@ -10167,6 +10185,52 @@ static uint32_t h_AtracSetMOutData(CpuState *s) {
 /* sceAtracSetMOutHalfwayBuffer(id, buf, readSize, bufSize) */
 static uint32_t h_AtracSetMOutHalfwayBuffer(CpuState *s) {
     return atrac_set_existing(A0, A1, A2, A3, 1, "SetMOutHalfwayBuffer");
+}
+/* sceAtracSetAA3DataAndGetID(buf, bufSize, fileSize, metadataSizeAddr) and
+ * sceAtracSetAA3HalfwayBufferAndGetID(buf, readSize, bufSize, fileSize) take
+ * an OMA/AA3 file: an ID3-style tag whose magic is "ea3", then an "EA3" header
+ * whose codec byte and parameters name the codec, frame size and channels.
+ * The header checks and their error codes below follow the public PPSSPP
+ * reference (GPL-2.0-or-later, Core/Util/AtracTrack.cpp AnalyzeAA3Track);
+ * none of them is measured on a PSP (UNMEASURED). This runtime parses RIFF
+ * only: the AA3 frame layout, the codec parameters (the decoder extradata
+ * comes from the RIFF fmt chunk today) and the metadata-size output are not
+ * modelled, so a well-formed AA3 header fails closed with
+ * ATRAC_ERROR_UNKNOWN_FORMAT and an ATRAC_AA3_UNSUPPORTED stderr line instead
+ * of a made-up context. No ID is allocated and metadataSizeAddr is not
+ * written. Until the AA3 parser exists, a title that streams AA3 stays
+ * silent and visibly so. */
+#define ATRAC_ERROR_AA3_INVALID_DATA 0x80631003u
+#define ATRAC_ERROR_AA3_SIZE_TOO_SMALL 0x80631004u
+static uint32_t atrac_aa3_refuse(uint32_t buf, uint32_t readSize, uint32_t bufSize,
+                                 uint32_t fileSize, const char *call) {
+    if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
+    if (readSize < 10u || !sr_guest_span_readable(buf, readSize))
+        return ATRAC_ERROR_AA3_SIZE_TOO_SMALL;
+    if (MEM_R8(buf) != 'e' || MEM_R8(buf + 1u) != 'a' || MEM_R8(buf + 2u) != '3')
+        return ATRAC_ERROR_AA3_INVALID_DATA;
+    uint32_t tag = (uint32_t)MEM_R8(buf + 9u) | ((uint32_t)MEM_R8(buf + 8u) << 7) |
+                   ((uint32_t)MEM_R8(buf + 7u) << 14) | ((uint32_t)MEM_R8(buf + 6u) << 21);
+    if ((uint64_t)readSize < (uint64_t)tag + 46u)
+        return ATRAC_ERROR_AA3_SIZE_TOO_SMALL;
+    uint32_t ea3 = buf + 10u + tag;
+    if (MEM_R8(ea3) != 'E' || MEM_R8(ea3 + 1u) != 'A' || MEM_R8(ea3 + 2u) != '3')
+        return ATRAC_ERROR_AA3_INVALID_DATA;
+    uint32_t codec = MEM_R8(ea3 + 32u);
+    if (codec != 0u && codec != 1u)
+        return ATRAC_ERROR_AA3_INVALID_DATA;
+    fprintf(stderr,
+            "ATRAC_AA3_UNSUPPORTED: %s buf=0x%08x readSize=%u bufSize=%u fileSize=%u "
+            "codec byte %u: the OMA/AA3 container is not modelled; refused with "
+            "ATRAC_ERROR_UNKNOWN_FORMAT (#1379).\n",
+            call, buf, readSize, bufSize, fileSize, codec);
+    return ATRAC_ERROR_UNKNOWN_FORMAT;
+}
+static uint32_t h_AtracSetAA3DataAndGetID(CpuState *s) {
+    return atrac_aa3_refuse(A0, A1, A1, A2, "SetAA3DataAndGetID");
+}
+static uint32_t h_AtracSetAA3HalfwayBufferAndGetID(CpuState *s) {
+    return atrac_aa3_refuse(A0, A1, A2, A3, "SetAA3HalfwayBufferAndGetID");
 }
 static uint32_t h_AtracReleaseAtracID(CpuState *s) {
     Atrac *a = atrac_of(A0);
@@ -10751,16 +10815,37 @@ static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
     return 0;
 }
 
-/* sceAtracReinit(at3Count, at3plusCount): reinitialize the ATRAC subsystem.
- * Refuses with SCE_KERNEL_ERROR_BUSY (0x80000021) if any context is currently in use. */
+/* sceAtracReinit(at3Count, at3plusCount): reserve context slots per codec.
+ * Refuses with SCE_KERNEL_ERROR_BUSY (0x80000021) while any context is in use.
+ * Counts are signed ints; a count of zero or below reserves nothing for that
+ * codec ((0, 0) reserves nothing at all, so every sceAtracGetAtracID then
+ * reports ATRAC_ERROR_NO_ATRACID). Slot cost and budget follow the public
+ * PPSSPP reference (GPL-2.0-or-later, Core/HLE/sceAtrac.cpp sceAtracReinit),
+ * UNMEASURED on a PSP: an ATRAC3+ context costs two units, an ATRAC3 context
+ * one, against a budget of six (four for the oldest ATRAC library, whose SDK
+ * version this runtime does not track). Requests are granted in order, ATRAC3+
+ * first; those that do not fit are dropped and the call returns
+ * SCE_KERNEL_ERROR_NO_MEMORY (0x80020190) after granting the ones that fit. */
+#define ATRAC_REINIT_BUDGET 6
 static uint32_t s_atrac_reinit_count = 0u;
 static uint32_t h_AtracReinit(CpuState *s) {
-    (void)s;
+    int at3 = (int)A0, at3plus = (int)A1;
     for (int i = 0; i < 8; i++) {
         if (s_atrac[i].used) return 0x80000021u; /* SCE_KERNEL_ERROR_BUSY */
     }
+    memset(s_atrac_slot_codec, 0, sizeof(s_atrac_slot_codec));
+    int next = 0, space = ATRAC_REINIT_BUDGET;
+    for (int i = 0; i < at3plus && space >= 0; i++) {
+        space -= 2;
+        if (space >= 0) s_atrac_slot_codec[next++] = ATRAC_CODEC_AT3PLUS;
+    }
+    for (int i = 0; i < at3 && space >= 0; i++) {
+        space -= 1;
+        if (space >= 0) s_atrac_slot_codec[next++] = ATRAC_CODEC_AT3;
+    }
+    s_atrac_caps_configured = 1;
     s_atrac_reinit_count++;
-    return 0;
+    return space >= 0 ? 0u : HLE_KERNEL_ERROR_NO_MEMORY;
 }
 
 /* sceAtracReleaseResources(): release system resources allocated for ATRAC decoding. */
@@ -10774,6 +10859,11 @@ static uint32_t h_AtracReleaseResources(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_atrac_reinit_count(void) { return s_atrac_reinit_count; }
 void sr_hle_test_atrac_reinit_reset(void) { s_atrac_reinit_count = 0u; }
+/* Back to the default pool (no sceAtracReinit yet): eight slots, either codec. */
+void sr_hle_test_atrac_caps_reset(void) {
+    s_atrac_caps_configured = 0;
+    memset(s_atrac_slot_codec, 0, sizeof(s_atrac_slot_codec));
+}
 uint32_t sr_hle_test_atrac_release_count(void) { return s_atrac_release_count; }
 void sr_hle_test_atrac_release_reset(void) { s_atrac_release_count = 0u; }
 #endif
@@ -26396,8 +26486,8 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_AtracGetBitrate);
     sr_hle_register(0xb3b5d042, "sceAtracGetOutputChannel", h_ok);
     sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
-    sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetDataAndGetID);
+    sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetAA3DataAndGetID);
+    sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetAA3HalfwayBufferAndGetID);
     sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetMOutDataAndGetID);
     sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetMOutHalfwayBuffer);
     sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetMOutHalfwayBufferAndGetID);
@@ -27356,6 +27446,8 @@ void sr_hle_loadexec_reset_guest_state(void) {
         atrac_stream_window_free(&s_atrac[i]);
         memset(&s_atrac[i], 0, sizeof(s_atrac[i]));
     }
+    s_atrac_caps_configured = 0;
+    memset(s_atrac_slot_codec, 0, sizeof(s_atrac_slot_codec));
     hle_audio_guest_reset();
     hle_sas_guest_reset();
 

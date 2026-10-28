@@ -47,7 +47,7 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 ### HLE Semantic Status Census
 
 Registered NIDs: **637** (dedicated **527**, fake_success **4**, controlled_unsupported **106**).
-Semantic handler census: **504** handlers across **25** API families, covering **533** handler-associated NID registrations.
+Semantic handler census: **506** handlers across **25** API families, covering **533** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,13 +55,13 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `partial` | 171 | 173 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 317 | 331 |
+| `unreviewed` | 319 | 331 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
-| `sceAtrac` | 0 | 0 | 0 | 0 | 30 | 30 | 33 |
+| `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
@@ -84,7 +84,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **171** | **1** | **2** | **317** | **504** | **533** |
+| **Total** | **13** | **171** | **1** | **2** | **319** | **506** | **533** |
 
 #### Complete Handlers (Evidence-Backed)
 

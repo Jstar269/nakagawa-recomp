@@ -21901,6 +21901,139 @@ static void test_atrac_set_entry_points_1379(void) {
            "#1379: sceAtracSetDataAndGetID refuses a RIFF whose fmt tag is not ATRAC");
 }
 
+/* ---- issue #1379, second half: the AA3 entry points and per-codec Reinit ----
+ *
+ * sceAtracSetAA3DataAndGetID(buf, bufSize, fileSize, metadataSizeAddr) and
+ * sceAtracSetAA3HalfwayBufferAndGetID(buf, readSize, bufSize, fileSize) were
+ * registered to the RIFF-only SetDataAndGetID(buf, bufSize), so a RIFF buffer
+ * allocated an ID through them and readSize/bufSize were conflated. They now
+ * check the OMA/AA3 header and fail closed for a well-formed one (the AA3
+ * container is not modelled). sceAtracReinit(at3Count, at3plusCount) ignored
+ * its counts; it now reserves ID slots per codec. Error codes and the Reinit
+ * budget come from the public PPSSPP reference and are not measured on a PSP. */
+extern void sr_hle_test_atrac_caps_reset(void);
+#define NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID             0x5622b7c1u
+#define NID_SCE_ATRAC_SET_AA3_HALFWAY_BUFFER_AND_GET_ID   0x5dd66588u
+#define AT1379_NID_REINIT          0x132f1ecau
+#define AT1379_AA3_INVALID_DATA    0x80631003u
+#define AT1379_AA3_SIZE_TOO_SMALL  0x80631004u
+#define AT1379_NO_MEMORY           0x80020190u
+/* "ea3" tag (syncsafe size 0), then an "EA3" header whose codec byte is at +32. */
+static void at1379_build_aa3(uint32_t base, uint8_t codecByte) {
+    for (uint32_t i = 0; i < 128u; i++) MEM_W8(base + i, 0u);
+    MEM_W8(base + 0u, 'e'); MEM_W8(base + 1u, 'a'); MEM_W8(base + 2u, '3');
+    MEM_W8(base + 10u, 'E'); MEM_W8(base + 11u, 'A'); MEM_W8(base + 12u, '3');
+    MEM_W8(base + 10u + 32u, codecByte);
+}
+static uint32_t at1379_reinit(uint32_t at3, uint32_t at3plus) {
+    return td24b_dispatch4(AT1379_NID_REINIT, at3, at3plus, 0u, 0u);
+}
+static void test_atrac_aa3_and_reinit_1379(void) {
+    enum { AA3 = 0x08002000u, AA3_SIZE = 128u };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_atrac_caps_reset();
+
+    /* AA3 entry points: argument roles and fail-closed results. */
+    at1379_build_aa3(AA3, 1u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AA3, AA3_SIZE, 4096u, 0u) ==
+               ATRAC_ERROR_UNKNOWN_FORMAT,
+           "#1379: a well-formed AA3 header fails closed (container not modelled)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_HALFWAY_BUFFER_AND_GET_ID,
+                           AA3, AA3_SIZE, 4096u, 8192u) == ATRAC_ERROR_UNKNOWN_FORMAT,
+           "#1379: a well-formed AA3 header fails closed through the halfway call");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_HALFWAY_BUFFER_AND_GET_ID,
+                           AA3, 4096u + 1u, 4096u, 8192u) == AT1379_INCORRECT_READ_SIZE,
+           "#1379: sceAtracSetAA3HalfwayBufferAndGetID keeps readSize and bufSize apart");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AA3, 9u, 4096u, 0u) ==
+               AT1379_AA3_SIZE_TOO_SMALL,
+           "#1379: an AA3 buffer under 10 bytes is refused (AA3_SIZE_TOO_SMALL)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AA3, 40u, 4096u, 0u) ==
+               AT1379_AA3_SIZE_TOO_SMALL,
+           "#1379: an AA3 buffer shorter than its tag plus EA3 header is refused");
+    MEM_W8(AA3 + 10u + 32u, 5u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AA3, AA3_SIZE, 4096u, 0u) ==
+               AT1379_AA3_INVALID_DATA,
+           "#1379: an AA3 codec byte that is not AT3 or AT3+ is refused (AA3_INVALID_DATA)");
+    at1379_build_aa3(AA3, 1u);
+    MEM_W8(AA3 + 10u, 'X');
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AA3, AA3_SIZE, 4096u, 0u) ==
+               AT1379_AA3_INVALID_DATA,
+           "#1379: a missing EA3 magic is refused (AA3_INVALID_DATA)");
+    atring_build_header();   /* a RIFF track is not an AA3 file */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE,
+                           AT_FILESIZE, 0u) == AT1379_AA3_INVALID_DATA,
+           "#1379: sceAtracSetAA3DataAndGetID refuses a RIFF buffer instead of allocating an ID");
+    {
+        uint32_t first = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+        expect(first == 0u, "#1379: the refused AA3 calls allocated no ID");
+        if (first < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, first, 0u, 0u, 0u);
+    }
+
+    /* sceAtracReinit(at3Count, at3plusCount): capacity per codec.
+     * ATRAC3+ slots come first (ids 0..), then ATRAC3. */
+    expect(at1379_reinit(2u, 1u) == 0u,
+           "#1379: sceAtracReinit(2 AT3, 1 AT3+) is accepted");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u) == 0u,
+           "#1379: the one ATRAC3+ slot is id 0");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u) ==
+               ATRAC_ERROR_NO_ATRACID,
+           "#1379: a second ATRAC3+ context reports NO_ATRACID");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) == 1u &&
+               td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) == 2u,
+           "#1379: the two ATRAC3 slots are ids 1 and 2");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) ==
+               ATRAC_ERROR_NO_ATRACID,
+           "#1379: a third ATRAC3 context reports NO_ATRACID");
+    expect(at1379_reinit(1u, 1u) == 0x80000021u,
+           "#1379: sceAtracReinit is still BUSY while contexts are in use");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, 0u, 0u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, 1u, 0u, 0u, 0u) == 0u,
+           "#1379: releasing an ATRAC3+ and an ATRAC3 context frees their slots");
+    atring_build_header();   /* an ATRAC3 slot is free, but this track is ATRAC3+ */
+    {
+        uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u);
+        expect(id == 0u, "#1379: sceAtracSetDataAndGetID of an ATRAC3+ track takes the ATRAC3+ slot");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u) ==
+                   ATRAC_ERROR_NO_ATRACID,
+               "#1379: a second ATRAC3+ track reports NO_ATRACID while ATRAC3 slots are free");
+    }
+    for (uint32_t id = 0u; id < 3u; id++)
+        (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+
+    /* Over budget: grant what fits, report no-memory. Budget 6, ATRAC3+ costs 2. */
+    expect(at1379_reinit(0u, 3u) == 0u,
+           "#1379: three ATRAC3+ contexts fit the budget exactly");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) ==
+               ATRAC_ERROR_NO_ATRACID,
+           "#1379: no ATRAC3 slot is left after three ATRAC3+ contexts");
+    expect(at1379_reinit(0u, 4u) == AT1379_NO_MEMORY,
+           "#1379: four ATRAC3+ contexts exceed the budget (NO_MEMORY)");
+    {
+        uint32_t n = 0u;
+        while (n < 9u && td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u) < 8u) n++;
+        expect(n == 3u, "#1379: an over-budget Reinit still grants the ATRAC3+ contexts that fit");
+    }
+    for (uint32_t id = 0u; id < 3u; id++)
+        (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+
+    /* (0, 0) and negative counts reserve nothing. */
+    expect(at1379_reinit(0u, 0u) == 0u,
+           "#1379: sceAtracReinit(0, 0) is accepted");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u) ==
+               ATRAC_ERROR_NO_ATRACID &&
+               td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) ==
+                   ATRAC_ERROR_NO_ATRACID,
+           "#1379: after Reinit(0, 0) no codec has capacity");
+    expect(at1379_reinit(0xffffffffu, 0xffffffffu) == 0u &&
+               td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u) ==
+                   ATRAC_ERROR_NO_ATRACID,
+           "#1379: negative counts reserve nothing");
+    expect(at1379_reinit(0x7fffffffu, 0x7fffffffu) == AT1379_NO_MEMORY,
+           "#1379: huge counts are bounded by the budget");
+    sr_hle_test_atrac_caps_reset();   /* later tests start from the default pool */
+}
+
 /* TD-24 batch 4: production-dispatch regressions for 20 converted fake-success
  * handlers across 6 families:
  *   1. Ctrl sampling (SetSamplingMode, SetSamplingCycle, SetIdleCancelThreshold, GetIdleCancelThreshold)
@@ -22202,8 +22335,11 @@ static void test_td24d_hle_batch(void) {
     sr_hle_test_atrac_reinit_reset();
     sr_hle_test_atrac_release_reset();
 
-    /* Reinit with no contexts in use: succeeds and increments count */
-    expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0u,
+    /* Reinit with no contexts in use: succeeds and increments count. It
+     * reserves one ATRAC3+ slot (#1379: the counts now set the capacity per
+     * codec, so the context allocated below needs a slot). */
+    sr_hle_test_atrac_caps_reset();
+    expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 1u, 0u, 0u) == 0u,
            "sceAtracReinit succeeds when no ATRAC contexts are in use");
     expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
 
@@ -22303,6 +22439,7 @@ static void test_td24d_hle_batch(void) {
     expect(td24b_dispatch4(NID_SCE_ATRAC_REINIT, 0u, 0u, 0u, 0u) == 0u,
            "sceAtracReinit succeeds again after releasing all contexts");
     expect(sr_hle_test_atrac_reinit_count() == 2u, "reinit count reached 2");
+    sr_hle_test_atrac_caps_reset();
 }
 
 /* sceImpose language/confirm-button mode: the setter (0x36aa6e91) was registered to the generic
@@ -35818,6 +35955,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_mp3_error_paths();
     test_at3_synthetic_decode_bookkeeping();
     test_atrac_set_entry_points_1379();
+    test_atrac_aa3_and_reinit_1379();
     test_td24d_hle_batch();
     test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
