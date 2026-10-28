@@ -18,8 +18,10 @@ The rules it links to decide whether a change can land, so read them once.
    (enhancements, diagnostic views, performance, new platforms). If GitHub won't let you set them, say in the
    issue which fit and a maintainer sets them.
 3. **Agree the approach.** For anything bigger than a small fix, comment on the issue first.
-4. **Make one focused change.** Fork the repository to your personal account, create a branch, and change
-   one thing. Leave **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
+4. **Make your change.** Fork the repository to your personal account and create a branch. One pull request
+   may group related changes, for example several fixes in the same area or a feature with its tests and docs.
+   Put unrelated changes in separate pull requests, and say in the description what each change does. Leave
+   **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
    up to date with `main` before merging. GitHub doesn't let them push to a fork owned by an organisation,
    so a pull request from one is carried in a new pull request. That pull request keeps your commits
    unchanged and credits you as co-author.

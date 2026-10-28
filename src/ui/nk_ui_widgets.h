@@ -95,6 +95,12 @@ bool nk_ui_app_icon_rgba(int size, unsigned char *rgba, size_t stride);
 /* ---- Prompt glyphs ---------------------------------------------------------- */
 /* One prompt glyph in the current prompt style, `height` px tall (24 in bars). */
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height);
+/* One glyph in `style`, whatever the current one, for a binding shown in its own
+   device's set (#1299). A non-NULL `label` is drawn as given in place of the action's
+   own text (a key's legend on a keycap, a pad button's name on a pill) and keeps the
+   project-drawn form; without one the style's image is used when the host set one. */
+bool nk_ui_prompt_glyph_in(NkUi *ui, NkUiId id, NkUiPromptStyle style, NkUiPromptAction action,
+                           const char *label, float height);
 
 /* ---- Text helpers ------------------------------------------------------------ */
 /* ASCII letters upper-cased into frame storage (labels and chips are caps). */

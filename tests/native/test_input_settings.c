@@ -1014,6 +1014,100 @@ static void test_keyboard_keys(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 12 PASSED!\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * 13. The prompt glyph beside each binding on the Controls page (#1299)
+ * -------------------------------------------------------------------------- */
+static void expect_glyph(const InputBindingGlyph *glyph, InputGlyphKind kind, const char *legend,
+                         const char *what) {
+    if (glyph->kind != kind || strcmp(glyph->legend, legend) != 0) {
+        printf("[INPUT_SETTINGS_TEST] %s: glyph %d '%s', expected %d '%s'\n", what,
+               (int)glyph->kind, glyph->legend, (int)kind, legend);
+    }
+    assert(glyph->kind == kind && strcmp(glyph->legend, legend) == 0);
+}
+
+static void test_binding_glyphs(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 13: a glyph for every binding, keyboard and controller...\n");
+
+    /* The default keys: keycaps with the legend the key prints, the arrows as arrows. */
+    static const struct { InputGlyphKind kind; const char *legend; } keys[INPUT_CONTROL_DIGITAL_COUNT] = {
+        {INPUT_GLYPH_KEY, "SHIFT"}, {INPUT_GLYPH_KEY, "ENTER"}, {INPUT_GLYPH_ARROW_KEY, ""},
+        {INPUT_GLYPH_ARROW_KEY, ""}, {INPUT_GLYPH_ARROW_KEY, ""}, {INPUT_GLYPH_ARROW_KEY, ""},
+        {INPUT_GLYPH_KEY, "Q"}, {INPUT_GLYPH_KEY, "W"}, {INPUT_GLYPH_KEY, "S"},
+        {INPUT_GLYPH_KEY, "Z"}, {INPUT_GLYPH_KEY, "X"}, {INPUT_GLYPH_KEY, "A"},
+        {INPUT_GLYPH_NONE, ""}, {INPUT_GLYPH_NONE, ""}
+    };
+    /* The default controller mapping: face buttons by position, Back named the way an
+     * Xbox-style pad (A south) names it; Home is unbound (Guide pauses the game). */
+    static const struct { InputGlyphKind kind; const char *legend; } pad[INPUT_CONTROL_DIGITAL_COUNT] = {
+        {INPUT_GLYPH_PAD_LEGEND, "VIEW"}, {INPUT_GLYPH_PAD_START, ""}, {INPUT_GLYPH_DPAD, ""},
+        {INPUT_GLYPH_DPAD, ""}, {INPUT_GLYPH_DPAD, ""}, {INPUT_GLYPH_DPAD, ""},
+        {INPUT_GLYPH_SHOULDER_LEFT, ""}, {INPUT_GLYPH_SHOULDER_RIGHT, ""},
+        {INPUT_GLYPH_FACE_NORTH, ""}, {INPUT_GLYPH_FACE_EAST, ""}, {INPUT_GLYPH_FACE_SOUTH, ""},
+        {INPUT_GLYPH_FACE_WEST, ""}, {INPUT_GLYPH_NONE, ""}, {INPUT_GLYPH_NONE, ""}
+    };
+    InputSettingsState state;
+    InputBindingGlyph glyph;
+    input_settings_init(&state);
+    for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+        input_settings_key_glyph(&state, i, &glyph);
+        expect_glyph(&glyph, keys[i].kind, keys[i].legend, input_settings_control_name(i));
+        input_settings_pad_glyph(&state, i, INPUT_PAD_NAMES_A_SOUTH, &glyph);
+        expect_glyph(&glyph, pad[i].kind, pad[i].legend, input_settings_control_name(i));
+    }
+
+    /* A keycap prints what the key prints: one legend for a key's left and right and
+     * its keypad copy, short forms for the long names; a second key alone is shown. */
+    static const struct { const char *name; const char *legend; } legends[] = {
+        {"rshift", "SHIFT"}, {"lctrl", "CTRL"}, {"ralt", "ALT"}, {"backspace", "BKSP"},
+        {"pagedown", "PG DN"}, {"delete", "DEL"}, {"kp_enter", "ENTER"}, {"kp_5", "5"},
+        {"kp_divide", "/"}, {"space", "SPACE"}, {"semicolon", ";"}, {"7", "7"}
+    };
+    for (size_t i = 0; i < sizeof(legends) / sizeof(legends[0]); i++) {
+        state.profile.psp_keys[NK_PSP_BTN_HOME].primary = nk_host_key_from_name(legends[i].name);
+        assert(state.profile.psp_keys[NK_PSP_BTN_HOME].primary != NK_HOST_KEY_NONE);
+        input_settings_key_glyph(&state, INPUT_CONTROL_BTN_HOME, &glyph);
+        expect_glyph(&glyph, INPUT_GLYPH_KEY, legends[i].legend, legends[i].name);
+    }
+    state.profile.psp_keys[NK_PSP_BTN_SELECT].primary = NK_HOST_KEY_NONE;
+    input_settings_key_glyph(&state, INPUT_CONTROL_BTN_SELECT, &glyph);
+    expect_glyph(&glyph, INPUT_GLYPH_KEY, "SHIFT", "Select's second key alone");
+
+    /* A rebound key changes the glyph with the words. */
+    input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
+    assert(input_settings_assign_key(&state, INPUT_CONTROL_BTN_START, nk_host_key_from_name("c")));
+    input_settings_key_glyph(&state, INPUT_CONTROL_BTN_START, &glyph);
+    expect_glyph(&glyph, INPUT_GLYPH_KEY, "C", "Start after rebinding to C");
+
+    /* A pad input with no glyph of its own is named the way the pad's family names it. */
+    static const struct { NkBindingSource source; const char *legends[INPUT_PAD_NAMES_COUNT]; } pills[] = {
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_BACK}, {"BACK", "VIEW", "-", "CREATE"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_GUIDE}, {"HOME", "GUIDE", "HOME", "HOME"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK}, {"LS", "LS", "LS", "L3"}},
+        {{NK_BINDING_HOST_TRIGGER, NK_HOST_AXIS_LEFT_TRIGGER}, {"LT", "LT", "ZL", "L2"}},
+        {{NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_RIGHT_TRIGGER}, {"RT", "RT", "ZR", "R2"}},
+        {{NK_BINDING_HOST_AXIS_NEG, NK_HOST_AXIS_RIGHTY}, {"RS", "RS", "RS", "RS"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_PADDLE1}, {"P3", "P3", "P3", "P3"}}
+    };
+    for (size_t i = 0; i < sizeof(pills) / sizeof(pills[0]); i++) {
+        state.profile.psp_buttons[INPUT_CONTROL_BTN_HOME].primary = pills[i].source;
+        for (int names = 0; names < INPUT_PAD_NAMES_COUNT; names++) {
+            input_settings_pad_glyph(&state, INPUT_CONTROL_BTN_HOME, (InputPadNames)names, &glyph);
+            expect_glyph(&glyph, INPUT_GLYPH_PAD_LEGEND, pills[i].legends[names], "a pad pill");
+        }
+    }
+    /* A control with only a second source shows it; one with none shows no glyph. */
+    state.profile.psp_buttons[INPUT_CONTROL_BTN_HOLD].secondary =
+        (NkBindingSource){NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_WEST};
+    input_settings_pad_glyph(&state, INPUT_CONTROL_BTN_HOLD, INPUT_PAD_NAMES_NEUTRAL, &glyph);
+    expect_glyph(&glyph, INPUT_GLYPH_FACE_WEST, "", "Hold's second source alone");
+    input_settings_pad_glyph(&state, INPUT_CONTROL_ANALOG_STICK, INPUT_PAD_NAMES_NEUTRAL, &glyph);
+    expect_glyph(&glyph, INPUT_GLYPH_NONE, "", "the stick is not a digital control");
+    input_settings_key_glyph(NULL, 0, &glyph);
+    expect_glyph(&glyph, INPUT_GLYPH_NONE, "", "no state");
+    printf("[INPUT_SETTINGS_TEST] Subtest 13 PASSED!\n");
+}
+
 int main(void) {
     /* Unbuffered: a failing case names itself on stdout, and the harness reads
      * that line even when the run aborts on the assert that follows. */
@@ -1042,6 +1136,7 @@ int main(void) {
     test_per_title_scope_and_atomic_save();
     test_hostile_profile_files();
     test_keyboard_keys();
+    test_binding_glyphs();
 
     native_test_assert_real_config_untouched();
 

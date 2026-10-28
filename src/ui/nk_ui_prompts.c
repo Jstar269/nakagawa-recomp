@@ -158,7 +158,18 @@ static bool nk_ui_prompt_is_shoulder(NkUiPromptAction action) {
     return action == NK_UI_PROMPT_ACT_TAB_PREV || action == NK_UI_PROMPT_ACT_TAB_NEXT;
 }
 
-float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float height) {
+/* The text a glyph draws: its own label when the spec carries one. */
+static const char *nk_ui_prompt_spec_text(const NkUiPromptSpec *spec) {
+    return spec->label != NULL ? spec->label : nk_ui_prompt_text(spec->style, spec->action);
+}
+
+/* A label `n` characters long wants this many heights of room. */
+static float nk_ui_prompt_text_span(size_t n) {
+    return n <= 1u ? 1.0f : 0.5f + 0.28f * (float)n;
+}
+
+float nk_ui_prompt_label_width(NkUiPromptStyle style, NkUiPromptAction action,
+                               const char *label, float height) {
     const char *text;
     if (!isfinite(height) || height <= 0.0f) {
         return 0.0f;
@@ -167,16 +178,19 @@ float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float h
         /* The arrow keys sit as an inverted T, three keys wide. */
         return style == NK_UI_PROMPT_KEYCAPS ? height * 1.5f : height;
     }
-    if (style == NK_UI_PROMPT_KEYCAPS && action != NK_UI_PROMPT_ACT_MOVE) {
-        size_t n;
-        text = nk_ui_prompt_text(style, action);
-        n = text != NULL ? strlen(text) : 1u;
-        return n <= 1u ? height : height * (0.5f + 0.28f * (float)n);
+    if (style == NK_UI_PROMPT_KEYCAPS) {
+        text = label != NULL ? label : nk_ui_prompt_text(style, action);
+        return height * nk_ui_prompt_text_span(text != NULL ? strlen(text) : 1u);
     }
     if (nk_ui_prompt_is_shoulder(action)) {
-        return height * 1.6f;
+        float span = label != NULL ? nk_ui_prompt_text_span(strlen(label)) : 0.0f;
+        return height * (span > 1.6f ? span : 1.6f);
     }
     return height;
+}
+
+float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float height) {
+    return nk_ui_prompt_label_width(style, action, NULL, height);
 }
 
 /* Glyphs are laid out in device pixels with integer sizes and offsets, then handed to
@@ -271,7 +285,7 @@ static bool nk_ui_prompt_circle_letter(const NkUiPromptPx *p) {
     int x0 = p->cx - dia / 2;
     int y0 = p->cy - dia / 2;
     return nk_ui_prompt_rect(p, x0, y0, x0 + dia, y0 + dia, dia / 2, p->spec->face_rgba) &&
-           nk_ui_prompt_text_in(p, nk_ui_prompt_text(p->spec->style, p->spec->action),
+           nk_ui_prompt_text_in(p, nk_ui_prompt_spec_text(p->spec),
                                 x0, y0, x0 + dia, y0 + dia, dia * 55 / 100);
 }
 
@@ -291,14 +305,14 @@ static bool nk_ui_prompt_keycap(const NkUiPromptPx *p) {
                              p->spec->dim_rgba) &&
            nk_ui_prompt_rect(p, p->x0, p->y0, p->x0 + p->w, p->y0 + face_h, radius,
                              p->spec->face_rgba) &&
-           nk_ui_prompt_text_in(p, nk_ui_prompt_text(p->spec->style, p->spec->action),
+           nk_ui_prompt_text_in(p, nk_ui_prompt_spec_text(p->spec),
                                 p->x0, p->y0, p->x0 + p->w, p->y0 + face_h, face_h * 50 / 100);
 }
 
 static bool nk_ui_prompt_pill(const NkUiPromptPx *p) {
     return nk_ui_prompt_rect(p, p->x0, p->y0, p->x0 + p->w, p->y0 + p->h, p->h / 2,
                              p->spec->face_rgba) &&
-           nk_ui_prompt_text_in(p, nk_ui_prompt_text(p->spec->style, p->spec->action),
+           nk_ui_prompt_text_in(p, nk_ui_prompt_spec_text(p->spec),
                                 p->x0, p->y0, p->x0 + p->w, p->y0 + p->h, p->h * 50 / 100);
 }
 
