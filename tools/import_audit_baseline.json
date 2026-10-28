@@ -1379,7 +1379,7 @@
   },
   "0x5622b7c1": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetAA3DataAndGetID",
     "name": "sceAtracSetAA3DataAndGetID",
     "status": "unreviewed"
   },
@@ -1466,7 +1466,7 @@
   },
   "0x5dd66588": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetAA3HalfwayBufferAndGetID",
     "name": "sceAtracSetAA3HalfwayBufferAndGetID",
     "status": "unreviewed"
   },
