@@ -23962,7 +23962,7 @@ typedef struct {
     uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
     int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
     uint32_t workarea;             /* LwMutex workarea address */
-    char name[32];                 /* LwMutex name */
+    char name[32];                 /* object name */
     int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
 enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
@@ -25375,7 +25375,12 @@ static uint32_t h_ReferMutexStatus(CpuState *s) {
 
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
+    /* PSPAutotests threads/events/create.expected records the null-name and
+     * attribute cases. The option is ignored, as in the recorded cases. */
+    if (!A0) return 0x80020001u;
+    if ((A1 & 0x100u) || A1 >= 0x300u) return 0x80020191u;
     Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
+    guest_cstr(A0, m->name, sizeof(m->name));
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
@@ -25636,18 +25641,20 @@ static uint32_t h_PollEventFlag(CpuState *s) {
     m->pattern = sr_evf_consume(m->pattern, bits, mode);
     return 0;
 }
-/* sceKernelReferEventFlagStatus(uid, SceKernelEventFlagInfo *info): size(0), name[32](4),
- * attr(36), initPattern(40), currentPattern(44), numWaitThreads(48). Size stays as the caller
- * wrote it. PSP-B1-01: attr and initPattern are the create-time values; waiters are not
- * tracked here. */
+/* PSPAutotests refer.expected: size zero writes nothing; every nonzero
+ * size, including 1, returns the complete 52-byte structure. */
 static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
-    uint32_t info = A1; if (!info) return 0x80020000;
-    for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
-    MEM_W32(info + 36, m->attr);
-    MEM_W32(info + 40, m->init_pattern);
-    MEM_W32(info + 44, m->pattern);
-    MEM_W32(info + 48, 0);
+    uint32_t info = A1;
+    if (!info || !sr_guest_span_readable(info, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!MEM_R32(info)) return 0;
+    if (!sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(info, 52u);
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(info + 4u + i, (uint8_t)m->name[i]);
+    MEM_W32(info + 36u, m->attr);
+    MEM_W32(info + 40u, m->init_pattern);
+    MEM_W32(info + 44u, m->pattern);
+    MEM_W32(info + 48u, (uint32_t)sched_count_waiters(A0));
     return 0;
 }
 

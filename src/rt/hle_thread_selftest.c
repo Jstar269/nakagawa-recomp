@@ -13088,6 +13088,32 @@ static void evt_expect_now(int self_idx, uint32_t thread_uid, uint32_t nid, uint
     s_cur = self_idx;
 }
 
+static void test_evf_create_and_refer(void) {
+    (void)wsv_begin();
+    title_hle_write_cstr(EVT_NAME, "12345678901234567890123456789012345");
+    b1_expect(b1_call(NID_B1_CREATE_EVF, 0u, 0u, 0u, 0u), 0x80020001u,
+              "event flag create rejects a null name");
+    b1_expect(b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x100u, 0u, 0u), 0x80020191u,
+              "event flag create rejects attribute 0x100");
+    b1_expect(b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x300u, 0u, 0u), 0x80020191u,
+              "event flag create rejects attribute 0x300");
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x222u, 0x29u, 0u);
+    expect((int32_t)evf > 0, "event flag create accepts measured attribute 0x222");
+    MEM_W32(EVT_INFO, 1u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u), 0u,
+              "event flag refer accepts size 1");
+    expect(MEM_R32(EVT_INFO) == 52u, "event flag refer writes full structure size");
+    expect(MEM_R8(EVT_INFO + 4u) == '1' && MEM_R8(EVT_INFO + 34u) == '1' &&
+           MEM_R8(EVT_INFO + 35u) == 0u, "event flag refer truncates name at 31 bytes");
+    expect(MEM_R32(EVT_INFO + 36u) == 0x222u && MEM_R32(EVT_INFO + 40u) == 0x29u &&
+           MEM_R32(EVT_INFO + 44u) == 0x29u, "event flag refer returns create attributes and patterns");
+    MEM_W32(EVT_INFO, 0u); MEM_W32(EVT_INFO + 36u, 0xdeadbeefu);
+    (void)b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u);
+    expect(MEM_R32(EVT_INFO + 36u) == 0xdeadbeefu, "event flag refer size zero writes nothing");
+    (void)b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u);
+    s_cur = -1;
+}
+
 static void test_evf_typed_uids_and_delete(void) {
     char msg[192];
     TCB *self = wsv_begin();
@@ -13201,6 +13227,10 @@ static void test_evf_typed_uids_and_delete(void) {
         expect(w && !s_evt_returned && w->state == TH_WAIT_OBJ && w->wait_obj == evf, msg);
         if (!w || s_evt_returned) { evt_end(w); s_cur = -1; continue; }
         s_cur = main_idx;
+        MEM_W32(EVT_INFO, 52u);
+        b1_expect(b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u), 0u,
+                  "ReferEventFlagStatus with a blocked waiter succeeds");
+        expect(MEM_R32(EVT_INFO + 48u) == 1u, "event flag refer counts its live waiter");
         snprintf(msg, sizeof msg, "DeleteEventFlag with a blocked %s waiter returns 0", who);
         b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, msg);
         snprintf(msg, sizeof msg, "issue #1389: the delete readied the %s waiter", who);
@@ -34604,6 +34634,7 @@ static int hle_selftest_main(int argc, char **argv) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
         test_evf_hardware_codes();
+        test_evf_create_and_refer();
         test_evf_typed_uids_and_delete();
         fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
@@ -34796,6 +34827,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_evf_create_and_refer();
     test_evf_typed_uids_and_delete();
     test_wake_result_is_per_thread();
     test_b23_second_round();
