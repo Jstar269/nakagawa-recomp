@@ -181,6 +181,8 @@ typedef struct {
     uint32_t addr, bytes;                  /* guest source range for precise CPU-write invalidation */
     TexMipKey mip;                         /* compared exactly on lookup, with key */
     uint32_t mip_bytes[7];                 /* source range of each level 1..mip.max_level */
+    uint64_t range_lo[8], range_hi[8];     /* canonical source ranges, level 0 first (#282) */
+    int range_n;
     int content_valid;
     int pending;                           /* referenced by not-yet-submitted batches */
     uint8_t *shadow;
@@ -298,15 +300,24 @@ static VkShaderModule s_vs, s_fs;
 static TexEnt  s_tex[MAX_TEX];
 static int     s_tex_n = 0;
 
-/* Pages no cached texture reads (#282). hook_vram_dirty runs for every guest store into VRAM,
- * and comparing each store with every cache entry was the largest single host cost of titles
- * whose CPU writes VRAM. A set bit says no entry's source range (any level) touches that 4 KiB
- * page of the canonical physical space SR_PHYS covers. Entry ranges never change after
- * tex_get creates the entry and eviction only removes ranges, so a bit stays true until a new
- * entry covers its page; creating one clears the bits of exactly the pages it covers. */
+/* CPU-store page index (#282). hook_vram_dirty runs for every guest store into VRAM, and
+ * comparing each store with every cache entry was the largest single host cost of titles whose
+ * CPU writes VRAM. Two facts about 4 KiB pages of the canonical physical space SR_PHYS covers
+ * let a store skip that scan:
+ *   clean  no entry's source range (any level) touches the page. Entry ranges never change
+ *          after tex_get creates the entry and eviction only removes ranges, so the bit stays
+ *          true until a new entry covers the page; creating one clears exactly its pages.
+ *   quiet  every entry touching the page is already invalid. Recorded with s_tex_valid_gen,
+ *          which moves whenever an entry is created or becomes valid again, so a quiet page
+ *          stays quiet only while no entry has been (re)validated anywhere.
+ * A store wholly inside clean pages changes nothing. A store wholly inside quiet pages could
+ * only re-invalidate invalid entries; it drops the state template, which a store overlapping
+ * an invalid entry also does, so every later draw sees the same textures. */
 #define TEX_CLEAN_PAGE_SHIFT 12u
 #define TEX_CLEAN_PAGES (0x20000000u >> TEX_CLEAN_PAGE_SHIFT)
 static uint64_t s_tex_clean[TEX_CLEAN_PAGES / 64u];
+static uint32_t s_tex_quiet[TEX_CLEAN_PAGES];    /* s_tex_valid_gen when found quiet; 0 = unknown */
+static uint32_t s_tex_valid_gen = 1;
 
 /* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the mirrored
  * 0x04xxxxxx VRAM aperture); cache ranges are compared in one physical namespace. */
@@ -314,24 +325,22 @@ static uint32_t tex_canonical(uint32_t addr) {
     return sr_vram_cpu_aperture(addr) ? sr_vram_cpu_address(addr) : SR_PHYS(addr);
 }
 
-/* The source range of level 0, then of each level 1..mip.max_level (#1373). Returns the
- * number of ranges written (at most 8). */
-static int tex_ent_ranges(const TexEnt *e, uint64_t lo[8], uint64_t hi[8]) {
+/* Cache the canonical source range of level 0, then of each level 1..mip.max_level (#1373). */
+static void tex_ent_set_ranges(TexEnt *e) {
     int n = 0;
-    lo[n] = tex_canonical(e->addr);
-    hi[n] = lo[n] + e->bytes;
+    e->range_lo[n] = tex_canonical(e->addr);
+    e->range_hi[n] = e->range_lo[n] + e->bytes;
     n++;
     for (uint32_t l = 0; l < e->mip.max_level && l < 7u; l++, n++) {
-        lo[n] = tex_canonical(e->mip.addr[l]);
-        hi[n] = lo[n] + e->mip_bytes[l];
+        e->range_lo[n] = tex_canonical(e->mip.addr[l]);
+        e->range_hi[n] = e->range_lo[n] + e->mip_bytes[l];
     }
-    return n;
+    e->range_n = n;
 }
 
-static int tex_ent_overlaps(const uint64_t lo[8], const uint64_t hi[8], int n,
-                            uint64_t a0, uint64_t a1) {
-    for (int i = 0; i < n; i++)
-        if (a0 < hi[i] && lo[i] < a1) return 1;
+static int tex_ent_overlaps(const TexEnt *e, uint64_t a0, uint64_t a1) {
+    for (int i = 0; i < e->range_n; i++)
+        if (a0 < e->range_hi[i] && e->range_lo[i] < a1) return 1;
     return 0;
 }
 
@@ -356,13 +365,26 @@ static void tex_clean_set(uint64_t p0, uint64_t p1, int clean) {
     }
 }
 
+static int tex_quiet_pages(uint64_t p0, uint64_t p1) {
+    for (uint64_t p = p0; p <= p1; p++)
+        if (s_tex_quiet[p] != s_tex_valid_gen) return 0;
+    return 1;
+}
+
+/* An entry became valid (created, revalidated or re-uploaded): no page is known quiet. */
+static void tex_note_valid(void) {
+    if (++s_tex_valid_gen == 0u) {          /* wrapped: no stale mark may match again */
+        memset(s_tex_quiet, 0, sizeof(s_tex_quiet));
+        s_tex_valid_gen = 1u;
+    }
+}
+
 /* A new entry: its pages may hold a cached texture from now on. */
 static void tex_clean_forget(const TexEnt *e) {
-    uint64_t lo[8], hi[8];
-    int n = tex_ent_ranges(e, lo, hi);
-    for (int i = 0; i < n; i++)
-        if (hi[i] > lo[i]) tex_clean_set(lo[i] >> TEX_CLEAN_PAGE_SHIFT,
-                                         (hi[i] - 1u) >> TEX_CLEAN_PAGE_SHIFT, 0);
+    for (int i = 0; i < e->range_n; i++)
+        if (e->range_hi[i] > e->range_lo[i])
+            tex_clean_set(e->range_lo[i] >> TEX_CLEAN_PAGE_SHIFT,
+                          (e->range_hi[i] - 1u) >> TEX_CLEAN_PAGE_SHIFT, 0);
 }
 static VkImage s_white; static VkDeviceMemory s_white_mem;
 static VkImageView s_white_view; static VkSampler s_white_smp;
@@ -417,7 +439,8 @@ static unsigned long s_cnt_present_cpu = 0, s_cnt_rtt = 0;
 static unsigned long s_cnt_readback = 0, s_cnt_upload = 0, s_cnt_dirty = 0;
 static unsigned long s_cnt_snap = 0, s_cnt_texup = 0, s_cnt_xferblit = 0;
 static uint64_t s_cnt_tex_invalidations = 0;
-static uint64_t s_cnt_tex_clean_skips = 0;   /* CPU writes that skipped the texture scan (#282) */
+static uint64_t s_cnt_tex_clean_skips = 0;   /* CPU stores that skipped the texture scan (#282): */
+static uint64_t s_cnt_tex_quiet_skips = 0;   /* clean pages, and quiet pages */
 static uint64_t s_cnt_shadow_checks = 0, s_cnt_shadow_hits = 0, s_cnt_shadow_misses = 0;
 static uint64_t s_cnt_shadow_bytes = 0, s_cnt_shadow_avoided = 0, s_cnt_shadow_required = 0;
 static GeGpuReplayStats s_replay_stats;
@@ -2563,6 +2586,7 @@ static VkDescriptorSet tex_get(void) {
         }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
             e->content_valid = 1;
+            tex_note_valid();
             e->pending = 1;
             s_cnt_shadow_avoided++;
             if (sr_perf_enabled) sr_perf_texture_cache(1);
@@ -2574,6 +2598,7 @@ static VkDescriptorSet tex_get(void) {
         if (!tex_decode_upload(e->img, e->w, e->h, levels)) return s_white_set;
         e->hash = hash;
         e->content_valid = 1;
+        tex_note_valid();
         tex_shadow_store(e);
         e->pending = 1;
         s_cnt_texup++;
@@ -2601,8 +2626,10 @@ static VkDescriptorSet tex_get(void) {
     e->bytes = tex_source_size();
     e->mip = mip;
     memcpy(e->mip_bytes, mip_bytes, sizeof(e->mip_bytes));
+    tex_ent_set_ranges(e);
     tex_clean_forget(e);
     e->content_valid = 1;
+    tex_note_valid();
     tex_shadow_store(e);
     e->pending = 1;
     e->lru = s_texlru++;
@@ -3309,20 +3336,24 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     uint64_t dirty0 = canonical_addr, dirty1 = dirty0 + bytes;
     uint64_t page0 = dirty0 >> TEX_CLEAN_PAGE_SHIFT, page1 = (dirty1 - 1u) >> TEX_CLEAN_PAGE_SHIFT;
     int indexed = page1 < TEX_CLEAN_PAGES;
-    /* The scan below cannot change anything for a store wholly inside pages no entry reads. */
-    int scan = !(indexed && tex_clean_pages(page0, page1));
-    if (!scan) s_cnt_tex_clean_skips++;
+    int scan = 1;
+    if (indexed && tex_clean_pages(page0, page1)) {
+        scan = 0;                          /* no entry reads these pages */
+        s_cnt_tex_clean_skips++;
+    } else if (indexed && tex_quiet_pages(page0, page1)) {
+        scan = 0;                          /* every entry reading them is already invalid */
+        s_tmpl_ok = 0;
+        s_cnt_tex_quiet_skips++;
+    }
     uint64_t span0 = page0 << TEX_CLEAN_PAGE_SHIFT, span1 = (page1 + 1u) << TEX_CLEAN_PAGE_SHIFT;
-    int span_touched = 0;
+    int span_touched = 0, span_valid = 0;
     for (int i = 0; scan && i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
-        uint64_t lo[8], hi[8];
-        int n = tex_ent_ranges(e, lo, hi);
-        if (!tex_ent_overlaps(lo, hi, n, span0, span1)) continue;
+        if (!tex_ent_overlaps(e, span0, span1)) continue;
         span_touched = 1;
         /* A mip chain (#1373) is stale when any of its levels is written: the same
          * canonical comparison against each level's own source range. */
-        if (tex_ent_overlaps(lo, hi, n, dirty0, dirty1)) {
+        if (tex_ent_overlaps(e, dirty0, dirty1)) {
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
                 e->content_valid = 0;
@@ -3333,8 +3364,13 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
              * template as well as the entry (coherence selftest texture-dirty-same-state). */
             s_tmpl_ok = 0;
         }
+        if (e->content_valid) span_valid = 1;
     }
-    if (scan && indexed && !span_touched) tex_clean_set(page0, page1, 1);
+    if (scan && indexed) {
+        if (!span_touched) tex_clean_set(page0, page1, 1);
+        else if (!span_valid)
+            for (uint64_t p = page0; p <= page1; p++) s_tex_quiet[p] = s_tex_valid_gen;
+    }
     if (!is_vram(canonical_addr)) return;
     uint32_t a0 = vram_off(canonical_addr);
     for (int i = 0; i < MAX_DEP; i++) {
@@ -5459,6 +5495,15 @@ static int coherence_run_texture_clean_page_index(void) {
     uint64_t invalidations_before = s_cnt_tex_invalidations;
     for (unsigned i = 0; i < 64u; i++) b[i] = green;
     sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    /* B is now the only entry on its page and invalid: a second store there skips the scan. */
+    uint64_t quiet_before = s_cnt_tex_quiet_skips;
+    sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    if (s_cnt_tex_quiet_skips != quiet_before + 1u) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: expected a quiet-page skip, "
+                "skipped %llu\n", (unsigned long long)(s_cnt_tex_quiet_skips - quiet_before));
+        coherence_reset_targets();
+        return 0;
+    }
     wrap_vtx(&p0, 50.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
     wrap_vtx(&p1, 58.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
     if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
@@ -5480,7 +5525,33 @@ static int coherence_run_texture_clean_page_index(void) {
         coherence_reset_targets();
         return 0;
     }
-    printf("gpu coherence selftest: PASS %-22s skips=1 invalidations=1\n", "texture-clean-page-index");
+    /* The third draw re-uploaded B, so its page is no longer quiet: the next store must
+     * invalidate it again, and the draw after it must show the new texels. */
+    const uint32_t yellow = 0xFF00FFFFu;
+    quiet_before = s_cnt_tex_quiet_skips;
+    invalidations_before = s_cnt_tex_invalidations;
+    for (unsigned i = 0; i < 64u; i++) b[i] = yellow;
+    sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    wrap_vtx(&p0, 70.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 78.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: fourth draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t last = guest[14u * stride + 74u] & rgb;
+    if (last != (yellow & rgb) || s_cnt_tex_quiet_skips != quiet_before ||
+        s_cnt_tex_invalidations != invalidations_before + 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-clean-page-index]: after re-upload last=%06x (want %06x), "
+                "quiet skips=%llu (want 0), invalidations=%llu (want 1)%s\n",
+                last, yellow & rgb, (unsigned long long)(s_cnt_tex_quiet_skips - quiet_before),
+                (unsigned long long)(s_cnt_tex_invalidations - invalidations_before),
+                last == (green & rgb) ? " -- a stale quiet mark skipped the store" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s clean=1 quiet=1 invalidations=2\n", "texture-clean-page-index");
     coherence_reset_targets();
     return 1;
 }
