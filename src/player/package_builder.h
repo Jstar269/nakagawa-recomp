@@ -284,6 +284,15 @@ typedef bool (*PackageHttpOpen)(void *context, const char *url,
 typedef bool (*PackageDownloadContinue)(void *context, uint64_t received,
                                         uint64_t expected);
 
+/* What the native transport's context may say; a NULL context keeps its defaults. */
+typedef struct {
+    const char *user_agent;   /* NULL keeps "NakagawaRecomp/PrerequisiteBootstrap" */
+} PackageHttpOptions;
+
+/* The native HTTPS transport (WinHTTP, redirects followed only within the allowed
+ * hosts), or NULL where there is none. Its context is NULL or a PackageHttpOptions. */
+PackageHttpOpen package_builder_native_transport(void);
+
 /* Download one manifest item to a .part file, check exact byte count and SHA-256,
  * then atomically promote it. A NULL transport selects native WinHTTP. */
 bool package_builder_download_verified(

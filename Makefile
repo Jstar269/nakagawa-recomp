@@ -2041,7 +2041,7 @@ NK_PLAYER_BUILD_EPOCH := $(or $(SR_SOURCE_DATE_EPOCH),$(strip $(shell "$(PYTHON)
 NK_PLAYER_BUILD_COMMIT := $(shell "$(PYTHON)" -c "import sys; print(sys.argv[1][:7])" "$(SR_SOURCE_COMMIT)")
 NK_PLAYER_IDENTITY_DEFS := $(if $(NK_PLAYER_BUILD_EPOCH),-DNK_PLAYER_BUILD_EPOCH=$(NK_PLAYER_BUILD_EPOCH)LL,) $(if $(strip $(NK_PLAYER_BUILD_COMMIT)),-DNK_PLAYER_BUILD_COMMIT=\"$(strip $(NK_PLAYER_BUILD_COMMIT))\",)
 PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),-DNK_UI_WITH_SDL_TTF,) $(NK_PLAYER_IDENTITY_DEFS)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c src/player/update_check.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 # Both icon objects come from this one rule; windres finds the icon beside the script.
@@ -2053,7 +2053,7 @@ endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
@@ -3110,6 +3110,12 @@ $(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DPYTHON_VERSION_PROBE_
 	tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 endef
 
+# Check for updates: answers from a fake transport and the recorded Releases API fixture,
+# never the internet (AGENTS.md section 5). Runs from the repository root for the fixture.
+define UPDATE_CHECK_TEST_BIN_CMD
+$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c src/player/update_check.c \n	tests/native/native_test_isolation.c tests/native/test_update_check.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_update_check$(EXE_EXT)
+endef
+
 player-state-test-bin:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(call PLAYER_STATE_TEST_BIN_CMD)
@@ -3337,6 +3343,8 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(BUILD_ROOT_RUN)/test_input_settings$(EXE_EXT)
 	$(call PACKAGE_BUILDER_TEST_BIN_CMD)
 	$(BUILD_ROOT_RUN)/test_package_builder$(EXE_EXT)
+	$(call UPDATE_CHECK_TEST_BIN_CMD)
+	$(BUILD_ROOT_RUN)/test_update_check$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
 		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
