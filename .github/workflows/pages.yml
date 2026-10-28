@@ -1,0 +1,132 @@
+name: Pages
+
+# Publishes the project website (docs/index.html) to GitHub Pages. The site is one static page plus
+# images the repository already publishes; there is no generator and no third-party build step.
+# Before the artifact is uploaded, tools/test_site_mobile.py renders the assembled site in headless
+# Chromium at phone and desktop widths in every theme and fails the build on a layout, theme,
+# contrast, tap-target or reference problem.
+# Pull requests that touch the site run the build job only, so a broken page fails before it lands;
+# only a push to main (or a manual run on main) deploys.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/index.html
+      - docs/images/brand/og-card.png
+      - docs/media/launcher-*
+      - docs/media/hst-rally.mp4
+      - tools/test_site_mobile.py
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - docs/index.html
+      - docs/images/brand/og-card.png
+      - docs/media/launcher-*
+      - docs/media/hst-rally.mp4
+      - tools/test_site_mobile.py
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'deploy' }}
+  # Never cancel a deployment that is already running; a newer one queues behind it.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assemble the site
+        # Copy an explicit list of files so nothing else in the repository is published. The layout
+        # under _site/ mirrors docs/, which keeps the page's relative image paths valid both here and
+        # when docs/index.html is opened from a checkout.
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/images/brand _site/media
+          cp docs/index.html _site/index.html
+          cp docs/images/brand/og-card.png _site/images/brand/
+          cp docs/media/launcher-library.png docs/media/launcher-building.png docs/media/hst-rally.mp4 _site/media/
+
+      - name: Check that every local reference resolves
+        # Fail on a src, srcset or href that names a local file the step above did not copy.
+        # External links and in-page anchors are not files and are skipped.
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r ref; do
+            if [ ! -f "_site/$ref" ]; then
+              echo "::error file=docs/index.html::$ref is referenced but not published by the Pages build"
+              missing=1
+            fi
+          done < <(grep -oE '(src|srcset|href)="[^"#:]+"' _site/index.html | sed -E 's/^[a-z]+="([^"]+)"$/\1/' | sort -u)
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          find _site -type f -printf '%P %s bytes\n' | sort
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+
+      - name: Install Playwright and its headless Chromium
+        # Exact CPython 3.15.1 / Ubuntu 26.04 x86_64 closure, hash-pinned. Playwright 1.64.1 lists
+        # ubuntu26.04-x64 as a supported host, so --with-deps installs the browser's system libraries.
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/site-test-requirements.txt" <<'LOCK'
+          playwright==1.64.1               --hash=sha256:577b8d88778c245cfbd145ae17cf53044f084b1b46c55c69081d4069d56057e2
+          greenlet==3.5.6               --hash=sha256:ccadce0130fd813ec86ebfe969a6c58b42acc1d0fe55a47525375b740e07b605
+          pyee==14.0.0               --hash=sha256:3ac2d3229a9677f7de2c33d7f52fe25b638a46b19c413fea2edc8c6d0a644e4d
+          typing_extensions==4.16.0               --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+          LOCK
+          python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all:             -r "$RUNNER_TEMP/site-test-requirements.txt"
+          python -m playwright install --with-deps --only-shell chromium
+
+      - name: Test the site at phone and desktop widths
+        # The assembled _site/, not docs/: the test also applies the reference rule above to it.
+        # NK_SITE_TEST_REQUIRED turns a missing browser into a failure instead of a skip.
+        env:
+          NK_SITE_DIR: _site
+          NK_SITE_TEST_REQUIRED: "1"
+        run: python -m unittest -v tools.test_site_mobile
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

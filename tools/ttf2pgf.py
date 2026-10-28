@@ -45,7 +45,13 @@ from pathlib import Path
 
 try:  # pragma: no cover - the tests import both styles
     from . import pgf_writer
-except ImportError:  # direct script execution: tools/ is the script directory
+except ImportError:  # direct script execution
+    # Python's embeddable distribution, which the release ZIP bundles for BUILD PACKAGE,
+    # never puts the script's own folder on sys.path (its ._pth file wins), so add tools/
+    # before importing the sibling module, as nk_cli.py does.
+    _TOOLS_DIR = str(Path(__file__).resolve().parent)
+    if _TOOLS_DIR not in sys.path:
+        sys.path.insert(0, _TOOLS_DIR)
     import pgf_writer  # type: ignore[no-redef]
 
 CONVERTER_NAME = "ttf2pgf"
@@ -61,6 +67,11 @@ FLATNESS = Fraction(2, 1)
 #: Hard bound for the recursive flattener; the second difference shrinks 4x per
 #: level, so a well-formed outline converges long before this depth.
 MAX_CURVE_DEPTH = 24
+#: Flattening runs on integers: 26.6 coordinates times 2**_SCALE_BITS.  An implied
+#: on-curve midpoint halves once and each flattening level halves twice, so after at most
+#: 1 + 2 * MAX_CURVE_DEPTH halvings every coordinate is still an exact integer, and the
+#: result is the same exact dyadic rational arithmetic the specification describes.
+_SCALE_BITS = 2 * MAX_CURVE_DEPTH + 2
 MAX_COMPOSITE_DEPTH = 8
 MAX_COMPOSITE_COMPONENTS = 64
 
@@ -805,6 +816,9 @@ def _to26_6(value: int | Fraction, ppem: int, units_per_em: int) -> int:
     Ties round toward positive infinity.  The arithmetic is exact rational
     arithmetic rounded exactly once, so every host computes the same integer.
     """
+    if type(value) is int and units_per_em > 0:
+        # floor(v * ppem * 64 / upem + 1/2) == floor((2 * v * ppem * 64 + upem) / (2 * upem))
+        return (2 * value * ppem * 64 + units_per_em) // (2 * units_per_em)
     rational = value if isinstance(value, Fraction) else Fraction(value, 1)
     return math.floor(rational * ppem * 64 / units_per_em + Fraction(1, 2))
 
@@ -827,7 +841,12 @@ def _round26_6(value: int | Fraction) -> int:
     return math.floor(value + Fraction(1, 2))
 
 
-def _expand_contour(points: list[tuple]) -> list[tuple]:
+def _scaled_midpoint(a: tuple, b: tuple) -> tuple[int, int]:
+    """Exact midpoint of two scaled-integer points (see _SCALE_BITS: the sums are even)."""
+    return (a[0] + b[0]) >> 1, (a[1] + b[1]) >> 1
+
+
+def _expand_contour(points: list[tuple], midpoint=_midpoint) -> list[tuple]:
     """Expand one contour into line/quad segments, adding implied midpoints.
 
     Segments are ``("L", a, b)`` or ``("Q", a, control, b)`` in exact 26.6
@@ -843,7 +862,7 @@ def _expand_contour(points: list[tuple]) -> list[tuple]:
         points = points[pivot:] + points[:pivot]
     else:
         first, last = points[0], points[-1]
-        mid = _midpoint(first, last)
+        mid = midpoint(first, last)
         points = [(mid[0], mid[1], True), *points]
 
     segments: list[tuple] = []
@@ -862,7 +881,7 @@ def _expand_contour(points: list[tuple]) -> list[tuple]:
         else:
             control = (x, y)
             if pending is not None:
-                implied = _midpoint(pending, control)
+                implied = midpoint(pending, control)
                 segments.append(("Q", cursor, pending, implied))
                 cursor = implied
             pending = control
@@ -890,6 +909,24 @@ def _flatten_quad(a: tuple, control: tuple, b: tuple, depth: int, out: list[tupl
     middle = _midpoint(left_control, right_control)
     _flatten_quad(a, left_control, middle, depth + 1, out)
     _flatten_quad(middle, right_control, b, depth + 1, out)
+
+
+def _flatten_quad_scaled(a: tuple, control: tuple, b: tuple, depth: int, out: list[tuple]) -> None:
+    """_flatten_quad on scaled-integer points: the same halvings, comparisons and depth bound."""
+    second_x = a[0] - 2 * control[0] + b[0]
+    second_y = a[1] - 2 * control[1] + b[1]
+    if depth >= MAX_CURVE_DEPTH or abs(second_x) + abs(second_y) <= _SCALED_FLATNESS:
+        out.append(b)
+        return
+    left_control = ((a[0] + control[0]) >> 1, (a[1] + control[1]) >> 1)
+    right_control = ((control[0] + b[0]) >> 1, (control[1] + b[1]) >> 1)
+    middle = ((left_control[0] + right_control[0]) >> 1, (left_control[1] + right_control[1]) >> 1)
+    _flatten_quad_scaled(a, left_control, middle, depth + 1, out)
+    _flatten_quad_scaled(middle, right_control, b, depth + 1, out)
+
+
+_SCALED_FLATNESS = int(FLATNESS * (1 << _SCALE_BITS))
+_SCALED_HALF = 1 << (_SCALE_BITS - 1)
 
 
 @dataclass(frozen=True)
@@ -929,19 +966,22 @@ def _plan_raster(contours: list[list[tuple]], ppem: int, units_per_em: int) -> _
     max_x = max_y = None
     for contour in contours:
         scaled = [
-            (_to26_6(x, ppem, units_per_em), _to26_6(y, ppem, units_per_em), on)
+            (_to26_6(x, ppem, units_per_em) << _SCALE_BITS,
+             _to26_6(y, ppem, units_per_em) << _SCALE_BITS, on)
             for x, y, on in contour
         ]
-        segments = _expand_contour(scaled)
+        segments = _expand_contour(scaled, _scaled_midpoint)
         chain: list[tuple[int, int]] = []
         for segment in segments:
             if segment[0] == "L":
                 raw_points = [segment[1], segment[2]]
             else:
                 flat: list[tuple] = []
-                _flatten_quad(segment[1], segment[2], segment[3], 0, flat)
+                _flatten_quad_scaled(segment[1], segment[2], segment[3], 0, flat)
                 raw_points = [segment[1], *flat]
-            points = [(_round26_6(x), _round26_6(y)) for x, y in raw_points]
+            # _round26_6 on the scaled value: floor(v + 1/2), ties toward +infinity.
+            points = [((x + _SCALED_HALF) >> _SCALE_BITS, (y + _SCALED_HALF) >> _SCALE_BITS)
+                      for x, y in raw_points]
             if chain and points and points[0] == chain[-1]:
                 chain.extend(points[1:])
             else:
@@ -998,7 +1038,13 @@ def _rasterize(raster: _Raster, embolden_x: int = 0, embolden_y: int = 0) -> tup
             # top-down bitmap grid: rows are 64 units, centres at +4 of each
             # SUPERSAMPLE-th slice.
             y = top26 - (row * SUPERSAMPLE + step) * SUB_PIXEL - SUB_PIXEL // 2
-            crossings: list[tuple[Fraction, int]] = []
+            # Each crossing is the exact rational numer/den (den > 0, local 26.6 units).  It sorts
+            # on the integer floor(numer * 2**32 / den): two distinct rationals with denominators
+            # below 2**16 differ by more than 2**-32, so their keys differ in the same order, and
+            # equal rationals get equal keys.  A row with a larger denominator sorts on Fractions.
+            # The sub-column bounds are exact integer floor divisions.
+            crossings: list[tuple[int, int, int, int]] = []
+            exact_keys = True
             sub_rows.append(0)
             for x0, y0, x1, y1 in raster.edges:
                 if y0 == y1:
@@ -1013,21 +1059,29 @@ def _rasterize(raster: _Raster, embolden_x: int = 0, embolden_y: int = 0) -> tup
                 den = y1 - y0
                 if den < 0:
                     numer, den = -numer, -den
-                crossings.append((Fraction(numer, den) - left26, direction))
+                numer -= left26 * den
+                if den >= 1 << 16:
+                    exact_keys = False
+                crossings.append(((numer << 32) // den, direction, numer, den))
             if not crossings:
                 continue
-            crossings.sort(key=lambda entry: (entry[0], entry[1]))
+            if exact_keys:
+                crossings.sort(key=lambda entry: (entry[0], entry[1]))
+            else:
+                crossings.sort(key=lambda entry: (Fraction(entry[2], entry[3]), entry[1]))
             bits = 0
             winding = 0
-            for index, (position, direction) in enumerate(crossings):
+            for index, (_, direction, numer, den) in enumerate(crossings):
                 winding += direction
                 if winding == 0 or index + 1 >= len(crossings):
                     continue
-                nxt = crossings[index + 1][0]
+                nxt_numer, nxt_den = crossings[index + 1][2], crossings[index + 1][3]
                 # Sub-column centres are 8*j + 4 (local 26.6); keep strictly
                 # inside the active span so shared edges never double-count.
-                j_min = (position - (SUB_PIXEL // 2)) // SUB_PIXEL + 1
-                j_max = -((SUB_PIXEL // 2 - nxt) // SUB_PIXEL) - 1
+                # j_min = floor((position - 4) / 8) + 1 and
+                # j_max = -floor((4 - next) / 8) - 1, for position = numer / den.
+                j_min = (numer - (SUB_PIXEL // 2) * den) // (SUB_PIXEL * den) + 1
+                j_max = -(((SUB_PIXEL // 2) * nxt_den - nxt_numer) // (SUB_PIXEL * nxt_den)) - 1
                 if j_max < j_min:
                     continue
                 j_min = max(j_min, 0)

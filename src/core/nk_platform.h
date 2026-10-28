@@ -32,8 +32,9 @@ int64_t nk_ftell64(FILE *f);
  * file opens, removals and renames the player and the shared core make on
  * user-data and install paths go through these, or through an equivalent
  * wide-character open local to a translation unit that is built without this
- * platform layer (the decrypt tool, and the file-local copies in nk_iso.c,
- * nk_xb.c, nk_title_manifest.c, nk_library.c and nk_input_profile.c). Code that
+ * platform layer (the decrypt tool and the NPUMDIMG reader nk_psp_npumdimg.c it
+ * links, and the file-local copies in nk_iso.c, nk_xb.c, nk_title_manifest.c,
+ * nk_library.c and nk_input_profile.c). Code that
  * opens such a path must not use the narrow fopen/remove/rename on Win32.
  * Win32 converts strictly (invalid UTF-8 fails rather than opening a path
  * where the bad bytes became U+FFFD); POSIX file names are already UTF-8 bytes,
