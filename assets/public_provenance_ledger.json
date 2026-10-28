@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "de5322dc699456d0a5a383baf93dda0cce416a7e91e76f175989554fe51c7c1e"
+      "sha256": "d6ff75c5d10962a223d9fc7c93553247aa09d3aff5b6c6792d13d8174bc36d3b"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -9523,7 +9523,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "677a424e389a856c3804bdd8f1399eecf1394e45e21dcd031a54b45b518e02f2"
+      "sha256": "85c117fbdeaf3cd6cd47e2b4d2bd2faaf30dfc5f2dfb1836102e5c902f034e3a"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -13721,7 +13721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7dac8e2cc8296afac3478544e81ec4c47e586cba914579cd9dcce638a58f56e6"
+      "sha256": "5865a5d29308a333256e807211c3d0af2ee58e068f3bbf2c2ba6f0e428e61649"
     },
     {
       "path": "tools/test_dco_policy.py",
@@ -14550,7 +14550,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "312f86739da038c9fc817c64e1e8504bf6f7d7bb30b997d96bc893916b96805c"
+      "sha256": "4db6883a09e24a7f0dbad65b1754d5eff0cf4eedfb50a7186946ae83b6e5a2e0"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
