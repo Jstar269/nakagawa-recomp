@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """End-to-end regressions for callable versus resume-entry codegen semantics.
 

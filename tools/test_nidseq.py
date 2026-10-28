@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 #
 # Synthetic fail-closed tests for tools/nidseq.py (issue #354).
 # No retail assets, traces, or import tables: every fixture is synthesized here.
