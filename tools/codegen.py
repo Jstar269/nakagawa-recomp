@@ -1382,8 +1382,8 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",
-    (0x01, 0x03): "vrndf2",
+    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
+    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
 }
 
 
@@ -1401,6 +1401,52 @@ def _vrndi_single_stmt(addr, w):
             f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
             "sr_end(s, 0u, 0); return; } "
             f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
+
+def _vfpu_forms_stmt(addr, w, what, body):
+    """A PSP-VFPU-FORMS-001 form (issue #326) under identity prefixes.
+
+    vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s were measured on a
+    PSP-3000 (2026-10-28) under identity S/T/D prefixes only; the rules are the recomp.h
+    helpers sr_vfpu_interp also calls. A pending prefix is unmeasured, so it stops the run
+    with no state change, as sr_vfpu_interp refuses it. None of these forms writes VFPU_CC.
+    """
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU {what} under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } " + body + " }")
+
+
+def _vfpu_forms_effect(addr, w, jump, sel, n):
+    """The PSP-VFPU-FORMS-001 forms at their measured widths, or None."""
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
+    if jump >= 24 and n == 1:  # vwbn.s, exponent imm8 in bits 16-23
+        d0, s0 = vreg_indices(vd, 1)[0], vreg_indices(vs, 1)[0]
+        return _vfpu_forms_stmt(addr, w, "vwbn.s",
+                                f"s->vi[{d0}]=sr_vfpu_wbn(s->vi[{s0}],{(w >> 16) & 0xFF}u);")
+    if jump == 1 and sel in (2, 3) and n == 1:  # vrndf1.s / vrndf2.s
+        d0 = vreg_indices(vd, 1)[0]
+        return _vfpu_forms_stmt(addr, w, f"vrndf{sel - 1}.s",
+                                f"s->vi[{d0}]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],{sel - 2});")
+    if jump == 1 and sel == 19 and n <= 2:  # vh2f.s/.p: low then high half, double width
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"uint32_t _s{i}=s->vi[{si[i]}];" for i in range(n))
+        writes = " ".join(f"s->vi[{di[2 * i]}]=sr_vfpu_h2f(_s{i}&0xFFFFu); "
+                          f"s->vi[{di[2 * i + 1]}]=sr_vfpu_h2f(_s{i}>>16);" for i in range(n))
+        return _vfpu_forms_stmt(addr, w, f"vh2f.{'sp'[n - 1]}", f"{reads} {writes}")
+    if jump == 1 and sel == 24 and n == 1:  # vuc2i.s: four bytes, low first, to a quad
+        s0, di = vreg_indices(vs, 1)[0], vreg_indices(vd, 4)
+        writes = " ".join(f"s->vi[{di[i]}]=sr_vfpu_uc2i(_s>>{8 * i});" for i in range(4))
+        return _vfpu_forms_stmt(addr, w, "vuc2i.s", f"uint32_t _s=s->vi[{s0}]; {writes}")
+    if jump == 2 and sel == 5 and n <= 2:  # vsocp.s/.p: x -> (sat0(1 - x), sat0(x))
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"_x[{i}]=s->vi[{si[i]}];" for i in range(n))
+        calc = " ".join(f"sr_vfpu_socp(_x[{i}],&_d[{2 * i}]);" for i in range(n))
+        writes = " ".join(f"s->vi[{di[i]}]=_d[{i}];" for i in range(2 * n))
+        return _vfpu_forms_stmt(addr, w, f"vsocp.{'sp'[n - 1]}",
+                                f"uint32_t _x[2],_d[4]; {reads} {calc} {writes}")
+    return None
+
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1446,6 +1492,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         rt_selector = (w >> 16) & 0x1F
         if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
             return _vrndi_single_stmt(addr, w), None, 0
+        forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
+        if forms is not None:
+            return forms, None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(

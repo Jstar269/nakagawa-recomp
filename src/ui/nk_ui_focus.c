@@ -75,9 +75,9 @@ static int nk_ui_focus_top_scope(const NkUiFocusEntry *entries, size_t count) {
 
 static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
                              size_t current, NkUiNavDir dir) {
-    const NkUiFocusEntry *cur = &entries[current];
-    float cx = nk_ui_focus_cx(cur->rect);
-    float cy = nk_ui_focus_cy(cur->rect);
+    const NkUiFocusEntry *from = &entries[current];
+    float from_cx = nk_ui_focus_cx(from->rect);
+    float from_cy = nk_ui_focus_cy(from->rect);
     bool horizontal = dir == NK_UI_DIR_LEFT || dir == NK_UI_DIR_RIGHT;
     long best = -1;
     float best_score = 0.0f;
@@ -86,22 +86,22 @@ static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
         dir != NK_UI_DIR_UP && dir != NK_UI_DIR_DOWN) {
         return -1;
     }
-    if (horizontal && (cur->flags & NK_UI_FOCUS_OWNS_HORIZONTAL) != 0u) {
+    if (horizontal && (from->flags & NK_UI_FOCUS_OWNS_HORIZONTAL) != 0u) {
         return -1;
     }
     for (i = 0; i < count; ++i) {
-        const NkUiFocusEntry *c = &entries[i];
+        const NkUiFocusEntry *cand = &entries[i];
         float dx;
         float dy;
         float main_axis;
         float cross;
         float score;
         bool in_half_plane;
-        if (i == current || !nk_ui_focus_enabled(c) || c->scope != cur->scope) {
+        if (i == current || !nk_ui_focus_enabled(cand) || cand->scope != from->scope) {
             continue;
         }
-        dx = nk_ui_focus_cx(c->rect) - cx;
-        dy = nk_ui_focus_cy(c->rect) - cy;
+        dx = nk_ui_focus_cx(cand->rect) - from_cx;
+        dy = nk_ui_focus_cy(cand->rect) - from_cy;
         switch (dir) {
         case NK_UI_DIR_RIGHT: in_half_plane = dx > NK_UI_FOCUS_EPS; break;
         case NK_UI_DIR_LEFT: in_half_plane = dx < -NK_UI_FOCUS_EPS; break;
@@ -112,16 +112,16 @@ static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
             continue;
         }
         if (horizontal) {
-            bool same_row = nk_ui_focus_overlap(cur->rect.y, cur->rect.y + cur->rect.h,
-                                                c->rect.y, c->rect.y + c->rect.h);
-            if (!same_row && (cur->flags & NK_UI_FOCUS_ROW_MEMBER) != 0u) {
+            bool same_row = nk_ui_focus_overlap(from->rect.y, from->rect.y + from->rect.h,
+                                                cand->rect.y, cand->rect.y + cand->rect.h);
+            if (!same_row && (from->flags & NK_UI_FOCUS_ROW_MEMBER) != 0u) {
                 continue;
             }
             main_axis = fabsf(dx);
             cross = same_row ? 0.0f : fabsf(dy);
         } else {
-            bool same_col = nk_ui_focus_overlap(cur->rect.x, cur->rect.x + cur->rect.w,
-                                                c->rect.x, c->rect.x + c->rect.w);
+            bool same_col = nk_ui_focus_overlap(from->rect.x, from->rect.x + from->rect.w,
+                                                cand->rect.x, cand->rect.x + cand->rect.w);
             main_axis = fabsf(dy);
             cross = same_col ? NK_UI_FOCUS_COLUMN_WEIGHT * fabsf(dx) : fabsf(dx);
         }
@@ -130,13 +130,16 @@ static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
             best = (long)i;
             best_score = score;
         } else if (score <= best_score + NK_UI_FOCUS_TIE) {
-            const NkUiFocusEntry *b = &entries[best];
-            float by = nk_ui_focus_cy(b->rect);
-            float bx = nk_ui_focus_cx(b->rect);
-            float cyy = nk_ui_focus_cy(c->rect);
-            float cxx = nk_ui_focus_cx(c->rect);
-            if (cyy < by - NK_UI_FOCUS_TIE ||
-                (fabsf(cyy - by) <= NK_UI_FOCUS_TIE && cxx < bx - NK_UI_FOCUS_TIE)) {
+            const NkUiFocusEntry *best_entry = &entries[best];
+            float best_cy = nk_ui_focus_cy(best_entry->rect);
+            float best_cx = nk_ui_focus_cx(best_entry->rect);
+            float cand_cy = nk_ui_focus_cy(cand->rect);
+            float cand_cx = nk_ui_focus_cx(cand->rect);
+            /* A tie in score goes to the candidate that reads first: higher, then
+               further left. */
+            if (cand_cy < best_cy - NK_UI_FOCUS_TIE ||
+                (fabsf(cand_cy - best_cy) <= NK_UI_FOCUS_TIE &&
+                 cand_cx < best_cx - NK_UI_FOCUS_TIE)) {
                 best = (long)i;
                 best_score = score;
             }
