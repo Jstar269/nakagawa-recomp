@@ -11804,7 +11804,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e5f2352c58ac4f7fd2192ebb672ea91433ee23262ea105d31191088863ace95"
+      "sha256": "7d7136e8f5ae5c5a88957d194d968ab79f272b489ae71f0cf32909f4c9d717d4"
     },
     {
       "path": "tools/contrib_refresh.py",
@@ -13673,7 +13673,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cf37802417407832e95fe15686993426c5232152b26e1a2e436e711a3bf431f4"
+      "sha256": "d4e8b6665e63495b11cac07d90c8b7f8748bba296930245601825656334e61fc"
     },
     {
       "path": "tools/test_contrib_refresh.py",

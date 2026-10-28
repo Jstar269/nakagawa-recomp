@@ -17,6 +17,11 @@ gate reports one of ``PASS``, ``FAIL``, ``SKIP`` (the tool is not installed) or
 ``NOT_RUN`` (the change does not touch that surface).  A gate that cannot run is
 never reported as a pass.
 
+The strict C compile builds each changed source with the include paths and
+defines the Makefile compiles it with (``STRICT_C_UNITS``), plus ``-Werror``.
+A source whose SDK header is not installed is ``SKIP``; one that includes a
+header only a build step writes, when that step has not run, is ``NOT_RUN``.
+
 The publication-safety gate is the one place this script interprets output.
 The publication audit's provenance self-consistency leg compares the working
 tree against the checked-in ledger, which only a maintainer holding the private
@@ -29,6 +34,7 @@ split.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -41,8 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from . import ci_paths  # noqa: E402
+    from .vulkan_sdk import VulkanSdkError, discover_vulkan_sdk  # noqa: E402
 except ImportError:  # pragma: no cover - direct script execution
     import ci_paths  # noqa: E402
+    from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk  # noqa: E402
 
 #: Findings the publication audit raises only because the generated controls
 #: have not been regenerated yet.  The ledger is maintained outside the
@@ -55,15 +63,137 @@ MAINTAINER_SIDE_CODES = (
 
 STRICT_C_FLAGS = (
     "-fsyntax-only", "-std=c11", "-Wall", "-Wextra", "-Werror",
-    "-Isrc/rt", "-Isrc/core",
+    # Every include directory below is one the Makefile puts on the compile line
+    # of the sources that need it: CFLAGS (`src/rt`, `src/core`), PLAYER_INCLUDES
+    # (`src/player`, `src/player/ui`, `src/ui`, `third_party/clay`,
+    # `src/core/generated`), RT_NK_UI_FLAGS (`src/rt/overlay`), the Ed25519
+    # selftest (`third_party/monocypher`) and HLE_INCLUDES (the ATRAC3+ subset).
     # A `tests/native/*.c` unit lives outside `src/`, so a bare include of a
-    # player header (`player_state.h`, `input_settings.h`, `ui_clip.h`, ...)
-    # resolves only with `src/player` on the include path.  Player sources are
-    # unaffected: they are their own directory, so the same include is found
-    # relative to the including file.
-    "-Isrc/player",
+    # player or UI header resolves only with that directory on the path.
+    "-Isrc/rt", "-Isrc/core",
+    "-Isrc/player", "-Isrc/player/ui", "-Isrc/ui", "-Isrc/rt/overlay",
+    "-Isrc/core/generated", "-Ithird_party/clay", "-Ithird_party/monocypher",
     "-Isrc/rt/atrac3p", "-Isrc/rt/atrac3p/libavcodec", "-Isrc/rt/atrac3p/libavutil",
 )
+
+
+@dataclass(frozen=True)
+class GeneratedHeader:
+    """A header a source includes that only a build step writes.
+
+    *directory* is where the Makefile writes it, spelled with ``{build_root}``
+    and ``{build_dir}`` (the Makefile's ``BUILD_ROOT`` and ``BUILD_DIR``
+    defaults, overridable from the environment the way make reads them).
+    *include* is the ``-I`` spelling on the recipe that compiles the source, and
+    *producer* is what a contributor runs to create the header.
+    """
+
+    name: str
+    directory: str
+    include: str
+    producer: str
+
+
+@dataclass(frozen=True)
+class StrictUnit:
+    """The extra flags the Makefile compiles one source with.
+
+    *recipes* name the Makefile rules (their target text) whose compile line
+    these flags come from; ``tools/test_contrib_check.py`` reads those recipes
+    and fails if a define, include or warning listed here is not on them, so
+    this table cannot drift from the build.
+    """
+
+    recipes: tuple[str, ...]
+    defines: tuple[str, ...] = ()
+    includes: tuple[str, ...] = ()
+    #: ``-Wno-*`` suppressions the Makefile owns, with their reason, for this
+    #: source's warning-audited build.  Only the ones this source needs.
+    warnings: tuple[str, ...] = ()
+    generated: tuple[GeneratedHeader, ...] = ()
+
+
+#: Sources the Makefile compiles with more than the common flags.  A selftest
+#: defines the hooks it is built against (`SR_HLE_THREAD_SELFTEST`, ...), and a
+#: header it includes is declared only under that define, so compiling it bare
+#: reports implicit declarations that the real build never sees.
+STRICT_C_UNITS: dict[str, StrictUnit] = {
+    "src/rt/hle_thread_selftest.c": StrictUnit(
+        recipes=("hle-thread-selftest-build", "$(PSP_ORACLE_SMOKE_EXE)"),
+        defines=("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST"),
+        # The Makefile's audited suppression list for this source: the
+        # intr_conformance.h IcProbe rows omit the trailing `skip` field on purpose.
+        warnings=("-Wno-missing-field-initializers",),
+    ),
+    "src/rt/sched_selftest.c": StrictUnit(
+        recipes=("sched-selftest-one",),
+        defines=("SR_SCHED_LIVENESS_TEST",),
+    ),
+    "src/rt/gpu_coherence_selftest.c": StrictUnit(
+        recipes=("$(GPU_COHERENCE_BIN)",),
+        defines=("SR_GPU_COHERENCE_SELFTEST",),
+    ),
+    "src/rt/atrac3p_bridge_selftest.c": StrictUnit(
+        recipes=("atrac3p-bridge-selftest",),
+        includes=("tests/native",),
+    ),
+    "src/rt/vfpu_oracle_host.c": StrictUnit(
+        recipes=("$(PSP_VFPU_ORACLE_EXE)",),
+        includes=("fixtures/vfpu_oracle",),
+    ),
+    "src/rt/title_config.c": StrictUnit(
+        recipes=("$(BUILD_DIR)/title_config.o",),
+        generated=(GeneratedHeader(
+            "sr_title_config.h", "{build_dir}", "-I$(TITLE_CONFIG_DIR)",
+            "make {build_dir}/sr_title_config.h",
+        ),),
+    ),
+    "src/rt/vfpu_interp_selftest.c": StrictUnit(
+        recipes=("vfpu-interp-selftest",),
+        defines=("SR_FLIGHT_RECORDER_STANDALONE",),
+        generated=(GeneratedHeader(
+            "vfpu_overlap_diff_cases.h", "{build_dir}", "-I$(BUILD_DIR)",
+            "make vfpu-interp-selftest",
+        ),),
+    ),
+    "src/rt/vfpu_fuzz.c": StrictUnit(
+        recipes=("$(BUILD_DIR)/vfpu_fuzz.o",),
+        defines=("SR_SDL3VK",),
+        generated=(GeneratedHeader(
+            "vfpu_fuzz_cases.h", "{build_dir}", "-I$(BUILD_DIR)", "make vfpu_fuzz",
+        ),),
+    ),
+    "fixtures/cosim/cosim_selftest.c": StrictUnit(
+        recipes=("cosim-selftest-run",),
+        defines=("SR_INSTRUCTION_TRACE",),
+        # cosim-selftest generates the fixture into $(BUILD_ROOT)/cosim and runs
+        # cosim-selftest-run with BUILD_DIR=$(COSIM_DIR) and GAME_NAME=cosim.
+        generated=(
+            GeneratedHeader(
+                "cosim_recomp_funcs.h", "{build_root}/cosim", "-I$(BUILD_DIR)",
+                "make cosim-selftest",
+            ),
+            GeneratedHeader(
+                "cosim_cells.h", "{build_root}/cosim/fixture", "-I$(COSIM_FIXTURE)",
+                "make cosim-selftest",
+            ),
+            GeneratedHeader(
+                "cosim_fpu_corpus.h", "{build_root}/cosim/fixture", "-I$(COSIM_FIXTURE)",
+                "make cosim-selftest",
+            ),
+        ),
+    ),
+}
+
+#: A missing header from an SDK the build discovers rather than vendors.  The
+#: compile cannot run without it, so the file is SKIP (never PASS, never FAIL).
+_MISSING_HEADER = re.compile(r"fatal error: ([^:\s]+): No such file or directory")
+_SDK_HEADER_PREFIXES = {
+    "vulkan/": "the Vulkan SDK",
+    "vk_video/": "the Vulkan SDK",
+    "SDL3/": "the SDL3 development headers",
+    "SDL3_ttf/": "the SDL3_ttf development headers",
+}
 
 #: A shared tool is exercised by more than the module named after it.  These
 #: extra modules are the ones whose failures the hosted Python gate attributes
@@ -234,20 +364,114 @@ def markdown_gate(paths: list[str]) -> Gate:
     )
 
 
+def build_locations() -> dict[str, str]:
+    """The Makefile's ``BUILD_ROOT`` and ``BUILD_DIR``, as make resolves them.
+
+    ``BUILD_ROOT ?= build``, ``GAME_NAME ?= mygame`` and
+    ``BUILD_DIR ?= $(BUILD_ROOT)/$(GAME_NAME)``; make takes each from the
+    environment when it is set there, and so does this.
+    """
+    build_root = os.environ.get("BUILD_ROOT") or "build"
+    game_name = os.environ.get("GAME_NAME") or "mygame"
+    build_dir = os.environ.get("BUILD_DIR") or f"{build_root}/{game_name}"
+    return {"build_root": build_root, "build_dir": build_dir}
+
+
+def vulkan_include_flags() -> tuple[list[str], str]:
+    """The Makefile's ``VULKAN_INC_FLAGS``, from the same SDK discovery.
+
+    Returns the flags and, when no SDK was found, the discovery's own reason.
+    On Linux the default is no SDK at all: the headers are system headers and
+    the compiler finds them without a flag, exactly as the Makefile expects.
+    """
+    try:
+        sdk = discover_vulkan_sdk()
+    except VulkanSdkError as error:
+        return [], str(error)
+    root = sdk.as_posix()
+    if os.name == "nt":
+        return [f"-I{root}/Include", f"-I{root}/include"], ""
+    return [f"-I{root}/include"], ""
+
+
+def strict_compile_command(compiler: str, source: str, vulkan_flags: list[str]) -> tuple[list[str] | None, str]:
+    """The strict compile line for *source*, or ``None`` and why it cannot run.
+
+    It cannot run when the source includes a header that only a build step
+    writes and that step has not run here.
+    """
+    unit = STRICT_C_UNITS.get(source)
+    extra: list[str] = []
+    if unit is not None:
+        extra.extend(f"-D{define}" for define in unit.defines)
+        extra.extend(f"-I{include}" for include in unit.includes)
+        extra.extend(unit.warnings)
+        locations = build_locations()
+        for header in unit.generated:
+            directory = header.directory.format(**locations)
+            if not (ROOT / directory / header.name).is_file():
+                producer = header.producer.format(**locations)
+                return None, (
+                    f"needs the generated header {directory}/{header.name}, which only "
+                    f"`{producer}` writes"
+                )
+            flag = f"-I{directory}"
+            if flag not in extra:
+                extra.append(flag)
+    return [compiler, *STRICT_C_FLAGS, *vulkan_flags, *extra, source], ""
+
+
+def _missing_sdk(output: str) -> str | None:
+    """The SDK a failed compile could not find, if that is why it failed."""
+    match = _MISSING_HEADER.search(output)
+    if not match:
+        return None
+    header = match.group(1)
+    for prefix, sdk in _SDK_HEADER_PREFIXES.items():
+        if header.startswith(prefix):
+            return f"{sdk} ({header}) is not installed"
+    return None
+
+
 def c_gate(paths: list[str]) -> Gate:
-    sources = [p for p in paths if PurePosixPath(p).suffix.lower() == ".c"]
+    sources = [
+        p for p in paths
+        if PurePosixPath(p).suffix.lower() == ".c" and (ROOT / p).is_file()
+    ]
     if not sources:
         return Gate("strict-c-compile", NOT_RUN, "no changed C source")
     compiler = os.environ.get("CC") or find_tool("gcc") or find_tool("cc")
     if compiler is None:
         return Gate("strict-c-compile", SKIP, "no C compiler on PATH (set CC)")
-    failures = []
+    vulkan_flags, vulkan_missing = vulkan_include_flags()
+    results: list[tuple[str, str, str]] = []
     for source in sources:
-        gate = _run(f"cc {source}", [compiler, *STRICT_C_FLAGS, source], timeout=600)
-        if gate.status != PASS:
-            failures.append(f"{source}: {gate.detail}")
-    if failures:
-        return Gate("strict-c-compile", FAIL, " || ".join(failures))
+        command, reason = strict_compile_command(compiler, source, vulkan_flags)
+        if command is None:
+            results.append((NOT_RUN, source, reason))
+            continue
+        gate = _run(f"cc {source}", command, timeout=600)
+        if gate.status == FAIL:
+            sdk = _missing_sdk(gate.detail)
+            if sdk is not None:
+                # A missing SDK header is the environment, not the change: the
+                # file was not compiled, so it is a skip and never a pass.
+                why = f"{sdk}; {vulkan_missing}" if vulkan_missing and "Vulkan" in sdk else sdk
+                results.append((SKIP, source, why))
+                continue
+        results.append((gate.status, source, gate.detail))
+    passed = sum(1 for status, _source, _detail in results if status == PASS)
+    for status in (FAIL, SKIP, NOT_RUN):
+        named = [f"{source}: {detail}" for found, source, detail in results if found == status]
+        if not named:
+            continue
+        others = [
+            f"{found} {source}: {detail}"
+            for found, source, detail in results if found not in (PASS, status)
+        ]
+        summary = " || ".join(named + others)
+        return Gate("strict-c-compile", status, f"{summary} || {passed} other file(s) passed"
+                    if passed else summary)
     return Gate("strict-c-compile", PASS, f"{len(sources)} file(s)")
 
 
