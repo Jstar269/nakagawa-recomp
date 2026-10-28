@@ -869,6 +869,40 @@
       "comment": "Presentation media of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp, approved by the maintainer for v0.0.1. The game belongs to its publisher; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
     },
     {
+      "id": "site-launcher-library",
+      "name": "Website screenshot: the launcher's library",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/launcher-library.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "0e40d1d521ca853bb711cf8fc369f6aba0f7666576d4665ef4f2a3b7898596ac"
+      },
+      "comment": "Presentation screenshot of the Nakagawa player from the v0.0.1 release build, approved by the maintainer on 2026-10-27. Game art and names shown belong to their publishers; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
+      "id": "site-launcher-building",
+      "name": "Website screenshot: the launcher building a game",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/launcher-building.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "1f1706c9a8aa1c11e7a3b44f3c9eb9cc8edbad059233f51fc7e6e6eea91c40db"
+      },
+      "comment": "Presentation screenshot of the Nakagawa player from the v0.0.1 release build, approved by the maintainer on 2026-10-27. Game art and names shown belong to their publishers; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
       "id": "fixture-fonts-gowundodum-regular",
       "name": "Pinned permissively redistributable Korean font source: GowunDodum-Regular.ttf",
       "source_path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",

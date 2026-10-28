@@ -14,19 +14,17 @@ on:
       - main
     paths:
       - docs/index.html
-      - docs/images/brand/**
-      - docs/images/showcase-*
-      - docs/media/hst-title-screen.png
-      - docs/media/hst-rally*
+      - docs/images/brand/og-card.png
+      - docs/media/launcher-*
+      - docs/media/hst-rally.mp4
       - tools/test_site_mobile.py
       - .github/workflows/pages.yml
   pull_request:
     paths:
       - docs/index.html
-      - docs/images/brand/**
-      - docs/images/showcase-*
-      - docs/media/hst-title-screen.png
-      - docs/media/hst-rally*
+      - docs/images/brand/og-card.png
+      - docs/media/launcher-*
+      - docs/media/hst-rally.mp4
       - tools/test_site_mobile.py
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -64,12 +62,8 @@ jobs:
           rm -rf _site
           mkdir -p _site/images/brand _site/media
           cp docs/index.html _site/index.html
-          cp docs/images/brand/nakagawa-mark-light.svg docs/images/brand/nakagawa-mark-dark.svg docs/images/brand/og-card.png \
-            _site/images/brand/
-          cp docs/images/showcase-ge-scene.gif docs/images/showcase-ge-scene-v240.png _site/images/
-          cp docs/images/showcase-breakout.gif docs/images/showcase-breakout-v180.png _site/images/
-          cp docs/media/hst-title-screen.png docs/media/hst-title-screen-960.png _site/media/
-          cp docs/media/hst-rally.mp4 docs/media/hst-rally-poster.png _site/media/
+          cp docs/images/brand/og-card.png _site/images/brand/
+          cp docs/media/launcher-library.png docs/media/launcher-building.png docs/media/hst-rally.mp4 _site/media/
 
       - name: Check that every local reference resolves
         # Fail on a src, srcset or href that names a local file the step above did not copy.

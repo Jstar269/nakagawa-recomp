@@ -78,13 +78,10 @@ retail inputs, or hardware.
 <https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
 repository's Pages source is "GitHub Actions". The page is one static file with inline CSS and
 two small inline scripts (the theme picker, remembered in the visitor's own browser, and the phone
-menu), and no web fonts, external scripts or third-party requests. Its images are files the
-repository already publishes:
-the brand marks, the showcase demo captures, the presentation screenshot
-`docs/media/hst-title-screen.png` and its 960 px copy with their notice, and the share card
-`docs/images/brand/og-card.png` that link previews show. The artifact also carries the presentation clip
-`docs/media/hst-rally.mp4` and its poster for the README's link; the page itself shows no game imagery. The
-build job copies an explicit list of
+menu), and no web fonts, external scripts or third-party requests. It shows two launcher screenshots,
+`docs/media/launcher-library.png` and `docs/media/launcher-building.png`, with their notice, and link
+previews show the share card `docs/images/brand/og-card.png`. The artifact also carries the presentation
+clip `docs/media/hst-rally.mp4` for the README's link. The build job copies an explicit list of
 files into the artifact, so nothing else in the tree is published, and fails when the page
 names a local file the list does not copy. Before it uploads the artifact, it runs
 `tools/test_site_mobile.py` on the assembled site: headless Chromium (Playwright, hash-pinned)

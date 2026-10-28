@@ -245,6 +245,15 @@ their owners and are not licensed under this repository's GPL-3.0-or-later decla
 only to identify the game. The repository contains no game data files, and users need their own copy of the
 game. Both files are listed with the SHA-256 of their exact bytes in assets/release_manifest.json.
 
+## Launcher screenshots
+
+The PNG files docs/media/launcher-library.png and docs/media/launcher-building.png are presentation
+screenshots of the Nakagawa player from the v0.0.1 release build. The library shows the disc art of Hot Shots
+Tennis: Get a Grip and LocoRoco, and the build screen names Hot Shots Tennis; those games, their art and
+names belong to their publishers and are shown only to identify them. The repository contains no game data
+files, and users need their own copy of a game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
 ## Presentation screenshots of Hot Shots Tennis
 
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
