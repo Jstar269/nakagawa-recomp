@@ -6631,7 +6631,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2b2ed39efde38c8574902e74ed2b332c7868ad94812895c01c3394e9b461dff8"
+      "sha256": "b53b51dd69dc2410b7afbb2755f25d98a20a5840c5ff7b2cec7f923886570b59"
     },
     {
       "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_loopfilter.c",

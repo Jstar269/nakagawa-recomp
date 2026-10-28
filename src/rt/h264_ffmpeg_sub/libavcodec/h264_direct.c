@@ -99,9 +99,6 @@ static void fill_colmap(const H264Context *h, H264SliceContext *sl,
 
             if (!interl)
                 poc |= 3;
-            // FIXME: store all MBAFF references so this is not needed
-            else if (interl && (poc & 3) == 3)
-                poc = (poc & ~3) + rfield + 1;
 
             for (j = start; j < end; j++) {
                 if (4 * sl->ref_list[0][j].parent->frame_num +
@@ -131,6 +128,15 @@ void ff_h264_direct_ref_list_init(const H264Context *const h, H264SliceContext *
         for (j = 0; j < sl->ref_count[list]; j++)
             cur->ref_poc[sidx][list][j] = 4 * sl->ref_list[list][j].parent->frame_num +
                                           (sl->ref_list[list][j].reference & 3);
+        if (FRAME_MBAFF(h)) {
+            for (j = 0; j < sl->ref_count[list]; j++) {
+                cur->ref_poc[sidx][list][16 + 2 * j]     = 4 * sl->ref_list[list][16 + 2 * j].parent->frame_num +
+                                                            (sl->ref_list[list][16 + 2 * j].reference & 3);
+                cur->ref_poc[sidx][list][16 + 2 * j + 1] = 4 * sl->ref_list[list][16 + 2 * j + 1].parent->frame_num +
+                                                            (sl->ref_list[list][16 + 2 * j + 1].reference & 3);
+            }
+            cur->ref_count[sidx][list] = 16 + 2 * sl->ref_count[list];
+        }
     }
 
     if (h->picture_structure == PICT_FRAME) {
