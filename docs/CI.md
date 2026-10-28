@@ -76,14 +76,25 @@ retail inputs, or hardware.
 
 `.github/workflows/pages.yml` publishes the project website,
 <https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
-repository's Pages source is "GitHub Actions". The page is one static file with no scripts,
-web fonts or third-party requests. Its images are files the repository already publishes:
+repository's Pages source is "GitHub Actions". The page is one static file with inline CSS and
+two small inline scripts (the theme picker, remembered in the visitor's own browser, and the phone
+menu), and no web fonts, external scripts or third-party requests. Its images are files the
+repository already publishes:
 the brand marks, the showcase demo captures, the presentation screenshot
 `docs/media/hst-title-screen.png` and its 960 px copy with their notice, and the share card
-`docs/images/brand/og-card.png` that link previews show. The build job copies an explicit list of
+`docs/images/brand/og-card.png` that link previews show. The artifact also carries the presentation clip
+`docs/media/hst-rally.mp4` and its poster for the README's link; the page itself shows no game imagery. The
+build job copies an explicit list of
 files into the artifact, so nothing else in the tree is published, and fails when the page
-names a local file the list does not copy. A pull request that touches those paths runs the
-build job only; a push to `main`, or a manual run on `main`, also deploys through
+names a local file the list does not copy. Before it uploads the artifact, it runs
+`tools/test_site_mobile.py` on the assembled site: headless Chromium (Playwright, hash-pinned)
+renders the page at 360x780, 390x844, 430x932 and 1280x800 in Auto with a light system, Auto with
+a dark system, picked Light and picked Dark, and fails on sideways overflow, a section whose
+background does not match the active theme, text below WCAG AA contrast, a phone tap target
+under 44 px, a theme picker that does not switch the whole page, or a missing image or link
+target. Locally the browser half reports SKIP when Playwright or its Chromium is missing; the
+workflow sets `NK_SITE_TEST_REQUIRED=1` so it cannot skip there. A pull request that touches
+those paths, or the test, runs the build job only; a push to `main`, or a manual run on `main`, also deploys through
 `actions/deploy-pages`. Only the deploy job holds `pages: write` and `id-token: write`, and
 the `github-pages` environment accepts deployments from `main` alone. To preview the site,
 open `docs/index.html` from a checkout: its relative image paths resolve the same way. Keep
