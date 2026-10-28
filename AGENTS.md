@@ -400,8 +400,9 @@ handler, run one native self-test, capture frames unattended):
 
 - When the task includes a pull request, push early: open a Draft PR after the first valid commit.
   Group related work: one PR may carry several related fixes in the same area or a whole feature
-  slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
-  uncertainty, private/hardware status, and blockers.
+  slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs,
+  scope, new-path provenance, failing-before evidence, tests, uncertainty, private/hardware status,
+  and blockers.
 - Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
   unless Section 2's autonomous-integration conditions hold; local success never means a
   Draft is hosted-CI green. A contributor's agent leaves Ready to its person. A substantive
