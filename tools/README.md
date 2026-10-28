@@ -176,6 +176,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
+| `verification_ledger.py` | Generate `docs/HLE_COVERAGE.md` and `src/rt/hle_evidence.h`: the evidence class of every registered HLE NID and every executed VFPU form. |
 | `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
 | `regen_all.py` | Run every committed-output generator in a fixed order, provenance refresh last; `--check` fails on any stale file and prints the one fix command (docs/CI.md). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
@@ -498,6 +499,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_telemetry_export_security.py` | Telemetry export must not leak private diagnostic data. |
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
+| `test_verification_ledger.py` | Verification ledger: committed outputs current, the five classes, curated tables validated both ways, runtime log-once wiring. |
 | `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
 | `test_regen_all.py` | Tests for the all-generator refresh: step inventory, committed outputs current, the downgrade refusal and `--check` failure. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |

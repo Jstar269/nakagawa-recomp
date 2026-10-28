@@ -59,6 +59,7 @@
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
@@ -174,6 +175,8 @@ typedef struct {
     uint32_t unsupported_error;
     atomic_uint unimplemented_error;
     atomic_uint unsupported_state;
+    unsigned char unverified;      /* 1 when docs/HLE_COVERAGE.md classes the NID unverified */
+    atomic_uint unverified_noted;  /* set by the first call's log line */
 } HleEntry;
 typedef struct HleDevctlRefusal {
     struct HleDevctlRefusal *next;
@@ -237,6 +240,25 @@ static void hle_note_unsupported(HleEntry *e) {
     hle_register_unsupported_summary();
     fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)\n",
             e->name, e->nid, e->unsupported_error);
+}
+
+/* One stderr line the first time a NID with no recorded evidence runs its handler. Diagnostic
+ * only: it changes no result or state. The class comes from the generated hle_evidence.h. */
+static int hle_nid_unverified(uint32_t nid) {
+    size_t lo = 0u, hi = SR_HLE_UNVERIFIED_NID_COUNT;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        if (sr_hle_unverified_nids[mid] < nid) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < SR_HLE_UNVERIFIED_NID_COUNT && sr_hle_unverified_nids[lo] == nid;
+}
+
+static void hle_note_unverified(HleEntry *e) {
+    if (!e->unverified || atomic_exchange_explicit(&e->unverified_noted, 1u, memory_order_acq_rel))
+        return;
+    fprintf(stderr, "HLE: unverified: %s (NID 0x%08x) has no recorded evidence (docs/HLE_COVERAGE.md)\n",
+            e->name, e->nid);
 }
 
 static void hle_note_success_exception(HleEntry *e) {
@@ -428,6 +450,8 @@ static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
         atomic_store_explicit(&e->unimplemented_error, unsupported_error,
                               memory_order_release);
         atomic_store_explicit(&e->unsupported_state, 0u, memory_order_release);
+        e->unverified = (unsigned char)hle_nid_unverified(nid);
+        atomic_store_explicit(&e->unverified_noted, 0u, memory_order_release);
     }
     hle_unlock();
 }
@@ -28223,6 +28247,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         hle_note_unsupported(e);
         ret = e->unsupported_error;
     } else {
+        hle_note_unverified(e);
         ret = e->fn(s);
         hle_note_success_exception(e);
     }
