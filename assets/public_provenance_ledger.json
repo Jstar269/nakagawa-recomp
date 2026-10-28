@@ -4022,7 +4022,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57dc65ae50a85b870c8e47f798a227c40e9327fb2331893f6137e042ad0a8f20"
+      "sha256": "e6b207d08d182919bc3c3fb29874032dc0704836d48133d26f7f3bdec9eda353"
     },
     {
       "path": "src/player/player_state.c",
@@ -4070,7 +4070,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c65aafce912f49185f76e678a5cd59fb5bc7ab8f7c0ad9c7961a42120dadf15"
+      "sha256": "69c21d2ad9869fc24acc9b1784bb7853894f776f9bf6bd8f6c23fc15b37aab18"
     },
     {
       "path": "src/player/ui/player_ui_art.c",
@@ -4154,7 +4154,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7fc55b3e1eefb270a8dfad6ffda6b1bf8c6936f677a29c031110633716f5864"
+      "sha256": "11718d7b18deea9b5840d9cff3df7f597cf3d113d8ea7d8cc2ae8b94c956445f"
     },
     {
       "path": "src/player/ui/scr_title.c",
@@ -4190,7 +4190,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5765f57541cf56ef5bca84e7aac04e76928e25f8e1080c06accd604a7fcd54d8"
+      "sha256": "ad9e720b9547d53c9451e2b597975d4937a241b36eb2fc99a1f9931aeadafa6c"
     },
     {
       "path": "src/player/ui_renderer.c",
@@ -4214,7 +4214,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3012bceace7184e466dc345fa9cc7ca8f70034ba5bdf90530d4718249949a57"
+      "sha256": "e415b5b703a99cfadfad8516d2030b57a827392343b1cddc66a51640738bddff"
     },
     {
       "path": "src/ref/cpu.h",

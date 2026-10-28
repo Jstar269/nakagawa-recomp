@@ -18,7 +18,8 @@ typedef struct {
     bool activate_pressed;
 } UiInput;
 
-/* Main render entry point */
+/* Draws one frame of the current view; `input` is this frame's pointer and
+ * activation state. */
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input);
 
 /* How many keyboard/gamepad focus stops the current view offers. The event
@@ -42,6 +43,7 @@ bool ui_renderer_art_pending(void);
  * card retries instead of staying pending for the rest of the session. Call
  * once per UI iteration. */
 void ui_renderer_recover_lost_art_handoffs(void);
+/* Test seams, built only into the UI regression harness. */
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 unsigned ui_renderer_test_art_attempt_count(void);
 bool ui_renderer_test_art_delay_active(void);
@@ -78,7 +80,7 @@ const char *ui_font_mode(void);
  * engages, so the bitmap font is never a silent outcome. */
 const char *ui_font_fallback_reason(void);
 
-/* Helper to capture current render target to BMP file */
+/* Writes the current render target to a BMP file. */
 bool ui_capture_screenshot(SDL_Renderer *renderer, const char *output_bmp_path);
 
 /* Where the last rendered frame drew the selected game's status badge, so
