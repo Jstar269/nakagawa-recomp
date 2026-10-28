@@ -494,6 +494,13 @@ Until then, adding `{"context": "Trusted provenance attestation",
 "integration_id": 15368}` to the ruleset would create the *appearance* of
 enforcement without the property. Do not do it.
 
+The trusted CI verdict ([`docs/CI.md`](CI.md#trusted-ci-verdict), #373) is the route
+chosen for #364. It does not make this context required. It requires a
+`Trusted provenance attestation` job, once, green, from a `pull_request_target` run of
+`provenance-attestation.yml` at the exact head, and refuses the context from any other
+workflow, event or app (`FOREIGN_PRODUCER`). The owner's ruleset step then requires
+`Trusted CI verdict` and `CodeQL` only.
+
 When the day comes, the ruleset already carries a `pull_request` rule,
 `required_linear_history`, and an empty `bypass_actors` list; its
 `strict_required_status_checks_policy` is already `true` (live value read from
@@ -569,6 +576,25 @@ secrets and cannot run code in the job that holds them.
 **This design is specified, not built.** Nothing in this branch creates an App,
 mints a token, or posts a check run.
 
+### The trusted CI verdict: identity without an App (#373)
+
+`Trusted CI verdict` narrows the spoof without an App. It is a commit **status**, posted
+by the default-branch workflow with its own token, and it judges the other contexts by
+their producer, not their name:
+
+* a candidate job named like an intended context is refused unless it belongs to a run
+  of the intended workflow path and event at the exact head (`FOREIGN_PRODUCER`), and any
+  workflow or CI tool change needs a maintainer label bound to that head;
+* a candidate job named `Trusted CI verdict` is a check run, not a status. GitHub requires
+  both when a check run and a status share a required name, so it cannot replace the
+  verdict, and the verifier also fails on it (`CI_CONTEXT_COLLISION`). The live canary in
+  `docs/CI.md` confirms that rule;
+* a fork pull request's workflows get a read-only token and cannot post a status at all.
+
+What remains is a workflow on a same-repository branch, which only a user with write access
+can push, posting its own status under the name. The App above, pinned by `integration_id`
+for `Trusted CI verdict`, would close that too.
+
 ### What may safely merge now, and what must not be claimed
 
 | | Status |
@@ -576,6 +602,7 @@ mints a token, or posts a check run.
 | The verifier, its tests, the trusted workflow, this documentation | complete and safe to merge; they add a real control and remove none |
 | The gate as a **signal** — it runs on every pull request, fails closed, and puts findings in the PR | complete once the secret exists |
 | The gate as **tamper-proof merge enforcement** against a hostile author who can add workflow files | **NOT complete.** Requires the `workflows` rule or the GitHub App above |
+| The gate as an input to `Trusted CI verdict` | built (#373); enforcing once the owner requires `Trusted CI verdict` in the ruleset. Against fork authors that is enforcement; against same-repository writers it still needs the App |
 
 Do not describe the required status check alone as enforcement. Until identity
 binding exists, it is a strong control against error and against an author who

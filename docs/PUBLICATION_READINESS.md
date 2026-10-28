@@ -77,6 +77,12 @@ or a human legal decision.
    work product or stale topology claims. Live repository visibility, rulesets,
    Actions behavior, DCO, and maintainer authorization are verified separately
    against the actual destination repository.
+8. **Trusted merge verdict.** A required hosted check counts only when the trusted gate
+   produced it. `Trusted CI verdict` ([`docs/CI.md`](CI.md#trusted-ci-verdict)) judges
+   `CI required`, `Hygiene and security`, `OSV Vulnerability Scan`, `dependency-review`
+   and the provenance attestation by producer at the exact head, and refuses an
+   unapproved change to a workflow or CI tool. It becomes merge-enforcing when the owner
+   makes it, with `CodeQL`, the ruleset's required checks.
 
 ## Refreshing after an ordinary change
 
