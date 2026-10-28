@@ -7710,6 +7710,86 @@ int main(int argc, char **argv) {
         assert(warning_card_has_details);
         assert(stall_log_kept);
 
+        /* #308: a live synthetic runtime keeps flipping frames that show nothing.
+           The dark-picture event raises the same notice at 30 seconds, worded for
+           a black screen; a flip-watchdog resume does not clear it, a visible
+           picture does; and Stop game reaches the no-picture card. */
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "1");
+        bool dark_launched = player_app_launch_game(rep, 0);
+        bool dark_events_ok = dark_launched && rep->is_game_running &&
+                              rep->boot_event_file_path[0] != '\0';
+        bool dark_no_early_notice = false;
+        bool dark_notice = false;
+        bool dark_kept_on_flip_resume = false;
+        bool dark_cleared_on_picture = false;
+        bool dark_returned = false;
+        bool dark_stopped = false;
+        char dark_events_path[NK_MAX_PATH] = "";
+        if (dark_events_ok) {
+            snprintf(dark_events_path, sizeof(dark_events_path), "%s",
+                     rep->boot_event_file_path);
+            dark_events_ok = append_runtime_event(
+                dark_events_path,
+                "BOOT_EVENT phase=stalled observation=dark_picture "
+                "dark_vblanks=1200 seconds=20 ready=2 delay=1 wait=4 spin=0\n");
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 80000);
+                dark_no_early_notice = !rep->stalled_game_notice_visible;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=stalled observation=dark_picture "
+                    "dark_vblanks=1800 seconds=30 ready=2 delay=1 wait=4 spin=0\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81000);
+                dark_notice = rep->stalled_game_notice_visible &&
+                    rep->stalled_game_dark_picture &&
+                    rep->stalled_game_no_frame_vblanks == 1800u &&
+                    rep->stalled_game_seconds == 30u && rep->stalled_game_wait == 4u;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=resumed observation=frame_present\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81050);
+                dark_kept_on_flip_resume = rep->stalled_game_notice_visible &&
+                    rep->stalled_game_dark_picture;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=resumed observation=picture brightest=200\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81100);
+                dark_cleared_on_picture = !rep->stalled_game_notice_visible &&
+                    !rep->stalled_game_dark_picture;
+                rep->stalled_game_restore_game_front_requested = false;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=stalled observation=dark_picture "
+                    "dark_vblanks=2400 seconds=40 ready=2 delay=1 wait=4 spin=0\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 122000);
+                dark_returned = rep->stalled_game_notice_visible &&
+                                rep->stalled_game_dark_picture;
+                player_app_stop_stalled_game(rep);
+                dark_stopped = !rep->is_game_running &&
+                    strcmp(rep->last_error.error_code, "RUNTIME_NO_PICTURE") == 0 &&
+                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strstr(rep->last_error.message, "black screen") != NULL &&
+                    strstr(rep->last_error.details, "dark_vblanks=2400") != NULL;
+            }
+        }
+        if (rep->is_game_running) player_app_stop_game(rep);
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "");
+        assert(dark_events_ok);
+        assert(dark_no_early_notice);
+        assert(dark_notice);
+        assert(dark_kept_on_flip_resume);
+        assert(dark_cleared_on_picture);
+        assert(dark_returned);
+        assert(dark_stopped);
+
         /* (d) No repository-tracked file changed across the runs. */
         if (git_available) {
             bool after_ok = git_status_snapshot(git_after);

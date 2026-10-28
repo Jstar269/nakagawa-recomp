@@ -1485,6 +1485,12 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
 1. Set `SR_DEBUG=0x0D` (MEM + SCHED + GE) to trace boot sequence
 2. Check for HLE calls that halt: look for `HLE:` lines followed by process exit
 3. Verify thread scheduling: look for `SCHED:` lines showing thread creation
+4. If the game keeps flipping frames that show nothing, look for `BOOT_EVENT phase=stalled
+   observation=dark_picture` lines. Every 300 vblanks a presented frame is probed; it counts as dark when
+   no colour byte is above 8, the lowest non-zero step of a 5-bit PSP channel (`src/rt/fbcap.h`). The line
+   repeats every 600 vblanks of a dark stretch with the scheduler summary, and
+   `BOOT_EVENT phase=resumed observation=picture` ends the stretch. After 30 seconds the native player shows
+   its black-screen notice. Like the no-frame watchdog, this is an observation, not a hang verdict.
 
 ### Crash on startup
 

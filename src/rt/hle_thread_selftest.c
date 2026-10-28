@@ -55,6 +55,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 #include "flight_recorder.h"
+#include "fbcap.h"            /* capture API this harness stubs (stub presenter) */
 #include "iso.h"
 #include "title_config.h"
 #include "nid_names.h"
@@ -614,6 +615,19 @@ int sr_capture_arm(const char *path) {
 /* The stub presenter never services an arm, so the present path must resolve it. */
 void sr_capture_cancel(void) { s_cap_pending = 0; }
 int sr_capture_result(void) { return 0; }
+/* Dark-picture probes (fbcap.h): the stub presenter services nothing, so a probe is
+ * never armed and no probe result or dark stretch ever exists in this harness. */
+int sr_capture_is_armed(void) { return s_cap_pending; }
+int sr_capture_arm_probe(void) { return 0; }
+int sr_capture_probe_take(uint32_t *brightest) { (void)brightest; return 0; }
+int sr_picture_watch_probe(SrPictureWatch *w, uint32_t vcount, uint32_t brightest) {
+    (void)w; (void)vcount; (void)brightest;
+    return SR_PICTURE_WATCH_NONE;
+}
+int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vblanks) {
+    (void)w; (void)vcount; (void)dark_vblanks;
+    return SR_PICTURE_WATCH_NONE;
+}
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sr_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }

@@ -291,9 +291,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             if (model->stalled_game_notice_visible &&
                 nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_2)) {
-                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW, "No new frames");
+                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW,
+                              model->stalled_game_dark_picture ? "Black screen" : "No new frames");
                 nk_ui_text_role(ui, TITLE_ID_STALL_TEXT,
-                                "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
+                                model->stalled_game_dark_picture
+                                    ? "The game is running but has shown only a black screen for 30 seconds. It may be stuck."
+                                    : "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
                                 NK_UI_TYPE_BODY_S, theme->paper);
                 row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
                 row.align_y = NK_UI_ALIGN_CENTER;

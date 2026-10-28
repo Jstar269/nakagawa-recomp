@@ -21033,6 +21033,12 @@ static unsigned long s_watchdog_fires = 0;
  * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
 static uint32_t s_watchdog_bucket = 0;
 
+/* Dark-picture watch (fbcap.h): the VBLANK of the latest picture probe, and the open dark
+ * stretch. Probes ride on presents (display_present_active); reports are made per VBLANK
+ * (sr_vblank_tick), beside the no-frame watchdog. */
+static uint32_t s_picture_probe_vcount = 0;
+static SrPictureWatch s_picture_watch;
+
 /* A resumed frame closes one observed no-frame stretch. stderr is redirected
  * to the per-run boot-event log by the native launcher, so the parent player
  * can consume this event while the game is still running. */
@@ -21072,6 +21078,8 @@ void sr_display_test_reset(void) {
     s_display_latched_pending = 0;
     s_display_configured = 0;
     s_framebuf = 0x04000000u;
+    s_picture_probe_vcount = 0;
+    memset(&s_picture_watch, 0, sizeof s_picture_watch);
 }
 
 /* Record a refused sceDisplaySetFrameBuf and return the PSP error unchanged, so
@@ -21343,8 +21351,26 @@ static void display_present_frame(void) {
  * (a skipped output slot, a presenter that declined the frame) resolves here as "nothing
  * attempted", so a later present can never publish this frame's path with newer pixels. */
 static void display_present_active(void) {
+    /* Dark-picture watch (fbcap.h): every SR_PICTURE_PROBE_EVERY VBLANKs, a present no file
+     * capture wanted carries a picture probe. The presenter services it inside this present,
+     * so its result is taken right after. */
+    int probe = 0;
+    if (!sr_capture_is_armed() && gui_on() && s_display_active.addr &&
+        s_vcount - s_picture_probe_vcount >= SR_PICTURE_PROBE_EVERY &&
+        display_host_span_valid(&s_display_active))
+        probe = sr_capture_arm_probe();
     display_present_frame();
     sr_capture_cancel();
+    uint32_t brightest;
+    if (probe && sr_capture_probe_take(&brightest)) {
+        s_picture_probe_vcount = s_vcount;
+        if (sr_picture_watch_probe(&s_picture_watch, s_vcount, brightest) ==
+            SR_PICTURE_WATCH_RESUMED) {
+            fprintf(stderr, "BOOT_EVENT phase=resumed observation=picture brightest=%u\n",
+                    brightest);
+            fflush(stderr);
+        }
+    }
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -22241,6 +22267,23 @@ void sr_vblank_tick(void) {
               sr_perf_shutdown();
               _Exit(1);
           }
+        }
+    }
+    /* Dark-picture watch: flips keep arriving, but every probed frame since the stretch began
+     * was dark. Like the no-frame watchdog, a neutral observation for the player and a
+     * person to classify, not a hang verdict. */
+    {
+        uint32_t dark = 0u;
+        if (sr_picture_watch_tick(&s_picture_watch, s_vcount, &dark) == SR_PICTURE_WATCH_REPORT) {
+            uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+            extern void sched_watchdog_summary(uint32_t *, uint32_t *,
+                                               uint32_t *, uint32_t *);
+            sched_watchdog_summary(&ready, &delay, &wait, &spin);
+            fprintf(stderr,
+                    "BOOT_EVENT phase=stalled observation=dark_picture "
+                    "dark_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u\n",
+                    dark, dark / 60u, ready, delay, wait, spin);
+            fflush(stderr);
         }
     }
     /* Frame capture happens at sceDisplaySetFrameBuf (the instant a finished frame is presented),
