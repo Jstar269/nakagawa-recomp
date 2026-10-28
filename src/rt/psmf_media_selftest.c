@@ -121,6 +121,50 @@ static int guest_rgba_matches(uint32_t addr, uint32_t width, uint32_t height,
     return 1;
 }
 
+/* ---- swizzled VRAM mirror oracle (#1049) ---------------------------------------------------
+ * The physical eDRAM byte a CPU address reaches is sr_vram_cpu_address(); the helpers below read
+ * and compare physical bytes directly, never through the writer under test. */
+#define VRAM_PHYS_BYTES  0x00200000u
+#define VRAM_SENTINEL    0xA5u
+
+static uint8_t *vram_phys_byte(uint32_t guest_addr) {
+    return g_mem + (int32_t)(sr_vram_cpu_address(guest_addr) - SR_RAM_BASE);
+}
+
+static void vram_fill_sentinel(void) {
+    memset(vram_phys_byte(SR_VRAM_CPU_BASE), (int)VRAM_SENTINEL, VRAM_PHYS_BYTES);
+}
+
+static uint32_t vram_changed_bytes(void) {
+    const uint8_t *vram = vram_phys_byte(SR_VRAM_CPU_BASE);
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < VRAM_PHYS_BYTES; i++) if (vram[i] != VRAM_SENTINEL) changed++;
+    return changed;
+}
+
+/* A width x height RGBA8888 picture of one colour starting at guest address `base`, every byte
+ * read from the physical address its guest address translates to. */
+static int vram_rgba_matches(uint32_t base, uint32_t width, uint32_t height,
+                             const uint8_t expected[4]) {
+    for (uint32_t i = 0; i < width * height * 4u; i++)
+        if (*vram_phys_byte(base + i) != expected[i & 3u]) return 0;
+    return 1;
+}
+
+/* Destinations the movie frame writers must accept: the swizzled views, an uncached alias of
+ * one, an unaligned start that makes the first piece short, plus two linear controls. */
+typedef struct { uint32_t base; const char *name; int swizzled; } VramDest;
+static const VramDest k_vram_dests[] = {
+    { SR_VRAM_CPU_BASE + 0x00040000u,       "linear base view",         0 },
+    { SR_VRAM_CPU_BASE + 0x00440000u,       "linear 0x044 view",        0 },
+    { SR_VRAM_CPU_BASE + 0x00240000u,       "0x042 mirror",             1 },
+    { SR_VRAM_CPU_BASE + 0x00240014u,       "0x042 mirror, unaligned",  1 },
+    { SR_VRAM_CPU_BASE + 0x00640000u,       "0x046 mirror",             1 },
+    { SR_VRAM_CPU_BASE + 0x00640014u,       "0x046 mirror, unaligned",  1 },
+    { 0x40000000u + SR_VRAM_CPU_BASE + 0x00641F10u, "0x046 mirror, uncached alias", 1 },
+};
+#define VRAM_DEST_COUNT (sizeof(k_vram_dests) / sizeof(k_vram_dests[0]))
+
 #define FIX_PICTURES 3
 #define ARENA_BYTES (8u * 1024u * 1024u)
 #define GUEST_BUF   (0x08000000u + 0x00400000u)   /* 4 MiB into guest RAM */
@@ -133,7 +177,8 @@ typedef struct {
     uint32_t bytes;
 } MediaVramEvent;
 
-static MediaVramEvent media_vram_events[FIX_PICTURES * 2u];
+#define MEDIA_VRAM_EVENT_CAP 16384u
+static MediaVramEvent media_vram_events[MEDIA_VRAM_EVENT_CAP];
 static unsigned media_vram_event_count;
 
 static void media_vram_record(int kind, uint32_t addr, uint32_t bytes) {
@@ -1149,18 +1194,20 @@ static const SrH264ConformanceBackend conformance_backend = {
     sr_h264_drain
 };
 
-static void test_guest_vram_write_coherence(void) {
+/* One decoder run into `dest` (a 64x64 RGBA8888 picture, three authored pictures): every
+ * picture's bytes must land at the physical addresses the destination translates to, nothing else
+ * may change, and the GE coherence hooks must see a prepare before each commit whose spans, taken
+ * together, are exactly the physical bytes the picture occupies (#1054, #1049). */
+static void guest_vram_write_coherence_case(const VramDest *dest, const uint8_t *es,
+                                            const uint32_t *au_off, const uint32_t *au_len) {
     static const uint8_t expected_rgb[FIX_PICTURES][3] = {
         { 255u, 203u, 138u },
         { 130u, 130u, 130u },
         {  79u, 144u, 195u },
     };
-    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
-    uint8_t es[65536];
-    uint32_t es_len = 0;
-    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
-          "VRAM coherence fixture stream builds");
-    if (!es_len) return;
+    static uint8_t span_map[VRAM_PHYS_BYTES];
+    const uint32_t picture_bytes = 64u * 64u * 4u;
+    const uint32_t row_bytes = 64u * 4u;
 
     GeGpuHooks hooks;
     memset(&hooks, 0, sizeof(hooks));
@@ -1172,6 +1219,7 @@ static void test_guest_vram_write_coherence(void) {
     g_sr_vram_read_pending = 0;
     ge_set_gpu_hooks(&hooks);
     sr_vram_mark_renderer_pending();
+    vram_fill_sentinel();
 
     int decoder = conformance_backend.create();
     if (decoder < 0) {
@@ -1193,7 +1241,7 @@ static void test_guest_vram_write_coherence(void) {
     SrH264FrameInfo info;
     memset(&target, 0, sizeof(target));
     target.kind = SR_H264_TARGET_GUEST;
-    target.guest_buffer = GUEST_VRAM_BUF;
+    target.guest_buffer = dest->base;
     target.frame_width = 64;
     target.pixel_mode = 3;
 
@@ -1201,6 +1249,7 @@ static void test_guest_vram_write_coherence(void) {
     for (int guard = 0; guard < FIX_PICTURES + 4; guard++) {
         int result = conformance_backend.frame_ex(decoder, 1, &target, &info);
         if (result < 0) {
+            fprintf(stderr, "  destination: %s\n", dest->name);
             CHECK(0, "a decoded picture targeting guest VRAM is accepted");
             break;
         }
@@ -1211,26 +1260,81 @@ static void test_guest_vram_write_coherence(void) {
             uint8_t expected[4] = {
                 expected_rgb[frames][0], expected_rgb[frames][1], expected_rgb[frames][2], 0xFFu,
             };
-            CHECK(guest_rgba_matches(GUEST_VRAM_BUF, 64, 64, expected),
-                  "the VRAM-targeted picture writes its exact guest pixels");
+            int match = vram_rgba_matches(dest->base, 64, 64, expected);
+            if (!match) fprintf(stderr, "  destination: %s, picture %d\n", dest->name, frames);
+            CHECK(match, "the VRAM-targeted picture writes its exact guest pixels");
         }
         frames++;
     }
     CHECK(frames == FIX_PICTURES, "the VRAM-targeted stream releases every authored picture");
-    CHECK(media_vram_event_count == (unsigned)frames * 2u,
-          "each VRAM picture has one prepare and one post-write commit event");
-    for (int i = 0; i < frames && (unsigned)(i * 2 + 1) < media_vram_event_count; i++) {
-        const MediaVramEvent *prepare = &media_vram_events[i * 2];
-        const MediaVramEvent *commit = &media_vram_events[i * 2 + 1];
-        CHECK(prepare->kind == 1 && commit->kind == 2 && prepare->addr == GUEST_VRAM_BUF &&
-                  commit->addr == GUEST_VRAM_BUF && prepare->bytes == 64u * 64u * 4u &&
-                  commit->bytes == 64u * 64u * 4u,
-              "each CPU VRAM write prepares the exact span before its post-write commit");
+    {
+        const uint32_t changed = vram_changed_bytes();
+        if (changed != picture_bytes)
+            fprintf(stderr, "  destination: %s, %u physical bytes changed\n", dest->name,
+                    (unsigned)changed);
+        CHECK(changed == picture_bytes,
+              "the VRAM-targeted pictures change exactly the physical bytes of the destination");
+    }
+
+    /* Event shape: one prepare then one commit per piece the writer stored. Their canonical
+     * spans must cover each picture's physical bytes exactly once. */
+    CHECK(media_vram_event_count != 0u && (media_vram_event_count & 1u) == 0u &&
+              media_vram_event_count < MEDIA_VRAM_EVENT_CAP,
+          "each CPU VRAM write publishes prepare and commit events in pairs");
+    uint32_t paired = media_vram_event_count / 2u;
+    int shape_ok = 1, linear_rows_ok = 1;
+    for (unsigned i = 0; i < paired; i++) {
+        const MediaVramEvent *prepare = &media_vram_events[i * 2u];
+        const MediaVramEvent *commit = &media_vram_events[i * 2u + 1u];
+        const uint32_t commit_canonical = sr_vram_cpu_aperture(commit->addr)
+                                              ? sr_vram_cpu_address(commit->addr)
+                                              : SR_PHYS(commit->addr);
+        if (prepare->kind != 1 || commit->kind != 2 || prepare->bytes != commit->bytes ||
+            prepare->addr != commit_canonical || prepare->bytes == 0u)
+            shape_ok = 0;
+        if (!dest->swizzled && !(prepare->bytes == row_bytes &&
+                                 (prepare->addr - SR_PHYS(dest->base)) % row_bytes == 0u))
+            linear_rows_ok = 0;
+    }
+    CHECK(shape_ok, "each prepare precedes a commit of the same physical span");
+    CHECK(linear_rows_ok, "a linear destination is prepared and committed one row at a time");
+    for (int f = 0; f < frames && f < FIX_PICTURES; f++) {
+        /* Events are published picture by picture in order, and every picture writes the same
+         * number of pieces, so picture f owns an equal slice of the list. */
+        const unsigned per = paired / (unsigned)frames;
+        memset(span_map, 0, sizeof(span_map));
+        int covered_once = per != 0u && paired % (unsigned)frames == 0u;
+        for (unsigned i = f * per; covered_once && i < (unsigned)(f + 1) * per; i++) {
+            const MediaVramEvent *prepare = &media_vram_events[i * 2u];
+            for (uint32_t b = 0; b < prepare->bytes; b++) {
+                uint32_t off = prepare->addr + b - SR_VRAM_CPU_BASE;
+                if (off >= VRAM_PHYS_BYTES || span_map[off]++) { covered_once = 0; break; }
+            }
+        }
+        for (uint32_t i = 0; covered_once && i < picture_bytes; i++) {
+            uint32_t off = sr_vram_cpu_address(dest->base + i) - SR_VRAM_CPU_BASE;
+            if (span_map[off] != 1u) covered_once = 0;
+        }
+        if (!covered_once)
+            fprintf(stderr, "  destination: %s, picture %d\n", dest->name, f);
+        CHECK(covered_once,
+              "each picture's prepare/commit spans cover exactly its physical bytes, once");
     }
 
     conformance_backend.destroy(decoder);
     ge_set_gpu_hooks(NULL);
     g_sr_vram_read_pending = 0;
+}
+
+static void test_guest_vram_write_coherence(void) {
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint8_t es[65536];
+    uint32_t es_len = 0;
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "VRAM coherence fixture stream builds");
+    if (!es_len) return;
+    for (size_t d = 0; d < VRAM_DEST_COUNT; d++)
+        guest_vram_write_coherence_case(&k_vram_dests[d], es, au_off, au_len);
 }
 
 static void test_backend_registry_fail_closed(void) {
@@ -1970,6 +2074,176 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
+/* ---- movie frame writers behind the swizzled VRAM mirrors (#1049) ------------------------
+ * Hot Shots Tennis hands its movie buffers to sceMpegAvcCsc / sceMpegAvcDecode through the
+ * 0x042 and 0x046 mirror views of VRAM. The bulk writers used to refuse such a span (and log
+ * VRAM_MIRROR_BULK_UNSUPPORTED), so the picture never reached VRAM. Every case below compares
+ * the whole 2 MiB of physical VRAM against an image built from sr_vram_cpu_address(). */
+
+/* PSP pixel bytes of one RGBA source pixel, written from the public format definitions. */
+static uint32_t ref_pixel_bytes(int mode, const uint8_t *px, uint8_t out[4]) {
+    unsigned r = px[0], g = px[1], b = px[2];
+    uint16_t v;
+    switch (mode) {
+        case 0: v = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11)); break;
+        case 1: v = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | 0x8000u); break;
+        case 2: v = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8) | 0xF000u); break;
+        default: memcpy(out, px, 4u); return 4u;
+    }
+    out[0] = (uint8_t)v;
+    out[1] = (uint8_t)(v >> 8);
+    return 2u;
+}
+
+/* The whole physical VRAM equals the expected image. */
+static int vram_matches_image(const uint8_t *image) {
+    return memcmp(vram_phys_byte(SR_VRAM_CPU_BASE), image, VRAM_PHYS_BYTES) == 0;
+}
+
+/* Record `n` bytes written at guest address `guest_addr` in the expected image. */
+static void image_store(uint8_t *image, uint32_t guest_addr, const uint8_t *bytes, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t phys = sr_vram_cpu_address(guest_addr + i);
+        if (phys >= SR_VRAM_CPU_BASE && phys < SR_VRAM_CPU_BASE + VRAM_PHYS_BYTES)
+            image[phys - SR_VRAM_CPU_BASE] = bytes[i];
+    }
+}
+
+#define CSC_W 64u
+#define CSC_H 32u
+
+static void test_mpeg_csc_swizzled_vram_mirrors(void) {
+    enum {
+        MC_DESC = 0x08300000u,
+        MC_DATA = 0x08310000u,
+        MC_YCBCR = 0x08320000u,
+        MC_RANGE = 0x08330000u,
+        MC_MODE = 0x08340000u,
+        MC_RAM_DEST = 0x08350000u,
+    };
+    static uint8_t image[VRAM_PHYS_BYTES];
+    const struct { uint32_t x, y, w, h, frame_width; const char *name; } cases[] = {
+        { 0u, 0u, CSC_W, CSC_H, CSC_W, "whole picture" },
+        { 8u, 2u, 40u, 5u, 80u, "partial rectangle in a wider buffer" },
+    };
+
+    MEM_W32(MC_DESC, 0u);
+    CHECK(mpeg_create(MC_DESC, MC_DATA, 0x10000u, 0, CSC_W, 0, 0) == 0,
+          "mirror CSC fixture creates a context");
+    CHECK(mpeg_avc_init_ycbcr(MC_DESC, UINT32_MAX, CSC_W, CSC_H, MC_YCBCR) == 0,
+          "mirror CSC fixture initializes a YCbCr allocation");
+    YcbcrBuf *state = ycbcr_find(MC_DESC, MC_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "mirror CSC fixture retains a host picture");
+    if (!state || !state->rgba) return;
+    /* Distinct bytes per pixel, so a displaced or repeated piece cannot match. */
+    for (uint32_t yy = 0; yy < CSC_H; yy++)
+        for (uint32_t xx = 0; xx < CSC_W; xx++) {
+            uint8_t *px = state->rgba + ((size_t)yy * CSC_W + xx) * 4u;
+            px[0] = (uint8_t)(xx * 4u + yy);
+            px[1] = (uint8_t)(yy * 8u + xx * 3u + 1u);
+            px[2] = (uint8_t)(xx * yy + 17u * xx);
+            px[3] = (uint8_t)(0x80u + ((xx + yy) & 0x3fu));
+        }
+    state->valid = 1;
+
+    for (int mode = 0; mode <= 3; mode++) {
+        MEM_W32(MC_MODE, 0u);
+        MEM_W32(MC_MODE + 4u, (uint32_t)mode);
+        CHECK(guest_mpeg_import(0xa11c7026u, MC_DESC, MC_MODE, 0u, 0u, 0u) == 0,
+              "mirror CSC fixture selects the pixel mode through the guest import");
+        const uint32_t bpp = mode == 3 ? 4u : 2u;
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            MEM_W32(MC_RANGE, cases[c].x);
+            MEM_W32(MC_RANGE + 4u, cases[c].y);
+            MEM_W32(MC_RANGE + 8u, cases[c].w);
+            MEM_W32(MC_RANGE + 12u, cases[c].h);
+            /* Every VRAM destination, then linear RAM as the control. */
+            for (size_t d = 0; d <= VRAM_DEST_COUNT; d++) {
+                const int in_ram = d == VRAM_DEST_COUNT;
+                const uint32_t dest = in_ram ? MC_RAM_DEST : k_vram_dests[d].base;
+                const char *name = in_ram ? "RAM" : k_vram_dests[d].name;
+                vram_fill_sentinel();
+                memset(vram_phys_byte(MC_RAM_DEST), (int)VRAM_SENTINEL, 0x4000u);
+                memset(image, (int)VRAM_SENTINEL, sizeof(image));
+                uint32_t result = guest_mpeg_import(0x31bd0272u, MC_DESC, MC_YCBCR, MC_RANGE,
+                                                    cases[c].frame_width, dest);
+                int ok = result == 0u;
+                for (uint32_t r = cases[c].y; r < cases[c].y + cases[c].h; r++)
+                    for (uint32_t col = cases[c].x; col < cases[c].x + cases[c].w; col++) {
+                        uint8_t bytes[4];
+                        const uint8_t *px = state->rgba + ((size_t)r * CSC_W + col) * 4u;
+                        const uint32_t n = ref_pixel_bytes(mode, px, bytes);
+                        const uint32_t addr = dest + (r * cases[c].frame_width + col) * bpp;
+                        if (in_ram) {
+                            for (uint32_t i = 0; i < n; i++)
+                                if (*vram_phys_byte(addr + i) != bytes[i]) ok = 0;
+                        } else {
+                            image_store(image, addr, bytes, n);
+                        }
+                    }
+                /* A VRAM destination must match its image; a RAM one must leave VRAM untouched. */
+                if (!vram_matches_image(image)) ok = 0;
+                if (!ok)
+                    fprintf(stderr, "  CSC mode %d, %s, destination %s: result 0x%08x\n", mode,
+                            cases[c].name, name, (unsigned)result);
+                CHECK(ok, "sceMpegAvcCsc writes each pixel at the physical address its "
+                          "destination address translates to, and nothing else");
+            }
+        }
+    }
+    mpeg_finish();
+}
+
+/* sceMpegAvcDecode's blank-frame path (no picture decoded yet) clears the whole buffer. */
+static void test_mpeg_avc_decode_clear_in_vram_mirrors(void) {
+    enum {
+        MD_DESC = 0x08360000u,
+        MD_DATA = 0x08370000u,
+        MD_AU = 0x08380000u,
+        MD_PTR = 0x08390000u,
+        MD_INIT = 0x083a0000u,
+    };
+    static uint8_t image[VRAM_PHYS_BYTES];
+    static const uint8_t zero = 0u;
+    MEM_W32(MD_DESC, 0u);
+    CHECK(mpeg_create(MD_DESC, MD_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "mirror AvcDecode fixture creates a context");
+    Mpeg *ctx = mpeg_find(MD_DESC);
+    CHECK(ctx != NULL, "mirror AvcDecode fixture finds its context");
+    if (!ctx) return;
+    ctx->streamWidth = 64u;
+    ctx->streamHeight = 64u;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: sceMpegAvcDecode blank-frame clear needs a decoder instance\n");
+        mpeg_finish();
+        return;
+    }
+    for (int mode = 3; mode >= 0; mode -= 3) {
+        ctx->pixelMode = mode;
+        const uint32_t bytes = 64u * 64u * (mode == 3 ? 4u : 2u);
+        for (size_t d = 0; d < VRAM_DEST_COUNT; d++) {
+            vram_fill_sentinel();
+            memset(image, (int)VRAM_SENTINEL, sizeof(image));
+            for (uint32_t i = 0; i < bytes; i++)
+                image_store(image, k_vram_dests[d].base + i, &zero, 1u);
+            memset(SR_HOST(MD_AU), 0, 24u);
+            MEM_W32(MD_PTR, k_vram_dests[d].base);
+            MEM_W32(MD_INIT, 0xdeadbeefu);
+            uint32_t result = guest_mpeg_import(0x0e3c2e9du, MD_DESC, MD_AU, 64u, MD_PTR, MD_INIT);
+            int ok = result == SCE_MPEG_ERROR_NO_DATA && MEM_R32(MD_INIT) == 0u &&
+                     vram_matches_image(image);
+            if (!ok)
+                fprintf(stderr, "  AvcDecode mode %d, destination %s: result 0x%08x\n", mode,
+                        k_vram_dests[d].name, (unsigned)result);
+            CHECK(ok, "sceMpegAvcDecode clears its blank frame through any VRAM view, "
+                      "touching only the destination's physical bytes");
+        }
+    }
+    mpeg_finish();
+}
+
 /* The host picture behind a YCbCr allocation holds exactly the rows sceMpegAvcInitYCbCr
  * asked for. The fixture's 64x64 pictures decoded into a 64x16 allocation deliver 16 rows;
  * the host conversion must not write the other 48 past the end of that buffer (the
@@ -2369,6 +2643,44 @@ static void test_player_lifecycle_releases_what_it_acquired(void) {
     free(image);
 }
 
+/* scePsmfPlayerGetVideoData with the display buffer behind each VRAM view: the first authored
+ * picture must reach VRAM at the translated addresses (the Hot Shots Tennis Cinema path). */
+static void test_psmf_player_display_in_vram_mirrors(void) {
+    if (!sr_h264_backend_available()) {
+        fprintf(stderr, "SKIP: PSMF player VRAM display needs an H.264 backend\n");
+        return;
+    }
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "VRAM display stream builds"); return; }
+    av_latch_mpeglog();
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    static const uint8_t picture0[4] = { 255u, 203u, 138u, 255u };
+    for (size_t d = 0; d < VRAM_DEST_COUNT; d++) {
+        vram_fill_sentinel();
+        MEM_W32(AV_VIDEO + 4, k_vram_dests[d].base);
+        CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+              "psmf-vram: the player is created");
+        int first = lc_play_first_picture(AV_PLAYER);
+        int pixels = vram_rgba_matches(k_vram_dests[d].base, 64, 64, picture0);
+        int exact = vram_changed_bytes() == 64u * 64u * 4u;
+        if (!first || !pixels || !exact)
+            fprintf(stderr, "  PSMF display %s: picture=%d pixels=%d exact=%d\n",
+                    k_vram_dests[d].name, first, pixels, exact);
+        CHECK(first, "psmf-vram: the first picture is delivered into a VRAM display buffer");
+        CHECK(pixels, "psmf-vram: scePsmfPlayerGetVideoData writes the picture at the "
+                      "physical addresses of the display buffer");
+        CHECK(exact, "psmf-vram: the picture changes exactly the display buffer's physical bytes");
+        CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-vram: the player is deleted");
+    }
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
 /* One "key=value" number from a published counter line. */
 static int av_log_field(const char *line, const char *key, long long *out) {
     const char *p = (line && *line) ? strstr(line, key) : NULL;
@@ -2758,8 +3070,11 @@ int main(int argc, char **argv) {
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_mpeg_csc_swizzled_vram_mirrors();
+    test_mpeg_avc_decode_clear_in_vram_mirrors();
     test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
+    test_psmf_player_display_in_vram_mirrors();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);

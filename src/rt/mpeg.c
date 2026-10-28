@@ -710,9 +710,10 @@ static uint32_t video_buffer_bytes(uint32_t width, uint32_t height, int pixelMod
 
 static int clear_video_buffer(uint32_t ptr, uint32_t width, uint32_t height, int pixelMode) {
     uint32_t bytes = video_buffer_bytes(width, height, pixelMode);
-    if (!ptr || !bytes || !sr_guest_span_writable(ptr, bytes)) return 0;
-    for (uint32_t i = 0; i < bytes; i++) MEM_W8(ptr + i, 0);
-    return 1;
+    if (!ptr || !bytes || !sr_guest_span_writable_any_view(ptr, bytes)) return 0;
+    /* sr_guest_fill prepares and commits each piece it writes, and splits the span
+     * where a swizzled VRAM mirror stops being host-contiguous (#1049). */
+    return sr_guest_fill(ptr, 0u, bytes);
 }
 
 /* AvcDecode(mpeg, auAddr, frameWidth, bufferAddr, initAddr): decode one AVC frame into
@@ -728,7 +729,8 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
         return mpeg_contract_error("sceMpegAvcDecode", "missing or unsupported stream geometry", SCE_MPEG_ERROR_INVALID_VALUE);
     uint32_t buffer = MEM_R32(bufferAddr);
     uint32_t bytes = video_buffer_bytes(width, height, ctx->pixelMode);
-    if (!buffer || (buffer & 3u) || (height && (!bytes || !sr_guest_span_writable(buffer, bytes))))
+    if (!buffer || (buffer & 3u) ||
+        (height && (!bytes || !sr_guest_span_writable_any_view(buffer, bytes))))
         return mpeg_contract_error("sceMpegAvcDecode", "invalid destination span", SCE_MPEG_ERROR_INVALID_VALUE);
 
     g_mpeg_avcdec++;
@@ -757,10 +759,8 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecode", "stream height is unavailable for a blank frame", SCE_MPEG_ERROR_NO_DATA);
         }
-        sr_guest_vram_write_prepare_bytes(buffer, bytes);
         if (!clear_video_buffer(buffer, width, height, ctx->pixelMode))
             return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
-        sr_guest_vram_write_commit_bytes(buffer, bytes);
     }
     MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
     if (getenv("SR_MPEGLOG")) {
@@ -1065,17 +1065,23 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
         return mpeg_contract_error("sceMpegAvcCsc", "range exceeds destination stride", SCE_MPEG_ERROR_INVALID_VALUE);
     uint32_t bpp = ctx->pixelMode == 3 ? 4u : 2u;
     SrGuestRectSpan span;
-    if (!sr_guest_rect_writable(dest, (uint32_t)x, (uint32_t)y, frameWidth,
-                                (uint32_t)w, (uint32_t)h, bpp, &span))
+    /* The destination may be a swizzled VRAM mirror view (#1049), so each row is built in a
+     * host scratch row and written with sr_guest_copy_out(), which translates it piece by
+     * piece and prepares/commits the VRAM span of every piece. */
+    if (!sr_guest_rect_geometry(dest, (uint32_t)x, (uint32_t)y, frameWidth,
+                                (uint32_t)w, (uint32_t)h, bpp, &span) ||
+        !sr_guest_span_writable_any_view(span.first, span.total_bytes))
         return mpeg_contract_error("sceMpegAvcCsc", "destination rectangle is out of bounds", SCE_MPEG_ERROR_INVALID_VALUE);
+    uint8_t *out = (uint8_t *)malloc(span.row_bytes);
+    if (!out)
+        return mpeg_contract_error("sceMpegAvcCsc", "no scratch row for the destination", SCE_MPEG_ERROR_INVALID_VALUE);
     for (uint32_t row = 0; row < (uint32_t)h; row++) {
         const uint8_t *px = b->rgba + ((size_t)((uint32_t)y + row) * b->width + (uint32_t)x) * 4u;
         uint32_t rowAddr = span.first + row * span.row_pitch;
-        uint8_t *out = (uint8_t *)SR_HOST(rowAddr);
-        sr_guest_vram_write_prepare_bytes(rowAddr, span.row_bytes);
 #ifdef SR_MPEG_CSC_NO_WRITE_MUTANT
         (void)px;
         (void)out;
+        (void)rowAddr;
 #else
         for (uint32_t col = 0; col < (uint32_t)w; col++, px += 4u) {
             unsigned r = px[0], g = px[1], bl = px[2];
@@ -1098,9 +1104,10 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
                     break;
             }
         }
+        sr_guest_copy_out(rowAddr, out, span.row_bytes);
 #endif
-        sr_guest_vram_write_commit_bytes(rowAddr, span.row_bytes);
     }
+    free(out);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
