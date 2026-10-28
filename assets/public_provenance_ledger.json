@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "35231bbec62d80031312a6010f22f5e1bc3e0bed68ccfed09210787642dce201"
+      "sha256": "099e6e4ce0157fa2e9c1370c5e6470c31acb7ef721b89248bf4745401c2f6280"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1711,7 +1711,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bf38c1da718055be97d262724db4099ce4bdd734508fb008521225bd323814fa"
+      "sha256": "83e6146e1722824d498784ba77078cf03be54f2ac83cb4652e4b8558fb58a77a"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1765,7 +1765,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "de33a210ec5afca58238ff3fae38d305ed06bf441ae2a915158354bb6b03bf72"
+      "sha256": "05256c9bfa909b4840fe79b5c36078a12e7fff15d1639edaf26e8e00977d6ec6"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -1885,7 +1885,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b13dd4f8f14b06f9556032071934018fb36a3b8171d0225973df2737d46cede9"
+      "sha256": "817f7cf9b08b4464e445363a615447c764df9b6fdf7423cad1ef6fd81cdd7020"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -2636,7 +2636,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e6d59c2d87ea4d2024fb24fde1adaecca407226e7b60f7d41554dc5db9c45966"
+      "sha256": "cb737f972e14cebd486d788b65f31c34a8e76e656f0adb9f8b6edbcfe7e01e1e"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e81bac61d66879b308d64ec284fd688b6770299badd10fcab309c22800457d33"
+      "sha256": "4b2cf09f913cc5d2c6db8a573374cfeee5d678f7234b087da716b7c3f2446a4f"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9418,7 +9418,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8b95e7c0aa72be3eb73ace82613b932ced546c953bdbf780a33dfc409b225431"
+      "sha256": "33eb632e679366cf4d6470248e18358876f0db109a61f4b54b09f4772ad83a8e"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -9430,7 +9430,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a34c7a7039ca26997204a65235ebdb57b1826923478c0c5ef14f0d129dc39741"
+      "sha256": "574fbaded8671bf3fb00d4ea236d5efd08b31e1ccd6399b67c46554cdaea0792"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -11651,7 +11651,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55387e36a6e5a887d16885159421b111e742d010b8dc12d20a4f883f55895684"
+      "sha256": "4bcf7b994c42f7f97d7a2d85d98c9023d7b29fbf2589281fffc1eeecd82389ee"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -12847,7 +12847,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9417d141ab158b0c88561d2ab4e964bc9f00281c43e83248acb14a101a167a09"
+      "sha256": "ee2c9549d92366ada40c4d467ea82a70f575eefd60d870f6497836d50e2dc512"
     },
     {
       "path": "tools/psp_oracle/user_mode_imports.py",
@@ -15190,7 +15190,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "135147db4d3eb4f06256023d74b55415ce1b42497c4c0e1e346408b083a60b52"
+      "sha256": "dd917be74cbc737c7972804aaf3a29cc295009b336f27464bf421f061acc89ae"
     },
     {
       "path": "tools/test_scratch_dir.py",
