@@ -181,6 +181,18 @@ uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
+/* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+void sr_exec_tier_switch(int tier) { sr_exec_tier = tier; }
+void sr_exec_interp_entry(uint32_t entry_pc) { (void)entry_pc; }
+void sr_exec_interp_exit(int returned_to_aot, int call_return) { (void)returned_to_aot; (void)call_return; }
+void sr_exec_slice_begin(int tier) { sr_exec_tier = tier; }
+int sr_exec_slice_end(void) { int tier = sr_exec_tier; sr_exec_tier = 0; return tier; }
+uint64_t sr_exec_now_ns(void) { return 0; }
+void sr_exec_idle(uint64_t started_ns) { (void)started_ns; }
+void sr_exec_share_arm(void) {}
+void sr_exec_share_report(void) {}
 void sr_perf_vblank(void) {}
 /* Display-source service-cadence attribution (perf.c owns the real counters). */
 void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }

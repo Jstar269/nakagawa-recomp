@@ -182,6 +182,7 @@ typedef struct {
                                   * must follow the RUNNING context, not the last one
                                   * to touch the global, or a blocking syscall's tag
                                   * would be blamed for the code that ran next */
+    int      exec_tier;          /* execution-share tier (perf.h SrExecTier) when suspended */
     int      is_cb_wait;         /* 1 when thread is in callback-aware wait */
     int      deleted;             /* kernel object has been removed; slot may be recycled */
     int      suspended;           /* sceKernelSuspendThread is in effect.  Orthogonal to `state`:
@@ -1548,9 +1549,11 @@ static void vblank_pace(void) {
     uint64_t now = host_now_ns();
     if (s_vbl_next_ns > now) {
         uint64_t wait_started = sr_perf_now_ns();
+        uint64_t exec_wait_started = sr_exec_now_ns();
         sr_rt_phase = SR_RT_PHASE_HOST_WAIT;
         SDL_DelayPrecise(s_vbl_next_ns - now);
         sr_perf_guest_idle_wait(wait_started);
+        sr_exec_idle(exec_wait_started);
         sr_rt_phase = SR_RT_PHASE_SCHED;
         now = host_now_ns();
     }
@@ -2204,6 +2207,8 @@ static void coro_body(void *param) {
              * boundaries. Drop this fiber's abandoned stack before it exits or
              * the thread is restarted. */
             sr_aot_return_boundaries_reset();
+            /* The discarded frames also held the tiers sr_exec_leave would have restored. */
+            sr_exec_tier_switch(SR_EXEC_TIER_NONE);
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
             if (reclaimed)
                 fprintf(stderr,
@@ -4974,7 +4979,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             sr_perf_guest_begin();
         }
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
+        sr_exec_slice_begin(t->exec_tier);
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
+        t->exec_tier = sr_exec_slice_end();
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
