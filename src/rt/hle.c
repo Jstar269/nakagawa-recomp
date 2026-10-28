@@ -3588,7 +3588,6 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
  * exposes the requested span and uses 16-byte chunks, the smallest conservative
  * alignment for guest allocations. */
 #define VPL_MAX 16
-#define VPL_MAX_ALLOCS 128
 #define VPL_MAX_WAITERS 64
 #define VPL_ALIGN 16u
 /* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): an unknown VPL id
@@ -3598,30 +3597,56 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
  * code. */
 #define VPL_EXHAUSTED 0x800200d9u
 typedef struct { uint32_t addr, size; } VplSpan;
-typedef struct { uint32_t addr, size; int used; } VplAlloc;
+typedef struct { uint32_t addr, size; } VplAlloc;
 typedef struct { uint32_t thread_uid; uint32_t size; } VplWaiter;
+/* The free spans (sorted by address) and the live blocks are host arrays that grow on
+ * demand. A PSP keeps a block's header inside the pool, so only the pool's own bytes bound
+ * how many blocks it holds; every block here is at least VPL_ALIGN bytes, which bounds
+ * both arrays by size / VPL_ALIGN + 1. A fixed table made the 129th live block of a pool
+ * with free space read as exhausted, and a blocking AllocateVpl then never returned. */
 typedef struct {
     uint32_t base, size, block_uid;
     uint32_t attr;
     int used;
-    VplSpan free[VPL_MAX_ALLOCS];
-    int nfree;
-    VplAlloc allocs[VPL_MAX_ALLOCS];
+    VplSpan *free;
+    int nfree, free_cap;
+    VplAlloc *allocs;
+    int nallocs, allocs_cap;
     VplWaiter waiters[VPL_MAX_WAITERS];
     int nwaiters;
 } VplPool;
 static VplPool s_vpls[VPL_MAX];
 
+/* Grow a pool array to hold `need` entries. A host that cannot provide them stops the run
+ * by name: refusing the guest would report a full pool that is not full. */
+static void *vpl_reserve(void *items, int *cap, int need, size_t item_size) {
+    if (need <= *cap) return items;
+    int grown = *cap ? *cap : 16;
+    while (grown < need) grown *= 2;
+    void *next = realloc(items, (size_t)grown * item_size);
+    if (!next) {
+        fprintf(stderr, "VPL: host allocation of %d entries failed\n", grown);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, (uint32_t)grown, (uint32_t)item_size);
+        abort();
+    }
+    *cap = grown;
+    return next;
+}
+
+static void vpl_release(VplPool *p) {
+    free(p->free);
+    free(p->allocs);
+    memset(p, 0, sizeof *p);
+}
+
 static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
     int i = 0;
     while (i < p->nfree && p->free[i].addr < addr) i++;
-    if (p->nfree < VPL_MAX_ALLOCS) {
-        for (int j = p->nfree; j > i; --j) p->free[j] = p->free[j - 1];
-        p->free[i] = (VplSpan){addr, size};
-        p->nfree++;
-    }
-    /* Coalesce all touching neighbors; the free-list capacity is intentionally
-     * bounded and is UNMEASURED relative to firmware's kernel object limits. */
+    p->free = vpl_reserve(p->free, &p->free_cap, p->nfree + 1, sizeof *p->free);
+    memmove(&p->free[i + 1], &p->free[i], (size_t)(p->nfree - i) * sizeof *p->free);
+    p->free[i] = (VplSpan){addr, size};
+    p->nfree++;
+    /* Coalesce all touching neighbors. */
     for (i = 0; i + 1 < p->nfree;) {
         if (p->free[i].addr + p->free[i].size == p->free[i + 1].addr) {
             p->free[i].size += p->free[i + 1].size;
@@ -3662,10 +3687,10 @@ static uint32_t h_CreateVpl(CpuState *s) {
     for (int i = 0; i < VPL_MAX; ++i) {
         if (!s_vpls[i].used) {
             VplPool *p = &s_vpls[i];
-            memset(p, 0, sizeof *p);
+            vpl_release(p);
             p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
             p->attr = A2;
-            p->free[0] = (VplSpan){base, size}; p->nfree = 1;
+            vpl_insert_free(p, base, size);
             return (uint32_t)(0x600 + i);
         }
     }
@@ -3680,22 +3705,20 @@ static VplPool *vpl_lookup(uint32_t uid) {
 
 static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t *addr_out) {
     if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (request > p->size) return VPL_EXHAUSTED; /* also keeps the rounding below from wrapping */
     uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
     for (int i = 0; i < p->nfree; ++i) {
         if (p->free[i].size >= need) {
             uint32_t addr = p->free[i].addr;
+            p->allocs = vpl_reserve(p->allocs, &p->allocs_cap, p->nallocs + 1, sizeof *p->allocs);
+            p->allocs[p->nallocs++] = (VplAlloc){addr, need};
             p->free[i].addr += need; p->free[i].size -= need;
             if (!p->free[i].size) {
                 for (int j = i; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
                 --p->nfree;
             }
-            for (int j = 0; j < VPL_MAX_ALLOCS; ++j) if (!p->allocs[j].used) {
-                p->allocs[j] = (VplAlloc){addr, need, 1};
-                *addr_out = addr;
-                return 0;
-            }
-            vpl_insert_free(p, addr, need);
-            return VPL_EXHAUSTED;
+            *addr_out = addr;
+            return 0;
         }
     }
     return VPL_EXHAUSTED;
@@ -3836,9 +3859,9 @@ static uint32_t h_FreeVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t addr = A1;
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
-    for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
+    for (int i = 0; i < p->nallocs; ++i) if (p->allocs[i].addr == addr) {
         vpl_insert_free(p, addr, p->allocs[i].size);
-        p->allocs[i].used = 0;
+        p->allocs[i] = p->allocs[--p->nallocs];
         /* Waiter order: semaphores in hle.c do not handle attr for priority/FIFO queuing;
          * per task instruction, default to FIFO order and document.
          * Wake one waiter. */
@@ -3866,7 +3889,7 @@ static uint32_t h_DeleteVpl(CpuState *s) {
         sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
         sched_preempt();
     }
-    memset(p, 0, sizeof *p);
+    vpl_release(p);
     return free_block(block_uid); /* exactly once; unknown/double delete frees nothing */
 }
 
@@ -28320,6 +28343,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
         free(s_fpls[i].allocated);
     }
     memset(s_fpls, 0, sizeof(s_fpls));
+    for (unsigned i = 0; i < VPL_MAX; i++) vpl_release(&s_vpls[i]);
     memset(s_sync, 0, sizeof(s_sync));
     memset(s_mbx, 0, sizeof(s_mbx));
     mutex_reset_all();
