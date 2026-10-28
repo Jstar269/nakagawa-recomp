@@ -12750,9 +12750,7 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
  *
- * Refused by name, out of scope: SetVTimerTime, and the handler family (SetVTimerHandler,
- * SetVTimerHandlerWide, CancelVTimerHandler), which needs the timer interrupt model (issue #325).
- * A non-NULL CreateVTimer option struct is refused too, because its layout is unmeasured. */
+ * Refused by name, out of scope: SetVTimerTime. The handler family is below its own header. */
 /* The PSP-3000 accepted 64 creates in a row without a refusal (PSP-HLE-VTIMER-003), so the table
  * holds 64 timers. What the console does past 64 is unmeasured. */
 #define VTIMER_MAX 64
@@ -12767,6 +12765,9 @@ typedef struct {
     int running;
     uint64_t accum_us;     /* elapsed guest time over the finished running intervals */
     uint64_t started_us;   /* guest time at the start of the open interval, when running */
+    uint32_t handler;      /* guest handler, 0 when none */
+    uint32_t common;       /* the handler's fourth argument */
+    uint64_t schedule;     /* timer time of the next handler call */
 } VTimer;
 
 static VTimer s_vtimers[VTIMER_MAX];
@@ -12845,6 +12846,158 @@ static uint32_t h_DeleteVTimer(CpuState *s) {
     return 0;
 }
 
+/* ---- VTimer handlers --------------------------------------------------------------------
+ *
+ * Measured on a PSP by pspautotests tests/threads/vtimers/{sethandler,cancelhandler}.expected
+ * (2ed7c9c5, recorded on a PSP):
+ *   - SetVTimerHandler(uid, SceKernelSysClock *time, handler, common) and the Wide form (the
+ *     time as a 64-bit value) store the schedule, the handler and common, and return 0. A NULL
+ *     handler clears the handler and leaves the schedule and common as they were.
+ *   - uid 0 returns 0x800201BF, an unknown or deleted uid 0x800201BE.
+ *   - The handler runs once the timer's own time reaches the schedule, also when the schedule
+ *     is already past at Set (it then runs at once, and again for each return still behind).
+ *     It gets (uid, SceKernelSysClock *scheduled, SceKernelSysClock *actual, common); the Wide
+ *     form's handler gets the same pointers. A non-zero return is the delay to the next call,
+ *     counted from the scheduled time; zero clears the handler and keeps the schedule.
+ *   - CancelVTimerHandler clears the handler and keeps the schedule and common. From inside the
+ *     timer's own handler it returns 0x800201BF for that timer and 0x800201BE for uid 0.
+ * The handler runs as a timer interrupt (sched_set_vtimer_hooks), on a nested guest frame like
+ * the GE callbacks. Not measured, so the run stops by name: a NULL time pointer (the test
+ * notes it crashes) and a SetVTimerHandler from inside the timer's own handler. */
+#define VTIMER_ZERO_ID 0x800201bfu
+
+static uint32_t s_vtimer_in_handler;   /* uid whose handler is running, else 0 */
+
+static uint32_t vtimer_set_handler(uint32_t uid, uint64_t time, uint32_t handler, uint32_t common,
+                                   const char *api) {
+    if (uid == 0u) return VTIMER_ZERO_ID;
+    VTimer *t = vtimer_lookup(uid);
+    if (!t) return VTIMER_BAD_ID;
+    if (s_vtimer_in_handler == uid)
+        return hle_unmodelled_stop(api, "from the timer's own handler is not measured");
+    t->handler = handler;
+    if (handler) {
+        t->schedule = time;
+        t->common = common;
+    }
+    return 0;
+}
+
+static uint32_t h_SetVTimerHandler(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock *time, a2=handler, a3=common. */
+    if (!sr_guest_span_readable(A1, 8u))
+        return hle_unmodelled_stop("sceKernelSetVTimerHandler",
+                                   "with an unreadable time pointer 0x%08x is not measured", A1);
+    uint64_t time = (uint64_t)MEM_R32(A1) | ((uint64_t)MEM_R32(A1 + 4u) << 32);
+    return vtimer_set_handler(A0, time, A2, A3, "sceKernelSetVTimerHandler");
+}
+
+static uint32_t h_SetVTimerHandlerWide(CpuState *s) {
+    /* a0=uid, a2/a3=aligned 64-bit time (a1 is skipped), t0=handler, t1=common. */
+    return vtimer_set_handler(A0, ((uint64_t)A3 << 32) | A2, stack_arg(s, 0), stack_arg(s, 1),
+                              "sceKernelSetVTimerHandlerWide");
+}
+
+static uint32_t h_CancelVTimerHandler(CpuState *s) {
+    /* a0=uid. */
+    if (s_vtimer_in_handler) {
+        if (A0 == 0u) return VTIMER_BAD_ID;
+        if (A0 == s_vtimer_in_handler) return VTIMER_ZERO_ID;
+    }
+    if (A0 == 0u) return VTIMER_ZERO_ID;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    t->handler = 0u;
+    return 0;
+}
+
+/* Guest time at which a running timer with a handler reaches its schedule, else UINT64_MAX. */
+static uint64_t vtimer_handler_deadline(const VTimer *t) {
+    if (!t->used || !t->running || !t->handler || s_vtimer_in_handler == t->uid) return UINT64_MAX;
+    if (t->schedule <= t->accum_us) return t->started_us;
+    uint64_t left = t->schedule - t->accum_us;
+    return left > UINT64_MAX - t->started_us ? UINT64_MAX : t->started_us + left;
+}
+
+static uint64_t vtimer_next_deadline_us(void) {
+    uint64_t next = UINT64_MAX;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        uint64_t d = vtimer_handler_deadline(&s_vtimers[i]);
+        if (d < next) next = d;
+    }
+    return next;
+}
+
+/* Run one handler as a timer interrupt on a nested guest frame, with the two clocks it is
+ * handed just above that frame. Returns its $v0. */
+static uint32_t vtimer_call_handler(CpuState *s, const VTimer *t, uint64_t scheduled,
+                                    uint64_t actual) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame) || frame_sp < 0x40u ||
+        !sr_guest_span_writable((frame_sp - 16u) & ~7u, 16u)) {
+        fprintf(stderr, "VTIMER_HANDLER: fn=0x%08x uid=0x%x has no nested guest-call frame; "
+                        "the run stops here (#308)\n", t->handler, t->uid);
+        if (frame >= 0) (void)sr_nested_frame_release(frame);
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = t->handler;
+        return 0u;
+    }
+    const uint32_t clocks = (frame_sp - 16u) & ~7u;
+    MEM_W32(clocks, (uint32_t)scheduled);
+    MEM_W32(clocks + 4u, (uint32_t)(scheduled >> 32));
+    MEM_W32(clocks + 8u, (uint32_t)actual);
+    MEM_W32(clocks + 12u, (uint32_t)(actual >> 32));
+    CpuState save;
+    memcpy(&save, s, sizeof(CpuState));
+    int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+    memset(s, 0, sizeof(CpuState));
+    s->r[4] = t->uid;
+    s->r[5] = clocks;
+    s->r[6] = clocks + 8u;
+    s->r[7] = t->common;
+    s->r[28] = save.r[28];
+    s->r[29] = clocks - 16u;
+    s->r[31] = 0;
+    s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
+    s->pc = t->handler;
+    atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
+    uint32_t fatal_target = 0u;
+    int fatal = hle_dispatch_guest_scoped(s, t->handler, "VTimer handler", &fatal_target);
+    uint32_t ret = s->r[2];
+    memcpy(s, &save, sizeof(CpuState));
+    if (fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = fatal_target;
+    }
+    sr_cpu_link_clear(s);
+    atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
+    return ret;
+}
+
+/* The scheduler's VTimer interrupt step: run the most overdue handler once. */
+static void vtimer_service_one(void) {
+    uint64_t now = sched_vtime_us();
+    int best = -1;
+    uint64_t best_deadline = UINT64_MAX;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        uint64_t d = vtimer_handler_deadline(&s_vtimers[i]);
+        if (d <= now && d < best_deadline) { best = i; best_deadline = d; }
+    }
+    if (best < 0) return;
+    VTimer *t = &s_vtimers[best];
+    const uint32_t uid = t->uid, handler = t->handler;
+    const uint64_t scheduled = t->schedule;
+    s_vtimer_in_handler = uid;
+    uint32_t delay = vtimer_call_handler(s_cpu, t, scheduled, vtimer_elapsed_at(t, now));
+    s_vtimer_in_handler = 0u;
+    t = vtimer_lookup(uid);
+    if (!t || t->handler != handler || t->schedule != scheduled) return;
+    if (delay == 0u) t->handler = 0u;
+    else t->schedule = scheduled + delay;
+}
+
 static uint32_t h_GetVTimerTime(CpuState *s) {
     /* a0=uid, a1=SceKernelSysClock * (low word, then high word). The pointer is checked before
      * the UID, as ReferFplStatus does. */
@@ -12885,9 +13038,9 @@ typedef struct {
     uint32_t active;        /* 0x24: 1 while running, 0 when created or stopped (measured) */
     uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 */
     uint32_t current[2];    /* 0x30: elapsed guest time, low/high (measured shape) */
-    uint32_t schedule[2];   /* 0x38: 0 (measured) */
-    uint32_t handler;       /* 0x40: 0 (measured) */
-    uint32_t common;        /* 0x44: 0 (measured) */
+    uint32_t schedule[2];   /* 0x38: timer time of the next handler call (0 until one is set) */
+    uint32_t handler;       /* 0x40: the handler, 0 when none */
+    uint32_t common;        /* 0x44: the handler's common argument */
 } SceKernelVTimerInfo;
 typedef char vtimer_info_is_72_bytes[(sizeof(SceKernelVTimerInfo) == VTIMER_INFO_SIZE) ? 1 : -1];
 
@@ -12914,6 +13067,10 @@ static uint32_t h_ReferVTimerStatus(CpuState *s) {
     info.base[1] = (uint32_t)(base >> 32);
     info.current[0] = (uint32_t)current;
     info.current[1] = (uint32_t)(current >> 32);
+    info.schedule[0] = (uint32_t)t->schedule;
+    info.schedule[1] = (uint32_t)(t->schedule >> 32);
+    info.handler = t->handler;
+    info.common = t->common;
     for (uint32_t i = 0; i < write_len; i++)
         MEM_W8(A1 + i, ((const uint8_t *)&info)[i]);
     return 0;
@@ -26785,9 +26942,9 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
     /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
     sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
-    sr_hle_register_unsupported(0xd8b299aeu, "sceKernelSetVTimerHandler", 0x80020002u);
-    sr_hle_register_unsupported(0x53b00e9au, "sceKernelSetVTimerHandlerWide", 0x80020002u);
-    sr_hle_register_unsupported(0xd2d615efu, "sceKernelCancelVTimerHandler", 0x80020002u);
+    sr_hle_register(0xd8b299aeu, "sceKernelSetVTimerHandler", h_SetVTimerHandler);
+    sr_hle_register(0x53b00e9au, "sceKernelSetVTimerHandlerWide", h_SetVTimerHandlerWide);
+    sr_hle_register(0xd2d615efu, "sceKernelCancelVTimerHandler", h_CancelVTimerHandler);
     sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
     sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
@@ -27142,6 +27299,7 @@ void sr_hle_init(void) {
     /* Opt-in GE completion timing: the hooks report nothing unless SR_GE_TIMING=1. */
     sched_set_ge_timing_hooks(ge_timing_next_deadline_us, ge_timing_service_due);
     (void)ge_timing_on();
+    sched_set_vtimer_hooks(vtimer_next_deadline_us, vtimer_service_one);
 #endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }

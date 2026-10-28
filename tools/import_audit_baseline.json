@@ -1341,11 +1341,10 @@
     "status": "complete"
   },
   "0x53b00e9a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerHandlerWide",
     "name": "sceKernelSetVTimerHandlerWide",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0x542ad630": {
     "classification": "controlled_unsupported",
@@ -3202,11 +3201,10 @@
     "status": "unreviewed"
   },
   "0xd2d615ef": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_CancelVTimerHandler",
     "name": "sceKernelCancelVTimerHandler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd3075926": {
     "classification": "dedicated",
@@ -3299,11 +3297,10 @@
     "status": "unreviewed"
   },
   "0xd8b299ae": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerHandler",
     "name": "sceKernelSetVTimerHandler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd8b73127": {
     "classification": "dedicated",

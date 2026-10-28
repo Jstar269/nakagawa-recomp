@@ -1720,6 +1720,13 @@ void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
 typedef uint64_t (*SrSchedGeNextDeadline)(void);
 typedef void (*SrSchedGeServiceDue)(void);
 void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
+/* VTimer handlers (hle.c): the earliest guest-time deadline of a running VTimer with a
+ * handler (UINT64_MAX when none), and the interrupt-service step that runs the most overdue
+ * handler once.  With no hooks registered the scheduler behaves as before. */
+typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
+typedef void (*SrSchedVtimerServiceOne)(void);
+void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                                SrSchedVtimerServiceOne service_one);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
