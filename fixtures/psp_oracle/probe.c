@@ -10186,6 +10186,95 @@ static void at3_stream_queries(int emulated, int atrac_id) {
     probe_emit_durable(emulated, line, strlen(line));
 }
 
+/* #1296 / #1096 follow-up: how long one sceAtracDecodeData takes, and whether its caller gives up
+   the CPU meanwhile. A lower-priority peer only counts while the caller is not runnable, so a
+   count that advances across a decode means the caller blocked inside it. A 1 ms delay is the
+   positive control. Call 0's full PCM goes to a private host0 file. */
+#define AT3_PEER_PRIO_STEP 8
+#define AT3_PCM0_PATH "host0:/at3_pcm0.bin"
+static volatile uint32_t s_at3_peer_count;
+static volatile int s_at3_peer_stop;
+
+static int at3_peer_thread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    while (!s_at3_peer_stop) s_at3_peer_count++;
+    return 0;
+}
+
+static void at3_timing_line(int emulated, const char *step, int rc, uint32_t dt_us, uint32_t peer) {
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-timing-%s status=RC "
+                   "result=0x%08x dt_us=%u peer=%u\n",
+                   step, (unsigned int)rc, (unsigned int)dt_us, (unsigned int)peer);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static int at3_timed_decode(int emulated, const char *step, int atrac_id, int *samples, int *end_flag,
+                            int *remain) {
+    const uint32_t c0 = s_at3_peer_count;
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int rc = sceAtracDecodeData(atrac_id, s_at3_pcm, samples, end_flag, remain);
+    const uint32_t t1 = sceKernelGetSystemTimeLow();
+    const uint32_t c1 = s_at3_peer_count;
+    at3_timing_line(emulated, step, rc, t1 - t0, c1 - c0);
+    return rc;
+}
+
+static SceUID at3_peer_start(int emulated) {
+    const int self = sceKernelGetThreadCurrentPriority();
+    int prio = self + AT3_PEER_PRIO_STEP;
+    if (prio > 0x6f) prio = 0x6f;
+    s_at3_peer_count = 0;
+    s_at3_peer_stop = 0;
+    SceUID peer = sceKernelCreateThread("at3_peer", at3_peer_thread, prio, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = peer >= 0 ? sceKernelStartThread(peer, 0, NULL) : peer;
+    if (peer >= 0 && start_rc < 0) {
+        sceKernelDeleteThread(peer);
+        peer = -1;
+    }
+    /* Positive control: a 1 ms delay gives the CPU away, so the peer must count across it. */
+    uint32_t control = 0;
+    if (peer >= 0) {
+        const uint32_t c0 = s_at3_peer_count;
+        sceKernelDelayThread(1000);
+        control = s_at3_peer_count - c0;
+    }
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-peer status=RC "
+                   "result=0x%08x self_prio=%d peer_prio=%d control_delay_us=1000 control_peer=%u\n",
+                   (unsigned int)start_rc, self, prio, (unsigned int)control);
+    probe_emit_durable(emulated, line, strlen(line));
+    return peer;
+}
+
+static void at3_peer_stop(SceUID peer) {
+    s_at3_peer_stop = 1;
+    if (peer < 0) return;
+    SceUInt join_us = 2000000u;
+    if (sceKernelWaitThreadEnd(peer, &join_us) < 0) sceKernelTerminateDeleteThread(peer);
+    else sceKernelDeleteThread(peer);
+}
+
+static void at3_pcm0_file(int emulated, int samples) {
+    int rc = -1;
+    const int bytes = samples > 0 && samples <= 1024 ? samples * 4 : 0;
+    if (bytes) {
+        SceUID fd = sceIoOpen(AT3_PCM0_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+        rc = fd;
+        if (fd >= 0) {
+            rc = sceIoWrite(fd, s_at3_pcm, (SceSize)bytes);
+            (void)sceIoClose(fd);
+        }
+    }
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm0-file status=RC "
+                   "result=0x%08x bytes=%d\n", (unsigned int)rc, bytes);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
 static void run_at3_decode(int emulated) {
     int input_rc = -1;
     int input_read = 0;
@@ -10251,9 +10340,10 @@ static void run_at3_decode(int emulated) {
                     probe_step(emulated, "at3-decode", "set-data");
                     setdata_rc = sceAtracSetData(atrac_id, s_at3_input, AT3_DECODE_BYTES);
                     at3_result(emulated, "set-data", setdata_rc);
+                    const SceUID peer = at3_peer_start(emulated);
                     probe_step(emulated, "at3-decode", "decode-data");
-                    decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &samples, &end_flag,
-                                                   &remain_frames);
+                    decode_rc = at3_timed_decode(emulated, "decode0", atrac_id, &samples, &end_flag,
+                                                 &remain_frames);
                     at3_result(emulated, "decode-data", decode_rc);
                     char decoded[200];
                     (void)snprintf(decoded, sizeof(decoded),
@@ -10264,6 +10354,7 @@ static void run_at3_decode(int emulated) {
                     /* #1096 follow-up: later frames, PCM fingerprints and the stream-position queries. The PCM
                        bytes stay in the private host0 log as a hash plus a few leading samples. */
                     at3_pcm_record(emulated, "decode0", decode_rc, samples, end_flag, remain_frames);
+                    at3_pcm0_file(emulated, samples);
                     at3_stream_queries(emulated, atrac_id);
                     for (int more = 1; more <= AT3_DECODE_EXTRA_CALLS && decode_rc == 0 && end_flag == 0;
                          more++) {
@@ -10272,10 +10363,11 @@ static void run_at3_decode(int emulated) {
                         (void)snprintf(step, sizeof(step), "decode%d", more);
                         probe_step(emulated, "at3-decode", step);
                         memset(s_at3_pcm, 0, sizeof(s_at3_pcm));
-                        decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &s2, &e2, &r2);
+                        decode_rc = at3_timed_decode(emulated, step, atrac_id, &s2, &e2, &r2);
                         at3_pcm_record(emulated, step, decode_rc, s2, e2, r2);
                         end_flag = e2;
                     }
+                    at3_peer_stop(peer);
                     at3_stream_queries(emulated, atrac_id);
                     probe_step(emulated, "at3-decode", "release-atracid");
                     release_rc = sceAtracReleaseAtracID(atrac_id);
