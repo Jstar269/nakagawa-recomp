@@ -511,6 +511,9 @@ static int test_prompt_style_follows_device(void) {
     nk_ui_input_init(&in);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS && !nk_ui_input_pad_connected(&in),
           "no pad: keyboard and mouse glyphs");
+    CHECK(nk_ui_input_pad_prompt_style(&in) == NK_UI_PROMPT_NEUTRAL &&
+              nk_ui_input_pad_prompt_style(NULL) == NK_UI_PROMPT_NEUTRAL,
+          "no pad: controller bindings are shown by position");
     (void)nk_ui_input_device_change(&in, 7, NK_UI_PAD_LETTERS_A_SOUTH, true, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH && nk_ui_input_pad_connected(&in),
           "a pad that connects switches the glyphs at once");
@@ -524,6 +527,8 @@ static int test_prompt_style_follows_device(void) {
                              NK_UI_PAD_KEYBOARD, 1.1, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS,
           "a key press makes the keyboard the active device");
+    CHECK(nk_ui_input_pad_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
+          "with the keyboard active, controller bindings keep the connected pad's set (#1299)");
     (void)nk_ui_input_button(&in, NK_UI_BTN_BACK, true, 7, NK_UI_PAD_LETTERS_A_SOUTH, 2.0, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
           "a pad button switches back to the pad's glyphs");
@@ -531,12 +536,16 @@ static int test_prompt_style_follows_device(void) {
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS, "a click is mouse activity");
     (void)nk_ui_input_device_change(&in, 9, NK_UI_PAD_NEUTRAL, true, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_NEUTRAL, "a second pad takes over when it connects");
+    CHECK(nk_ui_input_pad_prompt_style(&in) == NK_UI_PROMPT_NEUTRAL,
+          "the newest pad names the controller bindings");
     (void)nk_ui_input_device_change(&in, 9, NK_UI_PAD_NEUTRAL, false, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
           "when the active pad leaves, the pad still connected is used");
     (void)nk_ui_input_device_change(&in, 7, NK_UI_PAD_LETTERS_A_SOUTH, false, ev, 4);
     CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS && !nk_ui_input_pad_connected(&in),
           "with every pad gone the keyboard and mouse glyphs return");
+    CHECK(nk_ui_input_pad_prompt_style(&in) == NK_UI_PROMPT_NEUTRAL,
+          "with every pad gone controller bindings are shown by position again");
     return 1;
 }
 
@@ -702,6 +711,7 @@ static NkUiPromptSpec spec_for(NkUiPromptStyle style, NkUiPromptAction action) {
     s.face_rgba = theme->surface_high;
     s.font = 0;
     s.image = NULL;
+    s.label = NULL;
     return s;
 }
 
@@ -777,6 +787,66 @@ static int test_prompt_bounds(void) {
         CHECK(!nk_ui_prompt_draw(&buffer, &spec, rect, 1.0f, 1u), "unknown action");
         nk_ui_draw_buffer_destroy(&buffer);
     }
+    return 1;
+}
+
+/* A binding's glyph (#1299): its label replaces the action's own text, keycaps and
+   shoulder pills grow with it, and the glyph stays inside its box. */
+static int test_prompt_labels(void) {
+    static const struct {
+        NkUiPromptStyle style;
+        NkUiPromptAction action;
+        const char *label;
+        float width;
+    } cases[] = {
+        {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM, "X", 20.0f},
+        {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM, "SHIFT", 38.0f},
+        {NK_UI_PROMPT_NEUTRAL, NK_UI_PROMPT_ACT_TAB_PREV, "LT", 32.0f},
+        {NK_UI_PROMPT_LETTERS_A_EAST, NK_UI_PROMPT_ACT_TAB_NEXT, "ZR", 32.0f},
+        {NK_UI_PROMPT_SHAPES, NK_UI_PROMPT_ACT_TAB_PREV, "CREATE", 43.6f}
+    };
+    static const float densities[2] = {1.0f, 1.5f};
+    static char dump[4096];
+    char quoted[16];
+    size_t i;
+    int d;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        float width = nk_ui_prompt_label_width(cases[i].style, cases[i].action, cases[i].label,
+                                               20.0f);
+        CHECK(fabsf(width - cases[i].width) < 0.01f, "a labelled glyph is as wide as its label");
+        for (d = 0; d < 2; ++d) {
+            NkUiDrawBuffer buffer;
+            NkUiPromptSpec spec = spec_for(cases[i].style, cases[i].action);
+            NkUiRect rect = {10.0f, 4.0f, 0.0f, 20.0f};
+            NkUiPixelRect box;
+            uint32_t c;
+            int texts = 0;
+            memset(&buffer, 0, sizeof(buffer));
+            rect.w = width;
+            spec.label = cases[i].label;
+            CHECK(nk_ui_prompt_draw(&buffer, &spec, rect, densities[d], 7u), "labelled glyph draws");
+            box = nk_ui_round_rect(rect, densities[d]);
+            for (c = 0; c < buffer.list.ncmd; ++c) {
+                const NkUiDrawCmd *cmd = &buffer.list.cmd[c];
+                CHECK(cmd->bounds[0] >= box.x0 && cmd->bounds[1] >= box.y0 &&
+                          cmd->bounds[2] <= box.x1 && cmd->bounds[3] <= box.y1,
+                      "a labelled glyph stays inside its box");
+                if (cmd->kind == NK_UI_DRAW_TEXT) ++texts;
+            }
+            (void)nk_ui_dump_draw_list(&buffer.list, dump, sizeof(dump));
+            (void)snprintf(quoted, sizeof(quoted), "\"%s\"", cases[i].label);
+            CHECK(texts == 1 && strstr(dump, quoted) != NULL,
+                  "the label is the one text the glyph draws");
+            nk_ui_draw_buffer_destroy(&buffer);
+        }
+    }
+    CHECK(nk_ui_prompt_label_width(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM, NULL, 20.0f) ==
+              nk_ui_prompt_width(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM, 20.0f) &&
+              nk_ui_prompt_label_width(NK_UI_PROMPT_NEUTRAL, NK_UI_PROMPT_ACT_TAB_PREV, NULL,
+                                       20.0f) == 32.0f &&
+              nk_ui_prompt_label_width(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_MOVE, "UP",
+                                       20.0f) == 30.0f,
+          "without a label the action's width; the arrow cluster keeps its own");
     return 1;
 }
 
@@ -1304,7 +1374,7 @@ int main(int argc, char **argv) {
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
         !test_prompt_style_follows_device() ||
         !test_utf8() || !test_label_table() || !test_prompt_bounds() ||
-        !test_prompt_images() || !test_glyph_goldens()) {
+        !test_prompt_labels() || !test_prompt_images() || !test_glyph_goldens()) {
         return 1;
     }
     puts("nk_ui focus graph, input model, label table, prompt glyph goldens and images passed");

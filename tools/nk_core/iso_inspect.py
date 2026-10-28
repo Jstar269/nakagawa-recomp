@@ -400,6 +400,9 @@ def plan_guest_module_layout(
       otherwise). Two fixed-address modules may share addresses: only modules loaded
       at the same time compete for memory, and the allocator decides that when the
       game loads them.
+    * a code overlay (an MWo3 file the game reads into memory itself) is declared the
+      same way and translated at its own load address; the runtime binds it when the
+      game invalidates the instruction cache over it, not at sceKernelLoadModule.
 
     Modules are listed by case-insensitive filename.
     """
@@ -451,6 +454,27 @@ def plan_guest_module_layout(
             deferred.append({
                 "name": name,
                 "reason": "duplicate of the main executable, not loaded as a module",
+            })
+            continue
+        if mod_bytes[:4] == b"MWo3":
+            # A code overlay is not a module: the game reads it to its own load address
+            # and announces it with an instruction-cache invalidate, where the runtime
+            # binds its translation. It is translated like a runtime-placed module and
+            # never loaded through sceKernelLoadModule.
+            from analyze import code_overlay_layout
+            try:
+                code_overlay_layout(mod_bytes)
+            except ValueError as exc:
+                raise IsoInspectionError(
+                    f"code overlay has a malformed header: {name}: {exc}",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                ) from exc
+            modules.append({
+                "name": name,
+                "required": True,
+                "role": "guest-prx",
+                "placement": "runtime",
+                "guest_path": guest_path,
             })
             continue
         interface = read_guest_module_interface(name, mod_bytes)

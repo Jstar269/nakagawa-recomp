@@ -313,6 +313,24 @@ static const char *const k_key_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
     "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
     "Q", "W", "S", "Z", "X", "A", "None", "None"
 };
+/* The glyphs player_ui_nk.c gives the defaults (#1299): the controller's in the set of
+   an Xbox-style pad, the keys as keycaps; Home and Hold are unbound. */
+#define GLYPH(action, label) {true, NK_UI_PROMPT_ACT_##action, label}
+#define NO_GLYPH {false, NK_UI_PROMPT_ACT_CONFIRM, NULL}
+static const PlayerUiBindingGlyph k_pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    GLYPH(TAB_PREV, "VIEW"), GLYPH(MENU, NULL), GLYPH(MOVE, NULL), GLYPH(MOVE, NULL),
+    GLYPH(MOVE, NULL), GLYPH(MOVE, NULL), GLYPH(TAB_PREV, NULL), GLYPH(TAB_NEXT, NULL),
+    GLYPH(DETAILS, NULL), GLYPH(BACK, NULL), GLYPH(CONFIRM, NULL), GLYPH(OPTIONS, NULL),
+    NO_GLYPH, NO_GLYPH
+};
+static const PlayerUiBindingGlyph k_key_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    GLYPH(CONFIRM, "SHIFT"), GLYPH(CONFIRM, "ENTER"), GLYPH(MOVE, NULL), GLYPH(MOVE, NULL),
+    GLYPH(MOVE, NULL), GLYPH(MOVE, NULL), GLYPH(CONFIRM, "Q"), GLYPH(CONFIRM, "W"),
+    GLYPH(CONFIRM, "S"), GLYPH(CONFIRM, "Z"), GLYPH(CONFIRM, "X"), GLYPH(CONFIRM, "A"),
+    NO_GLYPH, NO_GLYPH
+};
+#undef GLYPH
+#undef NO_GLYPH
 
 static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
     PlayerUiControllerModel pad;
@@ -324,7 +342,10 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         pad.names[i] = k_pad_names[i];
         pad.bindings[i] = which == FLOW_CONTROLLER_KEYS ? k_key_bindings[i] : k_pad_bindings[i];
+        pad.glyphs[i] = which == FLOW_CONTROLLER_KEYS ? k_key_glyphs[i] : k_pad_glyphs[i];
     }
+    pad.glyph_style = which == FLOW_CONTROLLER_KEYS ? NK_UI_PROMPT_KEYCAPS
+                                                    : NK_UI_PROMPT_LETTERS_A_SOUTH;
     pad.capturing = -1;
     pad.scope = "global mapping";
     pad.deadzone = "Dead zone 24%";
@@ -1963,6 +1984,76 @@ static void test_controller_and_developer_log_pages(void) {
           "the newest log line and Close are on screen at 960 x 540");
 }
 
+/* True when the dump has a draw command of `kind` for element `id`, with `text` when
+   that is not NULL; the first such command's left and right edges go to x0 and x1. */
+static bool dump_has_element(const char *dump, NkUiId id, const char *kind, const char *text,
+                             int *x0, int *x1) {
+    char prefix[32];
+    char quoted[40];
+    const char *row = dump;
+    (void)snprintf(prefix, sizeof(prefix), "%08X %s ", (unsigned)id, kind);
+    if (text != NULL) (void)snprintf(quoted, sizeof(quoted), "\"%s\"\n", text);
+    while (row != NULL && *row != '\0') {
+        const char *end = strchr(row, '\n');
+        if (strncmp(row, prefix, strlen(prefix)) == 0 &&
+            (text == NULL || (end != NULL && (size_t)(end - row) + 1u >= strlen(quoted) &&
+                              strncmp(end + 1 - strlen(quoted), quoted, strlen(quoted)) == 0))) {
+            int left = 0, top = 0, right = 0;
+            if (sscanf(row + strlen(prefix), "%d %d %d", &left, &top, &right) != 3) return false;
+            if (x0 != NULL) *x0 = left;
+            if (x1 != NULL) *x1 = right;
+            return true;
+        }
+        row = end != NULL ? end + 1 : NULL;
+    }
+    return false;
+}
+
+/* #1299: each binding's prompt glyph, in the set of the device shown, between the
+   control's name and its binding: keycaps with the key's legend for the keyboard, the
+   pad's own face letters, shoulders, D-pad and pills for the controller. */
+static void test_controller_binding_glyphs(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const FlowCase pages[] = {FLOW_CONTROLLER, FLOW_CONTROLLER_KEYS};
+    static const char *const pad_text[PLAYER_UI_CONTROLLER_BUTTONS] = {
+        "VIEW", NULL, NULL, NULL, NULL, NULL, "L", "R", "Y", "B", "A", "X", NULL, NULL
+    };
+    for (size_t p = 0u; p < sizeof(pages) / sizeof(pages[0]); ++p) {
+        bool keys = pages[p] == FLOW_CONTROLLER_KEYS;
+        const PlayerUiBindingGlyph *glyphs = keys ? k_key_glyphs : k_pad_glyphs;
+        CHECK(dump_flow_case(pages[p], dump, sizeof(dump)), "the Controls page draws");
+        for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
+            NkUiId glyph = PLAYER_UI_ID_CONTROLLER_GLYPH(control);
+            const char *text = keys ? glyphs[control].label : pad_text[control];
+            int glyph_x1 = 0, words_x0 = 0;
+            if (!glyphs[control].shown) {
+                CHECK(!dump_has_element(dump, glyph, "RECT", NULL, NULL, NULL) &&
+                          !dump_has_element(dump, glyph, "TEXT", NULL, NULL, NULL),
+                      "an unbound control has no glyph");
+                continue;
+            }
+            CHECK(dump_has_element(dump, glyph, "RECT", NULL, NULL, &glyph_x1),
+                  "every binding has its glyph");
+            if (text != NULL) {
+                CHECK(dump_has_element(dump, glyph, "TEXT", text, NULL, NULL),
+                      "the glyph prints the key's legend or the pad button's name");
+            } else {
+                CHECK(!dump_has_element(dump, glyph, "TEXT", NULL, NULL, NULL),
+                      "the D-pad, arrow keys and menu button glyphs are drawn, not written");
+            }
+            CHECK(dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_BUTTON(control), "TEXT", NULL,
+                                   &words_x0, NULL) &&
+                      glyph_x1 < words_x0,
+                  "the glyph sits before the binding in words");
+        }
+    }
+    CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)) &&
+              dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(1u), "TEXT", "ENTER", NULL,
+                               NULL) &&
+              strstr(dump, "\"PRESS A KEY...\"") != NULL,
+          "the control waiting for a key keeps the glyph of the key it has");
+}
+
 /* #1299: the keyboard keys on the Controls page. CONTROLLER and KEYBOARD choose
    whose bindings the rows show, each row's button rebinds that control's key,
    and the page names every PSP control with its key and fits the minimum window. */
@@ -3231,6 +3322,7 @@ int main(int argc, char **argv) {
     test_settings_pages();
     test_controller_and_developer_log_pages();
     test_controller_keyboard_page();
+    test_controller_binding_glyphs();
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
