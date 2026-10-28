@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d6edcd6d9327ce033648bb3bac19a7ab496a727aaaef2c071e0f0bfbdabdcdf0"
+      "sha256": "c9ba29536e3ae2fff388dda423235937191cb01da428dd569ae955dcdb233382"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7f13b953dafd7167a5c98a48be7767733f901a7798ca1cf9fd8a9d2804e47fb3"
+      "sha256": "1066a253fa20dee63d50596c4355bf5439f58dc5e1de051bdc338b2c869ef696"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -9053,7 +9053,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "315491ea96b0e00143fcf8ed13d017ea91a31b78e392ed274ad34209406f2b7c"
+      "sha256": "7935dadb4dc0139024bfbc0036d1524e4d88abfe7cc066f52487709513e98cbf"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -9330,7 +9330,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5b99de689101cc080537a656826ed5afd7e6bc7a342ff3e5b676a3278bd4ba6"
+      "sha256": "c2e11836e68b7df03fe69767cdc876be671937e15e09b77e43ed0c80340fab93"
     },
     {
       "path": "src/rt/psmf_producer.c",
