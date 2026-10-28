@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "21dc0a9c7fa1509e985f930eb56d2528372fcd5fa42a0e97b43cee950a3c8881"
+      "sha256": "973b313c91bc3585ec6fea2100ab6e6ce3cd958280dcd56c40a19170b1554344"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5995,7 +5995,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "27406ad60d97731bf477a91f5306058433db66eb321cdea8974c2e25726ee3a4"
+      "sha256": "64a18995089f8cb88b6886ffdae05567b71b9a679be8d25f19089322e1e48158"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7c950b8317b31a2bd3cdf61c2734003d28a0916cbd5ebaa54f3159fce86b78a9"
+      "sha256": "0834d7286c41f42c76ed301cf4d437ceb4781569959ddf6e7be6316a5ba17053"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf0e5f62054ed2268d3e66ae511a664e86c9f4bf002d84b28cb5151b0d1de3ed"
+      "sha256": "fdba3ef1021ec335d198f46b19b55a83be13c310a81073e3c13479021fb892df"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9392,7 +9392,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3afe7d027f3cbd690894d51930a3668347b5d49fd3940879b531727040ff297e"
+      "sha256": "3590382476a6064ee9a69fa36b5e402faab259b09d8b86976f6e0dfcb01ba740"
     },
     {
       "path": "src/rt/savedata.c",
@@ -13315,7 +13315,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "438174cc4b51eb0a4369449422c4699f7ba2a0d432bd8aab16ed5cba54a46e74"
+      "sha256": "38d28ff249b34f3467e7352ff7a57b29bf8692d549ede828c6640a5572d22229"
     },
     {
       "path": "tools/test_ci_paths.py",
