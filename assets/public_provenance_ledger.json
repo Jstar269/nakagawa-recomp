@@ -4106,7 +4106,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7ba02abc68fc629dea6e5f75f63f1b62f9c152eeb10c963e60ae6632f68c6d0c"
+      "sha256": "599455fb76f0f6982fc54de88694688e5cb51614786f55e95f6ec889c0d82811"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -9945,7 +9945,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5723f0cd64f6ba416ae5d79088e8f31c5cd6aa33633661646837dee06d517103"
+      "sha256": "bf9864a761fd1f1c2a7feef61f4e5b15c132300a832473f8c22a474f21f9820c"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -9957,7 +9957,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "097a4630d9448ff8d91cabb1d5b442e8af7dc20c0c828d303fb0f1e1e19d5a38"
+      "sha256": "f19999f4c45a0fdfea25a2dc705f7fc8ccbf419af8b5101710d4c18f72d80146"
     },
     {
       "path": "src/ui/nk_ui_assets.c",
@@ -10533,7 +10533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e65045f5914d99e83ab42071aebb08fb8c7ad76e5f33fb0203a78c8825822e6"
+      "sha256": "0f2577cc8ffd81dcdb43942d88dc125ce86d4617f2eb0d236da19aebee46e45e"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
