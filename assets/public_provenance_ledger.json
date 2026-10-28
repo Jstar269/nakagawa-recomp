@@ -1438,7 +1438,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "30eae1ad8b2db788f072867882bccb007fa1449538438cc3f74edcc82b4f0d3e"
+      "sha256": "6c7d541a0f188dbde46389732bf62f28f62b6c7a009591f67870ba1cfcd8a87e"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1720,7 +1720,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fac3449d902a047bfd367930ca7b3c51964b0d24f4cc5b32fda0e55733e3d5ce"
+      "sha256": "bf38c1da718055be97d262724db4099ce4bdd734508fb008521225bd323814fa"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -13658,7 +13658,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a9ce11c26c1702aaff72a7eb1a9254c785915850689d06833547d6bf1ff7abe"
+      "sha256": "4278d30d6fe7712de950103037a1dfa2f0757383e83f41fecfc092437f2d153c"
     },
     {
       "path": "tools/test_compiler_compare.py",
