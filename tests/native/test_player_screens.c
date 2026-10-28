@@ -2991,6 +2991,18 @@ static void test_stalled_game_offers_stop_once(void) {
     }
     CHECK(stops == 1u, "a stalled game's page offers STOP GAME once");
     CHECK(strstr(dump, "KEEP WAITING") != NULL, "the stall card keeps Keep waiting");
+    CHECK(strstr(dump, "hasn't drawn anything new") != NULL, "a no-new-frames card says so");
+    /* #308: frames keep coming but show nothing: the same card, worded for a black screen. */
+    model.stalled_game_dark_picture = true;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &model);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "only a black screen") != NULL, "a dark-picture card names the black screen");
+    CHECK(strstr(dump, "hasn't drawn anything new") == NULL, "a dark-picture card drops the no-frames text");
+    CHECK(strstr(dump, "KEEP WAITING") != NULL, "the dark-picture card keeps Keep waiting");
     nk_ui_destroy(ui);
 }
 

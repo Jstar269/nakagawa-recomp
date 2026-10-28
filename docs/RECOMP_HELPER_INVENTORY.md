@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **363** (declared in `recomp.h`: 305)
-- reach class: emitter-reached 69, production-runtime-only 264, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 337
+- helpers: **365** (declared in `recomp.h`: 307)
+- reach class: emitter-reached 69, production-runtime-only 266, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 339
 
 ## Helpers
 
@@ -145,6 +145,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_set_guest_process_gp` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_priority` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_thread_exit_hook` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_set_vtimer_hooks` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_start_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_suspend_dispatch` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_suspend_interrupts` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -244,6 +245,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_guest_span_readable_at` | `rt/recomp.h` | yes | emitter-reached (via `sr_guest_span_readable`) | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_readable_current_at` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_report_vram_mirror_boundary` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
+| `sr_guest_span_writable_any_view` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_writable_at` | `rt/recomp.h` | yes | emitter-reached (via `sr_guest_span_writable`) | `rt/recomp.h`: upstream_derived |
 | `sr_guest_sprintf` | `rt/guest_printf.c` | yes | emitter-reached (direct) | `rt/guest_printf.c`: project_authored_attested |
 | `sr_guest_symbol_at` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
