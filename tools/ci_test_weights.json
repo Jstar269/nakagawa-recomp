@@ -134,6 +134,7 @@
     "test_prx_loader_cleanroom": 0.54,
     "test_prxload_psp_header": 0.01,
     "test_prxload_relocations": 0.01,
+    "test_psp_decrypt": 5.61,
     "test_psp_issue_matrix": 0.02,
     "test_psp_leaf_parsers": 0.14,
     "test_psp_oracle": 1.68,

@@ -23,6 +23,7 @@
 
 #include "nk_font.h"
 #include "nk_launch.h"
+#include "nk_psp_keystore.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
@@ -153,6 +154,7 @@ static int write_launch_environment_probe(void) {
     const char *novbpace = getenv("SR_NOVBPACE");
     const char *font_dir = getenv("SR_FONTDIR");
     const char *user_data_root = getenv("SR_USER_DATA_ROOT");
+    const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -165,7 +167,8 @@ static int write_launch_environment_probe(void) {
                      "NK_INPUT_PROFILE=%s\n"
                      "SR_NOVBPACE=%s\n"
                      "SR_FONTDIR=%s\n"
-                     "SR_USER_DATA_ROOT=%s\n",
+                     "SR_USER_DATA_ROOT=%s\n"
+                     "SR_EXPERIMENTAL_60HZ=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -177,7 +180,8 @@ static int write_launch_environment_probe(void) {
                      input_profile ? input_profile : "<unset>",
                      novbpace ? novbpace : "<unset>",
                      font_dir ? font_dir : "<unset>",
-                     user_data_root ? user_data_root : "<unset>") >= 0;
+                     user_data_root ? user_data_root : "<unset>",
+                     experimental_60hz ? experimental_60hz : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -317,6 +321,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
     /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
     set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
+    /* An inherited 60 Hz opt-in must not reach the child: only the session decides. */
+    bool had_60hz;
+    char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
+    set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
@@ -419,9 +427,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
+    session.config.experimental_60hz = true;
     session.config.fps_cap = -1;
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
@@ -435,7 +445,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(fclose(report) == 0);
     assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
+    session.config.experimental_60hz = false;
 
+    restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
+    free(old_60hz);
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
@@ -1142,6 +1156,24 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
                                  sizeof(pgf_error)));
     assert(strstr(pgf_error, "cannot open the file") == NULL);
     assert(strstr(pgf_error, "truncated") != NULL);
+
+    /* The key file lives under the same per-user root. A malformed key file
+     * is enough to prove it was OPENED: "no key file at" is the verdict an
+     * unopenable path produces, and it must not appear for an existing file. */
+    {
+        char key_path[1300];
+        char key_error[256] = "";
+        snprintf(key_path, sizeof(key_path), "%s%ckeys.json", root, sep);
+        write_file_utf8(key_path, "{ this is not json");
+        NkKeystore *keystore = nk_keystore_create();
+        assert(keystore != NULL);
+        assert(nk_keystore_load_file(keystore, key_path, key_error,
+                                     sizeof(key_error)) != 0);
+        assert(strstr(key_error, "no key file at") == NULL);
+        assert(strlen(key_error) > 0);
+        nk_keystore_free(keystore);
+        nk_remove_utf8(key_path);
+    }
 
     nk_remove_utf8(staged_eboot);
     nk_remove_utf8(manifest);
@@ -2026,10 +2058,10 @@ int main(int argc, char **argv) {
     snprintf(legacy_manifest, sizeof(legacy_manifest), "%s%clegacy-retail.json",
              root17, sep);
     const char *legacy_manifest_json =
-        "{\"schema_version\":1,\"id\":\"hst-ucus98701-v1\","
+        "{\"schema_version\":1,\"id\":\"legacy-retail-fixture-v1\","
         "\"game_name\":\"hst\","
         "\"display_name\":\"Legacy Retail Fixture\",\"kind\":\"retail\","
-        "\"disc\":{\"id\":\"UCUS98701\",\"region\":\"NA\","
+        "\"disc\":{\"id\":\"UCES01402\",\"region\":\"EU\","
         "\"revision_policy\":\"exact-disc-id\"},"
         "\"executable\":{\"base\":\"0x00000000\",\"entry\":\"0x00000000\","
         "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
@@ -2046,8 +2078,8 @@ int main(int argc, char **argv) {
     write_file(legacy_img, "image");
 
     make_game(&game, iso_path);
-    snprintf(game.disc_id, sizeof(game.disc_id), "UCUS98701");
-    snprintf(game.title_id, sizeof(game.title_id), "hst-ucus98701-v1");
+    snprintf(game.disc_id, sizeof(game.disc_id), "UCES01402");
+    snprintf(game.title_id, sizeof(game.title_id), "legacy-retail-fixture-v1");
 
     /* Without the validated overlay: fail closed, never by default. */
     assert(nk_launch_prepare_session(&session, &game, root17) != NK_OK);
@@ -2068,7 +2100,7 @@ int main(int argc, char **argv) {
     assert(session.entry_point == 0u);
     assert(ends_with(session.executable_path, "hst.exe"));
     assert(ends_with(session.image_path, "hst_image.bin"));
-    assert(nk_launch_runtime_available(root17, "hst-ucus98701-v1") == true);
+    assert(nk_launch_runtime_available(root17, "legacy-retail-fixture-v1") == true);
     nk_title_catalog_clear_overlay();
     remove(legacy_exe);
     remove(legacy_img);

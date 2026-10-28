@@ -323,6 +323,12 @@ int main(int argc, char **argv) {
             if (top == 0x3c && (sub3 == 5 || (sub3 == 7 && ((w >> 21) & 0x1F) == 29))) {
                 s0.vfpuCtrl[0] = 0xe4; s0.vfpuCtrl[1] = 0xe4; s0.vfpuCtrl[2] = 0;
             }
+            /* vrndi is defined only under identity prefixes (issue #326): both sides refuse
+             * a pending prefix and stop the run, so fuzz it identity-prefix only, with RCX
+             * (controls 8-15) left random. */
+            if (top == 0x34 && ((w >> 16) & 0x3FFu) == 0x21u) {
+                s0.vfpuCtrl[0] = 0xe4; s0.vfpuCtrl[1] = 0xe4; s0.vfpuCtrl[2] = 0;
+            }
 
             /* G-25: point memory operands at the scratch page and make GPRs
              * deterministic so memory and COP2 transfers compare meaningfully. */

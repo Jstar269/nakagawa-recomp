@@ -113,7 +113,7 @@ static int test_theme_tokens(void) {
 }
 
 static int test_scale_model(void) {
-    NkUiViewport viewport = {640, 400, 6.0f, 0, 150};
+    NkUiViewport viewport = {640, 400, 6.0f, 0, 150, 0.0f, 0.0f};
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     CHECK(scale.density == 4.0f, "automatic UI density clamps at four");
     CHECK(scale.logical_w == 160.0f && scale.logical_h == 100.0f,
@@ -132,7 +132,7 @@ static int test_scale_model(void) {
 
 static int test_explicit_ui_scale_values(void) {
     static const int supported[] = {100, 125, 150, 200};
-    NkUiViewport viewport = {1600, 1000, 2.0f, 0, 100};
+    NkUiViewport viewport = {1600, 1000, 2.0f, 0, 100, 0.0f, 0.0f};
     NkUiScale scale;
     size_t i;
     scale = nk_ui_scale_for_viewport(&viewport);
@@ -683,6 +683,28 @@ static int test_image_command(void) {
     return 1;
 }
 
+/* The app icon: a transparent rounded corner, the ink tile, a lime block and the
+   paper bar, row padding left alone, and refusals for sizes it does not draw. */
+static int test_app_icon(void) {
+    enum { SIZE = 64, STRIDE = SIZE * 4 + 12 };
+    static unsigned char rgba[SIZE * STRIDE];
+    memset(rgba, 0xAB, sizeof(rgba));
+    CHECK(nk_ui_app_icon_rgba(SIZE, rgba, STRIDE), "draw the 64 px icon");
+#define ICON_PIXEL(x, y) (rgba + (size_t)(y) * STRIDE + (size_t)(x) * 4u)
+    CHECK(ICON_PIXEL(0, 0)[3] == 0u, "the rounded corner stays transparent");
+    CHECK(memcmp(ICON_PIXEL(32, 3), "\x10\x15\x1C\xFF", 4) == 0, "ink tile above the mark");
+    CHECK(memcmp(ICON_PIXEL(15, 50), "\xD7\xF2\x4A\xFF", 4) == 0, "lime block, bottom left");
+    CHECK(memcmp(ICON_PIXEL(47, 32), "\xF5\xF7\xFA\xFF", 4) == 0, "paper bar, right");
+    CHECK(ICON_PIXEL(SIZE, 10)[0] == 0xABu && ICON_PIXEL(SIZE, 10)[11] == 0xABu,
+          "the row padding is not written");
+#undef ICON_PIXEL
+    CHECK(!nk_ui_app_icon_rgba(NK_UI_APP_ICON_MIN - 1, rgba, STRIDE) &&
+          !nk_ui_app_icon_rgba(NK_UI_APP_ICON_MAX + 1, rgba, sizeof(rgba)) &&
+          !nk_ui_app_icon_rgba(SIZE, NULL, STRIDE) &&
+          !nk_ui_app_icon_rgba(SIZE, rgba, SIZE * 4 - 1), "sizes and strides it cannot draw");
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -692,7 +714,7 @@ int main(int argc, char **argv) {
         !test_container_return_contract() || !test_backend_declarations() ||
         !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() ||
         !test_input_waits_for_a_new_screen_layout() || !test_wave_caps() ||
-        !test_image_decode() || !test_image_command()) {
+        !test_image_decode() || !test_image_command() || !test_app_icon()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

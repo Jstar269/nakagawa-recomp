@@ -17,7 +17,8 @@
  * shading. Points, lines, triangles (list/strip/fan) and sprites are rasterised.
  *
  * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/8/16/32/DXT1/3/5, swizzled or linear,
- * bilinear; DXT is inherently block-tiled and never swizzled),
+ * bilinear; DXT is inherently block-tiled and never swizzled; mip levels 0-7 chosen by the
+ * TEXLEVEL constant or automatic level of detail, nearest or blended, in tex_lod),
  * programmable alpha test, colour test, alpha blending (full factor/equation set), stencil
  * test/ops (PSP stencil lives in destination alpha), logic ops, 4x4 ordered dithering,
  * colour/alpha write masks, scissor, and a software 16-bit depth buffer.
@@ -26,7 +27,12 @@
  * morph blending (up to 8 targets, read_pos/read_tc/read_nrm/read_color), plus Bezier and
  * B-spline patch primitives tessellated by the active PATCHDIVISION factors (draw_patch).
  *
- * Not emulated: mipmaps (level 0 only), the BJUMP bounding-box test.
+ * Conditional rendering: BOUNDINGBOX records whether its box can be visible and BJUMP skips
+ * the object when it cannot (ge_bounding_box_visible); the exact PSP visibility test is
+ * unmeasured, so only a box wholly beyond one scissor edge is skipped.
+ *
+ * Not emulated: mip levels in the TEXLEVEL slope mode and per-level CLUTs (the TEXMODE
+ * multi-CLUT bit), in this sampler and in the Vulkan backend alike (#1373).
  */
 
 /*
@@ -165,6 +171,9 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+/* Bumped whenever GE state may change (every list command, init, replay restore); state
+ * derived from registers and cached between commands is keyed on it (light_consts). */
+static uint32_t s_ge_state_serial;
 static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
@@ -694,6 +703,10 @@ uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
+/* Result of the last BOUNDINGBOX, read by BJUMP (ge_bounding_box_visible). A list starts
+ * with "visible", so a BJUMP before any BOUNDINGBOX falls through; the PSP's value there is
+ * unmeasured. */
+static int s_bbox_visible = 1;
 
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
@@ -708,6 +721,8 @@ void ge_set_gpu_hooks(const GeGpuHooks *h) {
     s_gpu = h;
 }
 GeState *ge_state_ptr(void) { return &ge; }
+uint32_t ge_state_serial(void) { return s_ge_state_serial; }
+void ge_state_note_external_write(void) { s_ge_state_serial++; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
 }
@@ -720,6 +735,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    s_ge_state_serial++;
     memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
@@ -997,6 +1013,7 @@ uint32_t  ge_zbuf_stride(void) { return zbuf_stride(); }
 void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
+    s_ge_state_serial++;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
     s_zbuf_guest_base = state->zbp ? SR_PHYS(state->zbp) : SR_VRAM_CPU_BASE;
     if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
@@ -1007,6 +1024,7 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
+    s_bbox_visible = 1;
     g_ge_stall_addr = 0;
 }
 
@@ -1861,10 +1879,11 @@ static void dxt_color_block(uint32_t base, uint32_t x, uint32_t y, int fourcolor
     }
 }
 
-static void sample_dxt(uint32_t stride, uint32_t u, uint32_t v, int *r, int *g, int *b, int *a) {
+static void sample_dxt(uint32_t base, uint32_t stride, uint32_t u, uint32_t v,
+                       int *r, int *g, int *b, int *a) {
     uint32_t bpr = (stride / 4 ? stride / 4 : 1);        /* blocks per row */
     uint32_t bsize = ge.tex_fmt == 8 ? 8u : 16u;
-    uint32_t block = ge.tex_addr + ((v / 4) * bpr + (u / 4)) * bsize;
+    uint32_t block = base + ((v / 4) * bpr + (u / 4)) * bsize;
     uint32_t x = u & 3, y = v & 3;
     dxt_color_block(block, x, y, ge.tex_fmt != 8, r, g, b, a);
     if (ge.tex_fmt == 9) {           /* DXT3: 4-bit explicit alpha, u16 per row */
@@ -1883,50 +1902,120 @@ static void sample_dxt(uint32_t stride, uint32_t u, uint32_t v, int *r, int *g, 
     }
 }
 
-static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
-    g_tex_samples++;
-    if (ge.tex_w > 0) {
-        tu = tex_coord(tu, ge.tex_w, ge.tex_wrap & 1);
-        tv = tex_coord(tv, ge.tex_h, (ge.tex_wrap >> 8) & 1);
+/* One texture level as the sampler addresses it. Format, swizzle, CLUT and wrap are
+ * shared by every level; address, buffer width and size are per level (#1373). */
+typedef struct TexLevel { uint32_t addr, bufw; int w, h; } TexLevel;
+
+/* Level 0 is the TEXADDR0/TEXBUFWIDTH0/TEXSIZE0 state every other GE path reads. */
+static TexLevel tex_level(uint32_t level) {
+    TexLevel t;
+    if (level == 0u || level > 7u) {
+        t.addr = ge.tex_addr; t.bufw = ge.tex_bufw; t.w = ge.tex_w; t.h = ge.tex_h;
+    } else {
+        t.addr = ge.tex_mip_addr[level - 1u];
+        t.bufw = ge.tex_mip_bufw[level - 1u];
+        t.w = 1 << ge.tex_mip_wlog2[level - 1u];
+        t.h = 1 << ge.tex_mip_hlog2[level - 1u];
     }
-    uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
+    return t;
+}
+
+static void sample_tex_level(const TexLevel *t, int tu, int tv, int *r, int *g, int *b, int *a) {
+    g_tex_samples++;
+    if (t->w > 0) {
+        tu = tex_coord(tu, t->w, ge.tex_wrap & 1);
+        tv = tex_coord(tv, t->h, (ge.tex_wrap >> 8) & 1);
+    }
+    uint32_t stride = t->bufw ? t->bufw : (uint32_t)t->w;
     uint32_t u = (uint32_t)tu, v = (uint32_t)tv;
     switch (ge.tex_fmt) {
         case 0: case 1: case 2:
-            unpack_color(MEM_R16(ge.tex_addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
+            unpack_color(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
         case 3:
-            unpack_color(MEM_R32(ge.tex_addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
+            unpack_color(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
         case 4: {
             uint32_t off = texel_offset(stride, u, v, 4);
-            uint8_t byte = MEM_R8(ge.tex_addr + off);
+            uint8_t byte = MEM_R8(t->addr + off);
             int ni = (u & 1) ? (byte >> 4) : (byte & 0xF);
             clut_lookup((uint32_t)ni, r, g, b, a); break;
         }
-        case 5: clut_lookup(MEM_R8(ge.tex_addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
+        case 5: clut_lookup(MEM_R8(t->addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
         case 6:  /* CLUT16: 16-bit index through the same shift/mask/start transform */
-            clut_lookup(MEM_R16(ge.tex_addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
+            clut_lookup(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
         case 7:  /* CLUT32 */
-            clut_lookup(MEM_R32(ge.tex_addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
+            clut_lookup(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
         case 8: case 9: case 10:
-            sample_dxt(stride, u, v, r, g, b, a); break;
+            sample_dxt(t->addr, stride, u, v, r, g, b, a); break;
         default: *r=*g=*b=*a=255; break;
     }
     if (*r | *g | *b) g_tex_nonzero++;
     if (s_stat_on > 0 && *a == 0) s_stat.texa0++;
 }
 
-static int tex_footprint_is_minifying(float du_dx, float dv_dx, float du_dy, float dv_dy) {
-    float dx2 = du_dx * du_dx + dv_dx * dv_dx;
-    float dy2 = du_dy * du_dy + dv_dy * dv_dy;
-    return fmaxf(dx2, dy2) > 1.0f;
+static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
+    TexLevel t = tex_level(0u);
+    sample_tex_level(&t, tu, tv, r, g, b, a);
 }
 
-static void sample_tex_f(float fu, float fv_coord, int minifying,
-                         int *r, int *g, int *b, int *a) {
-    static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
-    int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
-    int use_linear = !nobil && filter_linear;
-    if (!use_linear) { sample_tex((int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a); return; }
+/* Squared texel footprint of one pixel step: the larger squared length of the level-0
+ * texel coordinate's x and y screen derivatives. Above 1 the texture is minified. */
+static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_dy) {
+    float dx2 = du_dx * du_dx + dv_dx * dv_dx;
+    float dy2 = du_dy * du_dy + dv_dy * dv_dy;
+    return fmaxf(dx2, dy2);
+}
+
+/* Texture level of detail of one fragment (#1373): a level with its fraction, in
+ * [0, highest level]. 0 samples level 0 exactly as before mip levels were modelled.
+ *
+ * Contract (PSPSDK): TEXMODE bits 16-18 hold the highest level (sceGuTexMode maxmips),
+ * TEXLEVEL the mode (sceGuTexLevelMode: GU_TEXTURE_AUTO 0, CONST 1, SLOPE 2) and a signed
+ * 4.4 bias, and TEXFILTER's minification field enables mip levels with the GL-named
+ * GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR} filters (4-7, bit 2). Without bit 2, or with a
+ * highest level of 0, the sampler stays on level 0.
+ *   constant:  lod = bias.
+ *   automatic: lod = log2(rho) + bias, rho being the footprint the rasterizer already uses
+ *              for its minification test (the GL scale factor those filter names mirror).
+ *   slope:     no public source gives its formula, so it stays on level 0.
+ * ge_tex_mip_active() (ge_shared.h) is that on/off rule, shared with the Vulkan backend.
+ * Unmeasured on a PSP: the automatic mode's derivative approximation and whether it is
+ * evaluated per pixel, the slope formula, and the nearest-level rounding and between-level
+ * weights sample_tex_f applies. */
+static float tex_lod(float rho2) {
+    if (!(ge.tex_filter & 4u) || ge.tex_max_level == 0u) return 0.0f;
+    if (!ge_tex_mip_active(&ge)) {
+        static int s_mode_noted;
+        if (!s_mode_noted) {
+            s_mode_noted = 1;
+            fprintf(stderr, "GE: TEXLEVEL mode %" PRIu32 " samples level 0; its level-of-detail "
+                    "formula is unmeasured (#1373)\n", ge.tex_level_mode);
+        }
+        return 0.0f;
+    }
+    float lod = ge.tex_level_mode == 1u ? ge.tex_lod_bias
+                                        : 0.5f * log2f(rho2) + ge.tex_lod_bias;
+    if (!(lod > 0.0f)) return 0.0f;            /* magnified, a negative bias, or NaN */
+    return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
+}
+
+/* Filter one level at level-0 texel coordinates. Every level spans the same normalised
+ * texture, and an integer texel coordinate names a texel's centre at every level (the
+ * convention below), so the level-0 coordinate fu sits at normalised (fu + 0.5) / w0 and
+ * at (fu + 0.5) * wL / w0 - 0.5 in level L. This is the GL/Vulkan normalised-coordinate
+ * rule the Vulkan backend samples its mip chain with; plain scaling (fu * wL / w0) put
+ * level 1 a quarter texel off. Unmeasured on a PSP, including for through-mode UV, which
+ * the PSP gives in level-0 texels. */
+static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_linear,
+                           int *r, int *g, int *b, int *a) {
+    TexLevel t = tex_level(level);
+    if (level != 0u && ge.tex_w > 0 && ge.tex_h > 0) {
+        fu = (fu + 0.5f) * ((float)t.w / (float)ge.tex_w) - 0.5f;
+        fv_coord = (fv_coord + 0.5f) * ((float)t.h / (float)ge.tex_h) - 0.5f;
+    }
+    if (!use_linear) {
+        sample_tex_level(&t, (int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a);
+        return;
+    }
     /* An integer texel coordinate names that texel's CENTRE -- that is the convention the
      * nearest branch above implements by rounding. The filter window is centred on the
      * same texel: taps are floor(fu) and floor(fu)+1, so a 1:1 sprite reproduces its
@@ -1944,15 +2033,42 @@ static void sample_tex_f(float fu, float fv_coord, int minifying,
     if (fy < 0) fy = 0;
     if (fy > 256) fy = 256;
     int r0,g0,b0,a0, r1,g1,b1,a1, r2,g2,b2,a2, r3,g3,b3,a3;
-    sample_tex(u0,   v0,   &r0,&g0,&b0,&a0);
-    sample_tex(u0+1, v0,   &r1,&g1,&b1,&a1);
-    sample_tex(u0,   v0+1, &r2,&g2,&b2,&a2);
-    sample_tex(u0+1, v0+1, &r3,&g3,&b3,&a3);
+    sample_tex_level(&t, u0,   v0,   &r0,&g0,&b0,&a0);
+    sample_tex_level(&t, u0+1, v0,   &r1,&g1,&b1,&a1);
+    sample_tex_level(&t, u0,   v0+1, &r2,&g2,&b2,&a2);
+    sample_tex_level(&t, u0+1, v0+1, &r3,&g3,&b3,&a3);
 #define LERP1(c0,c1,f) ((c0) + (((c1)-(c0))*(f)>>8))
     int tr=LERP1(r0,r1,fx), tg=LERP1(g0,g1,fx), tb=LERP1(b0,b1,fx), ta=LERP1(a0,a1,fx);
     int br=LERP1(r2,r3,fx), bg=LERP1(g2,g3,fx), bb=LERP1(b2,b3,fx), ba=LERP1(a2,a3,fx);
     *r=LERP1(tr,br,fy); *g=LERP1(tg,bg,fy); *b=LERP1(tb,bb,fy); *a=LERP1(ta,ba,fy);
 #undef LERP1
+}
+
+/* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
+ * magnification field for filtering within a level (shade() decides it: the footprint test
+ * with mip levels off, the level of detail with them on); `lod` (tex_lod) picks the level.
+ * TEXFILTER bit 1 selects
+ * between the nearest level (GL rounding: up only past one half) and a blend of the two
+ * levels around `lod` by its fraction in 1/256 steps. */
+static void sample_tex_f(float fu, float fv_coord, int minifying, float lod,
+                         int *r, int *g, int *b, int *a) {
+    static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
+    int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
+    int use_linear = !nobil && filter_linear;
+    uint32_t level = lod > 0.0f ? (uint32_t)lod : 0u;
+    float frac = lod > 0.0f ? lod - (float)level : 0.0f;
+    if (!(ge.tex_filter & 2u)) {
+        if (frac > 0.5f) level++;
+        sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
+        return;
+    }
+    int weight = (int)(frac * 256.0f);
+    sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
+    if (weight <= 0 || level >= ge.tex_max_level) return;
+    int r1, g1, b1, a1;
+    sample_level_f(level + 1u, fu, fv_coord, use_linear, &r1, &g1, &b1, &a1);
+    *r += ((r1 - *r) * weight) >> 8; *g += ((g1 - *g) * weight) >> 8;
+    *b += ((b1 - *b) * weight) >> 8; *a += ((a1 - *a) * weight) >> 8;
 }
 
 /* SR_TEXDUMP=1: write each distinct texture used by a draw once per run as
@@ -2042,6 +2158,19 @@ void ge_decode_tex_rgba(uint32_t *out) {
             sample_tex(u, v, &r, &g, &b, &a);
             out[v * ge.tex_w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
                                     ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
+        }
+}
+
+/* GPU backend mip decode (#1373): one level through the per-level sampler path the
+ * software rasterizer uses (sample_level_f), so format, swizzle and CLUT match level 0. */
+void ge_decode_tex_level_rgba(uint32_t level, uint32_t *out) {
+    TexLevel t = tex_level(level);
+    for (int v = 0; v < t.h; v++)
+        for (int u = 0; u < t.w; u++) {
+            int r, g, b, a;
+            sample_tex_level(&t, u, v, &r, &g, &b, &a);
+            out[v * t.w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
+                               ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
         }
 }
 
@@ -2367,8 +2496,9 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, int minifying, int fog,
+static int shade(float u, float fv, float rho2, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2376,7 +2506,14 @@ static int shade(float u, float fv, int minifying, int fog,
         int tr, tg, tb, ta;
         int rgba = (ge.tex_func & 0x100) != 0;
         int dbl  = (ge.tex_func & 0x10000) != 0;
-        sample_tex_f(u, fv, minifying, &tr, &tg, &tb, &ta);
+        /* With mip levels off the footprint picks the minification or magnification filter,
+         * as before they were modelled. With them on, the level of detail picks it, as in
+         * GL and Vulkan (above 0: minified), so a bias or a constant level moves the choice
+         * with the level and the Vulkan sampler makes the same one (#1373; unmeasured on a
+         * PSP). With a bias of 0 in automatic mode the two rules agree. */
+        float lod = tex_lod(rho2);
+        int minifying = ge_tex_mip_active(&ge) ? lod > 0.0f : rho2 > 1.0f;
+        sample_tex_f(u, fv, minifying, lod, &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
@@ -2501,8 +2638,294 @@ static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
     return 1;
 }
 
+/* ---- GE time model (opt-in, SR_GE_TIMING=1; issue #1296) ---------------------------------
+ *
+ * hle.c owns the GE timeline and list completion.  This block charges the work each
+ * ge_run_list call hands the GE, in GE clocks.  The GE clock is the bus clock (measured: every
+ * cost at 333/166 MHz is 0.665x its 222/111 MHz value), so hle.c converts clocks to guest time
+ * with the emulated bus clock.
+ *
+ * Every coefficient is measured on a PSP-3000 (firmware 6.6x), 2026-10-25, with the PSP oracle
+ * probe case CASE=ge-timing proposed in PR #1321 (record PSP-GE-TIMING-001, probe commits
+ * d8d3d0f2 and e9ad91d9).  The derived table is the third comment on issue #1296; raw logs are
+ * private.  Each constant names the cell of the #1296 measurement matrix (T0..T15) it comes
+ * from, where the table attributes it to one.
+ *
+ * Structure:
+ *   list  = GE_T_LIST_CLK (T0: enqueue to finish of an empty FINISH/END list; hle.c charges it)
+ *         + GE_T_WORD_CLK per other command word (T1-T3: NOP, state and matrix words alike)
+ *         + per PRIM: GE_T_PRIM_CLK beyond its word, plus, for each primitive in it,
+ *           max(its vertex work, its raster work)
+ *         + CLUT loads (T13) and block transfers (T14), serially.
+ *   Vertex and raster work overlap per primitive.  The data supports that and nothing wider:
+ *   a two-triangle quad costs roughly the larger of setup and fill, sprite count and
+ *   height make no difference to a fill (T5), and tiny triangles cost their vertex work alone
+ *   (T6, T7).  No cell shows one large fill hiding the vertex work of other primitives, so the
+ *   overlap is not taken across a whole PRIM.  The quad's measured +5-10% over the larger
+ *   stage is a range, not a coefficient, and is not charged.  The #1296 per-frame totals were
+ *   given between full overlap and none; this per-primitive overlap lies between the two.
+ *   Not modelled: depth-rejected pixels are charged as drawn, clipping adds no work, and the
+ *   CPU-side cost of the enqueue call (measured about 10 us while the GE is busy) is the
+ *   caller's, not the GE's.
+ *
+ * UNMEASURED_NEAREST: a class the matrix did not measure is charged as the structurally
+ * nearest measured class, and every such use carries this tag and names the class it borrows.
+ * It is a stand-in until a cell measures it, never a measured value. */
+#define GE_T_LIST_CLK          1665.0  /* T0: empty list, enqueue to finish interrupt */
+#define GE_T_WORD_CLK          2.03    /* T1-T3: one command word (NOP, state, matrix) */
+#define GE_T_PRIM_CLK          58.0    /* one PRIM beyond its command word */
+#define GE_T_THROUGH_TRI_CLK   18.3    /* T6: one through-mode 1-pixel triangle in a list */
+#define GE_T_VTX_POS_F32_CLK   6.1     /* T7: transformed vertex, position f32, list or strip */
+#define GE_T_VTX_POS_S16_CLK   5.0     /* T8: position 16-bit */
+#define GE_T_VTX_POS_S8_CLK    9.4     /* T8: position 8-bit */
+#define GE_T_VTX_INDEX16_CLK   38.9    /* T7: indexed (u16) transformed vertex, position f32 */
+#define GE_T_VTX_COLOR_CLK     2.0     /* T8: + colour 8888 */
+#define GE_T_VTX_UV_CLK        4.05    /* T8: + uv f32 */
+#define GE_T_VTX_NORMAL_CLK    6.1     /* T8: + normal f32 */
+#define GE_T_VTX_WEIGHT1_CLK   10.6    /* T10: skinning, one f32 weight */
+#define GE_T_VTX_WEIGHTN_CLK   7.0     /* T10: each further f32 weight */
+#define GE_T_VTX_LIGHTS4_CLK   1.2     /* T9: 4 lights (0 or 1 light: +0) */
+#define GE_T_ROW_8888_CLK      1.0     /* T5: 8888 sprite row up to 32 px: 1 + 0.274*w */
+#define GE_T_PX_8888_NARROW    0.274   /* T5 */
+#define GE_T_PX_8888_WIDE      0.52    /* T5: 8888 row from 64 px up, per pixel */
+#define GE_T_PX_5650           0.27    /* 5650 fill, 64-px strips, per pixel */
+#define GE_T_PX_8888_DEPTH     0.76    /* T4/T12: colour+depth clear and depth test+write, 8888 */
+#define GE_T_PX_5650_DEPTH     0.28    /* T4: colour+depth clear, 5650 */
+#define GE_T_LINEAR_FILTER     1.10    /* T11: linear filtering adds 10-20%; charged at the low end */
+#define GE_T_CLUT16_CLK        5.2     /* T13: CLUT load, per entry, 16 entries */
+#define GE_T_CLUT256_CLK       1.07    /* T13: CLUT load, per entry, 256 entries */
+#define GE_T_XFER_RAM_CLK      0.68    /* T14: block transfer per byte, RAM to eDRAM */
+#define GE_T_XFER_EDRAM_CLK    0.44    /* T14: block transfer per byte, eDRAM to eDRAM */
+
+static int s_ge_timing_model;          /* ge_timing_set_enabled(); 0 skips every charge */
+static double s_ge_run_clk;            /* GE clocks of the current ge_run_list call */
+static unsigned long s_ge_run_tail_words; /* FINISH and the terminating END: part of T0 */
+static double s_ge_prim_vtx_share;     /* vertex clocks of one primitive of the current PRIM */
+unsigned long g_ge_list_commands = 0;  /* command words fetched by the current ge_run_list call */
+
+void ge_timing_set_enabled(int on) { s_ge_timing_model = on != 0; }
+double ge_timing_list_clk(void) { return GE_T_LIST_CLK; }
+double ge_timing_run_clk(void) {
+    unsigned long words = g_ge_list_commands > s_ge_run_tail_words
+                              ? g_ge_list_commands - s_ge_run_tail_words : 0ul;
+    return s_ge_run_clk + (double)words * GE_T_WORD_CLK;
+}
+
+/* Vertex work of one submitted vertex in the current state. */
+static double ge_time_vertex_clk(const VFmt *vf, int idxfmt) {
+    /* T6 timed 1-pixel triangles in a list: 18.3 clk each, three vertices.  Transformed lists
+     * and strips cost the same per vertex (T7), so through mode is charged per vertex too.
+     * UNMEASURED_NEAREST: through-mode attribute formats other than T6's, and through-mode
+     * strips, fans, sprites, lines and points, as the T6 per-vertex cost. */
+    if (vf->through) return GE_T_THROUGH_TRI_CLK / 3.0;
+    double c;
+    if (idxfmt)               c = GE_T_VTX_INDEX16_CLK; /* UNMEASURED_NEAREST: index8 and u32, and indexed non-f32 positions, as indexed u16 with f32 */
+    else if (vf->pos_fmt == 2) c = GE_T_VTX_POS_S16_CLK;
+    else if (vf->pos_fmt == 1) c = GE_T_VTX_POS_S8_CLK;
+    else                       c = GE_T_VTX_POS_F32_CLK; /* pos_fmt 0 decodes as f32 (decode_vtype) */
+    if (vf->col_fmt) c += GE_T_VTX_COLOR_CLK;  /* UNMEASURED_NEAREST: 5650/5551/4444 as 8888 */
+    if (vf->tc_fmt)  c += GE_T_VTX_UV_CLK;     /* UNMEASURED_NEAREST: uv 8/16 as f32 */
+    if (vf->nrm_fmt) c += GE_T_VTX_NORMAL_CLK; /* UNMEASURED_NEAREST: normal 8/16 as f32 */
+    if (vf->w_n)     /* UNMEASURED_NEAREST: weights 8/16 as f32 */
+        c += GE_T_VTX_WEIGHT1_CLK + GE_T_VTX_WEIGHTN_CLK * (double)(vf->w_n - 1);
+    if (ge.lighting_enable) {
+        int lights = 0;
+        for (int i = 0; i < 4; i++) lights += ge.light_on[i] != 0;
+        /* UNMEASURED_NEAREST: 2 lights as 1 (+0), 3 lights as 4. */
+        if (lights >= 3) c += GE_T_VTX_LIGHTS4_CLK;
+    }
+    /* UNMEASURED_NEAREST: a morphed vertex (morph_n > 1) as one unmorphed vertex. */
+    return c;
+}
+
+/* Primitives a PRIM of `count` vertices draws, for the per-primitive vertex share. */
+static unsigned long ge_time_prim_count(int type, int count) {
+    switch (type) {
+        case 0: return (unsigned long)count;                        /* points */
+        case 1: case 6: return (unsigned long)(count / 2);          /* lines, sprites */
+        case 2: return count > 1 ? (unsigned long)(count - 1) : 0ul; /* line strip */
+        case 3: return (unsigned long)(count / 3);                  /* triangles */
+        case 4: case 5: return count > 2 ? (unsigned long)(count - 2) : 0ul; /* strip, fan */
+        default: return 0ul;
+    }
+}
+
+/* A PRIM (or a patch, `patch` != 0) is about to run: charge its fixed and vertex work and set
+ * the share that overlaps each primitive's raster work. */
+static void ge_time_prim_begin(uint32_t op, int patch) {
+    VFmt vf; decode_vtype(ge.vtype, &vf);
+    int idxfmt = (int)((ge.vtype >> 11) & 3);
+    int count = patch ? (int)(op & 0xFFu) * (int)((op >> 8) & 0xFFu) : (int)(op & 0xFFFFu);
+    double vtx = ge_time_vertex_clk(&vf, idxfmt) * (double)count;
+    s_ge_run_clk += GE_T_PRIM_CLK + vtx;
+    /* UNMEASURED_NEAREST: bezier/spline patches as a PRIM of their control points, with no
+     * overlap between them and the tessellated triangles' raster work (no cell times patches). */
+    unsigned long prims = patch ? 0ul : ge_time_prim_count((int)((op >> 16) & 7u), count);
+    s_ge_prim_vtx_share = prims ? vtx / (double)prims : 0.0;
+}
+
+/* One primitive's raster work: only what exceeds its overlapping vertex share costs time. */
+static void ge_time_raster(double clk) {
+    if (clk > s_ge_prim_vtx_share) s_ge_run_clk += clk - s_ge_prim_vtx_share;
+}
+
+/* Texel-fetch cost per pixel of the bound texture (T11, nearest filtering), or 0 where the
+ * texture runs at the untextured fill rate.  Rows: 8888, 5650, CLUT8, CLUT4, DXT1; columns:
+ * 64, 128, 256 and 512 square, swizzled 512.  A negative cell was not measured. */
+static double ge_time_texel_clk(void) {
+    static const double cells[5][5] = {
+        { 5.25, 6.3,  6.9,  7.8,  2.1  },   /* 8888 */
+        { 0.0,  3.2,  3.4,  3.6,  1.3  },   /* 5650 (64x64 at fill rate) */
+        { 0.0,  1.07, 1.86, 1.88, 0.88 },   /* CLUT8 (64x64 at fill rate) */
+        { 0.0,  -1.0, -1.0, 1.14, 0.65 },   /* CLUT4 (64x64 at fill rate; 128, 256 not measured) */
+        { 2.2,  2.4,  2.6,  2.43, -1.0 },   /* DXT1 (no swizzled form) */
+    };
+    int row;
+    switch (ge.tex_fmt & 0xFu) {
+        case 3: row = 0; break;
+        case 0: row = 1; break;
+        case 5: row = 2; break;
+        case 4: row = 3; break;
+        case 8: row = 4; break;
+        case 1: case 2: case 6: row = 1; break; /* UNMEASURED_NEAREST: 5551, 4444, CLUT16 as 5650 (16 bpp) */
+        case 7: row = 0; break;                 /* UNMEASURED_NEAREST: CLUT32 as 8888 (32 bpp) */
+        default: row = 4; break;                /* UNMEASURED_NEAREST: DXT3, DXT5 as DXT1 */
+    }
+    /* UNMEASURED_NEAREST: a non-square texture by its larger side; sides under 64 as 64 and
+     * over 512 as 512 (the texture-cache geometry behind the size steps is not measured). */
+    unsigned side = (unsigned)(ge.tex_w > ge.tex_h ? ge.tex_w : ge.tex_h);
+    int col = 0;
+    while (col < 3 && (64u << col) < side) col++;
+    double v;
+    if (ge.tex_swizzle && cells[row][4] >= 0.0) {
+        v = cells[row][4];  /* UNMEASURED_NEAREST: swizzled sizes other than 512 as swizzled 512 */
+    } else {
+        /* UNMEASURED_NEAREST: a size the row did not measure as the nearest measured size by
+         * powers of two, the larger on a tie. */
+        v = cells[row][col];
+        for (int d = 1; v < 0.0 && d < 4; d++) {
+            if (col + d < 4 && cells[row][col + d] >= 0.0) v = cells[row][col + d];
+            else if (col - d >= 0 && cells[row][col - d] >= 0.0) v = cells[row][col - d];
+        }
+    }
+    /* UNMEASURED_NEAREST: linear on only one of the minify/magnify filters as linear. */
+    if ((ge.tex_filter & 1u) || ((ge.tex_filter >> 8) & 1u)) v *= GE_T_LINEAR_FILTER;
+    return v;
+}
+
+/* Raster work of one span `w` pixels wide in the current fill state.  Fill and texel fetch
+ * overlap (T11: a small enough texture runs at the untextured fill rate), so a textured row
+ * costs the larger of the two. */
+static double ge_time_row_clk(int w) {
+    if (w <= 0) return 0.0;
+    /* UNMEASURED_NEAREST: a colour-only clear as a plain fill of the same format. */
+    int depth = ge.clear ? (ge.clear_mode & 0x400u) != 0 : ge.ztest_enable != 0;
+    double fill;
+    if ((ge.fbfmt & 3u) == 3u) {
+        if (depth)        fill = GE_T_PX_8888_DEPTH * w; /* UNMEASURED_NEAREST: depth on spans narrower than the full-screen cells, as full-screen */
+        else if (w <= 32) fill = GE_T_ROW_8888_CLK + GE_T_PX_8888_NARROW * w;
+        else if (w >= 64) fill = GE_T_PX_8888_WIDE * w;
+        else if (w < 48)  fill = GE_T_ROW_8888_CLK + GE_T_PX_8888_NARROW * w; /* UNMEASURED_NEAREST: 33-47 px as the up-to-32 band */
+        else              fill = GE_T_PX_8888_WIDE * w;  /* UNMEASURED_NEAREST: 48-63 px as the from-64 band */
+    } else {
+        /* UNMEASURED_NEAREST: 16-bit fill at other span widths as the 64-px strips; 5551 and
+         * 4444 as 5650; a 16-bit depth test as the 5650 colour+depth clear. */
+        fill = (depth ? GE_T_PX_5650_DEPTH : GE_T_PX_5650) * w;
+    }
+    /* Blend, alpha test, dither and fog add nothing on 8888 (T12).  UNMEASURED_NEAREST: on
+     * 16-bit targets, and stencil, colour test, logic op and masks anywhere, as adding nothing. */
+    if (ge.tex_enable && !ge.clear) {
+        double texel = ge_time_texel_clk() * w;
+        if (texel > fill) fill = texel;
+    }
+    return fill;
+}
+
+/* The scissor rectangle the rasteriser clips to, as inclusive pixel bounds. */
+static void ge_time_scissor(int *x1, int *y1, int *x2, int *y2) {
+    *x1 = ge.scis_x1 > 0 ? (int)ge.scis_x1 : 0;
+    *y1 = ge.scis_y1 > 0 ? (int)ge.scis_y1 : 0;
+    *x2 = ge.scis_x2 < 479 ? (int)ge.scis_x2 : 479;
+    *y2 = ge.scis_y2 < 271 ? (int)ge.scis_y2 : 271;
+}
+
+/* A sprite: its rows, clipped to the scissor, each one span of its width (T5). */
+static void ge_time_sprite(const Vtx *p0, const Vtx *p1) {
+    int xa = (int)fminf(p0->x, p1->x), xb = (int)fmaxf(p0->x, p1->x);
+    int ya = (int)fminf(p0->y, p1->y), yb = (int)fmaxf(p0->y, p1->y);
+    int cx1, cy1, cx2, cy2;
+    ge_time_scissor(&cx1, &cy1, &cx2, &cy2);
+    if (xa < cx1) xa = cx1;
+    if (xb > cx2 + 1) xb = cx2 + 1;
+    if (ya < cy1) ya = cy1;
+    if (yb > cy2 + 1) yb = cy2 + 1;
+    if (xa >= xb || ya >= yb) { ge_time_raster(0.0); return; }
+    ge_time_raster((double)(yb - ya) * ge_time_row_clk(xb - xa));
+}
+
+/* A triangle: each covered row, clipped to the scissor, as one span of its covered width.
+ * UNMEASURED_NEAREST: triangle spans as sprite spans of the same width (T5 timed sprites;
+ * T6/T7 triangles were one pixel). */
+static void ge_time_tri(const Vtx *A, const Vtx *B, const Vtx *C) {
+    double area = (double)(B->x - A->x) * (C->y - A->y) - (double)(C->x - A->x) * (B->y - A->y);
+    if (area == 0.0) return;
+    if (ge.cull_enable && !ge.clear && area < 0.0) return;   /* culled, as raster_tri culls */
+    int cx1, cy1, cx2, cy2;
+    ge_time_scissor(&cx1, &cy1, &cx2, &cy2);
+    int miny = (int)floorf(fminf(A->y, fminf(B->y, C->y)));
+    int maxy = (int)ceilf(fmaxf(A->y, fmaxf(B->y, C->y)));
+    if (miny < cy1) miny = cy1;
+    if (maxy > cy2) maxy = cy2;
+    const Vtx *v[3] = { A, B, C };
+    double clk = 0.0;
+    for (int y = miny; y <= maxy; y++) {
+        double yc = (double)y + 0.5, xl = 1e30, xr = -1e30;
+        for (int e = 0; e < 3; e++) {
+            const Vtx *p = v[e], *q = v[(e + 1) % 3];
+            if ((p->y <= yc) == (q->y <= yc)) continue;   /* this edge does not cross the row */
+            double x = p->x + (yc - p->y) * (q->x - p->x) / (q->y - p->y);
+            if (x < xl) xl = x;
+            if (x > xr) xr = x;
+        }
+        if (xl > xr) continue;
+        int x0 = (int)ceil(xl - 0.5), x1 = (int)ceil(xr - 0.5);   /* pixel centres in [xl, xr) */
+        if (x0 < cx1) x0 = cx1;
+        if (x1 > cx2 + 1) x1 = cx2 + 1;
+        clk += ge_time_row_clk(x1 - x0);
+    }
+    ge_time_raster(clk);
+}
+
+/* UNMEASURED_NEAREST: a line as spans, one per row it crosses, each the line's run per row;
+ * a point as a one-pixel span. */
+static void ge_time_line(const Vtx *A, const Vtx *B) {
+    int rows = (int)fabsf(B->y - A->y) + 1;
+    int w = ((int)fabsf(B->x - A->x) + 1 + rows - 1) / rows;
+    ge_time_raster((double)rows * ge_time_row_clk(w));
+}
+static void ge_time_point(void) { ge_time_raster(ge_time_row_clk(1)); }
+
+/* A CLUT load of `bytes`: T13 measured 16 entries at 5.2 clk each and 256 at 1.07, a fixed
+ * part and a per-entry part; this charges the line through the two cells.
+ * UNMEASURED_NEAREST: entry counts outside 16..256 on the same line. */
+static void ge_time_clut_load(uint32_t bytes) {
+    double e = (double)(bytes / ((ge.clut_fmt & 3u) == 3u ? 4u : 2u));
+    double per = (256.0 * GE_T_CLUT256_CLK - 16.0 * GE_T_CLUT16_CLK) / (256.0 - 16.0);
+    double fixed = 16.0 * GE_T_CLUT16_CLK - 16.0 * per;
+    if (e > 0.0) s_ge_run_clk += fixed + per * e;
+}
+
+/* A block transfer of `bytes` reading from `src` (T14).
+ * UNMEASURED_NEAREST: a destination in main RAM as one in eDRAM (by source only). */
+static void ge_time_transfer(uint32_t src, uint64_t bytes) {
+    uint32_t phys = src & 0x1FFFFFFFu;
+    int edram = phys >= 0x04000000u && phys < 0x04800000u;   /* 2 MiB eDRAM and its mirrors */
+    s_ge_run_clk += (edram ? GE_T_XFER_EDRAM_CLK : GE_T_XFER_RAM_CLK) * (double)bytes;
+}
+
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
+    if (s_ge_timing_model) ge_time_tri(A, B, C);   /* before the GPU hook: both backends charge alike */
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
@@ -2623,7 +3046,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             }
 
             float u = 0, fv = 0;
-            int minifying = 0;
+            float rho2 = 0.0f;
             if (textured) {
                 AT_PIX(iu, u); AT_PIX(iv, v);
                 float iu_dx = w0_dx * iu_ac + w1_dx * iu_bc;
@@ -2640,7 +3063,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
                     iu_dy = (iu_dy - u * irw_dy) * inv_rw;
                     iv_dy = (iv_dy - fv * irw_dy) * inv_rw;
                 } else { u = iu; fv = iv; }
-                minifying = tex_footprint_is_minifying(iu_dx, iv_dx, iu_dy, iv_dy);
+                rho2 = tex_footprint_rho2(iu_dx, iv_dx, iu_dy, iv_dy);
             }
             int r, g, b, a;
             if (gouraud) {
@@ -2651,7 +3074,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -2697,6 +3120,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 /* Line rasterizer (DDA), used for prim types 1/2 in both modes. */
 static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
     if (vtx_nonfinite(A, B, NULL)) return;
+    if (s_ge_timing_model) ge_time_line(A, B);
     if (s_gpu && s_gpu->line) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->line(A, B, persp);
@@ -2717,7 +3141,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         float t=(float)i/(float)steps;
         int x=(int)(A->x+dx*t), y=(int)(A->y+dy*t);
         float u=0, fv=0;
-        int minifying = 0;
+        float rho2 = 0.0f;
         if (textured) {
             float du_dt = B->u - A->u;
             float dv_dt = B->v - A->v;
@@ -2733,7 +3157,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
                 }
             }
             float inv_len = 1.0f / (len > 0.0f ? len : 1.0f);
-            minifying = tex_footprint_is_minifying(du_dt * inv_len, dv_dt * inv_len, 0.0f, 0.0f);
+            rho2 = tex_footprint_rho2(du_dt * inv_len, dv_dt * inv_len, 0.0f, 0.0f);
         }
         int r=(int)(A->r+(B->r-A->r)*t), g=(int)(A->g+(B->g-A->g)*t);
         int b=(int)(A->b+(B->b-A->b)*t), a=(int)(A->a+(B->a-A->a)*t);
@@ -2742,13 +3166,14 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
 
 static void draw_point_vtx(const Vtx *A, int persp) {
     if (vtx_nonfinite(A, NULL, NULL)) return;
+    if (s_ge_timing_model) ge_time_point();
     if (s_gpu && s_gpu->point) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->point(A, persp);
@@ -2766,7 +3191,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -2797,6 +3222,56 @@ static void mat44_mul(const float *m, float ix, float iy, float iz, float *ox, f
 
 static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0xFF) * (1.0f/255.0f); }
 
+/* Lighting inputs that only depend on GE registers: the material and scene colours as
+ * floats, each light's colours, and a directional light's normalized direction. They are
+ * the same expressions light_vertex used to evaluate for every vertex, computed once after
+ * the GE state last changed (every list command bumps s_ge_state_serial), so every value
+ * is bit-identical to the per-vertex evaluation. */
+typedef struct {
+    int on, comp, type;
+    float lx, ly, lz;            /* direction (normalized) for directional lights, else position */
+    float acol[3], dcol[3], scol[3];
+} LightConst;
+typedef struct {
+    uint32_t serial;
+    int valid;
+    float mat_amb[3], mat_dif[3], mat_spe[3], emissive[3], amb[3];
+    LightConst light[4];
+} LightConsts;
+static LightConsts s_light_consts;
+
+static const LightConsts *light_consts(void) {
+    LightConsts *lc = &s_light_consts;
+    if (lc->valid && lc->serial == s_ge_state_serial) return lc;
+    for (int ch = 0; ch < 3; ch++) {
+        lc->mat_amb[ch] = c8f(ge.material, ch);
+        lc->mat_dif[ch] = c8f(ge.mat_diffuse, ch);
+        lc->mat_spe[ch] = c8f(ge.mat_specular, ch);
+        lc->emissive[ch] = c8f(ge.mat_emissive, ch);
+        lc->amb[ch] = c8f(ge.amb_color, ch);
+    }
+    for (int i = 0; i < 4; i++) {
+        LightConst *l = &lc->light[i];
+        l->on = ge.light_on[i] != 0;
+        l->comp = (int)(ge.light_type[i] & 3);
+        l->type = (int)((ge.light_type[i] >> 8) & 3);
+        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        if (l->type == 0) {   /* directional: position register holds the direction */
+            float d = sqrtf(lx*lx + ly*ly + lz*lz);
+            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
+        }
+        l->lx = lx; l->ly = ly; l->lz = lz;
+        for (int ch = 0; ch < 3; ch++) {
+            l->acol[ch] = c8f(ge.light_acol[i], ch);
+            l->dcol[ch] = c8f(ge.light_dcol[i], ch);
+            l->scol[ch] = c8f(ge.light_scol[i], ch);
+        }
+    }
+    lc->serial = s_ge_state_serial;
+    lc->valid = 1;
+    return lc;
+}
+
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
@@ -2805,6 +3280,7 @@ static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0x
  * primitive closed instead (CVtx::nf). Only a finite result is a defined pixel. */
 static int light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
                         int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
+    const LightConsts *lc = light_consts();
     float vrf = vr*(1.0f/255.0f), vgf = vg*(1.0f/255.0f), vbf = vb*(1.0f/255.0f);
     /* Lit alpha = material-ambient alpha * scene-ambient alpha; diffuse/specular/emissive never
      * contribute to alpha (PPSSPP Software/Lighting.cpp). With MATERIALUPDATE bit 0 the vertex
@@ -2813,40 +3289,37 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
     *la = clamp8((maa * ge.amb_alpha + 127) / 255);
     float mar, mag, mab, mdr, mdg, mdb, msr, msg, msb;
     if (ge.mat_update & 1) { mar=vrf; mag=vgf; mab=vbf; }
-    else { mar=c8f(ge.material,0); mag=c8f(ge.material,1); mab=c8f(ge.material,2); }
+    else { mar=lc->mat_amb[0]; mag=lc->mat_amb[1]; mab=lc->mat_amb[2]; }
     if (ge.mat_update & 2) { mdr=vrf; mdg=vgf; mdb=vbf; }
-    else { mdr=c8f(ge.mat_diffuse,0); mdg=c8f(ge.mat_diffuse,1); mdb=c8f(ge.mat_diffuse,2); }
+    else { mdr=lc->mat_dif[0]; mdg=lc->mat_dif[1]; mdb=lc->mat_dif[2]; }
     if (ge.mat_update & 4) { msr=vrf; msg=vgf; msb=vbf; }
-    else { msr=c8f(ge.mat_specular,0); msg=c8f(ge.mat_specular,1); msb=c8f(ge.mat_specular,2); }
+    else { msr=lc->mat_spe[0]; msg=lc->mat_spe[1]; msb=lc->mat_spe[2]; }
 
-    float r = c8f(ge.mat_emissive,0) + c8f(ge.amb_color,0)*mar;
-    float g = c8f(ge.mat_emissive,1) + c8f(ge.amb_color,1)*mag;
-    float b = c8f(ge.mat_emissive,2) + c8f(ge.amb_color,2)*mab;
+    float r = lc->emissive[0] + lc->amb[0]*mar;
+    float g = lc->emissive[1] + lc->amb[1]*mag;
+    float b = lc->emissive[2] + lc->amb[2]*mab;
 
     for (int i = 0; i < 4; i++) {
-        if (!ge.light_on[i]) continue;
-        int comp = (int)(ge.light_type[i] & 3);
-        int type = (int)((ge.light_type[i] >> 8) & 3);
-        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        const LightConst *l = &lc->light[i];
+        if (!l->on) continue;
+        int comp = l->comp;
+        float lx = l->lx, ly = l->ly, lz = l->lz;
         float att = 1.0f;
-        if (type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
+        if (l->type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
             lx -= wx; ly -= wy; lz -= wz;
             float d2 = lx*lx + ly*ly + lz*lz;
             float d = sqrtf(d2);
             float den = ge.light_att[i][0] + ge.light_att[i][1]*d + ge.light_att[i][2]*d2;
             att = den > 0.0f ? clampf01(1.0f/den) : 1.0f;
             if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
-        } else {          /* directional: position register holds the direction */
-            float d = sqrtf(lx*lx + ly*ly + lz*lz);
-            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
         }
         float ndl = nx*lx + ny*ly + nz*lz;
         if (ndl < 0.0f) ndl = 0.0f;
         if (comp == 2 && ge.spec_coef > 0.0f) ndl = powf(ndl, ge.spec_coef);   /* powered diffuse */
 
-        r += att*(c8f(ge.light_acol[i],0)*mar + c8f(ge.light_dcol[i],0)*mdr*ndl);
-        g += att*(c8f(ge.light_acol[i],1)*mag + c8f(ge.light_dcol[i],1)*mdg*ndl);
-        b += att*(c8f(ge.light_acol[i],2)*mab + c8f(ge.light_dcol[i],2)*mdb*ndl);
+        r += att*(l->acol[0]*mar + l->dcol[0]*mdr*ndl);
+        g += att*(l->acol[1]*mag + l->dcol[1]*mdg*ndl);
+        b += att*(l->acol[2]*mab + l->dcol[2]*mdb*ndl);
 
         if ((comp & 1) && ndl > 0.0f) {  /* specular, Blinn half-vector with eye (0,0,1) */
             float hx=lx, hy=ly, hz=lz+1.0f;
@@ -2855,9 +3328,9 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
                 float ndh = (nx*hx + ny*hy + nz*hz) / hd;
                 if (ndh > 0.0f) {
                     float s = ge.spec_coef > 0.0f ? powf(ndh, ge.spec_coef) : ndh;
-                    r += att*c8f(ge.light_scol[i],0)*msr*s;
-                    g += att*c8f(ge.light_scol[i],1)*msg*s;
-                    b += att*c8f(ge.light_scol[i],2)*msb*s;
+                    r += att*l->scol[0]*msr*s;
+                    g += att*l->scol[1]*msg*s;
+                    b += att*l->scol[2]*msb*s;
                 }
             }
         }
@@ -3144,6 +3617,80 @@ static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
     return 1;
 }
 
+/* BOUNDINGBOX (0x07): does the box submitted in the current vertex format possibly reach
+ * the screen?  Returns 0 (not visible: BJUMP takes its branch) or 1 (visible: BJUMP falls
+ * through and the object's commands run).
+ *
+ * Contract (PSPSDK pspgu.h and the sceGuBeginObject/sceGuEndObject sources): the list sets
+ * VERTEXTYPE and VADDR (and IADDR for an indexed box), issues BOUNDINGBOX with the vertex
+ * count, then a BASE/BJUMP pair that sceGuEndObject points past the object's commands.  The
+ * documented outcome is that the object is skipped when none of the submitted vertices lies
+ * inside the scissor region.
+ *
+ * Implemented: the part every reading of that contract agrees on.  The box is not visible
+ * only when every vertex projects (finite, clip w > 0) strictly beyond the same scissor edge,
+ * with a one-pixel guard because the rasterizer's rounding at that edge is unmeasured.  The
+ * vertices go through the same decode (morph, skinning) and world/view/projection/viewport
+ * transform as a draw, and through the index buffer when the vertex type has one.  The
+ * result is state of its own: the scissor is only read, and neither scissor nor region
+ * fragment clipping is changed by the test.
+ *
+ * UNMEASURED, so resolved as "visible" (the commands run, as before BJUMP was emulated):
+ * a box with no vertex inside the scissor that is not wholly beyond one edge (for example a
+ * box enclosing the view), a vertex at or behind the eye (w <= 0) or non-finite, the depth
+ * range and the near/far planes, the drawing region, through-mode vertex types, a zero
+ * count, a vertex or index span outside guest memory, and the PSP's handling of counts
+ * above 0x100 (every vertex is tested here).  Whether BOUNDINGBOX advances VADDR/IADDR as PRIM does is also unmeasured;
+ * it leaves them unchanged. */
+#define GE_BBOX_GUARD_PX 1.0f
+static int ge_bounding_box_visible(uint32_t count) {
+    VFmt vf;
+    decode_vtype(ge.vtype, &vf);
+    if (count == 0u || vf.through) return 1;
+    int idxfmt = (int)((ge.vtype >> 11) & 3u);
+    uint32_t stride = (uint32_t)vf.stride;
+    static unsigned s_bbox_span_reports;   /* each refusal is reported, at most 8 times */
+    if (idxfmt && !sr_inrange_n(ge.iaddr, count << (idxfmt - 1))) {
+        if (s_bbox_span_reports++ < 8u)
+            fprintf(stderr, "GE BOUNDINGBOX: index span iaddr=0x%08" PRIx32 " count=%" PRIu32
+                    " outside guest memory, box treated as visible\n", ge.iaddr, count);
+        return 1;
+    }
+    float vp_xs = decode_float24(ge.viewport_raw[0]), vp_ys = decode_float24(ge.viewport_raw[1]);
+    float vp_xc = decode_float24(ge.viewport_raw[3]), vp_yc = decode_float24(ge.viewport_raw[4]);
+    float off_x = (float)(ge.offsetx & 0xFFFF) / 16.0f, off_y = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    /* Pixel (x, y) is written when scis_x1 <= x <= scis_x2 and scis_y1 <= y <= scis_y2. */
+    float left = (float)ge.scis_x1 - GE_BBOX_GUARD_PX;
+    float right = (float)ge.scis_x2 + 1.0f + GE_BBOX_GUARD_PX;
+    float top = (float)ge.scis_y1 - GE_BBOX_GUARD_PX;
+    float bottom = (float)ge.scis_y2 + 1.0f + GE_BBOX_GUARD_PX;
+    unsigned beyond_all = 0xFu;   /* edges every vertex so far lies beyond */
+    for (uint32_t i = 0; i < count && beyond_all; i++) {
+        uint32_t vi = idxfmt ? index_value(ge.iaddr, idxfmt, (int)i) : i;
+        uint32_t addr = ge.vaddr + vi * stride;
+        if (!sr_inrange_n(addr, stride)) {
+            if (s_bbox_span_reports++ < 8u)
+                fprintf(stderr, "GE BOUNDINGBOX: vertex 0x%08" PRIx32 " (index %" PRIu32
+                        ") outside guest memory, box treated as visible\n", addr, vi);
+            return 1;
+        }
+        ModelVtx m;
+        decode_model_vtx(addr, &vf, &m);
+        float wx, wy, wz, ex, ey, ez, cx, cy, cz, cw;
+        mat43_mul(ge.world, m.x, m.y, m.z, &wx, &wy, &wz);
+        mat43_mul(ge.view, wx, wy, wz, &ex, &ey, &ez);
+        mat44_mul(ge.proj, ex, ey, ez, &cx, &cy, &cz, &cw);
+        if (!(cw > 0.0f) || !isfinite(cw)) return 1;
+        float sx = cx / cw * vp_xs + vp_xc - off_x;
+        float sy = cy / cw * vp_ys + vp_yc - off_y;
+        if (!isfinite(sx) || !isfinite(sy)) return 1;
+        unsigned beyond = (sx < left ? 1u : 0u) | (sx >= right ? 2u : 0u) |
+                          (sy < top ? 4u : 0u) | (sy >= bottom ? 8u : 0u);
+        beyond_all &= beyond;
+    }
+    return beyond_all == 0u;
+}
+
 static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
     o->cx = a->cx + (b->cx - a->cx) * t;
     o->cy = a->cy + (b->cy - a->cy) * t;
@@ -3309,6 +3856,7 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
+    if (s_ge_timing_model) ge_time_sprite(p0, p1);
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     if (s_gpu && s_gpu->sprite) {
@@ -3364,7 +3912,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
     float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
     float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
-    int minifying = tex_footprint_is_minifying(u_dir, 0.0f, 0.0f, v_dir);
+    float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
      * row owned by a textured sprite had no way to name the draw. Name the full sampling
@@ -3390,7 +3938,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, minifying, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
@@ -4427,6 +4975,7 @@ static void ge_block_transfer(uint32_t startdata) {
                 w, h, bpp);
         return;
     }
+    if (s_ge_timing_model) ge_time_transfer(srcBase, (uint64_t)w * h * bpp);
     if (s_gpu && s_gpu->xfer && s_gpu->xfer(startdata)) return;   /* GPU-side blit */
     if (s_gpu && s_gpu->flush) s_gpu->flush("xfersrc");
     for (uint32_t y = 0; y < h; y++) {
@@ -4446,6 +4995,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     if (!s_ge_inited) ge_state_init();
     if (!resume) {
         s_sp = 0;
+        s_bbox_visible = 1;
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
     uint32_t list_addr=addr;
@@ -4470,6 +5020,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     g_ge_list_through_cmds=0; g_ge_list_transform_cmds=0;
     g_ge_list_through_vertices=0; g_ge_list_transform_vertices=0;
     g_ge_list_through_sprites=0; g_ge_list_transform_sprites=0;
+    g_ge_list_commands=0; s_ge_run_clk=0.0; s_ge_run_tail_words=0; s_ge_prim_vtx_share=0.0;
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
     int pending_signal=0;
@@ -4489,7 +5040,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_state_serial++;   /* any command may change state that light_consts() caches */
         s_ge_command[cmd] = data;
+        g_ge_list_commands++;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
         switch (cmd) {
@@ -4698,15 +5251,29 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_TEXADDR0:     ge.tex_addr=(ge.tex_addr&0xFF000000)|(data&0x00FFFFFF); break;
             case GE_TEXBUFWIDTH0: ge.tex_bufw=data&0xFFFF; ge.tex_addr=(ge.tex_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
             case GE_TEXSIZE0:  ge.tex_w=1<<(data&0xF); ge.tex_h=1<<((data>>8)&0xF); break;
-            /* Mip levels 1-7 (addr/bufwidth/size): only level 0 is sampled. */
+            /* Mip levels 1-7, decoded exactly like level 0 (sceGuTexImage(level, ...)). */
             case GE_TEXADDR0+1: case GE_TEXADDR0+2: case GE_TEXADDR0+3: case GE_TEXADDR0+4:
-            case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7:
+            case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7: {
+                uint32_t *level_addr = &ge.tex_mip_addr[cmd - GE_TEXADDR0 - 1u];
+                *level_addr = (*level_addr & 0xFF000000u) | (data & 0x00FFFFFFu);
+                break;
+            }
             case GE_TEXBUFWIDTH0+1: case GE_TEXBUFWIDTH0+2: case GE_TEXBUFWIDTH0+3:
             case GE_TEXBUFWIDTH0+4: case GE_TEXBUFWIDTH0+5: case GE_TEXBUFWIDTH0+6:
-            case GE_TEXBUFWIDTH0+7:
+            case GE_TEXBUFWIDTH0+7: {
+                uint32_t level = cmd - GE_TEXBUFWIDTH0 - 1u;
+                ge.tex_mip_bufw[level] = data & 0xFFFFu;
+                ge.tex_mip_addr[level] = (ge.tex_mip_addr[level] & 0x00FFFFFFu) | ((data & 0xFF0000u) << 8);
+                break;
+            }
             case GE_TEXSIZE0+1: case GE_TEXSIZE0+2: case GE_TEXSIZE0+3: case GE_TEXSIZE0+4:
-            case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7: break;
-            case GE_TEXMODE:   ge.tex_swizzle=data&1; break;
+            case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7:
+                ge.tex_mip_wlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)(data & 0xFu);
+                ge.tex_mip_hlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)((data >> 8) & 0xFu);
+                break;
+            /* sceGuTexMode: maxmips << 16 | multi-CLUT << 8 | swizzle. The multi-CLUT bit is
+             * not applied: every level samples through the one CLUT (#1373). */
+            case GE_TEXMODE:   ge.tex_swizzle=data&1; ge.tex_max_level=(data>>16)&7u; break;
             case GE_TEXFORMAT: ge.tex_fmt=data&0xF; break;
             case GE_TEXFILTER: ge.tex_filter=data; break;
             case GE_TEXWRAP:   ge.tex_wrap=data; break;
@@ -4723,7 +5290,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 if (ge.tgen_num < 12) ge.tgen[ge.tgen_num] = decode_float24(data);
                 ge.tgen_num++;
                 break;
-            case GE_TEXLEVEL: case GE_TEXLODSLOPE: break;     /* mipmaps not sampled */
+            /* sceGuTexLevelMode: mode | trunc(bias * 16) << 16, a signed 4.4 level bias. */
+            case GE_TEXLEVEL:
+                ge.tex_level_mode = data & 3u;
+                ge.tex_lod_bias = (float)(int8_t)(uint8_t)(data >> 16) / 16.0f;
+                break;
+            case GE_TEXLODSLOPE: ge.tex_lod_slope = decode_float24(data); break;
             case GE_TEXFLUSH: case GE_TEXSYNC: break;         /* no texture cache to flush */
             case GE_LOADCLUT: {
                 uint64_t profile_started = ge_cpu_profile_begin();
@@ -4744,6 +5316,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     uint32_t w = MEM_R32(ge.clut_addr + i);
                     memcpy(&ge.clutram[i], &w, 4);
                 }
+                if (s_ge_timing_model) ge_time_clut_load(bytes);
                 ge.clut_gen++;
                 if (s_cpu_profile) s_cpu_profile_stats.clut_loads++;
                 ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
@@ -4780,7 +5353,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
                                      list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
+                if (s_ge_timing_model) ge_time_prim_begin(op, 0);
                 prims++; draw_prim(op, prims, list_addr, prim_cmd);
+                s_ge_prim_vtx_share = 0.0;
                 if (s_cpu_profile) {
                     s_cpu_profile_stats.primitive_commands++;
                     s_cpu_profile_stats.primitive_vertices += op & 0xFFFFu;
@@ -4795,14 +5370,20 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     s_cpu_profile_stats.primitive_profile_patch_control_vertices +=
                         (uint64_t)(op & 0xFFu) * (uint64_t)((op >> 8) & 0xFFu);
                 }
+                if (s_ge_timing_model) ge_time_prim_begin(op, 1);
                 prims++; draw_patch(op, cmd == GE_SPLINE);
+                s_ge_prim_vtx_share = 0.0;
                 if (s_cpu_profile) s_cpu_profile_stats.primitive_commands++;
                 ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
                 break;
             }
             case GE_JUMP: addr=ge_rel_addr(data&0x00FFFFFCu); break;
-            case GE_BJUMP: break;  /* no bounding-box test result kept; draw everything */
-            case GE_BOUNDINGBOX: break;
+            /* Conditional object rendering (sceGuBeginObject/sceGuEndObject): BJUMP branches,
+             * addressed like JUMP, when the last BOUNDINGBOX found its box not visible. */
+            case GE_BJUMP:
+                if (!s_bbox_visible) addr=ge_rel_addr(data&0x00FFFFFCu);
+                break;
+            case GE_BOUNDINGBOX: s_bbox_visible = ge_bounding_box_visible(data & 0xFFFFu); break;
             case GE_CALL:
                 if (s_sp<(int)(sizeof(s_stack_pc)/sizeof(s_stack_pc[0]))) {
                     s_stack_pc[s_sp]=addr; s_stack_offset[s_sp]=ge.offset; s_sp++;
@@ -4819,6 +5400,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                  * command-flow implementation is being validated against real game lists. */
                 pending_signal=1; pending_signal_op=op; break;
             case GE_FINISH:
+                s_ge_run_tail_words++;   /* FINISH and the END after it are part of T0 */
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
                                      list_addr, addr - 4u, data, 0u);
@@ -4838,6 +5420,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     }
                     pending_signal=0; pending_signal_op=0; break;
                 }
+                s_ge_run_tail_words++;
                 if (s_gpu && s_gpu->flush) {
                     uint64_t profile_started = ge_cpu_profile_begin();
                     s_gpu->flush("listend");

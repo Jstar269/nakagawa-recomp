@@ -126,6 +126,72 @@ void input_settings_format_binding(const InputSettingsState *state, int control_
     }
 }
 
+/* Key names in plain words where the profile's own name is not one already. */
+static const struct {
+    const char *name;
+    const char *words;
+} kKeyWords[] = {
+    { "return", "Enter" },          { "backspace", "Backspace" },   { "tab", "Tab" },
+    { "space", "Space" },           { "minus", "-" },               { "equals", "=" },
+    { "leftbracket", "[" },         { "rightbracket", "]" },        { "backslash", "\\" },
+    { "semicolon", ";" },           { "apostrophe", "'" },          { "grave", "`" },
+    { "comma", "," },               { "period", "." },              { "slash", "/" },
+    { "insert", "Insert" },         { "home", "Home" },             { "pageup", "Page Up" },
+    { "delete", "Delete" },         { "end", "End" },               { "pagedown", "Page Down" },
+    { "right", "Right Arrow" },     { "left", "Left Arrow" },       { "down", "Down Arrow" },
+    { "up", "Up Arrow" },           { "kp_divide", "Keypad /" },    { "kp_multiply", "Keypad *" },
+    { "kp_minus", "Keypad -" },     { "kp_plus", "Keypad +" },      { "kp_enter", "Keypad Enter" },
+    { "kp_period", "Keypad ." },    { "lctrl", "Left Ctrl" },       { "lshift", "Left Shift" },
+    { "lalt", "Left Alt" },         { "rctrl", "Right Ctrl" },      { "rshift", "Right Shift" },
+    { "ralt", "Right Alt" }
+};
+
+void input_settings_format_key(int key, char *buf, size_t buf_sz) {
+    const char *name = nk_host_key_name(key);
+    if (!buf || buf_sz == 0) return;
+    if (!name) {
+        snprintf(buf, buf_sz, "None");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kKeyWords) / sizeof(kKeyWords[0]); i++) {
+        if (strcmp(name, kKeyWords[i].name) == 0) {
+            snprintf(buf, buf_sz, "%s", kKeyWords[i].words);
+            return;
+        }
+    }
+    /* What is left is a letter or digit, on the main keys or the keypad. */
+    if (strncmp(name, "kp_", 3) == 0) {
+        snprintf(buf, buf_sz, "Keypad %s", name + 3);
+    } else if (name[0] >= 'a' && name[0] <= 'z' && name[1] == '\0') {
+        snprintf(buf, buf_sz, "%c", name[0] - 'a' + 'A');
+    } else {
+        snprintf(buf, buf_sz, "%s", name);
+    }
+}
+
+void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
+                                       char *buf, size_t buf_sz) {
+    char primary[32];
+    char secondary[32];
+    if (!buf || buf_sz == 0) return;
+    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) {
+        snprintf(buf, buf_sz, "None");
+        return;
+    }
+    const NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    input_settings_format_key(keys->primary, primary, sizeof(primary));
+    if (keys->secondary != NK_HOST_KEY_NONE && keys->secondary != keys->primary) {
+        input_settings_format_key(keys->secondary, secondary, sizeof(secondary));
+        if (keys->primary == NK_HOST_KEY_NONE) {
+            snprintf(buf, buf_sz, "%s", secondary);
+        } else {
+            snprintf(buf, buf_sz, "%s / %s", primary, secondary);
+        }
+    } else {
+        snprintf(buf, buf_sz, "%s", primary);
+    }
+}
+
 void input_settings_init(InputSettingsState *state) {
     if (!state) return;
     memset(state, 0, sizeof(*state));
@@ -156,10 +222,71 @@ void input_settings_reset_to_defaults(InputSettingsState *state) {
     state->capturing = false;
     state->capture_control = -1;
     state->capture_elapsed_ms = 0;
+    state->key_note[0] = '\0';
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
     store_current_scope(state);
     input_settings_refresh_conflicts(state);
+}
+
+void input_settings_reset_device_to_defaults(InputSettingsState *state) {
+    if (!state) return;
+    if (state->device == INPUT_DEVICE_KEYBOARD) {
+        NkInputProfile defaults;
+        nk_input_profile_init_default(&defaults);
+        memcpy(state->profile.psp_keys, defaults.psp_keys, sizeof(state->profile.psp_keys));
+        input_settings_cancel_capture(state);
+        state->save_diagnostic[0] = '\0';
+        state->has_save_diagnostic = false;
+        store_current_scope(state);
+        return;
+    }
+    /* The controller's defaults leave the keyboard keys as the user set them. */
+    NkKeyBinding keys[NK_PSP_BTN_COUNT];
+    memcpy(keys, state->profile.psp_keys, sizeof(keys));
+    input_settings_reset_to_defaults(state);
+    memcpy(state->profile.psp_keys, keys, sizeof(keys));
+    store_current_scope(state);
+}
+
+void input_settings_set_device(InputSettingsState *state, InputSettingsDevice device) {
+    if (!state) return;
+    if (device != INPUT_DEVICE_KEYBOARD) device = INPUT_DEVICE_CONTROLLER;
+    input_settings_cancel_capture(state);
+    state->device = device;
+}
+
+bool input_settings_assign_key(InputSettingsState *state, int control_idx, int key) {
+    char words[32];
+    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return false;
+    if (key <= NK_HOST_KEY_NONE || key >= NK_HOST_KEY_LIMIT || !nk_host_key_name(key)) {
+        snprintf(state->key_note, sizeof(state->key_note),
+                 "That key can't be used for a PSP button. Choose another key.");
+        return false;
+    }
+    input_settings_format_key(key, words, sizeof(words));
+    for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+        if (i == control_idx) continue;
+        if (state->profile.psp_keys[i].primary == key ||
+            state->profile.psp_keys[i].secondary == key) {
+            snprintf(state->key_note, sizeof(state->key_note),
+                     "%s is already the key for %s. Choose another key, or change %s first.",
+                     words, input_settings_control_name(i), input_settings_control_name(i));
+            return false;
+        }
+    }
+    NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    keys->primary = key;
+    if (keys->secondary == key) keys->secondary = NK_HOST_KEY_NONE;
+    state->key_note[0] = '\0';
+    return true;
+}
+
+bool input_settings_feed_capture_key(InputSettingsState *state, int key) {
+    if (!state || !state->capturing || state->device != INPUT_DEVICE_KEYBOARD) return false;
+    int c = state->capture_control;
+    input_settings_cancel_capture(state);
+    return input_settings_assign_key(state, c, key);
 }
 
 bool input_settings_is_title_scope(const InputSettingsState *state) {
@@ -448,6 +575,7 @@ bool input_settings_start_capture(InputSettingsState *state, int control_idx) {
     state->capture_control = control_idx;
     state->capture_elapsed_ms = 0;
     state->capture_timeout_ms = INPUT_SETTINGS_CAPTURE_TIMEOUT_MS;
+    state->key_note[0] = '\0';
     return true;
 }
 
@@ -456,6 +584,7 @@ void input_settings_cancel_capture(InputSettingsState *state) {
     state->capturing = false;
     state->capture_control = -1;
     state->capture_elapsed_ms = 0;
+    state->key_note[0] = '\0';
 }
 
 bool input_settings_is_capturing(const InputSettingsState *state) {
@@ -485,7 +614,8 @@ bool input_settings_update_capture(InputSettingsState *state, int delta_ms) {
 }
 
 bool input_settings_feed_capture_source(InputSettingsState *state, NkBindingSource source) {
-    if (!state || !state->capturing) return false;
+    /* A key capture waits for a key; a controller input is not one. */
+    if (!state || !state->capturing || state->device != INPUT_DEVICE_CONTROLLER) return false;
     int c = state->capture_control;
     state->capturing = false;
     state->capture_control = -1;

@@ -5,10 +5,18 @@ betterleaksMinVersion = "1.9.0"
 # redaction fixture. Keep the exception tied to those exact values and file;
 # adding another secret-shaped value to tools/ or moving this fixture must still
 # fail the scanner.
+#
+# The prerequisite manifest records the OpenPGP fingerprint of each upstream
+# signing key that verified a pinned source. A fingerprint identifies a public
+# key, so it is not a secret, but generic-api-key matches the XZ maintainer's
+# key next to the word "key". Allow that exact fingerprint in that file only.
 filter = '''
-attributes["path"] == "tools/test_history_audit.py" &&
-finding["rule_id"] == "github-pat" &&
-finding["secret"] == ("ghp_" + "123456789012345678901234567890123456")
+(attributes["path"] == "tools/test_history_audit.py" &&
+ finding["rule_id"] == "github-pat" &&
+ finding["secret"] == ("ghp_" + "123456789012345678901234567890123456")) ||
+(attributes["path"] == "assets/prereq_manifest.json" &&
+ finding["rule_id"] == "generic-api-key" &&
+ finding["secret"] == "3690C240CE51B4670D30AD1C38EE757D69184620")
 '''
 
 [extend]

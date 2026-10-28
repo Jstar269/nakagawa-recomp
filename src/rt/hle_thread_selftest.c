@@ -72,9 +72,34 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>            /* wcsstr: assert the built child command line */
-#include <windows.h>
-#include <process.h>
-#include <io.h>              /* _dup/_dup2/_fileno/_close: capture the runtime's stderr */
+#include <strings.h>          /* strncasecmp: the ms0:/fatms0: device prefix */
+#include <unistd.h>           /* dup/dup2/fileno/close, getpid, getcwd/chdir, rmdir: POSIX, and
+                                 the same names in MinGW's CRT */
+#ifdef _WIN32
+#include <windows.h>          /* the Win32-only fixtures: CreateProcessW respawn, the FindFirstFileW
+                                 error classifier, the junction, GetModuleFileNameA */
+#endif
+
+/* The fixture path buffers are sized by the Win32 MAX_PATH. POSIX publishes no such
+ * constant, so the same 260-byte buffers are used there. */
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+/* Set an environment variable for the code under test, or remove it when value is NULL or
+ * empty (an empty _putenv_s value removes the variable on Win32, and the fixtures were
+ * written against that). Win32 writes both the process environment block, which the
+ * runtime's wide-character lookups read, and the CRT table getenv reads; POSIX has the one
+ * environment getenv reads. Returns nonzero on success. */
+static int hle_test_setenv(const char *name, const char *value) {
+#ifdef _WIN32
+    int os_ok = SetEnvironmentVariableA(name, value && value[0] ? value : NULL) != 0;
+    return _putenv_s(name, value ? value : "") == 0 && (os_ok || !value || !value[0]);
+#else
+    if (!value || !value[0]) return unsetenv(name) == 0;
+    return setenv(name, value, 1) == 0;
+#endif
+}
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
@@ -167,7 +192,8 @@ extern uint32_t sr_hle_test_io_dclose(CpuState *s);
 extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern void sr_hle_test_register_iofilemgr(void);
-extern uint32_t sr_hle_test_io_devctl_callback_uid(void);
+extern uint32_t sr_hle_test_io_devctl_callback_count(void);
+extern uint32_t sr_hle_test_io_devctl_callback_at(uint32_t index);
 extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
@@ -393,6 +419,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
 #define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
 #define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
@@ -529,6 +556,9 @@ static unsigned long s_test_gui_present_calls;
 static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
 static int s_test_gui_last_fmt;
 int gui_on(void) { return s_test_gui_on; }
+/* A real host window with a person at it (not the offscreen sink or an acceptance launch). */
+static int s_test_gui_interactive;
+int gui_interactive(void) { return s_test_gui_interactive; }
 void gui_pump(void) {}
 int gui_headless_acceptance_complete(void) { return 0; }
 /* The live pad: the keyboard tests hold a button on it for one frame; zero elsewhere. */
@@ -636,6 +666,7 @@ void sr_perf_vulkan_wait(uint64_t started_ns, int readback) { (void)started_ns; 
 void sr_perf_vulkan_pipeline(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vulkan_readback(uint32_t bytes) { (void)bytes; }
 void sr_perf_texture_cache(int hit) { (void)hit; }
+void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) { (void)buffer; (void)vcount; }
 void sr_perf_texture_decode(uint64_t started_ns, uint32_t bytes) { (void)started_ns; (void)bytes; }
 void sr_perf_storage_read(SrPerfStorageSource source, uint32_t bytes, uint64_t started_ns, int success) { (void)source; (void)bytes; (void)started_ns; (void)success; }
 void sr_perf_h264(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
@@ -687,7 +718,33 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     (void)guest_path; (void)out_lba; (void)out_size;
     return -1;
 }
+/* The umd-io test's synthetic disc, served only while that test enables it: 64 sectors, with
+ * the ISO 9660 primary volume descriptor header at the start of sector 16 and every other byte
+ * a function of its sector and offset, so a read from the wrong sector is visible. */
+enum { UMD_SYNTHETIC_SECTORS = 64u };
+
+static uint8_t umd_synthetic_byte(uint64_t position) {
+    static const uint8_t pvd[8] = {0x01u, 'C', 'D', '0', '0', '1', 0x01u, 0x00u};
+    const uint64_t sector = position / 2048u, offset = position % 2048u;
+    if (sector == 16u && offset < sizeof(pvd)) return pvd[offset];
+    return (uint8_t)(sector * 31u + offset * 7u + 1u);
+}
+
+int iso_sector_count(uint32_t *out_sectors) {
+    if (!s_umd_io_synthetic_enabled || !out_sectors) return -1;
+    *out_sectors = UMD_SYNTHETIC_SECTORS;
+    return 0;
+}
+
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_umd_io_synthetic_enabled && dst) {
+        const uint64_t start = (uint64_t)lba * 2048u + offset;
+        const uint64_t end = (uint64_t)UMD_SYNTHETIC_SECTORS * 2048u;
+        if (start >= end) return 0;
+        uint32_t n = end - start < bytes ? (uint32_t)(end - start) : bytes;
+        for (uint32_t i = 0; i < n; i++) ((uint8_t *)dst)[i] = umd_synthetic_byte(start + i);
+        return (int)n;
+    }
     if (s_psmf_synthetic_enabled && lba == 0u && dst && offset < s_psmf_synthetic_size) {
         uint32_t n = s_psmf_synthetic_size - offset;
         if (n > bytes) n = bytes;
@@ -759,6 +816,9 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
  * sr_hle_test_partition_reset() and restores the default afterwards. */
 static uint32_t s_fixture_loaded_end = 0x00400000u;
 uint32_t sr_loaded_end(void) { return s_fixture_loaded_end; }
+/* The main image's lowest loaded address; UINT32_MAX (nothing loaded) by default. */
+static uint32_t s_fixture_loaded_base = UINT32_MAX;
+uint32_t sr_loaded_base(void) { return s_fixture_loaded_base; }
 
 int g_hle_depth;
 jmp_buf g_hle_jmp;
@@ -969,8 +1029,6 @@ static void test_title_config_hle_bindings(void) {
     uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
-    SrTitleReentBindings reent;
-    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -987,12 +1045,6 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_latch) ||
            (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
-    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
-           "HST reent compatibility is selected only by the validated HST title config");
-    if (has_reent) {
-        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
-               "HST reent compatibility config supplies both required guest addresses");
-    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -1236,6 +1288,7 @@ static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd);
 static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
                                           char *output, size_t output_size);
 static int count_occurrences(const char *haystack, const char *needle);
+uint32_t sr_hle_test_libfont_startup_stops(void);
 
 /* sceKernelStartModule for the synthetic libfont handle, with the argument and status
  * pointers the production ABI documents. */
@@ -1350,7 +1403,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(write_synthetic_libfont_prx(path, base),
            "source-owned libfont PRX fixture is written");
 
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
@@ -1464,7 +1517,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     }
 
     /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_hle_test_module_reset();
     uint32_t uid_on = sr_hle_test_register_module("libfont.prx", base + 0x70u, 0u);
     uint32_t starts_before = s_synth_libfont_start_calls;
@@ -1474,9 +1527,15 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
 
     /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
-     * libfont too: no entry runs, the call fails closed, and readiness remains guest-owned.
-     * Phase 5 repeats unavailable startup so the diagnostic latch is observed. */
-    _putenv("SR_REAL_MODULE_START=0");
+     * libfont too: no entry runs, readiness remains guest-owned, and the run stops by name
+     * (the harness counts the stop and returns the refusal). Phase 5 repeats it for an
+     * untranslated entry. Every stop writes the player's semantic-boundary event line. */
+    const char *events_path = HLE_BUILD_ROOT "/hle_libfont_stop_events.txt";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    remove(events_path);
+    hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
+    uint32_t stops_before = sr_hle_test_libfont_startup_stops();
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
                                                    base + 0x70u, 0u);
@@ -1499,14 +1558,14 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
            "a repeated kill-switched libfont StartModule keeps failing closed");
 
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     expect(libfont_start_call(&cpu, uid_off) == 0u &&
                s_synth_libfont_start_calls == starts_before + 1u &&
                MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
            "translated startup can establish readiness after a refused attempt");
 
     /* Phase 5: an untranslated libfont entry takes the same named refusal. */
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
                                                             0x089b0000u, 0u);
@@ -1517,7 +1576,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "repeated untranslated libfont starts fail closed");
 
     /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     starts_before = s_synth_libfont_start_calls;
     uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
@@ -1526,14 +1585,30 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid_lookalike) == 0u &&
                s_synth_libfont_start_calls == starts_before,
            "a module whose name only contains libfont.prx does not take the libfont gate");
+    expect(sr_hle_test_libfont_startup_stops() == stops_before + 4u,
+           "each unavailable libfont start takes the named run stop");
+    {
+        char events[1024] = "";
+        FILE *ev = fopen(events_path, "rb");
+        size_t got = ev ? fread(events, 1, sizeof(events) - 1u, ev) : 0u;
+        if (ev) fclose(ev);
+        events[got] = '\0';
+        expect(count_occurrences(events, "BOOT_EVENT phase=stop reason=semantic-boundary "
+                                         "boundary=libfont-startup-unavailable issue=299\n") == 4,
+               "each libfont stop writes the player's semantic-boundary event line");
+    }
+    hle_test_setenv("SR_BOOT_EVENT_FILE", NULL);
+    remove(events_path);
     if (capturing) {
         captured[0] = '\0';
         hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof(captured));
         /* Replay the captured window so the boundary text a consumer would read from
          * stderr stays observable in the run output the regressions assert on. */
         fprintf(stderr, "%s", captured);
-        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 2,
-               "repeated unavailable libfont starts log the boundary exactly once per reason");
+        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 4,
+               "every unavailable libfont start names its boundary before the run stops");
+        expect(count_occurrences(captured, "the run stops at libfont-startup-unavailable") == 4,
+               "the libfont diagnostic names the run stop");
         expect(strstr(captured, "SR_REAL_MODULE_START=0 disabled guest startup") != NULL,
                "the libfont diagnostic names the kill switch as its boundary");
         expect(strstr(captured, "entry untranslated") != NULL,
@@ -1545,7 +1620,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
                "the look-alike module is refused by name, not by a libfont fallback");
     }
 
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     remove(path);
 }
@@ -1716,15 +1791,18 @@ static int write_fixed_module_prx(const char *path, uint32_t link) {
     return written == sizeof(image) && close_result == 0;
 }
 
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid);
 
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
-    return write_runtime_module_prx_entry(path, flavour, 1);
+    return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
 /* with_start == 0 writes a library module with no start routine: the system library
- * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
+ * one function under `export_nid`. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     /* A start-less module's single system-library address sits at table + 4. */
@@ -1802,7 +1880,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
     }
-    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
     memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
@@ -1877,6 +1955,85 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     return handler(&cpu);
 }
 
+/* A started module that exports a NID host HLE also serves takes that NID over, and only
+ * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
+ * handler answers a handle it does not know with its status error, and the guest body
+ * answers a0 + RT_START_MARK, so the result names which side ran. Generic loader and
+ * linker paths only; no title address or module name is involved. */
+#define RT_HLE_SHADOW_NID 0x3EA82A4Bu      /* scePsmfPlayerGetAudioOutSize */
+#define RT_HLE_SHADOW_HOST 0x80616001u     /* the host handler's unknown-handle status */
+
+static uint32_t rt_shadow_import(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, RT_HLE_SHADOW_NID);
+}
+
+static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *alpha_path) {
+    extern void sr_hle_test_partition_reset(void);
+    uint32_t base = 0;
+    expect(sr_hle_test_is_registered(RT_HLE_SHADOW_NID) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: host HLE serves the NID before any module exports it");
+    expect(write_runtime_module_prx_entry(alpha_path, 1u, 1, RT_HLE_SHADOW_NID) &&
+               runtime_module_identity(alpha_path, &s_rt_alpha_code),
+           "runtime placement: the fixture module exports a host-served NID");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_alpha_code);
+    s_rt_start_calls = 0;
+    s_rt_stop_calls = 0;
+
+    /* Shipped default: host HLE implements the export, so the host keeps serving it and
+     * module_start is bypassed; the export never links. */
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    uint32_t uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY,
+           "runtime placement: the shadowing export registers at the placed address");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: by default a host-served module's start leaves the host handler");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN,
+           "runtime placement: unloading the unstarted module restores the builtin");
+
+    /* Real module start: before start the host handler runs; once module_start has run the
+     * guest body owns the NID; unload hands it back to the host handler. */
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
+    uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: before module start the shadowed import reaches host HLE");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 1u &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               rt_shadow_import() == RT_START_MARK,
+           "runtime placement: after module start the shadowed import runs the guest body");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_stop_calls == 1u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               !sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u,
+           "runtime placement: unload returns the shadowed NID to the builtin");
+    expect(rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: after unload the shadowed import reaches host HLE again");
+
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+}
+
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -1911,7 +2068,7 @@ static void test_runtime_placed_modules(void) {
                runtime_module_identity(delta_path, &s_rt_delta_code),
            "runtime placement: descriptors record the fixture identities");
 
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
@@ -2093,11 +2250,10 @@ static void test_runtime_placed_modules(void) {
         char saved_memstick[512] = "";
         int had_memstick = old_memstick != NULL;
         if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
-        CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT", NULL);
-        SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-        _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        nk_platform_mkdir_p(HLE_BUILD_ROOT);
+        nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT");
+        hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
         fd_host_path(host, sizeof(host), alpha_guest);
         FILE *marker = fopen(host, "wb");
         if (marker) {
@@ -2155,8 +2311,7 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
-        SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
-        _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+        hle_test_setenv("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
     }
 
     /* LoadModuleByID of a descriptor that names no recorded file: there is no module to
@@ -2191,7 +2346,7 @@ static void test_runtime_placed_modules(void) {
         char nostart_path[1024];
         runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
         s_rt_nostart_code.link_high = RT_MEM_SPAN;
-        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0, RT_EXPORT_NID) &&
                    runtime_module_identity(nostart_path, &s_rt_nostart_code),
                "runtime placement: the start-less module fixture is written");
         sr_module_code_register(&s_rt_nostart_code);
@@ -2305,6 +2460,8 @@ static void test_runtime_placed_modules(void) {
                    sr_hle_test_module_count() == 0u,
                "runtime placement: a full partition refuses the load with NO_MEMORY");
     }
+
+    test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
@@ -2435,6 +2592,13 @@ static void fd_guest_copy(uint32_t address, const void *data, size_t size) {
     for (size_t i = 0; i < size; i++) MEM_W8(address + (uint32_t)i, bytes[i]);
 }
 
+/* Count the savedata staging temporaries (".nakagawa-stage-<n>", src/rt/savedata.c) among
+ * the regular files of a save directory. */
+static bool hle_test_count_stage_file(const char *name, void *ctx) {
+    if (strncmp(name, ".nakagawa-stage-", 16) == 0) ++*(int *)ctx;
+    return true;
+}
+
 static void fd_host_path(char *out, size_t capacity, const char *guest) {
     /* Hierarchical path under the unified Memory Stick root (issue #334):
      * strip a known ms0:/fatms0: device prefix and keep guest separators. */
@@ -2446,13 +2610,13 @@ static void fd_host_path(char *out, size_t capacity, const char *guest) {
     size_t at = 0;
     if (!out || capacity == 0) return;
     for (size_t i = 0; root[i] && at + 1 < capacity; i++) out[at++] = root[i];
-    if (_strnicmp(rel, "ms0:", 4) == 0) rel += 4;
-    else if (_strnicmp(rel, "fatms0:", 7) == 0) rel += 7;
+    if (strncasecmp(rel, "ms0:", 4) == 0) rel += 4;
+    else if (strncasecmp(rel, "fatms0:", 7) == 0) rel += 7;
     while (*rel == '/' || *rel == '\\') rel++;
-    if (at + 1 < capacity) out[at++] = '\\';
+    if (at + 1 < capacity) out[at++] = '/';
     for (size_t i = 0; rel[i] && at + 1 < capacity; i++) {
         char c = rel[i];
-        out[at++] = (c == '/') ? '\\' : c;
+        out[at++] = (c == '\\') ? '/' : c;
     }
     out[at] = '\0';
 }
@@ -2513,7 +2677,7 @@ static void test_io_async_and_path_imports(void) {
            "synthetic file-I/O callback registers for the async completion test");
 
     fd_host_path(async_host, sizeof(async_host), async_guest);
-    DeleteFileA(async_host);
+    nk_remove_utf8(async_host);
     fd_set_path(&cpu, PATH_ADDR, async_guest);
     uint32_t fd = sr_hle_test_io_open(&cpu);
     expect(fd == 3u, "async fixture opens under the synthetic Memory Stick root");
@@ -2655,6 +2819,30 @@ static void test_io_async_and_path_imports(void) {
     cpu.r[5] = RESULT_ADDR;
     expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
            "sceIoLseekAsync returns its resulting position through the async result");
+
+    /* A past-the-end destination is refused through the async result too (#1380). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = 4u;  /* one past the three-byte file */
+    cpu.r[7] = 0u;
+    cpu.r[8] = 0u;  /* SEEK_SET */
+    expect(sr_hle_test_io_lseek_async(&cpu) == 0u,
+           "sceIoLseekAsync queues a past-the-end destination");
+    sr_hle_test_io_async_import_boundary();
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+               MEM_R32(RESULT_ADDR + 4u) == 0xffffffffu,
+           "sceIoLseekAsync refuses a past-the-end destination instead of clamping it");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 2u,
+           "the refused asynchronous seek leaves the position unchanged");
 
     MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
@@ -2857,7 +3045,8 @@ static void test_fd_namespace(void) {
         FD_KIND_FILE = 2,
         SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR = 0x80020323u,
         SCE_KERNEL_ERROR_TOO_MANY_OPEN_FILES = 0x80020320u,
-        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u
+        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u,
+        IO_ERROR_FUNCTION_NOT_SUPPORTED = 0x80010086u
     };
     const uint32_t path_addr = 0x09010000u;
     const uint32_t payload_addr = 0x09011000u;
@@ -2870,14 +3059,15 @@ static void test_fd_namespace(void) {
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
-    DeleteFileA(result_host);
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-    _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    nk_remove_utf8(result_host);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
+#ifdef _WIN32
+    /* The classifier maps FindFirstFileW's initial error codes; it exists on Win32 only. */
     int initial_find_found = 0;
     expect(sr_hle_test_vfs_initial_find_error(ERROR_FILE_NOT_FOUND,
                                                &initial_find_found) == 0u &&
@@ -2888,6 +3078,7 @@ static void test_fd_namespace(void) {
                                                &initial_find_found) == 0x80010005u &&
                !initial_find_found,
            "an initial overlay enumeration failure stays a loud I/O error");
+#endif
     expect(sr_hle_test_fd_kind(0) == FD_KIND_STD &&
            sr_hle_test_fd_kind(1) == FD_KIND_STD &&
            sr_hle_test_fd_kind(2) == FD_KIND_STD,
@@ -2951,6 +3142,82 @@ static void test_fd_namespace(void) {
     cpu.r[5] = 1u;
     expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
            "open non-existent file returns driver errno 0x80010002");
+
+    /* PSP_O_CREAT (0x0200) and PSP_O_EXCL (0x0800), #1380. PSP-IO-001 measured only that a
+     * read-only open of a missing file fails; a write open without PSP_O_CREAT fails the same
+     * way and creates nothing. An exclusive create of an existing file has no measured
+     * result, so it is refused with the named boundary and the file is left intact. */
+    {
+        static const char flags_guest[] = "ms0:/NAKAGAWA_OPEN_FLAGS.TXT";
+        static const uint32_t no_create[] = {
+            0x0002u, 0x0003u, 0x0402u, 0x0102u, 0x0802u  /* WRONLY, RDWR, +TRUNC, +APPEND, +EXCL */
+        };
+        static const uint32_t exclusive_existing[] = {
+            0x0A02u, 0x0E02u, 0x0B02u  /* WRONLY|CREAT|EXCL, +TRUNC, +APPEND */
+        };
+        char flags_host[256];
+        fd_host_path(flags_host, sizeof(flags_host), flags_guest);
+        remove(flags_host);
+        for (size_t i = 0; i < sizeof(no_create) / sizeof(no_create[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = no_create[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == 0x80010002u && nk_platform_path_missing(flags_host),
+                   "an open without PSP_O_CREAT of a missing file fails and creates nothing");
+            remove(flags_host);
+        }
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0A02u;
+        uint32_t excl_fd = sr_hle_test_io_open(&cpu);
+        expect(excl_fd < 64u, "PSP_O_CREAT|PSP_O_EXCL creates a missing file");
+        fd_guest_copy(payload_addr, "abc", 3u);
+        fd_set_write(&cpu, excl_fd, payload_addr, 3u);
+        expect(sr_hle_test_io_write(&cpu) == 3u, "the exclusively created file takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = excl_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u, "the exclusively created file closes");
+        for (size_t i = 0; i < sizeof(exclusive_existing) / sizeof(exclusive_existing[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = exclusive_existing[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+                       fd_host_bytes_equal(flags_host, (const uint8_t *)"abc", 3u),
+                   "PSP_O_CREAT|PSP_O_EXCL on an existing file is refused and leaves it intact");
+        }
+        /* Without PSP_O_CREAT an existing file still opens, and APPEND and TRUNC apply. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0102u;
+        uint32_t append_fd = sr_hle_test_io_open(&cpu);
+        expect(append_fd < 64u, "WRONLY|APPEND opens an existing file without PSP_O_CREAT");
+        fd_guest_copy(payload_addr, "de", 2u);
+        fd_set_write(&cpu, append_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "the append descriptor takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = append_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcde", 5u),
+               "APPEND without PSP_O_CREAT appends to the existing file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0402u;
+        uint32_t trunc_fd = sr_hle_test_io_open(&cpu);
+        expect(trunc_fd < 64u, "WRONLY|TRUNC opens an existing file without PSP_O_CREAT");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = trunc_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC without PSP_O_CREAT truncates the existing file");
+        remove(flags_host);
+    }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
      * branch in hle.c; remove and mkdir refuse as an illegal path. Pins the cross-host
@@ -3089,7 +3356,7 @@ static void test_fd_namespace(void) {
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
      * directory. Lives under the unified Memory Stick root (issue #334). */
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty", NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -3105,7 +3372,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
+    rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -3156,6 +3423,59 @@ static void test_fd_namespace(void) {
     cpu.r[8] = 2u;     /* SEEK_END */
     cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
+
+    /* Seek destinations are no longer clamped (#1380). PSP-IO-001 measured destinations
+     * inside the file only; one before the start or past the end has no measured result,
+     * so it is refused with the named boundary and the position stays where it was. */
+    {
+        const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
+        static const struct { uint32_t offset, whence; } bad32[] = {
+            {0xffffffffu, 0u}, {0xfffffffau, 1u}, {1u, 2u}, {(uint32_t)(sizeof(payload) - 1u), 1u},
+        };
+        static const struct { uint32_t low, high, whence; } bad64[] = {
+            {0u, 1u, 0u},                    /* 2^32 from the start */
+            {0xfffffff0u, 0xffffffffu, 1u},  /* -16 from 5 */
+            {0xffffffffu, 0x7fffffffu, 1u},  /* INT64_MAX from 5: no overflow */
+            {0u, 0x80000000u, 2u},           /* INT64_MIN from the end */
+            {1u, 0u, 2u},                    /* one past the end */
+        };
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        cpu.r[5] = file_size;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size,
+               "lseek32 to the end of the file itself succeeds");
+        for (size_t i = 0; i < sizeof(bad32) / sizeof(bad32[0]) + sizeof(bad64) / sizeof(bad64[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 5u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u, "lseek32 places the descriptor at 5");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            uint32_t rc;
+            if (i < sizeof(bad32) / sizeof(bad32[0])) {
+                cpu.r[5] = bad32[i].offset;
+                cpu.r[6] = bad32[i].whence;
+                rc = sr_hle_test_io_lseek32(&cpu);
+            } else {
+                size_t j = i - sizeof(bad32) / sizeof(bad32[0]);
+                cpu.r[6] = bad64[j].low;
+                cpu.r[7] = bad64[j].high;
+                cpu.r[8] = bad64[j].whence;
+                rc = sr_hle_test_io_lseek(&cpu);
+                expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+                   "a seek before the start or past the end is refused, not clamped");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 0u;
+            cpu.r[6] = 1u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u,
+                   "a refused seek leaves the descriptor position unchanged");
+        }
+    }
 
     /* Closed descriptor behavior */
     memset(&cpu, 0, sizeof(cpu));
@@ -3242,7 +3562,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = realloc_fd;
     expect(sr_hle_test_io_close(&cpu) == 0u, "reallocated descriptor closes cleanly");
     fd_host_path(host_path, sizeof(host_path), "ms0:/NAKAGAWA_FD_REALLOC.TXT");
-    DeleteFileA(host_path);
+    nk_remove_utf8(host_path);
 
     for (uint32_t i = 1; i < 61u; i++) {
         memset(&cpu, 0, sizeof(cpu));
@@ -3250,11 +3570,11 @@ static void test_fd_namespace(void) {
         expect(sr_hle_test_io_close(&cpu) == 0u, "each exhausted-table descriptor closes cleanly");
         snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_%02u.TXT", i);
         fd_host_path(host_path, sizeof(host_path), guest_path);
-        DeleteFileA(host_path);
+        nk_remove_utf8(host_path);
     }
     snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_00.TXT");
     fd_host_path(host_path, sizeof(host_path), guest_path);
-    DeleteFileA(host_path);
+    nk_remove_utf8(host_path);
 
     /* Closing a standard descriptor makes it invalid for I/O but does not turn
      * its reserved identity into an ordinary allocation slot. */
@@ -3279,7 +3599,7 @@ static void test_fd_namespace(void) {
     static const char rename_dst_guest[] = "ms0:/NAKAGAWA_RENAMED_RESULT.TXT";
     char rename_dst_host[256];
     fd_host_path(rename_dst_host, sizeof(rename_dst_host), rename_dst_guest);
-    DeleteFileA(rename_dst_host);
+    nk_remove_utf8(rename_dst_host);
 
     /* 1. Rename on non-existent file returns 0x80010002 */
     fd_guest_copy(rename_src_addr, rename_nonexist, sizeof(rename_nonexist));
@@ -3302,7 +3622,7 @@ static void test_fd_namespace(void) {
     static const uint8_t rename_payload[] = "RENAME_TEST_PAYLOAD\n";
     char rename_src_host[256];
     fd_host_path(rename_src_host, sizeof(rename_src_host), rename_src_guest);
-    DeleteFileA(rename_src_host);
+    nk_remove_utf8(rename_src_host);
     fd_set_path(&cpu, rename_src_addr, rename_src_guest);
     uint32_t rn_fd = sr_hle_test_io_open(&cpu);
     expect(rn_fd == 3u, "open rename source file succeeds");
@@ -3319,7 +3639,7 @@ static void test_fd_namespace(void) {
     cpu.r[5] = rename_dst_addr;
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename on existing source file succeeds");
-    expect(GetFileAttributesA(rename_src_host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(rename_src_host),
            "sceIoRename removes original source file from host");
     expect(fd_host_bytes_equal(rename_dst_host, rename_payload, sizeof(rename_payload) - 1u),
            "sceIoRename preserves file content at destination path");
@@ -3329,7 +3649,7 @@ static void test_fd_namespace(void) {
     static const uint8_t overwrite_payload[] = "OVERWRITE_PAYLOAD_NEW\n";
     char overwrite_src_host[256];
     fd_host_path(overwrite_src_host, sizeof(overwrite_src_host), overwrite_src_guest);
-    DeleteFileA(overwrite_src_host);
+    nk_remove_utf8(overwrite_src_host);
     fd_set_path(&cpu, rename_src_addr, overwrite_src_guest);
     uint32_t ow_fd = sr_hle_test_io_open(&cpu);
     expect(ow_fd == 3u, "open overwrite source file succeeds");
@@ -3346,29 +3666,134 @@ static void test_fd_namespace(void) {
     cpu.r[5] = rename_dst_addr;
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename replacing existing destination file succeeds");
-    expect(GetFileAttributesA(overwrite_src_host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(overwrite_src_host),
            "sceIoRename source file removed after replace");
     expect(fd_host_bytes_equal(rename_dst_host, overwrite_payload, sizeof(overwrite_payload) - 1u),
            "sceIoRename replaced destination contains new payload");
-    DeleteFileA(rename_dst_host);
+    nk_remove_utf8(rename_dst_host);
 
-    DeleteFileA(result_host);
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
-    else _putenv_s("SR_MEMSTICK", "");
+    nk_remove_utf8(result_host);
+    rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
+}
+
+/* sceIoLseek takes its 64-bit offset in a2:a3 and whence in t0 and returns the high word in v1. */
+static uint32_t umd_test_seek64(uint32_t fd, int64_t offset, uint32_t whence, uint32_t *high) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = (uint32_t)(uint64_t)offset;
+    cpu.r[7] = (uint32_t)((uint64_t)offset >> 32);
+    cpu.r[8] = whence;
+    const uint32_t low = sr_syscall(&cpu, 0x27eb27b8u);
+    *high = cpu.r[3];
+    return low;
+}
+
+static uint32_t umd_test_seek32(uint32_t fd, int32_t offset, uint32_t whence) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)offset;
+    cpu.r[6] = whence;
+    return sr_syscall(&cpu, 0x68963324u);
+}
+
+static uint32_t umd_test_read(uint32_t fd, uint32_t dst, uint32_t count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = dst;
+    cpu.r[6] = count;
+    return sr_syscall(&cpu, 0x6a638d83u);
+}
+
+/* True when guest memory at dst holds the synthetic disc's sectors [sector, sector + count). */
+static int umd_test_sectors_match(uint32_t dst, uint32_t sector, uint32_t count) {
+    for (uint32_t i = 0; i < count * 2048u; i++) {
+        if (MEM_R8(dst + i) != umd_synthetic_byte((uint64_t)sector * 2048u + i)) return 0;
+    }
+    return 1;
+}
+
+/* The UMD block device counts in 2048-byte sectors (PSP-UMDRAW-001 captured cells): seeks
+ * return sector positions and SEEK_END is relative to the last sector; reads take and return
+ * sector counts and advance the position by them; a position below zero or past the last
+ * sector is refused with 0x8001b003 and leaves the position unchanged; a zero count is refused
+ * with 0x80010016. Uncaptured cases stay visible: a read crossing the last sector stops at the
+ * raw-device boundary, and so does every data operation while no disc image is open. */
+static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
+    uint32_t high = 0;
+    expect(umd_test_seek64(fd, 0, 0u, &high) == 0u && high == 0u, "UMD SEEK_SET 0 is sector 0");
+    expect(umd_test_seek64(fd, 16, 0u, &high) == 16u && high == 0u,
+           "UMD SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek64(fd, 32, 0u, &high) == 32u && high == 0u,
+           "a UMD seek offset counts sectors, not bytes");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 32u && high == 0u,
+           "UMD SEEK_CUR 0 reports the current sector");
+    expect(umd_test_seek64(fd, 0, 2u, &high) == UMD_SYNTHETIC_SECTORS - 1u && high == 0u,
+           "UMD SEEK_END 0 is the last sector");
+    expect(umd_test_seek64(fd, 1, 0u, &high) == 1u && high == 0u, "UMD SEEK_SET 1 is sector 1");
+    expect(umd_test_seek64(fd, -1, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a negative UMD position is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 1u,
+           "a refused UMD seek leaves the position unchanged");
+    expect(umd_test_seek64(fd, 0x7fffffff, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a UMD position far past the disc is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, UMD_SYNTHETIC_SECTORS, 0u, &high) == 0x8001b003u,
+           "the position after the last UMD sector is refused");
+    expect(umd_test_seek64(fd, INT64_MAX, 1u, &high) == 0x8001b003u,
+           "an overflowing UMD SEEK_CUR is refused");
+    expect(umd_test_seek64(fd, 0, 3u, &high) == 0x80020324u && high == 0xffffffffu,
+           "an unknown UMD whence is refused");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u, "UMD sceIoLseek32 SEEK_SET 0 is sector 0");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD sceIoLseek32 SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek32(fd, 0, 2u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "UMD sceIoLseek32 SEEK_END 0 is the last sector");
+    expect(umd_test_seek32(fd, -1, 0u) == 0x8001b003u,
+           "UMD sceIoLseek32 refuses a negative position");
+
+    /* Two consecutive one-sector reads from sector 16 return the descriptor header, then sector
+     * 17, and leave the position at 18. */
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD read setup seeks to sector 16");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 16u, 1u) &&
+               MEM_R32(data_addr) == 0x30444301u && MEM_R32(data_addr + 4u) == 0x00013130u,
+           "a one-sector UMD read returns 1 and the sector-16 descriptor header");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 17u, 1u),
+           "the next UMD read continues at the next sector");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 18u && high == 0u,
+           "each UMD read advances the position by its sector count");
+    expect(umd_test_seek32(fd, 20, 0u) == 20u &&
+               umd_test_read(fd, data_addr, 3u) == 3u && umd_test_sectors_match(data_addr, 20u, 3u) &&
+               umd_test_seek32(fd, 0, 1u) == 23u,
+           "a three-sector UMD read copies 6144 bytes and advances three sectors");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u && umd_test_read(fd, data_addr, 0u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 16u,
+           "a zero-count UMD read is refused with 0x80010016 and keeps the position");
+
+    /* A read crossing the last sector is not captured: it stops at the boundary and changes
+     * neither guest memory nor the position. */
+    MEM_W32(data_addr, 0xaabbccddu);
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_read(fd, data_addr, 2u) == 0x80010086u &&
+               MEM_R32(data_addr) == 0xaabbccddu &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a UMD read across the last sector stops at the raw-device boundary");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u &&
+               umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u),
+           "the last UMD sector itself is readable");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u && umd_test_read(fd, 0x0bffff00u, 1u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 0u,
+           "a UMD read that would run past the end of guest memory is refused");
 }
 
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
     static const uint32_t nid_io_close = 0x810c4bc3u;
-    static const uint32_t nid_io_read = 0x6a638d83u;
     static const uint32_t nid_io_write = 0x42ec03acu;
-    static const uint32_t nid_io_lseek32 = 0x68963324u;
-    static const uint32_t nid_io_lseek = 0x27eb27b8u;
     static const uint32_t nid_io_ioctl = 0x63632449u;
     static const uint32_t nid_io_getstat = 0xace946e8u;
     static const uint32_t nid_io_devctl = 0x54f5fb11u;
@@ -3475,35 +3900,49 @@ static void test_umd_io_console_model(void) {
         }
     }
 
-    /* The console measurement only covered close. Every other raw-device
-     * operation must stop at a named semantic boundary with a real error. */
-    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    /* Reads and seeks on the UMD block device follow the captured sector cells (above). With no
+     * disc image open they stay at the raw-device boundary, as does every operation no capture
+     * covers. */
+    s_umd_io_synthetic_enabled = 0;
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
     cpu.r[5] = 1u;
     uint32_t raw_fd = sr_syscall(&cpu, nid_io_open);
     expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
-           "bare UMD open creates a typed descriptor in the normal table");
+           "a UMD open with no disc image still creates a typed descriptor");
     MEM_W32(DATA_ADDR, 0xaabbccddu);
+    expect(umd_test_read(raw_fd, DATA_ADDR, 1u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoRead fails closed without changing guest memory");
+    expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoLseek32 fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    cpu.r[5] = DATA_ADDR;
-    cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read) == 0x80010086u &&
-               MEM_R32(DATA_ADDR) == 0xaabbccddu,
-           "raw UMD sceIoRead fails closed without changing guest memory");
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
+    s_umd_io_synthetic_enabled = 1;
+
+    static const char *const umd_devices[] = {"umd0:", "umd1:", "umd:"};
+    for (size_t i = 0; i < sizeof(umd_devices) / sizeof(umd_devices[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, umd_devices[i]);
+        cpu.r[5] = i == 0u ? 0x000f0001u : 1u;
+        raw_fd = sr_syscall(&cpu, nid_io_open);
+        expect(raw_fd == 3u, "each UMD block device opens read-only");
+        test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = raw_fd;
+        expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
+    }
+
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "bare UMD open creates a typed descriptor in the normal table");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
     expect(sr_syscall(&cpu, nid_io_write) == 0x80010086u,
            "raw UMD sceIoWrite fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32) == 0x80010086u,
-           "raw UMD sceIoLseek32 fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek) == 0x80010086u,
-           "raw UMD sceIoLseek fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl) == 0x80010086u,
@@ -3614,13 +4053,11 @@ static void test_ms0_unified_namespace(void) {
     if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
     if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
 
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(ms_root, NULL);
-    CreateDirectoryA(legacy_root, NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
-    SetEnvironmentVariableA("SR_FSDIR", legacy_root);
-    _putenv_s("SR_MEMSTICK", ms_root);
-    _putenv_s("SR_FSDIR", legacy_root);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(ms_root);
+    nk_platform_mkdir_p(legacy_root);
+    hle_test_setenv("SR_MEMSTICK", ms_root);
+    hle_test_setenv("SR_FSDIR", legacy_root);
     sr_hle_init();
 
     /* --- ordinary sceIo mkdir/open/write/read/seek/stat/remove --- */
@@ -3628,9 +4065,9 @@ static void test_ms0_unified_namespace(void) {
     static const char file_guest[] = "ms0:/TESTDIR/UNIFIED.TXT";
     static const char file_guest2[] = "ms0:/TESTDIR/UNIFIED_RENAMED.TXT";
     fd_host_path(host, sizeof(host), file_guest);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_host_path(host, sizeof(host), file_guest2);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
 
     fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
     memset(&cpu, 0, sizeof cpu);
@@ -3640,8 +4077,8 @@ static void test_ms0_unified_namespace(void) {
     /* mkdir result is hierarchical under SR_MEMSTICK, not flat fs/ */
     {
         char mkdir_host[512];
-        snprintf(mkdir_host, sizeof mkdir_host, "%s\\TESTDIR", ms_root);
-        expect(GetFileAttributesA(mkdir_host) != INVALID_FILE_ATTRIBUTES,
+        snprintf(mkdir_host, sizeof mkdir_host, "%s/TESTDIR", ms_root);
+        expect(nk_platform_dir_exists(mkdir_host),
                "mkdir result is hierarchical under SR_MEMSTICK, not flat fs/");
     }
     memset(&cpu, 0, sizeof cpu);
@@ -3683,14 +4120,14 @@ static void test_ms0_unified_namespace(void) {
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename moves a file within the unified Memory Stick root");
     fd_host_path(host, sizeof(host), file_guest2);
-    expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_file_exists(host),
            "rename destination exists under SR_MEMSTICK hierarchy");
 
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = PATH2_ADDR;
     expect(sr_hle_test_io_remove(&cpu) == 0u,
            "sceIoRemove deletes a regular file under the unified root");
-    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(host),
            "removed file is gone from the unified Memory Stick hierarchy");
 
     /* foreign device / traversal fail closed */
@@ -3712,7 +4149,7 @@ static void test_ms0_unified_namespace(void) {
 
     /* disc0 open does not create under the ms root */
     fd_host_path(host, sizeof host, "ms0:/PSP_GAME");
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN",
                   sizeof("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN"));
     fd_set_path(&cpu, PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
@@ -3723,14 +4160,14 @@ static void test_ms0_unified_namespace(void) {
         cpu.r[4] = disc_fd;
         sr_hle_test_io_close(&cpu);
     }
-    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(host),
            "foreign disc0 open never materializes a host path under SR_MEMSTICK");
 
     /* --- legacy flat import (read-open miss copies once) --- */
     {
         char legacy_flat[512];
         snprintf(legacy_flat, sizeof legacy_flat,
-                 "%s\\ms0__LEGACY_FLAT.TXT", legacy_root);
+                 "%s/ms0__LEGACY_FLAT.TXT", legacy_root);
         FILE *lf = fopen(legacy_flat, "wb");
         expect(lf != NULL, "legacy flat fixture file can be created");
         if (lf) {
@@ -3741,7 +4178,7 @@ static void test_ms0_unified_namespace(void) {
          * (sr_vfs_host_flat_path maps "ms0:/LEGACY_FLAT.TXT" -> "ms0__LEGACY_FLAT.TXT"). */
         static const char legacy_guest[] = "ms0:/LEGACY_FLAT.TXT";
         fd_host_path(host, sizeof(host), legacy_guest);
-        DeleteFileA(host);
+        nk_remove_utf8(host);
         uint32_t before = sr_hle_test_ms0_legacy_import_count();
         fd_set_path(&cpu, PATH_ADDR, legacy_guest);
         cpu.r[5] = 1u; /* O_RDONLY: import only on read miss */
@@ -3761,10 +4198,10 @@ static void test_ms0_unified_namespace(void) {
         }
         expect(sr_hle_test_ms0_legacy_import_count() == before + 1u,
                "legacy flat import increments the source-owned counter exactly once");
-        expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+        expect(nk_platform_file_exists(host),
                "imported legacy content lives under SR_MEMSTICK, not SR_FSDIR only");
-        DeleteFileA(host);
-        DeleteFileA(legacy_flat);
+        nk_remove_utf8(host);
+        nk_remove_utf8(legacy_flat);
     }
 
     /* --- savedata SAVE and ordinary sceIoOpen see the same host path --- */
@@ -3804,20 +4241,93 @@ static void test_ms0_unified_namespace(void) {
             cpu.r[4] = sfd;
             sr_hle_test_io_close(&cpu);
         }
+
+        /* Issue #1387 on the Windows handle route.  A shorter overwrite made
+         * while a guest descriptor holds the old file open replaces the file
+         * whole (the open descriptor keeps reading the old bytes, as on POSIX)
+         * and leaves no temporary.  A temporary that cannot be created fails
+         * the SAVE and keeps the previous save.  A load whose buffer is too
+         * small is refused instead of truncated. */
+        static const char shorter[] = "NEW\n";
+        char save_host[512], save_dir[512], planted[600];
+        fd_host_path(save_host, sizeof save_host, guest_open);
+        snprintf(save_dir, sizeof save_dir, "%s", save_host);
+        char *slot_end = strrchr(save_dir, '/');
+        char *slot_end_win = strrchr(save_dir, '\\');
+        if (!slot_end || (slot_end_win && slot_end_win > slot_end)) slot_end = slot_end_win;
+        expect(slot_end != NULL, "savedata host path names its save directory");
+        if (slot_end) *slot_end = '\0';
+        snprintf(planted, sizeof planted, "%s/.nakagawa-stage-1", save_dir);
+
+        fd_set_path(&cpu, PATH_ADDR, guest_open);
+        cpu.r[5] = 1u; /* O_RDONLY */
+        uint32_t held = sr_hle_test_io_open(&cpu);
+        expect(held < 64u, "a guest descriptor holds the save file open");
+        fd_guest_copy(DATA_ADDR, shorter, sizeof(shorter) - 1u);
+        MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(shorter) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0u,
+               "savedata overwrite of a file a guest descriptor holds open succeeds");
+        if (held < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            cpu.r[5] = DATA_ADDR + 0x100u;
+            cpu.r[6] = (uint32_t)(sizeof(data) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(data) - 1u &&
+                       MEM_R8(DATA_ADDR + 0x100u) == (uint8_t)'S',
+                   "the held descriptor keeps reading the previous bytes");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            sr_hle_test_io_close(&cpu);
+        }
+        expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
+               "savedata overwrite replaces the whole file, no stale tail");
+        int stage_files = 0;
+        expect(nk_platform_list_files(save_dir, hle_test_count_stage_file, &stage_files) &&
+                   stage_files == 0,
+               "savedata overwrite leaves no temporary file behind");
+
+        expect(nk_platform_mkdir_p(planted), "a directory planted at a temporary's name");
+        fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
+               "a SAVE whose PARAM.SFO cannot be staged fails");
+        expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
+               "a SAVE that failed while staging keeps the previous data file");
+        stage_files = 0;
+        expect(nk_platform_list_files(save_dir, hle_test_count_stage_file, &stage_files) &&
+                   stage_files == 0 && !nk_platform_path_missing(planted),
+               "a failed SAVE leaves no temporary file beside the planted directory");
+        nk_platform_remove_tree(planted, NULL);
+
+        MEM_W32(PARAM_ADDR + 0x30, 2u); /* SD_LOAD */
+        MEM_W32(PARAM_ADDR + 0x78, 2u);
+        MEM_W32(PARAM_ADDR + 0x7c, 0x1234u);
+        MEM_W8(DATA_ADDR, 0xEEu);
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110306u &&
+                   MEM_R32(PARAM_ADDR + 0x7c) == 0u && MEM_R8(DATA_ADDR) == 0xEEu,
+               "savedata load refuses data larger than the guest buffer");
     }
 
     /* --- junction rejection: open through a planted link fails closed --- */
     {
-        char victim[512], jpath[512], jcmd[1200];
-        snprintf(victim, sizeof victim, "%s\\..\\ms0_victim_outside.txt", ms_root);
+        char victim[512], jpath[512];
+        const char sep = nk_platform_path_separator();
+        snprintf(victim, sizeof victim, "%s%c..%cms0_victim_outside.txt", ms_root, sep, sep);
         FILE *vf = fopen(victim, "wb");
         if (vf) { fwrite(payload, 1, sizeof(payload) - 1u, vf); fclose(vf); }
-        snprintf(jpath, sizeof jpath, "%s\\JCT_LINK.TXT", ms_root);
-        DeleteFileA(jpath);
+        snprintf(jpath, sizeof jpath, "%s%cJCT_LINK.TXT", ms_root, sep);
+        nk_remove_utf8(jpath);
+#ifdef _WIN32
+        char jcmd[1200];
         snprintf(jcmd, sizeof jcmd,
                  "cmd /c mklink \"%s\" \"%s\" >nul 2>&1", jpath, victim);
         int made = system(jcmd) == 0 &&
-                   GetFileAttributesA(jpath) != INVALID_FILE_ATTRIBUTES;
+#else
+        /* POSIX's planted link is a symlink; its target resolves from the link's own directory. */
+        int made = symlink("../ms0_victim_outside.txt", jpath) == 0 &&
+#endif
+                   !nk_platform_path_missing(jpath);
         if (made) {
             fd_guest_copy(PATH_ADDR, "ms0:/JCT_LINK.TXT", sizeof("ms0:/JCT_LINK.TXT"));
             fd_set_path(&cpu, PATH_ADDR, "ms0:/JCT_LINK.TXT");
@@ -3830,33 +4340,27 @@ static void test_ms0_unified_namespace(void) {
                 cpu.r[4] = jfd;
                 sr_hle_test_io_close(&cpu);
             }
-            DeleteFileA(jpath);
+            nk_remove_utf8(jpath);
         } else {
-            fprintf(stderr, "SKIP: junction fixture needs mklink privilege\n");
+            fprintf(stderr, "SKIP: junction fixture needs mklink (Win32) or symlink privilege\n");
         }
-        DeleteFileA(victim);
+        nk_remove_utf8(victim);
     }
 
     /* cleanup */
     fd_host_path(host, sizeof(host), file_guest);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_host_path(host, sizeof(host), file_guest2);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     {
         char d[512];
-        snprintf(d, sizeof d, "%s\\TESTDIR", ms_root);
-        RemoveDirectoryA(d);
+        snprintf(d, sizeof d, "%s/TESTDIR", ms_root);
+        rmdir(d);
     }
-    RemoveDirectoryA(ms_root);
-    RemoveDirectoryA(legacy_root);
-    if (save_ms) SetEnvironmentVariableA("SR_MEMSTICK", save_ms);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (save_fs) SetEnvironmentVariableA("SR_FSDIR", save_fs);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
-    if (save_ms) _putenv_s("SR_MEMSTICK", save_ms);
-    else _putenv_s("SR_MEMSTICK", "");
-    if (save_fs) _putenv_s("SR_FSDIR", save_fs);
-    else _putenv_s("SR_FSDIR", "");
+    rmdir(ms_root);
+    rmdir(legacy_root);
+    hle_test_setenv("SR_MEMSTICK", save_ms);
+    hle_test_setenv("SR_FSDIR", save_fs);
     free(save_ms);
     free(save_fs);
 }
@@ -4132,21 +4636,19 @@ static int sysreg_keys_slot_is(uint32_t idx, const char *name) {
 }
 
 static void sysreg_env(const char *value) {
-    SetEnvironmentVariableA("SR_SYSTEM_REGISTRY", value);
-    _putenv_s("SR_SYSTEM_REGISTRY", value ? value : "");
+    hle_test_setenv("SR_SYSTEM_REGISTRY", value);
 }
 
 static void sysreg_scratch_clean(void) {
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(SYSREG_SCRATCH_DIR, NULL);
-    DeleteFileA(SYSREG_SCRATCH_FILE);
-    DeleteFileA(SYSREG_SCRATCH_FILE ".tmp");
-    DeleteFileA(SYSREG_SCRATCH_FILE ".corrupt");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(SYSREG_SCRATCH_DIR);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE ".tmp");
+    nk_remove_utf8(SYSREG_SCRATCH_FILE ".corrupt");
 }
 
 static int sysreg_file_exists(const char *path) {
-    DWORD attrs = GetFileAttributesA(path);
-    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    return nk_platform_file_exists(path);
 }
 
 static int sysreg_write_file(const char *path, const char *text, size_t len) {
@@ -4878,7 +5380,7 @@ static void test_sysreg_persistence_round_trip(void) {
            "a nickname a game wrote to owner_name persists with its own size");
 
     /* A flush after reads only writes nothing. */
-    DeleteFileA(SYSREG_SCRATCH_FILE);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE);
     expect(sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u &&
                sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, made, 0u, 0u, 0u, 0u) == 0u &&
                !sysreg_file_exists(SYSREG_SCRATCH_FILE),
@@ -5016,7 +5518,7 @@ static void test_sysreg_flush_failure(void) {
            "a failed flush keeps the written value live in memory");
     sysreg_env(SYSREG_SCRATCH_FILE);
     sysreg_restart();
-    DeleteFileA(blocker);
+    nk_remove_utf8(blocker);
     sysreg_scratch_clean();
 }
 
@@ -5177,6 +5679,16 @@ static void test_adhoc_named_refusals(void) {
 }
 
 extern void sr_hle_test_volatile_mem_reset(void);
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+/* Lock may block, so it is called from a current guest thread: with no thread current the
+ * runtime is in interrupt context, where Lock returns ILLEGAL_CONTEXT (#1383). */
+static TCB *volatile_mem_current_thread(uint32_t uid, int priority) {
+    TCB *t = fixture_thread(uid, TH_RUNNING, priority);
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    return t;
+}
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
@@ -5186,7 +5698,9 @@ static void test_volatile_mem_output_preflight(void) {
     const uint32_t size_out = 0x08a10004u;
     const uint32_t sentinel = 0xa5c35a3cu;
     CpuState cpu;
+    reset_fixture();
     sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b00u, 32);
 
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
@@ -5235,6 +5749,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory TryLock writes both valid outputs");
 
+    sr_hle_test_volatile_mem_reset();   /* a Lock while held would block (#1383) */
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -5255,7 +5770,8 @@ static void test_volatile_mem_output_preflight(void) {
            "volatile-memory TryLock retains NULL size-output tolerance");
     expect(MEM_R32(paddr_out) == 0x08400000u,
            "volatile-memory TryLock still writes the non-NULL address output");
-
+    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
 }
 
 /* ---- sceUtilityOsk. A person answers the keyboard in the native Win32 box
@@ -5388,12 +5904,11 @@ static uint32_t osk_poll_past_visible(CpuState *cpu) {
 }
 
 static void osk_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");      /* an empty value removes it from the CRT env */
+    hle_test_setenv(name, value);
 }
 
 static int osk_write_script(const char *const *lines, int count) {
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
     FILE *f = fopen(OSK_SCRIPT_PATH, "w");
     if (!f) return 0;
     for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
@@ -5872,7 +6387,8 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
                osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "after the answer the keyboard accepts shutdown and reaches NONE");
 
-    /* A new keyboard replaces one whose request is still open. */
+    /* One utility dialog slot (#1386): a second keyboard InitStart while one is VISIBLE is
+     * refused, and the running keyboard keeps the slot and the person's open request. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
@@ -5884,40 +6400,415 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)osk_poll(&cpu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
-           "starting a new keyboard drops the old keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open,
+           "a second keyboard InitStart while the first is VISIBLE returns INVALID_STATUS and "
+           "keeps the person's open request (#1386)");
     s_osk_person_typing = 0;
-    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
-               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
-           "the new keyboard asks the person afresh and is answered");
+    expect(osk_poll_past_visible(&cpu) == 3u && s_osk_requests == 1 && osk_guest_out_is(0, n, 1),
+           "the first keyboard is answered through its own request");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
 
-    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
-     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    /* Another utility dialog cannot take the slot while the person is still typing (#1386):
+     * savedata's InitStart is refused and the keyboard stays VISIBLE with its request open.
+     * Once the keyboard is back at NONE savedata takes the slot, and from then on the
+     * keyboard's GetStatus reports WRONG_TYPE. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog asks to replace starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
-               !s_osk_request_open,
-           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open && MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0xdeadbeefu,
+           "a savedata InitStart while the keyboard is VISIBLE returns INVALID_STATUS and "
+           "changes nothing");
+    expect(osk_poll(&cpu) == 2u, "the keyboard still holds the slot and stays VISIBLE");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u && osk_guest_out_is(0, n, 1),
+           "the keyboard is answered and winds down to NONE");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u &&
+               MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the keyboard at NONE a savedata InitStart takes the slot");
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
-           "the replaced keyboard reports WRONG_TYPE");
-    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "the dropped request writes nothing into the field");
+           "the keyboard that gave up the slot reports WRONG_TYPE");
     osk_person_reset();
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- One utility dialog slot (#1386), through the production dispatch. Savedata, message,
+ * netconf, gamedata-install, game-sharing and the OSK share it: a second InitStart while a
+ * dialog is active returns INVALID_STATUS (0x80110001) and leaves both dialogs untouched, a
+ * call for a type that does not hold the slot returns WRONG_TYPE (0x80110005), the OSK's
+ * PSP-measured code (#363), and the holder keeps the slot at NONE after use. The code a PSP
+ * returns for a second InitStart is unmeasured; the #1386 contract names INVALID_STATUS. */
+#define NID_SAVEDATA_DIALOG_STATUS   0x8874dbe0u
+#define NID_SAVEDATA_DIALOG_UPDATE   0xd4b95ffbu
+#define NID_SAVEDATA_DIALOG_SHUTDOWN 0x9790b33cu
+#define NID_MSG_DIALOG_INIT          0x2ad8e239u
+#define NID_MSG_DIALOG_UPDATE        0x95fc253bu
+#define NID_MSG_DIALOG_STATUS        0x9a1c91d7u
+#define NID_MSG_DIALOG_SHUTDOWN      0x67af3428u
+#define NID_NETCONF_DIALOG_INIT      0x4db1e739u
+#define NID_NETCONF_DIALOG_UPDATE    0x91e70e35u
+#define NID_NETCONF_DIALOG_STATUS    0x6332aa39u
+#define NID_NETCONF_DIALOG_SHUTDOWN  0xf88155f6u
+#define NID_GAMEDATA_DIALOG_INIT     0x24ac31ebu
+#define NID_GAMEDATA_DIALOG_UPDATE   0x4aecd179u
+#define NID_GAMEDATA_DIALOG_STATUS   0xb57e95d9u
+#define NID_GAMEDATA_DIALOG_SHUTDOWN 0x32e32dcbu
+#define NID_SHARING_DIALOG_INIT      0xc492f751u
+#define NID_SHARING_DIALOG_UPDATE    0x7853182du
+#define NID_SHARING_DIALOG_STATUS    0x946963f3u
+#define NID_SHARING_DIALOG_SHUTDOWN  0xefc6f80fu
+#define UTILITY_MSG_PARAM_ADDR       0x09034000u
+#define UTILITY_MSG2_PARAM_ADDR      0x09034400u
+#define UTILITY_OTHER_PARAM_ADDR     0x09034800u
+#define UTILITY_SAVEDATA_PARAM_ADDR  0x09035000u /* 0x600 bytes */
+#define UTILITY_RESULT_UNTOUCHED     0xdeadbeefu
+
+typedef struct UtilityDialogNids {
+    const char *name;
+    uint32_t init, update, status, shutdown;
+} UtilityDialogNids;
+
+static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    return sr_syscall(cpu, nid);
+}
+
+/* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
+ * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
+static void utility_param_block(uint32_t addr, uint32_t size) {
+    for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_utility_dialog_single_slot(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+        { "sceUtilityOsk", NID_OSK_INIT, NID_OSK_UPDATE, NID_OSK_STATUS, NID_OSK_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
+                 "opened return WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
+               what);
+    }
+
+    /* The message dialog takes the free slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "a message InitStart takes the free slot and clears its result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+
+    /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
+     * its own parameter block. */
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a second message InitStart while one is active returns INVALID_STATUS and leaves "
+           "its parameter block alone");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the running message dialog was not restarted: it moves on from INIT to RUNNING");
+
+    /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
+     * active, and calls for those types are WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
+                 "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
+                   MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+               what);
+        snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
+                 "returns WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+    }
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the refused InitStarts left the message dialog RUNNING");
+
+    /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "the message dialog finishes with its own result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a savedata InitStart before the shut-down message dialog reports NONE is refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "the message dialog winds down to NONE and keeps the slot there after use");
+
+    /* With the holder at NONE the next type takes the slot, and the old holder's calls become
+     * WRONG_TYPE. */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the message dialog at NONE a savedata InitStart takes the slot");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
+           "the message dialog that gave up the slot answers WRONG_TYPE");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+
+    /* Each remaining type takes the free slot in turn and gives it back at NONE. */
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t init = dialogs[i].init;
+        if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
+            continue;
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
+                 "then winds down to NONE after ShutdownStart", dialogs[i].name);
+        expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+    }
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- Utility dialog status sequence (#1386): which call drives each transition, as the
+ * PSPAutotests hardware captures show it (hrydgard/pspautotests e2d098fc). Update never moves
+ * INIT (tests/utility/dialog/status.expected: a message Update during INIT returns
+ * INVALID_STATUS), so a caller that updates before it polls still sees INIT first. A savedata
+ * shutdown ends at priority 0x20 (tests/utility/savedata/shutdownstatus.expected): a caller at
+ * 0x20 sees SHUTDOWN, then NONE; one at 0x21 or 0x6F sees only NONE and can start the next
+ * dialog straight after ShutdownStart. A message dialog shows SHUTDOWN to a caller at 0x6F
+ * (tests/utility/dialog/priority.expected). */
+#define NID_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define UTILITY_SAVEDATA_MODE_GETSIZE     22u /* with no sizeInfo: no memory-stick I/O */
+
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+static uint32_t utility_change_priority(CpuState *cpu, uint32_t priority) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[5] = priority;  /* a0 = 0: the current thread */
+    return sr_syscall(cpu, NID_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void utility_savedata_block(void) {
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+}
+
+/* Poll a started dialog the way a game does, GetStatus and then Update while RUNNING, until it
+ * reports FINISHED. Eight frames bound the test, not the dialog. */
+static int utility_poll_to_finished(CpuState *cpu, uint32_t update, uint32_t status) {
+    for (int frame = 0; frame < 8; frame++) {
+        const uint32_t st = utility_call(cpu, status, 0u);
+        if (st == 3u) return 1;
+        if (st == 2u) (void)utility_call(cpu, update, 0u);
+        else if (st != 1u) return 0;
+    }
+    return 0;
+}
+
+static int utility_savedata_start_to_finished(CpuState *cpu) {
+    utility_savedata_block();
+    return utility_call(cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+           utility_poll_to_finished(cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS);
+}
+
+/* A caller that updates before it polls: each frame Update, then GetStatus. Records each
+ * frame's status as a digit until FINISHED (3) and counts the Updates refused with
+ * INVALID_STATUS. */
+static void utility_update_first_frames(CpuState *cpu, uint32_t update, uint32_t status,
+                                        char seen[16], unsigned *refused) {
+    size_t n = 0;
+    *refused = 0;
+    for (int frame = 0; frame < 8; frame++) {
+        if (utility_call(cpu, update, 0u) == 0x80110001u) (*refused)++;
+        const uint32_t st = utility_call(cpu, status, 0u);
+        seen[n++] = st <= 4u ? (char)('0' + st) : '?';
+        if (st == 3u || st > 4u) break;
+    }
+    seen[n] = '\0';
+}
+
+static void test_utility_dialog_status_sequence(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256], seen[16];
+    unsigned refused = 0;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+
+    /* Update during INIT is refused and moves nothing: the next GetStatus still reports INIT,
+     * and RUNNING follows without an Update. (The test reset frees the slot afterwards; the
+     * gamedata and sharing work would create memory-stick directories.) */
+    for (size_t i = 0; i < count; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
+                 "still reports INIT, then RUNNING", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* A caller that updates before it polls sees every state: INIT, RUNNING while the work and
+     * the two further Updates run, then FINISHED. */
+    for (size_t i = 0; i < 3; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
+        utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
+        snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
+                 "FINISHED, one Update refused (saw %s, %u refused)", dialogs[i].name, seen,
+                 refused);
+        expect(strcmp(seen, "1223") == 0 && refused == 1u, what);
+        snprintf(what, sizeof(what), "%s: ShutdownStart at FINISHED, then SHUTDOWN and NONE",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* The savedata shutdown by caller priority, from a running guest thread. */
+    TCB *self = fixture_thread(0x5c0u, TH_RUNNING, 0x20);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(utility_change_priority(&cpu, 0x20u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x20");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x20 sees SHUTDOWN after a savedata ShutdownStart, cannot start another "
+           "dialog yet, then sees NONE");
+
+    expect(utility_change_priority(&cpu, 0x21u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x21");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x21 sees NONE straight after a savedata ShutdownStart, never SHUTDOWN");
+
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x6F");
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u,
+           "a caller at 0x6F starts the next savedata dialog straight after ShutdownStart");
+    expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the next savedata dialog runs to NONE");
+
+    /* The edges: a cancel from RUNNING, and a caller better than 0x20, are unmeasured and keep
+     * the reported SHUTDOWN. */
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a savedata ShutdownStart during RUNNING still reports SHUTDOWN to a caller at 0x6F");
+    expect(utility_change_priority(&cpu, 0x10u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x10");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x10 sees SHUTDOWN, then NONE");
+
+    /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
+     * a savedata InitStart right after it is refused. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_savedata_block();
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) ==
+                   0x80110001u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "a message dialog shows SHUTDOWN to a caller at 0x6F and refuses a savedata InitStart "
+           "until NONE");
+
+    s_cur = -1;
+    sr_hle_test_osk_slot_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -5954,10 +6845,9 @@ static void test_io_devctl_memory_stick(void) {
         return;
     }
 
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-    expect(SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") &&
-               _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") == 0,
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    expect(hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms"),
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -5991,16 +6881,24 @@ static void test_io_devctl_memory_stick(void) {
                           0u, 0u, outdata_addr, 4u) == 0u &&
                MEM_R32(outdata_addr) == 4u,
            "sceIoDevctl ready query writes 4 to its validated output span");
+    MEM_W32(outdata_addr, 0u);
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02425823u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 1u,
+           "sceIoDevctl fatms0: medium check reports an inserted Memory Stick");
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02425823u,
+                          0u, 0u, outdata_addr, 2u) == 0x80010016u,
+           "sceIoDevctl fatms0: medium check refuses an output shorter than one word");
 
     MEM_W32(indata_addr, 0x1234u);
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415821u,
-                          indata_addr, 4u, 0u, 0u) == 0u &&
-               sr_hle_test_io_devctl_callback_uid() == 0x1234u,
-           "sceIoDevctl callback registration stores its input UID without invoking it");
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "sceIoDevctl callback registration refuses a UID that is not a live callback");
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415822u,
-                          indata_addr, 4u, 0u, 0u) == 0u &&
-               sr_hle_test_io_devctl_callback_uid() == 0u,
-           "sceIoDevctl callback unregistration clears the stored UID");
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "sceIoDevctl callback unregistration refuses a UID that is not registered");
 
     MEM_W32(indata_addr, 0xdeadbeefu);
     expect(io_devctl_call(&cpu, device_addr, 0x02425818u,
@@ -6028,10 +6926,7 @@ static void test_io_devctl_memory_stick(void) {
                sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
            "sceIoDevctl refuses an unknown command and logs each device/command pair once");
 
-    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
-    else _putenv_s("SR_MEMSTICK", "");
+    hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
 }
 
@@ -6134,7 +7029,9 @@ static void reset_fixture(void) {
     audio_fixture_reset();
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
+    sr_hle_test_volatile_mem_reset();
     sched_alarm_reset();
+    sched_transfer_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -6899,8 +7796,10 @@ static void test_time_domains_are_coherent(void) {
     uint32_t libc_time = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_TIME);
     expect(libc_time == MEM_R32(libc_time_out) && libc_time == tv_sec,
            "libc time and gettimeofday share the RTC/Unix epoch");
-    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u && MEM_R32(TZ_OUT + 4u) == 0u,
-           "gettimeofday emits a valid deterministic UTC timezone record");
+    uint32_t profile_zone = sysreg_sysparam_int(6u), profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)profile_zone + (profile_daylight ? 60 : 0);
+    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u - profile_zone && MEM_R32(TZ_OUT + 4u) == profile_daylight,
+           "gettimeofday's timezone record carries the system profile's TIMEZONE and DAYLIGHTSAVINGS (#1382)");
 
     cpu.r[4] = DATE_EXPLICIT;
     cpu.r[5] = 60u; /* explicit PSP timezone offset in minutes */
@@ -6915,8 +7814,9 @@ static void test_time_domains_are_coherent(void) {
     cpu.r[4] = DATE_LOCAL; cpu.r[5] = DATE_TICK_LOCAL;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "local current-clock output is a valid RTC datetime");
-    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) == 3600000000ull,
-           "explicit RTC offset is applied in checked microseconds");
+    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) ==
+               (uint64_t)((60 - profile_local_minutes) * 60000000ll),
+           "explicit RTC offset and the system profile's local offset are applied in checked microseconds");
 
     expect(s_vtime_us == before,
            "all repeated clock queries leave the scheduler timeline unchanged");
@@ -7413,6 +8313,69 @@ static void test_unregistered_batch_ctrl_sampling_getter(void) {
     expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0x800200d3u &&
                MEM_R32(CTRL_MODE_OUT) == 0xa57c3de1u,
            "sceCtrlGetSamplingMode refuses a NULL out-pointer with ILLEGAL_ADDR and no write");
+    sr_hle_test_ctrl_sampling_reset();
+}
+
+/* Issue #1390: the sampling setters validate their argument and keep the old value on error.
+ * The matrix is PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files
+ * recorded on a PSP): SetSamplingMode accepts 0 and 1 and refuses 2 and -1 with 0x80000107;
+ * SetSamplingCycle accepts 0 and 5555..20000 and refuses 1, 333, 4444, 5554, 20001 and -1 with
+ * 0x800001FE; sceCtrlGetSamplingCycle reports the stored cycle and returns 0. Production
+ * dispatch through sr_syscall; HOST_TESTED, no project oracle case yet. */
+static void test_ctrl_sampling_mode_cycle_matrix(void) {
+    enum {
+        NID_CTRL_GET_SAMPLING_MODE = 0xda6b76a1u,
+        NID_CTRL_SET_SAMPLING_MODE = 0x1f4011e6u,
+        NID_CTRL_GET_SAMPLING_CYCLE = 0x02baad91u,
+        NID_CTRL_SET_SAMPLING_CYCLE = 0x6a2774f3u,
+        CTRL_SAMPLING_OUT = 0x00270040u,
+    };
+    static const uint32_t refused_cycles[] = { 1u, 333u, 4444u, 5554u, 20001u, 0xffffffffu };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    expect(sr_hle_test_is_registered(NID_CTRL_GET_SAMPLING_CYCLE),
+           "sceCtrlGetSamplingCycle has a production registration");
+
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 1u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingMode(1) returns the previous digital mode 0");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 2u, 0u, 0u, 0u) == 0x80000107u,
+           "sceCtrlSetSamplingMode(2) is refused with INVALID_MODE");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 0xffffffffu, 0u, 0u, 0u) == 0x80000107u,
+           "sceCtrlSetSamplingMode(-1) is refused with INVALID_MODE");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_MODE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 1u,
+           "a refused sampling mode leaves the stored mode 1 unchanged");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 0u, 0u, 0u, 0u) == 1u,
+           "sceCtrlSetSamplingMode(0) after the refusals returns the kept mode 1");
+
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 0u,
+           "sceCtrlGetSamplingCycle reports the power-on cycle 0");
+    for (size_t i = 0; i < sizeof refused_cycles / sizeof refused_cycles[0]; i++)
+        expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, refused_cycles[i], 0u, 0u, 0u) ==
+                   0x800001feu,
+               "an out-of-range sampling cycle is refused with INVALID_VALUE");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 5555u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingCycle(5555) is accepted and returns the kept cycle 0");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 5556u, 0u, 0u, 0u) == 5555u,
+           "sceCtrlSetSamplingCycle(5556) returns the previous cycle 5555");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 20000u, 0u, 0u, 0u) == 5556u,
+           "sceCtrlSetSamplingCycle(20000) returns the previous cycle 5556");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 20001u, 0u, 0u, 0u) == 0x800001feu,
+           "sceCtrlSetSamplingCycle(20001) is refused");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 20000u,
+           "a refused sampling cycle leaves the stored cycle 20000 unchanged");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 0u, 0u, 0u, 0u) == 20000u,
+           "sceCtrlSetSamplingCycle(0) returns the kept cycle 20000");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, 0u, 0u, 0u, 0u) == 0x800200d3u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 0xa57c3de1u,
+           "sceCtrlGetSamplingCycle refuses a NULL out-pointer with ILLEGAL_ADDR and no write");
     sr_hle_test_ctrl_sampling_reset();
 }
 
@@ -7953,22 +8916,25 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClock rejects an unwritable datetime span");
 
-    /* sceRtcGetCurrentClockLocalTime runs on the fixed UTC console profile
-     * until #77; the local output must equal the explicit tz=0 baseline. */
-    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    /* sceRtcGetCurrentClockLocalTime applies the system profile's time zone
+     * and daylight saving (#1382); the local output must equal the explicit
+     * clock at that offset. */
+    uint32_t profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)sysreg_sysparam_int(6u) + (profile_daylight ? 60 : 0);
+    cpu.r[4] = DATE_A; cpu.r[5] = (uint32_t)(int32_t)profile_local_minutes;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
-           "refreshes the explicit UTC baseline for the LocalTime comparison");
+           "refreshes the explicit baseline at the profile's offset for the LocalTime comparison");
     cpu.r[4] = DATE_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
-           "GetCurrentClockLocalTime succeeds on the pinned UTC profile");
+           "GetCurrentClockLocalTime succeeds on the system profile");
     cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
-           "the refreshed UTC baseline is a valid datetime");
+           "the refreshed explicit baseline is a valid datetime");
     cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "the LocalTime output is a valid datetime");
     expect(selftest_guest_u64(TICK_A) == selftest_guest_u64(TICK_B),
-           "LocalTime equals the UTC baseline while the console profile is pinned to UTC (#77)");
+           "LocalTime equals the explicit clock at the system profile's offset (#1382)");
     cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClockLocalTime rejects a NULL datetime pointer fail-closed");
@@ -7981,22 +8947,22 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
            "GetCurrentTick rejects a NULL output pointer fail-closed");
     /* ---- sceRtcConvertUtcToLocalTime / sceRtcConvertLocalTimeToUTC ---- */
     /* psprtc.h declares both directions (UTC<->local tick pointers, 0 on
-     * success, <0 on error).  With the console timezone pinned to UTC (#77)
-     * the conversion is the identity; the pointer edges fail closed and never
-     * touch the output. */
+     * success, <0 on error).  The conversion applies the system profile's
+     * local offset (#1382); the pointer edges fail closed and never touch the
+     * output. */
     MEM_W32(TICK_B, (uint32_t)tick_2012);
     MEM_W32(TICK_B + 4u, (uint32_t)(tick_2012 >> 32));
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = TICK_B; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u,
-           "ConvertUtcToLocalTime succeeds on the pinned UTC profile");
-    expect(selftest_guest_u64(TICK_A) == tick_2012,
-           "ConvertUtcToLocalTime is the identity while the console timezone is UTC (#77)");
+           "ConvertUtcToLocalTime succeeds on the system profile");
+    expect(selftest_guest_u64(TICK_A) == tick_2012 + (uint64_t)(profile_local_minutes * 60000000ll),
+           "ConvertUtcToLocalTime adds the system profile's local offset (#1382)");
     cpu.r[4] = TICK_A; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u,
-           "ConvertLocalTimeToUTC succeeds on the pinned UTC profile");
+           "ConvertLocalTimeToUTC succeeds on the system profile");
     expect(selftest_guest_u64(TICK_B) == tick_2012,
-           "ConvertLocalTimeToUTC inverts the identity on the pinned UTC profile");
+           "ConvertLocalTimeToUTC inverts the system profile's local offset");
 
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = 0u; cpu.r[5] = TICK_A;
@@ -8026,6 +8992,103 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "ConvertLocalTimeToUTC rejects an unwritable output span fail-closed");
+}
+
+/* Every local-time API agrees with the system profile the guest reads through
+ * sceUtilityGetSystemParamInt: TIMEZONE zone minutes from UTC and
+ * DAYLIGHTSAVINGS daylight, which give a local offset of local_minutes. */
+static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_minutes, const char *setting) {
+    enum {
+        DATE_LOCAL = 0x00200500u,
+        DATE_EXPLICIT = 0x00200520u,
+        TICK_LOCAL = 0x00200540u,
+        TICK_EXPLICIT = 0x00200548u,
+        TICK_IN = 0x00200550u,
+        TICK_OUT = 0x00200558u,
+        TZ_OUT = 0x00200560u,
+    };
+    const uint64_t tick_2012 = 63483721935000500ull; /* 2012-09-20 07:12:15.500 UTC */
+    const uint64_t local_2012 = tick_2012 + (uint64_t)(local_minutes * 60000000ll);
+    char what[192];
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    snprintf(what, sizeof(what), "%s: sceUtilityGetSystemParamInt reports TIMEZONE %d and DAYLIGHTSAVINGS %u",
+             setting, (int)zone, (unsigned)daylight);
+    expect(sysreg_sysparam_int(6u) == (uint32_t)zone && sysreg_sysparam_int(7u) == daylight, what);
+
+    MEM_W32(TICK_IN, (uint32_t)tick_2012);
+    MEM_W32(TICK_IN + 4u, (uint32_t)(tick_2012 >> 32));
+    cpu.r[4] = TICK_IN; cpu.r[5] = TICK_OUT;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertUtcToLocalTime adds %lld minutes", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u && selftest_guest_u64(TICK_OUT) == local_2012,
+           what);
+    cpu.r[4] = TICK_OUT; cpu.r[5] = TICK_IN;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertLocalTimeToUTC takes the same %lld minutes off", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u && selftest_guest_u64(TICK_IN) == tick_2012,
+           what);
+
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = (uint32_t)(int32_t)local_minutes;
+    int clocks = sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u;
+    cpu.r[4] = DATE_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u;
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = TICK_EXPLICIT;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    cpu.r[4] = DATE_LOCAL; cpu.r[5] = TICK_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    snprintf(what, sizeof(what), "%s: sceRtcGetCurrentClockLocalTime equals sceRtcGetCurrentClock at %lld minutes",
+             setting, (long long)local_minutes);
+    expect(clocks && selftest_guest_u64(TICK_LOCAL) == selftest_guest_u64(TICK_EXPLICIT), what);
+
+    MEM_W32(TZ_OUT, 0xdeadbeefu);
+    MEM_W32(TZ_OUT + 4u, 0xdeadbeefu);
+    cpu.r[4] = 0u; cpu.r[5] = TZ_OUT;
+    snprintf(what, sizeof(what), "%s: gettimeofday reports %d minutes west and dsttime %u", setting,
+             (int)(0u - (uint32_t)zone), (unsigned)daylight);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u && MEM_R32(TZ_OUT) == 0u - (uint32_t)zone &&
+               MEM_R32(TZ_OUT + 4u) == daylight,
+           what);
+}
+
+/* #1382: the RTC local-time APIs and gettimeofday read the time zone and
+ * daylight-saving setting from the registry keys sceUtilityGetSystemParamInt
+ * reports, so the two can never disagree, and a setting a game writes through
+ * sceReg moves local time at once. Production dispatch only; nothing is
+ * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_local_time_follows_the_system_profile(void) {
+    uint32_t r = 0u, reg, cat;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* The seed: TIMEZONE -300 and DAYLIGHTSAVINGS 1, both measured on the oracle console. */
+    rtc_expect_profile(-300, 1u, -240, "the measured seed");
+
+    reg = sysreg_open_registry(2u, &r);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry in mode 2");
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &r);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/DATE in mode 2");
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a +540-minute zone with daylight saving off");
+    rtc_expect_profile(540, 0u, 540, "a +540-minute zone written through sceReg");
+    expect(sysreg_set_int(cat, "summer_time", 1u) == 0u, "sceRegSetKeyValue turns daylight saving on");
+    rtc_expect_profile(540, 1u, 600, "the +540-minute zone with daylight saving on");
+    expect(sysreg_set_int(cat, "time_zone_offset", 0u - 210u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a -210-minute zone with daylight saving off");
+    rtc_expect_profile(-210, 0u, -210, "a -210-minute zone written through sceReg");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "the category and registry handles close");
+
+    /* A new process without a flush serves the seed again. */
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "the seed after a restart without a flush");
+    sysreg_scratch_clean();
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -8752,8 +9815,8 @@ static void test_route_observer_waits_for_guest_scanout_state(void) {
 static char s_prewarm_root[MAX_PATH];
 
 static void prewarm_env_restore(void) {
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
-    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", NULL);
 }
 
 typedef struct {
@@ -8841,17 +9904,19 @@ static int hle_xb_write(const char *path, const HleXbEntry *entries, size_t coun
 }
 
 static int hle_make_directory(const char *path) {
-    return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+    return nk_platform_mkdir_p(path);
 }
 
 /* The absolute form of HLE_BUILD_ROOT, for the fixtures below that build a path from it.
- * GetFullPathNameA resolves a relative root (the default "build") against the working
- * directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in its
- * scratch tree. Separators are normalised and trailing ones stripped. Returns 0 when the
- * root cannot be resolved or does not fit in the buffer. */
+ * nk_platform_absolute_path resolves a relative root (the default "build") against the
+ * working directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in
+ * its scratch tree; POSIX resolves through realpath, so the root is created first. Trailing
+ * separators are stripped. Returns 0 when the root cannot be resolved or does not fit in
+ * the buffer. */
 static int hle_scratch_root(char *out, size_t capacity) {
-    DWORD length = GetFullPathNameA(HLE_BUILD_ROOT, (DWORD)capacity, out, NULL);
-    if (length == 0 || length >= capacity) return 0;
+    if (!nk_platform_mkdir_p(HLE_BUILD_ROOT) ||
+        !nk_platform_absolute_path(HLE_BUILD_ROOT, out, capacity)) return 0;
+    size_t length = strlen(out);
     while (length > 3u && (out[length - 1u] == '\\' || out[length - 1u] == '/')) {
         out[--length] = '\0';
     }
@@ -8862,13 +9927,13 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, root_capacity, "%s\\archive_vfs_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, root_capacity, "%s/archive_vfs_%lu", scratch,
+              (unsigned long)getpid());
     if (!hle_make_directory(root)) return 0;
     char dir[3][MAX_PATH];
-    _snprintf(dir[0], sizeof(dir[0]), "%s\\data", root);
-    _snprintf(dir[1], sizeof(dir[1]), "%s\\data\\menu", root);
-    _snprintf(dir[2], sizeof(dir[2]), "%s\\data\\sound", root);
+    snprintf(dir[0], sizeof(dir[0]), "%s/data", root);
+    snprintf(dir[1], sizeof(dir[1]), "%s/data/menu", root);
+    snprintf(dir[2], sizeof(dir[2]), "%s/data/sound", root);
     for (size_t i = 0; i < 3; i++) if (!hle_make_directory(dir[i])) return 0;
     static const uint8_t archived[] = "archive-only";
     static const uint8_t overridden[] = "archive-override";
@@ -8881,10 +9946,10 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
         { "data/menu/nested/child.bin", child, sizeof(child) - 1u }
     };
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\assets.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/assets.xb", root);
     if (!hle_xb_write(archive_path, entries, sizeof(entries) / sizeof(entries[0]))) return 0;
     char loose_path[MAX_PATH];
-    _snprintf(loose_path, sizeof(loose_path), "%s\\data\\menu\\overridden.to", root);
+    snprintf(loose_path, sizeof(loose_path), "%s/data/menu/overridden.to", root);
     FILE *loose = fopen(loose_path, "wb");
     if (!loose) return 0;
     fputs("loose-override", loose);
@@ -8894,12 +9959,12 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
 
 static void hle_archive_fixture_remove(const char *root) {
     char path[MAX_PATH];
-    _snprintf(path, sizeof(path), "%s\\assets.xb", root); DeleteFileA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\menu\\overridden.to", root); DeleteFileA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\menu", root); RemoveDirectoryA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\sound", root); RemoveDirectoryA(path);
-    _snprintf(path, sizeof(path), "%s\\data", root); RemoveDirectoryA(path);
-    RemoveDirectoryA(root);
+    snprintf(path, sizeof(path), "%s/assets.xb", root); nk_remove_utf8(path);
+    snprintf(path, sizeof(path), "%s/data/menu/overridden.to", root); nk_remove_utf8(path);
+    snprintf(path, sizeof(path), "%s/data/menu", root); rmdir(path);
+    snprintf(path, sizeof(path), "%s/data/sound", root); rmdir(path);
+    snprintf(path, sizeof(path), "%s/data", root); rmdir(path);
+    rmdir(root);
 }
 
 static uint32_t hle_archive_set_path(CpuState *cpu, uint32_t address, const char *path) {
@@ -8932,7 +9997,7 @@ static void test_direct_xb_read_precedence_and_listing(void) {
     reset_fixture();
     sr_hle_init();
     expect(hle_archive_fixture_make(root, sizeof(root)), "the synthetic XB fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
            "the direct XB route reaches READY without an extracted tree");
@@ -8982,12 +10047,12 @@ static void test_direct_xb_read_precedence_and_listing(void) {
     expect(sr_hle_test_io_dclose(&cpu) == 0u, "the archive directory descriptor closes");
 
     char extracted[2][MAX_PATH];
-    _snprintf(extracted[0], sizeof(extracted[0]), "%s\\data\\menu\\archived.to", root);
-    _snprintf(extracted[1], sizeof(extracted[1]), "%s\\data\\menu\\nested\\child.bin", root);
-    expect(GetFileAttributesA(extracted[0]) == INVALID_FILE_ATTRIBUTES &&
-               GetFileAttributesA(extracted[1]) == INVALID_FILE_ATTRIBUTES,
+    snprintf(extracted[0], sizeof(extracted[0]), "%s/data/menu/archived.to", root);
+    snprintf(extracted[1], sizeof(extracted[1]), "%s/data/menu/nested/child.bin", root);
+    expect(nk_platform_path_missing(extracted[0]) &&
+               nk_platform_path_missing(extracted[1]),
            "archive reads do not extract members to the host tree");
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
     hle_archive_fixture_remove(root);
 }
@@ -8999,25 +10064,25 @@ static void test_direct_xb_malformed_archive_fails_closed(void) {
     sr_hle_init();
     expect(hle_scratch_root(scratch, sizeof(scratch)), "the malformed XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\archive_vfs_bad_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, sizeof(root), "%s/archive_vfs_bad_%lu", scratch,
+              (unsigned long)getpid());
     expect(hle_make_directory(root), "the malformed XB fixture root was created");
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\bad.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/bad.xb", root);
     const uint8_t truncated[] = { 0x78, 0x65, 0x00, 0x01, 0x01, 0x00, 0x00 };
     FILE *file = fopen(archive_path, "wb");
     expect(file != NULL && fwrite(truncated, 1u, sizeof(truncated), file) == sizeof(truncated) &&
                fclose(file) == 0, "the malformed XB fixture was written");
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_FAILED,
            "a malformed archive fails the production data route closed");
     expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_FAILED,
            "the malformed archive leaves no READY index");
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
-    DeleteFileA(archive_path);
-    RemoveDirectoryA(root);
+    nk_remove_utf8(archive_path);
+    rmdir(root);
 }
 
 static void test_direct_xb_many_members_skip_loose_walk(void) {
@@ -9028,8 +10093,8 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     sr_hle_init();
     expect(hle_scratch_root(scratch, sizeof(scratch)), "the large XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\archive_vfs_many_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, sizeof(root), "%s/archive_vfs_many_%lu", scratch,
+              (unsigned long)getpid());
     expect(hle_make_directory(root), "the large XB fixture root was created");
     HleXbEntry *entries = (HleXbEntry *)calloc(count, sizeof(*entries));
     char (*paths)[32] = (char (*)[32])calloc(count, sizeof(*paths));
@@ -9037,17 +10102,17 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     expect(entries != NULL && paths != NULL, "large XB fixture allocation succeeded");
     char data_dir[MAX_PATH];
     char gen_dir[MAX_PATH];
-    _snprintf(data_dir, sizeof(data_dir), "%s\\data", root);
-    _snprintf(gen_dir, sizeof(gen_dir), "%s\\gen", data_dir);
+    snprintf(data_dir, sizeof(data_dir), "%s/data", root);
+    snprintf(gen_dir, sizeof(gen_dir), "%s/gen", data_dir);
     expect(hle_make_directory(data_dir) && hle_make_directory(gen_dir),
            "the loose baseline directories were created");
     for (size_t i = 0; i < count; i++) {
-        _snprintf(paths[i], sizeof(paths[i]), "data/gen/file%04zu.bin", i);
+        snprintf(paths[i], sizeof(paths[i]), "data/gen/file%04zu.bin", i);
         entries[i].path = paths[i];
         entries[i].data = &byte;
         entries[i].size = 1u;
         char loose_path[MAX_PATH];
-        _snprintf(loose_path, sizeof(loose_path), "%s\\%s", root, paths[i]);
+        snprintf(loose_path, sizeof(loose_path), "%s/%s", root, paths[i]);
         FILE *file = fopen(loose_path, "wb");
         expect(file != NULL, "the loose baseline member was created");
         if (file) {
@@ -9056,11 +10121,11 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
         }
     }
 
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
-    ULONGLONG loose_started = GetTickCount64();
+    uint64_t loose_started = SDL_GetTicks();
     int loose_state = sr_host_data_prepare();
-    ULONGLONG loose_elapsed = GetTickCount64() - loose_started;
+    uint64_t loose_elapsed = SDL_GetTicks() - loose_started;
     expect(loose_state == SR_DATA_TEST_STATE_READY, "the loose baseline reaches READY");
     expect(sr_hle_test_data_entry_count() == count, "the loose baseline indexes every member");
     fprintf(stderr, "[ARCHIVE_VFS] loose baseline indexed %zu members in %llu ms; directory walks=%lu\n",
@@ -9068,31 +10133,31 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
 
     for (size_t i = 0; i < count; i++) {
         char loose_path[MAX_PATH];
-        _snprintf(loose_path, sizeof(loose_path), "%s\\%s", root, paths[i]);
-        DeleteFileA(loose_path);
+        snprintf(loose_path, sizeof(loose_path), "%s/%s", root, paths[i]);
+        nk_remove_utf8(loose_path);
     }
-    RemoveDirectoryA(gen_dir);
-    RemoveDirectoryA(data_dir);
+    rmdir(gen_dir);
+    rmdir(data_dir);
 
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\many.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/many.xb", root);
     expect(hle_xb_write(archive_path, entries, count), "the large synthetic XB archive was written");
     free(entries);
     free(paths);
     sr_hle_test_data_reset(0);
-    ULONGLONG archive_started = GetTickCount64();
+    uint64_t archive_started = SDL_GetTicks();
     int archive_state = sr_host_data_prepare();
-    ULONGLONG archive_elapsed = GetTickCount64() - archive_started;
+    uint64_t archive_elapsed = SDL_GetTicks() - archive_started;
     expect(archive_state == SR_DATA_TEST_STATE_READY, "the large synthetic archive reaches READY");
     expect(sr_hle_test_data_entry_count() == count, "the large archive index has every member");
     expect(sr_hle_test_data_walk_calls() <= 2ul,
            "large archive indexing does not walk one host directory per member");
     fprintf(stderr, "[ARCHIVE_VFS] startup indexed %zu members in %llu ms; directory walks=%lu\n",
             count, (unsigned long long)archive_elapsed, sr_hle_test_data_walk_calls());
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
-    DeleteFileA(archive_path);
-    RemoveDirectoryA(root);
+    nk_remove_utf8(archive_path);
+    rmdir(root);
 }
 
 enum {
@@ -9114,7 +10179,7 @@ static int host_data_bench_dir(const char *base, size_t bucket, char *path,
     size_t used = (size_t)snprintf(path, capacity, "%s", base);
     if (used >= capacity) return 0;
     unsigned depth = 1u + (unsigned)(bucket % 4u);
-    int written = snprintf(path + used, capacity - used, "\\Pack%03zu.XB%u.D",
+    int written = snprintf(path + used, capacity - used, "/Pack%03zu.XB%u.D",
                            bucket, (unsigned)(bucket % 3u));
     if (written < 0 || (size_t)written >= capacity - used) return 0;
     used += (size_t)written;
@@ -9129,7 +10194,7 @@ static int host_data_bench_dir(const char *base, size_t bucket, char *path,
     };
     static const char *const names[] = { "Group", "Scope", "Cell" };
     for (unsigned level = 1; level < depth; level++) {
-        written = snprintf(path + used, capacity - used, "\\%s%03u",
+        written = snprintf(path + used, capacity - used, "/%s%03u",
                            names[level - 1u], components[level - 1u]);
         if (written < 0 || (size_t)written >= capacity - used) return 0;
         used += (size_t)written;
@@ -9152,7 +10217,7 @@ static int host_data_bench_write_files(const char *base, size_t count,
     for (size_t i = 0; i < count; i++) {
         if (!host_data_bench_dir(base, i % 80u, directory,
                                  sizeof(directory), 0, dirs_created)) return 0;
-        int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
+        int written = snprintf(path, sizeof(path), "%s/%c%05zu.DaTa",
                               directory, prefix, i);
         if (written < 0 || (size_t)written >= sizeof(path)) return 0;
         FILE *file = fopen(path, "wb");
@@ -9166,28 +10231,7 @@ static int host_data_bench_write_files(const char *base, size_t count,
 
 static void host_data_bench_remove_tree(const char *root) {
     if (!root || !root[0]) return;
-    char pattern[MAX_PATH];
-    int pattern_size = snprintf(pattern, sizeof(pattern), "%s\\*", root);
-    if (pattern_size < 0 || (size_t)pattern_size >= sizeof(pattern)) return;
-    WIN32_FIND_DATAA data;
-    HANDLE handle = FindFirstFileA(pattern, &data);
-    if (handle != INVALID_HANDLE_VALUE) {
-        do {
-            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0)
-                continue;
-            char child[MAX_PATH];
-            int child_size = snprintf(child, sizeof(child), "%s\\%s", root, data.cFileName);
-            if (child_size < 0 || (size_t)child_size >= sizeof(child)) continue;
-            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                host_data_bench_remove_tree(child);
-                RemoveDirectoryA(child);
-            } else {
-                DeleteFileA(child);
-            }
-        } while (FindNextFileA(handle, &data));
-        FindClose(handle);
-    }
-    RemoveDirectoryA(root);
+    (void)nk_platform_remove_tree(root, NULL);
 }
 
 static int host_data_bench_make_tree(const char *root, size_t total_files,
@@ -9195,11 +10239,11 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
                                      size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
-    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\primary", root);
+    int n = snprintf(dataroot, dataroot_capacity, "%s/USRDIR/primary", root);
     if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
-    n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
+    n = snprintf(usrdir, sizeof(usrdir), "%s/USRDIR", root);
     if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
-    n = snprintf(loose, sizeof(loose), "%s\\data", usrdir);
+    n = snprintf(loose, sizeof(loose), "%s/data", usrdir);
     if (n < 0 || (size_t)n >= sizeof(loose) ||
         !hle_make_directory(root) || !hle_make_directory(usrdir) ||
         !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
@@ -9251,9 +10295,9 @@ static void test_host_data_scan_scaling(void) {
         char dataroot[MAX_PATH];
         size_t dirs_created = 0;
         root[0] = '\0';
-        int n = snprintf(root, sizeof(root), "%s\\host_data_scan_%lu_%llu",
-                         scratch, (unsigned long)GetCurrentProcessId(),
-                         (unsigned long long)GetTickCount64());
+        int n = snprintf(root, sizeof(root), "%s/host_data_scan_%lu_%llu",
+                         scratch, (unsigned long)getpid(),
+                         (unsigned long long)SDL_GetTicks());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
             host_data_bench_make_tree(root, counts[sample], dataroot,
@@ -9264,7 +10308,7 @@ static void test_host_data_scan_scaling(void) {
             continue;
         }
         char loose_root[MAX_PATH], loose_binding[MAX_PATH + 32];
-        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s\\USRDIR", root);
+        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s/USRDIR", root);
         int loose_binding_len = loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root)
             ? snprintf(loose_binding, sizeof(loose_binding), "%s\t\t10\n", loose_root) : -1;
         expect(loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root) &&
@@ -9274,12 +10318,12 @@ static void test_host_data_scan_scaling(void) {
             host_data_bench_remove_tree(root);
             continue;
         }
-        SetEnvironmentVariableA("SR_DATAROOT", dataroot);
-        SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", loose_binding);
+        hle_test_setenv("SR_DATAROOT", dataroot);
+        hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose_binding);
         sr_hle_test_data_reset(0);
-        ULONGLONG started = GetTickCount64();
+        uint64_t started = SDL_GetTicks();
         int state = sr_host_data_prepare();
-        elapsed_ms[sample] = GetTickCount64() - started;
+        elapsed_ms[sample] = SDL_GetTicks() - started;
         expect(state == SR_DATA_TEST_STATE_READY,
                "the synthetic prepared-tree route reaches READY");
         expect(sr_hle_test_data_entry_count() == counts[sample],
@@ -9302,7 +10346,7 @@ static void test_host_data_scan_scaling(void) {
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_FINALIZE),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_VALIDATE),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PUBLISH));
-        SetEnvironmentVariableA("SR_DATAROOT", NULL);
+        hle_test_setenv("SR_DATAROOT", NULL);
         sr_hle_test_data_reset(0);
         host_data_bench_remove_tree(root);
     }
@@ -9337,30 +10381,30 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     char scratch[MAX_PATH];
     if (!fixture || !hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(fixture->root, sizeof(fixture->root), "%s\\archive_route_%lu_%llu",
-              scratch, (unsigned long)GetCurrentProcessId(),
-              (unsigned long long)GetTickCount64());
-    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
+    snprintf(fixture->root, sizeof(fixture->root), "%s/archive_route_%lu_%llu",
+              scratch, (unsigned long)getpid(),
+              (unsigned long long)SDL_GetTicks());
+    snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s/USRDIR/primary",
              fixture->root);
-    _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
-              "%s\\" "USRDIR\t\t0\t1\t0\n", fixture->root);
-    _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
-    _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
-    _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
-    _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
+    snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
+              "%s/" "USRDIR\t\t0\t1\t0\n", fixture->root);
+    snprintf(fixture->memstick, sizeof(fixture->memstick), "%s/memstick", fixture->root);
+    snprintf(fixture->legacy, sizeof(fixture->legacy), "%s/legacy", fixture->root);
+    snprintf(fixture->archive, sizeof(fixture->archive), "%s/assets.xb", fixture->dataroot);
+    snprintf(fixture->hidden, sizeof(fixture->hidden), "%s/assets.xb.hidden", fixture->dataroot);
 
     static const char *const dirs[] = {
-        "", "\\USRDIR", "\\USRDIR\\primary",
-        "\\USRDIR\\primary\\data", "\\USRDIR\\primary\\data\\menu",
-        "\\USRDIR\\data", "\\USRDIR\\data\\menu",
-        "\\USRDIR\\packed_archives", "\\USRDIR\\module",
-        "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
-        "\\memstick", "\\legacy"
+        "", "/USRDIR", "/USRDIR/primary",
+        "/USRDIR/primary/data", "/USRDIR/primary/data/menu",
+        "/USRDIR/data", "/USRDIR/data/menu",
+        "/USRDIR/packed_archives", "/USRDIR/module",
+        "/USRDIR/PSP", "/USRDIR/PSP/SAVEDATA",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA",
+        "/memstick", "/legacy"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
         if (!hle_make_directory(path)) return 0;
     }
 
@@ -9377,16 +10421,16 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
         const char *relative;
         const char *body;
     } loose_files[] = {
-        { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
-        { "\\USRDIR\\data\\menu\\archived.to", "loose-over-archive-route" },
-        { "\\USRDIR\\primary\\data\\menu\\loose.to", "primary-route" },
-        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" },
-        { "\\USRDIR\\packed_archives\\packed.xb", "packed-archive" },
-        { "\\USRDIR\\module\\start.prx", "module-file" }
+        { "/USRDIR/data/menu/loose.to", "loose-route" },
+        { "/USRDIR/data/menu/archived.to", "loose-over-archive-route" },
+        { "/USRDIR/primary/data/menu/loose.to", "primary-route" },
+        { "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL", "savedata-route" },
+        { "/USRDIR/packed_archives/packed.xb", "packed-archive" },
+        { "/USRDIR/module/start.prx", "module-file" }
     };
     for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, loose_files[i].relative);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, loose_files[i].relative);
         FILE *file = fopen(path, "wb");
         if (!file) return 0;
         size_t size = strlen(loose_files[i].body);
@@ -9400,45 +10444,45 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
 static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
     if (!fixture) return;
     static const char *const files[] = {
-        "\\USRDIR\\primary\\assets.xb",
-        "\\USRDIR\\primary\\assets.xb.hidden",
-        "\\USRDIR\\primary\\data\\menu\\loose.to",
-        "\\USRDIR\\data\\menu\\loose.to",
-        "\\USRDIR\\data\\menu\\archived.to",
-        "\\USRDIR\\data\\dupe.to",
-        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL",
-        "\\USRDIR\\packed_archives\\packed.xb",
-        "\\USRDIR\\module\\start.prx"
+        "/USRDIR/primary/assets.xb",
+        "/USRDIR/primary/assets.xb.hidden",
+        "/USRDIR/primary/data/menu/loose.to",
+        "/USRDIR/data/menu/loose.to",
+        "/USRDIR/data/menu/archived.to",
+        "/USRDIR/data/dupe.to",
+        "/USRDIR/data/menu/collision.xb.d/DATA/DUPE.TO",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
+        "/USRDIR/packed_archives/packed.xb",
+        "/USRDIR/module/start.prx"
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, files[i]);
-        DeleteFileA(path);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, files[i]);
+        nk_remove_utf8(path);
     }
     static const char *const dirs[] = {
-        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA",
-        "\\USRDIR\\data\\menu\\collision.xb.d",
-        "\\USRDIR\\data\\menu",
-        "\\USRDIR\\packed_archives",
-        "\\USRDIR\\module",
-        "\\USRDIR\\data",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
-        "\\USRDIR\\PSP\\SAVEDATA",
-        "\\USRDIR\\PSP",
-        "\\USRDIR\\primary\\data\\menu",
-        "\\USRDIR\\primary\\data",
-        "\\USRDIR\\primary",
-        "\\USRDIR",
-        "\\memstick",
-        "\\legacy"
+        "/USRDIR/data/menu/collision.xb.d/DATA",
+        "/USRDIR/data/menu/collision.xb.d",
+        "/USRDIR/data/menu",
+        "/USRDIR/packed_archives",
+        "/USRDIR/module",
+        "/USRDIR/data",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA",
+        "/USRDIR/PSP/SAVEDATA",
+        "/USRDIR/PSP",
+        "/USRDIR/primary/data/menu",
+        "/USRDIR/primary/data",
+        "/USRDIR/primary",
+        "/USRDIR",
+        "/memstick",
+        "/legacy"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
-        RemoveDirectoryA(path);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        rmdir(path);
     }
-    RemoveDirectoryA(fixture->root);
+    rmdir(fixture->root);
 }
 
 static char *hle_archive_route_env_copy(const char *value) {
@@ -9450,8 +10494,7 @@ static char *hle_archive_route_env_copy(const char *value) {
 }
 
 static void hle_archive_route_set_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");
+    hle_test_setenv(name, value);
 }
 
 static uint32_t hle_archive_route_open_result(const char *path) {
@@ -9514,9 +10557,9 @@ static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd) {
     *saved_fd = -1;
     if (!*capture) return 0;
     fflush(stderr);
-    *saved_fd = _dup(_fileno(stderr));
-    if (*saved_fd < 0 || _dup2(_fileno(*capture), _fileno(stderr)) < 0) {
-        if (*saved_fd >= 0) _close(*saved_fd);
+    *saved_fd = dup(fileno(stderr));
+    if (*saved_fd < 0 || dup2(fileno(*capture), fileno(stderr)) < 0) {
+        if (*saved_fd >= 0) close(*saved_fd);
         *saved_fd = -1;
         fclose(*capture);
         *capture = NULL;
@@ -9534,8 +10577,8 @@ static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
     output[length] = '\0';
     clearerr(capture);
     if (saved_fd >= 0) {
-        _dup2(saved_fd, _fileno(stderr));
-        _close(saved_fd);
+        dup2(saved_fd, fileno(stderr));
+        close(saved_fd);
     }
     fclose(capture);
     return length;
@@ -9595,7 +10638,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
     unsigned long long migration_scan_names = 0u;
     unsigned long long migration_scan_probes = 0u;
     unsigned long migration_walk_calls = 0ul;
-    int moved = MoveFileA(fixture.archive, fixture.hidden);
+    int moved = nk_rename_utf8(fixture.archive, fixture.hidden) == 0;
     expect(moved != 0, "the archive is hidden for the loose-mode comparison");
     if (moved) {
         sr_hle_test_data_reset(0);
@@ -9614,7 +10657,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
         }
     }
 
-    int restored = MoveFileA(fixture.hidden, fixture.archive);
+    int restored = nk_rename_utf8(fixture.hidden, fixture.archive) == 0;
     expect(restored != 0, "the archive is restored for archive-mode comparison");
     if (restored) {
         sr_hle_test_data_reset(0);
@@ -9680,7 +10723,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
 
     char filtered_roots[MAX_PATH + 96];
     int filtered_len = snprintf(filtered_roots, sizeof(filtered_roots),
-        "%s\\" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
+        "%s/" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
     expect(filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots),
            "the two-exclusion manifest transport fits its bounded environment field");
     if (filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots)) {
@@ -9708,13 +10751,13 @@ static void test_archive_mode_preserves_loose_routes(void) {
     char duplicate_alias_path[MAX_PATH];
     int duplicate_paths_ok =
         snprintf(duplicate_directory, sizeof(duplicate_directory),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d", fixture.root) > 0 &&
+                 "%s/USRDIR/data/menu/collision.xb.d", fixture.root) > 0 &&
         snprintf(duplicate_data_directory, sizeof(duplicate_data_directory),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA", fixture.root) > 0 &&
+                 "%s/USRDIR/data/menu/collision.xb.d/DATA", fixture.root) > 0 &&
         snprintf(duplicate_path, sizeof(duplicate_path),
-                 "%s\\USRDIR\\data\\dupe.to", fixture.root) > 0 &&
+                 "%s/USRDIR/data/dupe.to", fixture.root) > 0 &&
         snprintf(duplicate_alias_path, sizeof(duplicate_alias_path),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+                 "%s/USRDIR/data/menu/collision.xb.d/DATA/DUPE.TO",
                  fixture.root) > 0;
     if (duplicate_paths_ok) {
         duplicate_paths_ok = hle_make_directory(duplicate_directory) &&
@@ -9775,33 +10818,32 @@ static void test_archive_mode_preserves_loose_routes(void) {
 static int prewarm_make_fixture(int with_asset) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\data_prewarm_%lu",
-             scratch, (unsigned long)GetCurrentProcessId());
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s/data_prewarm_%lu",
+             scratch, (unsigned long)getpid());
     /* A stale fixture from an earlier run must not inflate the counts. */
     char clean_root[MAX_PATH];
     snprintf(clean_root, sizeof clean_root, "\\\\?\\%s", s_prewarm_root);
     /* Best-effort removal of a previous run's deepest file only. */
     {
         char old_file[MAX_PATH];
-        snprintf(old_file, sizeof old_file, "\\\\?\\%s\\data\\menu\\text\\common.to",
-                 s_prewarm_root);
-        DeleteFileA(old_file);
+        snprintf(old_file, sizeof old_file, "%s/data/menu/text/common.to", s_prewarm_root);
+        nk_remove_utf8(old_file);
     }
     (void)clean_root;
     char dir[MAX_PATH];
-    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
-    if (!(CreateDirectoryA(s_prewarm_root, NULL) || GetLastError() == ERROR_ALREADY_EXISTS))
+    snprintf(dir, sizeof dir, "%s/data/menu/text", s_prewarm_root);
+    if (!nk_platform_mkdir_p(s_prewarm_root))
         return 0;
-    snprintf(dir, sizeof dir, "%s\\data", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
-    snprintf(dir, sizeof dir, "%s\\data\\menu", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
-    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
+    snprintf(dir, sizeof dir, "%s/data", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
+    snprintf(dir, sizeof dir, "%s/data/menu", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
+    snprintf(dir, sizeof dir, "%s/data/menu/text", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
     if (with_asset) {
         char file[MAX_PATH];
-        snprintf(file, sizeof file, "%s\\common.to", dir);
+        snprintf(file, sizeof file, "%s/common.to", dir);
         FILE *f = fopen(file, "wb");
         if (!f) return 0;
         fputs("common", f);
@@ -9836,7 +10878,7 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(0);
 
     expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_UNINITIALIZED,
@@ -9870,9 +10912,9 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
     if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
-    SetEnvironmentVariableA("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs", NULL);
+    hle_test_setenv("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     static const uint32_t dir_path_addr = 0x09101000u;
     static const uint32_t dirent_addr = 0x09102000u;
     static const char dir_path[] = "disc0:/data/menu/text";
@@ -9906,8 +10948,8 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     cpu.r[4] = dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the full disc0 indexed directory descriptor closes cleanly");
-    SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    hle_test_setenv("SR_FSDIR", old_fs ? old_fs : NULL);
+    rmdir(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     free(old_fs);
 
     prewarm_env_restore();
@@ -9921,7 +10963,7 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(0);
     sr_hle_test_data_mark_guest_start();
 
@@ -9946,36 +10988,36 @@ static char s_disc_route_root[MAX_PATH];
 static int disc_route_make_fixture(void) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
     snprintf(s_disc_route_root, sizeof s_disc_route_root,
-             "%s\\disc_route_%lu", scratch, (unsigned long)GetCurrentProcessId());
+             "%s/disc_route_%lu", scratch, (unsigned long)getpid());
 
-    /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
-     * fixture cannot depend on an earlier test having left a parent behind. */
+    /* Every intermediate is listed so the fixture cannot depend on an earlier test
+     * having left a parent behind. */
     static const char *const dirs[] = {
-        "", "\\USRDIR",
-        "\\USRDIR\\primary",
-        "\\USRDIR\\primary\\menu",
-        "\\USRDIR\\primary\\menu\\a.xb0.d",
-        "\\USRDIR\\primary\\menu\\a.xb0.d\\data",
-        "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu",
-        "\\USRDIR\\root_a",
-        "\\USRDIR\\root_a\\sound",
-        "\\USRDIR\\root_a\\sound\\bgm",
-        "\\USRDIR\\root_b",
-        "\\USRDIR\\root_b\\sound",
-        "\\USRDIR\\root_b\\sound\\bgm"
+        "", "/USRDIR",
+        "/USRDIR/primary",
+        "/USRDIR/primary/menu",
+        "/USRDIR/primary/menu/a.xb0.d",
+        "/USRDIR/primary/menu/a.xb0.d/data",
+        "/USRDIR/primary/menu/a.xb0.d/data/menu",
+        "/USRDIR/root_a",
+        "/USRDIR/root_a/sound",
+        "/USRDIR/root_a/sound/bgm",
+        "/USRDIR/root_b",
+        "/USRDIR/root_b/sound",
+        "/USRDIR/root_b/sound/bgm"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char dir[MAX_PATH];
         snprintf(dir, sizeof dir, "%s%s", s_disc_route_root, dirs[i]);
-        if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
+        if (!nk_platform_mkdir_p(dir)) return 0;
     }
     static const struct { const char *rel; const char *body; } files[] = {
-        { "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
-        { "\\USRDIR\\root_a\\sound\\bgm\\bgm_title.sgb", "first-root" },
-        { "\\USRDIR\\root_b\\sound\\bgm\\bgm_title.sgb", "second-root" },
-        { "\\USRDIR\\root_b\\sound\\bgm\\only_second.bin", "second-only" }
+        { "/USRDIR/primary/menu/a.xb0.d/data/menu/archived.to", "archived" },
+        { "/USRDIR/root_a/sound/bgm/bgm_title.sgb", "first-root" },
+        { "/USRDIR/root_b/sound/bgm/bgm_title.sgb", "second-root" },
+        { "/USRDIR/root_b/sound/bgm/only_second.bin", "second-only" }
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char file[MAX_PATH];
@@ -10006,13 +11048,13 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
 
     char dataroot[MAX_PATH];
     char root_a[MAX_PATH], root_b[MAX_PATH], serialized_roots[MAX_PATH * 5];
-    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\primary", s_disc_route_root);
-    snprintf(root_a, sizeof root_a, "%s\\USRDIR\\root_a", s_disc_route_root);
-    snprintf(root_b, sizeof root_b, "%s\\USRDIR\\root_b", s_disc_route_root);
+    snprintf(dataroot, sizeof dataroot, "%s/USRDIR/primary", s_disc_route_root);
+    snprintf(root_a, sizeof root_a, "%s/USRDIR/root_a", s_disc_route_root);
+    snprintf(root_b, sizeof root_b, "%s/USRDIR/root_b", s_disc_route_root);
     snprintf(serialized_roots, sizeof serialized_roots,
              "%s\tdata\t10\n%s\tdata\t20\n", root_a, root_b);
-    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
-    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
     sr_hle_test_data_reset(0);
 
     int state = sr_host_data_prepare();
@@ -10105,21 +11147,21 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) root_ok = 0;
     if (root_ok) {
-        int length = snprintf(root, sizeof(root), "%s\\primary_archive_dupes_%lu_%llu",
-                              scratch, (unsigned long)GetCurrentProcessId(),
-                              (unsigned long long)GetTickCount64());
+        int length = snprintf(root, sizeof(root), "%s/primary_archive_dupes_%lu_%llu",
+                              scratch, (unsigned long)getpid(),
+                              (unsigned long long)SDL_GetTicks());
         root_ok = length >= 0 && (size_t)length < sizeof(root);
     }
     if (root_ok) {
-        int length = snprintf(dataroot, sizeof(dataroot), "%s\\primary", root);
+        int length = snprintf(dataroot, sizeof(dataroot), "%s/primary", root);
         root_ok = length >= 0 && (size_t)length < sizeof(dataroot) &&
                   hle_make_directory(root) && hle_make_directory(dataroot);
     }
 
     static const char *const directories[] = {
-        "\\primary\\zeta", "\\primary\\zeta\\z.xb.d",
-        "\\primary\\zeta\\z.xb.d\\data", "\\primary\\alpha",
-        "\\primary\\alpha\\a.xb.d", "\\primary\\alpha\\a.xb.d\\data"
+        "/primary/zeta", "/primary/zeta/z.xb.d",
+        "/primary/zeta/z.xb.d/data", "/primary/alpha",
+        "/primary/alpha/a.xb.d", "/primary/alpha/a.xb.d/data"
     };
     for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]) && root_ok; i++) {
         char path[MAX_PATH];
@@ -10128,13 +11170,13 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
     }
     if (root_ok) {
         root_ok = host_data_duplicate_write_file(root,
-                    "\\primary\\zeta\\z.xb.d\\data\\identical.bin", "same-copy") &&
+                    "/primary/zeta/z.xb.d/data/identical.bin", "same-copy") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\alpha\\a.xb.d\\data\\identical.bin", "same-copy") &&
+                    "/primary/alpha/a.xb.d/data/identical.bin", "same-copy") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\zeta\\z.xb.d\\data\\different.bin", "zeta-loses") &&
+                    "/primary/zeta/z.xb.d/data/different.bin", "zeta-loses") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\alpha\\a.xb.d\\data\\different.bin", "alpha-wins");
+                    "/primary/alpha/a.xb.d/data/different.bin", "alpha-wins");
     }
     expect(root_ok, "the synthetic primary extracted-archive duplicate tree was created");
 
@@ -10152,10 +11194,10 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
                "the bytewise-first extracted archive matches the origin/main winner");
 
         char direct_directory[MAX_PATH];
-        int length = snprintf(direct_directory, sizeof(direct_directory), "%s\\data", dataroot);
+        int length = snprintf(direct_directory, sizeof(direct_directory), "%s/data", dataroot);
         int direct_ok = length >= 0 && (size_t)length < sizeof(direct_directory) &&
                         hle_make_directory(direct_directory) &&
-                        host_data_duplicate_write_file(dataroot, "\\data\\identical.bin",
+                        host_data_duplicate_write_file(dataroot, "/data/identical.bin",
                                                        "direct-copy");
         expect(direct_ok, "the primary-root ambiguity fixture was added");
         if (direct_ok) {
@@ -10196,7 +11238,7 @@ static void test_slow_enumeration_completes_before_guest_start(void) {
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(20 /* ms per directory */);
 
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
@@ -10245,9 +11287,9 @@ static void test_missing_root_fails_once_and_stays_failed(void) {
     reset_fixture();
     sr_hle_init();
     char missing[MAX_PATH];
-    snprintf(missing, sizeof missing, "%s\\absent\\data_prewarm_missing_%lu",
-             s_prewarm_root, (unsigned long)GetCurrentProcessId());
-    SetEnvironmentVariableA("SR_DATAROOT", missing);
+    snprintf(missing, sizeof missing, "%s/absent/data_prewarm_missing_%lu",
+             s_prewarm_root, (unsigned long)getpid());
+    hle_test_setenv("SR_DATAROOT", missing);
     sr_hle_test_data_reset(0);
 
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_FAILED,
@@ -10356,7 +11398,7 @@ static void test_display_capture_arms_on_latched_flip(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
     /* The policy reads SR_FBSNAP once and caches it, so arm it before the first flip. */
-    _putenv_s("SR_FBSNAP", "1");
+    hle_test_setenv("SR_FBSNAP", "1");
 
     /* With no presenter a flip is never shown, so nothing may be armed for it. */
     s_cap_arm_calls = 0;
@@ -10398,7 +11440,7 @@ static void test_display_capture_arms_on_latched_flip(void) {
            "an arm no presenter serviced is resolved before the immediate flip returns");
 
     s_test_gui_on = 0;
-    _putenv_s("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBSNAP", "");
 }
 
 /* Immediate flip at the next vblank; returns how many captures the policy armed for it and
@@ -10428,12 +11470,12 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     sr_hle_init();
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    _putenv_s("SR_FBSNAP", "");
-    _putenv_s("SR_FBDUMP", "");
+    hle_test_setenv("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBDUMP", "");
     uint32_t first = sr_syscall(&cpu, NID_DISPLAY_GET_VCOUNT) + 2u;
     char window[32], expected[32];
     snprintf(window, sizeof window, "%u-%u", (unsigned)first, (unsigned)(first + 1u));
-    _putenv_s("SR_FBSNAP_WINDOWS", window);
+    hle_test_setenv("SR_FBSNAP_WINDOWS", window);
     sr_fbcap_test_reset_config();
     s_cap_arm_accept = 0;
     s_test_gui_on = 1;
@@ -10450,8 +11492,8 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     }
 
     snprintf(window, sizeof window, "%u-%u", (unsigned)(first + 4u), (unsigned)(first + 5u));
-    _putenv_s("SR_FBSNAP_WINDOWS", window);
-    _putenv_s("SR_FBSNAP", "0");
+    hle_test_setenv("SR_FBSNAP_WINDOWS", window);
+    hle_test_setenv("SR_FBSNAP", "0");
     sr_fbcap_test_reset_config();
     for (int i = 0; i < 4; i++) {
         uint32_t v = 0;
@@ -10459,8 +11501,8 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
                "an explicit SR_FBSNAP=0 keeps FBSNAP off even inside a window");
     }
 
-    _putenv_s("SR_FBSNAP", "");
-    _putenv_s("SR_FBSNAP_WINDOWS", "");
+    hle_test_setenv("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBSNAP_WINDOWS", "");
     s_cap_arm_accept = 1;
     s_test_gui_on = 0;
     sr_fbcap_test_reset_config();
@@ -11101,11 +12143,12 @@ static void test_can_not_wait_semantics(void) {
                  "%s invalid mode returns ILLEGAL_MODE ahead of the context error", who);
         expect(sr_syscall(&cpu, nid) == 0x80020195u, msg);
 
-        /* Bad object still answers in the object error space. */
+        /* Bad object still answers in the object error space: UNKNOWN_EVFID
+         * (issue #1389; PSPAutotests tests/threads/events/wait.expected L35). */
         memset(&cpu, 0, sizeof cpu);
         cpu.r[4] = 0u; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
         snprintf(msg, sizeof msg, "%s bad flag still returns its object error", who);
-        expect(sr_syscall(&cpu, nid) == 0x80020000u, msg);
+        expect(sr_syscall(&cpu, nid) == 0x8002019au, msg);
         cnw_end(0, token);
 
         /* An already-satisfied pattern is not a wait: it succeeds and is consumed. */
@@ -12165,6 +13208,220 @@ static void test_cancel_release_wake_results(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * Issue #1389: semaphores, event flags and LwMutexes share one object table in
+ * src/rt/hle.c, so each lookup must accept only its own kind; unknown event-flag
+ * UIDs answer UNKNOWN_EVFID; DeleteEventFlag ends a blocked wait. Every call
+ * enters through the production NID.
+ *
+ * Codes: PSP-B1-01 (psp-hw-20260917) unknown-ID codes, 8002019A event flag,
+ * 80020199 semaphore, 800201CA and 800201C4 for a missing LwMutex. Cells:
+ * PSPAutotests tests/threads/events clear.expected L15-L19, refer.expected
+ * L23-L25, wait.expected L31-L35, delete.expected L5-L7. A UID of another kind
+ * answering the calling API's own unknown-ID code is the public reference model
+ * (PPSSPP's typed kernel-object lookup); no hardware cell passes one.
+ * ------------------------------------------------------------------------- */
+#define NID_EVT_CLEAR_EVF     0x812346e4u
+#define NID_EVT_POLL_SEMA     0x58b1f937u
+#define NID_EVT_REFER_SEMA    0xbc6febc5u
+#define NID_EVT_REFER_LW_ID   0x4c145944u
+#define EVT_NAME              0x00250800u
+#define EVT_OUT               0x00250840u
+#define EVT_TMO               0x00250844u
+#define EVT_INFO              0x00250880u
+#define EVT_LW_WA             0x00250900u
+#define EVT_UNKNOWN_EVFID     0x8002019au
+#define EVT_LW_NOT_FOUND      0x800201cau
+#define EVT_LW_FAILED_TO_OWN  0x800201c4u
+#define EVT_ILPAT             0x800201b1u
+#define EVT_WAIT_DELETE       0x800201b5u
+
+static uint32_t s_evt_nid;
+static uint32_t s_evt_arg[5];
+static uint32_t s_evt_ret;
+static int      s_evt_returned;
+
+static void evt_call_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    for (int i = 0; i < 5; i++) cpu.r[4 + i] = s_evt_arg[i];
+    s_evt_ret = sr_syscall(&cpu, s_evt_nid);
+    s_evt_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+/* One call on a thread of its own (a0-a3 in r4-r7, the fifth argument in t0):
+ * a call that wrongly blocks comes back to the test as a blocked thread instead
+ * of hanging it. Leaves s_cur on that thread; the caller restores it. */
+static TCB *evt_start(uint32_t thread_uid, uint32_t nid, uint32_t a0, uint32_t a1,
+                      uint32_t a2, uint32_t a3, uint32_t a4) {
+    s_evt_nid = nid;
+    s_evt_arg[0] = a0; s_evt_arg[1] = a1; s_evt_arg[2] = a2; s_evt_arg[3] = a3; s_evt_arg[4] = a4;
+    s_evt_ret = 0xFFFFFFFFu;
+    s_evt_returned = 0;
+    TCB *t = fixture_thread(thread_uid, TH_READY, 16);
+    t->started = 1;
+    t->coro = sr_coro_create(evt_call_body, NULL, (size_t)4 << 20);
+    expect(t->coro != NULL, "issue #1389 fixture: call coroutine created");
+    if (!t->coro) return NULL;
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+    return t;
+}
+
+static void evt_end(TCB *t) {
+    if (t && t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
+}
+
+/* A call that must return at once with `want`, run on its own thread. */
+static void evt_expect_now(int self_idx, uint32_t thread_uid, uint32_t nid, uint32_t a0,
+                           uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+                           uint32_t want, const char *what) {
+    char msg[192];
+    TCB *t = evt_start(thread_uid, nid, a0, a1, a2, a3, a4);
+    snprintf(msg, sizeof msg, "issue #1389: %s returns 0x%08x without blocking (got 0x%08x, %s)",
+             what, want, s_evt_ret, s_evt_returned ? "returned" : "blocked");
+    expect(t && s_evt_returned && s_evt_ret == want, msg);
+    evt_end(t);
+    s_cur = self_idx;
+}
+
+static void test_evf_typed_uids_and_delete(void) {
+    char msg[192];
+    TCB *self = wsv_begin();
+    int self_idx = (int)(self - s_tcb);
+    uint32_t sema = wsv_create(1, 2);
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, 0x0fu, 0u);
+    expect((int32_t)sema > 0 && (int32_t)evf > 0, "issue #1389: a semaphore and an event flag created");
+
+    /* ---- LwMutex calls naming another kind's UID: the LwMutex codes -------- */
+    MEM_W32(EVT_INFO, 64u);
+    b1_expect(b1_call(NID_EVT_REFER_LW_ID, evf, EVT_INFO, 0u, 0u), EVT_LW_NOT_FOUND,
+              "ReferLwMutexStatusByID(event-flag UID) returns 800201CA");
+    b1_expect(b1_call(NID_EVT_REFER_LW_ID, sema, EVT_INFO, 0u, 0u), EVT_LW_NOT_FOUND,
+              "ReferLwMutexStatusByID(semaphore UID) returns 800201CA");
+    for (uint32_t i = 0; i < 0x20u; i += 4u) MEM_W32(EVT_LW_WA + i, 0u);
+    MEM_W32(EVT_LW_WA + 0x10u, evf);
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, EVT_LW_WA, 1u, 0u, 0u), EVT_LW_FAILED_TO_OWN,
+              "TryLockLwMutex of a workarea naming an event flag returns 800201C4");
+    expect(MEM_R32(EVT_LW_WA) == 0u && MEM_R32(EVT_LW_WA + 4u) == 0u,
+           "issue #1389: that TryLock took no lock");
+    MEM_W32(EVT_LW_WA + 0x10u, sema);
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, EVT_LW_WA, 0u, 0u, 0u), EVT_LW_NOT_FOUND,
+              "DeleteLwMutex of a workarea naming a semaphore returns 800201CA");
+    expect(wsv_count(sema) == 1 && MEM_R32(EVT_LW_WA + 0x10u) == sema,
+           "issue #1389: that DeleteLwMutex left the semaphore and the workarea untouched");
+
+    /* ---- event-flag calls with a semaphore UID: 8002019A, semaphore intact -- */
+    b1_expect(b1_call(NID_B1_SET_EVF, sema, 0xf0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "SetEventFlag(semaphore UID) returns 8002019A");
+    b1_expect(b1_call(NID_EVT_CLEAR_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "ClearEventFlag(semaphore UID) returns 8002019A");
+    MEM_W32(EVT_OUT, 0xdeadbeefu);
+    b1_expect(b1_call(NID_B1_POLL_EVF, sema, 1u, 1u, EVT_OUT), EVT_UNKNOWN_EVFID,
+              "PollEventFlag(semaphore UID) returns 8002019A");
+    expect(MEM_R32(EVT_OUT) == 0xdeadbeefu, "issue #1389: PollEventFlag(semaphore UID) writes no outBits");
+    MEM_W32(EVT_INFO, 52u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, sema, EVT_INFO, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "ReferEventFlagStatus(semaphore UID) returns 8002019A");
+    b1_expect(b1_call(NID_WCR_CANCEL_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "CancelEventFlag(semaphore UID) returns 8002019A");
+    evt_expect_now(self_idx, 0x1f0u, NID_CNW_WAIT_EVF, sema, 1u, 1u, EVT_OUT, 0u,
+                   EVT_UNKNOWN_EVFID, "WaitEventFlag(semaphore UID)");
+    evt_expect_now(self_idx, 0x1f1u, NID_CNW_WAIT_EVF_CB, sema, 1u, 1u, EVT_OUT, 0u,
+                   EVT_UNKNOWN_EVFID, "WaitEventFlagCB(semaphore UID)");
+    b1_expect(b1_call(NID_B1_DELETE_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "DeleteEventFlag(semaphore UID) returns 8002019A");
+    expect(wsv_count(sema) == 1, "issue #1389: the event-flag calls left the semaphore alive at count 1");
+
+    /* ---- semaphore calls with an event-flag UID: 80020199, flag intact ------ */
+    b1_expect(b1_call(NID_WSV_SIGNAL_SEMA, evf, 1u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "SignalSema(event-flag UID) returns 80020199");
+    b1_expect(b1_call(NID_EVT_POLL_SEMA, evf, 1u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "PollSema(event-flag UID) returns 80020199");
+    MEM_W32(EVT_INFO, 56u);
+    b1_expect(b1_call(NID_EVT_REFER_SEMA, evf, EVT_INFO, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "ReferSemaStatus(event-flag UID) returns 80020199");
+    b1_expect(b1_call(NID_WCR_CANCEL_SEMA, evf, 0u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "CancelSema(event-flag UID) returns 80020199");
+    evt_expect_now(self_idx, 0x1f2u, NID_CNW_WAIT_SEMA, evf, 1u, 0u, 0u, 0u,
+                   WSV_UNKNOWN_SEMID, "WaitSema(event-flag UID)");
+    evt_expect_now(self_idx, 0x1f3u, NID_CNW_WAIT_SEMA_CB, evf, 1u, 0u, 0u, 0u,
+                   WSV_UNKNOWN_SEMID, "WaitSemaCB(event-flag UID)");
+    b1_expect(b1_call(NID_WSV_DELETE_SEMA, evf, 0u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "DeleteSema(event-flag UID) returns 80020199");
+    MEM_W32(EVT_INFO, 52u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u), 0u,
+              "ReferEventFlagStatus after the semaphore calls succeeds");
+    expect(MEM_R32(EVT_INFO + 44u) == 0x0fu,
+           "issue #1389: the semaphore calls left the flag alive with pattern 0x0F");
+
+    wsv_delete(sema);
+    b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, "DeleteEventFlag of the flag succeeds");
+
+    /* ---- unknown event-flag UIDs: NULL, invalid, deleted ------------------- */
+    uint32_t gone = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, 0u, 0u);
+    (void)b1_call(NID_B1_DELETE_EVF, gone, 0u, 0u, 0u);
+    const uint32_t bad[3] = {0u, 0xdeadbeefu, gone};
+    static const char *const bad_name[3] = {"NULL", "invalid", "deleted"};
+    for (int i = 0; i < 3; i++) {
+        snprintf(msg, sizeof msg, "ClearEventFlag(%s) returns 8002019A (clear.expected L15-L19)", bad_name[i]);
+        b1_expect(b1_call(NID_EVT_CLEAR_EVF, bad[i], 0u, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        MEM_W32(EVT_INFO, 52u);
+        snprintf(msg, sizeof msg, "ReferEventFlagStatus(%s) returns 8002019A (refer.expected L23-L25)", bad_name[i]);
+        b1_expect(b1_call(NID_B1_REFER_EVF, bad[i], EVT_INFO, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlag(%s, 0xFFFFFFFF, AND) returns 8002019A (wait.expected L35)", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF, bad[i], 0xffffffffu, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlagCB(%s, 0xFFFFFFFF, AND) returns 8002019A", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF_CB, bad[i], 0xffffffffu, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlag(%s, 0, AND) still returns 800201B1 first (wait.expected L32-L34)", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF, bad[i], 0u, 0u, 0u), EVT_ILPAT, msg);
+    }
+    s_cur = -1;
+
+    /* ---- DeleteEventFlag ends a blocked wait with WAIT_DELETE --------------- *
+     * Plain form: wait.expected L31, a waiter on AND 0xFFFFFFFF of a flag at 0,
+     * no timeout, leaves with 800201B5 and outBits 00000000 over 0xDEADBEEF.
+     * CB form, timed: delete.expected L5-L7 (800201B5). Its flag holds 0x0C at
+     * deletion, so outBits shows the pattern written; a nonzero pattern at
+     * deletion is the PPSSPP model and the measured Cancel rule, not a cell. */
+    for (int cb = 0; cb < 2; cb++) {
+        const char *who = cb ? "WaitEventFlagCB" : "WaitEventFlag";
+        const uint32_t init = cb ? 0x0cu : 0u;
+        TCB *main_t = wsv_begin();
+        int main_idx = (int)(main_t - s_tcb);
+        evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, init, 0u);
+        MEM_W32(EVT_OUT, 0xdeadbeefu);
+        MEM_W32(EVT_TMO, 500000u);
+        TCB *w = evt_start(0x1f8u, cb ? NID_CNW_WAIT_EVF_CB : NID_CNW_WAIT_EVF, evf,
+                           cb ? 0x01u : 0xffffffffu, 0u, EVT_OUT, cb ? EVT_TMO : 0u);
+        snprintf(msg, sizeof msg, "issue #1389: the %s waiter blocked on the flag", who);
+        expect(w && !s_evt_returned && w->state == TH_WAIT_OBJ && w->wait_obj == evf, msg);
+        if (!w || s_evt_returned) { evt_end(w); s_cur = -1; continue; }
+        s_cur = main_idx;
+        snprintf(msg, sizeof msg, "DeleteEventFlag with a blocked %s waiter returns 0", who);
+        b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the delete readied the %s waiter", who);
+        expect(w->state == TH_READY, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the delete wrote the %s waiter's outBits = 0x%08x", who, init);
+        expect(MEM_R32(EVT_OUT) == init, msg);
+        s_cur = (int)(w - s_tcb);
+        w->state = TH_RUNNING;
+        sr_coro_switch(w->coro);
+        snprintf(msg, sizeof msg, "issue #1389: the deleted %s waiter returns 800201B5 (got 0x%08x)", who, s_evt_ret);
+        expect(s_evt_returned && s_evt_ret == EVT_WAIT_DELETE, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the %s waiter's outBits stays 0x%08x after it resumes", who, init);
+        expect(MEM_R32(EVT_OUT) == init, msg);
+        s_cur = main_idx;
+        b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+                  "a second DeleteEventFlag returns 8002019A");
+        evt_end(w);
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
  * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917) second round: init restore, delete,
  * single-wait rejection, LwMutex handoff/timeout, msgpipe modes, dormant
  * threads and waitType. Each cell enters through the production NID.
@@ -13159,6 +14416,39 @@ static void test_td24b_cheap_hle_batch(void) {
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
     expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
 
+    /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
+     * registration line once, not once per frame. A changed registration and a register after
+     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
+     * (duplicate-register codes are UNMEASURED on the PSP). */
+    {
+        char err[2048];
+        FILE *capture = NULL;
+        int saved = -1;
+        int every = getenv("SR_HLELOG") != NULL;
+        err[0] = '\0';
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
+        uint32_t first = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t again = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t new_arg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
+        uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
+               "repeated, changed and post-Release registrations keep their success answers");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
+                   (every ? 2 : 1),
+               "an identical VBLANK re-registration writes no second registration line");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
+               "a changed arg and a register after Release each write the registration line");
+        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+               "the quiet path still records the latest registration");
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+               "the log fixture leaves the VBLANK line released");
+    }
+
     /* ---- 4+5. scePowerSetClockFrequency / 350 ---- */
     reset_fixture();
     sr_hle_init();
@@ -13369,14 +14659,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int guest_hash_contains_uid(uint32_t uid) {
-    uint32_t bucket = uid % 32u;
-    for (uint32_t node = 0x0030aa88u; node != 0u; node = MEM_R32(node)) {
-        if (MEM_R32(node + 0x84u + bucket * 4u) == uid) return 1;
-    }
-    return 0;
-}
-
 static int host_libc_contains_uid(uint32_t uid) {
     for (int i = 0; i < MAXTHREADS; i++)
         if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
@@ -13431,8 +14713,8 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid) && !guest_hash_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc and guest reent ownership");
+    expect(!host_libc_contains_uid(target_uid),
+           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&
@@ -13804,6 +15086,181 @@ static void test_refer_thread_status(void) {
            "ReferThreadStatus validates the complete output structure span");
 }
 
+/* -------------------------------------------------------------------------
+ * sceKernelGetThreadStackFreeSize (#1388)
+ * -------------------------------------------------------------------------
+ * The cells of the public PSPAutotests tests/threads/threads/stackfree.c and
+ * stackfree.expected (hrydgard/pspautotests e821a1ba), entered through sr_syscall from
+ * guest bodies that the real scheduler runs: the caller by UID 0 and by its own UID,
+ * another thread's own stack (created, ready, suspended, finished), a 0xFF creation fill
+ * that 0xFF writes leave intact and 0x00 writes consume, a NO_FILLSTACK thread answering
+ * 0, and UNKNOWN_THID for -1, an invalid UID and a deleted thread.  Counting starts 0x10
+ * bytes above a stack's low end (see sched_thread_stack_free_size).
+ * ------------------------------------------------------------------------- */
+#define SFS_NID_GET_STACK_FREE 0x52089ca1u
+#define SFS_MAIN_ENTRY         0x08a30000u
+#define SFS_WORKER_ENTRY       0x08a30080u
+#define SFS_IDLE_ENTRY         0x08a30100u
+#define SFS_ARG_ADDR           0x08303000u
+#define SFS_SKIP               0x10u
+#define SFS_UNKNOWN_THID       0x80020198u
+#define SFS_ATTR_NO_FILLSTACK  0x00100000u   /* PSPSDK PSP_THREAD_ATTR_NO_FILLSTACK */
+
+static struct {
+    int main_done;
+    int worker_ran;
+    uint32_t worker_sp;
+    uint32_t worker_free_untouched;
+    uint32_t worker_free_used;
+} s_sfs;
+
+static uint32_t sfs_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2,
+                         uint32_t t0) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = 0x1000u;   /* stack size, read only by CreateThread */
+    cpu->r[8] = t0;        /* attribute, the fifth argument: read only by CreateThread */
+    return sr_syscall(cpu, nid);
+}
+
+static uint32_t sfs_free(CpuState *cpu, uint32_t uid) {
+    return sfs_call(cpu, SFS_NID_GET_STACK_FREE, uid, 0u, 0u, 0u);
+}
+
+static void sfs_fill(uint32_t lo, uint32_t hi, uint8_t value) {
+    for (uint32_t a = lo; a < hi; a++) MEM_W8(a, value);
+}
+
+static void sfs_idle_fn(CpuState *cpu) { cpu->r[2] = 0u; }
+
+/* A stronger thread started by the main body: it measures itself by UID 0 before and after
+ * using 0x100 bytes below its SP, then returns. */
+static void sfs_worker_fn(CpuState *cpu) {
+    s_sfs.worker_ran = 1;
+    s_sfs.worker_sp = cpu->r[29];
+    s_sfs.worker_free_untouched = sfs_free(cpu, 0u);
+    sfs_fill(s_sfs.worker_sp - 0x100u, s_sfs.worker_sp, 0x00u);
+    s_sfs.worker_free_used = sfs_free(cpu, 0u);
+    cpu->r[2] = 0u;
+}
+
+static void sfs_main_fn(CpuState *cpu) {
+    const uint32_t self_uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(self_uid);
+    const uint32_t sp = cpu->r[29];
+    expect(self && self->stack_size >= 0x1000u && sp > self->stack_base + 0x800u &&
+           sp <= self->stack_base + self->stack_size,
+           "stack free: the main thread runs on its own scheduler stack");
+    if (!self) return;
+    const uint32_t self_first = self->stack_base + SFS_SKIP;
+
+    /* The caller, by UID 0 and by its own UID ("Current thread" and "Current"). */
+    const uint32_t untouched = sfs_free(cpu, 0u);
+    expect(untouched == self->stack_base + self->stack_size - self_first,
+           "stack free: UID 0 counts the caller's untouched stack above its low 0x10 bytes");
+    expect(sfs_free(cpu, self_uid) == untouched,
+           "stack free: the caller's own UID answers what UID 0 answers");
+    sfs_fill(sp - 0x400u, sp, 0xffu);
+    expect(sfs_free(cpu, 0u) == untouched,
+           "stack free: 1 KiB of 0xFF written into the frame leaves the free size unchanged");
+    sfs_fill(sp - 0x400u, sp, 0x00u);
+    const uint32_t used = sfs_free(cpu, 0u);
+    expect(used == (sp - 0x400u) - self_first && used < untouched,
+           "stack free: 1 KiB of 0x00 below SP ends the free run where it starts");
+    expect(sfs_free(cpu, self_uid) == used,
+           "stack free: the caller's own UID sees the same used stack as UID 0");
+
+    /* Created, never started: its own stack, filled at creation ("Created"). */
+    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                      0x30u, 0u);
+    TCB *ct = tcb_by_uid(created);
+    expect(ct && ct->stack_size == 0x1000u && MEM_R8(ct->stack_base) == 0xffu &&
+           MEM_R8(ct->stack_base + ct->stack_size - 1u) == 0xffu,
+           "stack free: CreateThread fills the whole requested stack with 0xFF");
+    expect(ct && MEM_R32(ct->k0_init + 4u) == ct->k0_init + 0x10u,
+           "stack free: the fill leaves the runtime's k0/TLS block above the stack seeded");
+    expect(ct && sfs_free(cpu, created) == ct->stack_size - SFS_SKIP,
+           "stack free: a created thread answers its own untouched stack, not the caller's");
+
+    /* NO_FILLSTACK: nothing is filled and the free size is 0. */
+    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                     0x30u, SFS_ATTR_NO_FILLSTACK);
+    TCB *nt = tcb_by_uid(nofill);
+    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u &&
+           MEM_R8(nt->stack_base + nt->stack_size - 1u) == 0u,
+           "stack free: NO_FILLSTACK leaves the new stack as it was");
+    expect(nt && sfs_free(cpu, nofill) == 0u,
+           "stack free: a NO_FILLSTACK thread answers 0");
+
+    /* Ready, started with a 4-byte argument block, then suspended ("Ready", "Suspended"). */
+    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                    0x30u, 0u);
+    MEM_W32(SFS_ARG_ADDR, 0x01020304u);   /* no 0xFF byte in the copied argument */
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, ready, 4u, SFS_ARG_ADDR, 0u) == 0u,
+           "stack free: the weaker thread starts");
+    TCB *rt = tcb_by_uid(ready);
+    const uint32_t ready_free = sfs_free(cpu, ready);
+    expect(rt && rt->state == TH_READY && rt->argp != 0u && ready_free > 0x200u &&
+           ready_free == rt->argp - (rt->stack_base + SFS_SKIP),
+           "stack free: a ready thread's copied argument block ends its free run");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_SUSPEND_THREAD, ready, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, ready) == ready_free,
+           "stack free: a suspended thread answers its free size");
+
+    /* A stronger thread runs at StartThread, measures itself and finishes ("Finished"). */
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_WORKER_ENTRY,
+                                     0x10u, 0u);
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
+           "stack free: the stronger thread starts");
+    TCB *wt = tcb_by_uid(worker);
+    expect(s_sfs.worker_ran && wt && wt->state == TH_DORMANT,
+           "stack free: the stronger thread ran to its end at StartThread");
+    if (wt) {
+        const uint32_t worker_first = wt->stack_base + SFS_SKIP;
+        expect(s_sfs.worker_free_untouched == wt->stack_base + wt->stack_size - worker_first &&
+               s_sfs.worker_free_used == (s_sfs.worker_sp - 0x100u) - worker_first,
+               "stack free: UID 0 measures the calling worker's own stack");
+    }
+    expect(sfs_free(cpu, worker) == s_sfs.worker_free_used,
+           "stack free: a finished thread keeps the free size it measured itself");
+    expect(sfs_free(cpu, 0u) == used,
+           "stack free: another thread's stack use leaves the caller's free size unchanged");
+
+    /* -1, an invalid UID and a deleted thread ("-1", "Invalid", "Deleted"). */
+    expect(sfs_free(cpu, 0xffffffffu) == SFS_UNKNOWN_THID,
+           "stack free: UID -1 answers UNKNOWN_THID");
+    expect(sfs_free(cpu, 0xdeadbeefu) == SFS_UNKNOWN_THID,
+           "stack free: an invalid UID answers UNKNOWN_THID");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, created, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, created) == SFS_UNKNOWN_THID,
+           "stack free: a deleted thread answers UNKNOWN_THID");
+
+    (void)sfs_call(cpu, NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, ready, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, nofill, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, worker, 0u, 0u, 0u);
+    s_sfs.main_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void test_thread_stack_free_size_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    memset(&s_sfs, 0, sizeof s_sfs);
+    const int registered = sr_hle_test_is_registered(SFS_NID_GET_STACK_FREE);
+    expect(registered, "stack free: GetThreadStackFreeSize has its production registration");
+    if (!registered) return;
+    sr_test_register_guest_fn(SFS_MAIN_ENTRY, sfs_main_fn);
+    sr_test_register_guest_fn(SFS_WORKER_ENTRY, sfs_worker_fn);
+    sr_test_register_guest_fn(SFS_IDLE_ENTRY, sfs_idle_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(SFS_MAIN_ENTRY, 0u, 0u);
+    expect(s_sfs.main_done, "stack free: the main body ran to its end");
+    sr_test_guest_fn_reset();
+}
+
 static void test_change_current_thread_attr(void) {
     enum {
         NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
@@ -13979,6 +15436,147 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
     expect(sched_terminate_thread(ready->uid) == 0u, "terminate the suspended thread");
     expect(!ready->suspended && ready->state == TH_DORMANT,
            "terminating a suspended thread clears the suspension");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelChangeThreadPriority (#1388), entered through sr_syscall.
+ * Expected results are the PSPAutotests threads/threads/change.expected cells:
+ * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
+ * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
+ * ------------------------------------------------------------------------- */
+#define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define SRT_ILLEGAL_PRIORITY 0x80020193u
+
+static uint32_t srt_change_priority(uint32_t uid, uint32_t priority) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = priority;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void test_change_thread_priority_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5b0u, TH_RUNNING, 0x18);
+    TCB *ready = fixture_thread(0x5b1u, TH_READY, 0x30);
+    TCB *stopped = fixture_thread(0x5b2u, TH_DORMANT, 0x30);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY),
+           "ChangeThreadPriority has a production registration");
+
+    /* ---- target errors ------------------------------------------------------ */
+    expect(srt_change_priority(0xffffffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority(-1) returns UNKNOWN_THID");
+    expect(srt_change_priority(0x7fffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of an unknown UID returns UNKNOWN_THID");
+    expect(srt_change_priority(stopped->uid, 0x20u) == SRT_DORMANT &&
+           stopped->priority == 0x30,
+           "ChangeThreadPriority of a dormant thread returns DORMANT and keeps its priority");
+    uint32_t deleted = sched_create_thread(0x08001000u, 0x30, 0x800u);
+    expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
+    expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
+
+    /* ---- illegal priorities are refused and change nothing ------------------ */
+    static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
+                                        0x05u, 0x06u, 0x07u, 0x78u, 0x79u };
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "priority 0x%x returns ILLEGAL_PRIORITY and keeps 0x30",
+                 illegal[i]);
+        expect(srt_change_priority(ready->uid, illegal[i]) == SRT_ILLEGAL_PRIORITY &&
+               ready->priority == 0x30 && self->state == TH_RUNNING, msg);
+    }
+
+    /* ---- legal priorities are stored; a stronger ready thread runs ---------- */
+    static const uint32_t legal[] = { 0x08u, 0x09u, 0x17u, 0x18u, 0x2fu, 0x30u, 0x31u,
+                                      0x50u, 0x6eu, 0x6fu, 0x77u };
+    for (size_t i = 0; i < sizeof legal / sizeof legal[0]; i++) {
+        char msg[96];
+        int stronger = (int)legal[i] < self->priority;
+        snprintf(msg, sizeof msg, "priority 0x%x is accepted and %s the caller",
+                 legal[i], stronger ? "preempts" : "does not preempt");
+        expect(srt_change_priority(ready->uid, legal[i]) == 0u &&
+               ready->priority == (int)legal[i] &&
+               self->state == (stronger ? TH_READY : TH_RUNNING), msg);
+        self->state = TH_RUNNING;
+    }
+
+    /* ---- priority 0 means the caller's current priority --------------------- */
+    expect(srt_change_priority(ready->uid, 0x21u) == 0u && ready->priority == 0x21,
+           "control: the target is set to 0x21");
+    expect(srt_change_priority(ready->uid, 0u) == 0u && ready->priority == 0x18,
+           "priority 0 gives the target the caller's current priority");
+    expect(self->state == TH_RUNNING, "an equal-priority target does not preempt the caller");
+
+    /* ---- UID 0 is the caller; lowering it lets a stronger ready thread run --- */
+    ready->priority = 0x20;
+    expect(srt_change_priority(0u, 0x18u) == 0u && self->state == TH_RUNNING,
+           "ChangeThreadPriority(0) keeps the caller ahead of a weaker ready thread");
+    expect(srt_change_priority(0u, 0x30u) == 0u && self->priority == 0x30 &&
+           self->state == TH_READY,
+           "lowering the caller below a ready thread reschedules at the call");
+    self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
 
     expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
     s_cur = -1;
@@ -15085,6 +16683,193 @@ static void test_callback_check_pump_services_pending_in_slot_order(void) {
     sr_test_guest_fn_reset();
 }
 
+/* A player quit request (#1392) notifies the callback registered with
+ * sceKernelRegisterExitCallback once, through sr_callback_notify, and its body runs on the
+ * owner thread at the next callback-servicing point. A repeat request does not notify again;
+ * the request expires when SR_EXIT_REQUEST_WINDOW_US of guest time has passed without an
+ * exit; with no registered callback the player exits at once. */
+#define NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK 0x4ac57943u
+#define EXIT_REQUEST_WINDOW_US 5000000u   /* SR_EXIT_REQUEST_WINDOW_US in hle.c */
+
+static uint32_t exit_request_register(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK);
+}
+
+static void test_quit_request_notifies_registered_exit_callback(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+
+    TCB *owner = fixture_thread(0x3420u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    expect(sr_exit_request_quit() == 0 && !sr_exit_request_expired(),
+           "quit request: with no exit callback registered the player exits at once");
+
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u,
+           "quit request: the exit callback is registered through sceKernelRegisterExitCallback");
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "quit request: registering the exit callback notifies nothing");
+
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a registered exit callback keeps the player running for the guest");
+    expect(sr_thread_has_pending_callbacks(owner->uid) && s_wakeup_log_len == 0u,
+           "quit request: the owner's exit callback is pending, its body not run inline");
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a repeat request inside the window keeps waiting");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 1u,
+           "quit request: the owner's callback pump services the exit callback");
+    expect(s_wakeup_log_len == 1u && wakeup_log_is(0u, 1u, 0u, WAKEUP_FIRST_COMMON),
+           "quit request: the exit callback runs once (count 1, notify argument 0, its common "
+           "argument), a repeat request does not notify it again");
+
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(!sr_exit_request_expired() && sr_exit_request_quit() == 1,
+           "quit request: the window is still open one microsecond before it ends");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_expired() && sr_exit_request_quit() == 0,
+           "quit request: a guest that has not exited when the window ends is ended by the player");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 0u &&
+               s_wakeup_log_len == 1u,
+           "quit request: the expired request notified nothing more");
+
+    wakeup_delete_callback(cb);
+    sr_test_guest_fn_reset();
+    s_vtime_us = 0u;
+}
+
+static uint32_t memstick_check_callback(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback"));
+}
+
+/* Issue #1378: Memory Stick insert/eject callbacks registered through the production
+ * sceIoDevctl dispatch on fatms0:. PSPAutotests tests/mstick/mstick.expected: registering
+ * on an inserted, ready stick queues one notification, the body runs with notifyCount 1 and
+ * notifyArg 1, and the following sceKernelCheckCallback returns 1. The 32-entry bound,
+ * duplicate entries, the 0x80010016 refusals and deleted-callback cleanup follow PPSSPP's
+ * model or the project model in hle.c; none of them is hardware-measured. */
+static void test_io_devctl_memstick_callback_notify(void) {
+    enum {
+        MS_DEVICE = 0x09020400u,
+        MS_INDATA = 0x09020440u,
+        MS_REGISTER = 0x02415821u,
+        MS_UNREGISTER = 0x02415822u,
+        MS_EINVAL = 0x80010016u,
+    };
+    static const char fatms0[] = "fatms0:";
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+    TCB *owner = fixture_thread(0x3420u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    fd_guest_copy(MS_DEVICE, fatms0, sizeof(fatms0));
+    CpuState cpu;
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "ms-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "ms-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u,
+           "mstick callbacks: both callbacks are created through sceKernelCreateCallback");
+
+    MEM_W32(MS_INDATA, first);
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u &&
+               sr_hle_test_io_devctl_callback_at(0u) == first,
+           "mstick callbacks: registration appends the live callback UID");
+    expect(s_wakeup_log_len == 0u && sr_thread_has_pending_callbacks(owner->uid),
+           "mstick callbacks: registration queues a notification without running the body");
+    expect(memstick_check_callback() == 1u && s_wakeup_log_len == 1u &&
+               wakeup_log_is(0u, 1u, 1u, WAKEUP_FIRST_COMMON),
+           "mstick callbacks: sceKernelCheckCallback returns 1 and runs notifyCount 1, notifyArg 1");
+    expect(memstick_check_callback() == 0u && s_wakeup_log_len == 1u,
+           "mstick callbacks: the initial notification is delivered once");
+
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 2u &&
+               memstick_check_callback() == 1u && wakeup_log_is(1u, 1u, 1u, WAKEUP_FIRST_COMMON),
+           "mstick callbacks: a duplicate registration takes a second entry and notifies again");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: each unregister removes one matching entry");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL,
+           "mstick callbacks: unregistering a UID that is no longer registered is refused");
+
+    MEM_W32(MS_INDATA, second);
+    uint32_t accepted = 0u;
+    for (uint32_t i = 0; i < 32u; i++)
+        accepted += io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u;
+    expect(accepted == 32u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL &&
+               sr_hle_test_io_devctl_callback_count() == 32u,
+           "mstick callbacks: the list holds 32 entries and refuses the 33rd");
+    expect(memstick_check_callback() == 1u && s_wakeup_log_len == 3u &&
+               s_wakeup_log[2].id == 2u && s_wakeup_log[2].count == 32u &&
+               s_wakeup_log[2].notify_arg == 1u,
+           "mstick callbacks: the refused registration queues no notification");
+
+    wakeup_delete_callback(second);
+    expect(sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: deleting a callback drops all of its registrations");
+    MEM_W32(MS_INDATA, first);
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_thread_has_pending_callbacks(owner->uid),
+           "mstick callbacks: a registration after cleanup queues its notification");
+    wakeup_delete_callback(first);
+    expect(sr_hle_test_io_devctl_callback_count() == 0u &&
+               memstick_check_callback() == 0u && s_wakeup_log_len == 3u,
+           "mstick callbacks: a callback deleted with a notification pending never fires");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL,
+           "mstick callbacks: a deleted callback can be neither registered nor unregistered");
+
+    /* Owner teardown deletes the thread's callbacks, so their registrations go with them. */
+    uint32_t target_uid = sched_create_thread(0x0800db00u, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target != NULL, "mstick callbacks: the owning thread is created");
+    if (target) {
+        target->state = TH_READY;
+        target->started = 1;
+        s_cur = (int)(target - s_tcb);
+    }
+    uint32_t owned = wakeup_create_callback(WAKEUP_SECOND_NAME, "ms-owned",
+                                            WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    MEM_W32(MS_INDATA, owned);
+    expect(owned != 0u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u,
+           "mstick callbacks: the owning thread registers its callback");
+    s_cur = (int)(owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE_THREAD) == 0u &&
+               !sr_callback_is_valid(owned) && sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: deleting the owning thread drops its registrations");
+    sr_test_guest_fn_reset();
+}
+
 /* sceKernelDelayThreadCB(1000) parked with nothing pending. Both callbacks are then notified
  * while the thread waits: each notify wakes it, the wakeup alone runs no body, and the resumed
  * wait services both in slot order, re-parks on its original deadline, and returns 0 when that
@@ -15247,11 +17032,13 @@ static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
  *    NUM_CTRL_BUFFERS (64) buffers returns SCE_KERNEL_ERROR_INVALID_SIZE rather
  *    than being clamped, and the returned value is the number of buffers
  *    actually written -- __CtrlReadSingleBuffer() contributes 0 for a pointer it
- *    cannot write, so a call that stores nothing reports 0.  With nBufs == 0 the
- *    available count is min(fresh, 0) == 0, so it writes nothing and returns 0.
+ *    cannot write, so a call that stores nothing reports 0.  PPSSPP returns 0
+ *    for nBufs == 0; issue #1390 specifies INVALID_SIZE from the project's PSP-3000
+ *    measurement (not yet a public oracle case), and that is what is asserted.
  *  - pspautotests tests/ctrl/ctrl.expected records that the blocking read really
- *    does wait and that the peek form does not.  Only the blocking form is
- *    registered by this runtime, so that is background, not an assertion here.
+ *    does wait and that the peek form does not.  The peek and Negative forms are
+ *    registered too; which of them consume history is asserted below, the wait
+ *    itself is not.
  *
  * The whole-span requirement does not depend on the PSP contract at all.  The
  * scalar accessors reject an out-of-range store one word at a time, so with no
@@ -15268,6 +17055,8 @@ static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
  * --------------------------------------------------------------------------- */
 #define NID_SCE_CTRL_READ_BUFFER_POSITIVE 0x1f803938u
 #define NID_SCE_CTRL_PEEK_BUFFER_POSITIVE 0x3a622550u
+#define NID_SCE_CTRL_READ_BUFFER_NEGATIVE 0x60b81f86u
+#define NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE 0xc152080au
 #define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
 #define CTRL_SAMPLE_BYTES 16u
 #define CTRL_BTN_START 0x0008u
@@ -15327,14 +17116,13 @@ static void ctrl_drain(CpuState *cpu) {
 
 static void ctrl_env(const char *noinput, const char *pad,
                      const char *period, const char *width) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "SR_NOINPUT=%s", noinput);  _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PAD=%s", pad);          _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PADPERIOD=%s", period); _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PADWIDTH=%s", width);   _putenv(buf);
-    _putenv("SR_PADSTART=");
-    _putenv("SR_PADSCRIPT=");
-    _putenv("SR_INLOG=");
+    hle_test_setenv("SR_NOINPUT", noinput);
+    hle_test_setenv("SR_PAD", pad);
+    hle_test_setenv("SR_PADPERIOD", period);
+    hle_test_setenv("SR_PADWIDTH", width);
+    hle_test_setenv("SR_PADSTART", NULL);
+    hle_test_setenv("SR_PADSCRIPT", NULL);
+    hle_test_setenv("SR_INLOG", NULL);
 }
 
 /* The auto-START bootstrap pulse must stop once a human is seen driving on ANY
@@ -15384,6 +17172,98 @@ static void test_ctrl_live_input_latch_suppresses_phantom_start(void) {
     sr_ctrl_test_reset_live_input();
     expect(!sr_ctrl_test_live_input_seen(),
            "the test reset clears the latch for subsequent cases");
+}
+
+/* Poll one controller sample per vblank through the production sampler for `vblanks`
+ * vblanks and report how many of them carry START. */
+static unsigned ctrl_start_samples_over(CpuState *cpu, unsigned vblanks) {
+    unsigned start = 0;
+    for (unsigned i = 0; i < vblanks; i++) {
+        ctrl_tick(1u);
+        if (ctrl_dispatch(cpu, CTRL_OK_BUF, 1u) == 1u &&
+            (MEM_R32(CTRL_OK_BUF + 4u) & CTRL_BTN_START))
+            start++;
+    }
+    return start;
+}
+
+/* Start one pulse case from a known place: the default pulse (START for 4 vblanks every 240)
+ * is anchored to VCOUNT, which the fixture never rewinds, so tick (with a neutral pad) up to
+ * its period boundary first. The first vblanks measured afterwards are then exactly the ones a
+ * fresh run's pulse fires in. */
+static void ctrl_pulse_case(CpuState *cpu, int interactive, const char *noinput, const char *pad,
+                            const char *period, const char *width) {
+    s_test_gui_interactive = 0;
+    ctrl_env("1", "", "", "");
+    while (sr_display_vcount() % 240u) ctrl_tick(1u);
+    sr_route_reset();   /* disarm the pulse and drop any pending press */
+    sr_ctrl_test_reset_live_input();
+    s_test_gui_interactive = interactive;
+    ctrl_env(noinput, pad, period, width);
+    ctrl_drain(cpu);
+}
+
+/* Walkthrough B16: the "Test this PC" demos quit on START and first read the pad at vblank 2,
+ * and the headless bootstrap pulse (START for 4 vblanks every 240, from vblank 0) was also
+ * running in the real player, so they closed on their first frame. In a real window nothing
+ * may be synthesised unless the user asked; a headless host still gets the pulse. Driven
+ * through the production sampler (sr_vblank_tick -> h_CtrlButtons), not just the gate. */
+static void test_ctrl_pulse_never_synthesises_start_in_a_real_window(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();   /* no route or pad script: the env pulse is the only input source */
+    /* VCOUNT is monotonic across the whole selftest and the pulse is anchored to it, so give it
+     * back at the same phase (mod 240) it was found in: later cases depend on that phase. */
+    const uint32_t entry_vcount = sr_display_vcount();
+
+    /* --- a real window, nothing requested: no START, ever -------------------- */
+    ctrl_pulse_case(&cpu, 1, "", "", "", "");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "a real window suppresses the bootstrap pulse before the first live key");
+    expect(!sr_ctrl_test_live_input_seen(),
+           "the window gate does not fake a live-input latch");
+    expect(ctrl_start_samples_over(&cpu, 11u) == 0u,
+           "a real window with no live input sees no START at vblanks 0 to 10");
+    expect(ctrl_start_samples_over(&cpu, 480u) == 0u,
+           "and none across two full pulse periods either");
+
+    /* --- the same run headless (offscreen sink, dummy driver, acceptance): pulses */
+    ctrl_pulse_case(&cpu, 0, "", "", "", "");
+    expect(!sr_ctrl_test_pulse_suppressed(0u),
+           "a headless host keeps the bootstrap pulse enabled");
+    expect(ctrl_start_samples_over(&cpu, 11u) >= 1u,
+           "a headless host still gets its START within the first vblanks");
+
+    /* --- a real window where the user asked for the pulse by name ------------- */
+    static const char *const asks[][4] = {
+        { "", "0008", "", "" },   /* SR_PAD */
+        { "", "", "60", "" },     /* SR_PADPERIOD */
+        { "", "", "", "3" },      /* SR_PADWIDTH */
+    };
+    for (unsigned a = 0; a < sizeof asks / sizeof asks[0]; a++) {
+        ctrl_pulse_case(&cpu, 1, asks[a][0], asks[a][1], asks[a][2], asks[a][3]);
+        expect(!sr_ctrl_test_pulse_suppressed(0u),
+               "an explicit pulse knob keeps the pulse enabled in a real window");
+        expect(ctrl_start_samples_over(&cpu, 11u) >= 1u,
+               "an explicit pulse knob still delivers START in a real window");
+    }
+
+    /* --- SR_NOINPUT wins over an explicit request ------------------------------ */
+    ctrl_pulse_case(&cpu, 1, "1", "0008", "", "");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "SR_NOINPUT suppresses the pulse even when SR_PAD names it");
+    expect(ctrl_start_samples_over(&cpu, 11u) == 0u,
+           "and no START reaches the guest in that case either");
+
+    /* --- leave the fixture as it was found ------------------------------------- */
+    s_test_gui_interactive = 0;
+    ctrl_env("1", "", "", "");
+    while ((sr_display_vcount() - entry_vcount) % 240u) ctrl_tick(1u);
+    sr_route_reset();
+    sr_ctrl_test_reset_live_input();
+    ctrl_env("", "", "", "");
 }
 
 static void test_ctrl_read_buffer_contract(void) {
@@ -15512,10 +17392,48 @@ static void test_ctrl_read_buffer_contract(void) {
     ctrl_drain(&cpu);
     ctrl_tick(4u);
     ctrl_fill_guest(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
-    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
-           "a zero-buffer request reports zero buffers written");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer read is refused with INVALID_SIZE (issue #1390)");
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer peek is refused with INVALID_SIZE (issue #1390)");
     expect(ctrl_guest_all(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
            "a zero-buffer request writes no guest byte");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 4u) == 4u,
+           "a refused zero-buffer read leaves the sample ring unconsumed");
+
+    /* --- negative read and peek ------------------------------------------- *
+     * The Negative forms invert the button field (PSPSDK pspctrl.h): a held
+     * START reads as every bit set except START. The peek leaves the history
+     * for the read, which then delivers the same samples. */
+    expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_NEGATIVE) &&
+               sr_hle_test_is_registered(NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE),
+           "sceCtrlReadBufferNegative and sceCtrlPeekBufferNegative are registered");
+    ctrl_env("", "0008", "1", "1");
+    ctrl_drain(&cpu);
+    ctrl_tick(2u);
+    ctrl_fill_guest(CTRL_OK_BUF, 2u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE) == 2u &&
+               MEM_R32(CTRL_OK_BUF + 4u) == ~(uint32_t)CTRL_BTN_START &&
+               MEM_R32(CTRL_OK_BUF + CTRL_SAMPLE_BYTES + 4u) == ~(uint32_t)CTRL_BTN_START,
+           "a negative peek reports a held START as its cleared bit in every sample");
+    uint8_t neg_peeked[2u * CTRL_SAMPLE_BYTES];
+    memcpy(neg_peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(neg_peeked));
+    ctrl_fill_guest(CTRL_OK_BUF, 2u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_READ_BUFFER_NEGATIVE) == 2u &&
+               memcmp(neg_peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(neg_peeked)) == 0,
+           "a negative read delivers the samples the negative peek left unconsumed");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_READ_BUFFER_NEGATIVE) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer negative read is refused with INVALID_SIZE");
+    ctrl_env("1", "", "", "");
 
     /* --- span crossing the end of the arena -------------------------------- *
      * The base is writable and its first sample fits exactly; the second cannot.
@@ -15815,8 +17733,8 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
 
     /* Vector F: ZERO COUNT
      * Produce a sample at T = 4,000,000 us. Advance time to 4,500,000 us.
-     * Issue a zero-count read (nbufs = 0). The zero-count read must return 0,
-     * write no bytes, and must NOT create or restamp any sample.
+     * Issue a zero-count read (nbufs = 0). The zero-count read is refused with
+     * INVALID_SIZE (issue #1390), writes no bytes, and must NOT create or restamp any sample.
      * Advance time to 5,000,000 us and read the sample: its timestamp must
      * still be 4,000,000 us. */
     ctrl_drain(&cpu);
@@ -15824,8 +17742,8 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
     sr_ctrl_sample();
     s_vtime_us = 4500000u;
     ctrl_fill_guest(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
-    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
-           "Vector F: zero-count read reports 0");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "Vector F: zero-count read is refused with INVALID_SIZE");
     expect(ctrl_guest_all(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
            "Vector F: zero-count read writes no guest bytes");
     s_vtime_us = 5000000u;
@@ -17253,6 +19171,113 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+/* #1374: a blocking sceGeListSync / sceGeDrawSync on a stalled list waits until a
+ * producer thread advances the stall address (or a sceGeBreak(1) reset removes the
+ * list); the producer first sleeps longer than any one scheduler yield, so a sync
+ * that reports completion before the list completes is caught. */
+enum {
+    GSW_MAIN_ENTRY = 0x08a60000u,
+    GSW_PRODUCER_ENTRY = 0x08a60040u,
+    GSW_NAME = 0x08a60080u,
+    GSW_LIST = 0x08a61000u,
+    GSW_PRODUCER_DELAY_US = 5000u,
+};
+static uint32_t s_gsw_qid;
+static int s_gsw_reset;              /* producer resets the queue instead of advancing it */
+static unsigned s_gsw_producer_done;  /* producer finished advancing or resetting */
+static uint32_t s_gsw_list_rc, s_gsw_list_poll, s_gsw_draw_rc, s_gsw_draw_poll, s_gsw_reset_rc;
+static unsigned s_gsw_list_done_at_return, s_gsw_draw_done_at_return, s_gsw_reset_done_at_return;
+void sr_hle_test_ge_lists_reset(void);
+
+static uint32_t gsw_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0; c.r[5] = a1; c.r[6] = a2; c.r[7] = a3;
+    return sr_syscall(&c, nid);
+}
+
+static void gsw_producer_fn(CpuState *cpu) {
+    (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
+    if (s_gsw_reset) {
+        (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+    } else {
+        /* The guest writes the rest of the list, then moves the stall past it. */
+        MEM_W32(GSW_LIST, 0x0f000000u);       /* FINISH */
+        MEM_W32(GSW_LIST + 4u, 0x0c000000u);  /* END */
+        (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, s_gsw_qid, GSW_LIST + 8u, 0u, 0u);
+    }
+    s_gsw_producer_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+/* Enqueue an empty ring (stall == list) and start a producer that is less urgent
+ * than the caller, so it runs only once the caller blocks. */
+static void gsw_arm(int reset) {
+    MEM_W32(GSW_LIST, 0u);
+    MEM_W32(GSW_LIST + 4u, 0u);
+    s_gsw_reset = reset;
+    s_gsw_producer_done = 0u;
+    s_gsw_qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GSW_NAME, GSW_PRODUCER_ENTRY, 48u, 0x1000u);
+    (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);
+}
+
+static void gsw_main_fn(CpuState *cpu) {
+    gsw_arm(0);
+    s_gsw_list_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_list_done_at_return = s_gsw_producer_done;
+    s_gsw_list_poll = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 1u, 0u, 0u);
+
+    gsw_arm(0);
+    s_gsw_draw_rc = gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+    s_gsw_draw_done_at_return = s_gsw_producer_done;
+    s_gsw_draw_poll = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+
+    gsw_arm(1);
+    s_gsw_reset_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_reset_done_at_return = s_gsw_producer_done;
+    cpu->r[2] = 0u;
+}
+
+static void test_ge_blocking_sync_waits_for_stalled_list(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+    title_hle_write_cstr(GSW_NAME, "ge-producer");
+    sr_test_register_guest_fn(GSW_MAIN_ENTRY, gsw_main_fn);
+    sr_test_register_guest_fn(GSW_PRODUCER_ENTRY, gsw_producer_fn);
+    s_gsw_list_rc = s_gsw_list_poll = s_gsw_draw_rc = s_gsw_draw_poll = s_gsw_reset_rc = 0xdeadbeefu;
+    s_gsw_list_done_at_return = s_gsw_draw_done_at_return = s_gsw_reset_done_at_return = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(GSW_MAIN_ENTRY, 0u, 0u);
+
+    expect(s_gsw_list_rc == 0u && s_gsw_list_done_at_return == 1u,
+           "blocking sceGeListSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_list_poll == 0u,
+           "sceGeListSync(syncType=1) after the blocking return reads the list completed");
+    expect(s_gsw_draw_rc == 0u && s_gsw_draw_done_at_return == 1u,
+           "blocking sceGeDrawSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_draw_poll == 0u,
+           "sceGeDrawSync(1) after the blocking return reads no list busy");
+    expect(s_gsw_reset_rc == 0x80000100u && s_gsw_reset_done_at_return == 1u,
+           "blocking sceGeListSync wakes on a sceGeBreak(1) reset with the removed-list code");
+
+    /* Outside a waitable guest thread nothing can advance the list: refused, not completed. */
+    MEM_W32(GSW_LIST, 0u);
+    uint32_t qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeListSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeDrawSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 1u, 0u, 0u) == 3u,
+           "the refused blocking sync leaves the list stalled");
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+}
+
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
     const uint32_t second_list = list + 0x100u;
@@ -17507,6 +19532,415 @@ static void test_ge_break_continue(void) {
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
            "ListSync peek on a paused list the mode 1 break removed returns 0x80000100 (same rule)");
+}
+
+/* Opt-in GE completion timing (SR_GE_TIMING=1, hle.c + ge.c).  With the model on, a list that
+ * reached its END completes -- finish callback, DrawSync, ListSync -- only once the guest clock
+ * passes the time ge.c's GE model charges for it.  The expected times below are computed from
+ * the measured cells themselves: PSP-3000 (firmware 6.6x), CASE=ge-timing, PSP-GE-TIMING-001
+ * (PR #1321), issue #1296's third comment, all in bus clocks at the emulated bus clock. */
+extern void sr_hle_test_ge_timing(int on);
+#define GE_TIM_CELL_T0_LIST   1665.0  /* T0: empty list, enqueue to finish */
+#define GE_TIM_CELL_WORD      2.03    /* T1: one command word */
+#define GE_TIM_CELL_PRIM      58.0    /* one PRIM beyond its word */
+#define GE_TIM_CELL_THRU_TRI  18.3    /* T6: through-mode 1-pixel triangle */
+#define GE_TIM_CELL_POS_F32   6.1     /* T7: transformed vertex, position f32 */
+#define GE_TIM_CELL_INDEX16   38.9    /* T7: indexed (u16) transformed vertex */
+#define GE_TIM_CELL_COLOR     2.0     /* T8: + colour 8888 */
+#define GE_TIM_CELL_UV        4.05    /* T8: + uv f32 */
+#define GE_TIM_CELL_NORMAL    6.1     /* T8: + normal f32 */
+#define GE_TIM_CELL_ROW32(w)  (1.0 + 0.274 * (w))  /* T5: 8888 sprite row up to 32 px */
+#define GE_TIM_CELL_PX64      0.52    /* T5: 8888 row from 64 px, per pixel */
+enum {
+    GE_TIM_DL = 0x08938000u,
+    GE_TIM_DL2 = 0x08940000u,       /* room for long lists */
+    GE_TIM_VTX = 0x08960000u,
+    GE_TIM_IDX = 0x08968000u,
+    GE_TIM_INFO = 0x08939000u,
+    GE_TIM_FINISH_FN = 0x08a38000u,
+    GE_TIM_ENTRY = 0x08a38040u,
+    GE_TIM_FINISH_ARG = 0x0000abcdu,
+};
+static unsigned s_ge_tim_calls;
+static uint64_t s_ge_tim_fired_at[4];
+static uint32_t s_ge_tim_list[4];
+static uint32_t s_ge_tim_arg;
+static int s_ge_tim_intr_ctx;
+static uint32_t s_ge_tim_cbid;
+
+static void ge_tim_finish_fn(CpuState *cpu) {
+    if (s_ge_tim_calls < 4u) {
+        s_ge_tim_fired_at[s_ge_tim_calls] = s_vtime_us;
+        s_ge_tim_list[s_ge_tim_calls] = cpu->r[4];
+    }
+    s_ge_tim_calls++;
+    s_ge_tim_arg = cpu->r[5];
+    s_ge_tim_intr_ctx = sched_is_intr_context();
+    cpu->r[2] = 0u;
+}
+
+static void ge_tim_write_list(uint32_t base, unsigned nops) {
+    for (unsigned i = 0; i < nops; i++) MEM_W32(base + 4u * i, 0x00000000u); /* NOP */
+    MEM_W32(base + 4u * nops, 0x0f000000u);       /* FINISH */
+    MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
+}
+
+/* The guest time, in us, at which a list enqueued at `enq_us` and charged `run_clk` beyond the
+ * T0 list cost completes at `mhz`: each charge lands on the GE timeline to the nearest ns, and
+ * the completion is the first whole us at or after it. */
+static uint64_t ge_tim_expect_us(uint64_t enq_us, double run_clk, unsigned mhz) {
+    uint64_t ns = enq_us * 1000u + (uint64_t)(GE_TIM_CELL_T0_LIST * 1000.0 / mhz + 0.5);
+    if (run_clk > 0.0) ns += (uint64_t)(run_clk * 1000.0 / mhz + 0.5);
+    return (ns + 999u) / 1000u;
+}
+
+static uint32_t ge_tim_enqueue(CpuState *cpu, uint32_t list) {
+    cpu->r[4] = list;
+    cpu->r[5] = 0u;            /* no stall: the list runs to its END */
+    cpu->r[6] = s_ge_tim_cbid;
+    cpu->r[7] = 0u;
+    return sr_syscall(cpu, NID_SCE_GE_LIST_ENQUEUE);
+}
+
+static uint32_t ge_tim_sync(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    return sr_syscall(cpu, nid);
+}
+
+/* scePowerSetClockFrequency through the real handler. */
+static void ge_tim_set_clock(uint32_t pll, uint32_t cpu_mhz, uint32_t bus) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = pll;
+    cpu.r[5] = cpu_mhz;
+    cpu.r[6] = bus;
+    expect(sr_syscall(&cpu, NID_SCE_POWER_SET_CLOCK) == 0u, "GE timing: scePowerSetClockFrequency accepted");
+}
+
+static void ge_tim_setup(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
+    s_ge_tim_calls = 0;
+    memset(s_ge_tim_fired_at, 0, sizeof(s_ge_tim_fired_at));
+    memset(s_ge_tim_list, 0, sizeof(s_ge_tim_list));
+    s_ge_tim_arg = 0;
+    s_ge_tim_intr_ctx = 0;
+    MEM_W32(GE_TIM_INFO + 0u, 0u);                 /* signal func */
+    MEM_W32(GE_TIM_INFO + 4u, 0u);                 /* signal arg */
+    MEM_W32(GE_TIM_INFO + 8u, GE_TIM_FINISH_FN);   /* finish func */
+    MEM_W32(GE_TIM_INFO + 12u, GE_TIM_FINISH_ARG); /* finish arg */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GE_TIM_INFO;
+    s_ge_tim_cbid = sr_syscall(&cpu, NID_SCE_GE_SET_CALLBACK);
+}
+
+static void ge_tim_teardown(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = s_ge_tim_cbid;
+    (void)sr_syscall(&cpu, NID_SCE_GE_UNSET_CALLBACK);
+    sr_hle_test_ge_timing(0);
+    sr_hle_test_power_reset();
+    sr_test_guest_fn_reset();
+}
+
+/* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
+ * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
+static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
+    CpuState cpu;
+    char msg[256];
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    s_vtime_us = enq;
+    uint32_t qid = ge_tim_enqueue(&cpu, list);
+    s_vtime_us = due - 1u;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s is still drawing 1 us before %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 0u && ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u, msg);
+    s_vtime_us = due;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+}
+
+/* A display-list builder for the measured-cell lists. */
+static uint32_t *s_ge_tim_dl;
+static unsigned s_ge_tim_words;
+static void ge_tim_cmd(uint32_t cmd, uint32_t data) {
+    s_ge_tim_dl[s_ge_tim_words++] = (cmd << 24) | (data & 0x00FFFFFFu);
+}
+/* Common state: framebuffer 0x04000000 / 512 / 8888, full-screen scissor, no clear, depth,
+ * texture, lighting or culling; vertices at GE_TIM_VTX, indices at GE_TIM_IDX. */
+static void ge_tim_begin_list(uint32_t base) {
+    s_ge_tim_dl = (uint32_t *)SR_HOST(base);
+    s_ge_tim_words = 0;
+    ge_tim_cmd(0x13, 0);                                    /* OFFSETADDR */
+    ge_tim_cmd(0x10, (GE_TIM_VTX >> 8) & 0x000F0000u);      /* BASE */
+    ge_tim_cmd(0x9C, 0);                                    /* FBP = 0x04000000 */
+    ge_tim_cmd(0x9D, 512u | (0x04000000u >> 8));            /* FBW = 512 */
+    ge_tim_cmd(0xD2, 3);                                    /* FBFMT = 8888 */
+    ge_tim_cmd(0xD4, 0);                                    /* SCISSOR1 = (0,0) */
+    ge_tim_cmd(0xD5, 479u | (271u << 10));                  /* SCISSOR2 = (479,271) */
+    ge_tim_cmd(0xD3, 0);                                    /* CLEARMODE off */
+    ge_tim_cmd(0x23, 0);                                    /* ZTESTENABLE off */
+    ge_tim_cmd(0x1E, 0);                                    /* TEXTUREMAPENABLE off */
+    ge_tim_cmd(0x17, 0);                                    /* LIGHTINGENABLE off */
+    ge_tim_cmd(0x1D, 0);                                    /* CULLFACEENABLE off */
+    ge_tim_cmd(0x01, GE_TIM_VTX & 0x00FFFFFFu);             /* VADDR */
+    ge_tim_cmd(0x02, GE_TIM_IDX & 0x00FFFFFFu);             /* IADDR */
+}
+/* FINISH and END are part of the T0 list cost; returns the charged words before them. */
+static unsigned ge_tim_end_list(void) {
+    unsigned words = s_ge_tim_words;
+    ge_tim_cmd(0x0F, 0);
+    ge_tim_cmd(0x0C, 0);
+    return words;
+}
+
+/* The thread half: DrawSync(0) and ListSync(qid, 0) delay the caller until the modelled time,
+ * and the finish callback has run by the time either returns. */
+static uint64_t s_ge_tim_t_enq[2], s_ge_tim_t_ret[2];
+static uint32_t s_ge_tim_peek_list, s_ge_tim_peek_draw, s_ge_tim_rc[2];
+static unsigned s_ge_tim_calls_at_peek, s_ge_tim_calls_at_ret[2];
+static unsigned s_ge_tim_entry_done;
+
+static void ge_tim_entry_fn(CpuState *cpu) {
+    CpuState sc;
+    memset(&sc, 0, sizeof(sc));
+    s_ge_tim_t_enq[0] = s_vtime_us;
+    uint32_t qid = ge_tim_enqueue(&sc, GE_TIM_DL);
+    s_ge_tim_calls_at_peek = s_ge_tim_calls;
+    s_ge_tim_peek_list = ge_tim_sync(&sc, NID_SCE_GE_LIST_SYNC, qid, 1u);
+    s_ge_tim_peek_draw = ge_tim_sync(&sc, NID_SCE_GE_DRAW_SYNC, 1u, 0u);
+    s_ge_tim_rc[0] = ge_tim_sync(cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u);
+    s_ge_tim_t_ret[0] = s_vtime_us;
+    s_ge_tim_calls_at_ret[0] = s_ge_tim_calls;
+
+    memset(&sc, 0, sizeof(sc));
+    s_ge_tim_t_enq[1] = s_vtime_us;
+    qid = ge_tim_enqueue(&sc, GE_TIM_DL2);
+    s_ge_tim_rc[1] = ge_tim_sync(cpu, NID_SCE_GE_LIST_SYNC, qid, 0u);
+    s_ge_tim_t_ret[1] = s_vtime_us;
+    s_ge_tim_calls_at_ret[1] = s_ge_tim_calls;
+    s_ge_tim_entry_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+/* MUTANT: the synthetic placeholder model this replaced (2000 ns per list, 6 ns per word, 30 ns
+ *   per vertex, 1.5 ps per pixel of primitive area) completes every list below early, so the
+ *   "still drawing 1 us before" and "completes at" checks fail; converting clocks at a fixed
+ *   111 MHz instead of the emulated bus clock fails the 166 MHz checks; dropping the T0 list
+ *   cost, the PRIM cost, a vertex term or the span-width fill term fails the matching cell. */
+static void test_ge_completion_timing(void) {
+    CpuState cpu;
+
+    /* Default (model off): the list completes inside sceGeListEnQueue, as before. */
+    ge_tim_setup();
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
+           "GE timing off: the finish callback runs inside sceGeListEnQueue");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing off: the syncs read the list as complete at once");
+    ge_tim_teardown();
+
+    /* T0 at the boot bus clock (111 MHz): an empty list is 1665 clk = 15 us. */
+    ge_tim_setup();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(1000u, 0.0, 111u) == 1015u,
+           "GE timing: an empty list is 1665 bus clk = 15 us at 111 MHz (T0)");
+    s_vtime_us = 1000u;
+    memset(&cpu, 0, sizeof(cpu));
+    qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect((qid & 0xff000000u) == 0x35000000u, "GE timing: the list is queued");
+    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback inside sceGeListEnQueue");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u,
+           "GE timing: the ListSync peek reads the list as drawing (2, measured C3)");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
+           "GE timing: the DrawSync peek reads the GE as drawing (2, measured C3)");
+    s_vtime_us = 1014u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback 1 us before the T0 time");
+    s_vtime_us = 1015u;
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
+           "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+           "GE timing: the empty list's finish callback runs at 15 us");
+    expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
+           "GE timing: the callback runs in interrupt context with its registered argument");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing: both peeks read 0 once the interrupt is handled");
+    s_vtime_us = 50000u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u, "GE timing: a completed list's callback never runs again");
+
+    /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
+    s_ge_tim_calls = 0;
+    s_vtime_us = 60000u;
+    uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    s_vtime_us = 60015u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
+           "GE timing: the first list completes after its own 15 us");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
+           "GE timing: the second list is still drawing behind it");
+    s_vtime_us = 60029u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
+    s_vtime_us = 60030u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+           "GE timing: the second list completes 15 us after the first");
+
+    /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 70000u,
+                             ge_tim_expect_us(70000u, 1000.0 * GE_TIM_CELL_WORD, 111u),
+                             "a 1000-word NOP list at 111 MHz");
+
+    /* T7/T8: transformed vertices.  999 vertices that all sit at the origin draw nothing, so
+     * the cost is the words, the PRIM and the vertex work alone. */
+    memset(SR_HOST(GE_TIM_VTX), 0, 0x8000u);
+    memset(SR_HOST(GE_TIM_IDX), 0, 0x1000u);
+    static const struct {
+        uint32_t vtype;
+        uint32_t prim;
+        double per_vertex;
+        const char *what;
+    } vcell[] = {
+        { 3u << 7, 3u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a triangle list" },
+        { 3u << 7, 4u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a strip" },
+        { (3u << 0) | (7u << 2) | (3u << 5) | (3u << 7), 3u,
+          GE_TIM_CELL_POS_F32 + GE_TIM_CELL_COLOR + GE_TIM_CELL_UV + GE_TIM_CELL_NORMAL,
+          "999 vertices with colour 8888, uv f32 and normal f32" },
+        { (3u << 7) | (2u << 11), 3u, GE_TIM_CELL_INDEX16, "999 indexed (u16) f32 vertices" },
+    };
+    for (unsigned c = 0; c < sizeof vcell / sizeof vcell[0]; c++) {
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, vcell[c].vtype);
+        ge_tim_cmd(0x04, (vcell[c].prim << 16) | 999u);
+        unsigned words = ge_tim_end_list();
+        double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 999.0 * vcell[c].per_vertex;
+        uint64_t enq = 100000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), vcell[c].what);
+    }
+
+    /* T6: 300 through-mode one-pixel triangles cost 18.3 clk each. */
+    for (unsigned t = 0; t < 300u; t++) {
+        uint32_t v = GE_TIM_VTX + t * 18u;          /* three s16 xyz vertices, stride 6 */
+        uint16_t x = (uint16_t)(t % 400u), y = (uint16_t)(2u * (t / 400u));
+        MEM_W16(v + 0u, x);       MEM_W16(v + 2u, y);       MEM_W16(v + 4u, 0u);
+        MEM_W16(v + 6u, x + 1u);  MEM_W16(v + 8u, y);       MEM_W16(v + 10u, 0u);
+        MEM_W16(v + 12u, x);      MEM_W16(v + 14u, y + 1u); MEM_W16(v + 16u, 0u);
+    }
+    ge_tim_begin_list(GE_TIM_DL2);
+    ge_tim_cmd(0x12, (2u << 7) | (1u << 23));       /* s16 position, through mode */
+    ge_tim_cmd(0x04, (3u << 16) | 900u);
+    unsigned words = ge_tim_end_list();
+    double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 300.0 * GE_TIM_CELL_THRU_TRI;
+    ge_tim_expect_completion(GE_TIM_DL2, 200000u, ge_tim_expect_us(200000u, run, 111u),
+                             "300 through-mode one-pixel triangles");
+
+    /* T5: 8888 fill by span width.  256x256 tiled with eight 32x256 sprites is 256 rows of
+     * 1 + 0.274*32 clk per sprite (the measured 180 us at 111 MHz); with four 64x256 sprites
+     * it is 0.52 clk/px (about 305 us).  The two vertices of a sprite overlap its fill. */
+    static const struct { unsigned w; double fill_us; const char *what; } scell[] = {
+        { 32u, 180.0, "256x256 tiled with 32x256 8888 sprites" },
+        { 64u, 305.0, "256x256 tiled with 64x256 8888 sprites" },
+    };
+    for (unsigned c = 0; c < sizeof scell / sizeof scell[0]; c++) {
+        unsigned n = 256u / scell[c].w;
+        for (unsigned i = 0; i < n; i++) {
+            uint32_t v = GE_TIM_VTX + i * 12u;
+            MEM_W16(v + 0u, (uint16_t)(i * scell[c].w));        MEM_W16(v + 2u, 0u);   MEM_W16(v + 4u, 0u);
+            MEM_W16(v + 6u, (uint16_t)((i + 1u) * scell[c].w)); MEM_W16(v + 8u, 256u); MEM_W16(v + 10u, 0u);
+        }
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, (2u << 7) | (1u << 23));   /* s16 position, through mode */
+        ge_tim_cmd(0x04, (6u << 16) | (2u * n));
+        words = ge_tim_end_list();
+        double row = scell[c].w <= 32u ? GE_TIM_CELL_ROW32(scell[c].w) : GE_TIM_CELL_PX64 * scell[c].w;
+        double fill = (double)n * 256.0 * row;
+        expect(fill / 111.0 > scell[c].fill_us - 3.0 && fill / 111.0 < scell[c].fill_us + 3.0,
+               "GE timing: the sprite cell's fill is the measured microseconds at 111 MHz");
+        run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + fill;
+        uint64_t enq = 300000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), scell[c].what);
+    }
+
+    /* The GE clock is the bus clock: at 333/166 every cost is 0.665x.  An empty list is
+     * 1665 clk = 10.03 us at 166 MHz, and the 1000-word NOP list scales the same way. */
+    ge_tim_set_clock(333u, 333u, 166u);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(400000u, 0.0, 166u) == 400011u,
+           "GE timing: an empty list is 1665 bus clk = 10.03 us at 166 MHz");
+    ge_tim_expect_completion(GE_TIM_DL, 400000u, 400011u, "an empty list at 166 MHz");
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 410000u,
+                             ge_tim_expect_us(410000u, 1000.0 * GE_TIM_CELL_WORD, 166u),
+                             "a 1000-word NOP list at 166 MHz");
+    ge_tim_set_clock(222u, 222u, 111u);
+
+    /* A reset (sceGeBreak(1)) cancels a drawing list: its callback never runs. */
+    s_ge_tim_calls = 0;
+    s_vtime_us = 500000u;
+    qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_BREAK, 1u, 0u) == 0u, "GE timing: the reset returns 0");
+    s_vtime_us = 510000u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 0u, "GE timing: a cancelled drawing list fires no callback");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing: the GE is idle after the reset");
+    ge_tim_teardown();
+
+    /* Model on, on a thread: the blocking syncs delay the caller until the modelled time and
+     * return after the finish callback (C2, C6).  The exact completion times are pinned above;
+     * here an idle turbo scheduler advances by whole VBLANK periods before it reaches a nearer
+     * deadline, so only "not early, and the callback first" is the model's claim. */
+    ge_tim_setup();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    memset(s_ge_tim_t_enq, 0, sizeof(s_ge_tim_t_enq));
+    memset(s_ge_tim_t_ret, 0, sizeof(s_ge_tim_t_ret));
+    memset(s_ge_tim_rc, 0xff, sizeof(s_ge_tim_rc));
+    memset(s_ge_tim_calls_at_ret, 0, sizeof(s_ge_tim_calls_at_ret));
+    s_ge_tim_peek_list = s_ge_tim_peek_draw = 0xffffffffu;
+    s_ge_tim_calls_at_peek = 99u;
+    s_ge_tim_entry_done = 0u;
+    sr_test_register_guest_fn(GE_TIM_ENTRY, ge_tim_entry_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(GE_TIM_ENTRY, 0u, 0u);
+
+    uint64_t due0 = ge_tim_expect_us(s_ge_tim_t_enq[0], 0.0, 111u);
+    uint64_t due1 = ge_tim_expect_us(s_ge_tim_t_enq[1], 1000.0 * GE_TIM_CELL_WORD, 111u);
+    expect(s_ge_tim_entry_done == 1u, "GE timing: the waiting thread finished");
+    expect(s_ge_tim_calls_at_peek == 0u && s_ge_tim_peek_list == 2u && s_ge_tim_peek_draw == 2u,
+           "GE timing: on a thread the list is drawing right after the enqueue");
+    expect(s_ge_tim_rc[0] == 0u && s_ge_tim_t_ret[0] >= due0,
+           "GE timing: sceGeDrawSync(0) returns only after the T0 time");
+    expect(s_ge_tim_calls_at_ret[0] == 1u && s_ge_tim_fired_at[0] >= due0,
+           "GE timing: the finish callback ran, not before the T0 time, before DrawSync returned");
+    expect(s_ge_tim_rc[1] == 0u && s_ge_tim_t_ret[1] >= due1,
+           "GE timing: sceGeListSync(qid, 0) returns only after the 1000-word list's time");
+    expect(s_ge_tim_calls_at_ret[1] == 2u && s_ge_tim_fired_at[1] >= due1,
+           "GE timing: the second callback ran, not before its modelled time, before ListSync returned");
+    ge_tim_teardown();
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
@@ -18287,12 +20721,156 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
 }
 
 /* Hardware measured sceDmacTryMemcpy matching the blocking form for every
- * single-caller size tested, while the multi-threaded campaign observed BUSY
- * during active DMA. The production runtime still has no active-transfer
- * state, so no BUSY result is fabricated here. */
+ * single-caller size tested. These calls have no current guest thread, so they
+ * take the synchronous copy; the cross-thread BUSY and wait cells are covered
+ * by test_dmac_active_transfer_across_threads below. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");
+}
+
+/* ---- sceDmac active transfer across two guest threads (#303) ----------------
+ *
+ * The PSP-3000 / 6.6.1 dma-concurrency probe (PSP-DMAC-001, 64/64 for each
+ * combination): a priority-0x10 thread starts a transfer and, outranking the
+ * priority-0x20 main thread, runs at once and blocks inside the call; the main
+ * thread then makes the second call. A Try made while the first transfer is
+ * pending returns BUSY (0x80000021); a blocking call made then waits for it and
+ * returns 0; the first call returns 0 in every combination.
+ *
+ * The production scheduler loop (sched_run) runs both guest threads, created
+ * and started through the production ThreadMan NIDs, so every wait here is a
+ * real scheduler block and wake. The transfer's guest-time duration is
+ * unmeasured, so only the measured ordering is asserted. */
+enum {
+    DMAC_CC_MAIN_ENTRY = 0x08a30000u,
+    DMAC_CC_FIRST_ENTRY = 0x08a30040u,
+    DMAC_CC_FIRST_NAME = 0x08a30100u,
+    DMAC_CC_SRC = 0x08600000u,
+    DMAC_CC_DST_FIRST = 0x08640000u,
+    DMAC_CC_DST_SECOND = 0x08680000u,
+    DMAC_CC_SIZE = 0x10000u,
+};
+#define SCE_DMAC_BUSY 0x80000021u
+
+static uint32_t s_dmac_cc_first_nid;
+static uint32_t s_dmac_cc_second_nid;
+static uint32_t s_dmac_cc_first_uid;
+static uint32_t s_dmac_cc_first_ret;
+static uint32_t s_dmac_cc_second_ret;
+static uint32_t s_dmac_cc_join_ret;
+static int s_dmac_cc_first_entered;
+static int s_dmac_cc_first_returned;
+static int s_dmac_cc_pending_at_second;     /* first entered, not returned, at the second call */
+static int s_dmac_cc_first_done_at_second;  /* first had returned when the second call returned */
+static int s_dmac_cc_main_finished;
+
+static uint32_t dmac_cc_call(uint32_t nid, uint32_t dst) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = dst;
+    c.r[5] = DMAC_CC_SRC;
+    c.r[6] = DMAC_CC_SIZE;
+    return sr_syscall(&c, nid);
+}
+
+static void dmac_cc_first_fn(CpuState *cpu) {
+    s_dmac_cc_first_entered = 1;
+    s_dmac_cc_first_ret = dmac_cc_call(s_dmac_cc_first_nid, DMAC_CC_DST_FIRST);
+    s_dmac_cc_first_returned = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_main_fn(CpuState *cpu) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    title_hle_write_cstr(DMAC_CC_FIRST_NAME, "dmac-first");
+    c.r[4] = DMAC_CC_FIRST_NAME;
+    c.r[5] = DMAC_CC_FIRST_ENTRY;
+    c.r[6] = 0x10u;
+    c.r[7] = 0x4000u;
+    s_dmac_cc_first_uid = sr_syscall(&c, NID_SCE_KERNEL_CREATE_THREAD);
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    (void)sr_syscall(&c, NID_SCE_KERNEL_START_THREAD);   /* the stronger thread runs at once */
+
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_entered && !s_dmac_cc_first_returned;
+    s_dmac_cc_second_ret = dmac_cc_call(s_dmac_cc_second_nid, DMAC_CC_DST_SECOND);
+    s_dmac_cc_first_done_at_second = s_dmac_cc_first_returned;
+
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    s_dmac_cc_join_ret = sr_syscall(&c, hle_selftest_nid("sceKernelWaitThreadEnd"));
+    s_dmac_cc_main_finished = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_run(uint32_t first_nid, uint32_t second_nid, int second_blocks,
+                        const char *label) {
+    char msg[256];
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(DMAC_CC_MAIN_ENTRY, dmac_cc_main_fn);
+    sr_test_register_guest_fn(DMAC_CC_FIRST_ENTRY, dmac_cc_first_fn);
+    s_dmac_cc_first_nid = first_nid;
+    s_dmac_cc_second_nid = second_nid;
+    s_dmac_cc_first_uid = 0u;
+    s_dmac_cc_first_ret = s_dmac_cc_second_ret = s_dmac_cc_join_ret = 0xffffffffu;
+    s_dmac_cc_first_entered = s_dmac_cc_first_returned = 0;
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_done_at_second = 0;
+    s_dmac_cc_main_finished = 0;
+    dmac_fill(DMAC_CC_SRC, DMAC_CC_SIZE);
+    dmac_clear(DMAC_CC_DST_FIRST, DMAC_CC_SIZE + 1u, 0u);
+    dmac_clear(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(DMAC_CC_MAIN_ENTRY, 0u, 0u);
+
+    snprintf(msg, sizeof msg, "%s: both guest threads ran to completion under sched_run", label);
+    expect(s_dmac_cc_main_finished && s_dmac_cc_first_uid >= 0x110u &&
+               s_dmac_cc_first_uid < 0x80000000u && s_dmac_cc_join_ret == 0u, msg);
+    snprintf(msg, sizeof msg,
+             "PSP %s: the first caller had entered and not returned when the second call began",
+             label);
+    expect(s_dmac_cc_pending_at_second, msg);
+    if (second_blocks) {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a blocking call made while another thread's transfer is pending returns 0",
+                 label);
+        expect(s_dmac_cc_second_ret == 0u, msg);
+        snprintf(msg, sizeof msg,
+                 "PSP %s: the blocking call waits and returns only after the first transfer", label);
+        expect(s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "PSP %s: the waiting call then performs its own full copy", label);
+        expect(dmac_span_matches(DMAC_CC_DST_SECOND, DMAC_CC_SIZE, 0u) &&
+                   MEM_R8(DMAC_CC_DST_SECOND + DMAC_CC_SIZE) == 0u, msg);
+    } else {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a Try made while another thread's transfer is pending returns BUSY "
+                 "(0x80000021)", label);
+        expect(s_dmac_cc_second_ret == SCE_DMAC_BUSY, msg);
+        snprintf(msg, sizeof msg, "PSP %s: BUSY is returned while the first transfer is pending",
+                 label);
+        expect(!s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "runtime %s: a BUSY Try copies nothing (unmeasured on PSP)",
+                 label);
+        expect(dmac_span_is(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u), msg);
+    }
+    snprintf(msg, sizeof msg, "PSP %s: the first call returns 0 after its full copy", label);
+    expect(s_dmac_cc_first_returned && s_dmac_cc_first_ret == 0u &&
+               dmac_span_matches(DMAC_CC_DST_FIRST, DMAC_CC_SIZE, 0u) &&
+               MEM_R8(DMAC_CC_DST_FIRST + DMAC_CC_SIZE) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: no transfer window outlives its threads", label);
+    expect(s_xfer_obj == 0u, msg);
+    sr_test_guest_fn_reset();
+}
+
+static void test_dmac_active_transfer_across_threads(void) {
+    dmac_cc_run(NID_SCE_DMAC_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-memcpy-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-try-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_MEMCPY, 1, "concurrent-try-memcpy");
 }
 
 static void test_display_framebuf_latch(void) {
@@ -18599,6 +21177,133 @@ static void test_atrac_stream_ring_wrap(void) {
            "streamed context releases cleanly");
 }
 
+/* ---- issue #1291: a streamed reset continues from the guest's refill ----
+ *
+ * A title hands sceAtracSetData its streaming ring, then starts playback the
+ * PSPSDK way: sceAtracGetBufferInfoForResetting(sample 0) says where to write
+ * and from which file offset, the guest writes that refill, and
+ * sceAtracResetPlayPosition passes the byte count it wrote. The guest then
+ * keeps its own file position (refill start + bytes written) and feeds the
+ * ring from it. The HLE used to ignore the refill: its ring and read offset
+ * stayed at the SetData state, so the frames after the refill mixed the stale
+ * ring with the guest's newer bytes, the decoder rejected them, and every
+ * later sceAtracDecodeData returned 0x80630006 while the guest retried.
+ * Synthetic terminator-unit frames as in the #32 fixture; no game data. */
+static void test_atrac_reset_refill_stream(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "#1291: streamed ATRAC3+ track accepted");
+    if (id >= 8u) return;
+
+    const uint32_t INFO = 0x08000300u;
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    const uint32_t REMAIN = 0x0800021cu;
+
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0u,
+           "#1291: sceAtracGetBufferInfoForResetting(sample 0) succeeds");
+    uint32_t wp = MEM_R32(INFO + 0u), writable = MEM_R32(INFO + 4u);
+    uint32_t minimum = MEM_R32(INFO + 8u), file_pos = MEM_R32(INFO + 12u);
+    expect(wp == AT_RINGBASE && file_pos == AT_DATAOFF,
+           "#1291: the reset refill starts at the ring start with the first frame");
+    expect(writable >= minimum && writable % AT_ALIGN == 0u,
+           "#1291: the reset refill offers whole frames, at least the minimum");
+
+    /* The guest writes the refill, then reports the byte count. */
+    for (uint32_t b = 0; b < writable; b++)
+        MEM_W8(wp + b, atring_file_byte(file_pos + b));
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0u,
+           "#1291: sceAtracResetPlayPosition accepts the refill it offered");
+
+    cpu.r[4] = id; cpu.r[5] = REMAIN;
+    expect(sr_syscall(&cpu, 0x9ae849a7u) == 0u &&
+               MEM_R32(REMAIN) == writable / AT_ALIGN - 1u,
+           "#1291: after the reset the remaining frames are the refill minus its state-loading frame");
+
+    uint32_t next = file_pos + writable;   /* the guest's own file position */
+    int read_offset_mismatch = 0, decode_failures = 0, decoded_frames = 0;
+    for (int i = 0; i < 30; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u,
+               "#1291: sceAtracGetStreamDataInfo succeeds after the reset");
+        uint32_t wb = MEM_R32(WB), ro = MEM_R32(RO);
+        if (next < AT_FILESIZE && wb > 0u) {
+            if (ro != next) read_offset_mismatch++;
+            uint32_t n = wb < AT_FILESIZE - next ? wb : AT_FILESIZE - next;
+            uint32_t at = MEM_R32(WP);
+            for (uint32_t b = 0; b < n; b++)
+                MEM_W8(at + b, atring_file_byte(next + b));
+            cpu.r[4] = id; cpu.r[5] = n; cpu.r[6] = 0u;
+            expect(sr_syscall(&cpu, 0x7db31251u) == 0u,
+                   "#1291: sceAtracAddStreamData accepts the continued feed");
+            next += n;
+        }
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+    expect(read_offset_mismatch == 0,
+           "#1291: the stream read offset continues after the reset refill");
+    expect(decode_failures == 0,
+           "#1291: no frame after a reset refill is refused by the decoder");
+    expect(decoded_frames == 30,
+           "#1291: every sceAtracDecodeData after the reset returns a full frame");
+
+    /* Counts outside the offered refill are refused and leave the context
+     * unchanged (codes from the public PPSSPP reference, not measured). */
+    uint32_t pos_before = 0, valid_before = 0, pos_after = 0, valid_after = 0;
+    (void)sr_hle_test_atrac_ring(id, &pos_before, NULL, NULL, NULL, &valid_before);
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill larger than the offered space is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = minimum - 1u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill below the required minimum is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630017u,
+           "#1291: a second-buffer count is refused when none was offered (BAD_SECOND_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = AT_FILEFR * 2048u + 1u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630015u,
+           "#1291: a reset past the end sample is refused (BAD_SAMPLE)");
+    cpu.r[4] = 0x7fu; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == ATRAC_ERROR_BAD_ATRACID,
+           "#1291: sceAtracResetPlayPosition on an invalid ID is refused (BAD_ATRACID)");
+    expect(sr_hle_test_atrac_ring(id, &pos_after, NULL, NULL, NULL, &valid_after) == 1 &&
+               pos_after == pos_before && valid_after == valid_before,
+           "#1291: refused resets leave the stream ring unchanged");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: streamed context releases cleanly");
+
+    /* An ID without data has no refill to describe or consume. */
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    uint32_t bare = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+    expect(bare < 8u, "#1291: sceAtracGetAtracID allocates an empty context");
+    if (bare >= 8u) return;
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0x80630010u,
+           "#1291: sceAtracGetBufferInfoForResetting without data is refused (NO_DATA)");
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630010u,
+           "#1291: sceAtracResetPlayPosition without data is refused (NO_DATA)");
+    cpu.r[4] = bare;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: empty context releases cleanly");
+}
+
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
  * fake-success handlers. Every leg enters the exact production NID mapping
  * through sr_syscall -- the same path a generated import stub takes -- and
@@ -18640,10 +21345,16 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
     td24c_wr32(base + 52u, fileSize - 56u);
 }
 
-/* One-frame, all-zero AT3 data is a synthetic silent frame. It exercises the
- * real FFmpeg decoder and HLE bookkeeping without title/game bytes. */
-static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
-    enum { FILE_SIZE = 380u, FRAME_SIZE = 304u };
+/* All-zero AT3 data with valid sound-unit headers is a synthetic silent
+ * frame. It exercises the real FFmpeg decoder and HLE bookkeeping without
+ * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
+ * fact chunk carries `factSamples` and the delay word `factDelay`. */
+enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
+                                    uint32_t frames, uint32_t factSamples,
+                                    uint32_t factDelay) {
+    const uint32_t FRAME_SIZE = TD1096_FRAME;
+    const uint32_t FILE_SIZE = TD1096_HEADER + frames * TD1096_FRAME;
     for (uint32_t i = 0; i < FILE_SIZE; i++)
         g_mem[base - 0x08000000u + i] = 0;
     td24c_wr32(base + 0u, 0x46464952u);           /* RIFF */
@@ -18666,14 +21377,35 @@ static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
     td24c_wr16(base + 50u, 0u);                   /* reserved */
     td24c_wr32(base + 52u, 0x74636166u);          /* fact */
     td24c_wr32(base + 56u, 8u);
-    td24c_wr32(base + 60u, ATRAC3_FRAME_SAMPLES);
-    td24c_wr32(base + 64u, 0u);                   /* synthetic, NOT_MEASURED */
+    td24c_wr32(base + 60u, factSamples);
+    td24c_wr32(base + 64u, factDelay);            /* fact delay word */
     td24c_wr32(base + 68u, 0x61746164u);          /* data */
-    td24c_wr32(base + 72u, FRAME_SIZE);
+    td24c_wr32(base + 72u, frames * FRAME_SIZE);
     /* Valid silent joint-stereo sound-unit headers: channel 1 starts with
      * 0x28; reverse-ordered channel 2 carries id 3 at the end of the frame. */
-    g_mem[base - 0x08000000u + 76u] = 0xa0u;
-    g_mem[base - 0x08000000u + 76u + FRAME_SIZE - 2u] = 0x0cu;
+    for (uint32_t f = 0; f < frames; f++) {
+        uint32_t frame = base - 0x08000000u + TD1096_HEADER + f * FRAME_SIZE;
+        g_mem[frame] = 0xa0u;
+        g_mem[frame + FRAME_SIZE - 2u] = 0x0cu;
+    }
+}
+static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
+    td1096_build_at3_frames(base, formatTag, 1u, ATRAC3_FRAME_SAMPLES, 0u);
+}
+/* One sceAtracDecodeData through the production NID with sentinel outputs. */
+static uint32_t td1096_decode(uint32_t id, uint32_t pcm, uint32_t outN,
+                              uint32_t outEnd, uint32_t outRemain) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = id;
+    cpu.r[5] = pcm;
+    cpu.r[6] = outN;
+    cpu.r[7] = outEnd;
+    cpu.r[8] = outRemain;
+    MEM_W32(outN, 0xdeadbeefu);
+    MEM_W32(outEnd, 0xdeadbeefu);
+    MEM_W32(outRemain, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
 }
 
 static void test_at3_synthetic_decode_bookkeeping(void) {
@@ -18735,12 +21467,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
     MEM_W32(OUT_N, 0xdeadbeefu);
     MEM_W32(OUT_END, 0xdeadbeefu);
     MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    /* Sentinel the whole stereo frame so the trimmed write extent is visible. */
+    for (uint32_t i = 0; i < ATRAC3_FRAME_SAMPLES * 2u; i++)
+        MEM_W16(PCM_OUT + i * 2u, 0xa5a5u);
     uint32_t decode_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    /* PSP-3000 measurement (fixtures/psp_oracle/README.md `at3-decode`, #1096):
+     * fact delay 0 gives a first call of 955 samples. */
     expect(decode_ret == 0u &&
-               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+               MEM_R32(OUT_N) == 955u &&
                MEM_R32(OUT_END) == 1u &&
                MEM_R32(OUT_REMAIN) == 0xffffffffu,
-           "AT3 DecodeData returns 1024 samples, final-frame flag, and all-data remain=-1");
+           "AT3 first DecodeData with fact delay 0 returns the measured 955 samples, final-frame flag, and all-data remain=-1");
+    expect(MEM_R16(PCM_OUT + (955u * 2u - 1u) * 2u) != 0xa5a5u &&
+               MEM_R16(PCM_OUT + 955u * 2u * 2u) == 0xa5a5u,
+           "AT3 first DecodeData writes exactly 955 stereo samples of PCM");
 
     cpu.r[4] = id;
     cpu.r[5] = PCM_OUT;
@@ -18757,6 +21497,91 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 DecodeData after the final frame returns 0x80630024 with outN=0");
     expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
            "AT3 fixture releases its decoder context");
+
+    /* First-call length against the 8-byte fact chunk's delay word, measured
+     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
+     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
+     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
+     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+    {
+        static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
+            {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
+            {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
+            {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
+            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+        };
+        for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+            uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                           0u, 0u, 0u);
+            expect(rid < 8u, "AT3 fact-delay leg allocates a context");
+            if (rid >= 8u) return;
+            td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES,
+                                    rows[r].delay);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
+                   "AT3 SetData accepts the fact-delay leg's track");
+            uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
+                   rows[r].what);
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
+        }
+    }
+
+    /* Buffer exhaustion, measured on a PSP-3000 on 2026-10-22 and 2026-10-24
+     * (#1096; fixtures/psp_oracle/README.md `at3-decode`): with more file data
+     * still to stream, the call after the last buffered frame returns
+     * 0x80630023 with 0 samples and end flag 0. The synthetic file has eight
+     * frames; SetData receives a four-frame prefix, leaving three decodable
+     * frames after the streamed ring's first-frame offset. */
+    {
+        enum { SRC = 0x08006000u, FRAMES = 8u, PREFIX_FRAMES = 4u,
+               WP = 0x08004200u, WB = 0x08004204u, RO = 0x08004208u };
+        const uint32_t prefix = TD1096_HEADER + PREFIX_FRAMES * TD1096_FRAME;
+        uint32_t sid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        expect(sid < 8u, "AT3 streamed leg allocates a context");
+        if (sid >= 8u) return;
+        td1096_build_at3_frames(SRC, 0x0270u, FRAMES,
+                                FRAMES * ATRAC3_FRAME_SAMPLES, 0u);
+        for (uint32_t b = 0; b < prefix; b++)
+            MEM_W8(TRACK + b, MEM_R8(SRC + b));
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
+               "AT3 SetData accepts a streamed prefix shorter than the file");
+
+        uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
+                   MEM_R32(OUT_REMAIN) == 2u,
+               "streamed AT3 first decode returns 955 samples with two frames remaining");
+        for (uint32_t left = 1u; left <= 2u; left++) {
+            ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                       MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
+                   "streamed AT3 later decodes return 1024 samples and count frames down");
+        }
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+
+        /* The exhaustion is not terminal: feeding the next frame resumes. */
+        CpuState cpu2;
+        memset(&cpu2, 0, sizeof(cpu2));
+        cpu2.r[4] = sid; cpu2.r[5] = WP; cpu2.r[6] = WB; cpu2.r[7] = RO;
+        expect(sr_syscall(&cpu2, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u &&
+                   MEM_R32(WB) >= TD1096_FRAME && MEM_R32(RO) == prefix,
+               "streamed AT3 ring offers room for the next file frame");
+        uint32_t wp = MEM_R32(WP), ro = MEM_R32(RO);
+        for (uint32_t b = 0; b < TD1096_FRAME; b++)
+            MEM_W8(wp + b, MEM_R8(SRC + ro + b));
+        expect(td24b_dispatch4(0x7db31251u, sid, TD1096_FRAME, 0u, 0u) == 0u,
+               "sceAtracAddStreamData accepts the next AT3 frame");
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode resumes after the ring is refilled");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, sid, 0u, 0u, 0u) == 0u,
+               "AT3 streamed leg releases its context");
+    }
 }
 
 static void test_td24c_atrac_info_batch(void) {
@@ -18898,6 +21723,182 @@ static void test_td24c_atrac_info_batch(void) {
         expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
                "streamed fixture releases its ATRAC context");
     }
+}
+
+/* ---- issue #1379: the halfway and MOut set calls get their own signatures ----
+ *
+ * Six sceAtrac NIDs were registered to h_AtracSetDataAndGetID(buf, bufSize).
+ * The ID-taking calls (sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize),
+ * sceAtracSetMOutData(id, buf, bufSize), sceAtracSetMOutHalfwayBuffer(id, buf,
+ * readSize, bufSize)) read the ID as a buffer address; the halfway calls lost
+ * the difference between the filled prefix (readSize) and the buffer
+ * (bufSize); the MOut calls accepted stereo tracks; and every *AndGetID call
+ * assumed ATRAC3+ whatever the fmt tag said. Every leg dispatches the
+ * production NID through sr_syscall. Fixtures are the synthetic #32 ring track
+ * (terminator-unit ATRAC3+ frames) and the synthetic #1096 AT3 frame; no game
+ * data. Error codes follow the public PPSSPP reference and are not measured on
+ * a PSP. */
+#define NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID       0x0fae370eu
+#define NID_SCE_ATRAC_SET_HALFWAY_BUFFER                  0x3f6e26b5u
+#define NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID            0x472e3825u
+#define NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER             0x5cf9d852u
+#define NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID  0x9cd7de03u
+#define NID_SCE_ATRAC_SET_MOUT_DATA                       0xf6837a1au
+#define AT1379_INCORRECT_READ_SIZE 0x80630013u
+#define AT1379_NOT_MONO            0x80630019u
+
+static void at1379_set_channels(uint16_t channels) {
+    fixture_wr16(&g_mem[AT_RINGBASE - 0x08000000u + 22u], channels);
+}
+/* A halfway buffer seen through sceAtracGetStreamDataInfo: the guest writes
+ * right after the filled prefix, may write the rest of the file, and the file
+ * read position is the prefix size. */
+static int at1379_halfway_info(uint32_t id, uint32_t readSize) {
+    enum { AT1379_WP = 0x08000200u, AT1379_WB = 0x08000204u, AT1379_RO = 0x08000208u };
+    MEM_W32(AT1379_WP, 0xdeadbeefu);
+    MEM_W32(AT1379_WB, 0xdeadbeefu);
+    MEM_W32(AT1379_RO, 0xdeadbeefu);
+    return td24b_dispatch4(NID_SCE_ATRAC_GET_STREAM_DATA_INFO, id, AT1379_WP, AT1379_WB, AT1379_RO) == 0u &&
+           MEM_R32(AT1379_WP) == AT_RINGBASE + readSize &&
+           MEM_R32(AT1379_WB) == AT_FILESIZE - readSize &&
+           MEM_R32(AT1379_RO) == readSize;
+}
+static uint32_t at1379_channels(uint32_t id) {
+    enum { AT1379_OUT = 0x08000220u };
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    if (td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, AT1379_OUT, 0u, 0u) != 0u)
+        return 0xffffffffu;
+    return MEM_R32(AT1379_OUT);
+}
+
+static void test_atrac_set_entry_points_1379(void) {
+    enum {
+        AT1379_OUT = 0x08000224u,
+        AT1379_DEC = 0x08000230u, AT1379_FIN = 0x08000234u, AT1379_REM = 0x08000238u,
+        AT1379_AT3_TRACK = 0x08002000u,
+        AT1379_AT3_SIZE = 380u,
+    };
+    const uint32_t READ = AT_BUFSIZE;      /* filled prefix of the track */
+    const uint32_t BUF = AT_FILESIZE;      /* buffer large enough for the file */
+    reset_fixture();
+    sr_hle_init();
+
+    /* 1. sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize) */
+    atring_build_header();
+    uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID,
+                                  AT_RINGBASE, READ, BUF, 0u);
+    expect(id < 8u, "#1379: sceAtracSetHalfwayBufferAndGetID allocates a context");
+    if (id >= 8u) return;
+    expect(at1379_halfway_info(id, READ),
+           "#1379: a halfway buffer writes after its filled prefix, up to the file end");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 0u,
+           "#1379: a halfway buffer needs no second buffer");
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_REMAIN_FRAME, id, AT1379_OUT, 0u, 0u) == 0u &&
+               MEM_R32(AT1379_OUT) == (READ - AT_DATAOFF) / AT_ALIGN,
+           "#1379: a halfway buffer has the frames of its filled prefix left");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = AT1379_DEC; cpu.r[7] = AT1379_FIN; cpu.r[8] = AT1379_REM;
+        MEM_W32(AT1379_DEC, 0xdeadbeefu);
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA) == 0u && MEM_R32(AT1379_DEC) == 2048u,
+               "#1379: a halfway buffer decodes its first frame");
+    }
+    for (uint32_t off = READ; off < AT_FILESIZE; off++)
+        g_mem[AT_RINGBASE - 0x08000000u + off] = atring_file_byte(off);
+    expect(td24b_dispatch4(0x7db31251u /* sceAtracAddStreamData */, id,
+                           AT_FILESIZE - READ, 0u, 0u) == 0u,
+           "#1379: the guest adds the rest of the file to the halfway buffer");
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_REMAIN_FRAME, id, AT1379_OUT, 0u, 0u) == 0u &&
+               MEM_R32(AT1379_OUT) == 0xffffffffu,
+           "#1379: a completed halfway buffer reports all data on memory");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+           "#1379: halfway context releases");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID,
+                           AT_RINGBASE, BUF + 1u, BUF, 0u) == AT1379_INCORRECT_READ_SIZE,
+           "#1379: a filled prefix larger than the buffer is refused (INCORRECT_READ_SIZE)");
+
+    /* 2. sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize) configures that ID. */
+    uint32_t got = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+    expect(got < 8u, "#1379: sceAtracGetAtracID allocates an ATRAC3+ context");
+    if (got >= 8u) return;
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) == 0u,
+           "#1379: sceAtracSetHalfwayBuffer configures the given ID");
+    expect(at1379_halfway_info(got, READ),
+           "#1379: sceAtracSetHalfwayBuffer keeps the prefix and buffer sizes apart");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, 0x7fu, AT_RINGBASE, READ, BUF) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "#1379: sceAtracSetHalfwayBuffer refuses an invalid ID (BAD_ATRACID)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, got, AT_RINGBASE, BUF + 1u, BUF) ==
+               AT1379_INCORRECT_READ_SIZE,
+           "#1379: sceAtracSetHalfwayBuffer refuses a prefix larger than the buffer");
+    expect(at1379_halfway_info(got, READ),
+           "#1379: a refused sceAtracSetHalfwayBuffer leaves the context unchanged");
+
+    /* 3. The MOut calls accept a mono track. */
+    atring_build_header();
+    at1379_set_channels(1u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u);
+    expect(id < 8u && at1379_channels(id) == 1u,
+           "#1379: sceAtracSetMOutDataAndGetID accepts a mono track");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID,
+                         AT_RINGBASE, READ, BUF, 0u);
+    expect(id < 8u && at1379_halfway_info(id, READ),
+           "#1379: sceAtracSetMOutHalfwayBufferAndGetID keeps the prefix and buffer sizes apart");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA, got, AT_RINGBASE, AT_BUFSIZE, 0u) == 0u &&
+               at1379_channels(got) == 1u,
+           "#1379: sceAtracSetMOutData configures the given ID with a mono track");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) == 0u &&
+               at1379_halfway_info(got, READ),
+           "#1379: sceAtracSetMOutHalfwayBuffer configures the given ID as a halfway buffer");
+
+    /* 4. ...and refuse a stereo one (NOT_MONO). The *AndGetID calls allocate
+     * nothing; the ID-taking calls leave the context unchanged. */
+    atring_build_header();
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutDataAndGetID refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID,
+                           AT_RINGBASE, READ, BUF, 0u) == AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutHalfwayBufferAndGetID refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA, got, AT_RINGBASE, AT_BUFSIZE, 0u) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutData refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutHalfwayBuffer refuses a stereo track (NOT_MONO)");
+    expect(at1379_channels(got) == 1u && at1379_halfway_info(got, READ),
+           "#1379: a NOT_MONO refusal leaves the configured context unchanged");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, got, 0u, 0u, 0u) == 0u,
+           "#1379: the configured context releases");
+    got = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+    expect(got == 0u, "#1379: the refused *AndGetID calls left every ID free");
+    if (got < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, got, 0u, 0u, 0u);
+
+    /* 5. The *AndGetID calls take the codec from the RIFF fmt tag. */
+    td1096_build_at3_track(AT1379_AT3_TRACK, 0x0270u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT1379_AT3_TRACK, AT1379_AT3_SIZE, 0u, 0u);
+    expect(id < 8u, "#1379: sceAtracSetDataAndGetID accepts an AT3 track (fmt tag 0x0270)");
+    if (id < 8u) {
+        MEM_W32(AT1379_OUT, 0xdeadbeefu);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, id, AT1379_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(AT1379_OUT) == ATRAC3_FRAME_SAMPLES,
+               "#1379: an fmt tag 0x0270 track gets an AT3 context (1024-sample frames)");
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = AT1379_DEC; cpu.r[7] = AT1379_FIN; cpu.r[8] = AT1379_REM;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA) == 0u,
+               "#1379: the AT3 context decodes through the AT3 decoder");
+        (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    }
+    td24c_build_track(AT1379_AT3_TRACK, 0x400u, 16000u);   /* fmt tag 1 (PCM) */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT1379_AT3_TRACK, 0x400u, 0u, 0u) ==
+               ATRAC_ERROR_UNKNOWN_FORMAT,
+           "#1379: sceAtracSetDataAndGetID refuses a RIFF whose fmt tag is not ATRAC");
 }
 
 /* TD-24 batch 4: production-dispatch regressions for 20 converted fake-success
@@ -20276,6 +23277,182 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
         selftest_msgpipe_waiter_resume(waiter);
 }
 
+#define NID_SCE_KERNEL_CANCEL_MSG_PIPE 0x349b864du
+#define NID_SCE_KERNEL_REFER_MSG_PIPE_STATUS 0x33be4024u
+#define MSGPIPE_SELFTEST_INFO_SIZE 56u
+
+static uint32_t selftest_msgpipe_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu = {0};
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_REFER_MSG_PIPE_STATUS);
+}
+
+static uint32_t selftest_msgpipe_cancel(uint32_t uid, uint32_t sendp, uint32_t receivep) {
+    CpuState cpu = {0};
+    cpu.r[4] = uid;
+    cpu.r[5] = sendp;
+    cpu.r[6] = receivep;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CANCEL_MSG_PIPE);
+}
+
+/* Issue #1381: sceKernelCancelMsgPipe and sceKernelReferMsgPipeStatus through
+ * production dispatch. Two blocked senders and one blocked receiver share a
+ * half-full pipe; Refer reports them, Cancel releases all three with
+ * WAIT_CANCEL, writes both counts and empties the buffer, and a timed waiter
+ * reports its remaining timeout on cancel and on delete (the public
+ * PSPAutotests threads/msgpipe cancel and delete cases). */
+static void test_msgpipe_cancel_and_refer(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    const uint32_t GUEST_INFO = 0x08050000u;
+    const uint32_t GUEST_COUNTS = 0x08060000u;
+    const uint32_t GUEST_TMO = 0x08070000u;
+    const uint32_t ARENA_END = 0x0c000000u;
+    MEM_W8(GUEST_NAME, 'c'); MEM_W8(GUEST_NAME + 1u, 'r'); MEM_W8(GUEST_NAME + 2u, 0u);
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(GUEST_BUF + i, (uint8_t)(0x50u + i));
+
+    TCB *owner = fixture_thread(0x13810u, TH_RUNNING, 32);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0x0100u, 4u);
+    expect(pipe != 0u && pipe < 0x80000000u, "cancel/refer Message Pipe fixture is created");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    /* Refer: lookup error, NULL and unmapped info, size 0, partial and full sizes. */
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(0x7ffffffeu, GUEST_INFO) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "ReferMsgPipeStatus is registered and rejects an unknown pipe");
+    expect(selftest_msgpipe_refer(pipe, 0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ReferMsgPipeStatus rejects a NULL info pointer");
+    MEM_W32(ARENA_END - 8u, MSGPIPE_SELFTEST_INFO_SIZE);
+    MEM_W32(ARENA_END - 4u, 0xa5a5a5a5u);
+    expect(selftest_msgpipe_refer(pipe, ARENA_END - 8u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
+           MEM_R32(ARENA_END - 8u) == MSGPIPE_SELFTEST_INFO_SIZE &&
+           MEM_R32(ARENA_END - 4u) == 0xa5a5a5a5u,
+           "ReferMsgPipeStatus checks the whole span before writing any byte");
+    for (uint32_t i = 0; i < 64u; i += 4u) MEM_W32(GUEST_INFO + i, 0xeeeeeeeeu);
+    MEM_W32(GUEST_INFO, 0u);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u && MEM_R32(GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 4u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus with size zero writes nothing");
+    MEM_W32(GUEST_INFO, 8u);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO) == MSGPIPE_SELFTEST_INFO_SIZE &&
+           MEM_R8(GUEST_INFO + 4u) == 'c' && MEM_R8(GUEST_INFO + 5u) == 'r' &&
+           MEM_R8(GUEST_INFO + 6u) == 0u && MEM_R8(GUEST_INFO + 7u) == 0u &&
+           MEM_R32(GUEST_INFO + 8u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus honours a short size field");
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 36u) == 0x0100u && MEM_R32(GUEST_INFO + 40u) == 4u &&
+           MEM_R32(GUEST_INFO + 44u) == 4u && MEM_R32(GUEST_INFO + 48u) == 0u &&
+           MEM_R32(GUEST_INFO + 52u) == 0u && MEM_R32(GUEST_INFO + 56u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus fills SceKernelMppInfo and stops at 56 bytes");
+
+    /* Half-fill the pipe, then park one receiver and two senders on it. */
+    CpuState cpu;
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "cancel fixture queues two bytes");
+    SelftestMsgPipeWaiterCtx receiver = {0}, sender = {0}, sender_cb = {0};
+    sender.toptr = GUEST_TMO;
+    MEM_W32(GUEST_TMO, 1000000u);
+    selftest_msgpipe_waiter_start_sized(&receiver, 0x13811u, 40, pipe, GUEST_OUT, 4u,
+                                        GUEST_RES, 0, 0);
+    selftest_msgpipe_waiter_start_sized(&sender, 0x13812u, 40, pipe, GUEST_BUF, 4u,
+                                        GUEST_RES + 4u, 1, 0);
+    selftest_msgpipe_waiter_start_sized(&sender_cb, 0x13813u, 40, pipe, GUEST_BUF, 3u,
+                                        GUEST_RES + 8u, 1, 1);
+    s_cur = owner_index;
+    expect(!receiver.returned && receiver.tcb->state == TH_WAIT_OBJ &&
+           !sender.returned && sender.tcb->state == TH_WAIT_OBJ &&
+           !sender_cb.returned && sender_cb.tcb->state == TH_WAIT_OBJ,
+           "a four-byte receive and two oversized sends block on the half-full pipe");
+    /* The kernel read the timeout at entry; poison the word to see the rewrite. */
+    MEM_W32(GUEST_TMO, 0xdeadbeefu);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 44u) == 2u && MEM_R32(GUEST_INFO + 48u) == 2u &&
+           MEM_R32(GUEST_INFO + 52u) == 1u,
+           "ReferMsgPipeStatus reports free bytes and both waiter counts");
+
+    /* Cancel: lookup error and output-pointer preflight leave waiters parked. */
+    expect(selftest_msgpipe_cancel(0x7ffffffeu, 0u, 0u) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "CancelMsgPipe is registered and rejects an unknown pipe");
+    expect(selftest_msgpipe_cancel(pipe, GUEST_COUNTS, ARENA_END - 2u) ==
+               SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "CancelMsgPipe rejects an unwritable receive-count pointer");
+    SrMsgPipeState state;
+    expect(receiver.tcb->state == TH_WAIT_OBJ && sender.tcb->state == TH_WAIT_OBJ &&
+           sender_cb.tcb->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 2u,
+           "a rejected CancelMsgPipe releases no waiter and keeps the buffer");
+
+    MEM_W32(GUEST_COUNTS, 0xffffffffu);
+    MEM_W32(GUEST_COUNTS + 4u, 0xffffffffu);
+    expect(selftest_msgpipe_cancel(pipe, GUEST_COUNTS, GUEST_COUNTS + 4u) == 0u,
+           "CancelMsgPipe succeeds with waiters on both sides");
+    expect(MEM_R32(GUEST_COUNTS) == 2u && MEM_R32(GUEST_COUNTS + 4u) == 1u,
+           "CancelMsgPipe writes the send and receive waiter counts");
+    expect(receiver.tcb->state == TH_READY && sender.tcb->state == TH_READY &&
+           sender_cb.tcb->state == TH_READY,
+           "CancelMsgPipe readies every sender and receiver waiter");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 0u &&
+           state.read_pos == 0u && state.write_pos == 0u,
+           "CancelMsgPipe empties the pipe buffer");
+    selftest_msgpipe_waiter_resume(&receiver);
+    selftest_msgpipe_waiter_resume(&sender);
+    selftest_msgpipe_waiter_resume(&sender_cb);
+    s_cur = owner_index;
+    expect(receiver.returned && receiver.ret == 0x800201a9u && MEM_R32(GUEST_RES) == 0u,
+           "cancelled receiver returns WAIT_CANCEL with no bytes");
+    expect(sender.returned && sender.ret == 0x800201a9u &&
+           sender_cb.returned && sender_cb.ret == 0x800201a9u,
+           "cancelled senders return WAIT_CANCEL");
+    expect(MEM_R32(GUEST_TMO) > 0u && MEM_R32(GUEST_TMO) <= 1000000u,
+           "cancelled timed sender reports its remaining timeout");
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 44u) == 4u && MEM_R32(GUEST_INFO + 48u) == 0u &&
+           MEM_R32(GUEST_INFO + 52u) == 0u,
+           "ReferMsgPipeStatus after cancel reports an empty pipe with no waiters");
+    expect(selftest_msgpipe_cancel(pipe, 0u, 0u) == 0u,
+           "CancelMsgPipe accepts NULL count pointers on an idle pipe");
+
+    SelftestMsgPipeWaiterCtx *all[] = {&receiver, &sender, &sender_cb};
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (all[i]->tcb && all[i]->tcb->coro) {
+            sr_coro_destroy(all[i]->tcb->coro);
+            all[i]->tcb->coro = NULL;
+        }
+    }
+    SelftestMsgPipeWaiterCtx deleted = {0};
+    deleted.toptr = GUEST_TMO + 4u;
+    MEM_W32(GUEST_TMO + 4u, 1000000u);
+    selftest_msgpipe_waiter_start_sized(&deleted, 0x13814u, 40, pipe, GUEST_OUT, 4u,
+                                        GUEST_RES + 12u, 0, 0);
+    MEM_W32(GUEST_TMO + 4u, 0xdeadbeefu);
+    s_cur = owner_index;
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    expect(!deleted.returned && sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "cancel/refer Message Pipe fixture deletes with a timed receiver parked");
+    selftest_msgpipe_waiter_resume(&deleted);
+    s_cur = owner_index;
+    expect(deleted.returned && deleted.ret == 0x800201b5u &&
+           MEM_R32(GUEST_TMO + 4u) > 0u && MEM_R32(GUEST_TMO + 4u) <= 1000000u,
+           "deleted timed receiver returns WAIT_DELETE and its remaining timeout");
+    if (deleted.tcb && deleted.tcb->coro) {
+        sr_coro_destroy(deleted.tcb->coro);
+        deleted.tcb->coro = NULL;
+    }
+}
+
 /* Priority-ordered Message Pipe wakes must still satisfy the requested transfer
  * amount. A stronger waiter for eight bytes is not eligible after a two-byte
  * edge, so the eligible lower-priority successor must be selected directly;
@@ -21621,6 +24798,49 @@ static void test_msgpipe_nested_callback_wait_scopes(void) {
     selftest_msgpipe_nested_fixture_end(&fixture);
 }
 
+/* Issue #1381: a callback-aware receive whose owner is running a callback is
+ * paused, not waiting. Its nested receive is the thread's one waiter: Refer and
+ * Cancel count the thread once, Cancel releases only the nested receive, and
+ * the outer receive resumes waiting on the emptied pipe. */
+static void test_msgpipe_cancel_skips_paused_callback_wait(void) {
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_INFO = 0x08050000u;
+    const uint32_t GUEST_COUNTS = 0x08060000u;
+    SelftestMsgPipeNestedFixture fixture;
+    SrMsgPipeState state;
+
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x13820u, 0x13821u,
+        NID_SCE_KERNEL_RECEIVE_MSG_PIPE, 8u, GUEST_OUT + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    s_cur = fixture.owner_index;
+    expect(!s_msgpipe_callback_nested_returned &&
+           fixture.waiter->state == TH_WAIT_OBJ,
+           "nested receive inside the outer receive's callback blocks");
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(fixture.pipe_uid, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 48u) == 0u && MEM_R32(GUEST_INFO + 52u) == 1u,
+           "ReferMsgPipeStatus counts a thread with a paused outer wait once");
+    MEM_W32(GUEST_COUNTS, 0xffffffffu);
+    MEM_W32(GUEST_COUNTS + 4u, 0xffffffffu);
+    expect(selftest_msgpipe_cancel(fixture.pipe_uid, GUEST_COUNTS, GUEST_COUNTS + 4u) == 0u &&
+           MEM_R32(GUEST_COUNTS) == 0u && MEM_R32(GUEST_COUNTS + 4u) == 1u &&
+           fixture.waiter->state == TH_READY,
+           "CancelMsgPipe counts and readies only the nested receive");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    s_cur = fixture.owner_index;
+    expect(s_msgpipe_callback_nested_returned &&
+           s_msgpipe_callback_nested_ret == 0x800201a9u,
+           "nested receive returns WAIT_CANCEL to its callback");
+    expect(!fixture.outer.returned && fixture.waiter->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(fixture.pipe_uid, &state) == 1 &&
+           state.count == 0u,
+           "paused outer receive resumes waiting on the emptied pipe");
+    selftest_msgpipe_nested_fixture_end(&fixture);
+}
+
 static uint32_t s_live_sema_obj;
 static uint32_t s_live_sema_ret;
 static int s_live_sema_returned;
@@ -22352,6 +25572,75 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
     expect(between != FAIL && between != 0u,
            "a fixed reservation above the lowest live stack succeeds");
+    s_fixture_loaded_end = 0x00400000u;
+}
+
+/* #1385: sceKernelGetModuleIdByAddress and sceKernelGetModuleId resolve through the
+ * live module records and the main image, not a constant shared by every module. */
+static void test_module_id_queries_resolve_owning_module(void) {
+    const uint32_t NID_GET_ID = 0xf0a26395u;
+    const uint32_t NID_GET_ID_BY_ADDR = 0xd8b73127u;
+    const uint32_t UNKNOWN_MODULE = 0x8002012eu;
+    const uint32_t A_BASE = 0x08a10000u, B_BASE = 0x08a20000u, SPAN = 0x10000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(main_id != 0u && (main_id & 0x80000000u) == 0u,
+           "an address in the main image resolves to the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08a00000u - 4u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == main_id,
+           "the main image's last word resolves to the same main module");
+    uint32_t thread_uid = sched_create_thread(0x2000u, 32, 0x8000u);
+    expect(thread_uid != 0u && thread_uid != main_id,
+           "the main module's UID is not another kernel object's");
+
+    uint32_t uid_a = sr_hle_test_register_module("late_a.prx", A_BASE + 0x70u, 0u);
+    uint32_t uid_b = sr_hle_test_register_module("late_b.prx", B_BASE + 0x70u, 0u);
+    expect(uid_a != 0u && uid_b != 0u &&
+               sr_hle_test_set_module_image(uid_a, A_BASE, A_BASE + SPAN, 0u) &&
+               sr_hle_test_set_module_image(uid_b, B_BASE, B_BASE + SPAN, 0u),
+           "two late modules are loaded at the same time");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE + 0x40u;
+    uint32_t got_a = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE;
+    uint32_t got_b = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(got_a == uid_a && got_b == uid_b && got_a != got_b && got_a != main_id,
+           "each late module's address resolves to its own distinct UID");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = A_BASE + 0x100u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == uid_a,
+           "sceKernelGetModuleId from late module code returns that module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x08804200u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == main_id,
+           "sceKernelGetModuleId from main-image code returns the main module");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "a null address is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an address outside every image is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == UNKNOWN_MODULE,
+           "sceKernelGetModuleId from code no module owns is refused");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_hle_test_unload_module(&cpu) == 0u, "the second late module is unloaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE + 0x40u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an unloaded module's range resolves to no module, not the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == uid_a,
+           "the module still loaded keeps its UID");
+
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
     s_fixture_loaded_end = 0x00400000u;
 }
 
@@ -24690,8 +27979,9 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
-        char msg[768];
+        extern int s_vm_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
@@ -24702,10 +27992,12 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ 1 callback-wakeup delay body "
+                 "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
-                 "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
+                 "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
+                 "= %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
-                 s_msgpipe_parks, expected_parks, s_parks);
+                 s_msgpipe_parks, s_vm_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -24926,8 +28218,16 @@ static int oracle_sha256_file(const char *path, char out[65]) {
  * different module. */
 static int oracle_running_executable(char *path, size_t capacity) {
     if (!path || capacity == 0 || capacity > (size_t)UINT32_MAX) return 0;
+#ifdef _WIN32
     const DWORD length = GetModuleFileNameA(NULL, path, (DWORD)capacity);
     return length != 0 && length < (DWORD)capacity;
+#else
+    /* The kernel's link to the running image, as hle.c's module directory reads it. */
+    const ssize_t length = readlink("/proc/self/exe", path, capacity);
+    if (length <= 0 || (size_t)length >= capacity) return 0;
+    path[length] = '\0';
+    return 1;
+#endif
 }
 
 static int oracle_field_safe(const char *value) {
@@ -26943,7 +30243,7 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     /* --- route program: a guest that never reads fails the run by name ---------- */
     sr_route_reset();
     ctrl_drain(&cpu);
-    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
     rt_write("PRESS START 4\nEND\n");
     expect(sr_route_load(RT_PATH) == 1, "a single-press route loads with a 30-vblank read budget");
     starve_batch(1u);
@@ -26952,12 +30252,12 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     starve_batch(2u);
     expect(sr_route_status() == RT_FAILED,
            "a press the guest never reads fails the route instead of vanishing");
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     sr_route_reset();
-    _putenv("SR_PADSCRIPT_READ_BUDGET=0");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "0");
     expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
            "a read budget that is not a vblank count >= 1 is refused at load");
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     remove(RT_PATH);
 
     /* --- auto-START pulse: one batch steps over its whole window ---------------- */
@@ -27032,7 +30332,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
     sr_route_reset();
     ctrl_drain(&cpu);
     starve_reset();
-    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
     rt_write("WIDTHS READS\nPRESS START 3\nEND\n");
     expect(sr_route_load(RT_PATH) == 1, "a three-read press loads with a 30-vblank read budget");
     starve_batch(1u);
@@ -27048,7 +30348,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
         expect(strstr(err, "the guest read the controller only 1 of the 3 reads START was held for") != NULL,
                "the failure names how many of its reads the guest made");
     }
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     remove(RT_PATH);
     sr_route_reset();
 }
@@ -27065,6 +30365,13 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
  * the observed process result. */
 #define EXITGAME_POISON 0xDEADBEEFu
 #define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
+#define EXITGAME_REENTERED 91  /* sceKernelExitGame ran the pending exit callback (#1392) */
+#define EXITGAME_NO_REQUEST 92 /* the exit-callback quit request could not be set up */
+
+static void exit_game_reentered_guest_fn(CpuState *cpu) {
+    (void)cpu;
+    _Exit(EXITGAME_REENTERED);
+}
 
 static int run_exit_game_poisoned(void) {
     CpuState cpu;
@@ -27074,6 +30381,19 @@ static int run_exit_game_poisoned(void) {
     s_cpu = &s_cpu_store;
     sched_init(&s_cpu_store);
     sr_hle_init();
+    /* A quit request leaves the registered exit callback pending, as when the guest's
+     * callback answers it with sceKernelExitGame. Measured under PSPLink, ExitGame does not run
+     * a registered exit callback, so it must end the process without servicing it (#1392). */
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, exit_game_reentered_guest_fn);
+    TCB *owner = fixture_thread(0x3430u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    if (cb == 0u || exit_request_register(cb) != 0u || sr_exit_request_quit() != 1 ||
+        !sr_thread_has_pending_callbacks(owner->uid))
+        return EXITGAME_NO_REQUEST;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = EXITGAME_POISON;   /* $a0 */
     cpu.r[5] = EXITGAME_POISON;   /* $a1 */
@@ -27102,6 +30422,7 @@ static int run_exit_game_poisoned(void) {
  * quoted command line, so the command line is built here.
  * ---------------------------------------------------------------------- */
 
+#ifdef _WIN32
 #define EXITGAME_SPAWN_CAP 4096
 
 /* Append *arg* to *out* quoted for a CreateProcess command line; returns the
@@ -27238,6 +30559,22 @@ static void exit_game_command_line_is_quoted(void) {
                                   L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe") == 0,
            "an undersized buffer is refused instead of truncated");
 }
+#else
+/* POSIX hands execv the arguments as a vector, so a spaced program path stays one argument
+ * and there is no command line to quote: the platform spawn seam starts the child. Returns
+ * the child's exit status, or -1 when it could not be started or did not exit normally. */
+static intptr_t exit_game_spawn_child(const char *self) {
+    const char *const argv[] = { self, "--exit-game-poisoned", NULL };
+    NkProcessHandle child;
+    if (!nk_platform_spawn_process(self, argv, NULL, NULL, NULL, &child)) return -1;
+    int status = nk_platform_wait_process(&child, -1);
+    nk_platform_close_process(&child);
+    return (intptr_t)status;
+}
+
+/* The quoting regression above is about the Win32 command line; POSIX builds none. */
+static void exit_game_command_line_is_quoted(void) { }
+#endif
 
 static void test_exit_game_ignores_argument_registers(const char *self) {
     intptr_t rc;
@@ -27249,6 +30586,10 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
     rc = exit_game_spawn_child(self);
     expect(rc != -1, "exit-game child process starts");
     if (rc == -1) return;
+    expect(rc != (intptr_t)EXITGAME_NO_REQUEST,
+           "exit-game child leaves a quit request's exit callback pending before ExitGame");
+    expect(rc != (intptr_t)EXITGAME_REENTERED,
+           "sceKernelExitGame does not run the pending exit callback (#1392)");
     expect(rc != (intptr_t)EXITGAME_RETURNED,
            "dispatching sceKernelExitGame terminates the process instead of returning");
     expect(((unsigned long long)rc & 0xffffffffull) != (unsigned long long)EXITGAME_POISON,
@@ -27304,7 +30645,7 @@ static void test_real_module_start_lifecycle(void) {
     /* -------------------------------------------------------------------------
      * Phase 1: Gate OFF (default / legacy behaviour)
      * ------------------------------------------------------------------------- */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     s_synth_start_calls = 0;
     s_synth_stop_calls = 0;
 
@@ -27345,7 +30686,7 @@ static void test_real_module_start_lifecycle(void) {
     /* -------------------------------------------------------------------------
      * Phase 2: Gate ON (real module_start / stop / unload lifecycle)
      * ------------------------------------------------------------------------- */
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_hle_test_module_reset();
     s_synth_start_calls = 0;
     s_synth_stop_calls = 0;
@@ -27471,7 +30812,7 @@ static void test_real_module_start_lifecycle(void) {
            "gate on: a module that could not stop cannot be unloaded");
 
     /* Clean up */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -27483,7 +30824,7 @@ static void test_prx_stop_entry_boundaries(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_test_register_guest_fn(SYNTH_MOD_START, synth_module_start_fn);
     sr_test_register_guest_fn(SYNTH_MOD_STOP, synth_module_stop_fn);
     s_synth_start_calls = 0;
@@ -27530,7 +30871,7 @@ static void test_prx_stop_entry_boundaries(void) {
     expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_ALREADY_LOADED,
            "untranslated-stop: module remains started after stop refusal");
 
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -27704,7 +31045,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     /* The real load path: the manifest binding this suite runs under declares one
      * module, so drive the production loader directly with a file it parses. */
@@ -27721,7 +31062,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
          * later test in an environment it was not written for. */
         remove(path_a);
         remove(path_b);
-        _putenv("SR_REAL_MODULE_START=0");
+        hle_test_setenv("SR_REAL_MODULE_START", "0");
         sr_test_guest_fn_reset();
         sr_hle_test_module_reset();
         return;
@@ -28040,7 +31381,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     remove(path_a);
     remove(path_b);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -28054,7 +31395,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     s_lifecycle_start_calls = 0;
     s_lifecycle_stop_calls = 0;
     expect(write_lifecycle_prx(path, 0x4444dddd),
@@ -28092,7 +31433,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
     uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
                                      LIFECYCLE_PATCH_OFF_A_1);
     expect(uid != 0, "host-skip: PRX reloads at its released address");
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid;
     expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
@@ -28111,7 +31452,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
            "host-skip: reloaded module unloads");
 
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -28130,7 +31471,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     expect(write_lifecycle_prx(path, 0x3333ccccu),
            "duplicate-base: synthetic module image written");
@@ -28186,7 +31527,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
            "duplicate-base: both handles' records are reclaimed");
 
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -28219,7 +31560,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
 static int s_stderr_saved_fd = -1;
 static int stderr_capture_begin(void) {
     fflush(stderr);
-    s_stderr_saved_fd = _dup(_fileno(stderr));
+    s_stderr_saved_fd = dup(fileno(stderr));
     if (s_stderr_saved_fd < 0) return 0;
     return freopen(HLE_BUILD_ROOT "/psmf_boundary_capture.txt", "w+", stderr) != NULL;
 }
@@ -28230,8 +31571,8 @@ static size_t stderr_capture_end(char *out, size_t capacity) {
     out[n] = '\0';
     clearerr(stderr);
     if (s_stderr_saved_fd >= 0) {
-        _dup2(s_stderr_saved_fd, _fileno(stderr));
-        _close(s_stderr_saved_fd);
+        dup2(s_stderr_saved_fd, fileno(stderr));
+        close(s_stderr_saved_fd);
         s_stderr_saved_fd = -1;
     }
     remove(HLE_BUILD_ROOT "/psmf_boundary_capture.txt");
@@ -28290,7 +31631,9 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
-    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
+    sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b01u, 32);
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
@@ -28322,7 +31665,7 @@ static void test_volatile_mem_unlock_states(void) {
     MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
     MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
-    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    cpu.r[4] = 0u; cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
     expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
            "VolatileMemTryLock while held leaves outputs unchanged");
@@ -28331,6 +31674,194 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
+    sr_hle_test_volatile_mem_reset();
+    s_cur = -1;
+}
+
+/* ---- #1383: a held volatile-memory lock blocks Lock and Unlock hands it on in FIFO order ----
+ *
+ * Production NIDs under the real scheduler: each waiter is a guest-thread coroutine whose Lock
+ * parks in a scheduler wait; Unlock completes the oldest live waiter's wait and writes its
+ * outputs. A Lock that can block is only ever entered on a waiter coroutine here, never on the
+ * scheduler's own. */
+#define VM_A_OUT     0x00250e10u   /* address output; the size output follows at +4 */
+#define VM_PROBE_OUT 0x00250e18u
+#define VM_SENTINEL  0x5a5a5a5au
+
+static uint32_t s_vm_waiter_out[3];
+static uint32_t s_vm_waiter_ret[3];
+static int s_vm_waiter_returned[3];
+static int s_vm_waiter_next;
+int s_vm_parks = 0;   /* waiter bodies that returned and parked; check_coroutine_lifecycle */
+
+static void vm_lock_waiter(void *arg) {
+    (void)arg;
+    int i = s_vm_waiter_next++;
+    CpuState cpu = {0};
+    cpu.r[5] = s_vm_waiter_out[i];
+    cpu.r[6] = s_vm_waiter_out[i] + 4u;
+    s_vm_waiter_ret[i] = sr_syscall(&cpu, NID_VM_LOCK);
+    s_vm_waiter_returned[i] = 1;
+    s_vm_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void vm_out_fill(uint32_t out) {
+    MEM_W32(out, VM_SENTINEL);
+    MEM_W32(out + 4u, VM_SENTINEL);
+}
+
+static int vm_out_holds_region(uint32_t out) {
+    return MEM_R32(out) == 0x08400000u && MEM_R32(out + 4u) == 0x00400000u;
+}
+
+static int vm_out_untouched(uint32_t out) {
+    return MEM_R32(out) == VM_SENTINEL && MEM_R32(out + 4u) == VM_SENTINEL;
+}
+
+static uint32_t vm_call(uint32_t nid, uint32_t a0, uint32_t out) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    cpu.r[5] = out;
+    cpu.r[6] = out ? out + 4u : 0u;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Queue n Lock callers (outputs at 0x00250e40 + 0x10 * i) behind the holder, oldest first, then
+ * make the holder current again. */
+static void vm_start_waiters(TCB **waiters, const int *priority, int n, uint32_t uid0,
+                             TCB *holder) {
+    s_vm_waiter_next = 0;
+    for (int i = 0; i < n; i++) {
+        s_vm_waiter_out[i] = 0x00250e40u + 0x10u * (uint32_t)i;
+        s_vm_waiter_ret[i] = 0xffffffffu;
+        s_vm_waiter_returned[i] = 0;
+        vm_out_fill(s_vm_waiter_out[i]);
+    }
+    for (int i = 0; i < n; i++)
+        waiters[i] = liveness_start_waiter(vm_lock_waiter, uid0 + (uint32_t)i, priority[i]);
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+}
+
+static void vm_run(TCB *t) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+}
+
+static void test_volatile_mem_lock_blocks_and_hands_off(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b10u, 40);
+    vm_out_fill(VM_A_OUT);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u && vm_out_holds_region(VM_A_OUT),
+           "VolatileMemLock on a free lock returns 0 and writes the region");
+
+    /* The second caller is stronger: FIFO order, not priority, picks the next holder. */
+    TCB *w[2];
+    const int prio[2] = { 30, 20 };
+    vm_start_waiters(w, prio, 2, 0x2b11u, holder);
+    expect(w[0]->coro && w[1]->coro && w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           !s_vm_waiter_returned[0] && !s_vm_waiter_returned[1],
+           "VolatileMemLock while held blocks each later caller in a scheduler wait (#1383)");
+    expect(w[0]->wait_obj == w[1]->wait_obj && sched_count_waiters(w[0]->wait_obj) == 2,
+           "both blocked Lock callers wait on the one volatile-memory object");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "a blocked VolatileMemLock writes neither output");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock while held still returns 0x802b0200 and writes nothing");
+
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u, "VolatileMemUnlock by the holder returns 0");
+    expect(w[0]->state == TH_READY && w[1]->state == TH_WAIT_OBJ,
+           "VolatileMemUnlock readies the oldest waiter only (FIFO, not priority)");
+    expect(vm_out_holds_region(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "VolatileMemUnlock writes the new holder's address and size outputs");
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "the lock stays held across the handoff");
+    vm_run(w[0]);
+    expect(s_vm_waiter_returned[0] && s_vm_waiter_ret[0] == 0u,
+           "the woken waiter's VolatileMemLock returns 0 holding the region");
+
+    s_cur = (int)(w[0] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[1]->state == TH_READY &&
+           vm_out_holds_region(s_vm_waiter_out[1]),
+           "the second holder's Unlock hands the lock to the next waiter");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0u,
+           "the last waiter's VolatileMemLock returns 0");
+    s_cur = (int)(w[1] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "VolatileMemUnlock with no waiter releases the lock");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "VolatileMemUnlock when free still returns 0x800201ae");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
+ * lock; terminating the thread that holds the lock leaves it held (the lock has no owning
+ * thread); a type other than 0 is refused by name and takes nothing. */
+static void test_volatile_mem_lock_departures_and_type(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b20u, 40);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u, "the first VolatileMemLock takes the lock");
+    TCB *w[3];
+    const int prio[3] = { 30, 30, 30 };
+    vm_start_waiters(w, prio, 3, 0x2b21u, holder);
+    expect(w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           w[2]->state == TH_WAIT_OBJ, "three Lock callers queue behind the holder");
+
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, w[0]->uid, 0u) == 0u,
+           "the oldest waiter is terminated and deleted while blocked");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_WCR_RELEASE_WAIT, w[1]->uid, 0u) == 0u && w[1]->state == TH_READY,
+           "sceKernelReleaseWaitThread releases the second waiter");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[2]->state == TH_READY,
+           "Unlock passes over the deleted and released waiters to the next live one");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]) &&
+           vm_out_holds_region(s_vm_waiter_out[2]),
+           "only the waiter handed the lock has its outputs written");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0x800201aau,
+           "the released waiter's VolatileMemLock returns WAIT_RELEASE without the lock");
+    vm_run(w[2]);
+    expect(s_vm_waiter_returned[2] && s_vm_waiter_ret[2] == 0u,
+           "the next live waiter's VolatileMemLock returns 0");
+
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_THREAD, w[2]->uid, 0u) == 0u,
+           "the thread holding the lock is terminated");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "terminating the holder leaves the lock held (it has no owning thread)");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "another thread's VolatileMemUnlock releases it");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemLock type 1 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock type 2 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "a refused type took no lock");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    liveness_finish_waiter(w[2]);
     sr_hle_test_volatile_mem_reset();
 }
 
@@ -28506,7 +32037,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     expect(write_lifecycle_prx(path, 0x1106aaaau), "late-objects: synthetic module image written");
     uint32_t uid = sr_hle_test_load_prx_image(path, LATE_OBJ_BASE, LATE_OBJ_EXPORT,
@@ -28514,7 +32045,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     expect(uid != 0, "late-objects: module image loads at its declared base");
     if (uid == 0) {
         remove(path);
-        _putenv("SR_REAL_MODULE_START=0");
+        hle_test_setenv("SR_REAL_MODULE_START", "0");
         sr_test_guest_fn_reset();
         sr_hle_test_module_reset();
         return;
@@ -28572,7 +32103,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
            "late-objects: callback was already removed with its owner thread");
     s_cur = -1;
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -28777,14 +32308,14 @@ static void test_flight_recorder_trace(void) {
     size_t bundle_size;
 
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_hle_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_hle_selftest.json");
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_PRX | SR_FLIGHT_CLASS_SCHED |
                              SR_FLIGHT_CLASS_FATAL,
                          4u);
     sr_hle_init();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
 
     first = fixture_thread(0x310u, TH_READY, 20);
     s_cur = (int)(first - s_tcb);
@@ -28904,7 +32435,7 @@ static void test_flight_recorder_trace(void) {
            "unsupported refusal event is retained");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static size_t flight_refusal_read_bundle(const char *path, char *bundle, size_t capacity) {
@@ -28928,7 +32459,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
 
     /* Refused calls, then a later fatal: the fatal is the terminal record. */
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_refusal_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_refusal_selftest.json");
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
@@ -29025,7 +32556,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "hang bundle names the hang terminal and the vblanks without a frame");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_fault_trigger(void) {
@@ -29037,7 +32568,7 @@ static void test_flight_recorder_fault_trigger(void) {
     FILE *bundle_file;
 
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_fault_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_fault_selftest.json");
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
     sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900000u, 0xdead0001u, 0u);
     sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900004u, 0xdead0002u, 0u);
@@ -29061,10 +32592,13 @@ static void test_flight_recorder_fault_trigger(void) {
            "first-exception bundle carries the fatal terminal with the fault kind");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_host_fault(void) {
+    /* The recorder stores the host code verbatim; this is the Win32 access-violation code
+     * driver.c's exception handler reports. */
+    const uint32_t access_violation = 0xc0000005u;
     const char *output = "flight_recorder_host_fault_selftest.json";
     char bundle[16384];
     SrFlightSnapshot snapshot;
@@ -29075,10 +32609,10 @@ static void test_flight_recorder_host_fault(void) {
     /* Fault inside guest memory: exactly one bundle whose fatal terminal names
      * the fault kind and carries the host exception code and guest address. */
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_host_fault_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_host_fault_selftest.json");
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
-    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012345u);
-    sr_flight_host_fault(0x08901238u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012349u);
+    sr_flight_host_fault(0x08901234u, access_violation, 0x08012345u);
+    sr_flight_host_fault(0x08901238u, access_violation, 0x08012349u);
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 1u && snapshot.retained == 1u,
            "host fault freezes the recorder after the first fault");
@@ -29086,13 +32620,13 @@ static void test_flight_recorder_host_fault(void) {
            "host fault triggers exactly one recorder dump");
     expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_FATAL &&
                snapshot.terminal_kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
-               snapshot.terminal_arg == (uint32_t)EXCEPTION_ACCESS_VIOLATION,
+               snapshot.terminal_arg == access_violation,
            "host fault terminal names the fault kind and carries the exception code");
     expect(sr_flight_event_count() == 1 && sr_flight_event_at(0, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_FAULT &&
                flight_event.kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
                flight_event.arg0 == 0x08901234u &&
-               flight_event.arg1 == (uint32_t)EXCEPTION_ACCESS_VIOLATION &&
+               flight_event.arg1 == access_violation &&
                flight_event.arg2 == 0x08012345u,
            "host fault event carries the guest pc and fault address");
     bundle[0] = '\0';
@@ -29109,7 +32643,7 @@ static void test_flight_recorder_host_fault(void) {
     /* Fault outside guest memory records address 0 and still dumps one bundle. */
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
-    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0u);
+    sr_flight_host_fault(0x08901234u, access_violation, 0u);
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
            "host fault outside guest memory still triggers one recorder dump");
@@ -29118,7 +32652,7 @@ static void test_flight_recorder_host_fault(void) {
            "host fault outside guest memory records address 0");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_ge_present_events(void) {
@@ -29826,8 +33360,7 @@ static uint32_t f0t_rename(const char *from, const char *to) {
 /* Sets or clears one environment variable in both views the runtime reads: the wide block that
  * sr_wide_env_alloc uses on Win32, and the CRT table that getenv reads. */
 static void f0t_set_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");
+    hle_test_setenv(name, value);
 }
 
 /* ---- The registry view of the font device (FONT_PLAN section 4) ----
@@ -30094,6 +33627,24 @@ static void test_flash0_latin_index_resolution(void) {
                legacy_source && strcmp(legacy_source, "user-imported") == 0 &&
                legacy_served_index == -2 && strstr(legacy_path, "nkltn.pgf") != NULL,
            "SR_FONTDIR at a legacy-only import cache still resolves all Latin indices");
+
+    /* #1300: two indices not resolved above, so each logs its own line (the driver reads them):
+     * index 7 has only the legacy import, and index 16 no import at all, only the project font. */
+    Flash0Sources project_sources;
+    SrFontRegistryInfo project_info;
+    memset(&project_sources, 0, sizeof(project_sources));
+    snprintf(project_sources.user_data_dir, sizeof(project_sources.user_data_dir), "%s/no-imports",
+             root);
+    snprintf(project_sources.project_dir, sizeof(project_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_resolve_latin_index_path(&legacy_sources, 6, legacy_path,
+                                                   sizeof(legacy_path), &legacy_source,
+                                                   &legacy_served_index) &&
+               legacy_served_index == -2,
+           "a legacy-only cache serves its single Latin import for index 7");
+    expect(sr_flash0_font_registry_info(&project_sources, 16u, &project_info) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               project_info.source && strcmp(project_info.source, "project") == 0,
+           "with no import, Latin index 16 is served by the project font");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
@@ -30274,6 +33825,131 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
     sysreg_scratch_clean();
 }
 
+/* ---- sceFont guest spans, allocator results and handle lifecycle (#1384) --------------------
+ * Driven through production dispatch (sr_syscall). The allocator and free callbacks are
+ * synthetic guest bodies; the served font is the synthetic PGF the flash0 driver wrote. Spans
+ * that end past guest memory are placed at the top of the guest arena. The rejections are host
+ * policy: what the PSP's libfont does with a truncated span or a reused block is UNMEASURED. */
+#define FLT_ALLOC_ENTRY 0x0800ae00u
+#define FLT_FREE_ENTRY  0x0800ae40u
+#define FLT_PARAMS      0x09050000u
+#define FLT_ERR         0x09050100u
+#define FLT_INFO        0x09050200u
+#define FLT_LIB_A       0x09060000u
+#define FLT_LIB_B       0x09068000u
+#define FLT_FONT        0x09070000u
+#define FLT_GUEST_TOP   0x0c000000u
+#define FLT_NID_NEWLIB  0x67f17ed7u
+#define FLT_NID_OPEN    0xa834319du
+#define FLT_NID_DONELIB 0x574b6fbcu
+#define FLT_NID_INFO    0x0da7535eu
+#define FLT_NID_CHAR    0xdcc80c2fu
+#define FLT_NID_CLOSE   0x3aea8cb6u
+#define FLT_NID_USERMEM 0xbb8e7fe6u
+#define FLT_ERR_OOM         0x80460001u
+#define FLT_ERR_INVALID_LIB 0x80460002u
+#define FLT_ERR_INVALID_ARG 0x80460003u
+#define FLT_ERR_INVALID_DATA 0x8046000au
+static uint32_t s_flt_alloc_ret, s_flt_alloc_calls, s_flt_free_calls, s_flt_last_free;
+static void flt_alloc_fn(CpuState *s) { s_flt_alloc_calls++; s->r[2] = s_flt_alloc_ret; }
+static void flt_free_fn(CpuState *s) { s_flt_free_calls++; s_flt_last_free = s->r[5]; s->r[2] = 0; }
+static uint32_t flt_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+static void flt_write_params(uint32_t at, uint32_t num_fonts) {
+    /* FontNewLibParams: userData, numFonts, cacheData, allocFunc, freeFunc, then six words. */
+    const uint32_t words[5] = { 0x1234u, num_fonts, 0u, FLT_ALLOC_ENTRY, FLT_FREE_ENTRY };
+    for (uint32_t i = 0; i < 5u; i++) MEM_W32(at + i * 4u, words[i]);
+}
+static uint32_t flt_new_lib(uint32_t params, uint32_t alloc_ret) {
+    s_flt_alloc_ret = alloc_ret;
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    return flt_call(FLT_NID_NEWLIB, params, FLT_ERR, 0u, 0u);
+}
+static void test_font_lib_lifecycle(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+
+    /* The first 0x20 bytes of the 0x2c-byte params block are guest memory, the rest are not. */
+    uint32_t truncated = FLT_GUEST_TOP - 0x20u;
+    flt_write_params(truncated, 4u);
+    expect(flt_new_lib(truncated, FLT_LIB_A) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG &&
+               s_flt_alloc_calls == 0u,
+           "sceFontNewLib refuses a params block that ends past guest memory before calling the allocator");
+
+    flt_write_params(FLT_PARAMS, 4u);
+    uint32_t past_end = FLT_GUEST_TOP - 0x10u;
+    expect(flt_new_lib(FLT_PARAMS, past_end) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               flt_call(FLT_NID_DONELIB, past_end, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "sceFontNewLib refuses an allocator block that ends past guest memory and publishes no library");
+    expect(s_flt_free_calls == 0u, "a refused allocator block is not handed to freeFunc");
+
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A) == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u &&
+               MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
+           "sceFontNewLib publishes a library at a valid allocator block");
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A + 0x10u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
+           "sceFontNewLib refuses an allocator block overlapping a live library and leaves it intact");
+
+    s_flt_alloc_ret = FLT_LIB_A + 0x20u;
+    expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
+           "sceFontOpen refuses a font block inside its library and leaves the open count at zero");
+    s_flt_alloc_ret = FLT_GUEST_TOP - 0x10u;
+    expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM,
+           "sceFontOpen refuses a font block that ends past guest memory");
+    s_flt_alloc_ret = FLT_FONT;
+    uint32_t font = flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR);
+    expect(font == FLT_FONT && MEM_R32(FLT_ERR) == 0u && MEM_R32(FLT_LIB_A + 0x14u) == 1u,
+           "sceFontOpen publishes a font at a valid allocator block");
+    expect(flt_new_lib(FLT_PARAMS, FLT_FONT) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM,
+           "sceFontNewLib refuses an allocator block that reuses a live font");
+
+    uint32_t info_tail = FLT_GUEST_TOP - 0x80u;
+    MEM_W32(info_tail, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_INFO, font, info_tail, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               MEM_R32(info_tail) == 0x5a5a5a5au,
+           "sceFontGetFontInfo refuses a 0x108-byte output that ends past guest memory and writes nothing");
+    uint32_t char_tail = FLT_GUEST_TOP - 0x20u;
+    MEM_W32(char_tail, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_CHAR, font, 'A', char_tail, 0u) == FLT_ERR_INVALID_ARG &&
+               MEM_R32(char_tail) == 0x5a5a5a5au,
+           "sceFontGetCharInfo refuses a 0x3c-byte output that ends past guest memory and writes nothing");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == 0u,
+           "sceFontGetFontInfo still serves a complete output span");
+
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == FLT_FONT && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
+           "sceFontClose retires the font and returns its block to freeFunc once");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 1u,
+           "a second sceFontClose of the same handle fails closed without freeing again");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "a closed font handle is refused");
+
+    /* A source PGF span that ends past guest memory is refused before any copy or allocation. */
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_B) == FLT_LIB_B, "a second library opens at its own block");
+    s_flt_alloc_calls = 0;
+    expect(flt_call(FLT_NID_USERMEM, FLT_LIB_B, FLT_GUEST_TOP - 0x100u, 0x200u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_DATA && s_flt_alloc_calls == 0u,
+           "sceFontOpenUserMemory refuses a source span that ends past guest memory");
+
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_A, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == FLT_LIB_A,
+           "sceFontDoneLib retires the library after its font was closed and frees only the library");
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_A, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 1u,
+           "a second sceFontDoneLib of the same library fails closed without freeing again");
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -30375,8 +34051,7 @@ static void test_flash0_font_device(void) {
         expect(saved_fontdir != NULL && strlen(saved_fontdir) < sizeof(saved),
                "the test's SR_FONTDIR is set and fits the save buffer");
         if (saved_fontdir) snprintf(saved, sizeof(saved), "%s", saved_fontdir);
-        SetEnvironmentVariableA("SR_FONTDIR", cache_dir);
-        _putenv_s("SR_FONTDIR", cache_dir);
+        hle_test_setenv("SR_FONTDIR", cache_dir);
         uint32_t cache_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
         if (user_refused) {
             expect(cache_fd == F0T_ERR_NOT_FOUND,
@@ -30387,8 +34062,7 @@ static void test_flash0_font_device(void) {
                    "with SR_FONTDIR at the imported cache and its file vouched for, the cache file is served");
         }
         if (cache_fd >= 3u) (void)f0t_close(cache_fd);
-        SetEnvironmentVariableA("SR_FONTDIR", saved);
-        _putenv_s("SR_FONTDIR", saved);
+        hle_test_setenv("SR_FONTDIR", saved);
     }
 
     /* Case-insensitive device, prefix and name, and project fallback for japanese. */
@@ -30590,6 +34264,7 @@ static void test_flash0_font_device(void) {
         memset(&expected_sources, 0, sizeof(expected_sources));
         snprintf(expected_sources.user_data_dir, sizeof(expected_sources.user_data_dir), "%s", data_dir);
         snprintf(expected_sources.project_dir, sizeof(expected_sources.project_dir), "%s/project", root);
+        uint32_t served_index = SR_FONT_REGISTRY_COUNT;
         for (uint32_t index = 0; index < SR_FONT_REGISTRY_COUNT; index++) {
             SrFontRegistryInfo expected;
             SrFontRegistryStatus status = sr_flash0_font_registry_info(&expected_sources, index, &expected);
@@ -30601,6 +34276,7 @@ static void test_flash0_font_device(void) {
             uint32_t result = sr_font_test_info_for_index(index, F0T_FONT_INFO_ADDR);
             expect(result == 0u, "the sceFont shim exposes every served measured index");
             if (result != 0u) continue;
+            if (served_index == SR_FONT_REGISTRY_COUNT) served_index = index;
             float metrics[4] = {
                 (float)expected.h_size / 64.0f, (float)expected.v_size / 64.0f,
                 (float)expected.h_resolution / 64.0f, (float)expected.v_resolution / 64.0f,
@@ -30625,6 +34301,8 @@ static void test_flash0_font_device(void) {
                        f0t_guest_string_field_is(F0T_FONT_INFO_ADDR + 0xbcu, 64u, expected.file_name),
                    "the sceFont shim reads font and file names from the served source");
         }
+        expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
     }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
@@ -31607,13 +35285,223 @@ static void test_mp3_error_paths(void) {
            "errors: a second sceMp3TermResource is harmless");
 }
 
+/* sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount), issue #1288. The
+ * signature and the list classes are the public PSPSDK ones (pspthreadman.h,
+ * SceKernelIdListType); readbufsize counts SceUIDs. The error codes, the list order and
+ * the return value of a short buffer are UNMEASURED on a PSP, so these checks pin the
+ * runtime's model, not a hardware oracle: the call writes min(readbufsize, total) uids,
+ * stores the total in *idcount when idcount is not NULL, and returns the number written. */
+#define NID_TMID_LIST          0x94416130u
+#define NID_TMID_SET_ALARM     0x6652b8cau
+#define NID_TMID_CANCEL_ALARM  0x7e65b999u
+#define NID_TMID_CREATE_CB     0xe81caf8fu
+#define NID_TMID_DELETE_CB     0xedba5844u
+#define NID_TMID_CREATE_MPP    0x7c0dc2a0u
+#define NID_TMID_DELETE_MPP    0xf0b7da1cu
+#define NID_TMID_CREATE_VT     0x20fff560u
+#define NID_TMID_DELETE_VT     0x328f9e52u
+#define TMID_BUF               0x00252000u
+#define TMID_COUNT             0x00252100u
+#define TMID_NAME              0x00252140u
+#define TMID_LWMUTEX_WA        0x00252200u
+#define TMID_HANDLER           0x08a10000u
+#define TMID_BUF_SLOTS         32u
+#define TMID_SENTINEL          0xa5a5a5a5u
+#define TMID_ILLEGAL_TYPE_ERR  0x800201bbu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+#define TMID_ILLEGAL_ADDR_ERR  0x800200d3u   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define TMID_ILLEGAL_SIZE_ERR  0x800201bcu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_SIZE */
+#define TMID_NOT_MODELLED_ERR  0x80020002u   /* the runtime's named refusal */
+
+static uint32_t tmid_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t tmid_list(uint32_t type, uint32_t buf, uint32_t size, uint32_t count) {
+    return tmid_call(NID_TMID_LIST, type, buf, size, count);
+}
+
+static void tmid_fill(void) {
+    for (uint32_t i = 0; i < TMID_BUF_SLOTS; i++) MEM_W32(TMID_BUF + 4u * i, TMID_SENTINEL);
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+}
+
+/* The total for `type`, read through idcount with no buffer, or UINT32_MAX on an error. */
+static uint32_t tmid_total(uint32_t type) {
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+    return tmid_list(type, 0u, 0u, TMID_COUNT) == 0u ? MEM_R32(TMID_COUNT) : UINT32_MAX;
+}
+
+static int tmid_lists(uint32_t type, uint32_t uid) {
+    tmid_fill();
+    uint32_t n = tmid_list(type, TMID_BUF, TMID_BUF_SLOTS, TMID_COUNT);
+    if (n > TMID_BUF_SLOTS) return 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R32(TMID_BUF + 4u * i) == uid) return 1;
+    return 0;
+}
+
+/* One created object of `type`: listed while it lives, gone once deleted, and never
+ * counted under `other`, the class that shares its table or its uid range. */
+static void tmid_check_object(const char *cls, uint32_t type, uint32_t other, uint32_t uid,
+                              uint32_t base, uint32_t other_base, uint32_t delete_nid) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: created object 0x%x is listed once", cls, uid);
+    expect((int32_t)uid > 0 && tmid_total(type) == base + 1u && tmid_lists(type, uid), msg);
+    if (other) {
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: object is not listed under type %u", cls, other);
+        expect(tmid_total(other) == other_base && !tmid_lists(other, uid), msg);
+    }
+    if ((int32_t)uid <= 0) return;
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: delete succeeds", cls);
+    expect(tmid_call(delete_nid, uid, 0u, 0u, 0u) == 0u, msg);
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: deleted object is no longer listed", cls);
+    expect(tmid_total(type) == base && !tmid_lists(type, uid), msg);
+}
+
+static void test_threadman_id_list(void) {
+    char msg[192];
+    (void)wsv_begin();   /* uid 0x1e0, RUNNING, current */
+    expect(sr_hle_test_is_registered(NID_TMID_LIST),
+           "sceKernelGetThreadmanIdList has a production registration");
+    if (!sr_hle_test_is_registered(NID_TMID_LIST)) { s_cur = -1; return; }
+
+    TCB *dormant = fixture_thread(0x1e1u, TH_DORMANT, 32);
+    TCB *sleeper = fixture_thread(0x1e2u, TH_WAIT_OBJ, 32);
+    sleeper->started = 1; sleeper->sleeping = 1; sleeper->wait_obj = 0x1e2u;
+    TCB *delayed = fixture_thread(0x1e3u, TH_WAIT_DELAY, 32);
+    delayed->started = 1;
+    TCB *held = fixture_thread(0x1e4u, TH_READY, 32);
+    held->started = 1; held->suspended = 1;
+    TCB *deleted = fixture_thread(0x1e5u, TH_DORMANT, 32);
+    deleted->deleted = 1;
+    (void)dormant;
+
+    /* Every live thread, in table order; a deleted one is not an object any more. */
+    static const uint32_t live[] = {0x1e0u, 0x1e1u, 0x1e2u, 0x1e3u, 0x1e4u};
+    tmid_fill();
+    uint32_t rc = tmid_list(1u, TMID_BUF, 8u, TMID_COUNT);
+    int order_ok = 1;
+    for (uint32_t i = 0; i < 5u; i++) order_ok &= MEM_R32(TMID_BUF + 4u * i) == live[i];
+    snprintf(msg, sizeof msg, "ThreadmanIdList Thread: returns 5 and lists the live threads (rc=0x%x count=0x%x)",
+             rc, MEM_R32(TMID_COUNT));
+    expect(rc == 5u && MEM_R32(TMID_COUNT) == 5u && order_ok, msg);
+    expect(MEM_R32(TMID_BUF + 20u) == TMID_SENTINEL,
+           "ThreadmanIdList Thread: nothing is written past the listed uids");
+
+    /* The four thread-state lists agree with sceKernelReferThreadStatus. */
+    static const struct { uint32_t type; uint32_t uid; const char *name; } states[] = {
+        {64u, 0x1e2u, "SleepThread"}, {65u, 0x1e3u, "DelayThread"},
+        {66u, 0x1e4u, "SuspendThread"}, {67u, 0x1e1u, "DormantThread"},
+    };
+    for (size_t i = 0; i < sizeof states / sizeof states[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(states[i].type, TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: lists only uid 0x%x (rc=0x%x first=0x%x)",
+                 states[i].name, states[i].uid, rc, MEM_R32(TMID_BUF));
+        expect(rc == 1u && MEM_R32(TMID_COUNT) == 1u && MEM_R32(TMID_BUF) == states[i].uid &&
+                   MEM_R32(TMID_BUF + 4u) == TMID_SENTINEL, msg);
+    }
+
+    /* Truncation: two slots get the first two uids, idcount still reports the total. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 2u, TMID_COUNT);
+    expect(rc == 2u && MEM_R32(TMID_COUNT) == 5u && MEM_R32(TMID_BUF) == 0x1e0u &&
+               MEM_R32(TMID_BUF + 4u) == 0x1e1u && MEM_R32(TMID_BUF + 8u) == TMID_SENTINEL,
+           "ThreadmanIdList truncation: writes readbufsize uids, idcount holds the total");
+
+    /* A NULL idcount is optional. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 8u, 0u);
+    expect(rc == 5u && MEM_R32(TMID_BUF + 16u) == 0x1e4u && MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL idcount: lists the uids and writes no count");
+
+    /* A count-only query: no buffer, no uids written. */
+    tmid_fill();
+    rc = tmid_list(1u, 0u, 0u, TMID_COUNT);
+    expect(rc == 0u && MEM_R32(TMID_COUNT) == 5u,
+           "ThreadmanIdList count-only: readbufsize 0 returns 0 and idcount holds the total");
+
+    /* Types outside the PSPSDK list are refused before any write. */
+    static const uint32_t illegal[] = {0u, 12u, 63u, 68u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(illegal[i], TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList invalid type %d: ILLEGAL_TYPE, nothing written (rc=0x%x)",
+                 (int)illegal[i], rc);
+        expect(rc == TMID_ILLEGAL_TYPE_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+                   MEM_R32(TMID_BUF) == TMID_SENTINEL, msg);
+    }
+
+    /* Thread event handlers are a PSPSDK class this runtime does not track: a named
+     * refusal, never an empty success. */
+    tmid_fill();
+    rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
+    expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+
+    /* Bad guest pointers and sizes are refused before any write. */
+    tmid_fill();
+    expect(tmid_list(1u, 0u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL readbuf with a size: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, 0x0bfffff8u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList readbuf span past guest memory: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_SIZE_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList negative readbufsize: ILLEGAL_SIZE, no count written");
+    expect(tmid_list(1u, TMID_BUF, 8u, 0x0bfffffeu) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList unwritable idcount: ILLEGAL_ADDR, no uid written");
+
+    /* The object classes the HLE tables keep. Semaphores, event flags and LwMutexes share
+     * one table, so each create is checked against the other class too. */
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(TMID_NAME + i, (uint8_t)"tmidobj"[i]);
+    uint32_t sema_base = tmid_total(2u), evf_base = tmid_total(3u);
+    uint32_t uid = tmid_call(NID_CNW_CREATE_SEMA, TMID_NAME, 0u, 1u, 1u);
+    tmid_check_object("Semaphore", 2u, 3u, uid, sema_base, evf_base, NID_WSV_DELETE_SEMA);
+    uid = tmid_call(NID_B1_CREATE_EVF, TMID_NAME, 0u, 0u, 0u);
+    tmid_check_object("EventFlag", 3u, 2u, uid, evf_base, sema_base, NID_B1_DELETE_EVF);
+    expect(tmid_call(NID_B1_CREATE_LWMUTEX, TMID_LWMUTEX_WA, TMID_NAME, 0u, 0u) == 0u &&
+               tmid_total(2u) == sema_base && tmid_total(3u) == evf_base,
+           "ThreadmanIdList: an LwMutex is neither a semaphore nor an event flag");
+    expect(tmid_call(NID_B1_DELETE_LWMUTEX, TMID_LWMUTEX_WA, 0u, 0u, 0u) == 0u,
+           "ThreadmanIdList: LwMutex delete succeeds");
+
+    uint32_t base = tmid_total(4u);
+    tmid_check_object("Mbox", 4u, 0u, tmid_call(NID_MBX_CREATE, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_MBX_DELETE);
+    uint32_t vpl_base = tmid_total(5u), fpl_base = tmid_total(6u);
+    uid = tmid_call(NID_VPL_CREATE, TMID_NAME, 2u, 0u, 0x400u);
+    tmid_check_object("Vpl", 5u, 6u, uid, vpl_base, fpl_base, NID_VPL_DELETE);
+    uid = fpl_make_pool();
+    tmid_check_object("Fpl", 6u, 5u, uid, fpl_base, vpl_base, NID_FPL_DELETE);
+    base = tmid_total(7u);
+    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 0u, 0u, 64u),
+                      base, 0u, NID_TMID_DELETE_MPP);
+    base = tmid_total(8u);
+    tmid_check_object("Callback", 8u, 0u, tmid_call(NID_TMID_CREATE_CB, TMID_NAME, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_CB);
+    base = tmid_total(10u);
+    tmid_check_object("Alarm", 10u, 0u, tmid_call(NID_TMID_SET_ALARM, 1000000000u, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_CANCEL_ALARM);
+    base = tmid_total(11u);
+    tmid_check_object("VTimer", 11u, 0u, tmid_call(NID_TMID_CREATE_VT, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_VT);
+    s_cur = -1;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
         return hle_selftest_main(argc, argv);
     static const char scratch_rel[] = HLE_BUILD_ROOT "/hle_selftest_cwd";
     char original[MAX_PATH];
-    if (!GetCurrentDirectoryA((DWORD)sizeof(original), original)) {
+    if (!getcwd(original, sizeof(original))) {
         fprintf(stderr, "hle_thread_selftest: cannot read the working directory\n");
         return 2;
     }
@@ -31622,20 +35510,19 @@ int main(int argc, char **argv) {
      * working directory. Resolve it while that is still the caller's directory. */
     static char s_abs_argv0[MAX_PATH];
     if (argc > 0 && argv[0]) {
-        DWORD n = GetFullPathNameA(argv[0], (DWORD)sizeof(s_abs_argv0), s_abs_argv0, NULL);
-        if (n == 0 || n >= sizeof(s_abs_argv0)) {
+        if (!nk_platform_absolute_path(argv[0], s_abs_argv0, sizeof(s_abs_argv0))) {
             fprintf(stderr, "hle_thread_selftest: cannot resolve argv[0] '%s'\n", argv[0]);
             return 2;
         }
         argv[0] = s_abs_argv0;
     }
     hle_make_directory(HLE_BUILD_ROOT);
-    if (!hle_make_directory(scratch_rel) || !SetCurrentDirectoryA(scratch_rel)) {
+    if (!hle_make_directory(scratch_rel) || chdir(scratch_rel) != 0) {
         fprintf(stderr, "hle_thread_selftest: cannot enter scratch directory '%s'\n", scratch_rel);
         return 2;
     }
     int rc = hle_selftest_main(argc, argv);
-    if (!SetCurrentDirectoryA(original)) {
+    if (chdir(original) != 0) {
         fprintf(stderr, "hle_thread_selftest: cannot restore the working directory\n");
         return 2;
     }
@@ -31707,10 +35594,18 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--threadman-idlist") == 0) {
+        test_threadman_id_list();
+        fprintf(stderr, "threadman-idlist: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--b1-kobj") == 0) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
         test_evf_hardware_codes();
+        test_evf_typed_uids_and_delete();
         fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
@@ -31761,13 +35656,17 @@ static int hle_selftest_main(int argc, char **argv) {
     test_adhoc_named_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
+    test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_break_continue();
+    test_ge_completion_timing();
     test_volatile_mem_output_preflight();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_utility_dialog_single_slot();
+    test_utility_dialog_status_sequence();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -31792,6 +35691,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
+    test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
@@ -31812,9 +35712,11 @@ static int hle_selftest_main(int argc, char **argv) {
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
+    test_thread_stack_free_size_contract();
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
+    test_change_thread_priority_contract();
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
@@ -31828,6 +35730,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_handler_runs_under_interrupt_context_rules();
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
+    test_dmac_active_transfer_across_threads();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
@@ -31840,16 +35743,20 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_rtc_time64_20261024();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
+    test_ctrl_sampling_mode_cycle_matrix();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
+    test_quit_request_notifies_registered_exit_callback();
+    test_io_devctl_memstick_callback_notify();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
+    test_rtc_local_time_follows_the_system_profile();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
@@ -31886,6 +35793,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
+    test_threadman_id_list();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_hle_liveness_sema_handoff();
@@ -31894,6 +35802,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_evf_typed_uids_and_delete();
     test_wake_result_is_per_thread();
     test_b23_second_round();
     test_allocate_fpl_context_precedence();
@@ -31902,11 +35811,13 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
+    test_atrac_reset_refill_stream();
     test_td24c_atrac_info_batch();
     test_mp3_stream_lifecycle();
     test_mp3_loop_and_mono();
     test_mp3_error_paths();
     test_at3_synthetic_decode_bookkeeping();
+    test_atrac_set_entry_points_1379();
     test_td24d_hle_batch();
     test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
@@ -31915,6 +35826,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_end_flags_refresh_per_cycle();
     test_msgpipe_safety();
     test_msgpipe_blocking();
+    test_msgpipe_cancel_and_refer();
     test_msgpipe_departure_reconsiders_successor();
     test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
@@ -31925,12 +35837,14 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_termination_requeues_readied_waiters();
     test_msgpipe_callback_and_delete();
     test_msgpipe_nested_callback_wait_scopes();
+    test_msgpipe_cancel_skips_paused_callback_wait();
     test_td23_guest_pointer_validation();
     test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
+    test_module_id_queries_resolve_owning_module();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
@@ -31947,6 +35861,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
+    test_volatile_mem_lock_blocks_and_hands_off();
+    test_volatile_mem_lock_departures_and_type();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
@@ -31960,7 +35876,7 @@ static int hle_selftest_main(int argc, char **argv) {
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can
      * never be archived as a completed route. */
-    _putenv("SR_ROUTE_NO_EXIT=1");
+    hle_test_setenv("SR_ROUTE_NO_EXIT", "1");
     test_route_program_advances_only_on_observed_state();
     test_route_wait_timeout_fails_loudly();
     test_route_expect_rejects_the_wrong_screen();
@@ -32019,6 +35935,7 @@ void sr_recomp_test_unused_trace_close(void);
 #define sr_heap_note_bulk_write sr_recomp_test_unused_heap_note_bulk_write
 #define sr_newlib_malloc sr_recomp_test_unused_newlib_malloc
 #define sr_loaded_end sr_recomp_test_unused_loaded_end
+#define sr_loaded_base sr_recomp_test_unused_loaded_base
 #define g_hle_depth sr_recomp_test_unused_hle_depth
 #define g_hle_jmp sr_recomp_test_unused_hle_jmp
 #define sr_trace_close sr_recomp_test_unused_trace_close
@@ -32027,6 +35944,7 @@ void sr_recomp_test_unused_trace_close(void);
 #undef g_hle_jmp
 #undef g_hle_depth
 #undef sr_loaded_end
+#undef sr_loaded_base
 #undef sr_newlib_malloc
 #undef sr_heap_note_bulk_write
 #undef sr_heap_note_write

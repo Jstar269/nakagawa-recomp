@@ -156,7 +156,8 @@ static const char *package_state_text(PlayerUiPackageState state) {
         case PLAYER_UI_PACKAGE_STARTING:
             return "Starting the game. Its window opens when it is ready.";
         case PLAYER_UI_PACKAGE_RUNNING:
-            return "Running now. Stop the game to rebuild or change settings.";
+            return "Built, in use by the running game. Stop the game to rebuild or change "
+                   "settings.";
         case PLAYER_UI_PACKAGE_MISSING:
         default: return "The package for this game is not ready yet.";
     }
@@ -166,13 +167,14 @@ static const char *package_state_text(PlayerUiPackageState state) {
    Why the files are needed, one row per file (still needed, or a copy to
    replace; the file to add; what it is a copy of), a count and the folder.
    The title page, the game-found card and the wizard's Verify step share it;
-   each keeps its own buttons (Check again, Open folder). The words never ask
-   for a key and never say how to decrypt: Nakagawa does not decrypt games. */
+   each keeps its own buttons (Check again, Open folder). The guide shows only
+   when built-in decryption (#295) stopped; its words never ask for a key and
+   never say how to decrypt. */
 
 #define INPUT_GUIDE_LEAD \
-    "This game's program files are encrypted on the disc, and Nakagawa doesn't decrypt " \
-    "games. It can use decrypted copies you make from your own disc: put these files in " \
-    "the folder below, then choose Check again."
+    "Nakagawa couldn't decrypt some of this game's program files from your disc. It can " \
+    "use decrypted copies you make from your own disc: put these files in the folder " \
+    "below, then choose Check again."
 
 static bool input_guide_present(const PlayerUiInputGuide *guide) {
     return guide != NULL && guide->file_count > 0u;
@@ -327,7 +329,14 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_STATUS_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_STATUS_EYEBROW, "Package");
-                    if (title->library_status != NULL && title->library_status[0] != '\0') {
+                    if (title->package_state == PLAYER_UI_PACKAGE_STARTING ||
+                        title->package_state == PLAYER_UI_PACKAGE_RUNNING) {
+                        /* The header badge says Starting or Running once; the
+                           package card describes the package. */
+                        nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, "\xE2\x97\x8F", "Ready",
+                                          theme->ready);
+                    } else if (title->library_status != NULL &&
+                               title->library_status[0] != '\0') {
                         nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, title->status_marker,
                                           title->library_status, title->status_rgba);
                     }
@@ -424,7 +433,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             row.padding_top = NK_UI_SPACE_2;
             row.padding_bottom = NK_UI_SPACE_2;
             if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
+                /* While the no-new-frames card is up, its STOP GAME is the only
+                   one on the page. */
+                bool stop_in_stall_card = model->stalled_game_notice_visible &&
+                    title->primary_action == PLAYER_UI_PRIMARY_STOP_GAME;
+                if (!stop_in_stall_card &&
+                    nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
                                  safe_text(title->primary_action_label, "Unavailable"),
                                  NK_UI_BUTTON_LARGE |
                                  (title->primary_action_enabled
@@ -1084,6 +1098,7 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
 #define ABOUT_ID_NOTICE 0x5000002Bu
 #define ABOUT_ID_LINK 0x5000002Cu
 #define ABOUT_ID_BUILD 0x5000002Du
+#define ABOUT_ID_FOOT 0x5000002Eu
 #define ABOUT_ID_PROMPTS 0x50000040u
 #define ABOUT_ID_WAVES 0x50000050u
 
@@ -1184,12 +1199,19 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                             "Not affiliated with or endorsed by Sony Interactive Entertainment. "
                             "PSP is a trademark of its owner. No game data is included.",
                             NK_UI_TYPE_CAPTION, theme->muted);
-            nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
-                            NK_UI_TYPE_DATA, theme->paper);
-            if (model->build_commit != NULL && model->build_commit[0] != '\0') {
-                char build[64];
-                (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
-                nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+            /* The project link and the source commit share one line, so the
+               page fits the 1280 x 720 design size. */
+            row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_6);
+            row.align_y = NK_UI_ALIGN_CENTER;
+            if (nk_ui_begin_container(ui, ABOUT_ID_FOOT, &row, NULL)) {
+                nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
+                                NK_UI_TYPE_DATA, theme->paper);
+                if (model->build_commit != NULL && model->build_commit[0] != '\0') {
+                    char build[64];
+                    (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
+                    nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
+                nk_ui_end_container(ui);
             }
             nk_ui_end_container(ui);
         }
@@ -1359,7 +1381,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                     NK_UI_TYPE_BODY_L, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
             nk_ui_eyebrow(ui, WIZ_ID_TEXT + 2u, "What you need");
-            wizard_text(ui, 3u, "A decrypted .iso of a PSP game you own", NK_UI_TYPE_BODY_S,
+            wizard_text(ui, 3u, "A disc image (.iso) of a PSP game you own", NK_UI_TYPE_BODY_S,
                         theme->paper);
             wizard_text(ui, 4u, "A PC with a recent graphics driver", NK_UI_TYPE_BODY_S,
                         theme->paper);
@@ -1369,8 +1391,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         }
         wizard_text(ui, 6u,
                     "Your games stay on this PC. Nakagawa never uploads anything, and downloads "
-                    "only the build tools you approve. It does not decrypt games: it uses the "
-                    "decrypted files from your own copy.",
+                    "only the build tools you approve. It decrypts your own disc here and never "
+                    "touches firmware.",
                     NK_UI_TYPE_CAPTION, theme->muted);
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 2u, &result);
         break;
@@ -1468,15 +1490,17 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         /* Encrypted program files the user can supply (#308). */
         bool guided = blocked && input_guide_present(&model->input_guide);
         const char *badge = guided ? "Needs your files" : blocked ? "Not playable yet"
+            : model->recorded ? "On the list"
             : (model->experimental ? "Not tested yet"
                : (model->supported ? "Title profiled" : "Profile missing"));
         uint32_t tone = guided ? theme->warning : blocked ? theme->error
+            : model->recorded ? theme->ready
             : (model->experimental ? theme->warning
                : (model->supported ? theme->ready : theme->error));
         const char *note;
         uint32_t note_tone = theme->muted;
         if (model->extracting) {
-            badge = "Copying files";
+            badge = model->converting_package ? "Converting package" : "Copying files";
             tone = theme->warning;
         } else if (model->extraction_complete) {
             badge = "Files staged";
@@ -1484,7 +1508,10 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             badge = "Copy failed";
             tone = theme->error;
         }
-        if (model->extracting) {
+        if (model->extracting && model->converting_package) {
+            note = "The PSN package is being turned back into its disc image on this PC. "
+                   "This happens once.";
+        } else if (model->extracting) {
             note = "The disc's files are being copied into a local staging folder.";
         } else if (model->extraction_failed && model->extraction_error != NULL &&
                    model->extraction_error[0] != '\0') {
@@ -1497,6 +1524,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         } else if (blocked) {
             note = "This game can't be played in this version of Nakagawa yet.";
             note_tone = theme->error;
+        } else if (model->recorded) {
+            note = "On Nakagawa's compatibility list. Add it to your library, then build it "
+                   "there to play.";
         } else if (model->experimental) {
             note = "Nakagawa hasn't been tested with this game, so it may not start or may "
                    "stop early. You can add it and try.";
@@ -1507,7 +1537,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             note = "This disc is not listed in the native title catalog.";
             note_tone = theme->warning;
         }
-        wizard_text(ui, 0u, model->extracting ? "Copying the game's files" : "Check the disc",
+        wizard_text(ui, 0u, model->converting_package ? "Converting the PSN package"
+                            : (model->extracting ? "Copying the game's files" : "Check the disc"),
                     NK_UI_TYPE_TITLE_XL, theme->paper);
         if (wizard_box_begin(ui, tone)) {
             NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
@@ -1528,10 +1559,14 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             if (blocked && !model->extracting && !guided) {
                 wizard_text(ui, 6u, model->blocked_reason, NK_UI_TYPE_BODY_S, theme->paper);
             }
-            if (model->extracting) {
+            if (model->extracting && model->converting_package) {
+                (void)snprintf(line, sizeof(line), "Converted %d%%", model->extraction_percent);
+            } else if (model->extracting) {
                 (void)snprintf(line, sizeof(line), "Copied %d of %d files" FLOW_MIDDOT "%d%%",
                                model->files_extracted, model->total_files,
                                model->extraction_percent);
+            }
+            if (model->extracting) {
                 wizard_text(ui, 3u, line, NK_UI_TYPE_DATA, theme->paper);
                 nk_ui_progress_bar(ui, WIZ_ID_TEXT + 0x30u, inner - 32.0f,
                                    (float)model->extraction_percent / 100.0f, 0.0);
@@ -1579,11 +1614,16 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             nk_ui_end_container(ui);
         }
         if (model->extracting) {
-            static const WizardButton buttons[] = {
+            static const WizardButton copying[] = {
                 {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel copying", NK_UI_BUTTON_DANGER,
                  PLAYER_UI_WIZARD_CANCEL}
             };
-            wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 1u, &result);
+            static const WizardButton converting[] = {
+                {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel converting", NK_UI_BUTTON_DANGER,
+                 PLAYER_UI_WIZARD_CANCEL}
+            };
+            wizard_buttons(ui, WIZ_ID_BUTTONS,
+                           model->converting_package ? converting : copying, 1u, &result);
         } else if (guided) {
             /* Check again reads the same disc again once the files are in
                the folder; nothing is imported again (#308). */
@@ -2106,7 +2146,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              settings_on_off(model->vsync), model->vsync, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_VSYNC);
             }
-            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Fullscreen",
+            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Game fullscreen",
                              settings_on_off(model->fullscreen), model->fullscreen,
                              name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN);
@@ -2154,7 +2194,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                 }
             }
             if (settings_row(ui, 6u, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
-                             "Fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
+                             "Launcher fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
                              model->launcher_fullscreen, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN);
             }
@@ -2168,7 +2208,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS);
             }
             if (settings_row(ui, 9u, PLAYER_UI_ID_SETTINGS_CONTROLLER, "Controls",
-                             "Controller settings", false, name_width)) {
+                             "Controller and keyboard", false, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_OPEN_CONTROLLER);
             }
             {
@@ -2205,6 +2245,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         }
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
         }
         nk_ui_end_container(ui);
     }
@@ -2383,6 +2426,69 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             }
         }
         break;
+    case PLAYER_UI_SETTINGS_PAGE_FONTS:
+        /* Walkthrough blocker: the wizard's Fonts step is not on the Add to
+           library path, so the import lives here, with each slot's status. */
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Optional. Games look right with your PSP's own fonts: copy the .pgf "
+                        "files from flash0:/font on your PSP to a folder on this PC and import "
+                        "it (docs/SETUP.md, \"Copying the fonts from your PSP\"). Until then "
+                        "similar fonts stand in.",
+                        NK_UI_TYPE_BODY_S, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                          NK_UI_SPACE_4);
+            if (nk_ui_begin_container(ui, SET_ID_TEXT + 0xD0u, &cols, NULL)) {
+                float column = (inner - 32.0f - 2.0f * NK_UI_SPACE_4) / 3.0f;
+                for (int c = 0; c < 3; ++c) {
+                    NkUiLayout col = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column),
+                                                 sizing_fit(), 2.0f);
+                    if (!nk_ui_begin_container(ui, (NkUiId)(SET_ID_TEXT + 0xD1u + (NkUiId)c),
+                                               &col, NULL)) {
+                        continue;
+                    }
+                    for (size_t r = 0u; r < 6u; ++r) {
+                        size_t item = (size_t)c * 6u + r;
+                        NkUiTextStyle font = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                        if (item >= model->font_line_count) break;
+                        nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0xE0u + (NkUiId)item),
+                                   nk_ui_text_clamp(ui, safe_text(model->font_lines[item], ""),
+                                                    &font, column, 1), &font);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            if (model->font_message != NULL && model->font_message[0] != '\0') {
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                nk_ui_text(ui, SET_ID_TEXT + 0xDCu,
+                           nk_ui_text_clamp(ui, model->font_message, &text, inner - 32.0f, 2),
+                           &text);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Import fonts folder",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_FONTS, "Remove imported fonts",
+                                 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_REMOVE_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
     case PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS:
     default:
         flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Remove build tools", theme->warning);
@@ -2453,7 +2559,9 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
    The PSP buttons in two columns of named rows, each binding on the button that
    rebinds it, beside the stick and trigger card with the live input. The
    mapping being edited is named on the buttons card, so the scope is stated,
-   never implied (#520). While a guided calibration runs, its step replaces the
+   never implied (#520). CONTROLLER and KEYBOARD above the cards choose whose
+   bindings the rows show; for the keyboard the stick card names the keys
+   Nakagawa keeps (#1299). While a guided calibration runs, its step replaces the
    cards. Under a top bar with SETTINGS active, as the Settings page. */
 
 #define PAD_ID_ROOT 0x64000001u
@@ -2468,6 +2576,8 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
 #define PAD_ID_GRID 0x64000027u
 #define PAD_ID_LIVE 0x64000030u
 #define PAD_ID_SPACER 0x64000031u
+#define PAD_ID_DEVICE 0x64000032u
+#define PAD_ID_DEVICE_BUTTONS 0x64000033u
 #define PAD_ID_PROMPTS 0x64000040u
 #define PAD_ID_WAVES 0x64000050u
 #define PAD_ID_ROWS 0x64000100u
@@ -2510,7 +2620,8 @@ static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_
         }
     }
     if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_BUTTON(control),
-                     controller_button_label(ui, capturing ? "Press a button..."
+                     controller_button_label(ui, capturing ? (model->keyboard ? "Press a key..."
+                                                                              : "Press a button...")
                                                            : safe_text(model->bindings[control],
                                                                        "None"),
                                              button_width),
@@ -2558,6 +2669,49 @@ static void controller_live(NkUi *ui, const PlayerUiControllerModel *model, floa
     nk_ui_end_container(ui);
 }
 
+/* CONTROLLER and KEYBOARD: whose bindings the rows show, the one shown filled. */
+#define PAD_DEVICE_WIDTH 240.0f
+static void controller_device(NkUi *ui, const PlayerUiControllerModel *model,
+                              PlayerUiAction *result) {
+    NkUiLayout pair = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(PAD_DEVICE_WIDTH), sizing_fit(),
+                                  NK_UI_SPACE_2);
+    float each = (PAD_DEVICE_WIDTH - NK_UI_SPACE_2) * 0.5f;
+    uint32_t flags = NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW | NK_UI_BUTTON_ROW;
+    if (!nk_ui_begin_container(ui, PAD_ID_DEVICE_BUTTONS, &pair, NULL)) return;
+    if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SHOW_PAD,
+                     controller_button_label(ui, "Controller", each),
+                     flags | (model->keyboard ? 0u : NK_UI_BUTTON_PRIMARY))) {
+        *result = controller_op(PLAYER_UI_CONTROLLER_SHOW_CONTROLLER, 0u);
+    }
+    if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD,
+                     controller_button_label(ui, "Keyboard", each),
+                     flags | (model->keyboard ? NK_UI_BUTTON_PRIMARY : 0u))) {
+        *result = controller_op(PLAYER_UI_CONTROLLER_SHOW_KEYBOARD, 0u);
+    }
+    nk_ui_end_container(ui);
+}
+
+/* For the keyboard, the stick card says which keys stay with Nakagawa. */
+static void controller_keyboard_card(NkUi *ui, float card) {
+    static const char *const kept[] = {"Esc or F1 pauses the game.", "F3 shows the frame rate."};
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+    float inner = card - 2.0f * NK_UI_SPACE_5;
+    if (!nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(card), sizing_grow(), NK_UI_SPACE_2)) {
+        return;
+    }
+    nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x20u, "Keys Nakagawa keeps");
+    for (size_t i = 0u; i < sizeof(kept) / sizeof(kept[0]); ++i) {
+        nk_ui_text(ui, (NkUiId)(PAD_ID_TEXT + 0x50u + (NkUiId)i),
+                   nk_ui_text_clamp(ui, kept[i], &text, inner, 2), &text);
+    }
+    nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x21u, "Analog stick");
+    nk_ui_text(ui, PAD_ID_TEXT + 0x58u,
+               nk_ui_text_clamp(ui, "The stick has no keys. Use a controller for it.", &text,
+                                inner, 2), &text);
+    nk_ui_end_container(ui);
+}
+
 static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, float width,
                                float height, PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -2586,17 +2740,25 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
         if (nk_ui_begin_container(ui, PAD_ID_HEAD, &head, NULL)) {
             NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S,
                                             model->status_error ? theme->error : theme->muted);
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.align_y = NK_UI_ALIGN_CENTER;
             /* The SETTINGS tab names the area, so a short window drops the
                heading to keep every row on screen. */
             if (tall) {
-                nk_ui_text_role(ui, PAD_ID_TEXT + 0u, "CONTROLLER", NK_UI_TYPE_DISPLAY,
+                nk_ui_text_role(ui, PAD_ID_TEXT + 0u, "CONTROLS", NK_UI_TYPE_DISPLAY,
                                 theme->paper);
             }
-            nk_ui_text(ui, PAD_ID_TEXT + 1u,
-                       nk_ui_text_clamp(ui, safe_text(model->status,
-                                                      "Choose a button to change it, then press "
-                                                      "the controller button to use."),
-                                        &text, column, 1), &text);
+            if (nk_ui_begin_container(ui, PAD_ID_DEVICE, &row, NULL)) {
+                controller_device(ui, model, result);
+                nk_ui_text(ui, PAD_ID_TEXT + 1u,
+                           nk_ui_text_clamp(ui, safe_text(model->status,
+                                                          "Choose a button to change it, then "
+                                                          "press the controller button to use."),
+                                            &text, column - PAD_DEVICE_WIDTH - NK_UI_SPACE_3, 1),
+                           &text);
+                nk_ui_end_container(ui);
+            }
             nk_ui_end_container(ui);
         }
     }
@@ -2605,7 +2767,8 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
         if (nk_ui_card_begin(ui, PAD_ID_BUTTONS, sizing_grow(), sizing_grow(), NK_UI_SPACE_2)) {
             NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_EYEBROW,
                                             model->scope_title ? theme->ready : theme->muted);
-            (void)snprintf(eyebrow, sizeof(eyebrow), "Buttons" FLOW_MIDDOT "%s",
+            (void)snprintf(eyebrow, sizeof(eyebrow), "%s" FLOW_MIDDOT "%s",
+                           model->keyboard ? "Keys" : "Buttons",
                            safe_text(model->scope, "global mapping"));
             nk_ui_text(ui, PAD_ID_TEXT + 0x10u,
                        nk_ui_text_clamp(ui, nk_ui_caps(ui, eyebrow), &text, buttons_inner, 1),
@@ -2630,8 +2793,10 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
             }
             nk_ui_end_container(ui);
         }
-        if (nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(stick_card), sizing_grow(),
-                             NK_UI_SPACE_2)) {
+        if (model->keyboard) {
+            controller_keyboard_card(ui, stick_card);
+        } else if (nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(stick_card), sizing_grow(),
+                                    NK_UI_SPACE_2)) {
             float inner = stick_card - 2.0f * NK_UI_SPACE_5;
             nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x20u, "Stick and triggers");
             controller_stepper(ui, 0u, model->deadzone, inner,
