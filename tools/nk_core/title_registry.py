@@ -19,9 +19,8 @@ import title_manifest
 from . import synthetic_disc_ids
 from .types import TitleProfile
 
-# Map synthetic titles to test disc IDs for synthetic ISO test harnesses
-# Re-exported from the single home so this module and
-# tools/title_catalog_codegen.py cannot drift apart again.
+# Synthetic title id -> test disc id, for the synthetic-ISO test harnesses. Re-exported
+# from its single home so this module and tools/title_catalog_codegen.py cannot drift apart.
 SYNTHETIC_DISC_ID_MAP = synthetic_disc_ids.SYNTHETIC_DISC_IDS
 
 
@@ -35,7 +34,7 @@ def _manifest_game_name(manifest: Dict[str, Any]) -> str:
 
 def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
     """Derive TitleProfile directly from validated manifest data."""
-    t_id = manifest["id"]
+    title_id = manifest["id"]
     display_name = manifest["display_name"]
     kind = manifest["kind"]
 
@@ -52,7 +51,7 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         # collide with each other and with the public catalog. The strict
         # title_manifest.synthetic_disc_id() is for catalog generation, where an
         # unassigned PUBLIC manifest really is a mistake.
-        assigned = synthetic_disc_ids.SYNTHETIC_DISC_IDS.get(t_id)
+        assigned = synthetic_disc_ids.SYNTHETIC_DISC_IDS.get(title_id)
         disc_ids = [assigned] if assigned else []
         regions = ["TEST"]
     else:
@@ -62,14 +61,14 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
     modules = manifest.get("modules", [])
     required_modules = [m["name"] for m in modules if m.get("required")]
 
-    fs = manifest.get("filesystem", {})
-    data_root = fs.get("data_root", "")
+    filesystem = manifest.get("filesystem", {})
+    data_root = filesystem.get("data_root", "")
 
-    # Identify archive format from title attributes or filesystem
+    # A data root under xbdata ships its content in claphanz_xb archives; any other root is read as-is.
     archive_format = "claphanz_xb" if "xbdata" in data_root else "raw"
 
     return TitleProfile(
-        id=t_id,
+        id=title_id,
         name=display_name,
         disc_ids=disc_ids,
         regions=regions,
@@ -83,14 +82,14 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         required_modules=required_modules,
         archive_format=archive_format,
         archive_relpath=data_root,
-        save_namespace=disc_ids[0] if disc_ids else t_id,
+        save_namespace=disc_ids[0] if disc_ids else title_id,
         runtime_profile=manifest.get("hle_profile", "standard"),
         codegen_profile=manifest.get("codegen_profile", "none"),
         require_local_compatibility_record=bool(
             manifest.get("disc", {}).get("require_local_compatibility_record", False)
         ),
         loose_content_roots=tuple(
-            dict(root) for root in fs.get("loose_content_roots", [])
+            dict(root) for root in filesystem.get("loose_content_roots", [])
         ),
     )
 
@@ -103,9 +102,9 @@ class TitleRegistry:
         self._disc_index: Dict[str, str] = {}
         self._profile_refusals: Dict[str, str] = {}
         if include_defaults:
-            t_dir = titles_dir or (ROOT / "assets" / "titles")
-            if t_dir.is_dir():
-                self.load_from_directory(t_dir)
+            titles_path = titles_dir or (ROOT / "assets" / "titles")
+            if titles_path.is_dir():
+                self.load_from_directory(titles_path)
 
     def load_from_directory(self, directory: Path, enforce_public_policy: bool = True) -> None:
         policy = None
@@ -117,7 +116,7 @@ class TitleRegistry:
         for json_file in sorted(directory.glob("*.json")):
             if policy is not None:
                 try:
-                    rel = json_file.resolve().relative_to(ROOT).as_posix()
+                    repo_relative = json_file.resolve().relative_to(ROOT).as_posix()
                 except ValueError:
                     # Same hole as tools/title_catalog_codegen.py had: naming
                     # the file assets/titles/<name> lent an untracked manifest
@@ -126,8 +125,8 @@ class TitleRegistry:
                     # it is not public-eligible. A caller that means to load an
                     # external directory passes enforce_public_policy=False.
                     continue
-                res = policy.resolve(rel)
-                if res.is_excluded or res.disposition != publication_policy.INCLUDED:
+                decision = policy.resolve(repo_relative)
+                if decision.is_excluded or decision.disposition != publication_policy.INCLUDED:
                     continue
 
             try:
@@ -136,7 +135,7 @@ class TitleRegistry:
                 profile = title_profile_from_manifest(validated)
                 self.register(profile)
             except Exception as exc:
-                # Malformed manifests are rejected at load
+                # A bad manifest stops the load and is named, rather than being skipped silently.
                 raise RuntimeError(f"Failed loading manifest {json_file}: {exc}") from exc
 
     def load_private_manifest(self, manifest_file: Path, allow_override: bool = False) -> TitleProfile:
@@ -187,8 +186,7 @@ class TitleRegistry:
         collision = profile.id in self._profiles
         if not collision:
             for disc_id in profile.disc_ids:
-                norm = self._norm_disc(disc_id)
-                if norm in self._disc_index:
+                if self._norm_disc(disc_id) in self._disc_index:
                     collision = True
                     break
 
@@ -207,12 +205,10 @@ class TitleRegistry:
 
         self._profiles[profile.id] = profile
         for disc_id in profile.disc_ids:
-            norm = self._norm_disc(disc_id)
-            self._disc_index[norm] = profile.id
+            self._disc_index[self._norm_disc(disc_id)] = profile.id
 
     def lookup_by_disc_id(self, disc_id: str) -> Optional[TitleProfile]:
-        norm = self._norm_disc(disc_id)
-        profile_id = self._disc_index.get(norm)
+        profile_id = self._disc_index.get(self._norm_disc(disc_id))
         if profile_id:
             return self._profiles.get(profile_id)
         return None
@@ -238,7 +234,7 @@ class TitleRegistry:
         return list(self._profiles.values())
 
     def _norm_disc(self, disc_id: str) -> str:
-        return "".join(c for c in disc_id if c not in "-_ ").upper()
+        return "".join(char for char in disc_id if char not in "-_ ").upper()
 
 
 _DEFAULT_REGISTRY: Optional[TitleRegistry] = None

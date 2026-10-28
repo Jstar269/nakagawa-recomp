@@ -18,6 +18,7 @@
 
 #include "package_builder.h"
 #include "nk_json.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 
 #include <ctype.h>
@@ -1430,6 +1431,16 @@ NkResult package_builder_start_prerequisite_fetch(
     const char *argv[] = { python_path, "-c", code, NULL };
     if (!nk_platform_spawn_process(python_path, argv, envp, source_root,
                                    session->log_file_path, &session->process)) {
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(session->process.spawn_error,
+                                           "the build tools' Python", "Build Tools",
+                                           python_path, &block)) {
+            safe_str_copy(session->failure_code, sizeof(session->failure_code), block.code);
+            safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
+                          block.message);
+            fprintf(stderr, "[BUILD] %s: %s\n", block.code, block.details);
+            return NK_ERROR_PROCESS_SPAWN;
+        }
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
                       "Could not start the verified Python prerequisite fetcher.");

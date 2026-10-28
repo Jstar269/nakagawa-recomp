@@ -88,15 +88,15 @@ class Report:
         return f"VBLANK_CHECK: {name} {status} {detail}"
 
     def render(self) -> str:
-        out = [self.line(*c) for c in self.checks]
+        lines = [self.line(*check) for check in self.checks]
         if not self.judged:
-            out.append("VBLANK_AUDIT: verdict=NOT_RUN checks=0 failures=0")
+            lines.append("VBLANK_AUDIT: verdict=NOT_RUN checks=0 failures=0")
         else:
             verdict = "FAIL" if self.failures else "PASS"
-            out.append(
+            lines.append(
                 f"VBLANK_AUDIT: verdict={verdict} checks={self.judged} failures={self.failures}"
             )
-        return "\n".join(out)
+        return "\n".join(lines)
 
 
 def _number(row: dict[str, str], key: str) -> float | None:
@@ -116,7 +116,7 @@ def presenting_window(rows: list[dict[str, str]]) -> list[tuple[int, dict[str, s
     it would divide delivered episodes by a wall time in which the source was not
     yet running.
     """
-    return [(i, r) for i, r in enumerate(rows) if (_number(r, "fps") or 0.0) > 0.0]
+    return [(index, row) for index, row in enumerate(rows) if (_number(row, "fps") or 0.0) > 0.0]
 
 
 def read_perf(path: Path) -> list[dict[str, str]]:
@@ -214,14 +214,18 @@ def check_identity(report: Report, text: str | None) -> None:
             "identity", None, "no PERF_ATTRIB vblank_owed ledger in the stderr log (run with SR_PERF=1)"
         )
         return
-    o, coal, deliv, drop, inflight, late_owed, late_deliv = (int(g) for g in owed[-1])
-    residual = o + coal - deliv - drop
-    ok = residual == inflight
+    # The runtime reports the cumulative ledger periodically; the last line covers the whole run.
+    owed_total, coalesced, delivered, dropped, in_flight, late_owed, late_delivered = (
+        int(count) for count in owed[-1]
+    )
+    residual = owed_total + coalesced - delivered - dropped
+    ok = residual == in_flight
     report.add(
         "identity",
         ok,
-        f"owed={o} coalesced={coal} delivered={deliv} dropped={drop} in_flight={inflight} "
-        f"residual={residual} late_owed={late_owed} late_delivered={late_deliv}",
+        f"owed={owed_total} coalesced={coalesced} delivered={delivered} dropped={dropped} "
+        f"in_flight={in_flight} residual={residual} late_owed={late_owed} "
+        f"late_delivered={late_delivered}",
     )
 
 
@@ -234,14 +238,17 @@ def check_masked(report: Report, text: str | None) -> None:
     if not owed or not late:
         report.add("masked", None, "no vblank ledger in the stderr log (run with SR_PERF=1)")
         return
-    o, coal, _deliv, _drop, inflight, _lo, _ld = (int(g) for g in owed[-1])
-    masked = int(late[-1][2])
-    credit = coal - masked
-    ok = credit <= inflight
+    _owed, coalesced, _delivered, _dropped, in_flight, _late_owed, _late_delivered = (
+        int(count) for count in owed[-1]
+    )
+    masked_periods = int(late[-1][2])
+    credit = coalesced - masked_periods
+    ok = credit <= in_flight
     report.add(
         "masked",
         ok,
-        f"coalesced={coal} masked_periods={masked} credit={credit:+d} in_flight={inflight}",
+        f"coalesced={coalesced} masked_periods={masked_periods} credit={credit:+d} "
+        f"in_flight={in_flight}",
     )
 
 

@@ -56,7 +56,7 @@ FATAL_PATTERNS = (
 AUDIOSTAT_HOST = re.compile(
     r"AUDIOSTAT_HOST:\s+state=(\S+)\s+driver=(\S+)\s+pushed=(\d+)\s+underruns=(\d+)\s+"
     r"overruns=(\d+)\s+backpressure=(\d+)"
-    # Pause counters (C9a) sit between backpressure and peak_q; older builds omit them.
+    # Pause counters sit between backpressure and peak_q; older builds omit them.
     r"(?:\s+pause_enters=\d+\s+pause_held_frames=\d+\s+pause_stash_failures=\d+)?"
     r"\s+peak_q=(\d+)"
     r"(?:\s+queued=(-?\d+)\s+lead_ms=(-?\d+))?"
@@ -225,10 +225,6 @@ def check_cadence(report: Report, rows: list[dict[str, str]], min_hz: float,
     )
 
 
-def _read_proc(path: Path) -> list[dict[str, str]]:
-    return read_perf(path)
-
-
 def check_growth(report: Report, rows: list[dict[str, str]], key: str, name: str,
                  max_growth_pct: float, warmup_s: int) -> None:
     series = [(i, _number(r, key)) for i, r in enumerate(rows)]
@@ -291,18 +287,19 @@ def check_audio(report: Report, text: str, max_underruns: int, max_drift_ms: int
     """
     host = AUDIOSTAT_HOST.findall(text)
     pushes = AUDIOSTAT_PUSH.findall(text)
-    cb = AUDIOSTAT_CB.findall(text)
+    callbacks = AUDIOSTAT_CB.findall(text)
     windows = AUDIOSTAT_WIN.findall(text)
-    if not (host or pushes or cb or windows):
+    if not (host or pushes or callbacks or windows):
         report.add("audio", None, "no audio counters in this run (run with SR_AUDIOSTAT=1)")
         return
-    dropped = sum(int(p[6]) for p in pushes)
-    clamps = sum(int(p[5]) for p in pushes)
-    put_fail = sum(int(c[5]) for c in cb)
-    under = max((int(h[3]) for h in host), default=0)
-    over = max((int(h[4]) for h in host), default=0)
-    duty = [int(w[3]) for w in windows]
-    silent = sum(1 for d in duty[1:] if d == 0)
+    # Indices are capture-group positions in the AUDIOSTAT_* patterns above.
+    dropped = sum(int(push[6]) for push in pushes)
+    clamps = sum(int(push[5]) for push in pushes)
+    put_fail = sum(int(callback[5]) for callback in callbacks)
+    under = max((int(host_line[3]) for host_line in host), default=0)
+    over = max((int(host_line[4]) for host_line in host), default=0)
+    duty = [int(window[3]) for window in windows]
+    silent = sum(1 for percent in duty[1:] if percent == 0)
     ok = under <= max_underruns and over <= max_underruns and dropped == 0 and put_fail == 0
     parts = [
         f"underruns={under if host else 'n/a'}",
@@ -407,12 +404,12 @@ def audit(args: argparse.Namespace) -> Report:
         for name in ("presenting", "cadence"):
             report.add(name, None, "no perf.csv given")
     if args.proc:
-        prows = _read_proc(Path(args.proc))
-        check_growth(report, prows, "working_set_kb", "memory_working_set",
+        proc_rows = read_perf(Path(args.proc))
+        check_growth(report, proc_rows, "working_set_kb", "memory_working_set",
                      args.max_growth_pct, args.warmup_s)
-        check_growth(report, prows, "private_bytes_kb", "memory_private",
+        check_growth(report, proc_rows, "private_bytes_kb", "memory_private",
                      args.max_growth_pct, args.warmup_s)
-        check_growth(report, prows, "handles", "handles", args.max_growth_pct, args.warmup_s)
+        check_growth(report, proc_rows, "handles", "handles", args.max_growth_pct, args.warmup_s)
     else:
         for name in ("memory_working_set", "memory_private", "handles"):
             report.add(name, None, "no process-metrics CSV given (--proc)")
