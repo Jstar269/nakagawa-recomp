@@ -1681,7 +1681,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3b4197fd38cd8bc893fa3a7a7407dbb72128a8d27edc113eee3719f36ffe31e3"
+      "sha256": "3149a4540e1e93c82f1b903ecb0167d17af84a837db24b7c9f3a9d9e8e563dd1"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -3236,7 +3236,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8690d6ed57793817d085bb60f67b9375f3459307c354dae3165e790a7d7b82e"
+      "sha256": "2c80d73ca2a15821e5e6c6298eadeee0cd10b2157d4fc07d500ec8b0b584eb0a"
     },
     {
       "path": "nk_manager.ps1",
@@ -11606,7 +11606,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b338000f45589d4d1e24265cda8281bf22b630bcbb587443fac8c92730a3eb64"
+      "sha256": "b91a1402ac53c47ad2b31dece7e63c634cdc72746f1263ae9a8fa32c204e03b2"
     },
     {
       "path": "tools/analyze.py",
@@ -13309,7 +13309,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b71be2b5705877742f7a5205f333a8f64c1d5e156430539f217e52cff1dcea4"
+      "sha256": "9b3cafb76838703a0077ee45379c60d3758a4d48d9a2d6f09c896f4cc546ac3c"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
