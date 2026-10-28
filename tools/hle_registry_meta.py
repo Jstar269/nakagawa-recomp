@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Curated classification metadata for the HLE registration manifest.
 
@@ -372,6 +372,17 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
     },
+    # scePsmfPlayerGetPsmfInfo reports the opened PSMF's header as SetPsmfCB parsed it.
+    # Checks, their order and the one-picture duration offset follow PPSSPP
+    # Core/HLE/scePsmf.cpp (3f40ddc8); the 567567 lastFrameTs, version 1 and zero PCM
+    # streams agree with pspautotests video/psmfplayer/getpsmfinfo.expected (2321faa0).
+    "h_PsmfGetPsmfInfo": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_player_get_psmf_info",
+        ],
+        "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs of the 0x03090510 libpsmfplayer build are never written because the loaded build is not recorded; lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
+    },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
     "h_NpDrmSetLicenseeKey": {
@@ -550,8 +561,11 @@ HANDLER_METADATA = {
     # a PSP scheduler measurement; open also returns its descriptor at submit.
     "h_IoOpenAsync": {
         "status": "partial",
-        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
-        "limitation": "open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_fd_namespace",
+            "src/rt/hle_thread_selftest.c:test_io_open_async_notifies_later_callback",
+        ],
+        "limitation": "open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it",
     },
     "h_IoReadAsync": {
         "status": "partial",
@@ -710,7 +724,7 @@ HANDLER_METADATA = {
     # behaviour and handlers depend on issue #325.
     "h_CreateVTimer": {
         "status": "partial",
-        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
+        "limitation": "the option struct is ignored, as on a PSP (pspautotests vtimers/create.expected at 2ed7c9c5, recorded on a PSP: every declared size creates the same timer), and an unreadable one stops the run by name; 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64, while the same PSP-recorded output shows 1024 creates succeed; a NULL name is accepted here, where that output shows 0x80020001; the no-slot code 0x80020190 is unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
     },
     "h_StartVTimer": {
         "status": "partial",
@@ -880,7 +894,7 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
             "src/rt/hle.c:psp_profile_local_offset_minutes",
         ],
-        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; on the first run the setting starts from the host's local time zone (SR_HOST_TIME_ZONE) and is retained, else the seed is the oracle console's measured setting, not a factory default; the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",

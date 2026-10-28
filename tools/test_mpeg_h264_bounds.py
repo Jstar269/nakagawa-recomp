@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Static contracts and small independent arithmetic fixtures for issues #170, #283, and #302.
 
@@ -88,8 +88,11 @@ class TestMpegH264Bounds(unittest.TestCase):
         self.assertIn("uint64_t srcNeed", convert)
         self.assertIn("srcNeed > srcLen", convert)
         self.assertIn("uint64_t rowAddr", convert)
-        self.assertIn("sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)", convert)
-        self.assertIn("uint64_t fullBytes", convert)
+        # #1049: the destination may sit behind a swizzled VRAM mirror, so every row is
+        # validated with the any-view predicate and written through the piecewise helper.
+        self.assertIn("sr_guest_span_writable_any_view((uint32_t)rowAddr, (uint32_t)rowBytes64)", convert)
+        self.assertIn("sr_guest_copy_out(buffer + (uint32_t)y * pitchBytes, row, rowBytes)", convert)
+        self.assertNotIn("SR_HOST(", convert)
         self.assertNotIn("stride * h + stride * h / 2", convert)
 
     def test_h264_conversion_reports_delivery_rather_than_production(self) -> None:
@@ -108,7 +111,7 @@ class TestMpegH264Bounds(unittest.TestCase):
             "if (!buffer || !src || frameWidth <= 0 || pixelMode < 0 || pixelMode > 3) return 0;",
             "if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;",
             "if (srcNeed < yBytes || srcNeed > srcLen) return 0;",
-            "!sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;",
+            "!sr_guest_span_writable_any_view((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;",
         ):
             self.assertIn(refusal, convert)
         self.assertEqual(convert.count("return 1;"), 1)
@@ -172,7 +175,9 @@ class TestMpegYcbcrContracts(unittest.TestCase):
     def test_ycbcr_operations_preflight_ranges_and_modes(self) -> None:
         block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
         for contract in (
-            "sr_guest_rect_writable",
+            "sr_guest_rect_geometry",
+            "sr_guest_span_writable_any_view(span.first, span.total_bytes)",
+            "sr_guest_copy_out(rowAddr, out, span.row_bytes)",
             "rangeAddr & 3u",
             "frameWidth == 0",
             "ctx->pixelMode < 0 || ctx->pixelMode > 3",

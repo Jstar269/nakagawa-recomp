@@ -2479,7 +2479,13 @@ static bool player_package_status_start_next(
     }
     requested[index] = false;
     force_requested[index] = false;
-    player_app_runtime_package_cache_mark_pending(app, index);
+    /* The same rule as player_package_status_queue_game: a title with a status keeps it while a
+       periodic re-check runs, so its card does not blink back to CHECKING on every rescan. A title
+       with no status yet, a check the user asked for and a forced check (after a build or a
+       staging) still show the check in flight. */
+    if (!same_game || !cached->status_valid || job->force) {
+        player_app_runtime_package_cache_mark_pending(app, index);
+    }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_ui_test_package_status_thread_create_attempts++;
     bool fail_thread_create =

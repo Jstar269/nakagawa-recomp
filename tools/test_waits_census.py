@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 """Tests for tools/waits_census.py (issue #339 acceptance)."""
 
 from __future__ import annotations

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Audit the prospective, tracked Git tree or candidate release directory before publication."""
 
@@ -1929,7 +1930,7 @@ def _default_provenance(
     # Metadata-only classification below. Every branch returns ``policy_public``
     # for the publication flag: these prefixes describe what a file *is*, never
     # whether it may be published. Only the canonical policy decides that.
-    if rel_path in REQUIRED_PATHS or rel_path in ("NOTICE.md", "LICENSE", "README.md", "AGENTS.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "DEDICATION.md", "ISSUES.md", "SECURITY.md", "TODO.md"):
+    if rel_path in REQUIRED_PATHS or rel_path in ("NOTICE.md", "LICENSE", "README.md", "AGENTS.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "DEDICATION.md", "SECURITY.md", "TODO.md"):
         return "notice_doc", "GPL-3.0-or-later", rel_path if rel_path in ("LICENSE", "NOTICE.md") else "NOTICE.md", "documentation", "included", policy_public
 
     if rel_path.startswith("THIRD_PARTY_LICENSES/"):

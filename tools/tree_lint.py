@@ -177,13 +177,13 @@ def build_reference_index(
     references: the generated inventories, and the allowlist the caller loaded.  They
     are still judged on their own merit, exactly like the inventories.
     """
-    keys: dict[str, list[str]] = {}
+    paths_by_spelling: dict[str, list[str]] = {}
     for path in tracked:
         for key in _spelling_keys(path):
-            owners = keys.setdefault(key, [])
+            owners = paths_by_spelling.setdefault(key, [])
             if path not in owners:
                 owners.append(path)
-    contested = {key for key, owners in keys.items() if len(owners) > 1}
+    contested = {key for key, owners in paths_by_spelling.items() if len(owners) > 1}
 
     index: dict[str, dict[str, object]] = {path: {"status": UNREFERENCED, "referenced_by": set()} for path in tracked}
     for source in tracked:
@@ -201,7 +201,7 @@ def build_reference_index(
             token = raw_token.rstrip(".")
             if not token:
                 continue
-            owners = keys.get(token)
+            owners = paths_by_spelling.get(token)
             if not owners:
                 continue
             if token in contested:

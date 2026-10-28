@@ -229,20 +229,21 @@ def stage_ui_font_assets(target_dir: Path, *, repo_root: Path = ROOT) -> list[st
     return staged
 
 
-def _files_equal(a: Path, b: Path) -> bool:
+def _files_equal(first: Path, second: Path) -> bool:
+    """Whether two files have identical bytes; a file that cannot be stat'ed counts as different."""
     try:
-        if a.stat().st_size != b.stat().st_size:
+        if first.stat().st_size != second.stat().st_size:
             return False
     except OSError:
         return False
-    ha = hashlib.sha256()
-    hb = hashlib.sha256()
-    with a.open("rb") as fa, b.open("rb") as fb:
-        for chunk in iter(lambda: fa.read(65536), b""):
-            ha.update(chunk)
-        for chunk in iter(lambda: fb.read(65536), b""):
-            hb.update(chunk)
-    return ha.digest() == hb.digest()
+    first_digest = hashlib.sha256()
+    second_digest = hashlib.sha256()
+    with first.open("rb") as first_file, second.open("rb") as second_file:
+        for chunk in iter(lambda: first_file.read(65536), b""):
+            first_digest.update(chunk)
+        for chunk in iter(lambda: second_file.read(65536), b""):
+            second_digest.update(chunk)
+    return first_digest.digest() == second_digest.digest()
 
 
 def stage_runtime_dlls(

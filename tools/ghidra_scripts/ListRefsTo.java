@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2025-2026 the psp-recomp authors
+ * Copyright (C) 2026 the Nakagawa Recomp authors
  *
  * For each address argument, print every reference Ghidra knows that points
  * AT it (from-address, reference type, and the containing function of the

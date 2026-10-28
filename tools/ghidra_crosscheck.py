@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Cross-check Ghidra's function inventory against tools/analyze.py discovery.
 
 Ghidra (with ghidra-allegrex) is an independent, mature disassembler; treating
 its function list as a second opinion surfaces analyze.py misdiscoveries of the
 0x000e1724 class (functions suppressed by the former trailing-epilogue heuristic,
-which at runtime become NONPLT_MISS dispatch faults). See ISSUES.md 2026-07-17.
+which at runtime become NONPLT_MISS dispatch faults; first found on 2026-07-17).
 
 Inputs:
   third_party/ghidra/exports/functions.csv  (python tools/ghidra_headless.py export-functions)
