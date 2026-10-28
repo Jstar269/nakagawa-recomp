@@ -115,6 +115,7 @@ const char *nk_disc_format_extension(NkDiscFormat format) {
 typedef struct {
     FILE *f;
     uint64_t size;
+    uint64_t pos; /* where the next fread starts; UINT64_MAX when unknown */
 } NkDiscSource;
 
 static bool source_open(NkDiscSource *source, const char *path, NkDiscExpandStatus *status) {
@@ -125,6 +126,8 @@ static bool source_open(NkDiscSource *source, const char *path, NkDiscExpandStat
         return disc_fail(status, NK_DISC_READ_FAILED,
                          "The disc image could not be opened for reading.");
     }
+    /* Before any other use of the stream, as setvbuf requires. */
+    setvbuf(source->f, NULL, _IOFBF, NK_DISC_IO_BUFFER);
     if (nk_fseek64(source->f, 0, SEEK_END) != 0 || (end = nk_ftell64(source->f)) < 0 ||
         nk_fseek64(source->f, 0, SEEK_SET) != 0) {
         fclose(source->f);
@@ -132,6 +135,7 @@ static bool source_open(NkDiscSource *source, const char *path, NkDiscExpandStat
         return disc_fail(status, NK_DISC_READ_FAILED, "The disc image's size could not be read.");
     }
     source->size = (uint64_t)end;
+    source->pos = 0;
     return true;
 }
 
@@ -141,17 +145,25 @@ static void source_close(NkDiscSource *source) {
 }
 
 /* Read exactly `bytes` at `offset`; a span past the end of the file is a
-   truncated image. */
+   truncated image. Blocks are read in file order, so the stream seeks only
+   when the next span does not start where the last one ended (a seek would
+   throw away the read buffer). */
 static bool source_read_at(NkDiscSource *source, uint64_t offset, void *dst, size_t bytes,
                            NkDiscExpandStatus *status) {
     if (offset > source->size || (uint64_t)bytes > source->size - offset) {
         return disc_fail(status, NK_DISC_TRUNCATED,
                          "The disc image ends before the data its header describes.");
     }
-    if (offset > (uint64_t)INT64_MAX || nk_fseek64(source->f, (int64_t)offset, SEEK_SET) != 0 ||
-        fread(dst, 1, bytes, source->f) != bytes) {
+    if (offset != source->pos &&
+        (offset > (uint64_t)INT64_MAX || nk_fseek64(source->f, (int64_t)offset, SEEK_SET) != 0)) {
+        source->pos = UINT64_MAX;
         return disc_fail(status, NK_DISC_READ_FAILED, "The disc image could not be read.");
     }
+    if (fread(dst, 1, bytes, source->f) != bytes) {
+        source->pos = UINT64_MAX;
+        return disc_fail(status, NK_DISC_READ_FAILED, "The disc image could not be read.");
+    }
+    source->pos = offset + bytes;
     return true;
 }
 
@@ -621,7 +633,6 @@ bool nk_disc_expand_file(const char *source_path, const char *dest_iso,
                        "folder.");
     } else {
         setvbuf(sink.f, NULL, _IOFBF, NK_DISC_IO_BUFFER);
-        if (source.f) setvbuf(source.f, NULL, _IOFBF, NK_DISC_IO_BUFFER);
         if (callbacks && callbacks->on_progress) callbacks->on_progress(0, total, callbacks->user);
         ok = format == NK_DISC_FORMAT_CHD ? chd_expand(chd, total, hunk, &sink, status)
                                           : ciso_expand(&source, &image, &sink, status);
