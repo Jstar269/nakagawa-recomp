@@ -1504,6 +1504,7 @@ def _cache_codegen_options(
     *,
     selected_optional: set[str],
     funcs_per_chunk: int,
+    enhancement_package_path: Path | None = None,
 ) -> dict[str, Any]:
     from nk_core import package_cache
 
@@ -1528,6 +1529,10 @@ def _cache_codegen_options(
     # options name it only when it is on, leaving untrapped keys unchanged.
     if package_cache.nan_trap_enabled(os.environ):
         options["nan_trap"] = True
+    env_for_enh = dict(os.environ)
+    if enhancement_package_path is not None:
+        env_for_enh["ENHANCEMENT_PACKAGE"] = str(enhancement_package_path)
+    options.update(package_cache.enhancement_package_options(env_for_enh))
     return options
 
 
@@ -1713,6 +1718,7 @@ def _cache_key_for_build(
     funcs_per_chunk: int,
     public_safe: bool = True,
     compiler_name: str,
+    enhancement_package_path: Path | None = None,
 ) -> dict[str, Any]:
     # Imported lazily: planning (--manager-plan) must not depend on the package cache.
     from nk_core import package_cache
@@ -1721,6 +1727,7 @@ def _cache_key_for_build(
         plan,
         selected_optional=selected_optional,
         funcs_per_chunk=funcs_per_chunk,
+        enhancement_package_path=enhancement_package_path,
     )
     options["planner_sha256"] = package_cache.sha256_file(
         ROOT / "tools" / "title_codegen_plan.py"
@@ -1800,6 +1807,7 @@ def build_package(
     title_input_identity_file: Path | None = None,
     aot_stage: bool = False,
     reuse_aot_stage: Path | None = None,
+    enhancement_package_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON.
 
@@ -1813,6 +1821,16 @@ def build_package(
     """
     from nk_core import package_cache
 
+    # The Makefile reads ENHANCEMENT_PACKAGE and CODEGEN_USER_ARGS from the environment,
+    # so an inherited one would enhance an authentic package or override the explicit
+    # package. A package build names its package with enhancement_package_path only.
+    ambient = package_cache.ambient_enhancement_package(os.environ)
+    if ambient is not None:
+        raise PackageRouteError(
+            "PACKAGE_AMBIENT_ENHANCEMENT",
+            f"the environment names an enhancement package ({ambient}); unset it and pass "
+            "--enhancement-package instead",
+        )
     try:
         normalized = title_manifest.validate_manifest(manifest)
     except ValueError as exc:
@@ -1884,6 +1902,19 @@ def build_package(
         game_elf = _stage_for_make(game_elf, stage_dir, "executable ELF")
         if psp_header is not None:
             psp_header = _stage_for_make(psp_header, stage_dir, "PSP header")
+        if enhancement_package_path is not None:
+            enhancement_package_path = _absolute_path(
+                enhancement_package_path, "enhancement-package", make_safe=False
+            )
+            _require_file(enhancement_package_path, "enhancement package")
+            sidecar_src = enhancement_package_path.with_suffix(".symbols.json")
+            enhancement_package_path = _stage_for_make(
+                enhancement_package_path, stage_dir, "enhancement package"
+            )
+            if sidecar_src.is_file() and enhancement_package_path.parent == stage_dir:
+                shutil.copyfile(
+                    sidecar_src, enhancement_package_path.with_suffix(".symbols.json")
+                )
         if module_dir is not None and _make_unsafe(module_dir.as_posix()):
             staged_modules = stage_dir / "modules"
             for module in _selected_guest_modules(normalized, selected_optional):
@@ -2033,14 +2064,18 @@ def build_package(
             )
         make_display_name, make_identity = _version_identity(make_executable, "Make")
         cc_display_name, cc_identity = _version_identity(cc_executable, "C compiler")
-        cache_key = _cache_key_for_build(
-            input_hashes=input_hashes,
-            title_input_identity=title_input_identity,
-            plan=plan,
-            selected_optional=selected_optional,
-            funcs_per_chunk=funcs_per_chunk,
-            compiler_name=cc_name,
-        )
+        try:
+            cache_key = _cache_key_for_build(
+                input_hashes=input_hashes,
+                title_input_identity=title_input_identity,
+                plan=plan,
+                selected_optional=selected_optional,
+                funcs_per_chunk=funcs_per_chunk,
+                compiler_name=cc_name,
+                enhancement_package_path=enhancement_package_path,
+            )
+        except package_cache.PackageCacheError as exc:
+            raise PackageRouteError("PACKAGE_INVALID_ENHANCEMENT", str(exc)) from exc
         if reuse_aot_from is not None:
             reuse_source = _absolute_path(reuse_aot_from, "reusable AOT source", make_safe=False)
             valid_reuse, reuse_reason = package_cache.validate_package_cache(reuse_source)
@@ -2106,6 +2141,8 @@ def build_package(
             "PUBLIC_SAFE": "1",
             "NK_AOT_PREGENERATED": "1" if pregenerated else "0",
         })
+        if enhancement_package_path is not None:
+            build_environment["ENHANCEMENT_PACKAGE"] = enhancement_package_path.as_posix()
         build_jobs, build_jobs_reason = _host_package_build_jobs(
             build_environment["CHUNK_TARGET_BYTES"]
         )
@@ -2224,6 +2261,7 @@ def build_package(
             plan,
             selected_optional=selected_optional,
             funcs_per_chunk=funcs_per_chunk,
+            enhancement_package_path=enhancement_package_path,
         )
         cache_options["planner_sha256"] = package_cache.sha256_file(
             ROOT / "tools" / "title_codegen_plan.py"
@@ -2340,6 +2378,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aot-stage", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reuse-aot-stage", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
+        "--enhancement-package",
+        type=Path,
+        default=None,
+        help="optional declarative enhancement package (e.g. experimental 60 Hz logic rescale)",
+    )
+    parser.add_argument(
         "--profile",
         dest="codegen_profile",
         choices=("none", "hst"),
@@ -2395,6 +2439,7 @@ def main(argv: list[str] | None = None) -> int:
                 title_input_identity_file=args.title_input_identity_file,
                 aot_stage=args.aot_stage,
                 reuse_aot_stage=args.reuse_aot_stage,
+                enhancement_package_path=args.enhancement_package,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:

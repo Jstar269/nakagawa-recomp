@@ -38,6 +38,7 @@ typedef struct {
     int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;
+    bool experimental_60hz; /* exports SR_EXPERIMENTAL_60HZ=1; only an enhancement-package build reads it */
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
     uint32_t headless_accept_presented_frames; /* 0 disables the windowed acceptance checkpoint */

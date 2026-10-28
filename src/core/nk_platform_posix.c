@@ -489,14 +489,18 @@ bool nk_platform_spawn_process(
             }
         }
 
-        /* If custom envp provided, apply it */
+        /* If custom envp provided, apply it. The entries are const (callers pass
+         * string literals), so the name is copied out rather than split in place. */
         if (envp) {
             for (int i = 0; envp[i]; i++) {
-                char *eq = strchr(envp[i], '=');
+                const char *eq = strchr(envp[i], '=');
                 if (eq) {
-                    *eq = '\0';
-                    setenv(envp[i], eq + 1, 1);
-                    *eq = '=';
+                    char name[256];
+                    size_t name_len = (size_t)(eq - envp[i]);
+                    if (name_len == 0 || name_len >= sizeof(name)) _exit(127);
+                    memcpy(name, envp[i], name_len);
+                    name[name_len] = '\0';
+                    if (setenv(name, eq + 1, 1) != 0) _exit(127);
                 } else {
                     unsetenv(envp[i]);
                 }

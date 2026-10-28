@@ -2349,6 +2349,44 @@ static void sched_release_thread_stack(TCB *t) {
     t->stack_released = 1;
 }
 
+/* Public PSPSDK pspthreadman.h: PSP_THREAD_ATTR_NO_FILLSTACK "Disables filling the stack
+ * with 0xFF on creation". */
+#define SCHED_THREAD_ATTR_NO_FILLSTACK 0x00100000u
+#define SCHED_STACK_FILL_BYTE          0xffu
+/* sceKernelGetThreadStackFreeSize starts counting this many bytes above the low end. */
+#define SCHED_STACK_FREE_SKIP          0x10u
+
+/* sceKernelGetThreadStackFreeSize(thid): the run of untouched fill bytes in the selected
+ * thread's own stack, counted upward from SCHED_STACK_FREE_SKIP bytes above its low end;
+ * thid 0 selects the calling thread.  Public PSPAutotests tests/threads/threads/stackfree.c
+ * and stackfree.expected (hrydgard/pspautotests e821a1ba):
+ *  - a new stack is filled with 0xFF: a thread that writes 1 KiB of 0xFF into its frame
+ *    answers the free size of a thread that writes nothing (0xea0), and one that writes
+ *    1 KiB of 0x00 answers 0x400 less (0xaa0);
+ *  - in each of those cells the free size is 0x10 below the same thread's
+ *    sceKernelCheckThreadStack value, read here as its SP's distance from the low end, so
+ *    the lowest 0x10 bytes are not counted.  What the PSP keeps there is not measured;
+ *  - a thread created with NO_FILLSTACK answers 0.  The capture's three no-fill cells pass
+ *    it together with 0x00400000, which this runtime does not model;
+ *  - -1, 0xDEADBEEF and a deleted thread answer UNKNOWN_THID; a created, ready, finished
+ *    or suspended thread and the caller answer a size.
+ * A NO_FILLSTACK stack holds no fill bytes, so it answers 0 from the attribute recorded at
+ * creation.  Two cases are not measured: a no-fill stack placed over memory that still
+ * holds 0xFF, and whether restarting a finished thread fills its stack again (the fill
+ * here happens only at creation).  Byte reads go through the range-checked accessor, so
+ * no bulk host pointer is formed. */
+uint32_t sched_thread_stack_free_size(uint32_t uid) {
+    TCB *t = tcb_by_uid(resolve_thread_uid(uid));
+    if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
+    if ((t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK) || t->stack_size <= SCHED_STACK_FREE_SKIP)
+        return 0;
+    const uint32_t first = t->stack_base + SCHED_STACK_FREE_SKIP;
+    const uint32_t span = t->stack_size - SCHED_STACK_FREE_SKIP;
+    uint32_t free_bytes = 0;
+    while (free_bytes < span && MEM_R8(first + free_bytes) == SCHED_STACK_FILL_BYTE) free_bytes++;
+    return free_bytes;
+}
+
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name) {
     if (s_ntcb >= MAXTHREADS) {
@@ -2467,6 +2505,15 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         stack_range_release(user_base, reservation);
         stack_ok = 0;
     }
+    /* The 0xFF fill and the k0/TLS seeding below write through host pointers over the
+     * whole reservation, so the span is checked before anything is written. */
+    if (stack_ok && !sr_guest_span_writable(user_base, reservation)) {
+        fprintf(stderr, "sched_create_thread: stack [0x%08x,0x%08x) is not writable guest "
+                "memory -- failing create (maps to SCE_KERNEL_ERROR_NO_MEMORY)\n",
+                user_base, user_base + reservation);
+        stack_range_release(user_base, reservation);
+        stack_ok = 0;
+    }
     if (!stack_ok) {
         fprintf(stderr, "sched_create_thread: stack_size=0x%08x exceeds available "
                 "free guest stack ranges below s_stack_top=0x%08x (entry=0x%08x) -- failing create "
@@ -2516,6 +2563,11 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->stack_size = user_sz;
     t->stack_reservation = reservation;
     t->stack_released = 0;
+    /* A new stack is filled with 0xFF unless the creation attribute has NO_FILLSTACK
+     * (evidence at sched_thread_stack_free_size).  The fill covers the requested stack
+     * only; the runtime's k0/TLS block above it is seeded below. */
+    if (!(t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK))
+        memset(SR_HOST(user_base), SCHED_STACK_FILL_BYTE, user_sz);
     t->resources_released = 0;
     t->k0_init = k0;
     t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 region */
@@ -2931,12 +2983,6 @@ void sr_yield(CpuState *s) {
         return;
     }
     s_suspended_yields = 0;
-    /* Phase B1.spin (audio dead-loop break) was removed: after stripping the
-     * VBLANK forward in recomp.c and the relaunch hacks in deliver_vblank,
-     * the recomp's f_0004ea98 stub and its downstream goto-spin are now a real
-     * bug to fix at the source. Forcing s->pc from inside sr_yield is unsafe
-     * (mutates guest control flow mid-recomp) — replace f_0004ea98 with a
-     * native handler in hle.c that writes MEM[0x33b230]=1 and returns r3=1. */
 
     static int s_yieldlog = -1;
     if (s_yieldlog < 0) s_yieldlog = getenv("SR_YIELDLOG") ? 1 : 0;

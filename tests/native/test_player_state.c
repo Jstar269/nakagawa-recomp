@@ -3877,6 +3877,16 @@ int main(int argc, char **argv) {
     player_app_toggle_reduce_motion(settings);
     assert(settings->settings.reduce_motion == false);
 
+    assert(settings->settings.experimental_60hz == false);
+    player_app_toggle_experimental_60hz(settings);
+    assert(settings->settings.experimental_60hz == true);
+    player_app_toggle_experimental_60hz(settings);
+    assert(settings->settings.experimental_60hz == false);
+    player_app_set_experimental_60hz(settings, true);
+    assert(settings->settings.experimental_60hz == true);
+    player_app_set_experimental_60hz(settings, false);
+    assert(settings->settings.experimental_60hz == false);
+
     player_app_adjust_volume(settings, 5);
     assert(settings->settings.master_volume == 85);
     player_app_adjust_volume(settings, 1000);
@@ -5966,6 +5976,33 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.launcher_window_width == 1100);
         assert(s_app2->settings.launcher_window_height == 640);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* The player's --experimental-60hz is a session-only override: it opts the
+           launches of this session in, and a later save never records it. */
+        {
+            PlayerApp *x_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+            assert(x_app != NULL);
+            player_app_settings_init_default(&x_app->settings);
+            size_t path_len = strlen(test_settings_path);
+            assert(path_len < sizeof(x_app->settings_path));
+            memcpy(x_app->settings_path, test_settings_path, path_len + 1u);
+            assert(!player_app_experimental_60hz_active(x_app));
+            player_app_set_experimental_60hz_session(x_app, true);
+            assert(player_app_experimental_60hz_active(x_app));
+            assert(x_app->settings.experimental_60hz == false);
+            player_app_toggle_vsync(x_app); /* a persisted change writes the file */
+            PlayerApp *x_reload = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+            assert(x_reload != NULL);
+            assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
+            assert(x_reload->settings.vsync == x_app->settings.vsync);
+            assert(x_reload->settings.experimental_60hz == false);
+            assert(!player_app_experimental_60hz_active(x_reload));
+            /* The saved setting alone also turns it on. */
+            player_app_set_experimental_60hz(x_reload, true);
+            assert(player_app_experimental_60hz_active(x_reload));
+            free(x_reload);
+            free(x_app);
+        }
 
         /* Launcher and game fullscreen are independent persisted settings. */
         player_app_toggle_launcher_fullscreen(s_app2);
