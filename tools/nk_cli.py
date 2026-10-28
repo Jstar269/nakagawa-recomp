@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 import contextlib
 import errno
 import hashlib
@@ -1515,6 +1516,7 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     # CODEGEN_USER_ARGS above. Named only when on, so untrapped keys are unchanged.
     if package_cache.nan_trap_enabled(environment):
         options["nan_trap"] = True
+    options.update(package_cache.enhancement_package_options(environment))
     return options
 
 
@@ -1528,6 +1530,7 @@ def _current_package_cache_key(
     *,
     public_safe: bool = True,
     instruction_trace: bool = False,
+    enhancement_package_path: Path | None = None,
 ) -> dict:
     import title_codegen_plan
 
@@ -1563,7 +1566,12 @@ def _current_package_cache_key(
     environment.update(package_cache.package_optimization(
         manifest.get("codegen_profile", "none"), environment
     ))
-    options = _package_codegen_options(manifest, environment)
+    if enhancement_package_path is not None:
+        environment["ENHANCEMENT_PACKAGE"] = str(enhancement_package_path)
+    try:
+        options = _package_codegen_options(manifest, environment)
+    except package_cache.PackageCacheError as exc:
+        raise PackageBuildError(str(exc)) from exc
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
         title_input_identity=title_input_identity,
@@ -2059,6 +2067,63 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         reporter.close()
 
 
+def _select_enhancement_package(
+    user_root: Path,
+    disc_id: str,
+    *,
+    title_id: str,
+    executable_sha256: str,
+    enhancement_package: Path | None,
+    experimental_60hz: bool,
+    environment: Mapping[str, str],
+) -> tuple[Path | None, Path]:
+    """The enhancement package a build applies and the package directory it writes.
+
+    A package is applied only when the command names it (`--enhancement-package`, or
+    `--experimental-60hz` with `<user data>/enhancements/<disc id, lowercase>-60hz.json`).
+    An environment that names one on its own is refused, explicit package or not: the
+    Makefile would read it, and it would otherwise enhance the authentic package or
+    override the package checked here. An enhanced build gets its own directory, never
+    the authentic `packages/<disc_id>`.
+    """
+    ambient = package_cache.ambient_enhancement_package(environment)
+    if ambient is not None:
+        raise PackageBuildError(
+            f"Build refused: the environment names an enhancement package ({ambient}). "
+            "Unset it; build-package applies a package only through --enhancement-package "
+            "or --experimental-60hz."
+        )
+    package_path = enhancement_package
+    if experimental_60hz and package_path is None:
+        candidate = user_root / "enhancements" / f"{disc_id.lower()}-60hz.json"
+        if not candidate.is_file():
+            raise PackageBuildError(
+                f"--experimental-60hz requires an enhancement package at {candidate} "
+                "or an explicit --enhancement-package <path>."
+            )
+        package_path = candidate
+    if package_path is None:
+        return None, user_root / "packages" / disc_id
+    import enhancement_package as enhancement_package_module
+
+    package_path = Path(package_path).expanduser().resolve(strict=False)
+    try:
+        package = enhancement_package_module.load_and_validate_package(package_path)
+    except (OSError, ValueError) as exc:
+        raise PackageBuildError(f"Enhancement package rejected: {exc}") from exc
+    if package["target_title_id"] != title_id:
+        raise PackageBuildError(
+            f"Enhancement package target_title_id {package['target_title_id']!r} "
+            f"does not match library title_id {title_id!r}."
+        )
+    if "executable_sha256" in package and package["executable_sha256"] != executable_sha256:
+        raise PackageBuildError(
+            f"Enhancement package executable_sha256 {package['executable_sha256']} "
+            f"does not match selected executable SHA-256 {executable_sha256}."
+        )
+    return package_path, user_root / "packages" / f"{disc_id}-enhanced-{package['id']}"
+
+
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
     _record_aot_stage_result(args, "NOT_RUN", "NONE")
@@ -2315,7 +2380,15 @@ def _build_package(args: argparse.Namespace, stage_observer,
             package_cache.canonical_json(title_input_identity).encode("utf-8"),
         )
 
-        target_dir = user_root / "packages" / disc_id
+        enhancement_package_path, target_dir = _select_enhancement_package(
+            user_root,
+            disc_id,
+            title_id=entry["title_id"],
+            executable_sha256=actual_hash,
+            enhancement_package=getattr(args, "enhancement_package", None),
+            experimental_60hz=bool(getattr(args, "experimental_60hz", False)),
+            environment=os.environ,
+        )
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
@@ -2327,6 +2400,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             cached_header,
             title_input_identity,
             instruction_trace=bool(getattr(args, "instruction_trace", False)),
+            enhancement_package_path=enhancement_package_path,
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)
@@ -2415,6 +2489,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 planner.extend(("--module-dir", str(module_dir)))
             if cached_header is not None:
                 planner.extend(("--psp-header", str(cached_header)))
+            if enhancement_package_path is not None:
+                planner.extend(("--enhancement-package", str(enhancement_package_path)))
             return planner
 
         def log_command(planner: list[str]) -> None:
@@ -4531,6 +4607,14 @@ def main() -> int:
                          help="Optional directory containing required guest PRXs")
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
+    p_build.add_argument(
+        "--enhancement-package", type=Path, default=None,
+        help="Experimental: apply a validated enhancement package (e.g. 60 Hz logic rescale) in a separate AOT epoch",
+    )
+    p_build.add_argument(
+        "--experimental-60hz", action="store_true", default=False,
+        help="Experimental: opt in to building the native 60 Hz enhanced package (default: off / authentic 30 Hz)",
+    )
     p_build.add_argument(
         "--register-local-compatibility-record", action="store_true",
         help="explicitly record this exact local input identity for a manifest that requires it",
