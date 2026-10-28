@@ -332,12 +332,13 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
 }
 #endif
 
-int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes) {
+int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int maxH, int strideBytes) {
     SrH264FrameTarget target;
     memset(&target, 0, sizeof(target));
     target.kind = SR_H264_TARGET_HOST;
     target.host_buffer = dst;
     target.host_width = maxW;
+    target.host_height = maxH;
     target.host_stride = strideBytes;
     return sr_h264_frame_ex(id, eos, &target, NULL);
 }

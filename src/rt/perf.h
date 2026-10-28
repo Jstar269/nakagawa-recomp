@@ -185,6 +185,9 @@ void     sr_perf_present_submit(void);
 void     sr_perf_present_wait(uint64_t started_ns);
 void     sr_perf_present_done(uint64_t started_ns, int result);
 void     sr_perf_present_skip(void);
+/* One guest framebuffer the window received, at VBLANK `vcount`. A buffer that differs from the
+ * previous present's is a new game frame; the same buffer again is a re-present. */
+void     sr_perf_present_frame(uint32_t buffer, uint32_t vcount);
 void     sr_perf_aot_begin(uint32_t pc);
 void     sr_perf_aot_end(void);
 void     sr_perf_aot_instruction(uint32_t pc, uint32_t opcode);
@@ -221,6 +224,9 @@ void     sr_perf_audio_queue(int channel, uint32_t queued_frames, uint64_t starv
 /* In-game HUD metrics query (reuses SR_PERF counters, zero overhead when inactive) */
 void     sr_perf_enable_counters(void);
 void     sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz);
+/* New game frames per second and the mean VBLANKs from one new frame to the next (0 until two
+ * new frames were seen); out_fps above counts every present, re-presents included. */
+void     sr_perf_get_hud_frames(double *out_game_fps, double *out_vblanks_per_frame);
 
 #ifdef __cplusplus
 }

@@ -133,7 +133,7 @@ Current fail-closed limits are deliberate:
 - only the generator's current `hst` and `none` profile choices are accepted.
 
 The manager adapter is deliberately fail-closed: this slice accepts only the
-local HST retail manifest (publication-excluded, never checked in) for HST manager actions, and it rejects unsupported plan
+HST manifest (`assets/titles/hst-ucus98701.json`) for HST manager actions, and it rejects unsupported plan
 versions, unknown plan fields, malformed digests, projections that disagree with
 the plan's semantics, a manifest that changed after planning, missing required
 private bindings, and unsupported span/profile configurations before Make runs.
@@ -164,7 +164,7 @@ and every field is a guest address:
 | --- | --- |
 | `fallback_entry` | `driver.c` when the image entry is not compiled |
 | `worker_thread_entry` | `sched.c` worker role capture and create-reuse |
-| `launcher_thread_entry` | `sched.c` launcher role capture and priority demotion |
+| `launcher_thread_entry` | `sched.c` launcher role capture (the priority demotion is retired, #363) |
 
 `vblank_frame_counter_addr` and `vblank_vsync_counter_addr` are retired (#643): a delivered
 VBLANK writes no guest memory, and manifests declaring them are refused.
@@ -175,7 +175,7 @@ configured" value, so a configured zero would be ambiguous), and equal worker an
 launcher entries. Omitting the block entirely is valid and configures nothing.
 
 The block may name addresses and roles. It cannot redefine a PSP semantic: what a
-worker entry or a launcher demotion *means* stays in the
+worker entry or a launcher role *means* stays in the
 runtime, and a binding only decides whether — and where — that meaning applies.
 
 ### Typed collections
@@ -306,7 +306,7 @@ which title the tree happens to be building.
 The two public fixtures carry deliberately disjoint source-owned addresses. Each build
 asserts that the scheduler acts at its own configured addresses and that every other
 candidate address — the other fixture's, and the five values the runtime used to
-hardcode — claims no role, is never reused, is never demoted, and never has its counter
+hardcode — claims no role, is never reused, keeps its declared priority, and never has its counter
 word written. The generic build asserts that of all of them. This is production-helper
 (tier-2) evidence: the real `sched_create_thread` and `deliver_vblank` run, but the
 scheduler world is a white-box test fixture rather than a title route.
@@ -394,13 +394,10 @@ role global or accessor directly.
 
 ### HST
 
-HST's real values live only in the local `assets/titles/hst-ucus98701.json` —
-intentionally never checked in and publication-excluded via
-`assets/public_source_profile.json`, with an explicit `.gitignore` accident
-guard (see the titles README)
-and reach the build through `nk_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
+HST's real values live only in `assets/titles/hst-ucus98701.json` (see the
+titles README) and reach the build through `nk_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
 direct Make line). They are deliberately not encoded in the `Makefile`, in `src/rt`, or
-in any checked-in manifest.
+in any other checked-in manifest.
 
 A build that explicitly identifies itself as HST (`GAME_NAME=hst`) but supplies no
 `TITLE_MANIFEST` **fails closed** with an actionable message rather than producing an HST

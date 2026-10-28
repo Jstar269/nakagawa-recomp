@@ -55,6 +55,14 @@ typedef struct {
     uint32_t tex_addr, tex_bufw, tex_fmt;   /* level-0 texture base / stride(texels) / PSM */
     uint32_t tex_wrap, tex_func, tex_env, tex_filter;
     int tex_w, tex_h;                        /* texture dimensions (from TEXSIZE log2) */
+    /* Mip levels 1-7 (index = level - 1), decoded like level 0's TEXADDR/TEXBUFWIDTH/TEXSIZE.
+     * Sizes stay log2 so a level never written reads as the 1x1 a zero TEXSIZE word gives. */
+    uint32_t tex_mip_addr[7], tex_mip_bufw[7];
+    uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
+    uint32_t tex_max_level;                  /* TEXMODE bits 16-18: highest level sampled */
+    uint32_t tex_level_mode;                 /* TEXLEVEL bits 0-1: 0 auto, 1 constant, 2 slope */
+    float tex_lod_bias;                      /* TEXLEVEL bits 16-23: signed 4.4 level bias */
+    float tex_lod_slope;                     /* TEXLODSLOPE */
     uint32_t clut_addr, clut_fmt;            /* palette base and format word */
     /* Internal CLUT RAM, captured at GE_LOADCLUT like the hardware. Games reuse the staging
      * buffer right after LOADCLUT, so sampling the palette live from memory reads garbage. */
@@ -283,6 +291,13 @@ void      ge_zbuf_invalidate_guest_span(uint32_t addr, uint32_t bytes);
 void      ge_zbuf_note_external_write(void);
 void      ge_zbuf_invalidate_guest_range(uint32_t addr);
 GeState  *ge_state_ptr(void);
+/* Changes whenever GE state may have changed (each list command, init, replay restore), so a
+ * consumer can keep values derived from GeState until it moves. */
+uint32_t  ge_state_serial(void);
+/* A write through ge_state_ptr() outside a list command does not move the serial by itself:
+ * the writer calls this before the next draw, or the consumers keep values derived from the
+ * old state (ge.c's lighting inputs, the Vulkan backend's per-draw state template). */
+void      ge_state_note_external_write(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);
 /* Decode the CURRENT texture (ge.tex_addr, tex_w x tex_h) to RGBA8 through the exact

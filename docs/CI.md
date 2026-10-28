@@ -72,6 +72,23 @@ Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
 at 60 seconds with a 4 KiB maximum input. The target does not use title files,
 retail inputs, or hardware.
 
+### Project website (GitHub Pages)
+
+`.github/workflows/pages.yml` publishes the project website,
+<https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
+repository's Pages source is "GitHub Actions". The page is one static file with no scripts,
+web fonts or third-party requests. Its images are files the repository already publishes:
+the brand marks, the showcase demo captures, the presentation screenshot
+`docs/media/hst-title-screen.png` and its 960 px copy with their notice, and the share card
+`docs/images/brand/og-card.png` that link previews show. The build job copies an explicit list of
+files into the artifact, so nothing else in the tree is published, and fails when the page
+names a local file the list does not copy. A pull request that touches those paths runs the
+build job only; a push to `main`, or a manual run on `main`, also deploys through
+`actions/deploy-pages`. Only the deploy job holds `pages: write` and `id-token: write`, and
+the `github-pages` environment accepts deployments from `main` alone. To preview the site,
+open `docs/index.html` from a checkout: its relative image paths resolve the same way. Keep
+the page's status text in step with `README.md`, `docs/COMPATIBILITY.md` and the release notes.
+
 ### Hygiene beside the substantive gates
 
 The Python, native and Windows jobs wait only for `classify` and the
@@ -118,6 +135,15 @@ display guest in the showcase's synthetic TEST00007 identity. The built `nakagaw
 APPDATA and USERPROFILE point under the runner temporary directory. The Linux `native_tools` job
 stages the PSPDEV-built scene instead. Neither run is PSP-hardware or consumer-ISO evidence.
 
+When `tools/ci_paths.py` routes the native jobs, both hosts run `psmf-media-selftest`, the
+source-authored PSMF/H.264 fixture behind the `sr_h264` decoder seam (#283), each on its own
+backend. The Windows job runs it in its `selftests` part on Media Foundation
+(`src/rt/h264_mf.c`), then requires `psmf-media-selftest-csc-mutant` to be killed. The Linux
+`native_tools` job runs it on the vendored FFmpeg subset (`H264_FFMPEG=1`). When no decoder
+instance can be created, the selftest reports `SKIP` for its decode checks and still exits 0, so
+the Windows step fails on any `SKIP` line. Neither run is private media acceptance or
+PSP-hardware evidence.
+
 The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
 source-owned guest bytes twice — once as generated native code, once through the production
 interpreter floor — and reports the first difference in the canonical instruction trace, the
@@ -151,7 +177,10 @@ the Khronos validation layer, Xvfb, and the X11/XTest development libraries need
 SDL3 build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
 `gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer. Its
 terminal present-fault cases each get a fresh process, because the renderer must not reuse a
-device after a terminal failure; an exit 77 skip fails the gate. The job also runs
+device after a terminal failure; an exit 77 skip fails the gate. A separate step runs
+`gpu-coherence-selftest` the same way on lavapipe: the Vulkan backend's render-target coherence,
+texture cache, per-draw state template, filtering and blend cases against the software GE, where
+an exit 77 skip also fails. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
@@ -165,7 +194,9 @@ TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requi
 synthetic fixtures. Separately, the job runs `make CC=gcc player-ui-regressions`: scripted native
 player UI event and recovery flows, which are UI evidence rather than staging evidence. The test
 harness (`tests/native/test_player_ui.py`) forces SDL's dummy video and software render drivers for
-every player it spawns, so the gate is headless without any step environment. The CMake player is configured with CMake's default, unoptimized build type, so
+every player it spawns, so the gate is headless without any step environment. The target runs the
+suite as four parallel shards (`PLAYER_UI_SHARDS`, `NAKAGAWA_PLAYER_UI_SHARD`) that together run
+every test exactly once; each test already uses its own temporary data roots. The CMake player is configured with CMake's default, unoptimized build type, so
 the gate covers only that configuration: an optimized Release configuration fails under the global
 `-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
 job does not claim that configuration builds. Consumer ISO compatibility remains in the works

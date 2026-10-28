@@ -335,6 +335,37 @@ def assert_refusals_named(test: unittest.TestCase, stderr: str, case: str) -> No
     )
 
 
+def request_lines(stderr: str) -> list[str]:
+    """The lines the device logs for registry requests: one per request, the first time it resolves."""
+    return [line for line in stderr.splitlines() if re.match(r"flash0: \w+ registry index=", line)]
+
+
+def latin_request_line(index: int, backing: str, source: str, fallback: str | None = None) -> str:
+    """The line for Latin file ordinal ``index``. A request served by another file than its own
+    import is a substitute and names its fallback rule (#1300)."""
+    selection = "selection=exact" if fallback is None else f"selection=substitute fallback={fallback}"
+    return (f"flash0: Latin registry index={index + 1} requested=ltn{index}.pgf backing={backing} "
+            f"source={source} {selection}")
+
+
+def assert_requests_logged(test: unittest.TestCase, stderr: str, case: str) -> None:
+    """Every request is logged once. The Japanese project font and, when the cache is refused, the
+    project Latin font are stand-ins, so their lines say substitute; Korean has no source."""
+    project_latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+    if case in ("valid", "tampered"):  # the tampered file is the legacy alias, not an indexed one
+        latin = [latin_request_line(index, f"ltn{index}.pgf", "user-imported") for index in range(16)]
+    else:
+        latin = [latin_request_line(index, project_latin, "project", "project") for index in range(16)]
+    expected = [
+        "flash0: Japanese registry index=0 requested=jpn0.pgf "
+        f"backing={header_string('NK_FONT_SLOT_JAPANESE_FILE')} source=project "
+        "selection=substitute fallback=project",
+        "flash0: Korean registry index=17 requested=kr0.pgf backing=none source=none fallback=missing",
+        *latin,
+    ]
+    test.assertCountEqual(request_lines(stderr), expected)
+
+
 class Flash0FontFixtureContractTests(unittest.TestCase):
     """Compiler-free: the fixture is a valid import, and each case changes only what it names."""
 
@@ -569,6 +600,10 @@ const char *nk_font_latin_index_filename(int index) {
         "ltn8.pgf", "ltn9.pgf", "ltn10.pgf", "ltn11.pgf", "ltn12.pgf", "ltn13.pgf", "ltn14.pgf", "ltn15.pgf",
     };
     return (unsigned)index < NK_FONT_LATIN_INDEX_COUNT ? names[index] : NULL;
+}
+
+const char *nk_font_slot_psp_filename(NkFontSlot slot) {
+    return slot == NK_FONT_SLOT_JAPANESE ? "jpn0.pgf" : slot == NK_FONT_SLOT_KOREAN ? "kr0.pgf" : NULL;
 }
 
 int nk_font_latin_index_from_filename(const char *name) {
@@ -845,6 +880,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     self.assertIn("flash0-font:", run.stderr)
                     self.assertEqual(run.returncode, 0, run.stderr[-6000:])
                     assert_refusals_named(self, run.stderr, case)
+                    assert_requests_logged(self, run.stderr, case)
                     # The relative SR_USER_DATA_ROOT the selftest sets is named once, however many opens follow.
                     named = refusal_lines(run.stderr, USER_ROOT_PREFIX)
                     self.assertEqual(len(named), 1, "expected one SR_USER_DATA_ROOT refusal, got: " + repr(named))
@@ -896,6 +932,18 @@ class Flash0FontDeviceTests(unittest.TestCase):
             )
             self.assertIn("flash0-font-index:", run.stderr)
             self.assertEqual(run.returncode, 0, run.stderr[-6000:])
+            # #1300: one line per request, in resolution order. Index 3 is served by the nearest
+            # import in its size group, index 7 by the legacy single import, and index 16 by the
+            # project font: each says it is a substitute and which fallback chose its file.
+            project_latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+            self.assertEqual(request_lines(run.stderr), [
+                latin_request_line(0, "ltn0.pgf", "user-imported"),
+                latin_request_line(8, "ltn8.pgf", "user-imported"),
+                latin_request_line(4, "ltn4.pgf", "user-imported"),
+                latin_request_line(2, "ltn0.pgf", "user-imported", "same-size"),
+                latin_request_line(6, project_latin, "user-imported", "legacy"),
+                latin_request_line(15, project_latin, "project", "project"),
+            ])
 
 
 if __name__ == "__main__":

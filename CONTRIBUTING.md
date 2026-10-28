@@ -12,7 +12,11 @@ The rules it links to decide whether a change can land, so read them once.
    self-contained, no PSP or retail game needed) or
    [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted) (a contributor can take
    it). Issues labelled `needs-psp-hardware` need a physical PSP run, and `needs-owner-decision` waits on a
-   maintainer. Search existing issues before you open a new one.
+   maintainer. Search existing issues before you open a new one. Every issue carries at least one label and a
+   milestone: `v0.0.1` (the release's own steps), `v0.0.2` (bugs, HLE and accuracy fixes, tooling), `v0.1.0` (a
+   second title, the flight recorder, the hardware oracle), `v0.2.0` (product and distribution) or `v0.3.0`
+   (enhancements, diagnostic views, performance, new platforms). If GitHub won't let you set them, say in the
+   issue which fit and a maintainer sets them.
 3. **Agree the approach.** For anything bigger than a small fix, comment on the issue first.
 4. **Make one focused change.** Fork the repository to your personal account, create a branch, and change
    one thing. Leave **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
@@ -29,37 +33,38 @@ The rules it links to decide whether a change can land, so read them once.
    each refusal.
 7. **Disclose AI help.** If an AI tool helped, follow [docs/AI_USAGE.md](docs/AI_USAGE.md). Add one
    `Assisted-by: <tool> (<model>)` trailer per tool to each commit it helped produce (not `Co-Authored-By:`),
-   and say so in the pull request.
+   and say so in the pull request. If you work with an AI agent, point it at [AGENTS.md](AGENTS.md): its
+   "Where to start" section is written for your agent and covers the same steps as this list.
 8. **Sign off as the human author.** Sign off every commit with `git commit -s`, which adds
    `Signed-off-by: Your Name <you@example.com>`. Only the person who wrote the change may sign it off.
    See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
 9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
-   Ask questions by opening an issue, or by commenting on the issue you are working on.
+   Ask questions in the [Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category
+   of GitHub Discussions, or comment on the issue you are working on.
 
 ## Accessibility
 
 The player's accessibility statement, with what works, what does not and how to report a barrier, is
 [ACCESSIBILITY.md](ACCESSIBILITY.md). If you change the launcher or the documentation, follow its
 "Contributing accessibly" list and update its tables when a change adds, changes or removes a barrier.
-Questions that are not about code go through [SUPPORT.md](SUPPORT.md).
+For questions that are not about code, [SUPPORT.md](SUPPORT.md) says where to go.
 
 ## Licensing
 
-The repository-level project declaration is
-GPL-3.0-or-later. New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later`.
-Inherited and third-party files retain the exact SPDX identifier and notices recorded for their source
-lineage; do not relabel upstream-derived code as project-authored or replace its license identifier.
-Specific inherited licensing/provenance questions remain under qualified review; do not introduce
-third-party-derived code without resolving its actual source/license chain.
+The project as a whole is licensed GPL-3.0-or-later, and new files you write yourself use
+`SPDX-License-Identifier: GPL-3.0-or-later`. Files that came from somewhere else keep the exact SPDX
+identifier and notices recorded for where they came from: don't relabel upstream-derived code as
+project-authored, and don't replace its licence identifier. Some questions about inherited licensing and
+provenance are still under qualified review, so don't bring in code derived from a third party until you
+know exactly where it came from and under which licence.
 
 ## Provenance controls
 
 Run `make contrib-refresh`, or leave this to a maintainer. Two files,
 `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`, are generated from a private
-trusted ledger that contributors don't have. Never edit them by hand; they are not hand-written
-files. The ledger records, for each published path, the classification and evidence the public
-export claims for it and the SHA-256 of its bytes; the export is the public-safe inventory and
-digest built from that ledger.
+trusted ledger that contributors don't have, so never edit them by hand. For each published file, the
+ledger records where it came from, the evidence for that, and the SHA-256 of its bytes. The export is
+the list of public files and their digests, built from that ledger.
 
 For the ordinary case — you changed the contents of paths that already have public entries, and you
 added and removed nothing — run:
@@ -210,7 +215,7 @@ template points contributors at it instead). The evidence a pull request needs i
 set on its exact head commit — see [docs/CI.md](docs/CI.md) for which jobs run for which changed
 paths and what each one means.
 
-Every gate reports one of four outcomes, and they are not interchangeable:
+Every gate reports one of these outcomes, and they are not interchangeable:
 
 | Outcome | Meaning |
 | --- | --- |
@@ -230,11 +235,16 @@ Run checks proportional to the change:
 
 ```powershell
 .\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
-.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # runtime-only change
-.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # codegen/pipeline change
+mingw32-make --no-print-directory native-core-tests  # runtime change
+mingw32-make --no-print-directory display-smoke      # codegen/pipeline change: full build of a synthetic fixture, no game needed
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree
 ```
+
+To rebuild a game you own, pass its local title manifest:
+`.\nk_manager.ps1 -Action BuildFast -TitleManifest <your manifest> -GameName <name>` for a runtime-only change, or
+`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). Title manifests
+that name a retail game, such as the maintainer's Hot Shots Tennis one, stay local and are not in the repository.
 
 Pass `--worktree` when auditing by hand: it reads the bytes on disk. The bare `--tracked-only`
 form reads staged Git blobs, which is correct for the pre-commit hook (it stashes unstaged
@@ -276,8 +286,9 @@ Nakagawa Recomp is a maintainer-led project.
   [code of conduct](CODE_OF_CONDUCT.md). Decisions are made in public issues and pull requests whenever they are not
   security-sensitive.
 - **Contributors**: anyone who opens an issue or pull request under this guide and the DCO.
-- **AI agents**: used by the maintainer as assistants under [`AGENTS.md`](AGENTS.md); their commits say so with an
-  `Assisted-by:` trailer, and a human maintainer remains accountable for everything merged.
+- **AI agents**: used by the maintainer and by contributors as assistants under [`AGENTS.md`](AGENTS.md); their
+  commits say so with an `Assisted-by:` trailer. The person who submits a change is accountable for it, and a human
+  maintainer for everything merged.
 - **Automated reviewers and CI**: required checks gate every merge, but they advise; they do not decide.
 
 **Access to sensitive resources.** Only the maintainer, [@Jstar269](https://github.com/Jstar269), has admin
@@ -320,6 +331,5 @@ evidence. In every substantive pull request:
 A partial PR does not close an issue merely because CI is green. Record which acceptance criteria
 remain unresolved in the issue/PR discussion.
 
-Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) in all project spaces. Report security issues
-through [SECURITY.md](SECURITY.md), not a public issue when the reporting channel is available and
-appropriate to the repository's current visibility.
+Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) in all project spaces, including Discussions. Report
+security problems privately through [SECURITY.md](SECURITY.md), never in a public issue or discussion.

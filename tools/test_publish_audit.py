@@ -9,6 +9,7 @@ import sys
 import tempfile
 import hashlib
 import os
+import random
 import unittest
 from unittest import mock
 
@@ -350,6 +351,19 @@ class TestPublishAudit(unittest.TestCase):
         # Negative C macro #define fixture
         c_macro_neg = '#define TABLE_DIGEST "0123456789abcdef0123456789abcdef"\n'
         self.assertEqual(publish_audit.private_key_assignment_lines(c_macro_neg, "src/pgd.h"), [])
+
+    def test_only_the_reviewed_game_key_table_may_hold_key_literals(self):
+        # Owner decision 2026-10-27: one exact path carries the public game
+        # tables; the same bytes anywhere else still fail.
+        c_key = "static const u8 key_D91613F0[] = {%s};" % ", ".join(
+            "0x%02X" % i for i in range(16))
+        self.assertEqual(publish_audit.PUBLIC_GAME_KEY_TABLE_PATHS,
+                         frozenset({"src/core/nk_psp_builtin_keys.c"}))
+        self.assertEqual(publish_audit.private_key_literal_lines(
+            "src/core/nk_psp_builtin_keys.c", c_key), [])
+        for other in ("src/core/nk_psp_builtin_keys.h", "src/core/nk_psp_prx.c",
+                      "src/core/copy/nk_psp_builtin_keys.c", "nk_psp_builtin_keys.c"):
+            self.assertEqual(publish_audit.private_key_literal_lines(other, c_key), [1], other)
 
     def test_json_key_material_detection(self):
         # Positive JSON 32-hex string
@@ -1925,6 +1939,13 @@ class TextHygieneTests(unittest.TestCase):
     def test_exempt_binary_suffix_is_skipped(self):
         self.assertEqual(self._codes(b"a" + CRLF + b"b", path="assets/x.dat"), [])
 
+    def test_presentation_clip_is_binary_but_its_text_neighbours_are_not(self):
+        # Bytes that are neither UTF-8 nor NUL-bearing: governed text would report them, an .mp4 clip does not.
+        clip = b"ftypisom" + bytes(range(0x80, 0x100))
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4"), [])
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4.txt"), ["TEXT_ENCODING_UNDECODABLE"])
+        self.assertEqual(self._codes(b"a" + CRLF + b"b" + CRLF, path="docs/media/clip.md"), ["TEXT_LINE_ENDING_CRLF"])
+
     def test_empty_file_is_silent(self):
         self.assertEqual(self._codes(b""), [])
 
@@ -2449,6 +2470,107 @@ class RetailDiscIdTests(unittest.TestCase):
             for disc_id in unregistered_retail_disc_ids(data.decode("utf-8", "replace")):
                 offenders.append(f"{rel}: {disc_id}")
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+
+class IndexEntryProbeTests(unittest.TestCase):
+    """The LFS-pointer probe reads staged blobs in one batch and keeps per-entry verdicts."""
+
+    POINTER = (
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:d363cec75fecfafd1511e370e48c748c30199c694b83a4026be34d799b192917\n"
+        "size 4316284\n"
+    )
+
+    def repository(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name).resolve()
+        run_git(["init", "-q"], cwd=repo, check=True, capture_output=True)
+        run_git(["config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+        run_git(["config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def kinds(self, repo: Path, content_source: str) -> dict[tuple[str, str], str]:
+        entries = publish_audit._get_git_entries(
+            tracked_only=True, repo_root=repo, content_source=content_source)
+        return {(entry.path, entry.stage): entry.kind for entry in entries}
+
+    def test_index_probe_reads_staged_blobs_without_a_git_process_per_file(self):
+        repo = self.repository()
+        (repo / "pointer.bin").write_text(self.POINTER, encoding="utf-8", newline="\n")
+        (repo / "plain.txt").write_text("plain\n", encoding="utf-8", newline="\n")
+        run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
+        # Unstaged edits swap the two, so each source must read its own bytes.
+        (repo / "pointer.bin").write_text("no longer a pointer\n", encoding="utf-8", newline="\n")
+        (repo / "plain.txt").write_text(self.POINTER, encoding="utf-8", newline="\n")
+
+        per_file = mock.Mock(side_effect=AssertionError("one git process per indexed file"))
+        with mock.patch.object(publish_audit, "read_indexed_blob", per_file):
+            index = self.kinds(repo, publish_audit.CONTENT_INDEX)
+        self.assertEqual(index, {("plain.txt", "0"): "file", ("pointer.bin", "0"): "lfs_pointer"})
+        per_file.assert_not_called()
+        self.assertEqual(self.kinds(repo, publish_audit.CONTENT_WORKTREE),
+                         {("plain.txt", "0"): "lfs_pointer", ("pointer.bin", "0"): "file"})
+
+    def test_unmerged_index_judges_each_stage_by_its_own_blob(self):
+        repo = self.repository()
+        (repo / "asset.dat").write_text("base\n", encoding="utf-8", newline="\n")
+        run_git(["add", "-A"], cwd=repo, check=True, capture_output=True)
+        run_git(["commit", "-qm", "base"], cwd=repo, check=True, capture_output=True)
+        run_git(["checkout", "-qb", "side"], cwd=repo, check=True, capture_output=True)
+        (repo / "asset.dat").write_text("side\n", encoding="utf-8", newline="\n")
+        run_git(["commit", "-qam", "side"], cwd=repo, check=True, capture_output=True)
+        run_git(["checkout", "-q", "-"], cwd=repo, check=True, capture_output=True)
+        (repo / "asset.dat").write_text(self.POINTER, encoding="utf-8", newline="\n")
+        run_git(["commit", "-qam", "pointer"], cwd=repo, check=True, capture_output=True)
+        merge = run_git(["merge", "-q", "side"], cwd=repo, capture_output=True)
+        self.assertNotEqual(merge.returncode, 0, "the fixture needs a conflicted index")
+
+        self.assertEqual(self.kinds(repo, publish_audit.CONTENT_INDEX), {
+            ("asset.dat", "1"): "file",
+            ("asset.dat", "2"): "lfs_pointer",
+            ("asset.dat", "3"): "file",
+        })
+
+
+class BinaryHeuristicTests(unittest.TestCase):
+    """The control-byte count must equal the per-character rule it replaced."""
+
+    @staticmethod
+    def character_rule(data: bytes) -> bool:
+        if b"\x00" in data:
+            return True
+        try:
+            decoded = data.decode("utf-8")
+            if not decoded:
+                return False
+            non_printable = sum(1 for ch in decoded if ord(ch) < 32 and ch not in "\t\n\r")
+            return (non_printable / len(decoded)) > 0.05
+        except UnicodeDecodeError:
+            return True
+
+    def test_matches_the_character_rule(self):
+        rng = random.Random(1291)
+        alphabet = ["a", "Z", " ", "\t", "\n", "\r", "\x01", "\x1b", "\x1f", "\x7f",
+                    "é", "日", "\U0001f600", " "]
+        samples = [b"", b"\x00", b"plain text\n", "\x1b[0m\n".encode()]
+        for _ in range(3000):
+            length = rng.randrange(1, 120)
+            if rng.random() < 0.25:
+                samples.append(bytes(rng.randrange(256) for _ in range(length)))
+            else:
+                samples.append("".join(rng.choice(alphabet) for _ in range(length)).encode("utf-8"))
+        # Ratios on both sides of the 5% threshold, counted in characters, not bytes.
+        for controls in range(0, 8):
+            for wide in (0, 40):
+                samples.append(("\x01" * controls + "日" * wide + "x" * (100 - controls - wide))
+                               .encode("utf-8"))
+        flagged = 0
+        for data in samples:
+            expected = self.character_rule(data)
+            flagged += expected
+            self.assertEqual(publish_audit._is_binary_bytes(data), expected, repr(data[:40]))
+        self.assertTrue(0 < flagged < len(samples), "the samples must exercise both verdicts")
 
 
 if __name__ == "__main__":

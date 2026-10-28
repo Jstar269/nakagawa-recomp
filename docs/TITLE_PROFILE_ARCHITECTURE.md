@@ -1,12 +1,12 @@
 # Title Profile and Launch Session Architecture
 
-> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. Private title manifests, game-derived bindings, and acceptance evidence stay outside the public repository.
+> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. The HST manifest is public (`assets/titles/hst-ucus98701.json`); game inputs, other private title manifests and acceptance evidence stay outside the repository.
 
 ## 1. Goal and current evidence
 
 The architecture goal is to keep title identity and title-specific inputs out of generic UI and runtime defaults. Source-owned title data is validated before it reaches the registry, build planner, or launch path.
 
-The current source proves a narrower claim than complete multi-title acceptance: Python and native launch resolution bind a session to a validated title identity, and the test suite covers fail-closed identity/path selection and parity on synthetic fixtures. A real second-title bring-up remains open in [issue #285](https://github.com/Jstar269/nakagawa-recomp/issues/285). The project does not claim that every title can be supported without presentation or integration work.
+The current source proves a narrower claim than complete multi-title acceptance: Python and native launch resolution bind a session to a validated title identity, and the test suite covers fail-closed identity/path selection and parity on synthetic fixtures. A second-title bring-up landed under [issue #285](https://github.com/Jstar269/nakagawa-recomp/issues/285): PAC-MAN Championship Edition reaches its menu and plays a stage with generic fixes only ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). The next milestone, a second title that saves, closes and resumes, is [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126). The project does not claim that every title can be supported without presentation or integration work.
 
 ```text
 public title manifest
@@ -83,8 +83,8 @@ guest namespace:
 ]
 ```
 
-The private flagship manifest expresses its roots with these same typed entries;
-its local manifest and inputs remain outside this repository. A manifest that
+The flagship manifest, `assets/titles/hst-ucus98701.json`, expresses its roots
+with these same typed entries; its game inputs stay outside this repository. A manifest that
 omits `loose_content_roots` still loads and normalizes to an empty list. That is
 the explicit migration default: no neighboring-directory discovery occurs, so
 profiles that need extra roots must add the field before expecting those files
@@ -131,21 +131,18 @@ The current schema also permits an optional, typed `runtime_bindings` block for 
 The target remains a generic core that does not require title-specific patches. The current contract records the temporary bindings honestly rather than describing the target state as already achieved. Public schema fields do not authorize private paths, retail bytes, captures, or derived evidence.
 
 The generic dispatcher has no exact or range title-hook table. Historical resource-shaped
-targets now reach ordinary lookup and fail at a named interpreter boundary; the runtime
-reports the boundary as in the works under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
+targets now reach ordinary lookup and fail at a named interpreter boundary
+(`not-executable`).
 Unsupported interpreter forms remain fail-closed. HST-specific diagnostic probes in the
 HLE, scheduler, and recompiler were removed; use generic SR_TRACE_PC or SR_WATCH
 instrumentation when those observations are needed. The init-walker r16 save/restore
 no longer names caller addresses in generic dispatch. Real hardware does not restore
-$s0-$s7 or $fp/$s8 for a callee, so a generic title keeps every register write its
-callee makes. Only the HST title configuration arms a restore of those registers at a
-returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
-until the flagship's clobber is root-caused.
+$s0-$s7 or $fp/$s8 for a callee, so every title keeps every register write its callee
+makes. The HST-only restore of those registers at a returning CALL was retired under #363.
 
-The HST Newlib master and guest thread-table addresses are isolated behind the typed
-SrTitleReentBindings accessor in src/rt/title_config.c. It returns values only for the
-validated hst codegen profile with the matching HST source id. Other profiles receive no
-addresses and perform no guest-table seeding.
+No title profile supplies Newlib master or guest thread-table addresses: the HST reent
+bindings were retired under #363, and the runtime performs no guest-table seeding for any
+profile.
 
 ## 3. Catalog identity and generic launch resolution
 
@@ -181,9 +178,9 @@ For the native player’s current implementation boundary and process lifecycle,
 
 - Manifest structure is enforced by the shared schema/validator and public fixture tests.
 - Python/native identity and path resolution have source-owned parity and fail-closed regression coverage under #366.
-- A real second-title bring-up remains pending under #285.
+- The second-title bring-up landed under #285 (#552, #556); a second title that saves, closes and resumes is #1126.
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
 - HST reent-table configuration remains title-gated compatibility debt under #363; generic
   dispatch rejection and diagnostic cleanup do not establish full second-title support.
-- Release and preparation version authority remains unresolved under #333.
+- The first release is v0.0.1 (#333); its root release metadata was set to 0.0.1 at the candidate freeze (#513).
 - Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.

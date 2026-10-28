@@ -23,6 +23,8 @@
 #define PGF_MAX_SAMPLES 65536u
 #define PGF_MAX_GLYPH_EDGE 127u
 #define PGF_COMPOSITE_PARTS 3u
+/* A composite part whose code is 0 (and absent from the map) has no component. */
+#define PGF_COMPONENT_NONE UINT32_MAX
 #define PGF_FONT_INFO_SIZE 0x108u
 #define PGF_CHAR_INFO_SIZE 0x3cu
 #define PGF_GLYPH_IMAGE_SIZE 0x18u
@@ -48,6 +50,10 @@ struct PGF {
     uint8_t metric_counts[PGF_TABLE_COUNT];
     size_t metric_offsets[PGF_TABLE_COUNT];
     size_t shadow_map_offset;
+    /* Revision 3 with a 412-byte header: the first extension table's (start, length) code
+       ranges index the character map (PGF_SPEC.md 3.2); 0 ranges means a direct map. */
+    size_t subcharmap_offset;
+    uint32_t subcharmap_count;
     size_t char_map_offset;
     size_t char_pointer_offset;
     size_t glyph_data_offset;
@@ -160,12 +166,36 @@ static int pgf_add_section(size_t *cursor, uint64_t length, size_t total_size,
     return 1;
 }
 
+/* The character-map index of a code: code - firstGlyph for a direct map, or, when the
+   revision-3 subcharmap ranges are present, the code's position in those ranges laid end
+   to end in file order (a code in no range has no index). PGF_SPEC.md 3.2. */
+static int pgf_map_index(const PGF *p, uint32_t char_code, uint64_t *index) {
+    uint64_t base = 0u;
+    uint32_t i;
+    if (p->subcharmap_count == 0u) {
+        if (char_code < p->first_glyph) return 0;
+        *index = (uint64_t)char_code - p->first_glyph;
+        return 1;
+    }
+    for (i = 0; i < p->subcharmap_count; ++i) {
+        const uint8_t *range = p->image + p->subcharmap_offset + (size_t)i * 4u;
+        uint32_t start = pgf_u16(range);
+        uint32_t length = pgf_u16(range + 2u);
+        if (char_code >= start && char_code - start < length) {
+            *index = base + (char_code - start);
+            return 1;
+        }
+        base += length;
+    }
+    return 0;
+}
+
 static int pgf_map_entry(const PGF *p, uint32_t char_code, uint32_t *glyph_id) {
-    int64_t index = (int64_t)char_code - (int64_t)p->first_glyph;
+    uint64_t index;
     uint32_t value;
     int valid;
 
-    if (index < 0 || (uint64_t)index >= p->char_map_count) return 0;
+    if (!pgf_map_index(p, char_code, &index) || index >= p->char_map_count) return 0;
     /* The map value is a glyph index: the all-ones sentinel, and any value at or above
        the glyph (pointer) count, are lookup misses (PGF_SPEC.md 3.2). */
     value = pgf_get_bits(p->image + p->char_map_offset,
@@ -203,9 +233,10 @@ static int pgf_table_pair(const PGF *p, unsigned table, uint32_t index,
                           int32_t *first, int32_t *second) {
     size_t entry;
     if (table >= PGF_TABLE_COUNT) return 0;
-    if (index == UINT8_MAX && p->metric_counts[table] == UINT8_MAX) {
-        /* Project decision, unmeasured on PSP: return a zero pair without forming a table read.
-         * The count has no entry for index 255, so accepting it keeps this reader bounded. */
+    if (index == UINT8_MAX) {
+        /* Index 255 is "no entry" whatever the table's count (a one-byte count never reaches
+         * it); console font files use it in shorter tables (PGF_SPEC.md 3.5). The zero pair is
+         * a project decision, unmeasured on PSP, and no table read is formed. */
         *first = 0;
         *second = 0;
         return 1;
@@ -255,8 +286,12 @@ static int pgf_primary_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph) {
     if (!valid) return 0;
     glyph->row_order = pgf_get_bits(p->image + absolute, available, 42, 2, &valid);
     if (!valid) return 0;
-    flags = pgf_get_bits(p->image + absolute, available, 45, 3, &valid);
-    if (!valid) return 0;
+    /* Bits 44-47 say, for the dimension, X-adjustment, Y-adjustment and advance groups in
+       that order, whether the group is an 8-bit table index (1) or an inline pair (0)
+       (PGF_SPEC.md 3.5). Every console font record sets bit 47; an inline advance is
+       unmeasured and refused. */
+    flags = pgf_get_bits(p->image + absolute, available, 44, 4, &valid);
+    if (!valid || (flags & 8u) == 0u) return 0;
     glyph->shadow_id = pgf_get_bits(p->image + absolute, available, 55, 9, &valid);
     if (!valid) return 0;
 
@@ -304,9 +339,11 @@ static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
 
 /* Row order 3 carries three little-endian 16-bit character codes at the record's
    bitmap offset instead of a bitmap. Each code resolves through the ordinary
-   character map to a leaf raster component; see PGF_SPEC.md 3.6. */
+   character map to a leaf raster component; a code 0 that the map does not hold
+   names no component, and at least one part must name one. See PGF_SPEC.md 3.6. */
 static int pgf_resolve_composite(const PGF *p, PgfGlyph *glyph) {
     unsigned part;
+    unsigned present = 0u;
 
     if (glyph->bitmap_offset > p->size ||
         p->size - glyph->bitmap_offset < PGF_COMPOSITE_PARTS * 2u) {
@@ -318,16 +355,20 @@ static int pgf_resolve_composite(const PGF *p, PgfGlyph *glyph) {
         uint32_t code = pgf_u16(p->image + glyph->bitmap_offset +
                                 (size_t)part * 2u);
 
-        if (!pgf_map_entry(p, code, &component_id) ||
-            !pgf_checked_glyph(p, component_id, &component, 0)) {
-            return 0;
+        if (!pgf_map_entry(p, code, &component_id)) {
+            if (code != 0u) return 0;
+            glyph->component[part] = PGF_COMPONENT_NONE;
+            continue;
         }
+        if (!pgf_checked_glyph(p, component_id, &component, 0)) return 0;
         if ((component.row_order != 1u && component.row_order != 2u) ||
             component.width == 0u || component.height == 0u) {
             return 0;
         }
         glyph->component[part] = component_id;
+        present++;
     }
+    if (present == 0u) return 0;
     glyph->composite = 1u;
     return 1;
 }
@@ -345,21 +386,27 @@ static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
 
         shadow_code = pgf_u16(p->image + p->shadow_map_offset +
                               ((size_t)glyph->shadow_id - 1u) * 2u);
-        if (!pgf_map_entry(p, shadow_code, &mapped_glyph)) return 0;
-
-        if (glyph->shadow_offset < glyph->record_size) return 0;
-        target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
-        if (target < glyph->record_offset || target > p->size) return 0;
-        if (target == p->size) {
-            /* Project decision, unmeasured on PSP: treat an EOF target as an absent optional
-             * prefix and keep the read bounded. */
+        if (!pgf_map_entry(p, shadow_code, &mapped_glyph)) {
+            /* A shadow entry naming character 0, absent from the map, names no shadow glyph:
+             * console font files carry such entries (PGF_SPEC.md 3.3). The record is used with
+             * no shadow and no shadow record is read; any other unmapped code is refused. */
+            if (shadow_code != 0u) return 0;
             glyph->shadow_row_order = 0u;
         } else {
-            if (p->size - (size_t)target < 6u) return 0;
-            glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
-                                                    p->size - (size_t)target,
-                                                    42, 2, &valid);
-            if (!valid) return 0;
+            if (glyph->shadow_offset < glyph->record_size) return 0;
+            target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
+            if (target < glyph->record_offset || target > p->size) return 0;
+            if (target == p->size) {
+                /* Project decision, unmeasured on PSP: treat an EOF target as an absent
+                 * optional prefix and keep the read bounded. */
+                glyph->shadow_row_order = 0u;
+            } else {
+                if (p->size - (size_t)target < 6u) return 0;
+                glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
+                                                        p->size - (size_t)target,
+                                                        42, 2, &valid);
+                if (!valid) return 0;
+            }
         }
     }
     if (glyph->row_order != 3u) return 1;
@@ -494,12 +541,13 @@ static int pgf_parse_directory(PGF *p, PgfRefusal *refusal) {
     }
     if (header_size == PGF_REV3_HEADER_SIZE) {
         if (!pgf_add_section(&cursor, (uint64_t)rev3_count_a * 4u,
-                             p->size, &table_offset) ||
+                             p->size, &p->subcharmap_offset) ||
             !pgf_add_section(&cursor, (uint64_t)rev3_count_b * 4u,
                              p->size, &table_offset)) {
             *refusal = PGF_REFUSE_TRUNCATED;
             return 0;
         }
+        p->subcharmap_count = rev3_count_a;
     }
     if (!pgf_packed_size(p->char_map_count, char_map_bits, &length) ||
         !pgf_add_section(&cursor, length, p->size, &p->char_map_offset)) {
@@ -1269,6 +1317,7 @@ static int pgf_draw(const PGF *p, const PgfGlyph *glyph, uint32_t guest_image) {
     PgfPlan plans[PGF_COMPOSITE_PARTS];
     PgfGlyph parts[PGF_COMPOSITE_PARTS];
     unsigned part;
+    int drawn = 0;
 
     if (!p || !glyph || !pgf_read_target(guest_image, &target)) return 0;
     if (!glyph->composite) {
@@ -1279,13 +1328,17 @@ static int pgf_draw(const PGF *p, const PgfGlyph *glyph, uint32_t guest_image) {
     /* Every component is preflighted before the first pixel is written, so a
        component that cannot be placed leaves the whole draw untouched. */
     for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
+        if (glyph->component[part] == PGF_COMPONENT_NONE) continue;
         if (!pgf_checked_glyph(p, glyph->component[part], &parts[part], 0) ||
             !pgf_plan_component(&target, &parts[part], &plans[part])) {
             return 0;
         }
     }
+    /* The first present component is written as it is; the later ones combine with it. */
     for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
-        pgf_blit_component(p, &target, &parts[part], &plans[part], part != 0u);
+        if (glyph->component[part] == PGF_COMPONENT_NONE) continue;
+        pgf_blit_component(p, &target, &parts[part], &plans[part], drawn);
+        drawn = 1;
     }
     return 1;
 }

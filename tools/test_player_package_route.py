@@ -384,14 +384,25 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("#285", readme)
         self.assertIn("in the works", readme.lower())
         self.assertIn("START SETUP WIZARD", readme)
-        self.assertIn("ADD ANOTHER ISO", readme)
+        # The default launcher adds later games through the library's add tile,
+        # not the legacy renderer's ADD ANOTHER ISO button.
+        self.assertIn("Add a disc image you own", readme)
+        self.assertIn(
+            '"Add a disc image you own"',
+            (ROOT / "src" / "player" / "ui" / "scr_library.c").read_text(encoding="utf-8"),
+        )
+        # The player decrypts the user's disc itself (#295), so the setup wizard asks for
+        # a disc image, not a decrypted one.
+        wizard = (ROOT / "src" / "player" / "ui" / "scr_title.c").read_text(encoding="utf-8")
+        self.assertIn('"A disc image (.iso) of a PSP game you own"', wizard)
+        self.assertNotIn("A decrypted .iso", wizard)
         self.assertNotIn("click **Add Game**", readme)
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
         self.assertNotIn("automatic decryption is in the works", readme.lower())
-        # Built-in decryption was removed: the README says so and
-        # never asks for a key file.
-        self.assertIn("does not decrypt games", readme)
+        # Built-in decryption (#295): the README says Nakagawa decrypts the
+        # user's own disc locally and never asks for a key file.
+        self.assertIn("decrypts your own disc", readme)
         self.assertNotIn("key file", readme.lower())
         self.assertIn("#308", release_notes)
         self.assertNotIn("#285", release_notes)
@@ -401,8 +412,29 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("#547", preview)
         self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
         self.assertIn("-ExcludeOptionalFonts", preview)
-        self.assertIn("python tools/stage_runtime_dlls.py --target dist/bin", workflow)
+        # The job's Windows CPython runs the stager ("$PYTHON", #1522).
+        self.assertIn('"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin', workflow)
+        # Without the UI fonts beside it the packaged player silently starts the old launcher UI.
+        self.assertIn("tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts", workflow)
+        self.assertIn("assets/fonts/ui/manifest.json", preview)
         self.assertIn("set -euo pipefail", workflow)
+        # The showcase demos ship in bin/demos: PRXs from the locked PSPDEV on Linux,
+        # packages built and attested by the candidate job. The release scan exempts
+        # them and the player's own project fonts, and nothing else.
+        self.assertIn("showcase.py build-prx --out-dir", workflow)
+        self.assertIn("NK_SHOWCASE_DEMO_ROOT=dist/bin/demos", workflow)
+        self.assertIn("--prebuilt-prx-dir", workflow)
+        self.assertLess(workflow.index("--prebuilt-prx-dir"),
+                        workflow.index("actions/attest-build-provenance"))
+        # The showcase packages' completion manifests list dot-file build stamps;
+        # without them in the uploaded bundle the player hides both demos as stale.
+        upload = workflow[workflow.index("- name: Upload the attested candidate bundle"):]
+        upload = upload.split("\n      - name:", 1)[0]
+        self.assertIn("include-hidden-files: true", upload)
+        self.assertIn("'^\\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$'", preview)
+        self.assertIn("$relative -notmatch '^bin/font/nk[^/]*\\.pgf$'", preview)
+        self.assertIn("$relative -notlike 'bin/demos/*'", preview)
+        self.assertEqual(preview.count("$relative -not"), 2)
         self.assertIn("a nonzero exit aborts the job before artifact upload", preview)
         self.assertIn("does not run the stager again", preview)
         self.assertIn("SDL3.dll", release_notes)
@@ -1513,9 +1545,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
         encrypted = self.run_build_action(encrypted_root)
         self.assertNotEqual(encrypted.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", encrypted.stdout)
-        self.assertIn("[preflight] FAIL: ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
-                      "Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from "
-                      "your own copy in ", encrypted.stdout)
+        self.assertIn("[preflight] FAIL: ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                      "no decrypted EBOOT.elf is in ", encrypted.stdout)
+        self.assertIn("you can also place a decrypted EBOOT.elf from your own copy there.",
+                      encrypted.stdout)
         self.assertNotIn("key file", encrypted.stdout)
         self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())

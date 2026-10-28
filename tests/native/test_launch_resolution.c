@@ -23,6 +23,7 @@
 
 #include "nk_font.h"
 #include "nk_launch.h"
+#include "nk_psp_keystore.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
@@ -1143,6 +1144,24 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     assert(strstr(pgf_error, "cannot open the file") == NULL);
     assert(strstr(pgf_error, "truncated") != NULL);
 
+    /* The key file lives under the same per-user root. A malformed key file
+     * is enough to prove it was OPENED: "no key file at" is the verdict an
+     * unopenable path produces, and it must not appear for an existing file. */
+    {
+        char key_path[1300];
+        char key_error[256] = "";
+        snprintf(key_path, sizeof(key_path), "%s%ckeys.json", root, sep);
+        write_file_utf8(key_path, "{ this is not json");
+        NkKeystore *keystore = nk_keystore_create();
+        assert(keystore != NULL);
+        assert(nk_keystore_load_file(keystore, key_path, key_error,
+                                     sizeof(key_error)) != 0);
+        assert(strstr(key_error, "no key file at") == NULL);
+        assert(strlen(key_error) > 0);
+        nk_keystore_free(keystore);
+        nk_remove_utf8(key_path);
+    }
+
     nk_remove_utf8(staged_eboot);
     nk_remove_utf8(manifest);
     nk_remove_utf8(pgf);
@@ -2026,10 +2045,10 @@ int main(int argc, char **argv) {
     snprintf(legacy_manifest, sizeof(legacy_manifest), "%s%clegacy-retail.json",
              root17, sep);
     const char *legacy_manifest_json =
-        "{\"schema_version\":1,\"id\":\"hst-ucus98701-v1\","
+        "{\"schema_version\":1,\"id\":\"legacy-retail-fixture-v1\","
         "\"game_name\":\"hst\","
         "\"display_name\":\"Legacy Retail Fixture\",\"kind\":\"retail\","
-        "\"disc\":{\"id\":\"UCUS98701\",\"region\":\"NA\","
+        "\"disc\":{\"id\":\"UCES01402\",\"region\":\"EU\","
         "\"revision_policy\":\"exact-disc-id\"},"
         "\"executable\":{\"base\":\"0x00000000\",\"entry\":\"0x00000000\","
         "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
@@ -2046,8 +2065,8 @@ int main(int argc, char **argv) {
     write_file(legacy_img, "image");
 
     make_game(&game, iso_path);
-    snprintf(game.disc_id, sizeof(game.disc_id), "UCUS98701");
-    snprintf(game.title_id, sizeof(game.title_id), "hst-ucus98701-v1");
+    snprintf(game.disc_id, sizeof(game.disc_id), "UCES01402");
+    snprintf(game.title_id, sizeof(game.title_id), "legacy-retail-fixture-v1");
 
     /* Without the validated overlay: fail closed, never by default. */
     assert(nk_launch_prepare_session(&session, &game, root17) != NK_OK);
@@ -2068,7 +2087,7 @@ int main(int argc, char **argv) {
     assert(session.entry_point == 0u);
     assert(ends_with(session.executable_path, "hst.exe"));
     assert(ends_with(session.image_path, "hst_image.bin"));
-    assert(nk_launch_runtime_available(root17, "hst-ucus98701-v1") == true);
+    assert(nk_launch_runtime_available(root17, "legacy-retail-fixture-v1") == true);
     nk_title_catalog_clear_overlay();
     remove(legacy_exe);
     remove(legacy_img);
