@@ -336,6 +336,24 @@ class RuntimeModuleBoundaries(unittest.TestCase):
                          r'"code overlay cannot be translated: MWo3 header sizes do not add up')
 
 
+    def test_executable_pointers_seed_entry_shaped_overlay_words_only(self):
+        # The executable holds the table of an overlay's entry points; a pointer seeds the
+        # overlay only where the overlay's own word is entry-shaped (a prologue or `jr ra`).
+        data, entry, ctor, _memsz = basic_code_overlay()
+        elf = Elf(data)
+        ranges = exec_ranges(elf)
+        leaf = OVERLAY_LINK + 0x54                     # `jr ra`: entry-shaped
+        inner = OVERLAY_LINK + 0x48                    # `addiu sp, sp, 16`: not entry-shaped
+        plain, _ = analyze(elf)
+        hinted, _ = analyze(elf, entry_hints={leaf, inner, 0x12345678})
+        plain = {a for a in plain if in_ranges(a, ranges)}
+        hinted = {a for a in hinted if in_ranges(a, ranges)}
+        self.assertIn(entry, plain)
+        self.assertIn(ctor, plain)
+        self.assertNotIn(leaf, plain)
+        self.assertEqual(hinted - plain, {leaf})
+
+
 OVERLAY_LINK = 0x08C00000
 
 

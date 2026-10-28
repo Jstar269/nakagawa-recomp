@@ -233,6 +233,20 @@ class CodeOverlayLayout:
         return CODE_OVERLAY_HEADER_BYTES + self.text_size
 
 
+def data_section_words(elf):
+    """Every aligned word in an image's file-backed data sections (not .text or stubs).
+
+    These are the pointers it holds; codegen hands them to a code overlay's analysis as
+    entry hints, because the executable keeps the table of its overlays' entry points."""
+    words = set()
+    for s in elf.sections:
+        if s["typ"] != 1 or not s["size"] or s.get("nm") in (".text", ".sceStub.text"):
+            continue
+        blob = elf.data[s["off"]:s["off"] + s["size"]]
+        words.update(int.from_bytes(blob[o:o + 4], "little") for o in range(0, len(blob) - 3, 4))
+    return words
+
+
 def is_code_overlay(data):
     return bytes(data[:4]) == CODE_OVERLAY_MAGIC
 
@@ -2914,9 +2928,11 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
+            entry_hints=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
+    # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
@@ -3085,6 +3101,14 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
     # Linker-specific data-section names can also contain function pointers.
     # Keep their file-backed executable targets as traced entry candidates.
     hc.update(code_pointer_evidence(elf, ranges)["data"])
+
+    # Code pointers another image holds into this one: the executable's table of a code
+    # overlay's entry points. Several overlays share one address range, so a pointer seeds
+    # this image only where its own word there is entry-shaped, as for an address
+    # materialized in code.
+    for val in entry_hints or ():
+        if in_text(val) and _is_address_taken_entry(elf, val):
+            hc.add(val)
 
     # A computed `jr` whose target set the code bounds (an `andi` mask applied to a
     # materialized base) lands only on those pads; each one needs a dispatch entry.
