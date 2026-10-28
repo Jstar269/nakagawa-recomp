@@ -738,6 +738,37 @@ class BatchAdmitPathsTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "MERGE_PROFILE_NON_PATH_FIELD_CHANGED")
         git(ours, "merge", "--abort")
 
+    def test_merge_profile_keeps_a_path_the_other_side_moved_or_removed(self) -> None:
+        # main publishes an excluded path and drops an included one while the pull
+        # request adds its own: a union of each list would keep the path in both lists
+        # and bring the dropped one back.
+        fixture = _Fixture(self)
+        ours = fixture.worktree("profile-ours")
+        fixture.add_pr_path(ours, "docs/ours.md", "# Ours\n")
+        theirs = fixture.worktree("profile-theirs")
+        write(theirs, "docs/private-notes.md", "# Now public\n")
+        policy = json.loads((theirs / admit_paths.POLICY).read_text(encoding="utf-8"))
+        policy["exclude_paths"] = []
+        policy["include_paths"] = sorted(
+            (set(policy["include_paths"]) | {"docs/private-notes.md"}) - {"docs/guide.md"}
+        )
+        write(theirs, admit_paths.POLICY, admit_paths._canonical_profile_bytes(policy).decode("utf-8"))
+        git(theirs, "rm", "-q", "docs/guide.md")
+        git(theirs, "add", "docs/private-notes.md", admit_paths.POLICY)
+        git(theirs, "commit", "-qm", "publish the notes and drop the guide")
+        merge = subprocess.run(
+            ["git", "merge", "--no-commit", "--no-ff", git(theirs, "rev-parse", "HEAD")],
+            cwd=ours, env={**os.environ, **GIT_ENV}, capture_output=True, check=False,
+        )
+        self.assertIn(merge.returncode, (0, 1))
+        admit_paths.merge_profile(ours)
+        merged = json.loads((ours / admit_paths.POLICY).read_text(encoding="utf-8"))
+        self.assertEqual(merged["exclude_paths"], [])
+        self.assertIn("docs/private-notes.md", merged["include_paths"])
+        self.assertIn("docs/ours.md", merged["include_paths"])
+        self.assertNotIn("docs/guide.md", merged["include_paths"])
+        git(ours, "merge", "--abort")
+
     def test_nested_delta_verifies_and_legacy_flat_delta_remains_readable(self) -> None:
         fixture = _Fixture(self)
         fixture.add("docs/new-page.md", "# New page\n")

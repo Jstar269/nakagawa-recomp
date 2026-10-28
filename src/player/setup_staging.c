@@ -52,6 +52,13 @@ typedef struct {
 static void stage_error(PlayerStageContext *context, NkResult result,
                         const char *format, ...);
 
+/* What a too-long path runs into, named for the user. */
+#if defined(_WIN32) || defined(_WIN64)
+#define STAGE_PATH_LIMIT_OWNER "Windows"
+#else
+#define STAGE_PATH_LIMIT_OWNER "this system"
+#endif
+
 static bool stage_path_suffix_ci(const char *path, const char *suffix) {
     if (!path || !suffix) return false;
     size_t path_len = strlen(path);
@@ -162,6 +169,8 @@ static const char *stage_default_error(NkResult result) {
             return "[STAGE_XB_INVALID] A companion XB asset archive could not be decoded.";
         case NK_ERROR_INVALID_EXECUTABLE:
             return "[STAGE_EXECUTABLE_INVALID] The PSP executable in the ISO is invalid.";
+        case NK_ERROR_PATH_TOO_LONG:
+            return "[STAGE_PATH_TOO_LONG] A staged file's path is longer than " STAGE_PATH_LIMIT_OWNER " allows.";
         case NK_OK:
         default:
             return "[STAGE_FAILED] Native ISO staging failed; verify the selected image and retry.";
@@ -748,11 +757,13 @@ NkResult player_stage_game_with_summary(const char *iso_path,
         return NK_ERROR_ALREADY_EXISTS;
     }
     if (!nk_platform_mkdir_p_private(staging_root)) {
+        NkResult failure = nk_platform_path_exceeds_limit(staging_root, true)
+            ? NK_ERROR_PATH_TOO_LONG : NK_ERROR_IO;
         if (error_message && error_message_size > 0) {
             snprintf(error_message, error_message_size, "%s",
-                     stage_default_error(NK_ERROR_IO));
+                     stage_default_error(failure));
         }
-        return NK_ERROR_IO;
+        return failure;
     }
 
     PlayerStageContext context;
@@ -1145,6 +1156,10 @@ static void stage_title_extraction_message(NkResult result, const char *detail,
         case NK_ERROR_INVALID_XB:
             sentence = "[STAGE_XB_INVALID] One of the game's data archives on the disc could not be read. The disc image may be damaged; make a fresh copy of your disc and try again.";
             break;
+        case NK_ERROR_PATH_TOO_LONG:
+            /* Not the disc: the folder the files go into is too deep. */
+            sentence = "[STAGE_PATH_TOO_LONG] The path to Nakagawa's data folder is too long for " STAGE_PATH_LIMIT_OWNER ", so this game's deepest files could not be copied into it. Nothing is wrong with the disc. Start Nakagawa with a shorter data folder (--user-data-root=<a short folder>) and try again.";
+            break;
         case NK_ERROR_IO:
             sentence = "[STAGE_STORAGE_IO] The game's files could not be written. Check that the drive has free space and that Nakagawa's data folder is writable, then try again.";
             break;
@@ -1273,8 +1288,10 @@ NkResult player_stage_title(const PlayerStageTitleRequest *request,
     }
 
     if (!nk_platform_mkdir_p_private(paths.games_root)) {
-        stage_title_extraction_message(NK_ERROR_IO, NULL, message, message_size);
-        return NK_ERROR_IO;
+        NkResult failure = nk_platform_path_exceeds_limit(paths.games_root, true)
+            ? NK_ERROR_PATH_TOO_LONG : NK_ERROR_IO;
+        stage_title_extraction_message(failure, NULL, message, message_size);
+        return failure;
     }
     PlayerStageLock lock;
     int lock_state = stage_lock_acquire(paths.games_root, paths.lock_path, &lock);

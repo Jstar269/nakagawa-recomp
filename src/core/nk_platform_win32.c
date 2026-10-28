@@ -376,6 +376,35 @@ bool nk_platform_mkdir_p(const char *dir_path) {
     return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
 }
 
+/* RtlAreLongPathsEnabled (Windows 10 1607 and later) is true only when both the
+ * process manifest and the system allow paths past MAX_PATH. */
+static bool win32_long_paths_enabled(void) {
+    typedef BOOLEAN (WINAPI *LongPathsEnabledFn)(void);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+    FARPROC proc = GetProcAddress(ntdll, "RtlAreLongPathsEnabled");
+    if (!proc) return false;
+    LongPathsEnabledFn enabled;
+    memcpy(&enabled, &proc, sizeof(enabled));
+    return enabled() != 0;
+}
+
+bool nk_platform_path_exceeds_limit(const char *path, bool is_directory) {
+    if (!path || !*path) return false;
+    WCHAR wpath[32768];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(WCHAR))) return false;
+    /* The extended-length form is not held to MAX_PATH. */
+    if (wcsncmp(wpath, L"\\\\?\\", 4) == 0) return false;
+    if (win32_long_paths_enabled()) return false;
+    /* A relative path is held to the limit as the full path it names. */
+    DWORD length = GetFullPathNameW(wpath, 0, NULL, NULL);
+    if (length == 0) length = (DWORD)wcslen(wpath) + 1u;
+    length -= 1u; /* the size it reports counts the terminator */
+    /* CreateDirectoryW keeps room for an 8.3 file name inside a new directory. */
+    DWORD limit = is_directory ? MAX_PATH - 12u : MAX_PATH;
+    return length + 1u > limit;
+}
+
 bool nk_platform_mkdir_p_private(const char *dir_path) {
     /* Application-data directories inherit the per-user ACL established by
      * Windows. Keep the same wide-character path handling as mkdir_p so a
@@ -861,6 +890,9 @@ bool nk_platform_spawn_process(
         &si.StartupInfo,
         &pi
     );
+    /* Read the refusal before the cleanup below can reset the thread's last
+       error: a security product's block reaches the player only as this code. */
+    DWORD create_error = success ? ERROR_SUCCESS : GetLastError();
 
     DeleteProcThreadAttributeList(attribute_list);
     free(attribute_list);
@@ -872,6 +904,7 @@ bool nk_platform_spawn_process(
     }
 
     if (!success) {
+        out_process->spawn_error = (int)create_error;
         return false;
     }
 
@@ -918,6 +951,45 @@ bool nk_platform_spawn_process(
     out_process->job_handle = (void *)hJob;
     out_process->process_id = (int)pi.dwProcessId;
     out_process->is_active = true;
+    return true;
+}
+
+#ifndef ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION
+#define ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION 4551L
+#endif
+
+NkSpawnBlock nk_platform_spawn_block(int os_error) {
+    switch ((DWORD)os_error) {
+        case ERROR_ACCESS_DENIED:
+            return NK_SPAWN_BLOCK_ACCESS_DENIED;
+        case ERROR_VIRUS_INFECTED:
+        case ERROR_VIRUS_DELETED:
+            return NK_SPAWN_BLOCK_THREAT;
+        case ERROR_ACCESS_DISABLED_BY_POLICY:
+        case ERROR_ACCESS_DISABLED_NO_SAFER_UI_BY_POLICY:
+        case ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION:
+            return NK_SPAWN_BLOCK_POLICY;
+        default:
+            return NK_SPAWN_BLOCK_NONE;
+    }
+}
+
+bool nk_platform_describe_os_error(int os_error, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (os_error == 0) return false;
+    WCHAR text[512];
+    DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                  NULL, (DWORD)os_error, 0, text,
+                                  (DWORD)(sizeof(text) / sizeof(text[0])), NULL);
+    while (length > 0 && (text[length - 1] == L'\r' || text[length - 1] == L'\n' ||
+                          text[length - 1] == L' ')) {
+        text[--length] = L'\0';
+    }
+    if (length == 0 || !wide_to_utf8(text, out, out_size)) {
+        out[0] = '\0';
+        return false;
+    }
     return true;
 }
 

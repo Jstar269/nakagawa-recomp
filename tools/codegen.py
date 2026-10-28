@@ -31,6 +31,7 @@ import build_profile
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
+    code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
@@ -3223,6 +3224,10 @@ class RuntimeModuleTranslation:
     functions: list = None        # (link address, nwords)
     spans: list = None            # (start, end) link space
     stubbed: list = None          # (link address, reason)
+    # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
+    # leading bytes of the file (its header and text), not when the game loads a module.
+    overlay_check_len: int = 0
+    overlay_check_fnv1a64: int = 0
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
     shared: bool = False
@@ -3261,7 +3266,8 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
-def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False):
+def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
+                             entry_hints=None):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
@@ -3279,6 +3285,17 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
+    if is_code_overlay(data):
+        # The analysis reads a code overlay through its fixed-address ELF image; the
+        # descriptor keeps the file's own identity and the bytes that identify it in memory.
+        try:
+            layout = code_overlay_layout(data)
+        except ValueError as exc:
+            module.unsupported_reason = f"code overlay cannot be translated: {exc}"
+            return module
+        module.overlay_check_len = layout.check_bytes
+        module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
+        data = code_overlay_elf(data)
     try:
         relocations = prx_reloc_model.model_relocations(data, name)
     except prx_reloc_model.RelocationModelError as exc:
@@ -3300,7 +3317,9 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         return module
     ranges = exec_ranges(elf)
     try:
-        analyzed, _ = analyze(elf, cfg_gate=cfg_gate)
+        # A code overlay's entry points are held by the executable (entry_hints).
+        analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
+                              entry_hints=entry_hints if module.overlay_check_len else None)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3444,7 +3463,8 @@ def runtime_module_descriptor_lines(module):
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
-        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u",
+        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
+        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull",
         "};",
         "",
     ]
@@ -4122,10 +4142,12 @@ def main(argv):
         with open(module_path, "rb") as source:
             module_hashes.append(fnv1a64(source.read()))
     module_translations = []
+    main_data_words = data_section_words(elf) if runtime_modules else set()
     for index, module_path in enumerate(runtime_modules):
         shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
-                                              cfg_gate=cfg_gate, shared=shared)
+                                              cfg_gate=cfg_gate, shared=shared,
+                                              entry_hints=main_data_words)
         if isinstance(translated, int):
             return translated
         module_translations.append(translated)

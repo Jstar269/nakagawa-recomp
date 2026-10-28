@@ -42,7 +42,7 @@ first. It reuses the admission already recorded for exactly these paths and
 bytes and records no new decision. ``--batch-resume`` reissues a listed-order
 chain for remaining entries from their recorded admissions after earlier
 entries landed. PRs admitted together in an all-order batch may land in any
-order; run ``--merge-profile`` during the merge to write the canonical union
+order; run ``--merge-profile`` during the merge to write the three-way merge
 of the path lists before staging the profile.
 
 It pushes nothing unless ``--push`` is given, and then only the private
@@ -774,15 +774,23 @@ def admit_batch(
 
 
 def merge_profile(worktree: Path) -> dict:
-    """Write the canonical union of both merge sides' include and exclude path lists."""
+    """Write the three-way merge of both sides' include and exclude path lists.
+
+    Each list keeps the merge base's paths, adds what either side added and drops what
+    either side removed, so a path one side moved between the lists or dropped is not
+    brought back by the other side's copy of the list."""
     repo = Path(_text(worktree, "rev-parse", "--show-toplevel"))
     try:
         head = _text(repo, "rev-parse", "--verify", "HEAD")
         merge_head = _text(repo, "rev-parse", "--verify", "MERGE_HEAD")
     except AdmitError as error:
         raise AdmitError("MERGE_PROFILE_NOT_IN_PROGRESS", "--merge-profile requires an active git merge") from error
+    try:
+        merge_base = _text(repo, "merge-base", head, merge_head)
+    except AdmitError as error:
+        raise AdmitError("MERGE_PROFILE_INPUT_INVALID", "the merge sides have no merge base") from error
     side_documents = []
-    for revision in (head, merge_head):
+    for revision in (merge_base, head, merge_head):
         try:
             document = json.loads(_git(repo, "show", f"{revision}:{POLICY}").decode("utf-8"))
         except (AdmitError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -795,7 +803,7 @@ def merge_profile(worktree: Path) -> dict:
             ):
                 raise AdmitError("MERGE_PROFILE_INPUT_INVALID", f"{POLICY} {field} must be a list of strings")
         side_documents.append(document)
-    ours, theirs = side_documents
+    base, ours, theirs = side_documents
     path_fields = {"include_paths", "exclude_paths"}
     ours_other = {key: value for key, value in ours.items() if key not in path_fields}
     theirs_other = {key: value for key, value in theirs.items() if key not in path_fields}
@@ -811,7 +819,14 @@ def merge_profile(worktree: Path) -> dict:
             raise AdmitError("MERGE_PROFILE_UNSAFE_PATH", f"refusing symlinked profile path component: {current}")
     merged = dict(ours)
     for field in path_fields:
-        merged[field] = sorted(set(ours[field]) | set(theirs[field]))
+        before, mine, other = set(base[field]), set(ours[field]), set(theirs[field])
+        merged[field] = sorted((before | mine | other) - (before - mine) - (before - other))
+    both = sorted(set(merged["include_paths"]) & set(merged["exclude_paths"]))
+    if both:
+        raise AdmitError(
+            "MERGE_PROFILE_PATH_CONFLICT",
+            f"the merge would include and exclude the same path: {', '.join(both)}",
+        )
     raw = _canonical_profile_bytes(merged)
     profile_path = repo.joinpath(*PurePosixPath(POLICY).parts)
     profile_path.write_bytes(raw)
@@ -871,7 +886,7 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument("--batch-resume", type=Path,
                        help="JSON list of remaining entries; re-issue their chain from recorded admissions")
     modes.add_argument("--merge-profile", type=Path, metavar="WORKTREE",
-                       help="write the canonical union of profile paths during an active merge")
+                       help="write the three-way merge of the profile paths during an active merge")
     parser.add_argument("--any-order-limit", type=int, default=6,
                         help="pre-issue every landing order up to this batch size (default: 6)")
     parser.add_argument("--approval-basis", help="the human decision, recorded verbatim (not with --rekey)")

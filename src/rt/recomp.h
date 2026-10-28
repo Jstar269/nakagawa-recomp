@@ -1209,6 +1209,12 @@ typedef struct SrModuleCode {
     uint32_t nfuncs;
     const SrModuleSpan *spans;
     uint32_t nspans;
+    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py,
+     * MWo3). It is bound, at its link address, when the guest invalidates the instruction
+     * cache over it and these leading bytes of the file (header and text) are in memory,
+     * and unbound when they no longer are. sceKernelLoadModule never binds it. */
+    uint32_t overlay_check_len;
+    uint64_t overlay_check_fnv1a64;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1247,6 +1253,10 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
+/* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
+ * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns
+ * the number of bindings changed. */
+uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi);
 
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* Opt-in dynamic check of guest stack preservation at generated callable
