@@ -6682,6 +6682,47 @@ static void utility_update_first_frames(CpuState *cpu, uint32_t update, uint32_t
     seen[n] = '\0';
 }
 
+/* #308: the message dialog's default answer goes to buttonPressed (+0x240), present from the
+ * 580-byte V2 parameter block on; the caller's options word (+0x23c) is input and stays as
+ * written (PPSSPP Core/Dialog/PSPMsgDialog.h). A yes/no caller that found the answer in options
+ * and buttonPressed still 0 read "no" and re-ran its prompt forever. A 572-byte V1 block has no
+ * buttonPressed, so nothing past its end is written. */
+static int msg_dialog_run_to_finished(CpuState *cpu, uint32_t param) {
+    if (utility_call(cpu, NID_MSG_DIALOG_INIT, param) != 0u) return 0;
+    if (!utility_poll_to_finished(cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS)) return 0;
+    if (utility_call(cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) != 0u) return 0;
+    for (int frame = 0; frame < 4; frame++)
+        if (utility_call(cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u) return 1;
+    return 0;
+}
+
+static void test_msg_dialog_answer_field(void) {
+    enum { OPTIONS = 0x23cu, BUTTON_PRESSED = 0x240u, OPT_YESNO = 0x10u };
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    MEM_W32(UTILITY_MSG_PARAM_ADDR, 0x2c4u);                  /* V3: 708 bytes */
+    MEM_W32(UTILITY_MSG_PARAM_ADDR + OPTIONS, OPT_YESNO);
+    expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR),
+           "a V3 yes/no message dialog runs to FINISHED and shuts down");
+    expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + BUTTON_PRESSED) == 1u,
+           "the message dialog's default answer lands in buttonPressed (+0x240)");
+    expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + OPTIONS) == OPT_YESNO,
+           "the caller's options word (+0x23c) is input and stays as written");
+
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    MEM_W32(UTILITY_MSG_PARAM_ADDR, 0x23cu);                  /* V1: 572 bytes */
+    MEM_W32(UTILITY_MSG_PARAM_ADDR + OPTIONS, 0xa5a5a5a5u);   /* past the V1 block */
+    MEM_W32(UTILITY_MSG_PARAM_ADDR + BUTTON_PRESSED, 0x5a5a5a5au);
+    expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR),
+           "a V1 message dialog runs to FINISHED and shuts down");
+    expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + OPTIONS) == 0xa5a5a5a5u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + BUTTON_PRESSED) == 0x5a5a5a5au,
+           "a V1 block has no buttonPressed: nothing past its 572 bytes is written");
+}
+
 static void test_utility_dialog_status_sequence(void) {
     static const UtilityDialogNids dialogs[] = {
         { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
@@ -35667,6 +35708,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_keyboard_keeps_guest_time_running();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
+    test_msg_dialog_answer_field();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
