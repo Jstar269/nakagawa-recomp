@@ -164,6 +164,15 @@ void sr_add_mem_watch(uint32_t start, uint32_t end, const char *label);
 void sr_add_value_watch(uint32_t value, const char *label);
 void sr_debug_init_watches(void);
 
+// ---- diagnostic streams (#1296) ----
+// Called once at startup, before diagnostics start. On Windows a stdout or stderr that is
+// not a console gets a full buffer that a host thread drains every SR_DEBUG_STREAM_FLUSH_MS;
+// elsewhere stdout is line buffered and stderr is left unbuffered. Returns the number of
+// streams it buffered (0 off Windows). The comment in debug.c gives the reasons and what
+// still reaches the log when the process ends.
+#define SR_DEBUG_STREAM_FLUSH_MS 50u
+int sr_debug_streams_init(void);
+
 /* Bounded, opt-in provenance for transient guest buffers.  Unlike a normal
  * watchpoint, this records the most recent generated-code PC for each recently
  * written address so a later consumer (notably the GE) can identify the write

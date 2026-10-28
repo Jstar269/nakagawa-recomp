@@ -2366,6 +2366,7 @@ const char *player_error_badge(const ErrorState *error) {
     static const struct { const char *code; const char *badge; } badges[] = {
         {"RUNTIME_SEMANTIC_BOUNDARY", "Game stopped"},
         {"RUNTIME_NO_NEW_FRAMES", "Game stopped"},
+        {"RUNTIME_NO_PICTURE", "Game stopped"},
         {"RUNTIME_PREMATURE_EXIT", "Game didn't start"},
         {"RUNTIME_ERROR_EXIT", "Game closed"},
         {"RUNTIME_START_TIMEOUT", "Game didn't start"},
@@ -2390,7 +2391,7 @@ const char *player_error_badge(const ErrorState *error) {
 
 bool player_error_leads_with_message(const ErrorState *error) {
     static const char *const codes[] = {
-        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES",
+        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES", "RUNTIME_NO_PICTURE",
         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
         "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
         "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
@@ -2574,6 +2575,15 @@ void player_app_set_game_stop_error(PlayerApp *app, const char *code,
                              "Return to Library", VIEW_LIBRARY);
         snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
                  where);
+    } else if (strcmp(code, "RUNTIME_NO_PICTURE") == 0) {
+        snprintf(message, sizeof(message),
+                 "The game kept running but showed only a black screen. %s Press Restart game "
+                 "to try again.",
+                 progress);
+        player_app_set_error(app, code, "Game Stopped Early", message,
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
+                 where);
     } else if (strcmp(code, "RUNTIME_PREMATURE_EXIT") == 0) {
         player_app_set_error(app, code, "Game Couldn't Start",
                              "The game closed while it was starting. Press Restart game to try "
@@ -2710,6 +2720,7 @@ static void player_clear_stalled_game_notice(PlayerApp *app, bool restore_game_w
     app->stalled_game_notice_dismissed = false;
     app->stalled_game_notice_raise_requested = false;
     app->stalled_game_no_frame_vblanks = 0;
+    app->stalled_game_dark_picture = false;
     app->stalled_game_seconds = 0;
     app->stalled_game_ready = 0;
     app->stalled_game_delay = 0;
@@ -3187,8 +3198,9 @@ void player_app_stop_stalled_game(PlayerApp *app) {
     snprintf(disc_id, sizeof(disc_id), "%s", app->launch_session.disc_id);
     char stall_details[256];
     snprintf(stall_details, sizeof(stall_details),
-             "no_frame_vblanks=%u seconds=%u; scheduler summary: "
+             "%s=%u seconds=%u; scheduler summary: "
              "ready=%u delay=%u wait=%u spin=%u",
+             app->stalled_game_dark_picture ? "dark_vblanks" : "no_frame_vblanks",
              app->stalled_game_no_frame_vblanks, app->stalled_game_seconds,
              app->stalled_game_ready, app->stalled_game_delay,
              app->stalled_game_wait, app->stalled_game_spin);
@@ -3211,7 +3223,10 @@ void player_app_stop_stalled_game(PlayerApp *app) {
         }
     }
     const char *run_log = kept_log[0] ? kept_log : app->boot_event_file_path;
-    player_app_set_game_stop_error(app, "RUNTIME_NO_NEW_FRAMES", stall_details,
+    player_app_set_game_stop_error(app,
+                                   app->stalled_game_dark_picture ? "RUNTIME_NO_PICTURE"
+                                                                  : "RUNTIME_NO_NEW_FRAMES",
+                                   stall_details,
                                    0u, 0, 0u, disc_id, run_log);
     player_clear_stalled_game_notice(app, true);
 }
@@ -3337,20 +3352,43 @@ static void player_consume_stall_event_line(PlayerApp *app, const char *line) {
         "BOOT_EVENT phase=stalled observation=no_new_flip ";
     static const char resumed_prefix[] =
         "BOOT_EVENT phase=resumed observation=frame_present";
+    /* The runtime's dark-picture watch (src/rt/fbcap.h): frames keep coming,
+       but none of them shows anything. */
+    static const char dark_prefix[] =
+        "BOOT_EVENT phase=stalled observation=dark_picture ";
+    static const char picture_prefix[] =
+        "BOOT_EVENT phase=resumed observation=picture";
     if (!app || !line) return;
+    bool dark = false;
     if (strncmp(line, resumed_prefix, sizeof(resumed_prefix) - 1u) == 0) {
-        player_clear_stalled_game_notice(app, true);
+        if (!app->stalled_game_dark_picture) player_clear_stalled_game_notice(app, true);
         return;
     }
-    if (strncmp(line, stalled_prefix, sizeof(stalled_prefix) - 1u) != 0) return;
+    if (strncmp(line, picture_prefix, sizeof(picture_prefix) - 1u) == 0) {
+        if (app->stalled_game_dark_picture) player_clear_stalled_game_notice(app, true);
+        return;
+    }
+    const char *fields = NULL;
+    if (strncmp(line, stalled_prefix, sizeof(stalled_prefix) - 1u) == 0) {
+        fields = line + sizeof(stalled_prefix) - 1u;
+    } else if (strncmp(line, dark_prefix, sizeof(dark_prefix) - 1u) == 0) {
+        fields = line + sizeof(dark_prefix) - 1u;
+        dark = true;
+    } else {
+        return;
+    }
 
     unsigned int no_frame_vblanks = 0u, seconds = 0u;
     unsigned int ready = 0u, delay = 0u, wait = 0u, spin = 0u;
-    if (sscanf(line + sizeof(stalled_prefix) - 1u,
-               "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u",
+    if (sscanf(fields,
+               dark ? "dark_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u"
+                    : "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u",
                &no_frame_vblanks, &seconds, &ready, &delay, &wait, &spin) != 6) {
         return;
     }
+    /* One notice at a time: an open notice keeps the observation that raised it. */
+    if (app->stalled_game_notice_visible && app->stalled_game_dark_picture != dark) return;
+    app->stalled_game_dark_picture = dark;
     app->stalled_game_no_frame_vblanks = (uint32_t)no_frame_vblanks;
     app->stalled_game_seconds = (uint32_t)seconds;
     app->stalled_game_ready = (uint32_t)ready;
@@ -3363,8 +3401,9 @@ static void player_consume_stall_event_line(PlayerApp *app, const char *line) {
         app->stalled_game_notice_visible = true;
         app->stalled_game_notice_raise_requested = true;
         player_dev_log_add(app, "runtime",
-                           "no new frame for %u seconds; scheduler ready=%u delay=%u "
+                           "%s for %u seconds; scheduler ready=%u delay=%u "
                            "wait=%u spin=%u",
+                           dark ? "only dark frames" : "no new frame",
                            app->stalled_game_seconds, app->stalled_game_ready,
                            app->stalled_game_delay, app->stalled_game_wait,
                            app->stalled_game_spin);

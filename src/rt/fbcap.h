@@ -95,6 +95,50 @@ void sr_capture_mark_recorded(sr_cap_source src, uint32_t w, uint32_t h);
  * and 0 when no capture was recorded (nothing to do). */
 int sr_capture_publish_recorded(const void *px, uint32_t row_bytes, sr_cap_order order);
 
+/* Picture probe: arm the next presented frame like a capture, but publish no file. The
+ * presenter services it through the same calls as a file capture; the service records the
+ * brightest colour byte of the frame instead. Returns 1 when armed, 0 when refused (a
+ * capture or probe is already pending). A file capture always takes precedence: the caller
+ * arms a probe only for a present no file capture wanted. */
+int sr_capture_arm_probe(void);
+
+/* Take the result of a serviced probe: 1 with *brightest set to the frame's brightest
+ * colour byte (0..255), once per probe; 0 when no probe result is waiting. */
+int sr_capture_probe_take(uint32_t *brightest);
+
+/* Dark-picture watch, fed by picture probes. The no-frame watchdog sees a game that stops
+ * flipping; this one sees a game that keeps flipping frames nobody can see. A frame is dark
+ * when no colour byte is above SR_PICTURE_DARK_MAX, the value of the lowest non-zero step of a
+ * 5-bit PSP colour channel (1 << 3 | 1 >> 2): such a frame shows nothing on a display. A dark
+ * stretch starts at the first dark probe and ends at the first probe with any brighter byte.
+ * It is an observation, not a hang verdict: a game may keep a dark screen on purpose. */
+#define SR_PICTURE_DARK_MAX 8u
+#define SR_PICTURE_PROBE_EVERY 300u  /* VBLANKs between probes (about 5 s) */
+#define SR_PICTURE_REPORT_EVERY 600u /* VBLANKs between dark-stretch reports */
+
+typedef struct {
+    int dark;                /* a dark stretch is open */
+    uint32_t first_vcount;   /* VBLANK of the stretch's first dark probe */
+    uint32_t last_vcount;    /* VBLANK of the latest probe */
+    uint32_t reported;       /* report buckets already emitted for this stretch */
+} SrPictureWatch;
+
+enum {
+    SR_PICTURE_WATCH_NONE = 0,
+    SR_PICTURE_WATCH_REPORT,  /* the open stretch crossed a new report bucket */
+    SR_PICTURE_WATCH_RESUMED  /* a reported stretch ended with a visible frame */
+};
+
+/* Feed one probe result taken at vcount. Returns SR_PICTURE_WATCH_RESUMED when it ends a
+ * stretch that was reported, else SR_PICTURE_WATCH_NONE. */
+int sr_picture_watch_probe(SrPictureWatch *w, uint32_t vcount, uint32_t brightest);
+
+/* Check the open stretch at vcount. Returns SR_PICTURE_WATCH_REPORT, with *dark_vblanks set,
+ * once per SR_PICTURE_REPORT_EVERY VBLANKs of stretch, and only while probes keep arriving
+ * (the latest within two probe periods): a game that stopped flipping is the no-frame
+ * watchdog's observation, not this one's. */
+int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vblanks);
+
 #ifdef __cplusplus
 }
 #endif
