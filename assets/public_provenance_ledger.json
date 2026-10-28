@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "4a3fb7b6906d9a3bb1b6463ce2770c7aee2348aa068d2d5aa2150a297da65efe"
+      "sha256": "0b8f319962e6667dbb8d0d3720c71c22727434e5d296807b3e4fec789b257cf6"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
