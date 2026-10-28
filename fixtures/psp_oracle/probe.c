@@ -145,6 +145,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_GE_TIMING 114
 /* #1296: CPU instruction-class and per-frame syscall timing; synthetic buffers only. */
 #define PSP_ORACLE_CASE_CPU_TIMING 115
+/* #1595: __sceSasInit on a core that is already initialized; see run_sas_init. */
+#define PSP_ORACLE_CASE_SAS_INIT 116
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -376,6 +378,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/ge_timing_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 #define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+#define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -10304,6 +10308,88 @@ static void run_at3_decode(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+#include <pspsascore.h>
+#include <psputility_avmodules.h>
+/* #1595: what __sceSasInit returns when the core is already initialized. A game can stop its mixer thread
+   for a movie and call __sceSasInit again on the same core, with no exit call in between (sceSasCore exports
+   none). Cells: init, the same init again, a re-init with other parameters (and what the getters then
+   report), an init of a second core, a re-init over a voice that is playing (end flag before and after), and
+   a misaligned core after init. Synthetic VAG data only. Ends in the normal teardown. */
+#define SAS_INIT_GRAIN 256
+#define SAS_INIT_VAG_BLOCKS 64u
+static SceSasCore s_sas_core_a __attribute__((aligned(64)));
+static SceSasCore s_sas_core_b __attribute__((aligned(64)));
+static unsigned char s_sas_vag[SAS_INIT_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static short s_sas_out[2048 * 2] __attribute__((aligned(64)));
+
+static void sas_result(int emulated, const char *step, int rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SAS-001 case_id=sas-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+static int sas_init(SceSasCore *core, int grain, int voices, int mode) {
+    return __sceSasInit(core, grain, voices, (PspSasOutputModes)mode, PSP_SAS_SAMPLE_RATE);
+}
+
+static void run_sas_init(int emulated) {
+    /* Non-silent ADPCM: filter 0, shift 0, alternating nibbles; flags 0 until the last block, which ends. */
+    for (uint32_t b = 0; b < SAS_INIT_VAG_BLOCKS; b++) {
+        unsigned char *blk = s_sas_vag + b * 16u;
+        blk[0] = 0x00;
+        blk[1] = b + 1u == SAS_INIT_VAG_BLOCKS ? 0x01 : 0x00;
+        for (int i = 2; i < 16; i++) blk[i] = 0x71;
+    }
+    probe_step(emulated, "sas-init", "load-avcodec");
+    const int avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    sas_result(emulated, "load-avcodec", avcodec_rc);
+    probe_step(emulated, "sas-init", "load-sascore");
+    const int sascore_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_SASCORE);
+    sas_result(emulated, "load-sascore", sascore_rc);
+    if (sascore_rc == 0) {
+        probe_step(emulated, "sas-init", "init-a");
+        sas_result(emulated, "init-a", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "grain-a", __sceSasGetGrain(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "reinit-a-same");
+        sas_result(emulated, "reinit-a-same", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        probe_step(emulated, "sas-init", "reinit-a-other");
+        sas_result(emulated, "reinit-a-other", sas_init(&s_sas_core_a, 512, 16, 1));
+        sas_result(emulated, "grain-a-after-other", __sceSasGetGrain(&s_sas_core_a));
+        sas_result(emulated, "outputmode-a-after-other", __sceSasGetOutputmode(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "init-b");
+        sas_result(emulated, "init-b", sas_init(&s_sas_core_b, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "grain-b", __sceSasGetGrain(&s_sas_core_b));
+        sas_result(emulated, "grain-a-after-b", __sceSasGetGrain(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "reinit-a-playing");
+        sas_result(emulated, "reinit-a-base", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "setvoice-a0", __sceSasSetVoice(&s_sas_core_a, 0, s_sas_vag, sizeof(s_sas_vag), 0));
+        sas_result(emulated, "keyon-a0", __sceSasSetKeyOn(&s_sas_core_a, 0));
+        sas_result(emulated, "core-a-1", __sceSasCore(&s_sas_core_a, s_sas_out));
+        sas_result(emulated, "endflag-a-playing", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        sas_result(emulated, "envelope-a0-playing", __sceSasGetEnvelopeHeight(&s_sas_core_a, 0));
+        sas_result(emulated, "reinit-a-over-voice", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "endflag-a-after-reinit", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        sas_result(emulated, "envelope-a0-after-reinit", __sceSasGetEnvelopeHeight(&s_sas_core_a, 0));
+        sas_result(emulated, "core-a-2", __sceSasCore(&s_sas_core_a, s_sas_out));
+        sas_result(emulated, "endflag-a-after-core", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "init-misaligned");
+        sas_result(emulated, "init-misaligned",
+                   sas_init((SceSasCore *)((unsigned char *)&s_sas_core_b + 4), SAS_INIT_GRAIN, 32, 0));
+    }
+    probe_step(emulated, "sas-init", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. The AV
+       modules stay loaded; sceSasCore has no exit call and unloading under an initialized core is not measured
+       here. */
+    probe_teardown(emulated);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
 #include <pspsuspend.h>
 #include <psputility.h>
@@ -11509,6 +11595,8 @@ int main(int argc, char *argv[]) {
     run_ge_timing(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
     run_cpu_timing(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+    run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

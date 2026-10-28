@@ -228,6 +228,8 @@ else ifeq ($(CASE),ge-timing)
 CASE_ID = 114
 else ifeq ($(CASE),cpu-timing)
 CASE_ID = 115
+else ifeq ($(CASE),sas-init)
+CASE_ID = 116
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -434,6 +436,10 @@ endif
 # #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
 ifeq ($(CASE),at3-decode)
 LIBS += -lpspatrac3 -lpsputility
+endif
+# #1595: the SAS re-init probe links the user-mode sceSasCore and utility stubs it calls.
+ifeq ($(CASE),sas-init)
+LIBS += -lpspsascore -lpsputility
 endif
 # Fake-success audit: the OSK calls live in libpsputility; the volatile-memory calls are in SuspendForUser.
 ifeq ($(CASE),fake-success)
