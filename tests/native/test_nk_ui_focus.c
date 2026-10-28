@@ -117,6 +117,33 @@ static int test_grid(void) {
     return 1;
 }
 
+/* A control that owns left and right (a segmented control, a slider) in the middle
+   of a 3x3 grid: left and right never leave it, up and down still do. */
+static int test_owns_horizontal(void) {
+    NkUiFocusGraph *g = nk_ui_focus_graph_create();
+    int i;
+    CHECK(g != NULL, "create graph");
+    nk_ui_focus_begin_frame(g);
+    for (i = 0; i < 9; ++i) {
+        reg(g, (NkUiId)(i + 1), (float)((i % 3) * 110), (float)((i / 3) * 110), 100.0f, 100.0f,
+            i == 4 ? NK_UI_FOCUS_OWNS_HORIZONTAL : 0u, NK_UI_SCOPE_ROOT, 0u);
+    }
+    nk_ui_focus_end_frame(g);
+    CHECK(!nk_ui_focus_owns_horizontal(g), "a plain entry does not own left and right");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_RIGHT) == 2u, "right from 1 reaches 2");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_DOWN) == 5u, "down from 2 reaches the owning entry");
+    CHECK(nk_ui_focus_owns_horizontal(g), "the focused entry owns left and right");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_RIGHT) == 0u, "right stays with the owning entry");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_LEFT) == 0u, "left stays with the owning entry");
+    CHECK(nk_ui_focus_current(g) == 5u, "focus is still on the owning entry");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_DOWN) == 8u, "down still leaves it");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_UP) == 5u, "up comes back to it");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_UP) == 2u, "up still leaves it");
+    CHECK(nk_ui_focus_owns_horizontal(NULL) == false, "a NULL graph owns nothing");
+    nk_ui_focus_graph_destroy(g);
+    return 1;
+}
+
 static int test_ragged_row(void) {
     NkUiFocusGraph *g = nk_ui_focus_graph_create();
     NkUiFocusEntry list[3];
@@ -1271,7 +1298,8 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
-    if (!test_grid() || !test_no_default_entry() || !test_ragged_row() || !test_scroll_into_view() ||
+    if (!test_grid() || !test_no_default_entry() || !test_owns_horizontal() ||
+        !test_ragged_row() || !test_scroll_into_view() ||
         !test_dialog_trap_and_scope_memory() || !test_tab_cycle_and_repair() ||
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
         !test_prompt_style_follows_device() ||

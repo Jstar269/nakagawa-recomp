@@ -1369,6 +1369,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
     char env_headless_accept_frames[64];
+    char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
+    char env_ui_root[NK_MAX_PATH + 16];
     char sep = nk_platform_path_separator();
 
     if (session->config.fps_cap == -1) {
@@ -1415,6 +1417,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;
     envp[env_count++] = env_volume;
+    /* Always set, so an inherited value cannot opt a launch in. */
+    envp[env_count++] = session->config.experimental_60hz ? "SR_EXPERIMENTAL_60HZ=1" : "SR_EXPERIMENTAL_60HZ=0";
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
                  "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",
@@ -1454,9 +1458,16 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
              session->user_data_root);
     envp[env_count++] = env_user_data_root;
+    /* What the pause overlay shows and draws with, beside the game's name (SR_GAME_TITLE
+     * below): the disc ID and the player's folder for the UI fonts. Always exported, so an
+     * empty value masks an inherited one instead of naming another game. */
+    snprintf(env_disc_id, sizeof(env_disc_id), "SR_DISC_ID=%s", session->disc_id);
+    envp[env_count++] = env_disc_id;
+    snprintf(env_ui_root, sizeof(env_ui_root), "SR_UI_ROOT=%s", session->ui_root);
+    envp[env_count++] = env_ui_root;
 
-    /* The user's own disc title (PARAM.SFO TITLE) for the window caption; the runtime sanitises it
-     * (sr_window_title_format in src/rt/recomp.h). Always exported so an inherited value cannot
+    /* The user's own disc title (PARAM.SFO TITLE) for the window caption and the pause overlay; the
+     * runtime sanitises it (sr_window_title_sanitize in src/rt/recomp.h). Always exported so an inherited value cannot
      * name another game. */
     snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
     envp[env_count++] = env_game_title;

@@ -473,6 +473,16 @@ NAME_IMPORTS_ARG :=
 NAME_IMPORTS_PREREQ :=
 NAME_IMPORTS_PROFILE_LINE :=
 endif
+# Optional declarative enhancement package (e.g. 60 Hz frame-rate rescale).
+# Empty keeps authentic translation and profile stamps byte-identical.
+ENHANCEMENT_PACKAGE ?=
+ifeq ($(strip $(ENHANCEMENT_PACKAGE)),)
+ENHANCEMENT_PACKAGE_ARG :=
+ENHANCEMENT_PACKAGE_PROFILE_LINE :=
+else
+ENHANCEMENT_PACKAGE_ARG := --enhancement-package=$(ENHANCEMENT_PACKAGE)
+ENHANCEMENT_PACKAGE_PROFILE_LINE := $(NEWLINE)ENHANCEMENT_PACKAGE=$(ENHANCEMENT_PACKAGE)
+endif
 
 # ---------------------------------------------------------------------------
 # BUILD IDENTITY: the source revision every commit-stamped artifact records --
@@ -827,6 +837,11 @@ ASSET_COPY_STEP     =
 endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
+# The pause overlay (#1159): nk_ui, its SDL edge and SDL_Renderer backend, the overlay's pages
+# and their runtime host. SDL3_ttf is loaded at run time, so the runtime needs only its headers.
+RT_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c \
+                 $(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_HOST_SRCS)
+
 RT_SRCS    := src/rt/recomp.c \
               src/rt/flight_recorder.c \
               src/rt/cpu_lle.c \
@@ -872,7 +887,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
-              src/ui/nk_ui_theme.c \
+              $(RT_NK_UI_SRCS) \
               $(PLAYER_PLATFORM_SRC)
 
 RT_OBJS   := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
@@ -1065,6 +1080,8 @@ PUBLIC_TARGETS := \
 	nk-ui-core-selftest \
 	nk-ui-player-screens-selftest \
 	nk-ui-player-screens-capture \
+	nk-ui-overlay-screens-selftest \
+	nk-ui-overlay-host-selftest \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
@@ -1198,6 +1215,8 @@ HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout 
 HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
+HELP_DESCRIPTION_nk-ui-overlay-host-selftest := build and run the in-game overlay host on SDL3_ttf, real key events and the SDL_Renderer backend (#1159)
+HELP_DESCRIPTION_nk-ui-overlay-screens-selftest := build and run the in-game overlay page snapshots and flow checks (#1159)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
@@ -1834,7 +1853,7 @@ endif
 # every guest module, and a title with a hundred modules under a long private path
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
-export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)$(SYMBOL_MAP_PROFILE_LINE)$(NAME_IMPORTS_PROFILE_LINE)
+export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)$(SYMBOL_MAP_PROFILE_LINE)$(NAME_IMPORTS_PROFILE_LINE)$(ENHANCEMENT_PACKAGE_PROFILE_LINE)
 ifdef NK_BUILD_DIR_READY
 $(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
 $(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
@@ -1868,7 +1887,7 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h:
 	$(if $(wildcard $@),,$(error NK_AOT_PREGENERATED requires $@))
 else
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP) $(SYMBOL_MAP) $(NAME_IMPORTS_PREREQ)
-	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(CODEGEN_USER_ARGS)
+	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(ENHANCEMENT_PACKAGE_ARG) $(CODEGEN_USER_ARGS)
 endif
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
@@ -1929,13 +1948,23 @@ $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/%.o: src/core/%.c $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-# The pause overlay draws with the player's design tokens (src/ui/nk_ui_theme.c); only the
-# window presenter and the token table see the UI include path.
+# The pause overlay draws its pages with nk_ui (src/ui, src/rt/overlay); only the window
+# presenter and those sources see the UI include path. SDL3_TTF_AVAILABLE is set further down;
+# these flags are read when a recipe runs.
+RT_NK_UI_FLAGS = -Isrc/ui -Isrc/rt/overlay -Ithird_party/clay -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 \
+                 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),$(SDL3_TTF_CFLAGS) -DNK_UI_WITH_SDL_TTF,)
+
 $(BUILD_DIR)/%.o: src/ui/%.c $(RUNTIME_PROFILE_STAMP)
-	$(CC) $(CFLAGS) -Isrc/ui $(DEPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: src/ui/backend/%.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: src/rt/overlay/%.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/gui.o: src/rt/gui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
-	$(CC) $(CFLAGS) -Isrc/ui $(DEPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
@@ -3124,7 +3153,7 @@ endif
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set. The
 # optional UI font selftest reports a named skip when SDL3_ttf is unavailable.
-player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screens-selftest
+player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
@@ -3206,6 +3235,41 @@ nk-ui-player-screens-selftest:
 		tests/native/test_player_screens.c -lm -o $(BUILD_ROOT)/test_player_screens$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_player_screens$(EXE_EXT)
 
+# nk-ui-overlay-screens-selftest - the in-game overlay's pages (#1159, C9c) on the SDL-free core:
+# page flow, focus, actions, fit at every capture size, and fixtures/nk_ui/overlay.golden.
+.PHONY: nk-ui-overlay-screens-selftest
+nk-ui-overlay-screens-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt/overlay -Isrc/core -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) $(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_CORE_SRCS) \
+		tests/native/test_overlay_screens.c $(PLAYER_PLATFORM_LIBS) -lm \
+		-o $(BUILD_ROOT)/test_overlay_screens$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_overlay_screens$(EXE_EXT)
+
+# nk-ui-overlay-host-selftest - the overlay's runtime host (#1159, C9c) on its production path:
+# SDL3_ttf and the bundled UI fonts, real SDL key events, the pages drawn by the SDL_Renderer
+# backend over a base surface, a resize onto a new renderer. Like nk-ui-sdlr-selftest it builds
+# the SKIP variant without the SDL3 or SDL3_ttf headers and skips when the library cannot load.
+# The host is runtime code and always needs SDL3, so the SKIP variant builds the test alone.
+.PHONY: nk-ui-overlay-host-selftest
+nk-ui-overlay-host-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@sdl_defs=""; sdl_libs=""; host_srcs=""; \
+	if printf '%s\n' '#include <SDL3/SDL.h>' '#include <SDL3_ttf/SDL_ttf.h>' '#include <SDL3_ttf/SDL_textengine.h>' | $(CC) -E -x c $(SDL3_INC_FLAGS) - >/dev/null 2>&1; then \
+		sdl_defs="-DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 -DNK_UI_WITH_SDL_TTF"; sdl_libs="$(LDFLAGS) -lSDL3"; \
+		host_srcs="$(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_HOST_SRCS) $(NK_UI_OVERLAY_CORE_SRCS)"; \
+	else \
+		echo "nk-ui-overlay-host-selftest: SDL3 or SDL3_ttf headers not found; building the SKIP variant"; \
+	fi; \
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt/overlay -Isrc/core -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(SDL3_INC_FLAGS) $$sdl_defs $$host_srcs tests/native/test_overlay_host.c \
+		$$sdl_libs $(PLAYER_PLATFORM_LIBS) -lm -o $(BUILD_ROOT)/test_overlay_host$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/test_overlay_host$(EXE_EXT) . || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP nk-ui-overlay-host-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-overlay-host-selftest (exit $$rc)"; exit $$rc; fi
+
 # nk-ui-sdlr-selftest - the nk_ui SDL_Renderer backend and SDL3_ttf text engine (lane C3b) drawing a
 # synthetic screen into a software-rendered surface at 1x, 1.25x and 2x, with Japanese shaping and
 # kerning checks. SDL3_ttf is loaded at run time, so only its headers are needed to build. A host
@@ -3251,7 +3315,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
