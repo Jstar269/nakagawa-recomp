@@ -139,6 +139,35 @@ class TitleManifestTests(unittest.TestCase):
         self.assertIn("PRIVATE_TITLE_ACCEPTANCE", title_manifest.PROFILE_ZERO_FORBIDDEN_EVIDENCE_CLASSES)
         self.assertNotIn("PRIVATE_TITLE_ACCEPTANCE", profile_zero_case["evidence_class"]["enum"])
 
+    def test_retired_binding_fields_keep_their_named_migration_errors(self) -> None:
+        """A retired runtime binding is neither published nor declarable, and a manifest
+        that still names one fails with that field's own migration message (the #363
+        host assists with HLE_TITLE_ASSIST_RETIRED)."""
+        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        published = set(schema["$defs"]["runtimeBindings"]["properties"])
+        self.assertEqual(set(title_manifest.RETIRED_HLE_ASSIST_BINDINGS),
+                         {"frame_ready_latch_addr", "display_bringup", "runtime_sync"})
+        self.assertLessEqual(set(title_manifest.RETIRED_HLE_ASSIST_BINDINGS),
+                             set(title_manifest.RETIRED_RUNTIME_BINDING_FIELDS))
+        self.assertTrue(title_manifest.HLE_ASSIST_RETIRED_MESSAGE.startswith("HLE_TITLE_ASSIST_RETIRED:"))
+        self.assertTrue(title_manifest.retired_binding_message("libfont_ready_flag_addr")
+                        .startswith("LIBFONT_READY_FLAG_RETIRED:"))
+        for field in title_manifest.RETIRED_RUNTIME_BINDING_FIELDS:
+            with self.subTest(field=field):
+                self.assertNotIn(field, published)
+                self.assertNotIn(field, title_manifest.DECLARABLE_BINDING_FAMILIES)
+                message = title_manifest.retired_binding_message(field)
+                if field in title_manifest.RETIRED_HLE_ASSIST_BINDINGS:
+                    self.assertEqual(message, title_manifest.HLE_ASSIST_RETIRED_MESSAGE)
+                configured = copy.deepcopy(self.fixture)
+                configured["runtime_bindings"][field] = 0x08900100
+                declared = copy.deepcopy(self.fixture)
+                declared["required_runtime_bindings"] = [field]
+                for value in (configured, declared):
+                    with self.assertRaises(title_manifest.TitleManifestError) as caught:
+                        title_manifest.validate_manifest(value)
+                    self.assertIn(message, str(caught.exception))
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON object key"):
             title_manifest.loads_manifest('{"schema_version":1,"schema_version":1}')
