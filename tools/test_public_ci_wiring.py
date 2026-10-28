@@ -1173,7 +1173,7 @@ class CoverageWiringTests(unittest.TestCase):
 
     The measurement may not weaken a gate: the Python shards run the exact module
     list they always ran under unittest, the unprofiled native core gate keeps its
-    command, and both uploads are informational (``codecov.yml``,
+    command, and both uploads are informational (``.github/codecov.yml``,
     ``fail_ci_if_error: false``), so a Codecov outage cannot fail a required job.
     """
 
@@ -1302,7 +1302,7 @@ class CoverageWiringTests(unittest.TestCase):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(project["tool"]["coverage"]["run"]["omit"], ["tools/test_*.py"])
 
-        codecov = (ROOT / "codecov.yml").read_text(encoding="utf-8")
+        codecov = (ROOT / ".github" / "codecov.yml").read_text(encoding="utf-8")
         # Project and patch status may inform but never block a merge.
         self.assertRegex(
             codecov,
@@ -1322,7 +1322,7 @@ class CoverageWiringTests(unittest.TestCase):
         blocks = _markdown_blocks(coverage)
         for terms in (
             ("python_tools", "coverage-python.xml", "unittest"),
-            ("codecov.yml", "informational"),
+            (".github/codecov.yml", "informational"),
             ("native_tools", "native-core-tests"),
         ):
             with self.subTest(terms=terms):

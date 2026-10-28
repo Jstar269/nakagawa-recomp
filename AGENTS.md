@@ -34,7 +34,7 @@ Before you change anything:
 1. Read [`README.md`](README.md), then [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
    design. [`docs/CODE_TOUR.md`](docs/CODE_TOUR.md) follows one game through the code, file by file.
    [`docs/README.md`](docs/README.md) says which guide covers which area.
-2. Work from an issue. GitHub Issues are where work is agreed; [`ISSUES.md`](ISSUES.md) is a short
+2. Work from an issue. GitHub Issues are where work is agreed; [`docs/STATUS.md`](docs/STATUS.md) is a short
    summary of them. For anything bigger than a small fix, comment on the issue first. Good
    starting points are labelled `good first issue` and `help wanted`. An issue you file carries at least
    one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
@@ -148,7 +148,7 @@ request; [`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) says what each
 ## 1. Sources and live preflight
 
 - Resolve disagreements in this order: live source/tests/Makefiles, live GitHub Issues,
-  `ISSUES.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
+  `docs/STATUS.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
 - Before a change, run `git fetch origin`, record the exact `BASE_SHA`, inspect `git status`, and
   check on current `origin/main` that the task is not already done. Without network access, work
   from the last fetched `origin/main` and report `FETCH: NOT_RUN` with that SHA instead of stopping.
@@ -439,7 +439,7 @@ READY_QUALITY: YES/NO
 ```
 
 Say whether any tag, release, asset, version, hardware, or private-input operation was
-intentionally not performed. Keep `ISSUES.md` concise and detailed evidence in the issue or PR.
+intentionally not performed. Keep `docs/STATUS.md` concise and detailed evidence in the issue or PR.
 Put build/workspace ergonomics debt in maintained workspace documentation, not in this enduring
 contract.
 

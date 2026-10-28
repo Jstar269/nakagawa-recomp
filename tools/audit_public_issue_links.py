@@ -10,7 +10,7 @@ The audit has two purposes:
   in every tracked Markdown document;
 * shorthand ``#N`` references are checked in explicitly current-facing documents
   (including ``.github/copilot-instructions.md``);
-* ISSUES.md ``## At a glance`` rows whose State cell is ``Open`` must not link to a
+* docs/STATUS.md ``## At a glance`` rows whose State cell is ``Open`` must not link to a
   closed public issue/PR, so a merged fix cannot silently leave an "Open" row
   pointing at the closed tracker item it resolved;
 * in current-facing documents, a clause that says work is "in the works", and a
@@ -40,7 +40,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CURRENT_FACING_DOCS = {
     "README.md",
     "AGENTS.md",
-    "ISSUES.md",
+    "docs/STATUS.md",
     ".github/copilot-instructions.md",
     "CONTRIBUTING.md",
     "NOTICE.md",
@@ -104,7 +104,7 @@ TRACKER_LINK_PAT = re.compile(
 SHORTHAND_PAT = re.compile(r"(?<![A-Fa-f0-9_#])#(\d+)\b")
 STATE_LABEL_PAT = re.compile(r"\[(OPEN ISSUE|CLOSED ISSUE|OPEN PR|CLOSED PR|MERGED PR)\]")
 TRACKER_SECTION = "## Current public tracker"
-# ISSUES.md "At a glance" rows declare a State cell ("Open") next to the tracker
+# docs/STATUS.md "At a glance" rows declare a State cell ("Open") next to the tracker
 # links they cite. A row whose State says the work item is open must not point at a
 # closed issue/PR; that is exactly how the portable float-to-word row silently went
 # stale against the closed #38 after the fix merged.
@@ -356,8 +356,8 @@ def audit_markdown_files(
                 in_fenced_code = not in_fenced_code
 
             if line.startswith("## "):
-                in_tracker_section = rel == "ISSUES.md" and line.strip() == TRACKER_SECTION
-                in_at_a_glance = rel == "ISSUES.md" and line.strip() == AT_A_GLANCE_SECTION
+                in_tracker_section = rel == "docs/STATUS.md" and line.strip() == TRACKER_SECTION
+                in_at_a_glance = rel == "docs/STATUS.md" and line.strip() == AT_A_GLANCE_SECTION
 
             url_matches = _canonical_url_matches(line)
             for match in MALFORMED_TRACKER_URL_PAT.finditer(line):

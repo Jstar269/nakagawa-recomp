@@ -1140,8 +1140,8 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         complete = dict(synthetic, owner_issue="#363", retirement="remove the patch",
                         test="tools/test_compat_manifest.py")
         self.assertEqual(compat_overrides.temporary_patch_defects(complete), [])
-        # An ISSUES.md anchor is a documentation pointer, not a live owner.
-        pointed = dict(complete, owner_issue="ISSUES.md #5.1")
+        # A status-page anchor is a documentation pointer, not a live owner.
+        pointed = dict(complete, owner_issue="docs/STATUS.md #5.1")
         self.assertTrue(compat_overrides.temporary_patch_defects(pointed))
 
     def test_a_new_untested_temporary_patch_fails_the_gate(self):

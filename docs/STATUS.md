@@ -19,13 +19,13 @@ linked live issue, and read counts from the generator cited beside each area.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in
-  [`docs/ARCHIVE_VFS.md`](docs/ARCHIVE_VFS.md); title inputs
+  [`docs/ARCHIVE_VFS.md`](ARCHIVE_VFS.md); title inputs
   remain local-only.
 - The versioned title-manifest/toolkit boundary is described in
-  [`assets/titles/README.md`](assets/titles/README.md); only generic and
+  [`assets/titles/README.md`](../assets/titles/README.md); only generic and
   synthetic manifests are public-scope. Analyzer executable spans and
   manifest-derived build settings now have one explicit owner
-  ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)).
+  ([`docs/TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md)).
 - PGD/amctrl surfaces remain excluded pending qualified provenance and
   distribution review. The derived PGF reader `src/rt/pgf.c` was retired on
   2026-10-25; the public PGF reader is the project-authored
@@ -54,7 +54,7 @@ remains on the linked live issue.
 - Trusted refresh path for modified source hashes in the public provenance
   ledger: established through [issue #132](https://github.com/Jstar269/nakagawa-recomp/issues/132)
   and documented under "Reviewed refresh of an existing public path" in
-  [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md). A content
+  [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md). A content
   hash may be refreshed in place for a path whose classification and record are
   unchanged; establishing or re-authenticating an attestation needs the
   maintainer-controlled trusted evidence this workflow requires.
@@ -67,11 +67,11 @@ remains on the linked live issue.
   invariant enforced by `test_every_word_decodes_without_fallback` in
   `tools/test_vfpu_synth_corpus.py`. These claims apply only to the exact
   measured cells.
-- Acceptance-route determinism: [issue #64](https://github.com/Jstar269/nakagawa-recomp/issues/64). Routes now assert the screen they reach (`WAIT`/`EXPECT` in `SR_PADSCRIPT`, see [`docs/DEBUGGING.md`](docs/DEBUGGING.md)); a run that reaches a different state fails loudly instead of completing.
+- Acceptance-route determinism: [issue #64](https://github.com/Jstar269/nakagawa-recomp/issues/64). Routes now assert the screen they reach (`WAIT`/`EXPECT` in `SR_PADSCRIPT`, see [`docs/DEBUGGING.md`](DEBUGGING.md)); a run that reaches a different state fails loudly instead of completing.
 - Executing valid executable AOT misses instead of fabricating success:
   [issue #116](https://github.com/Jstar269/nakagawa-recomp/issues/116). The production fail-closed interpreter floor and its source-owned cosimulation gate landed. Closing it records that a valid executable miss now executes; it does not claim coverage beyond the implemented interpreter subset. Read [Execution-contract state](#execution-contract-state) before citing this.
 - Proving the full production pipeline with a source-owned PSP guest:
-  [issue #110](https://github.com/Jstar269/nakagawa-recomp/issues/110). `production-smoke` and `production-smoke-gap` build a deterministic PSP-shaped fixture through the real two-phase pipeline ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). That gate catches generic pipeline and composition failures without an ISO; it establishes neither commercial-title compatibility nor PSP timing, rendering, or audio correctness.
+  [issue #110](https://github.com/Jstar269/nakagawa-recomp/issues/110). `production-smoke` and `production-smoke-gap` build a deterministic PSP-shaped fixture through the real two-phase pipeline ([`docs/ARCHITECTURE.md`](ARCHITECTURE.md)). That gate catches generic pipeline and composition failures without an ISO; it establishes neither commercial-title compatibility nor PSP timing, rendering, or audio correctness.
 
 ## Execution-contract state
 
@@ -88,7 +88,7 @@ overstated. State it exactly this way:
 - Current evidence covers **both CALL and TAIL** tier crossings, for the **implemented
   interpreter instruction subset only**. That subset is enumerated in
   `src/rt/guest_interp.h` and is checked in both directions against the cells that execute
-  it ([`fixtures/cosim/README.md`](fixtures/cosim/README.md)).
+  it ([`fixtures/cosim/README.md`](../fixtures/cosim/README.md)).
 - Unsupported forms still **fail closed** rather than being decoded as some unrelated
   arithmetic form. Nested interpreted calls are outside the current floor: the interpreter
   carries one call boundary, not a stack of them.
@@ -115,8 +115,8 @@ external oracles remain unavailable rather than passing.
 
 ## Publication controls
 
-The machine-readable policy in [`assets/public_source_profile.json`](assets/public_source_profile.json)
-is authoritative. [`PUBLIC_EXPORT.json`](PUBLIC_EXPORT.json), the provenance
+The machine-readable policy in [`assets/public_source_profile.json`](../assets/public_source_profile.json)
+is authoritative. [`PUBLIC_EXPORT.json`](../PUBLIC_EXPORT.json), the provenance
 ledger, release manifest, SBOMs, and `tools/publish_audit.py` must describe the
 same exact bytes. A candidate or export cannot select a relaxed private audit
 mode or self-authorize provenance.

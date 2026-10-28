@@ -22720,7 +22720,7 @@ void sr_hle_test_sas_reset(void) { hle_sas_guest_reset(); }
 #endif
 
 /* SR_SASLOG: decay-gated trace of KeyOn events and SAS mixer active-voice counts, to determine
- * whether the game ever keys on a SAS voice during the silent-PCM window (ISSUES.md P1). */
+ * whether the game ever keys on a SAS voice during the silent-PCM window. */
 static int sas_log_on(void) {
     static int on = -1;
     if (on < 0) on = getenv("SR_SASLOG") != NULL;
