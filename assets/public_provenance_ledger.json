@@ -381,7 +381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0930d15642da671bc5cde9f2a9cf85c3c9acafcd960971093a4431c21e353ea7"
+      "sha256": "d4a184362d7d62638a06da2005a4570dee46ea1c6ddf6ec143a7b8d8781a1a70"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -13474,7 +13474,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca80a027c810fb77569dc8d680e5ac1d5acc7a3d9bcc95361f84c817046922c0"
+      "sha256": "0b86938a6637217ecce90faaacd19af425e8f0347e8008623dcf8546e09f30db"
     },
     {
       "path": "tools/test_build_truth.py",
@@ -14592,7 +14592,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c507eef2ad40f952ee3a22de6c35d60cea0709cf705815b0f3f50f78df1b8af"
+      "sha256": "39c072b99411f678f0d418614bb2e9caebce4d7f57db46b72cbaf3ef2b0254ea"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
