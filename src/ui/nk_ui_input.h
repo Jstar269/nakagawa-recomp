@@ -150,6 +150,11 @@ int nk_ui_input_last_device(const NkUiInput *input);
 NkUiPromptStyle nk_ui_input_prompt_style(const NkUiInput *input);
 /* True while at least one pad is connected. */
 bool nk_ui_input_pad_connected(const NkUiInput *input);
+/* The glyph set of the pad the user would pick up, for showing controller bindings
+   while the keyboard is the active device (#1299): the last-used device's set when it
+   was a pad, else the most recently connected pad's, else NK_UI_PROMPT_NEUTRAL. Never
+   NK_UI_PROMPT_KEYCAPS. */
+NkUiPromptStyle nk_ui_input_pad_prompt_style(const NkUiInput *input);
 
 /* Decodes one UTF-8 code point from *cursor (advancing it). Returns 0 at end of input;
    a malformed sequence yields U+FFFD and advances one byte. */
@@ -198,6 +203,10 @@ typedef enum {
 const char *nk_ui_prompt_text(NkUiPromptStyle style, NkUiPromptAction action);
 /* Width of the glyph for a given height. Keycaps grow with their label. */
 float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float height);
+/* Width of the glyph with `label` drawn in place of its own text (NULL: the same as
+   nk_ui_prompt_width). Keycaps grow with the label, and so do shoulder pills. */
+float nk_ui_prompt_label_width(NkUiPromptStyle style, NkUiPromptAction action,
+                               const char *label, float height);
 
 typedef struct {
     NkUiPromptStyle style;
@@ -207,6 +216,8 @@ typedef struct {
     uint32_t face_rgba;   /* letter circle, keycap face, pill */
     int font;             /* font index for the label text */
     const NkUiImage *image; /* when set, drawn tinted instead of the geometry */
+    const char *label;    /* when set, drawn in place of nk_ui_prompt_text: a key's legend
+                             on a keycap, a pad button's name on a pill (#1299) */
 } NkUiPromptSpec;
 
 /* The embedded Kenney glyph (nk_ui_assets.h name, "input-prompts/<file>.png")
