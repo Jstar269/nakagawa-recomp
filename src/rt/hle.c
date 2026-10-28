@@ -11800,7 +11800,13 @@ static int osk_collect(void) {
 /* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
  * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
+    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. Check the
+     * size word first, then the entire version before retaining the guest address. */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {

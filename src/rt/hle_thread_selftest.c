@@ -5876,6 +5876,7 @@ static void osk_guest_build(int fields, uint32_t out_len, uint32_t out_limit) {
         MEM_W32(f + 0x2cu, 0u);                            /* result: UNCHANGED */
         MEM_W32(f + 0x30u, out_limit);
     }
+    MEM_W32(OSK_PARAM_ADDR, 0x40u);
     MEM_W32(OSK_PARAM_ADDR + 0x30u, (uint32_t)fields);
     MEM_W32(OSK_PARAM_ADDR + 0x34u, OSK_FIELDS_ADDR);
     MEM_W32(OSK_PARAM_ADDR + 0x38u, 0u);
@@ -5921,6 +5922,30 @@ static int osk_write_script(const char *const *lines, int count) {
  * after use, and retain the earlier INIT refusal coverage. */
 #define NID_OSK_UPDATE 0x4b85c861u
 extern void sr_hle_test_osk_slot_reset(void);
+
+static void test_osk_parameter_sizes(void) {
+    CpuState cpu = {0};
+    static const uint32_t invalid[] = {0u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    sr_hle_test_osk_slot_reset();
+    cpu.r[4] = OSK_PARAM_ADDR;
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        MEM_W32(OSK_PARAM_ADDR, invalid[i]);
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+               "OSK rejects an unsupported parameter size");
+    }
+    expect(osk_poll(&cpu) == 0x80110005u, "invalid OSK sizes do not claim the dialog slot");
+    for (uint32_t size = 0x40u; size <= 0x44u; size += 4u) {
+        MEM_W32(OSK_PARAM_ADDR, size);
+        cpu.r[4] = OSK_PARAM_ADDR;
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "OSK accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    cpu.r[4] = 0x0bffffc0u;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+           "OSK rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
+}
 
 static void test_osk_update_and_shutdown_init_states(void) {
     CpuState cpu;
@@ -6556,6 +6581,7 @@ static void test_utility_dialog_single_slot(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         utility_param_block(block, savedata ? 0x600u : 0x40u);
+        if (dialogs[i].init == NID_OSK_INIT) MEM_W32(block, 0x40u);
         snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
                  "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
@@ -35660,6 +35686,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_break_continue();
     test_ge_completion_timing();
     test_volatile_mem_output_preflight();
+    test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
