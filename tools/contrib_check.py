@@ -243,7 +243,15 @@ def c_gate(paths: list[str]) -> Gate:
         return Gate("strict-c-compile", SKIP, "no C compiler on PATH (set CC)")
     failures = []
     for source in sources:
-        gate = _run(f"cc {source}", [compiler, *STRICT_C_FLAGS, source], timeout=600)
+        extra_flags = []
+        if source.startswith("src/rt/h264_ffmpeg_sub/"):
+            extra_flags = [
+                "-w", "-Isrc/rt/h264_ffmpeg_sub", "-Isrc/rt/h264_ffmpeg_sub/libavcodec",
+                "-DHAVE_AV_CONFIG_H", "-D_ISOC99_SOURCE", "-D_FILE_OFFSET_BITS=64",
+                "-D_LARGEFILE_SOURCE", "-D_POSIX_C_SOURCE=200112", "-D_XOPEN_SOURCE=600",
+                "-include", "src/rt/h264_ffmpeg_sub/nk_h264_symbols.h",
+            ]
+        gate = _run(f"cc {source}", [compiler, *extra_flags, *STRICT_C_FLAGS, source], timeout=600)
         if gate.status != PASS:
             failures.append(f"{source}: {gate.detail}")
     if failures:

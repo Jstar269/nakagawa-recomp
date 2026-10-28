@@ -556,33 +556,37 @@ static int hadamard8_diff8x8_c(MpegEncContext *s, uint8_t *dst,
                                uint8_t *src, ptrdiff_t stride, int h)
 {
     int i, temp[64], sum = 0;
+    int *t = temp;
 
     av_assert2(h == 8);
 
     for (i = 0; i < 8; i++) {
-        // FIXME: try pointer walks
-        BUTTERFLY2(temp[8 * i + 0], temp[8 * i + 1],
-                   src[stride * i + 0] - dst[stride * i + 0],
-                   src[stride * i + 1] - dst[stride * i + 1]);
-        BUTTERFLY2(temp[8 * i + 2], temp[8 * i + 3],
-                   src[stride * i + 2] - dst[stride * i + 2],
-                   src[stride * i + 3] - dst[stride * i + 3]);
-        BUTTERFLY2(temp[8 * i + 4], temp[8 * i + 5],
-                   src[stride * i + 4] - dst[stride * i + 4],
-                   src[stride * i + 5] - dst[stride * i + 5]);
-        BUTTERFLY2(temp[8 * i + 6], temp[8 * i + 7],
-                   src[stride * i + 6] - dst[stride * i + 6],
-                   src[stride * i + 7] - dst[stride * i + 7]);
+        BUTTERFLY2(t[0], t[1],
+                   src[0] - dst[0],
+                   src[1] - dst[1]);
+        BUTTERFLY2(t[2], t[3],
+                   src[2] - dst[2],
+                   src[3] - dst[3]);
+        BUTTERFLY2(t[4], t[5],
+                   src[4] - dst[4],
+                   src[5] - dst[5]);
+        BUTTERFLY2(t[6], t[7],
+                   src[6] - dst[6],
+                   src[7] - dst[7]);
 
-        BUTTERFLY1(temp[8 * i + 0], temp[8 * i + 2]);
-        BUTTERFLY1(temp[8 * i + 1], temp[8 * i + 3]);
-        BUTTERFLY1(temp[8 * i + 4], temp[8 * i + 6]);
-        BUTTERFLY1(temp[8 * i + 5], temp[8 * i + 7]);
+        BUTTERFLY1(t[0], t[2]);
+        BUTTERFLY1(t[1], t[3]);
+        BUTTERFLY1(t[4], t[6]);
+        BUTTERFLY1(t[5], t[7]);
 
-        BUTTERFLY1(temp[8 * i + 0], temp[8 * i + 4]);
-        BUTTERFLY1(temp[8 * i + 1], temp[8 * i + 5]);
-        BUTTERFLY1(temp[8 * i + 2], temp[8 * i + 6]);
-        BUTTERFLY1(temp[8 * i + 3], temp[8 * i + 7]);
+        BUTTERFLY1(t[0], t[4]);
+        BUTTERFLY1(t[1], t[5]);
+        BUTTERFLY1(t[2], t[6]);
+        BUTTERFLY1(t[3], t[7]);
+
+        src += stride;
+        dst += stride;
+        t   += 8;
     }
 
     for (i = 0; i < 8; i++) {
@@ -608,29 +612,32 @@ static int hadamard8_intra8x8_c(MpegEncContext *s, uint8_t *src,
                                 uint8_t *dummy, ptrdiff_t stride, int h)
 {
     int i, temp[64], sum = 0;
+    int *t = temp;
 
     av_assert2(h == 8);
 
     for (i = 0; i < 8; i++) {
-        // FIXME: try pointer walks
-        BUTTERFLY2(temp[8 * i + 0], temp[8 * i + 1],
-                   src[stride * i + 0], src[stride * i + 1]);
-        BUTTERFLY2(temp[8 * i + 2], temp[8 * i + 3],
-                   src[stride * i + 2], src[stride * i + 3]);
-        BUTTERFLY2(temp[8 * i + 4], temp[8 * i + 5],
-                   src[stride * i + 4], src[stride * i + 5]);
-        BUTTERFLY2(temp[8 * i + 6], temp[8 * i + 7],
-                   src[stride * i + 6], src[stride * i + 7]);
+        BUTTERFLY2(t[0], t[1],
+                   src[0], src[1]);
+        BUTTERFLY2(t[2], t[3],
+                   src[2], src[3]);
+        BUTTERFLY2(t[4], t[5],
+                   src[4], src[5]);
+        BUTTERFLY2(t[6], t[7],
+                   src[6], src[7]);
 
-        BUTTERFLY1(temp[8 * i + 0], temp[8 * i + 2]);
-        BUTTERFLY1(temp[8 * i + 1], temp[8 * i + 3]);
-        BUTTERFLY1(temp[8 * i + 4], temp[8 * i + 6]);
-        BUTTERFLY1(temp[8 * i + 5], temp[8 * i + 7]);
+        BUTTERFLY1(t[0], t[2]);
+        BUTTERFLY1(t[1], t[3]);
+        BUTTERFLY1(t[4], t[6]);
+        BUTTERFLY1(t[5], t[7]);
 
-        BUTTERFLY1(temp[8 * i + 0], temp[8 * i + 4]);
-        BUTTERFLY1(temp[8 * i + 1], temp[8 * i + 5]);
-        BUTTERFLY1(temp[8 * i + 2], temp[8 * i + 6]);
-        BUTTERFLY1(temp[8 * i + 3], temp[8 * i + 7]);
+        BUTTERFLY1(t[0], t[4]);
+        BUTTERFLY1(t[1], t[5]);
+        BUTTERFLY1(t[2], t[6]);
+        BUTTERFLY1(t[3], t[7]);
+
+        src += stride;
+        t   += 8;
     }
 
     for (i = 0; i < 8; i++) {

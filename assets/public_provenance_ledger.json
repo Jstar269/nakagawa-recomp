@@ -7203,7 +7203,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "adeb4a191dfaec0f6c45cd555257214a592ca833683ed8d55a7b4a5fb515dd1e"
+      "sha256": "9f4efbd51f157f510da30ef2779de8628365299e17574b16217bc049b44c3fbe"
     },
     {
       "path": "src/rt/h264_ffmpeg_sub/libavcodec/me_cmp.h",
@@ -11675,7 +11675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e5f2352c58ac4f7fd2192ebb672ea91433ee23262ea105d31191088863ace95"
+      "sha256": "4b2a4a635ba8de24b8f8050574eb81cb90ad0e00a91ca1db048fd84a0449ecc3"
     },
     {
       "path": "tools/contrib_refresh.py",
