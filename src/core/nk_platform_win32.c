@@ -1009,3 +1009,15 @@ void nk_platform_close_process(NkProcessHandle *process) {
 }
 
 #endif /* _WIN32 */
+
+bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
+    TIME_ZONE_INFORMATION zone;
+    DWORD id;
+    if (!standard_minutes || !daylight_now) return false;
+    id = GetTimeZoneInformation(&zone);
+    if (id == TIME_ZONE_ID_INVALID) return false;
+    /* Bias is minutes to add to local time for UTC, so east of UTC is negative. */
+    *standard_minutes = -(int)(zone.Bias + zone.StandardBias);
+    *daylight_now = id == TIME_ZONE_ID_DAYLIGHT;
+    return true;
+}

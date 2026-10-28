@@ -724,9 +724,13 @@ Clock ownership:
   `sceUtilityGetSystemParamInt` reports as TIMEZONE and DAYLIGHTSAVINGS, so
   `sceRtcGetCurrentClockLocalTime`, the UTC/local conversions and the `gettimeofday` timezone
   record follow a setting a game writes through `sceReg` and can never disagree with the getter
-  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). The seed is the oracle
-  console's measured setting (-300 minutes, daylight saving on), not a factory default; the
-  60-minute daylight-saving shift is the setting's meaning, not a measurement. The
+  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). On the first run, when no
+  per-user registry overlay exists yet, the setting starts from the host's local time zone, which
+  the launcher passes as `SR_HOST_TIME_ZONE`, and is saved to the overlay at once; from then on it
+  is retained the way a console keeps its setting, and a later host change does not move it.
+  Without that variable the seed is the oracle console's measured setting (-300 minutes, daylight
+  saving on), not a factory default. The 60-minute daylight-saving shift is the setting's meaning,
+  not a measurement. The
   explicit-offset `sceRtcGetCurrentClock` path takes its offset from the caller.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
   domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
@@ -789,6 +793,7 @@ the maintained references for exact behavior.
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
 | `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
 | `SR_FSDIR` | path | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root (default `fs/`) |
+| `SR_HOST_TIME_ZONE` | `<minutes>,<0\|1>` | The host's standard offset from UTC and whether daylight saving is on now, set by the launcher; adopted as the console's time zone only on the first run, when the registry overlay does not exist yet (#1382) |
 | `SR_SYSTEM_REGISTRY` | path | Per-user overlay file of the virtual PSP system registry that `sceRegFlush*` writes (default `registry/system.json` in the per-user data directory) |
 
 Many legacy Boolean diagnostics are enabled by **presence**, so setting them to the literal string

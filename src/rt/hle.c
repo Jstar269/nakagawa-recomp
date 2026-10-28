@@ -1070,7 +1070,8 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
  * LANGUAGE, BUTTON_PREFERENCE, DATE_FORMAT, TIME_FORMAT and DAYLIGHTSAVINGS from the read-only
  * registry enumeration of 2026-10-09, and ADHOC_CHANNEL, TIMEZONE and LOCK_PARENTAL_LEVEL through
  * sceUtilityGetSystemParamInt on 2026-10-10 (hle-sysparam). WLAN_POWERSAVE is an unmeasured
- * project default. */
+ * project default. On the first run TIMEZONE and DAYLIGHTSAVINGS start from the host's local time
+ * zone instead, when the launcher passes it (sreg_seed_host_time_zone). */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
         case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
@@ -2096,6 +2097,59 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
     return 1;
 }
 
+static uint32_t sreg_persist(const char *caller);
+
+/* Parses SR_HOST_TIME_ZONE, "<minutes from UTC>,<0|1>" (the standard offset and whether daylight
+ * saving is on now), as the launcher writes it from the host's local time zone (nk_launch.c).
+ * Returns 0 for anything else: a zone must be a whole quarter hour within UTC-12:00..UTC+14:00. */
+static int sreg_parse_host_time_zone(const char *text, int32_t *zone_out, uint32_t *daylight_out) {
+    char *end = NULL;
+    long zone;
+    if (!text || !*text) return 0;
+    errno = 0;
+    zone = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != ',' || (end[1] != '0' && end[1] != '1') || end[2] != '\0')
+        return 0;
+    if (zone < -720 || zone > 840 || zone % 15 != 0) return 0;
+    *zone_out = (int32_t)zone;
+    *daylight_out = end[1] == '1' ? 1u : 0u;
+    return 1;
+}
+
+/* First run (#1382): with no per-user overlay yet, the console's time zone and daylight-saving
+ * setting start from the host's local time zone instead of the oracle console's measured -300 and
+ * SAVING, and are saved to the overlay at once, so they are retained from then on the way a
+ * console keeps its setting: a later change on the host does not move them, and a game or the
+ * user can still change them through sceReg. Without SR_HOST_TIME_ZONE (a bare runtime, the
+ * selftests) or with a malformed value, the measured seed stays. */
+static void sreg_seed_host_time_zone(void) {
+    char *env = NULL;
+    int present = 0;
+    int32_t zone;
+    uint32_t daylight;
+    int zone_node, daylight_node;
+    if (!sr_utf8_env_alloc(L"SR_HOST_TIME_ZONE", &env, &present) || !present) {
+        free(env);
+        return;
+    }
+    if (!sreg_parse_host_time_zone(env, &zone, &daylight)) {
+        fprintf(stderr, "system profile: ignoring SR_HOST_TIME_ZONE \"%.32s\" (want <minutes>,<0|1>); "
+                        "the time zone keeps its seed\n", env ? env : "");
+        free(env);
+        return;
+    }
+    free(env);
+    zone_node = sreg_find_path("/CONFIG/DATE/time_zone_offset");
+    daylight_node = sreg_find_path("/CONFIG/DATE/summer_time");
+    if (zone_node < 0 || daylight_node < 0) return;
+    sreg_put_le32(s_sreg_nodes[zone_node].value, (uint32_t)zone);
+    sreg_put_le32(s_sreg_nodes[daylight_node].value, daylight);
+    s_sreg_dirty = 1;
+    fprintf(stderr, "system profile: time zone %+d min from UTC, daylight saving %s, from the host's "
+                    "local time zone on first run\n", (int)zone, daylight ? "on" : "off");
+    (void)sreg_persist("system profile");
+}
+
 /* Load the defaults and the per-user overlay once per process. */
 static void sreg_ensure_loaded(void) {
     char *path, *text = NULL;
@@ -2132,6 +2186,7 @@ static void sreg_ensure_loaded(void) {
     s_sreg_dirty = 0;
     free(text);
     free(path);
+    if (got == 0) sreg_seed_host_time_zone();
 }
 
 typedef struct {

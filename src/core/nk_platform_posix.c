@@ -642,4 +642,20 @@ void nk_platform_close_process(NkProcessHandle *process) {
     process->cached_exit_code = 0;
 }
 
+bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
+    time_t now = time(NULL);
+    time_t as_standard;
+    struct tm local;
+    struct tm utc;
+    if (!standard_minutes || !daylight_now || now == (time_t)-1) return false;
+    if (!localtime_r(&now, &local) || !gmtime_r(&now, &utc)) return false;
+    /* The UTC clock read back as local standard time lands the standard offset before now. */
+    utc.tm_isdst = 0;
+    as_standard = mktime(&utc);
+    if (as_standard == (time_t)-1) return false;
+    *standard_minutes = (int)(difftime(now, as_standard) / 60.0);
+    *daylight_now = local.tm_isdst > 0;
+    return true;
+}
+
 #endif /* !_WIN32 */
