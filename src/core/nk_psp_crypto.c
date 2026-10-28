@@ -50,6 +50,9 @@ const char *nk_psp_status_name(int code)
     case NK_PSP_ERR_UNSUPPORTED: return "UNSUPPORTED_SCHEME";
     case NK_PSP_ERR_DECOMPRESS: return "DECOMPRESS_FAILURE";
     case NK_PSP_ERR_FIRMWARE: return "FIRMWARE_OUT_OF_SCOPE";
+    case NK_PSP_ERR_CONTEXT: return "CONTEXT_REQUIRED";
+    case NK_PSP_ERR_PSONE: return "PSONE_CLASSIC_UNSUPPORTED";
+    case NK_PSP_ERR_CANCELLED: return "CANCELLED";
     default: return "INTERNAL_ERROR";
     }
 }

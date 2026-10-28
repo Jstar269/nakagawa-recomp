@@ -469,6 +469,17 @@ void gui_init(const char *title) {
 }
 
 int gui_on(void) { return s_on; }
+/* 1 only while a person is looking at a real host window: a presenter is up and it is not the
+ * offscreen sink, a headless/dummy-video-driver host, or a headless acceptance launch. Those
+ * unattended presenters also report gui_on(), but nobody there can press START, so the
+ * runtime's bootstrap input (h_CtrlButtons) must keep running for them. */
+int gui_interactive(void) {
+    if (!s_on || s_offscreen || s_headless_accept_requested) return 0;
+#if defined(SR_SDL3VK) || defined(_WIN32)
+    if (sr_gui_is_headless_presenter()) return 0;
+#endif
+    return 1;
+}
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 int gui_pad_present(void) { return s_pad_present; }
@@ -572,7 +583,9 @@ void gui_pump(void) {
     if (s_offscreen) return;
 #ifdef SR_SDL3VK
     if (s_sdl3) {
-        int alive = sdl3vk_poll();
+        /* A window close first notifies the guest's exit callback; the run goes on while the
+         * guest has its bounded window to call sceKernelExitGame (hle.c, #1392). */
+        int alive = sdl3vk_poll() ? !sr_exit_request_expired() : sr_exit_request_quit();
         sync_sdl_input();
         if (!alive) { gui_window_closed_exit(); }
         return;

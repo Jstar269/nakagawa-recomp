@@ -31,6 +31,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x02baad91": {
+    "classification": "dedicated",
+    "handler": "h_CtrlGetSamplingCycle",
+    "name": "sceCtrlGetSamplingCycle",
+    "status": "partial"
+  },
   "0x03444eb4": {
     "classification": "dedicated",
     "handler": "h_GeListSync",
@@ -251,7 +257,7 @@
   },
   "0x0fae370e": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetHalfwayBufferAndGetID",
     "name": "sceAtracSetHalfwayBufferAndGetID",
     "status": "unreviewed"
   },
@@ -334,12 +340,6 @@
     "name": "sceUtilityLoadNetModule",
     "refusal_error": "0x80110001",
     "status": "controlled_unsupported"
-  },
-  "0x1579a30a": {
-    "classification": "dedicated",
-    "handler": "h_UtilityUnloadModule",
-    "name": "sceUtilityUnloadModule",
-    "status": "unreviewed"
   },
   "0x157e6225": {
     "classification": "controlled_unsupported",
@@ -457,7 +457,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlSetSamplingMode",
     "name": "sceCtrlSetSamplingMode",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1f6752ad": {
     "classification": "dedicated",
@@ -669,12 +669,6 @@
     "name": "sceKernelGetCallbackCount",
     "status": "unreviewed"
   },
-  "0x2a6117a5": {
-    "classification": "dedicated",
-    "handler": "h_UtilityLoadModule",
-    "name": "sceUtilityLoadModule",
-    "status": "unreviewed"
-  },
   "0x2ad8e239": {
     "classification": "dedicated",
     "handler": "h_MsgDialogInit",
@@ -815,6 +809,12 @@
     "name": "sceUtilityGamedataInstallShutdownStart",
     "status": "unreviewed"
   },
+  "0x33be4024": {
+    "classification": "dedicated",
+    "handler": "h_ReferMsgPipeStatus",
+    "name": "sceKernelReferMsgPipeStatus",
+    "status": "partial"
+  },
   "0x33d4ab37": {
     "classification": "dedicated",
     "handler": "h_SasRevType",
@@ -844,6 +844,12 @@
     "classification": "dedicated",
     "handler": "h_RtcConvertUtcToLocal",
     "name": "sceRtcConvertUtcToLocalTime",
+    "status": "partial"
+  },
+  "0x349b864d": {
+    "classification": "dedicated",
+    "handler": "h_CancelMsgPipe",
+    "name": "sceKernelCancelMsgPipe",
     "status": "partial"
   },
   "0x349d6d6c": {
@@ -1080,7 +1086,7 @@
   },
   "0x3f6e26b5": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetHalfwayBuffer",
     "name": "sceAtracSetHalfwayBuffer",
     "status": "unreviewed"
   },
@@ -1197,7 +1203,7 @@
   },
   "0x472e3825": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutDataAndGetID",
     "name": "sceAtracSetMOutDataAndGetID",
     "status": "unreviewed"
   },
@@ -1449,7 +1455,7 @@
   },
   "0x5cf9d852": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutHalfwayBuffer",
     "name": "sceAtracSetMOutHalfwayBuffer",
     "status": "unreviewed"
   },
@@ -1519,6 +1525,12 @@
     "classification": "dedicated",
     "handler": "h_MpegDelete",
     "name": "sceMpegDelete",
+    "status": "unreviewed"
+  },
+  "0x60b81f86": {
+    "classification": "dedicated",
+    "handler": "h_CtrlReadBufferNegative",
+    "name": "sceCtrlReadBufferNegative",
     "status": "unreviewed"
   },
   "0x611e9e11": {
@@ -1665,7 +1677,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlSetSamplingCycle",
     "name": "sceCtrlSetSamplingCycle",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6a638d83": {
     "classification": "dedicated",
@@ -2443,7 +2455,7 @@
   },
   "0x9cd7de03": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutHalfwayBufferAndGetID",
     "name": "sceAtracSetMOutHalfwayBufferAndGetID",
     "status": "unreviewed"
   },
@@ -2991,6 +3003,12 @@
     "name": "sceMpegQueryMemSize",
     "status": "unreviewed"
   },
+  "0xc152080a": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekBufferNegative",
+    "name": "sceCtrlPeekBufferNegative",
+    "status": "unreviewed"
+  },
   "0xc1734599": {
     "classification": "dedicated",
     "handler": "h_ReferLwMutexStatus",
@@ -3289,7 +3307,7 @@
   },
   "0xd8b73127": {
     "classification": "dedicated",
-    "handler": "h_GetModuleId",
+    "handler": "h_GetModuleIdByAddress",
     "name": "sceKernelGetModuleIdByAddress",
     "status": "unreviewed"
   },
@@ -3738,7 +3756,7 @@
   },
   "0xf6837a1a": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutData",
     "name": "sceAtracSetMOutData",
     "status": "unreviewed"
   },

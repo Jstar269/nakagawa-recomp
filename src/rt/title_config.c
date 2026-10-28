@@ -252,21 +252,6 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
     return 0;
 }
 
-int sr_title_config_preserve_callee_saved_at_calls(void) {
-#if SR_TITLE_CONFIG_COMPAT_PROFILE
-    /* #363 compatibility debt, HST only: a returning dispatch CALL restores the
-     * callee-saved $s0-$s7/$fp. Real hardware does not; a generic title sees every
-     * register write its callee makes. Retire this once the flagship's clobber is
-     * root-caused. */
-    static int enabled = -1;
-    if (enabled < 0)
-        enabled = s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0;
-    return enabled;
-#else
-    return 0;
-#endif
-}
-
 int sr_title_config_frame_latch_addr(uint32_t *out) {
     if (!(s_config.valid & SR_TITLE_CFG_FRAME_LATCH)) return 0;
     if (out) *out = s_config.frame_ready_latch_addr;

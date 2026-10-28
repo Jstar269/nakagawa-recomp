@@ -4974,7 +4974,7 @@ class HleMeasureProbeTests(unittest.TestCase):
     # Calls supplied by the SDK's default IO/audio libraries, not by the hand-written
     # ThreadMan import block. Libc and CRT helpers are not sce-prefixed.
     SDK_DEFAULT_CALLS = frozenset({
-        "sceIoOpen", "sceIoWrite", "sceIoRead", "sceIoClose",
+        "sceIoOpen", "sceIoWrite", "sceIoRead", "sceIoClose", "sceIoRemove",
         "sceAudioSRCChReserve", "sceAudioSRCChRelease", "sceAudioSRCOutputBlocking",
         "sceAudioOutput2Reserve", "sceAudioOutput2Release",
     })
@@ -5182,9 +5182,11 @@ class HleMeasureProbeTests(unittest.TestCase):
             self) -> None:
         forbidden = re.compile(r"sce\w*(?:Set|Install|Remove|Flush|Register|Reset)\w*")
         names = set(re.findall(r"\b(sce\w+)\b", self.probe))
+        # sceIoRemove deletes only the sysparam family's own private host0 file (#1072 M4);
+        # it changes no console state.
         self.assertEqual({name for name in names if forbidden.fullmatch(name)},
                          {"sceGeEdramSetAddrTranslation", "sceKernelSetAlarm",
-                          "sceKernelSetVTimerHandler"})
+                          "sceKernelSetVTimerHandler", "sceIoRemove"})
         for _library, _flags, pins in self.PINNED_BLOCKS.values():
             for name in pins:
                 if name != "sceGeEdramSetAddrTranslation":
@@ -5267,9 +5269,40 @@ class HleMeasureProbeTests(unittest.TestCase):
         self.assertIn("hle_private_nickname_write(buf, nul);", body)
         private = self.probe[self.probe.index("static void hle_private_nickname_write("):]
         private = private[:private.index("\n}\n")]
-        self.assertIn("host0:/hle_sysparam_private_strings.txt", private)
+        self.assertIn("HLE_PRIVATE_STRINGS_PATH", private)
         self.assertNotIn("hle_record", private)
         self.assertNotIn("hle_emit", private)
+
+    def test_private_nickname_file_is_removed_after_its_read_back(self) -> None:
+        """#1072 M4: the nickname file must not outlive the case. No tool reads it, so the
+        probe reads it back, compares it with what it wrote, then removes it whatever the
+        comparison found; a failed round trip or removal fails the run."""
+        section = self._section("HLE_CASE_SYSPARAM")
+        self.assertIn('#define HLE_PRIVATE_STRINGS_PATH "host0:/hle_sysparam_private_strings.txt"',
+                      section)
+        private = self._function_body(section, "static void hle_private_nickname_write(")
+        steps = [
+            "sceIoOpen(HLE_PRIVATE_STRINGS_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);",
+            "sceIoWrite(fd, written, total);",
+            "sceIoOpen(HLE_PRIVATE_STRINGS_PATH, PSP_O_RDONLY, 0);",
+            "sceIoRead(fd, observed, (SceSize)sizeof(observed));",
+            "memcmp(written, observed, total) == 0",
+            "if (sceIoRemove(HLE_PRIVATE_STRINGS_PATH) < 0 || !verified) { s_log_failed = 1; }",
+        ]
+        positions = [private.find(step) for step in steps]
+        self.assertNotIn(-1, positions, dict(zip(steps, positions, strict=True)))
+        self.assertEqual(positions, sorted(positions))
+        # Once the write is issued every path reaches the removal: no return after it, and
+        # the read-back result only decides PASS or FAIL.
+        self.assertNotIn("return", private[positions[1]:])
+        self.assertEqual(private.count("sceIoClose(fd)"), 2)
+        # The read-back holds one byte more than was written, so a longer file is caught.
+        self.assertIn("static uint8_t observed[sizeof(written) + 1u];", private)
+        # Removal is this file's alone: no other host0 file and no other family removes.
+        self.assertEqual(re.findall(r"\bsceIoRemove\s*\(([^)]*)\)", self.probe),
+                         ["HLE_PRIVATE_STRINGS_PATH"])
+        issues = (self.fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        self.assertNotRegex(issues, r"\bsceIoRemove\s*\(")
 
     def test_probe_emits_the_protocol_lines_and_the_log_the_runner_reads(self) -> None:
         for marker in ("NAKAGAWA_PSP_META schema=1", "NAKAGAWA_PSP_STEP schema=1 case_id=",
