@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7361d60b2eab294402b5a0c89208140f63f59c9429fd74b4f41164fd1113fd1c"
+      "sha256": "14c01674bc7a153f1c6391e3ebf0f305165d9c27b84d02a56882ae3c97ea2598"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -4025,7 +4025,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d295a983e28240c8cd79abdc109d89418f18e12ddc6116ae0568863a063038ab"
+      "sha256": "c3dfed56b7f0fc25ff1aad51e72f67b2cec2d62031db86d013827152ad9d4029"
     },
     {
       "path": "src/player/player_state.h",
@@ -4037,7 +4037,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d3c5c4aeb72dafc7beda3485e01814aafadeae65341da4540c584c82b5215c87"
+      "sha256": "6de03970589fa3e26898f4c1a4b6f1967bd49adbdfbcc451fc12116b5dda7c34"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -10548,7 +10548,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0bbefdfebaff8905a554bff6f161f5fd2801b7d2550c7ddc143e01a35889a9b2"
+      "sha256": "352edeb04620e1ca03a5b346448a5f056b7429f7878faa33f99c1bdfa76d4bcd"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -12352,7 +12352,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "779988ca6794353feda2e92f2db809bcbe4cb7785239e5b49bda19de4abda434"
+      "sha256": "51817ea27717f6ae273bb91da42f939fd38d040fb33418fb6548aad6baead1fc"
     },
     {
       "path": "tools/nk_core/git_isolation.py",
@@ -12376,7 +12376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fca85244ae21ef88f1556f64c72809061ee1ca004bf696268917da743fbdc89e"
+      "sha256": "9125dac48860a607e47598c5b459315a0b464a05e50692019a888289c35c6c21"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -14253,7 +14253,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e546de1bd1722ee4a6a73e57b8edd3a700e8600d62ea592c4e9c6546c69326f1"
+      "sha256": "822016958d76af0d97e765f50548ef37cd27aa2a08995e71aeab18cbe823b695"
     },
     {
       "path": "tools/test_key_scrub_tools.py",

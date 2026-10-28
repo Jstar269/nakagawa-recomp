@@ -4448,8 +4448,9 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_OK);
         check = find_preflight_check(&wiz->wizard.preflight, "DATA_ROOT");
         assert(check && check->status == PREFLIGHT_OK);
+        /* Project fonts only: every font is served, none is the user's own (#1300). */
         check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
-        assert(check && check->status == PREFLIGHT_OK);
+        assert(check && check->status == PREFLIGHT_SYNTHETIC);
 
         /* A refused local title profile remains identifiable by its declared
            disc ID, so the player can show the same refusal beside the card. */
@@ -5318,7 +5319,10 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* The Korean font is the project's stand-in: Synthetic, not OK (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+            assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
+            assert(!player_preflight_check_blocks(fcheck));
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
             assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
@@ -5634,7 +5638,8 @@ int main(int argc, char **argv) {
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* One Latin file stands in for the sixteen Latin fonts: Synthetic (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
             assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
@@ -5733,8 +5738,8 @@ int main(int argc, char **argv) {
                       "different; for 8 of the 16 Latin fonts and the Korean font they get no "
                       "font at all. Import them from your own PSP in the setup wizard.") == 0);
 
-        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
-           it still names the fonts a game gets a stand-in for. */
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is
+           Synthetic (#1300), and it names the fonts a game gets a stand-in for. */
         snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
         assert(nk_platform_mkdir_p(path));
         snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
@@ -5743,7 +5748,8 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+        assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
                       "Korean font. Games that ask for them get a stand-in font that looks "
@@ -5753,7 +5759,7 @@ int main(int argc, char **argv) {
         assert(player_app_fonts_import_folder(missing_app, rest));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "This PSP system font was not found: the Korean font. Games that ask for it "
                       "get a stand-in font that looks different. Import it from your own PSP in "
@@ -5764,6 +5770,7 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_status_word(fcheck), "Ready") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
 
         free(missing_app);
