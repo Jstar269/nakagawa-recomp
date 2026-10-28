@@ -1452,126 +1452,107 @@ class TitleConfigIdentityWiring(unittest.TestCase):
                             "an unchanged flavour must not invalidate anything")
 
 
-class DisplayBringupAndRuntimeSyncReservedTests(unittest.TestCase):
-    """Schema and Python must agree on the VFPU reservation for every
-    dispatch / call-target field. Display bring-up has 3 dispatch targets
-    (malloc, vblank, render) that must reject the reservation while its 3
-    data addresses must accept it; runtime-sync wrappers must reject it.
-    This test proves the fix for finding 1 and audits all affected fields.
+class RetiredHleAssistBindingTests(unittest.TestCase):
+    """The frame-latch, display bring-up and runtime-sync assists are retired (#363).
+
+    Their reserved-target, duplicate-mode and distinct-address rules left with them. What
+    stays pinned is the migration contract: a manifest that still names one fails with
+    the named HLE_TITLE_ASSIST_RETIRED error, the schema and the generator no longer
+    publish any of them, and no generated header carries their macros or validity bits.
     """
 
-    def assert_python_rejects(self, manifest: dict, fragment: str) -> None:
+    #: The shapes these fields had while they were live, so the refusal is shown for a
+    #: manifest that WAS valid and not for a malformed one. Synthetic addresses only.
+    LEGACY = {
+        "frame_ready_latch_addr": 0x08905004,
+        "display_bringup": {
+            "malloc_entry": 0x08901000,
+            "vblank_device_init_entry": 0x08901010,
+            "render_context_init_entry": 0x08901020,
+            "render_context_magic_addr": 0x08902000,
+            "render_table_ready_flag_addr": 0x08902004,
+            "render_context_word_addr": 0x08902008,
+        },
+        "runtime_sync": {
+            "config_base": 0x08903000,
+            "sema_name_ptr": 0x08903020,
+            "wrappers": [{"mode": 0, "enter": 0x08904000, "leave": 0x08904004}],
+        },
+    }
+
+    #: Substrings of the macros and validity bits the generated header used to carry.
+    RETIRED_HEADER_TOKENS = ("FRAME_READY_LATCH", "FRAME_LATCH", "DISPLAY_BRINGUP",
+                             "RUNTIME_SYNC")
+
+    def assert_retired(self, manifest: dict, path: str) -> None:
         with self.assertRaises(title_manifest.TitleManifestError) as caught:
             title_manifest.validate_manifest(manifest)
-        self.assertIn(fragment, str(caught.exception))
+        self.assertIn(path, str(caught.exception))
+        self.assertIn(title_manifest.HLE_ASSIST_RETIRED_MESSAGE, str(caught.exception))
 
-    def test_display_bringup_dispatch_targets_reject_reserved(self) -> None:
-        for field in ("malloc_entry", "vblank_device_init_entry", "render_context_init_entry"):
+    def test_every_retired_field_is_refused_with_the_named_error(self) -> None:
+        self.assertEqual(set(self.LEGACY), set(title_manifest.RETIRED_HLE_ASSIST_BINDINGS))
+        self.assertTrue(
+            title_manifest.HLE_ASSIST_RETIRED_MESSAGE.startswith("HLE_TITLE_ASSIST_RETIRED:"))
+        for field, value in self.LEGACY.items():
             with self.subTest(field=field):
-                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-                m["runtime_bindings"] = {
-                    "schema_version": 1,
-                    "display_bringup": {
-                        "malloc_entry": 0x08901000,
-                        "vblank_device_init_entry": 0x08901010,
-                        "render_context_init_entry": 0x08901020,
-                        "render_context_magic_addr": 0x08902000,
-                        "render_table_ready_flag_addr": 0x08902004,
-                        "render_context_word_addr": 0x08902008,
-                    },
-                }
-                m["runtime_bindings"]["display_bringup"][field] = title_manifest.SR_DISPATCH_VFPU_TAG
-                self.assert_python_rejects(m, "core VFPU")
-                # Data seeds must still accept the same value (they are not dispatch targets)
-        for field in ("render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"):
+                self.assertEqual(title_manifest.retired_binding_message(field),
+                                 title_manifest.HLE_ASSIST_RETIRED_MESSAGE)
+                # Beside a live binding, and alone in the block: the migration error
+                # wins over both "unknown field" and "configure at least one binding".
+                beside = base_manifest(fallback_entry=0x08900100)
+                beside["runtime_bindings"][field] = value
+                self.assert_retired(beside, f"runtime_bindings.{field}")
+                self.assert_retired(base_manifest(**{field: value}), f"runtime_bindings.{field}")
+
+    def test_retired_fields_cannot_be_declared_required(self) -> None:
+        for field in self.LEGACY:
             with self.subTest(field=field):
-                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-                m["runtime_bindings"] = {
-                    "schema_version": 1,
-                    "display_bringup": {
-                        "malloc_entry": 0x08901000,
-                        "vblank_device_init_entry": 0x08901010,
-                        "render_context_init_entry": 0x08901020,
-                        "render_context_magic_addr": 0x08902000,
-                        "render_table_ready_flag_addr": 0x08902004,
-                        "render_context_word_addr": 0x08902008,
-                    },
-                }
-                m["runtime_bindings"]["display_bringup"][field] = title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000
-                # Must validate — data seeds are plain guest addresses, VFPU window is allowed
-                # (guest_address allows it, and display_bringup does not reject for these)
-                normalized = title_manifest.validate_manifest(m)
-                self.assertEqual(normalized["runtime_bindings"]["display_bringup"][field],
-                                 title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000)
+                manifest = base_manifest(fallback_entry=0x08900100)
+                manifest["required_runtime_bindings"] = [field]
+                self.assert_retired(manifest, "required_runtime_bindings[0]")
 
-    def test_display_bringup_schema_encodes_reservation(self) -> None:
-        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
-        props = schema["$defs"]["displayBringup"]["properties"]
-        excluded = {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
-        for field in ("malloc_entry", "vblank_device_init_entry", "render_context_init_entry"):
+    def test_schema_and_generator_no_longer_publish_them(self) -> None:
+        schema = json.loads(
+            (ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        for name in ("displayBringup", "runtimeSync", "runtimeSyncWrapper"):
+            self.assertNotIn(name, schema["$defs"])
+        published = set(schema["$defs"]["runtimeBindings"]["properties"])
+        declarable = set(schema["properties"]["required_runtime_bindings"]["items"]["enum"])
+        generated = set(title_runtime_config.FIELD_BITS) | set(title_runtime_config.OBJECT_BITS)
+        for field in self.LEGACY:
             with self.subTest(field=field):
-                self.assertIn("allOf", props[field])
-                self.assertIn(excluded, props[field]["allOf"])
-        for field in ("render_context_magic_addr", "render_table_ready_flag_addr", "render_context_word_addr"):
+                self.assertIn(field, title_manifest.RETIRED_RUNTIME_BINDING_FIELDS)
+                self.assertNotIn(field, published)
+                self.assertNotIn(field, declarable)
+                self.assertNotIn(field, title_manifest.DECLARABLE_BINDING_FAMILIES)
+                self.assertNotIn(field, generated)
+        self.assertEqual(title_manifest.RUNTIME_BINDING_OBJECTS, ())
+        self.assertEqual(title_runtime_config.OBJECT_BITS, {})
+
+    def test_generated_headers_carry_no_retired_macro_or_validity_bit(self) -> None:
+        self.assertGreaterEqual(title_runtime_config.GENERATED_SCHEMA_VERSION, 11,
+                                "the header contract must have moved past the version "
+                                "that carried the retired assists")
+        for label, manifest in (
+                ("generic", None),
+                (FIXTURE_A.name, json.loads(FIXTURE_A.read_text(encoding="utf-8"))),
+                (FIXTURE_B.name, json.loads(FIXTURE_B.read_text(encoding="utf-8")))):
+            with self.subTest(config=label):
+                header = title_runtime_config.render_header(
+                    title_runtime_config.bindings_from_manifest(manifest))
+                for token in self.RETIRED_HEADER_TOKENS:
+                    self.assertNotIn(token, header)
+
+    def test_the_generator_refuses_a_retired_binding_that_bypassed_validation(self) -> None:
+        for field, value in self.LEGACY.items():
             with self.subTest(field=field):
-                self.assertNotIn("allOf", props[field])
-                self.assertEqual(props[field], {"$ref": "#/$defs/guestAddress"})
-
-    def test_runtime_sync_wrappers_reject_reserved(self) -> None:
-        for role in ("enter", "leave"):
-            with self.subTest(role=role):
-                m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-                m["runtime_bindings"] = {
-                    "schema_version": 1,
-                    "runtime_sync": {
-                        "config_base": 0x08903000,
-                        "sema_name_ptr": 0x08903020,
-                        "wrappers": [{"mode": 0, "enter": 0x08904000, "leave": 0x08904004}],
-                    },
-                }
-                m["runtime_bindings"]["runtime_sync"]["wrappers"][0][role] = title_manifest.SR_DISPATCH_VFPU_TAG
-                self.assert_python_rejects(m, "core VFPU")
-
-    def test_out_of_range_and_malformed_rejected(self) -> None:
-        # Out-of-range: too large
-        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-        m["runtime_bindings"] = {
-            "schema_version": 1,
-            "display_bringup": {
-                "malloc_entry": 0x100000000,  # > UINT32_MAX
-                "vblank_device_init_entry": 0x08901010,
-                "render_context_init_entry": 0x08901020,
-                "render_context_magic_addr": 0x08902000,
-                "render_table_ready_flag_addr": 0x08902004,
-                "render_context_word_addr": 0x08902008,
-            },
-        }
-        self.assert_python_rejects(m, "must be in range")
-        # Malformed: unaligned
-        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = 0x08901001
-        self.assert_python_rejects(m, "must be 4-byte aligned")
-        # Malformed: zero (omit means disabled)
-        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = 0
-        self.assert_python_rejects(m, "must not be zero")
-        # Malformed: wrong type
-        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = "0x08901000"
-        self.assert_python_rejects(m, "must be an integer")
-
-    def test_valid_ordinary_guest_target_accepted(self) -> None:
-        m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-        m["runtime_bindings"] = {
-            "schema_version": 1,
-            "display_bringup": {
-                "malloc_entry": 0x08901000,
-                "vblank_device_init_entry": 0x08901010,
-                "render_context_init_entry": 0x08901020,
-                "render_context_magic_addr": 0x08902000,
-                "render_table_ready_flag_addr": 0x08902004,
-                "render_context_word_addr": 0x08902008,
-            },
-        }
-        normalized = title_manifest.validate_manifest(m)
-        self.assertEqual(normalized["runtime_bindings"]["display_bringup"]["malloc_entry"], 0x08901000)
+                config = title_runtime_config.bindings_from_manifest(None)
+                config["bindings"][field] = value
+                with self.assertRaises(title_runtime_config.TitleRuntimeConfigError) as caught:
+                    title_runtime_config.render_header(config)
+                self.assertIn("no runtime representation", str(caught.exception))
+                self.assertIn(field, str(caught.exception))
 
 
 class RequiredRuntimeBindingsTests(unittest.TestCase):
@@ -1584,16 +1565,9 @@ class RequiredRuntimeBindingsTests(unittest.TestCase):
     half so the pair cannot rot into a vacuous assertion.
     """
 
-    #: A complete, valid display bring-up family, used as the thing that goes
+    #: A complete, valid multi-field binding family, used as the thing that goes
     #: missing. Addresses are synthetic fixture values, not any title's.
-    BRINGUP = {
-        "malloc_entry": 0x08901000,
-        "vblank_device_init_entry": 0x08901010,
-        "render_context_init_entry": 0x08901020,
-        "render_context_magic_addr": 0x08902000,
-        "render_table_ready_flag_addr": 0x08902004,
-        "render_context_word_addr": 0x08902008,
-    }
+    ALIASES = [{"from": 0x08901000, "to": 0x08901010}]
 
     def manifest(self, *, bindings=None, required=None):
         m = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
@@ -1625,33 +1599,34 @@ class RequiredRuntimeBindingsTests(unittest.TestCase):
         ):
             with self.subTest(shape=label):
                 normalized = title_manifest.validate_manifest(self.manifest(bindings=bindings))
-                self.assertNotIn("display_bringup", normalized.get("runtime_bindings") or {})
+                self.assertNotIn("dispatch_aliases", normalized.get("runtime_bindings") or {})
 
     def test_omitted_family_generates_a_disabled_binding(self) -> None:
         """And it generates cleanly, which is why the runtime never noticed."""
         config = title_runtime_config.bindings_from_manifest(
             self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100}))
-        self.assertNotIn("display_bringup", config["bindings"])
+        self.assertNotIn("dispatch_aliases", config["bindings"])
 
     # ---- the "after" half: the same shapes, now declared and refused ----
 
     def test_absent_family_rejected_when_required(self) -> None:
         self.assert_rejects(
             self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100},
-                          required=["display_bringup"]),
-            "does not configure: display_bringup")
+                          required=["dispatch_aliases"]),
+            "does not configure: dispatch_aliases")
 
     def test_absent_runtime_bindings_block_rejected_when_required(self) -> None:
         """The widest shape: no bindings block at all."""
         self.assert_rejects(
-            self.manifest(bindings=None, required=["display_bringup", "frame_ready_latch_addr"]),
-            "does not configure: display_bringup, frame_ready_latch_addr")
+            self.manifest(bindings=None, required=["dispatch_aliases", "worker_thread_entry"]),
+            "does not configure: dispatch_aliases, worker_thread_entry")
 
     def test_absent_scalar_binding_rejected_when_required(self) -> None:
-        for field in ("frame_ready_latch_addr", "fallback_entry"):
+        for field in ("fallback_entry", "worker_thread_entry", "launcher_thread_entry",
+                      "expected_data_file_count"):
             with self.subTest(field=field):
                 self.assert_rejects(
-                    self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                    self.manifest(bindings={"schema_version": 1, "dispatch_aliases": self.ALIASES},
                                   required=[field]),
                     f"does not configure: {field}")
 
@@ -1665,72 +1640,72 @@ class RequiredRuntimeBindingsTests(unittest.TestCase):
 
     def test_partial_required_family_still_rejected(self) -> None:
         """A declared family cannot be satisfied by a half-configured one."""
-        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+        for field in ("from", "to"):
             with self.subTest(missing_field=field):
-                bringup = dict(self.BRINGUP)
-                del bringup[field]
+                alias = dict(self.ALIASES[0])
+                del alias[field]
                 self.assert_rejects(
-                    self.manifest(bindings={"schema_version": 1, "display_bringup": bringup},
-                                  required=["display_bringup"]),
+                    self.manifest(bindings={"schema_version": 1, "dispatch_aliases": [alias]},
+                                  required=["dispatch_aliases"]),
                     "missing required field(s)")
 
     def test_zero_in_required_family_still_rejected(self) -> None:
         """Nor by a family whose addresses are the runtime's disabled sentinel."""
-        for field in title_manifest.DISPLAY_BRINGUP_FIELDS:
+        for field in ("from", "to"):
             with self.subTest(zero_field=field):
-                bringup = dict(self.BRINGUP)
-                bringup[field] = 0
+                alias = dict(self.ALIASES[0])
+                alias[field] = 0
                 self.assert_rejects(
-                    self.manifest(bindings={"schema_version": 1, "display_bringup": bringup},
-                                  required=["display_bringup"]),
+                    self.manifest(bindings={"schema_version": 1, "dispatch_aliases": [alias]},
+                                  required=["dispatch_aliases"]),
                     "must not be zero")
 
     def test_zero_required_scalar_rejected(self) -> None:
         self.assert_rejects(
             self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100,
-                                    "frame_ready_latch_addr": 0},
-                          required=["frame_ready_latch_addr"]),
+                                    "worker_thread_entry": 0},
+                          required=["worker_thread_entry"]),
             "must not be zero")
 
     def test_generation_refuses_a_required_family_it_cannot_emit(self) -> None:
         """The generator is a second gate, so no build path emits zero macros
         for a family the title says it requires."""
         manifest = self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100},
-                                 required=["display_bringup"])
+                                 required=["dispatch_aliases"])
         with self.assertRaises((title_manifest.TitleManifestError,
                                 title_runtime_config.TitleRuntimeConfigError)) as caught:
             title_runtime_config.bindings_from_manifest(manifest)
-        self.assertIn("display_bringup", str(caught.exception))
+        self.assertIn("dispatch_aliases", str(caught.exception))
 
     # ---- the declaration itself must fail closed ----
 
     def test_complete_required_family_accepted(self) -> None:
         normalized = title_manifest.validate_manifest(
-            self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
-                          required=["display_bringup"]))
-        self.assertEqual(normalized["required_runtime_bindings"], ["display_bringup"])
-        self.assertIn("display_bringup", normalized["runtime_bindings"])
+            self.manifest(bindings={"schema_version": 1, "dispatch_aliases": self.ALIASES},
+                          required=["dispatch_aliases"]))
+        self.assertEqual(normalized["required_runtime_bindings"], ["dispatch_aliases"])
+        self.assertIn("dispatch_aliases", normalized["runtime_bindings"])
 
     def test_unknown_family_name_rejected(self) -> None:
         """A typo must not silently declare nothing and reopen the hole."""
-        for name in ("display_bringups", "displaybringup", "not_a_family"):
+        for name in ("dispatch_alias", "dispatchaliases", "not_a_family"):
             with self.subTest(name=name):
                 self.assert_rejects(
-                    self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
+                    self.manifest(bindings={"schema_version": 1, "dispatch_aliases": self.ALIASES},
                                   required=[name]),
                     "is not a runtime binding family")
 
     def test_duplicate_and_malformed_declarations_rejected(self) -> None:
         self.assert_rejects(
-            self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
-                          required=["display_bringup", "display_bringup"]),
+            self.manifest(bindings={"schema_version": 1, "dispatch_aliases": self.ALIASES},
+                          required=["dispatch_aliases", "dispatch_aliases"]),
             "duplicate required binding family")
-        for bad in ({}, "display_bringup", 7, [5], [None]):
+        for bad in ({}, "dispatch_aliases", 7, [5], [None]):
             with self.subTest(value=bad):
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(
                         self.manifest(bindings={"schema_version": 1,
-                                                "display_bringup": self.BRINGUP},
+                                                "dispatch_aliases": self.ALIASES},
                                       required=bad))
 
     def test_empty_declaration_is_legal_and_requires_nothing(self) -> None:
