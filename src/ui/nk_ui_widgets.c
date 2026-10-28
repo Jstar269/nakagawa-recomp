@@ -267,6 +267,144 @@ const NkUiShapeArt *nk_ui_art_n1_mark(void) {
     return &g_n1_mark_art;
 }
 
+/* ---- App icon ---------------------------------------------------------------------- */
+/* Keep these in step with TILE_RGB, CORNER_FRACTION, INSET_FRACTION and CORNER_SAMPLES in
+   tools/make_app_icon.py; tools/test_app_icon.py compares them. */
+#define NK_UI_APP_ICON_TILE_RGB 0x10151Cu
+#define NK_UI_APP_ICON_CORNER 0.18
+#define NK_UI_APP_ICON_INSET 0.16
+#define NK_UI_APP_ICON_CORNER_SAMPLES 16
+
+typedef struct {
+    double x;
+    double y;
+} NkUiIconPoint;
+
+/* Each clip against one pixel edge adds at most one vertex. */
+#define NK_UI_ICON_CLIP_POINTS (NK_UI_SHAPE_MAX_POINTS + 4u)
+
+static unsigned nk_ui_icon_clip(const NkUiIconPoint *in, unsigned count, int axis,
+                                double bound, int keep_above, NkUiIconPoint *out) {
+    unsigned n = 0u;
+    for (unsigned i = 0u; i < count; ++i) {
+        NkUiIconPoint a = in[i];
+        NkUiIconPoint b = in[(i + 1u) % count];
+        double av = axis == 0 ? a.x : a.y;
+        double bv = axis == 0 ? b.x : b.y;
+        int a_in = keep_above ? av >= bound : av <= bound;
+        int b_in = keep_above ? bv >= bound : bv <= bound;
+        if (a_in) out[n++] = a;
+        if (a_in != b_in) {
+            double t = (bound - av) / (bv - av);
+            NkUiIconPoint p = {a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)};
+            out[n++] = p;
+        }
+    }
+    return n;
+}
+
+/* Exact area of the convex polygon inside pixel (px, py). */
+static double nk_ui_icon_coverage(const NkUiIconPoint *poly, unsigned count, int px, int py) {
+    NkUiIconPoint a[NK_UI_ICON_CLIP_POINTS];
+    NkUiIconPoint b[NK_UI_ICON_CLIP_POINTS];
+    unsigned n = nk_ui_icon_clip(poly, count, 0, (double)px, 1, a);
+    if (n != 0u) n = nk_ui_icon_clip(a, n, 0, (double)(px + 1), 0, b);
+    if (n != 0u) n = nk_ui_icon_clip(b, n, 1, (double)py, 1, a);
+    if (n != 0u) n = nk_ui_icon_clip(a, n, 1, (double)(py + 1), 0, b);
+    if (n < 3u) return 0.0;
+    double total = 0.0;
+    for (unsigned i = 0u; i < n; ++i) {
+        NkUiIconPoint p = b[i];
+        NkUiIconPoint q = b[(i + 1u) % n];
+        total += p.x * q.y - q.x * p.y;
+    }
+    return (total < 0.0 ? -total : total) * 0.5;
+}
+
+static double nk_ui_icon_tile_coverage(int size, int px, int py) {
+    double radius = size * NK_UI_APP_ICON_CORNER;
+    int near_x = px < radius || px + 1 > size - radius;
+    int near_y = py < radius || py + 1 > size - radius;
+    if (!(near_x && near_y)) return 1.0;
+    double cx = px < radius ? radius : size - radius;
+    double cy = py < radius ? radius : size - radius;
+    int inside = 0;
+    for (int sy = 0; sy < NK_UI_APP_ICON_CORNER_SAMPLES; ++sy) {
+        double y = py + (sy + 0.5) / NK_UI_APP_ICON_CORNER_SAMPLES;
+        for (int sx = 0; sx < NK_UI_APP_ICON_CORNER_SAMPLES; ++sx) {
+            double x = px + (sx + 0.5) / NK_UI_APP_ICON_CORNER_SAMPLES;
+            double dx = (x < radius || x > size - radius) ? x - cx : 0.0;
+            double dy = (y < radius || y > size - radius) ? y - cy : 0.0;
+            if (dx * dx + dy * dy <= radius * radius) ++inside;
+        }
+    }
+    return (double)inside / (NK_UI_APP_ICON_CORNER_SAMPLES * NK_UI_APP_ICON_CORNER_SAMPLES);
+}
+
+static unsigned char nk_ui_icon_byte(double value) {
+    int v = (int)(value * 255.0 + 0.5);
+    return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
+bool nk_ui_app_icon_rgba(int size, unsigned char *rgba, size_t stride) {
+    if (rgba == NULL || size < NK_UI_APP_ICON_MIN || size > NK_UI_APP_ICON_MAX ||
+        stride < (size_t)size * 4u) {
+        return false;
+    }
+    const NkUiShapeArt *art = &g_n1_mark_art;
+    NkUiIconPoint polys[sizeof(g_n1_mark) / sizeof(g_n1_mark[0])][NK_UI_SHAPE_MAX_POINTS];
+    unsigned counts[sizeof(g_n1_mark) / sizeof(g_n1_mark[0])];
+    double inset = size * NK_UI_APP_ICON_INSET;
+    double extent = art->view_w > art->view_h ? art->view_w : art->view_h;
+    double scale = (size - 2.0 * inset) / extent;
+    for (size_t s = 0u; s < art->count; ++s) {
+        const NkUiShape *shape = &art->shapes[s];
+        NkUiIconPoint *poly = polys[s];
+        if (shape->kind == NK_UI_SHAPE_RECT) {
+            double x = shape->v[0], y = shape->v[1];
+            double w = shape->v[2], h = shape->v[3];
+            NkUiIconPoint corners[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
+            memcpy(poly, corners, sizeof(corners));
+            counts[s] = 4u;
+        } else {
+            for (unsigned i = 0u; i < shape->count; ++i) {
+                poly[i].x = shape->v[2u * i];
+                poly[i].y = shape->v[2u * i + 1u];
+            }
+            counts[s] = shape->count;
+        }
+        for (unsigned i = 0u; i < counts[s]; ++i) {
+            poly[i].x = inset + (poly[i].x - art->view_x) * scale;
+            poly[i].y = inset + (poly[i].y - art->view_y) * scale;
+        }
+    }
+    const double tile[3] = {((NK_UI_APP_ICON_TILE_RGB >> 16) & 0xFFu) / 255.0,
+                            ((NK_UI_APP_ICON_TILE_RGB >> 8) & 0xFFu) / 255.0,
+                            (NK_UI_APP_ICON_TILE_RGB & 0xFFu) / 255.0};
+    for (int py = 0; py < size; ++py) {
+        unsigned char *row = rgba + (size_t)py * stride;
+        for (int px = 0; px < size; ++px) {
+            double alpha = nk_ui_icon_tile_coverage(size, px, py);
+            double c[3] = {tile[0] * alpha, tile[1] * alpha, tile[2] * alpha};
+            for (size_t s = 0u; s < art->count; ++s) {
+                double cover = nk_ui_icon_coverage(polys[s], counts[s], px, py);
+                if (cover <= 0.0) continue;
+                uint32_t fill = art->shapes[s].rgba;
+                for (int k = 0; k < 3; ++k) {
+                    double channel = ((fill >> (24 - 8 * k)) & 0xFFu) / 255.0;
+                    c[k] = channel * cover + c[k] * (1.0 - cover);
+                }
+                alpha = cover + alpha * (1.0 - cover);
+            }
+            for (int k = 0; k < 3; ++k) {
+                row[px * 4 + k] = nk_ui_icon_byte(alpha > 0.0 ? c[k] / alpha : c[k]);
+            }
+            row[px * 4 + 3] = nk_ui_icon_byte(alpha);
+        }
+    }
+    return true;
+}
+
 const NkUiShapeArt *nk_ui_art_picture(NkUiArtKind kind) {
     switch (kind) {
     case NK_UI_ART_SHOWCASE_SCENE: return &g_showcase_scene_art;

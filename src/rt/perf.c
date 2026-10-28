@@ -50,6 +50,9 @@ typedef struct SrPerfMetrics {
     uint64_t present_wait_ns;
     uint64_t vblanks;
     uint64_t presents;
+    uint64_t new_frames;            /* presents of a buffer other than the previous present's */
+    uint64_t new_frame_intervals;   /* new frames with a previous new frame to measure from */
+    uint64_t new_frame_vblanks;     /* VBLANKs summed over those intervals */
     uint64_t ge_submits;
     uint64_t present_submits;
     uint64_t ge_waits;
@@ -164,6 +167,9 @@ typedef struct SrPerfState {
     uint64_t sched_start_ns;
     uint64_t gpu_replay_last[SR_PERF_GPU_REPLAY_COUNT];   /* last cumulative snapshot */
     SrPerfTransitionEntry transitions[2][SR_PERF_TOP_N];
+    int frame_seen;                 /* a present happened, so last_frame_buffer is valid */
+    uint32_t last_frame_buffer;     /* guest framebuffer of the previous present */
+    uint32_t last_new_frame_vcount; /* VBLANK of the previous new frame */
 } SrPerfState;
 
 static SrPerfState s_perf;
@@ -187,6 +193,8 @@ static int s_perf_stderr_enabled = 0;
 static double s_hud_fps = 0.0;
 static double s_hud_frame_ms = 0.0;
 static double s_hud_vblank_hz = 0.0;
+static double s_hud_game_fps = 0.0;
+static double s_hud_vblanks_per_frame = 0.0;
 
 static int env_on(const char *name) {
     const char *value = getenv(name);
@@ -393,7 +401,7 @@ static void csv_header(FILE *csv) {
                 s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i]);
     for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
         fprintf(csv, ",gpu_replay_%s", s_gpu_replay_names[i]);
-    fputc('\n', csv);
+    fputs(",new_frames,new_frame_intervals,new_frame_vblanks\n", csv);
 }
 
 static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
@@ -480,7 +488,8 @@ static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
                 (unsigned long long)m->ge_frontend_eligible[i]);
     for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
         fprintf(csv, ",%llu", (unsigned long long)m->gpu_replay[i]);
-    fputc('\n', csv);
+    fprintf(csv, ",%llu,%llu,%llu\n", (unsigned long long)m->new_frames,
+            (unsigned long long)m->new_frame_intervals, (unsigned long long)m->new_frame_vblanks);
 }
 
 static int transition_compare(const void *left, const void *right) {
@@ -747,6 +756,9 @@ static void report_if_due(uint64_t now) {
     s_hud_fps = fps;
     s_hud_frame_ms = frame_ms;
     s_hud_vblank_hz = vblank_hz;
+    s_hud_game_fps = seconds > 0.0 ? (double)m.new_frames / seconds : 0.0;
+    s_hud_vblanks_per_frame = m.new_frame_intervals
+        ? (double)m.new_frame_vblanks / (double)m.new_frame_intervals : 0.0;
     if (s_perf_stderr_enabled) {
     perf_emit_format(
             "PERF vblank_total=%llu wall_ms=%.3f fps=%.3f frame_ms=%.3f vblank_hz=%.3f "
@@ -1133,6 +1145,26 @@ void sr_perf_present_skip(void) {
     if (s_perf.enabled && !s_perf.shutdown) ADD(present_skips, 1);
 }
 
+/* A new game frame is a present whose guest framebuffer differs from the previous present's,
+ * the flip of tools/perf_attribution.py; the first present is one and starts the interval
+ * clock. A title that hands one finished frame to the window more than once (Hot Shots Tennis
+ * sets the same buffer immediately and for the next frame) makes one new frame and re-presents,
+ * so `presents` counts what the window received and `new_frames` what the game drew. The
+ * VBLANKs from one new frame to the next are the game's pacing: 2 is a 30-frame title on time.
+ * A title that redraws one buffer in place shows as re-presents, as in that tool. */
+void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    if (s_perf.frame_seen && buffer == s_perf.last_frame_buffer) return;
+    ADD(new_frames, 1);
+    if (s_perf.frame_seen) {
+        ADD(new_frame_intervals, 1);
+        ADD(new_frame_vblanks, (uint64_t)(uint32_t)(vcount - s_perf.last_new_frame_vcount));
+    }
+    s_perf.frame_seen = 1;
+    s_perf.last_frame_buffer = buffer;
+    s_perf.last_new_frame_vcount = vcount;
+}
+
 void sr_perf_aot_begin(uint32_t pc) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     uint64_t now = raw_now_ns();
@@ -1441,4 +1473,24 @@ void sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_
     if (out_fps) *out_fps = fps;
     if (out_frame_ms) *out_frame_ms = frame_ms;
     if (out_vblank_hz) *out_vblank_hz = vblank_hz;
+}
+
+void sr_perf_get_hud_frames(double *out_game_fps, double *out_vblanks_per_frame) {
+    double game_fps = s_hud_game_fps, vblanks_per_frame = s_hud_vblanks_per_frame;
+    if (s_hud_fps <= 0.0) {
+        /* Before the first 1 Hz interval closes, estimate from the open interval, as
+         * sr_perf_get_hud_metrics() does. */
+        uint64_t now = raw_now_ns();
+        uint64_t elapsed = now > s_perf.interval_start_ns ? now - s_perf.interval_start_ns : 0;
+        double seconds = (double)elapsed / 1000000000.0;
+        if (s_perf.interval_start_ns && seconds > 0.1) {
+            game_fps = (double)s_perf.interval.new_frames / seconds;
+            vblanks_per_frame = s_perf.interval.new_frame_intervals
+                ? (double)s_perf.interval.new_frame_vblanks /
+                      (double)s_perf.interval.new_frame_intervals
+                : 0.0;
+        }
+    }
+    if (out_game_fps) *out_game_fps = game_fps;
+    if (out_vblanks_per_frame) *out_vblanks_per_frame = vblanks_per_frame;
 }

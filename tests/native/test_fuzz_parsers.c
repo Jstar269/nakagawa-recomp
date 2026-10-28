@@ -14,6 +14,17 @@
 #include "nk_input_profile.h"
 #include "nk_platform.h"
 #include "prx_loader.h"
+#include "nk_psp_aes.h"
+#include "nk_psp_container.h"
+#include "nk_psp_ec.h"
+#include "nk_psp_inflate.h"
+#include "nk_psp_keystore.h"
+#include "nk_psp_kirk.h"
+#include "nk_psp_kle.h"
+#include "nk_psp_lzrc.h"
+#include "nk_psp_npumdimg.h"
+#include "nk_psp_sha1.h"
+#include "psp_seal_fixture.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -103,6 +114,14 @@ static void put32le(uint8_t *p, uint32_t value) {
 static uint32_t get32le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* The KL4E/KL3E header carries its copy length most-significant byte first. */
+static void put32be(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)(value >> 24);
+    p[1] = (uint8_t)(value >> 16);
+    p[2] = (uint8_t)(value >> 8);
+    p[3] = (uint8_t)value;
 }
 
 static void put32_iso_both(uint8_t *p, uint32_t value) {
@@ -1579,6 +1598,1409 @@ static void test_fuzz_library(unsigned iters) {
     fflush(stdout);
 }
 
+/* -----------------------------------------------------------------------------
+ * 7. Built-in PSP decryption boundary fuzz coverage
+ *
+ * Every parser the decryption boundary exposes to user-supplied bytes gets a
+ * seeded mutation harness here: the container probe/framing (~PSP, ~SCE,
+ * PBP), the ~PSP header parse, the KeyStore JSON loader, the
+ * DEFLATE/zlib/gzip inflater, the KL4E/KL3E decoder and the KIRK command
+ * dispatch on attacker-controlled headers.
+ *
+ * ALL SEEDS ARE SYNTHETIC and built in this file: a tiny source-owned
+ * ELF32/MIPS image, a type-2 ~PSP container sealed around it with constant
+ * fake keys (never key material), a synthetic KeyStore document, and
+ * gzip/zlib/raw-deflate plus KL4E/KL3E streams produced by the small writers
+ * below.  No retail, firmware or key bytes are involved.
+ *
+ * Ceilings asserted by these harnesses (the boundary's own limits):
+ *   wrapper depth 8; ~PSP psp_size in [0x150, file size] and segments <= 4;
+ *   KeyStore 64 KiB and 512 entries; inflate output <= the cap passed in
+ *   (64 MiB in production, 256 KiB here); KL output <= the declared
+ *   elf_size; KIRK data_size <= size - header and 16-byte aligned.
+ * -------------------------------------------------------------------------- */
+#define FUZZ_PSP_TAG 0x5EED3191u /* obviously synthetic; no retail meaning */
+#define FUZZ_PSP_CODE 67         /* synthetic KIRK keyvault slot */
+#define FUZZ_KEYSTORE_FORMAT "nakagawa-psp-keystore-1"
+#define FUZZ_INFLATE_CAP (256u * 1024u)
+#define FUZZ_CANARY 0xC7u
+
+/* Constant, obviously-fake key bytes.  Derived from an entry id so each
+ * synthetic key differs; this is a test pattern, not key material. */
+static void fuzz_fake_key(uint8_t *out, unsigned id) {
+    for (unsigned i = 0; i < 16u; i++) {
+        out[i] = (uint8_t)(0x11u + 0x23u * (id + i));
+    }
+}
+
+static void fuzz_hex_encode(const uint8_t *bytes, size_t n, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2u] = digits[(bytes[i] >> 4) & 0x0Fu];
+        out[i * 2u + 1u] = digits[bytes[i] & 0x0Fu];
+    }
+    out[n * 2u] = '\0';
+}
+
+/* The complete synthetic key set the sealed ~PSP container needs. */
+static size_t build_keystore_json(char *buf, size_t cap) {
+    uint8_t cmd1[16], vault[16], tag_key[16];
+    char cmd1_hex[33], vault_hex[33], tag_hex[33];
+    fuzz_fake_key(cmd1, 1u);
+    fuzz_fake_key(vault, 2u);
+    fuzz_fake_key(tag_key, 3u);
+    fuzz_hex_encode(cmd1, sizeof(cmd1), cmd1_hex);
+    fuzz_hex_encode(vault, sizeof(vault), vault_hex);
+    fuzz_hex_encode(tag_key, sizeof(tag_key), tag_hex);
+    int n = snprintf(buf, cap,
+                     "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{"
+                     "\"kirk.cmd1.key\":\"%s\","
+                     "\"kirk.keyvault.%d\":\"%s\","
+                     "\"prx.tag.0x%08X\":{\"code\":%d,\"key\":\"%s\"}}}",
+                     cmd1_hex, FUZZ_PSP_CODE, vault_hex,
+                     (unsigned)FUZZ_PSP_TAG, FUZZ_PSP_CODE, tag_hex);
+    assert(n > 0 && (size_t)n < cap);
+    return (size_t)n;
+}
+
+/* Tiny source-owned ELF32/MIPS image (one PT_LOAD, entry inside it). */
+static size_t build_tiny_elf(uint8_t *buf, size_t cap) {
+    const uint32_t ehsize = 52u, phsize = 32u, text_off = 84u;
+    assert(cap >= 128u);
+    memset(buf, 0, cap);
+    buf[0] = 0x7Fu; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[4] = 1u; buf[5] = 1u; buf[6] = 1u; /* 32-bit, LSB, current */
+    put16le(buf + 16, 2u);   /* e_type ET_EXEC */
+    put16le(buf + 18, 8u);   /* e_machine EM_MIPS */
+    put32le(buf + 20, 1u);   /* e_version */
+    put32le(buf + 24, 0x08804000u + text_off); /* e_entry */
+    put32le(buf + 28, ehsize);
+    put32le(buf + 32, 0u);   /* e_shoff */
+    put32le(buf + 36, 0x60000000u);
+    put16le(buf + 40, (uint16_t)ehsize);
+    put16le(buf + 42, (uint16_t)phsize);
+    put16le(buf + 44, 1u);   /* e_phnum */
+    put16le(buf + 46, 40u);
+    put32le(buf + 52, 1u);   /* p_type PT_LOAD */
+    put32le(buf + 56, text_off);
+    put32le(buf + 60, 0x08804000u);
+    put32le(buf + 64, 0x08804000u);
+    put32le(buf + 68, 32u);  /* p_filesz */
+    put32le(buf + 72, 0x1000u); /* p_memsz: the entry lies inside */
+    put32le(buf + 76, 5u);   /* p_flags RX */
+    put32le(buf + 80, 4u);   /* p_align */
+    memcpy(buf + text_off, "NK319", 5);
+    return (size_t)text_off + 32u;
+}
+
+/* ---- gzip / zlib / raw DEFLATE stream writers (harness-local) ---------- */
+
+typedef struct {
+    uint8_t *buf;
+    size_t cap;
+    size_t len;
+    uint32_t acc;
+    int have;
+    int overflow;
+} FuzzBits;
+
+static void fuzz_put_bits(FuzzBits *w, uint32_t value, int count) {
+    for (int i = 0; i < count; i++) {
+        uint32_t bit = (value >> i) & 1u;
+        w->acc |= (uint32_t)bit << w->have;
+        if (++w->have == 8) {
+            if (w->len >= w->cap) { w->overflow = 1; return; }
+            w->buf[w->len++] = (uint8_t)w->acc;
+            w->acc = 0u;
+            w->have = 0;
+        }
+    }
+}
+
+/* DEFLATE packs Huffman codes most-significant bit first. */
+static void fuzz_put_code(FuzzBits *w, uint32_t code, int nbits) {
+    for (int i = nbits - 1; i >= 0; i--) {
+        fuzz_put_bits(w, (code >> i) & 1u, 1);
+    }
+}
+
+static void fuzz_put_literal(FuzzBits *w, uint8_t byte) {
+    if (byte < 144u) fuzz_put_code(w, 0x30u + byte, 8);
+    else fuzz_put_code(w, 0x190u + (uint32_t)(byte - 144u), 9);
+}
+
+static void fuzz_finish_bits(FuzzBits *w) {
+    if (w->have != 0) {
+        if (w->len < w->cap) w->buf[w->len++] = (uint8_t)w->acc;
+        else w->overflow = 1;
+        w->acc = 0u;
+        w->have = 0;
+    }
+}
+
+/* Fixed-Huffman block: literals, then `matches` back-references of the
+ * longest length (code 285, distance 1), then end-of-block. */
+static size_t build_deflate_fixed(uint8_t *out, size_t cap,
+                                  const uint8_t *literals, size_t lit_count,
+                                  unsigned matches) {
+    FuzzBits w;
+    w.buf = out; w.cap = cap; w.len = 0; w.acc = 0u; w.have = 0; w.overflow = 0;
+    fuzz_put_bits(&w, 1u, 1);  /* final block */
+    fuzz_put_bits(&w, 1u, 2);  /* fixed Huffman */
+    for (size_t i = 0; i < lit_count; i++) fuzz_put_literal(&w, literals[i]);
+    for (unsigned m = 0; m < matches && !w.overflow; m++) {
+        fuzz_put_code(&w, 0xC5u, 8); /* length symbol 285 -> 258 bytes */
+        fuzz_put_code(&w, 0u, 5);    /* distance symbol 0 -> distance 1 */
+    }
+    fuzz_put_code(&w, 0u, 7);        /* end of block */
+    fuzz_finish_bits(&w);
+    assert(!w.overflow);
+    return w.len;
+}
+
+/* Single stored (uncompressed) block, as the firmware's own payloads use. */
+static size_t build_deflate_stored(uint8_t *out, size_t cap,
+                                   const uint8_t *data, size_t n) {
+    assert(n <= 0xFFFFu && cap >= n + 5u);
+    out[0] = 1u; /* final block, stored type */
+    out[1] = (uint8_t)n;
+    out[2] = (uint8_t)(n >> 8);
+    out[3] = (uint8_t)(~out[1]);
+    out[4] = (uint8_t)(~out[2]);
+    memcpy(out + 5, data, n);
+    return n + 5u;
+}
+
+static uint32_t fuzz_crc32(const uint8_t *p, size_t n) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; i++) {
+        int k;
+        crc ^= p[i];
+        for (k = 0; k < 8; k++) {
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+        }
+    }
+    return ~crc;
+}
+
+static uint32_t fuzz_adler32(const uint8_t *p, size_t n) {
+    uint32_t s1 = 1u, s2 = 0u;
+    while (n > 0u) {
+        size_t k = (n < 5552u) ? n : 5552u;
+        n -= k;
+        while (k-- > 0u) { s1 += *p++; s2 += s1; }
+        s1 %= 65521u;
+        s2 %= 65521u;
+    }
+    return (s2 << 16) | s1;
+}
+
+static size_t build_gzip(uint8_t *out, size_t cap, const uint8_t *deflated,
+                         size_t deflated_len, const uint8_t *plain,
+                         size_t plain_len) {
+    assert(cap >= deflated_len + 18u);
+    out[0] = 0x1Fu; out[1] = 0x8Bu; out[2] = 8u; out[3] = 0u;
+    memset(out + 4, 0, 5);  /* MTIME */
+    out[8] = 0u;            /* XFL */
+    out[9] = 3u;            /* OS = Unix; no name, no comment, no hcrc */
+    memcpy(out + 10, deflated, deflated_len);
+    size_t at = 10u + deflated_len;
+    put32le(out + at, fuzz_crc32(plain, plain_len));
+    put32le(out + at + 4u, (uint32_t)plain_len);
+    return at + 8u;
+}
+
+static size_t build_zlib(uint8_t *out, size_t cap, const uint8_t *deflated,
+                         size_t deflated_len, const uint8_t *plain,
+                         size_t plain_len) {
+    assert(cap >= deflated_len + 6u);
+    out[0] = 0x78u; out[1] = 0x9Cu; /* CM=8, FCHECK valid */
+    memcpy(out + 2, deflated, deflated_len);
+    size_t at = 2u + deflated_len;
+    uint32_t adler = fuzz_adler32(plain, plain_len);
+    out[at + 0u] = (uint8_t)(adler >> 24);
+    out[at + 1u] = (uint8_t)(adler >> 16);
+    out[at + 2u] = (uint8_t)(adler >> 8);
+    out[at + 3u] = (uint8_t)adler;
+    return at + 4u;
+}
+
+static size_t build_gzip_full(uint8_t *out, size_t cap, const uint8_t *deflated,
+                              size_t deflated_len, const uint8_t *plain,
+                              size_t plain_len, uint8_t flags,
+                              const uint8_t *extra, size_t extra_len,
+                              const char *name, const char *comment,
+                              int corrupt_fhcrc) {
+    assert(cap >= deflated_len + 256u);
+    out[0] = 0x1Fu; out[1] = 0x8Bu; out[2] = 8u; out[3] = flags;
+    memset(out + 4, 0, 6); /* MTIME, XFL, OS */
+    size_t pos = 10u;
+
+    if (flags & 0x04u) { /* FEXTRA */
+        out[pos++] = (uint8_t)(extra_len & 0xFFu);
+        out[pos++] = (uint8_t)((extra_len >> 8) & 0xFFu);
+        if (extra_len > 0u && extra != NULL) {
+            memcpy(out + pos, extra, extra_len);
+            pos += extra_len;
+        }
+    }
+    if (flags & 0x08u) { /* FNAME */
+        if (name != NULL) {
+            size_t nlen = strlen(name) + 1u;
+            memcpy(out + pos, name, nlen);
+            pos += nlen;
+        }
+    }
+    if (flags & 0x10u) { /* FCOMMENT */
+        if (comment != NULL) {
+            size_t clen = strlen(comment) + 1u;
+            memcpy(out + pos, comment, clen);
+            pos += clen;
+        }
+    }
+    if (flags & 0x02u) { /* FHCRC */
+        uint32_t hcrc = fuzz_crc32(out, pos) & 0xFFFFu;
+        if (corrupt_fhcrc) {
+            hcrc ^= 0xFFFFu;
+        }
+        out[pos++] = (uint8_t)(hcrc & 0xFFu);
+        out[pos++] = (uint8_t)((hcrc >> 8) & 0xFFu);
+    }
+
+    memcpy(out + pos, deflated, deflated_len);
+    pos += deflated_len;
+
+    put32le(out + pos, fuzz_crc32(plain, plain_len));
+    put32le(out + pos + 4u, (uint32_t)plain_len);
+    return pos + 8u;
+}
+
+/* ---- synthetic type-2 ~PSP sealer (tests/native/psp_seal_fixture.h) ---- */
+
+#define FUZZ_KLE_SIZE 0x1000u
+
+/* The shared sealer with this harness's constant fake keys and tag. */
+static size_t seal_type2_psp(uint8_t *out, size_t cap, const uint8_t *payload,
+                             size_t payload_len, int compressed,
+                             uint32_t elf_size) {
+    uint8_t cmd1_key[16], vault_key[16], tag_key[16];
+    fuzz_fake_key(cmd1_key, 1u);
+    fuzz_fake_key(vault_key, 2u);
+    fuzz_fake_key(tag_key, 3u);
+    return psp_seal_type2(out, cap, payload, payload_len, compressed, elf_size,
+                          FUZZ_PSP_TAG, tag_key, vault_key, cmd1_key);
+}
+
+static void test_fuzz_decrypt_boundary(unsigned iters) {
+    printf("[FUZZ] Testing PSP decryption boundary: ~PSP/~SCE/PBP framing, "
+           "KeyStore, inflate, KL4E/KL3E, KIRK dispatch (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+
+    char json[1024];
+    size_t json_len = build_keystore_json(json, sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, json_len, err, sizeof(err)) == NK_PSP_OK);
+    assert(nk_keystore_count(ks) == 3u);
+
+    uint8_t elf[256];
+    size_t elf_len = build_tiny_elf(elf, sizeof(elf));
+    uint8_t sealed[1024];
+    size_t sealed_len = seal_type2_psp(sealed, sizeof(sealed), elf, elf_len, 0,
+                                        (uint32_t)elf_len);
+
+    /* Self-check: the synthetic container round-trips through production. */
+    {
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        uint8_t *out = NULL;
+        size_t out_size = 0;
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, sealed, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        assert(info.compressed == 0);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_decrypt(&ctx, sealed, sealed_len, &out, &out_size) ==
+               NK_PSP_OK);
+        assert(out != NULL && out_size == elf_len);
+        assert(memcmp(out, elf, elf_len) == 0);
+        free(out);
+    }
+
+    /* Declared-extent checks in validate_psp: the probe must refuse each
+     * malformed segment table before any decrypt work. The aggregate case
+     * passes the per-segment cap but overflows the 256 MiB total. */
+    {
+        static const struct {
+            uint8_t nseg;
+            uint32_t seg0;
+            uint32_t seg1;
+            const char *want;
+        } cases[] = {
+            {2u, 0x0C000000u, 0x0C000000u, "overflow aggregate extent"},
+            {2u, 0xFFFFFFFFu, 0x100u, "declares an impossible size"},
+            {0u, 0x100u, 0x100u, "impossible segment count"},
+        };
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            uint8_t *bad = (uint8_t *)malloc(sealed_len);
+            NkPspCtx ctx;
+            NkContainerInfo info;
+            assert(bad != NULL);
+            memcpy(bad, sealed, sealed_len);
+            bad[0x27] = cases[c].nseg;
+            put32le(bad + 0x54, cases[c].seg0);
+            put32le(bad + 0x58, cases[c].seg1);
+            nk_psp_ctx_init(&ctx, ks);
+            assert(nk_container_probe(&ctx, bad, sealed_len, &info) == NK_PSP_ERR_FORMAT);
+            assert(info.kind == NK_CTR_UNKNOWN);
+            assert(strstr(ctx.message, cases[c].want) != NULL);
+            free(bad);
+        }
+    }
+
+    /* A zero-size trailing segment is a valid layout: a ~PSP module may declare
+     * segment 1 as 0x0 after a non-empty segment 0. Only the segment count,
+     * the per-segment cap and the aggregate extent may refuse a table. */
+    {
+        uint8_t *zero_tail = (uint8_t *)malloc(sealed_len);
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        assert(zero_tail != NULL);
+        memcpy(zero_tail, sealed, sealed_len);
+        put32le(zero_tail + 0x58, 0u);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, zero_tail, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        free(zero_tail);
+    }
+
+    uint8_t wrapped[1200];
+    uint8_t *mutated;
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        unsigned form = (unsigned)(fuzz_rand32() % 3u);
+        size_t seed_len = sealed_len;
+        const uint8_t *seed = sealed;
+        if (form == 1u) { /* ~SCE outer wrapper */
+            memcpy(wrapped, "~SCE", 4);
+            put32le(wrapped + 4, 0x10u);
+            memcpy(wrapped + 0x10u, sealed, sealed_len);
+            seed = wrapped;
+            seed_len = 0x10u + sealed_len;
+        } else if (form == 2u) { /* PBP package carrying DATA.PSP */
+            memset(wrapped, 0, 0x28u);
+            memcpy(wrapped, "\0PBP", 4);
+            put32le(wrapped + 0x20, 0x28u);
+            memcpy(wrapped + 0x28u, sealed, sealed_len);
+            seed = wrapped;
+            seed_len = 0x28u + sealed_len;
+        }
+        /* Exact-size heap copy: any read past the caller's length traps. */
+        mutated = (uint8_t *)malloc(seed_len);
+        assert(mutated != NULL);
+        memcpy(mutated, seed, seed_len);
+        size_t cur_size = seed_len;
+        mutate_buffer(mutated, &cur_size, seed_len);
+
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        char entries[4][80];
+        int n_entries;
+        nk_psp_ctx_init(&ctx, ks);
+        (void)nk_container_probe(&ctx, mutated, cur_size, &info);
+        nk_psp_ctx_init(&ctx, ks);
+        n_entries = nk_container_key_entries(&info, ks, entries, 4);
+        assert(n_entries >= 0 && n_entries <= 4);
+        nk_psp_ctx_init(&ctx, ks);
+        {
+            uint8_t *out = NULL;
+            size_t out_size = 0;
+            int rc = nk_container_decrypt(&ctx, mutated, cur_size, &out, &out_size);
+            if (rc == NK_PSP_OK) {
+                assert(out != NULL);
+                assert(out_size <= 64u * 1024u * 1024u);
+                assert(out_size >= 4u && memcmp(out, "\x7f"
+                                                        "ELF", 4) == 0);
+                accepted++;
+            }
+            assert(out == NULL || rc == NK_PSP_OK);
+            free(out);
+        }
+        free(mutated);
+    }
+    nk_keystore_free(ks);
+    printf("[FUZZ] Decryption boundary completed: %u/%u decrypted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KeyStore JSON loader --------------------------------------------- */
+
+static void test_fuzz_keystore(unsigned iters) {
+    printf("[FUZZ] Testing KeyStore JSON loader (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char seed[1024];
+    size_t seed_len = build_keystore_json(seed, sizeof(seed));
+    const char *path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_keystore.json";
+    char err[256];
+    {
+        NkKeystore *ks = nk_keystore_create();
+        assert(ks != NULL);
+        assert(nk_keystore_load_json(ks, seed, seed_len, err, sizeof(err)) ==
+               NK_PSP_OK);
+        nk_keystore_free(ks);
+    }
+
+    /* Ceiling: the file is rejected outright past 64 KiB, never truncated. */
+    {
+        char *big = (char *)malloc(NK_KEYSTORE_MAX_BYTES + 2u);
+        NkKeystore *ks = nk_keystore_create();
+        assert(big != NULL && ks != NULL);
+        memset(big, ' ', NK_KEYSTORE_MAX_BYTES + 1u);
+        assert(nk_keystore_load_json(ks, big, NK_KEYSTORE_MAX_BYTES + 1u, err,
+                                     sizeof(err)) != NK_PSP_OK);
+        assert(nk_keystore_count(ks) == 0u);
+        nk_keystore_free(ks);
+        free(big);
+    }
+
+    uint8_t *mutated = (uint8_t *)malloc(4096u);
+    assert(mutated != NULL);
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        size_t cur_size = seed_len;
+        memcpy(mutated, seed, seed_len);
+        mutate_buffer(mutated, &cur_size, 4096u);
+
+        NkKeystore *ks = nk_keystore_create();
+        assert(ks != NULL);
+        if (nk_keystore_load_json(ks, (const char *)mutated, cur_size, err,
+                                  sizeof(err)) == NK_PSP_OK) {
+            const uint8_t *value = NULL;
+            size_t value_len = 0;
+            assert(nk_keystore_count(ks) <= NK_KEYSTORE_MAX_ENTRIES);
+            if (nk_keystore_get(ks, "kirk.cmd1.key", &value, &value_len) == 0) {
+                /* Entry lengths are validated at load: never anything else. */
+                assert(value_len == 16u || value_len == 20u || value_len == 21u);
+            }
+            accepted++;
+        }
+        nk_keystore_free(ks);
+
+        if ((i % 8u) == 0u) { /* the file route as well as the buffer route */
+            write_file_bytes(path, mutated, cur_size);
+            NkKeystore *fks = nk_keystore_create();
+            assert(fks != NULL);
+            (void)nk_keystore_load_file(fks, path, err, sizeof(err));
+            nk_keystore_free(fks);
+        }
+    }
+    remove(path);
+    free(mutated);
+    printf("[FUZZ] KeyStore JSON completed: %u/%u accepted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- inflate (raw DEFLATE / zlib / gzip) ------------------------------ */
+
+
+static void test_nk_psp_inflate_unit(void) {
+    printf("[UNIT] Testing nk_psp_inflate error paths and spec conformance...\n");
+    fflush(stdout);
+
+    uint8_t plain[16];
+    for (size_t i = 0; i < sizeof(plain); i++) plain[i] = (uint8_t)(i * 7u + 3u);
+
+    uint8_t deflated[512];
+    size_t deflated_len = build_deflate_fixed(deflated, sizeof(deflated), plain,
+                                             sizeof(plain), 0u);
+    uint8_t stored[128];
+    size_t stored_len = build_deflate_stored(stored, sizeof(stored), plain,
+                                            sizeof(plain));
+    uint8_t zlibbed[512];
+    size_t zlibbed_len = build_zlib(zlibbed, sizeof(zlibbed), deflated,
+                                    deflated_len, plain, sizeof(plain));
+    uint8_t gzipped[512];
+    size_t gzipped_len = build_gzip(gzipped, sizeof(gzipped), deflated,
+                                    deflated_len, plain, sizeof(plain));
+
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    char err[128];
+
+    /* 1. Invalid Arguments & Null Handling */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, NULL, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, &out, NULL, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 0, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(out == NULL && out_len == 0u);
+    /* Safely handles NULL err buffer or 0 err_len */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, NULL, 0) == NK_INFLATE_ERR_FORMAT);
+
+    /* 2. Raw DEFLATE & Stored Blocks */
+    /* Happy path: raw DEFLATE fixed */
+    assert(nk_psp_inflate(deflated, deflated_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Happy path: raw DEFLATE stored block */
+    assert(nk_psp_inflate(stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Stored block with invalid length complement */
+    {
+        uint8_t bad_stored[128];
+        memcpy(bad_stored, stored, stored_len);
+        bad_stored[3] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "stored block length mismatch") != NULL);
+    }
+
+    /* Truncated stored block header & payload */
+    assert(nk_psp_inflate(stored, 3, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    assert(nk_psp_inflate(stored, 8, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+
+    /* Invalid DEFLATE block type (btype = 3) */
+    {
+        uint8_t bad_btype[1] = { 0x06u }; /* final bit = 0, btype = 11b (3) */
+        assert(nk_psp_inflate(bad_btype, sizeof(bad_btype), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "invalid deflate block type") != NULL);
+    }
+
+    /* Distance code too far back (referencing data before start of output) */
+    {
+        FuzzBits w;
+        uint8_t bad_dist[64];
+        w.buf = bad_dist; w.cap = sizeof(bad_dist); w.len = 0; w.acc = 0u; w.have = 0; w.overflow = 0;
+        fuzz_put_bits(&w, 1u, 1);    /* final block */
+        fuzz_put_bits(&w, 1u, 2);    /* fixed Huffman */
+        fuzz_put_code(&w, 0xC5u, 8); /* length symbol 285 -> 258 bytes */
+        fuzz_put_code(&w, 0u, 5);    /* distance symbol 0 -> distance 1, but output length is 0! */
+        fuzz_put_code(&w, 0u, 7);    /* EOB */
+        fuzz_finish_bits(&w);
+        assert(nk_psp_inflate(bad_dist, w.len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "distance too far back") != NULL);
+    }
+
+    /* 3. Zlib Wrapper & Fallback */
+    /* Happy path: zlib */
+    assert(nk_psp_inflate(zlibbed, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Preset dictionary unsupported */
+    {
+        uint8_t bad_zlib[512];
+        memcpy(bad_zlib, zlibbed, zlibbed_len);
+        bad_zlib[1] = 0x7Du; /* FDICT set (0x787D % 31 == 0, FDICT bit 5 set) */
+        assert(nk_psp_inflate(bad_zlib, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "zlib preset dictionary is not supported") != NULL);
+    }
+
+    /* Adler32 checksum mismatch */
+    {
+        uint8_t bad_adler[512];
+        memcpy(bad_adler, zlibbed, zlibbed_len);
+        bad_adler[zlibbed_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_adler, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "zlib adler32 mismatch") != NULL);
+    }
+
+
+    /* Zlib header-like stream that fails zlib decode, but falls back to raw DEFLATE */
+    {
+        uint8_t zlib_like_raw[256];
+        memset(zlib_like_raw, 0, sizeof(zlib_like_raw));
+        zlib_like_raw[0] = 0x78u; /* non-final stored block: BFINAL=0, BTYPE=00 */
+        zlib_like_raw[1] = 0x9Cu; /* len16 low = 156 */
+        zlib_like_raw[2] = 0x00u; /* len16 high = 0 */
+        zlib_like_raw[3] = 0x63u; /* nlen16 low = ~156 */
+        zlib_like_raw[4] = 0xFFu; /* nlen16 high = ~0 */
+        /* 156 bytes payload */
+        for (size_t i = 0; i < 156; i++) zlib_like_raw[5 + i] = (uint8_t)(i & 0xFF);
+        /* final stored block */
+        zlib_like_raw[161] = 0x01u; /* BFINAL=1, BTYPE=00 */
+        zlib_like_raw[162] = 0x01u; /* len16 = 1 */
+        zlib_like_raw[163] = 0x00u;
+        zlib_like_raw[164] = 0xFEu; /* nlen16 = ~1 */
+        zlib_like_raw[165] = 0xFFu;
+        zlib_like_raw[166] = 0x42u;
+
+        assert(nk_psp_inflate(zlib_like_raw, 167, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 157u && out[156] == 0x42u);
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* Raw DEFLATE beginning 08 3C: the zlib header test passes and the FDICT
+     * bit (byte 1, bit 5) is set, but the bytes are valid raw DEFLATE: a
+     * non-final stored block of 60 bytes, then an empty final stored block.
+     * It must decode and must not be refused as a preset-dictionary stream. */
+    {
+        uint8_t raw_08_3c[70];
+        memset(raw_08_3c, 0, sizeof(raw_08_3c));
+        raw_08_3c[0] = 0x08u; /* stored block, BFINAL = 0 */
+        raw_08_3c[1] = 0x3Cu; /* LEN low; also zlib FLG with FDICT set */
+        raw_08_3c[2] = 0x00u; /* LEN high: LEN = 60 */
+        raw_08_3c[3] = 0xC3u; /* NLEN low */
+        raw_08_3c[4] = 0xFFu; /* NLEN high: ~60 */
+        for (size_t i = 0; i < 60; i++) raw_08_3c[5 + i] = (uint8_t)('A' + (i % 26));
+        raw_08_3c[65] = 0x01u; /* final stored block, BFINAL = 1 */
+        raw_08_3c[66] = 0x00u; /* LEN = 0 */
+        raw_08_3c[67] = 0x00u;
+        raw_08_3c[68] = 0xFFu; /* NLEN = ~0 */
+        raw_08_3c[69] = 0xFFu;
+
+        assert(nk_psp_inflate(raw_08_3c, sizeof(raw_08_3c), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 60u && out[0] == 'A' && out[59] == (uint8_t)('A' + (59 % 26)));
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* 4. Gzip Wrapper & Optional Header Flags */
+    /* Unsupported compression method */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[2] = 9u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "unsupported gzip compression method") != NULL);
+    }
+
+    /* Reserved gzip header bits set */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[3] = 0xE0u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "gzip header reserved bits set") != NULL);
+    }
+
+    /* Trailer CRC32 mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 8] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Trailer ISIZE mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Gzip optional fields: FEXTRA, FNAME, FCOMMENT, FHCRC */
+    {
+        uint8_t extra_data[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        uint8_t gz_full[1024];
+        /* Flags: FHCRC (0x02) | FEXTRA (0x04) | FNAME (0x08) | FCOMMENT (0x10) = 0x1E */
+        size_t gz_full_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                             plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                             "hello.txt", "a test comment", 0);
+        assert(nk_psp_inflate(gz_full, gz_full_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+        free(out); out = NULL; out_len = 0;
+
+        /* Test FHCRC mismatch */
+        size_t gz_bad_hcrc_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                                  plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                                  "hello.txt", "a test comment", 1);
+        assert(nk_psp_inflate(gz_full, gz_bad_hcrc_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip header crc mismatch") != NULL);
+
+        /* Test truncated FNAME/FCOMMENT string */
+        uint8_t gz_trunc_str[1024];
+        memcpy(gz_trunc_str, gz_full, gz_full_len);
+        assert(nk_psp_inflate(gz_trunc_str, 20, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    }
+
+    /* 5. Capacity Limit & Expectations */
+    /* Capacity lower than uncompressed output length */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 0, 8u, err, sizeof(err)) == NK_INFLATE_ERR_OVERFLOW);
+    assert(out == NULL && strstr(err, "output exceeds limit") != NULL);
+
+    /* Custom expectation hints */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 4u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 1024u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+}
+
+static void test_fuzz_inflate(unsigned iters) {
+    test_nk_psp_inflate_unit();
+    printf("[FUZZ] Testing inflate: raw DEFLATE, zlib and gzip (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+
+    uint8_t plain[64];
+    for (size_t i = 0; i < sizeof(plain); i++) plain[i] = (uint8_t)(i * 7u + 3u);
+
+    uint8_t deflated[2048];
+    size_t deflated_len = build_deflate_fixed(deflated, sizeof(deflated), plain,
+                                             16u, 0u);
+    uint8_t gzipped[2100];
+    size_t gzipped_len = build_gzip(gzipped, sizeof(gzipped), deflated,
+                                    deflated_len, plain, 16u);
+    uint8_t zlibbed[2100];
+    size_t zlibbed_len = build_zlib(zlibbed, sizeof(zlibbed), deflated,
+                                    deflated_len, plain, 16u);
+    uint8_t stored[128];
+    size_t stored_len = build_deflate_stored(stored, sizeof(stored), plain, 16u);
+    uint8_t gz_stored[160];
+    size_t gz_stored_len = build_gzip(gz_stored, sizeof(gz_stored), stored,
+                                      stored_len, plain, 16u);
+    /* Expansion bomb: 1200 back-references, 302 KiB out of ~2 KiB. */
+    uint8_t bomb[2048];
+    size_t bomb_len = build_deflate_fixed(bomb, sizeof(bomb), plain, 1u, 1200u);
+
+    struct { const uint8_t *data; size_t size; } seeds[5];
+    seeds[0].data = deflated; seeds[0].size = deflated_len;
+    seeds[1].data = gzipped;  seeds[1].size = gzipped_len;
+    seeds[2].data = zlibbed;  seeds[2].size = zlibbed_len;
+    seeds[3].data = gz_stored; seeds[3].size = gz_stored_len;
+    seeds[4].data = bomb;     seeds[4].size = bomb_len;
+
+    char err[128];
+    /* Fixed expectations: a well-formed stream decodes, a bomb is refused. */
+    {
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out_len == 16u);
+        assert(memcmp(out, plain, 16u) == 0);
+        free(out);
+        out = NULL;
+        out_len = 0;
+        assert(nk_psp_inflate(bomb, bomb_len, &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) ==
+               NK_INFLATE_ERR_OVERFLOW);
+        assert(out == NULL && out_len == 0u);
+    }
+    /* A zlib-looking input shorter than a zlib stream is refused as
+     * truncated; the header flags byte is never read past the input. */
+    {
+        static const uint8_t short_zlib[4] = {0x78u, 0x9Cu, 0x00u, 0x20u};
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        assert(nk_psp_inflate(short_zlib, sizeof(short_zlib), &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) ==
+               NK_INFLATE_ERR_TRUNCATED);
+        assert(out == NULL && out_len == 0u);
+    }
+
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        unsigned pick = (unsigned)(fuzz_rand32() % 5u);
+        size_t seed_size = seeds[pick].size;
+        uint8_t *mutated = (uint8_t *)malloc(seed_size);
+        assert(mutated != NULL);
+        memcpy(mutated, seeds[pick].data, seed_size);
+        size_t cur_size = seed_size;
+        mutate_buffer(mutated, &cur_size, seed_size);
+
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        int rc = nk_psp_inflate(mutated, cur_size, &out, &out_len, 0u,
+                                FUZZ_INFLATE_CAP, err, sizeof(err));
+        if (rc == NK_INFLATE_OK) {
+            assert(out != NULL);
+            assert(out_len <= FUZZ_INFLATE_CAP); /* the declared ceiling */
+            accepted++;
+        } else {
+            assert(out == NULL && out_len == 0u);
+        }
+        free(out);
+        free(mutated);
+    }
+    printf("[FUZZ] Inflate completed: %u/%u decoded, 0 crashes\n", accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KIRK command dispatch on attacker-controlled headers -------------- */
+
+/* A key file carrying every ECDSA entry the KeyStore accepts must satisfy an
+ * ECDSA-signed CMD1 block: the curve loads, and a fake signature then fails
+ * the integrity check. Before the fix, load_curve asked for kirk.ecdsa.p1 /
+ * a1, names the KeyStore rejects, so this path always reported a missing key. */
+static void test_kirk_ecdsa_curve_names(void) {
+    printf("[FUZZ] Testing that an ECDSA key file satisfies the KIRK curve loader...\n");
+    fflush(stdout);
+    static const char *const names20[] = {
+        "kirk.ecdsa.p", "kirk.ecdsa.a", "kirk.ecdsa.b1", "kirk.ecdsa.b2",
+        "kirk.ecdsa.gx1", "kirk.ecdsa.gy1", "kirk.ecdsa.gx2", "kirk.ecdsa.gy2",
+        "kirk.ecdsa.px1", "kirk.ecdsa.py1"};
+    static const char *const names21[] = {"kirk.ecdsa.n1", "kirk.ecdsa.n2"};
+    char json[2048];
+    uint8_t cmd1[16];
+    char cmd1_hex[33];
+    fuzz_fake_key(cmd1, 1u);
+    fuzz_hex_encode(cmd1, sizeof(cmd1), cmd1_hex);
+    int n = snprintf(json, sizeof(json),
+                     "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{"
+                     "\"kirk.cmd1.key\":\"%s\"", cmd1_hex);
+    assert(n > 0 && (size_t)n < sizeof(json));
+    for (size_t i = 0; i < sizeof(names20) / sizeof(names20[0]); i++) {
+        uint8_t v[20];
+        char hex[41];
+        for (unsigned b = 0; b < 20u; b++) v[b] = (uint8_t)(0x40u + i * 7u + b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names20[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    for (size_t i = 0; i < sizeof(names21) / sizeof(names21[0]); i++) {
+        uint8_t v[21];
+        char hex[43];
+        v[0] = 0u;
+        for (unsigned b = 1; b < 21u; b++) v[b] = (uint8_t)(0xF0u - i - b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names21[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    n += snprintf(json + n, sizeof(json) - (size_t)n, "}}");
+    assert((size_t)n < sizeof(json));
+
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, (size_t)n, err, sizeof(err)) == NK_PSP_OK);
+
+    enum { SIZE = 0x90u + 0x80u };
+    uint8_t in[SIZE], out[SIZE];
+    memset(in, 0, sizeof(in));
+    put32le(in + 0x60, 1u);      /* KIRK_MODE_CMD1 */
+    in[0x64] = 1u;               /* ecdsa_hash: signed with the curve-1 key */
+    put32le(in + 0x70, 0x80u);   /* data_size */
+    put32le(in + 0x74, 0x10u);   /* data_offset */
+    for (unsigned i = 0; i < 0x80u; i++) in[0x90u + i] = (uint8_t)i;
+
+    NkPspCtx ctx;
+    nk_psp_ctx_init(&ctx, ks);
+    int rc = sceUtilsBufferCopyWithRange(&ctx, out, SIZE, in, SIZE, KIRK_CMD_DECRYPT_PRIVATE);
+    assert(rc != KIRK_INVALID_OPERATION);   /* the curve and public key loaded */
+    assert(rc != KIRK_OPERATION_SUCCESS);   /* a fake signature never verifies */
+    assert(ctx.missing_entry[0] == '\0');
+    nk_keystore_free(ks);
+}
+
+/* nk_ec_mod_n finishes in a fixed number of steps for every order a key file
+ * can supply (the earlier repeated subtraction hung on a tiny order), and it
+ * agrees with the definition for orders near the real 160-bit ones. */
+static void test_ec_mod_n_is_bounded(unsigned iters) {
+    printf("[FUZZ] Testing bounded reduction modulo a key-file curve order (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+    uint8_t x[NK_EC_BYTES], nn[NK_EC_BYTES], out[NK_EC_BYTES];
+    memset(x, 0xFF, sizeof(x));
+    memset(nn, 0, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == -1);             /* order 0 is refused */
+    nn[NK_EC_BYTES - 1] = 2u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* (2^160 - 1) mod 2 = 1 */
+    for (unsigned i = 0; i + 1u < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    assert(out[NK_EC_BYTES - 1] == 1u);
+    nn[NK_EC_BYTES - 1] = 3u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* 2^160 = 1 (mod 3) */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    memset(nn, 0xFF, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* x == n */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+
+    /* Orders with the top bit set: x mod n is x or x - n (one subtraction). */
+    for (unsigned it = 0; it < iters; it++) {
+        for (unsigned i = 0; i < NK_EC_BYTES; i++) {
+            x[i] = (uint8_t)fuzz_rand32();
+            nn[i] = (uint8_t)fuzz_rand32();
+        }
+        nn[0] |= 0x80u;
+        uint8_t expect[NK_EC_BYTES];
+        int x_ge_n = memcmp(x, nn, NK_EC_BYTES) >= 0;
+        int borrow = 0;
+        for (int i = NK_EC_BYTES - 1; i >= 0; i--) {
+            int d = (int)x[i] - (x_ge_n ? (int)nn[i] : 0) - borrow;
+            borrow = d < 0;
+            expect[i] = (uint8_t)(d < 0 ? d + 256 : d);
+        }
+        assert(nk_ec_mod_n(x, nn, out) == 0);
+        assert(memcmp(out, expect, NK_EC_BYTES) == 0);
+    }
+}
+
+static void test_fuzz_kirk(unsigned iters) {
+    printf("[FUZZ] Testing KIRK command dispatch on hostile headers "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char json[1024];
+    size_t json_len = build_keystore_json(json, sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, json_len, err, sizeof(err)) == NK_PSP_OK);
+
+    /* Two synthetic header shapes the attacker controls: a CMD1 block
+     * (0x90 header: mode, ecdsa_hash, data_size, data_offset) and an
+     * AES128-CBC block (0x14 header: mode, keyseed, data_size), each
+     * followed by a 0x80 body. */
+    enum { FUZZ_KIRK_SIZE = 0x90u + 0x80u, FUZZ_KIRK_GUARD = 64 };
+    uint8_t cmd1_seed[FUZZ_KIRK_SIZE];
+    uint8_t cbc_seed[FUZZ_KIRK_SIZE];
+    memset(cmd1_seed, 0, sizeof(cmd1_seed));
+    memcpy(cmd1_seed, "CMAC", 4);       /* AES_key slot */
+    put32le(cmd1_seed + 0x60, 1u);      /* KIRK_MODE_CMD1 */
+    cmd1_seed[0x64] = 0u;               /* ecdsa_hash */
+    put32le(cmd1_seed + 0x70, 0x80u);   /* data_size */
+    put32le(cmd1_seed + 0x74, 0x10u);   /* data_offset */
+    memset(cbc_seed, 0, sizeof(cbc_seed));
+    put32le(cbc_seed, 4u);              /* KIRK_MODE_ENCRYPT_CBC */
+    put32le(cbc_seed + 0x0C, FUZZ_PSP_CODE); /* keyvault slot */
+    put32le(cbc_seed + 0x10, 0x80u);    /* data_size (16-byte aligned) */
+    for (unsigned i = 0; i < 0x80u; i++) {
+        cmd1_seed[0x90u + i] = (uint8_t)(i * 3u);
+        cbc_seed[0x90u + i] = (uint8_t)(i * 5u);
+    }
+
+    static const int kirk_commands[] = {
+        KIRK_CMD_DECRYPT_PRIVATE, KIRK_CMD_ENCRYPT_IV_0, KIRK_CMD_DECRYPT_IV_0,
+        KIRK_CMD_PRIV_SIGN_CHECK, KIRK_CMD_SHA1_HASH, 0x7F};
+
+    /* The unmutated CBC header is a well-formed command: the AES pass runs
+     * and writes exactly data_size bytes at 0x14, and nothing past the
+     * caller's declared output size. */
+    {
+        uint8_t *outbuf = (uint8_t *)malloc(FUZZ_KIRK_SIZE + FUZZ_KIRK_GUARD);
+        assert(outbuf != NULL);
+        memset(outbuf, FUZZ_CANARY, FUZZ_KIRK_SIZE + FUZZ_KIRK_GUARD);
+        NkPspCtx ctx;
+        nk_psp_ctx_init(&ctx, ks);
+        assert(sceUtilsBufferCopyWithRange(&ctx, outbuf, FUZZ_KIRK_SIZE, cbc_seed,
+                                           FUZZ_KIRK_SIZE,
+                                           KIRK_CMD_ENCRYPT_IV_0) ==
+               KIRK_OPERATION_SUCCESS);
+        assert(outbuf[0x14] != FUZZ_CANARY);
+        for (unsigned g = 0; g < FUZZ_KIRK_GUARD; g++) {
+            assert(outbuf[FUZZ_KIRK_SIZE + g] == FUZZ_CANARY);
+        }
+        free(outbuf);
+    }
+
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        int cmd = kirk_commands[fuzz_rand32() % 6u];
+        const uint8_t *seed = ((fuzz_rand32() % 2u) != 0u) ? cmd1_seed : cbc_seed;
+        size_t insize = FUZZ_KIRK_SIZE;
+        size_t scratch;
+        uint8_t *inbuf = (uint8_t *)malloc(insize);
+        assert(inbuf != NULL);
+        memcpy(inbuf, seed, insize);
+        scratch = insize;
+        mutate_buffer(inbuf, &scratch, insize);
+
+        /* Exactly the caller's declared output size, plus a poisoned tail:
+         * any write past the negotiated size is caught without a sanitizer. */
+        uint8_t *outbuf = (uint8_t *)malloc(insize + FUZZ_KIRK_GUARD);
+        assert(outbuf != NULL);
+        memset(outbuf, FUZZ_CANARY, insize + FUZZ_KIRK_GUARD);
+        NkPspCtx ctx;
+        nk_psp_ctx_init(&ctx, ks);
+        int rc = sceUtilsBufferCopyWithRange(&ctx, outbuf, (int)insize, inbuf,
+                                             (int)insize, cmd);
+        for (unsigned g = 0; g < FUZZ_KIRK_GUARD; g++) {
+            assert(outbuf[insize + g] == FUZZ_CANARY);
+        }
+        if (rc == KIRK_OPERATION_SUCCESS) accepted++;
+        free(outbuf);
+        free(inbuf);
+
+        /* The ECDSA commands take fixed, exactly-checked sizes. */
+        if ((i % 4u) == 0u) {
+            uint8_t cmd13_out[0x28];
+            uint8_t *heap13 = (uint8_t *)malloc(0x3Cu);
+            uint8_t *heap17 = (uint8_t *)malloc(0x64u);
+            assert(heap13 != NULL && heap17 != NULL);
+            memset(heap13, 0x11u, 0x3Cu);
+            memset(heap17, 0x22u, 0x64u);
+            scratch = 0x3Cu;
+            mutate_buffer(heap13, &scratch, 0x3Cu);
+            scratch = 0x64u;
+            mutate_buffer(heap17, &scratch, 0x64u);
+            memset(cmd13_out, 0, sizeof(cmd13_out));
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, cmd13_out,
+                                              (int)sizeof(cmd13_out), heap13,
+                                              (int)0x3Cu,
+                                              KIRK_CMD_ECDSA_MULTIPLY_POINT);
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, NULL, 0, heap17,
+                                              (int)0x64u,
+                                              KIRK_CMD_ECDSA_VERIFY);
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, NULL, 0, heap17,
+                                              (int)0x64u - 1,
+                                              KIRK_CMD_ECDSA_VERIFY);
+            free(heap13);
+            free(heap17);
+        }
+    }
+    nk_keystore_free(ks);
+    printf("[FUZZ] KIRK dispatch completed: %u/%u accepted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KL4E / KL3E decoder ---------------------------------------------- */
+
+static void test_fuzz_kle(unsigned iters) {
+    printf("[FUZZ] Testing KL4E/KL3E decoder on hostile headers "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    uint8_t payload[64];
+    for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)(i * 5u + 9u);
+
+    /* A synthetic "uncompressed" KL stream: the firmware's direct-copy
+     * form, which is the one form a host can produce without the range
+     * encoder.  The arithmetic-coded form is reached only by mutating it. */
+    uint8_t kl4e[128];
+    size_t kl4e_len = 0;
+    memcpy(kl4e, "KL4E", 4);
+    kl4e[4] = 0x80u | 3u; /* direct copy, shift = 3 */
+    put32be(kl4e + 5, (uint32_t)sizeof(payload));
+    memcpy(kl4e + 9, payload, sizeof(payload));
+    kl4e_len = 9u + sizeof(payload);
+    uint8_t kl3e[128];
+    memcpy(kl3e, "KL3E", 4);
+    memcpy(kl3e + 4, kl4e + 4, kl4e_len - 4u);
+    size_t kl3e_len = kl4e_len;
+
+    uint8_t *out = (uint8_t *)malloc(FUZZ_KLE_SIZE);
+    assert(out != NULL);
+    memset(out, 0, FUZZ_KLE_SIZE);
+    {
+        void *end = NULL;
+        int rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4,
+                                (int)(kl4e_len - 4u), &end, 1);
+        assert(rc == (int)sizeof(payload));
+        assert(memcmp(out, payload, sizeof(payload)) == 0);
+        assert(end != NULL);
+        assert((uint8_t *)end >= kl4e + 4 && (uint8_t *)end <= kl4e + kl4e_len);
+    }
+    /* A stream that declares more bytes than it carries fails closed
+     * instead of copying from beyond the input. */
+    {
+        uint8_t truncated[12];
+        void *end = NULL;
+        int rc;
+        memcpy(truncated, kl4e, sizeof(truncated));
+        put32be(truncated + 5, 0x400u); /* claims 1024 bytes, carries 7 */
+        rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, truncated + 4,
+                            (int)(sizeof(truncated) - 4u), &end, 1);
+        assert(rc < 0);
+        assert(end == NULL);
+    }
+    /* Fewer than the five header bytes is refused outright. */
+    {
+        void *end = NULL;
+        assert(decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4, 4, &end, 1) < 0);
+        assert(decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4, 0, &end, 0) < 0);
+    }
+
+    unsigned decoded = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        int is_kl4e = (fuzz_rand32() % 2u) != 0u;
+        const uint8_t *seed = is_kl4e ? kl4e : kl3e;
+        size_t seed_len = is_kl4e ? kl4e_len : kl3e_len;
+        /* Exact-size heap copy: the decoder may never read past it. */
+        uint8_t *inbuf = (uint8_t *)malloc(seed_len);
+        assert(inbuf != NULL);
+        memcpy(inbuf, seed, seed_len);
+        size_t cur_size = seed_len;
+        mutate_buffer(inbuf, &cur_size, seed_len);
+
+        memset(out, 0, FUZZ_KLE_SIZE);
+        void *end = NULL;
+        int in_size = (cur_size > 4u) ? (int)(cur_size - 4u) : 0;
+        int rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, inbuf + 4, in_size,
+                                &end, is_kl4e);
+        assert(rc <= (int)FUZZ_KLE_SIZE);
+        if (rc > 0) {
+            assert((uint8_t *)end >= inbuf && (uint8_t *)end <= inbuf + cur_size);
+            decoded++;
+        }
+        free(inbuf);
+    }
+    free(out);
+    printf("[FUZZ] KL4E/KL3E completed: %u/%u decoded, 0 crashes\n", decoded, iters);
+    fflush(stdout);
+}
+
+
+static void test_ec_verify(void) {
+    printf("[EC] Testing ECDSA verification nk_ec_verify...\n");
+    fflush(stdout);
+
+    static const NkEcParams params = {
+        .p  = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xec, 0x3f},
+        .a  = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        .b  = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07},
+        .n  = {0x00, 0x00, 0x00, 0x02, 0xdd, 0xda, 0x86, 0xe6, 0x06, 0x34, 0x61, 0x23, 0x57, 0xb2, 0x70, 0xf2, 0x39, 0xc7, 0xaa, 0x0d},
+        .gx = {0x35, 0x31, 0x75, 0xc3, 0x7a, 0x8e, 0xb7, 0x50, 0x18, 0xde, 0x71, 0x39, 0x46, 0xa3, 0xb5, 0x14, 0x86, 0x5e, 0x6d, 0x06},
+        .gy = {0xd0, 0x5f, 0x61, 0xeb, 0x24, 0x09, 0xd5, 0x02, 0xc6, 0x7e, 0xbe, 0xca, 0xa9, 0xf6, 0xe8, 0x3b, 0x2b, 0x51, 0x70, 0x46}
+    };
+
+    static const uint8_t qx[20] = {0x4c, 0x89, 0x5d, 0x17, 0x81, 0x3d, 0x5a, 0xd0, 0xe4, 0xcb, 0xc9, 0x98, 0x2c, 0xce, 0x7d, 0x4e, 0xe6, 0x7c, 0x43, 0x45};
+    static const uint8_t qy[20] = {0xaf, 0x33, 0x45, 0x4c, 0x21, 0x7a, 0x87, 0x99, 0xcb, 0x6c, 0x61, 0x1b, 0x23, 0x13, 0xed, 0xbe, 0x4c, 0xb9, 0xff, 0x46};
+    static const uint8_t hash[20] = {0x00, 0x00, 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0};
+    static const uint8_t r[20] = {0x00, 0x00, 0x00, 0x00, 0x7b, 0xd8, 0xa2, 0xa2, 0x41, 0x0e, 0x04, 0x10, 0x34, 0x51, 0xc7, 0x80, 0x77, 0x43, 0x49, 0x4b};
+    static const uint8_t s[20] = {0x00, 0x00, 0x00, 0x01, 0x46, 0x76, 0x4d, 0xf3, 0xd4, 0x65, 0xa3, 0x95, 0xc8, 0x19, 0x3c, 0xc3, 0xfb, 0x28, 0xdd, 0x3d};
+
+    /* 1. KAT happy path: valid signature must verify (returns 0) */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, s) == 0);
+
+    /* 2. Null argument checks (returns -1) */
+    assert(nk_ec_verify(NULL, qx, qy, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, NULL, qy, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, NULL, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, NULL, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, hash, NULL, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, hash, r, NULL) == -1);
+
+    /* 3. Range checks on r and s */
+    uint8_t zero_val[20] = {0};
+    assert(nk_ec_verify(&params, qx, qy, hash, zero_val, s) == -1); /* r == 0 */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, zero_val) == -1); /* s == 0 */
+
+    uint8_t invalid_r[20], invalid_s[20];
+    memcpy(invalid_r, params.n, 20); /* r == n */
+    assert(nk_ec_verify(&params, qx, qy, hash, invalid_r, s) == -1);
+
+    memcpy(invalid_s, params.n, 20);
+    invalid_s[19]++; /* s > n */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, invalid_s) == -1);
+
+    /* 4. Off-curve Public Key Q rejection */
+    uint8_t bad_qx[20];
+    memcpy(bad_qx, qx, 20);
+    bad_qx[19] ^= 1;
+    assert(nk_ec_verify(&params, bad_qx, qy, hash, r, s) == -1);
+
+    /* 5. Off-curve Generator G rejection */
+    NkEcParams bad_params = params;
+    bad_params.gx[19] ^= 1;
+    assert(nk_ec_verify(&bad_params, qx, qy, hash, r, s) == -1);
+
+    /* 6. Signature / Message hash corruption rejections */
+    uint8_t bad_hash[20], bad_r[20], bad_s[20];
+
+    memcpy(bad_hash, hash, 20);
+    bad_hash[10] ^= 0x55;
+    assert(nk_ec_verify(&params, qx, qy, bad_hash, r, s) == -1);
+
+    memcpy(bad_r, r, 20);
+    bad_r[15] ^= 0xAA;
+    assert(nk_ec_verify(&params, qx, qy, hash, bad_r, s) == -1);
+
+    memcpy(bad_s, s, 20);
+    bad_s[15] ^= 0xFF;
+    assert(nk_ec_verify(&params, qx, qy, hash, r, bad_s) == -1);
+
+    /* 7. Point sum resulting in point at infinity:
+     * If Q = -G = (gx, p - gy), and hash = 1, r = 1, s = 1 (so u1 = 1, u2 = 1),
+     * u1 * G + u2 * Q = 1*G + 1*(-G) = infinity point -> return -1.
+     */
+    {
+        NkEcParams p_inf = params;
+        uint8_t gy_neg[20];
+        int borrow = 0;
+        for (int i = 19; i >= 0; i--) {
+            int diff = (int)params.p[i] - (int)params.gy[i] - borrow;
+            if (diff < 0) { diff += 256; borrow = 1; } else { borrow = 0; }
+            gy_neg[i] = (uint8_t)diff;
+        }
+
+        uint8_t one[20] = {0};
+        one[19] = 1;
+
+        assert(nk_ec_verify(&p_inf, params.gx, gy_neg, one, one, one) == -1);
+    }
+
+    printf("[EC] ECDSA verification nk_ec_verify tests PASSED!\n");
+    fflush(stdout);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 8. PSN UMD images (NPUMDIMG) and the LZRC decoder (issue #295, phase 2)
+ *
+ * A synthetic PBP whose DATA.PSAR is an NPUMDIMG image, sealed with constant
+ * fake keys through the production DRM BB calls (tests/native/
+ * psp_seal_fixture.h), is mutated and run through the PBP identification, the
+ * header/table parse and every block read. LZRC gets random streams into a
+ * guarded buffer. Ceilings: block size 1..4096 sectors, image <= 4 GiB, the
+ * whole table and every block inside the file, LZRC output <= the caller's
+ * length.
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} FuzzMemSource;
+
+static int fuzz_mem_read_at(void *user, uint64_t offset, void *buf, size_t len) {
+    const FuzzMemSource *mem = (const FuzzMemSource *)user;
+    if (offset > mem->size || (uint64_t)len > mem->size - offset) return -1;
+    memcpy(buf, mem->data + offset, len);
+    return 0;
+}
+
+static int fuzz_npumdimg_known(int rc) {
+    return rc == NK_PSP_OK || rc == NK_PSP_ERR_INPUT || rc == NK_PSP_ERR_FORMAT ||
+           rc == NK_PSP_ERR_INTEGRITY || rc == NK_PSP_ERR_UNSUPPORTED ||
+           rc == NK_PSP_ERR_DECOMPRESS || rc == NK_PSP_ERR_FIRMWARE ||
+           rc == NK_PSP_ERR_PSONE;
+}
+
+/* Identify, open and read every block; returns the first failure or OK. */
+static int fuzz_npumdimg_walk(NkKeystore *ks, const uint8_t *pbp, size_t size,
+                              uint8_t *image, size_t image_cap) {
+    FuzzMemSource mem = { pbp, size };
+    NkPsarSource src = { fuzz_mem_read_at, &mem, size };
+    NkPbpInfo info;
+    NkNpumdimg *img = NULL;
+    NkPspCtx ctx;
+    int rc;
+    nk_psp_ctx_init(&ctx, ks);
+    rc = nk_pbp_identify(&ctx, &src, &info);
+    if (rc != NK_PSP_OK) return rc;
+    rc = nk_npumdimg_open(&ctx, &src, &info, &img);
+    if (rc != NK_PSP_OK) return rc;
+    assert(nk_npumdimg_block_lbas(img) >= 1u &&
+           nk_npumdimg_block_lbas(img) <= NK_NPUMDIMG_MAX_BLOCK_LBAS);
+    assert(nk_npumdimg_lba_count(img) <= NK_NPUMDIMG_MAX_LBAS);
+    for (uint32_t b = 0; b < nk_npumdimg_block_count(img); b++) {
+        const uint8_t *data = NULL;
+        size_t block_bytes = (size_t)nk_npumdimg_block_lbas(img) * NK_NPUMDIMG_SECTOR;
+        rc = nk_npumdimg_read_block(&ctx, img, b, &data);
+        if (rc != NK_PSP_OK) break;
+        assert(data != NULL);
+        if (image != NULL && (size_t)(b + 1u) * block_bytes <= image_cap) {
+            memcpy(image + (size_t)b * block_bytes, data, block_bytes);
+        }
+    }
+    nk_npumdimg_close(img);
+    return rc;
+}
+
+static void test_fuzz_npumdimg(unsigned iters) {
+    enum { SECTORS = 24, GUARD = 64, LZ_CAP = 4096 };
+    static const int rows[3] = { 0x38, 0x39, 0x63 };
+    static const char *const values[3] = { "amctrl.loc_1CD4", "amctrl.loc_1CE4",
+                                            "amctrl.loc_1CF4" };
+    printf("[FUZZ] Testing PBP identify, NPUMDIMG image and LZRC decoder "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char json[2048];
+    size_t at = 0;
+    at += (size_t)snprintf(json + at, sizeof(json) - at,
+                           "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{");
+    for (unsigned i = 0; i < 6u; i++) {
+        uint8_t fake[16];
+        char hex[33];
+        fuzz_fake_key(fake, 40u + i);
+        fuzz_hex_encode(fake, sizeof(fake), hex);
+        if (i < 3u) {
+            at += (size_t)snprintf(json + at, sizeof(json) - at, "%s\"kirk.keyvault.%d\":\"%s\"",
+                                   i ? "," : "", rows[i], hex);
+        } else {
+            at += (size_t)snprintf(json + at, sizeof(json) - at, ",\"%s\":\"%s\"",
+                                   values[i - 3u], hex);
+        }
+        assert(at < sizeof(json));
+    }
+    at += (size_t)snprintf(json + at, sizeof(json) - at, "}}");
+    assert(at < sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char kerr[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, at, kerr, sizeof(kerr)) == NK_PSP_OK);
+
+    /* A patterned "disc image": the reader checks layout, not content. */
+    static uint8_t iso[SECTORS * 2048];
+    for (size_t i = 0; i < sizeof(iso); i++) iso[i] = (uint8_t)(i * 7u + (i >> 11));
+    NkPspCtx seal;
+    nk_psp_ctx_init(&seal, ks);
+    size_t seed_len = 0;
+    uint8_t *seed = psp_seal_npumdimg_pbp(&seal, "TEST80901", iso, sizeof(iso), 4u, &seed_len);
+    static uint8_t image[SECTORS * 2048];
+    memset(image, 0, sizeof(image));
+    assert(fuzz_npumdimg_walk(ks, seed, seed_len, image, sizeof(image)) == NK_PSP_OK);
+    assert(memcmp(image, iso, sizeof(iso)) == 0);
+
+    uint8_t *work = (uint8_t *)malloc(seed_len);
+    assert(work != NULL);
+    size_t psar_at = (size_t)seed[0x24] | ((size_t)seed[0x25] << 8) |
+                     ((size_t)seed[0x26] << 16) | ((size_t)seed[0x27] << 24);
+    unsigned opened = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        memcpy(work, seed, seed_len);
+        unsigned flips = 1u + fuzz_rand32() % 6u;
+        for (unsigned f = 0; f < flips; f++) {
+            size_t pos;
+            switch (fuzz_rand32() % 4u) {
+            case 0: pos = fuzz_rand32() % 0x28u; break;                  /* PBP header */
+            case 1: pos = psar_at + fuzz_rand32() % 0x100u; break;       /* image header */
+            case 2: pos = psar_at + 0x100u + fuzz_rand32() % 0xC0u; break; /* block table */
+            default: pos = fuzz_rand32() % seed_len; break;
+            }
+            if (pos < seed_len) work[pos] ^= (uint8_t)(1u + fuzz_rand32() % 255u);
+        }
+        size_t size = (fuzz_rand32() % 8u == 0u) ? fuzz_rand32() % seed_len : seed_len;
+        int rc = fuzz_npumdimg_walk(ks, work, size, NULL, 0);
+        assert(fuzz_npumdimg_known(rc));
+        if (rc == NK_PSP_OK) opened++;
+    }
+    free(work);
+    free(seed);
+    nk_keystore_free(ks);
+
+    /* LZRC: random streams never write outside the caller's length. */
+    uint8_t *out = (uint8_t *)malloc(LZ_CAP + 2u * GUARD);
+    uint8_t in[512];
+    unsigned decoded = 0;
+    assert(out != NULL);
+    for (unsigned i = 0; i < iters; i++) {
+        size_t in_len = fuzz_rand32() % sizeof(in);
+        size_t out_len = fuzz_rand32() % LZ_CAP;
+        for (size_t k = 0; k < in_len; k++) in[k] = (uint8_t)fuzz_rand32();
+        if (in_len > 0u && (i & 1u)) in[0] &= 0x7Fu; /* mostly coded streams */
+        memset(out, FUZZ_CANARY, LZ_CAP + 2u * GUARD);
+        int got = nk_psp_lzrc_decompress(out + GUARD, out_len, in, in_len);
+        assert(got <= (int)out_len);
+        for (size_t k = 0; k < GUARD; k++) {
+            assert(out[k] == FUZZ_CANARY);
+            assert(out[GUARD + out_len + k] == FUZZ_CANARY);
+        }
+        if (got >= 0) decoded++;
+    }
+    free(out);
+    printf("[FUZZ] NPUMDIMG completed: %u/%u mutated packages opened, %u/%u LZRC "
+           "streams decoded, 0 crashes\n", opened, iters, decoded, iters);
+    fflush(stdout);
+}
+
 int main(int argc, char **argv) {
     unsigned iters = 100;
 
@@ -1607,6 +3029,15 @@ int main(int argc, char **argv) {
     test_fuzz_input_profile(iters);
     test_fuzz_package(iters > 1000 ? 1000 : iters);
     test_fuzz_library(iters > 500 ? 500 : iters);
+    test_fuzz_decrypt_boundary(iters > 4000 ? 4000 : iters);
+    test_fuzz_keystore(iters > 1000 ? 1000 : iters);
+    test_fuzz_inflate(iters > 2000 ? 2000 : iters);
+    test_fuzz_kirk(iters > 2000 ? 2000 : iters);
+    test_fuzz_kle(iters > 2000 ? 2000 : iters);
+    test_fuzz_npumdimg(iters > 2000 ? 2000 : iters);
+    test_kirk_ecdsa_curve_names();
+    test_ec_mod_n_is_bounded(iters > 2000 ? 2000 : iters);
+    test_ec_verify();
 
     printf("=================================================================\n");
     printf("ALL DETERMINISTIC PARSER FUZZ HARNESSES PASSED SUCCESSFULLY!\n");

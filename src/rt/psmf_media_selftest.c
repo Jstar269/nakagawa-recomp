@@ -965,6 +965,7 @@ static void test_decoded_pixels(void) {
     target.kind = SR_H264_TARGET_HOST;
     target.host_buffer = host;
     target.host_width = 64;
+    target.host_height = 272;
     target.host_stride = 64 * 4;
     for (int guard = 0; guard < 65536 && seen < FIX_PICTURES; guard++) {
         SrPsmfAu au;
@@ -1249,6 +1250,7 @@ static void test_backend_registry_fail_closed(void) {
     target.kind = SR_H264_TARGET_HOST;
     target.host_buffer = (uint8_t *)&info;
     target.host_width = 1;
+    target.host_height = 1;
     target.host_stride = 4;
     CHECK(sr_h264_frame_ex(-1, 1, &target, &info) < 0,
           "an unavailable backend cannot fabricate a frame");
@@ -1968,6 +1970,64 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
+/* The host picture behind a YCbCr allocation holds exactly the rows sceMpegAvcInitYCbCr
+ * asked for. The fixture's 64x64 pictures decoded into a 64x16 allocation deliver 16 rows;
+ * the host conversion must not write the other 48 past the end of that buffer (the
+ * AddressSanitizer build reports the overflow this guards against). */
+static void test_mpeg_ycbcr_host_rows_bounded(void) {
+    enum {
+        TR_MPEG_DESC = 0x08100000u,
+        TR_MPEG_DATA = 0x08110000u,
+        TR_MPEG_SIZE = 0x08120000u,
+        TR_MPEG_YCBCR = 0x08130000u,
+        TR_MPEG_PTR = 0x08160000u,
+        TR_MPEG_INIT = 0x08170000u,
+        TR_MPEG_AU = 0x08180000u,
+    };
+    const uint32_t width = 64u, height = 16u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    uint8_t es[65536];
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "host-row fixture builds the synthetic I_PCM stream");
+    if (!es_len) return;
+
+    MEM_W32(TR_MPEG_DESC, 0u);
+    CHECK(mpeg_create(TR_MPEG_DESC, TR_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "host-row fixture creates a context");
+    Mpeg *ctx = mpeg_find(TR_MPEG_DESC);
+    CHECK(ctx != NULL, "host-row fixture finds its context");
+    if (!ctx) return;
+    ctx->streamWidth = width;
+    ctx->streamHeight = height;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    ctx->totalPackets = 1u;
+    ctx->fedPackets = 1u;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: YCbCr host-row bound needs a real H.264 backend\n");
+        mpeg_finish();
+        return;
+    }
+    for (int i = 0; i < FIX_PICTURES; i++)
+        CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0,
+              "64x64 synthetic access unit reaches the decoder");
+
+    CHECK(guest_mpeg_import(0x211a057cu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_SIZE) == 0,
+          "a 64x16 YCbCr allocation size is queried");
+    uint32_t allocation_size = MEM_R32(TR_MPEG_SIZE);
+    memset(SR_HOST(TR_MPEG_YCBCR), 0xa5, allocation_size);
+    memset(SR_HOST(TR_MPEG_AU), 0, 24u);
+    CHECK(guest_mpeg_import(0x67179b1bu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_YCBCR) == 0,
+          "a 64x16 YCbCr allocation initializes");
+    MEM_W32(TR_MPEG_PTR, TR_MPEG_YCBCR);
+    MEM_W32(TR_MPEG_INIT, 0xdeadbeefu);
+    uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TR_MPEG_DESC, TR_MPEG_AU,
+                                               TR_MPEG_PTR, TR_MPEG_INIT, 0u);
+    CHECK(decode_result == 0u && MEM_R32(TR_MPEG_INIT) == 1u,
+          "a picture taller than the YCbCr allocation decodes into the rows it holds");
+    mpeg_finish();
+}
+
 /* ---- scePsmfPlayer: A/V presentation timing at the guest boundaries (issue #279) -------- */
 
 /* Latch SR_MPEGLOG before the player's first produce call: hle.c caches the flag the first
@@ -2037,6 +2097,11 @@ int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
 }
 
 uint32_t iso_physical_lba(uint32_t lba_or_token) { return lba_or_token; }
+
+int iso_sector_count(uint32_t *out_sectors) {
+    (void)out_sectors;
+    return -1;
+}
 
 /* scePsmfPlayer NIDs and results (public PSP NIDs; same values the executable HLE harness
  * enters). */
@@ -2202,6 +2267,106 @@ static uint8_t *build_psmf_av(uint32_t *size_out, int layout) {
 
 static void av_write_cstr(uint32_t addr, const char *s) {
     memcpy(SR_HOST(addr), s, strlen(s) + 1u);
+}
+
+/* ---- scePsmfPlayer lifecycle: a player gives back what it acquired (issue #279) -------- */
+
+#define LC_CYCLES  8                    /* twice the four decoder instances a backend has */
+#define LC_PLAYERS 0x08610000u          /* control blocks for the lifecycle cycles */
+
+static void lc_prepare_guest(void) {
+    MEM_W32(AV_CREATE + 0, 0x08700000u);      /* player read buffer (never dereferenced here) */
+    MEM_W32(AV_CREATE + 4, 0x00285800u);      /* the size scePsmfPlayerCreate requires */
+    MEM_W32(AV_CREATE + 8, 0x30u);            /* priority inside the accepted range */
+    av_write_cstr(AV_PATH, s_player_path);
+    MEM_W32(AV_CONFIG + 0, 0x0eu);            /* H.264 video */
+    MEM_W32(AV_CONFIG + 4, 0u);
+    MEM_W32(AV_CONFIG + 8, 0x0fu);            /* ATRAC3+ audio */
+    MEM_W32(AV_CONFIG + 12, 0u);
+    MEM_W32(AV_CONFIG + 16, 0u);
+    MEM_W32(AV_CONFIG + 20, 0u);
+    MEM_W32(AV_VIDEO + 0, 64u);
+    MEM_W32(AV_VIDEO + 4, GUEST_BUF);
+}
+
+/* Open the A/V stream on `player`, start it and run it until the first picture reaches
+ * the guest.  Returns 1 when that picture arrived with the first authored time. */
+static int lc_play_first_picture(uint32_t player) {
+    if (guest_mpeg_import(AV_NID_SET_PSMF, player, AV_PATH, 0, 0, 0) != 0 ||
+        guest_mpeg_import(AV_NID_START, player, AV_CONFIG, 0, 0, 0) != 0)
+        return 0;
+    for (int i = 0; i < 64; i++) {
+        if (guest_mpeg_import(AV_NID_GET_VIDEO, player, AV_VIDEO, 0, 0, 0) == 0)
+            return (int64_t)MEM_R32(AV_VIDEO + 8) == av_video_pts(0);
+        (void)guest_mpeg_import(AV_NID_GET_AUDIO, player, AV_AUDIO, 0, 0, 0);
+        if (guest_mpeg_import(AV_NID_UPDATE, player, 0, 0, 0, 0) != 0) return 0;
+    }
+    return 0;
+}
+
+/* A backend has a fixed number of decoder instances (four for Media Foundation and for
+ * FFmpeg).  scePsmfPlayerDelete used to reset the player's decoder and then forget its id,
+ * and creating over a live control block forgot it too, so each movie kept one instance for
+ * the rest of the session and the fifth movie got "H.264 backend unavailable" and no
+ * picture.  A failed scePsmfPlayerCreate also kept the player slot it had claimed, so four
+ * failures left no slot for a valid player. */
+static void test_player_lifecycle_releases_what_it_acquired(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "lifecycle stream builds"); return; }
+    av_latch_mpeglog();   /* hle.c caches SR_MPEGLOG at the first produce call */
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+
+    /* Failed creates claim nothing: four refusals, then a fifth control block is created. */
+    MEM_W32(AV_CREATE + 4, 0x1000u);          /* smaller than scePsmfPlayerCreate requires */
+    for (uint32_t i = 0; i < 4u; i++)
+        CHECK(guest_mpeg_import(AV_NID_CREATE, LC_PLAYERS + i * 4u, AV_CREATE, 0, 0, 0) ==
+                  0x80616005u,
+              "psmf-lifecycle: an undersized player buffer is refused");
+    MEM_W32(AV_CREATE + 4, 0x00285800u);
+    CHECK(guest_mpeg_import(AV_NID_CREATE, LC_PLAYERS + 16u, AV_CREATE, 0, 0, 0) == 0,
+          "psmf-lifecycle: refused creates leave every player slot free");
+    CHECK(guest_mpeg_import(AV_NID_DELETE, LC_PLAYERS + 16u, 0, 0, 0, 0) == 0,
+          "psmf-lifecycle: the probe player is deleted");
+
+    if (!sr_h264_backend_available()) {
+        fprintf(stderr, "SKIP: decoder-instance lifecycle needs an H.264 backend\n");
+    } else {
+        /* Create, play, delete: every cycle gets a decoder and a picture. */
+        int pictures = 0;
+        for (int c = 0; c < LC_CYCLES; c++) {
+            CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+                  "psmf-lifecycle: the player is created");
+            pictures += lc_play_first_picture(AV_PLAYER);
+            CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+                  "psmf-lifecycle: the player is deleted");
+        }
+        CHECK(pictures == LC_CYCLES,
+              "psmf-lifecycle: every create/play/delete cycle decodes its first picture");
+
+        /* Creating over a live control block starts a fresh player and gives the old
+         * player's decoder back. */
+        pictures = 0;
+        for (int c = 0; c < LC_CYCLES; c++) {
+            CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+                  "psmf-lifecycle: a live control block is created again");
+            pictures += lc_play_first_picture(AV_PLAYER);
+        }
+        CHECK(pictures == LC_CYCLES,
+              "psmf-lifecycle: every re-created player decodes its first picture");
+        CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-lifecycle: the re-created player is deleted");
+
+        /* Nothing is left behind: the backend can still hand out a decoder. */
+        int dec = sr_h264_create();
+        CHECK(dec >= 0, "psmf-lifecycle: deleted players leave the decoder instances free");
+        if (dec >= 0) sr_h264_destroy(dec);
+    }
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
 }
 
 /* One "key=value" number from a published counter line. */
@@ -2593,6 +2758,8 @@ int main(int argc, char **argv) {
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_mpeg_ycbcr_host_rows_bounded();
+    test_player_lifecycle_releases_what_it_acquired();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);

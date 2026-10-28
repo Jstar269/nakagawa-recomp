@@ -30,6 +30,9 @@
 #include "nk_title_manifest.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
+#include "nk_psp_builtin_keys.h"
+#include "nk_psp_keystore.h"
+#include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
 
@@ -112,6 +115,11 @@ static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name
     snprintf(entry->title_name, sizeof(entry->title_name), "%s", name);
     snprintf(entry->disc_version, sizeof(entry->disc_version), "1.00");
     entry->status = NK_STATUS_IDENTIFIED;
+}
+
+static bool test_cancel_always(void *user) {
+    (void)user;
+    return true;
 }
 
 static void write_file(const char *path) {
@@ -1117,6 +1125,75 @@ static void write_guest_module_iso(const char *path, const char *name,
     assert(fwrite(image, 1, total, file) == total);
     assert(fclose(file) == 0);
     free(image);
+}
+
+/* A disc whose PSP_GAME/SYSDIR/EBOOT.BIN holds the given bytes. */
+static void write_sysdir_eboot_iso(const char *path, const unsigned char *eboot,
+                                   size_t eboot_size) {
+    enum { SECTOR = 2048, DATA_LBA = 20 };
+    static const uint8_t dot[1] = { 0 };
+    static const uint8_t dotdot[1] = { 1 };
+    size_t data_sectors = (eboot_size + SECTOR - 1) / SECTOR;
+    size_t total = ((size_t)DATA_LBA + data_sectors) * SECTOR;
+    uint8_t *image = (uint8_t *)calloc(1, total);
+    assert(image != NULL);
+    uint8_t *pvd = image + 16 * SECTOR;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    iso_dir_record(pvd + 156, dot, 1, 17, SECTOR, true);
+    uint8_t *root = image + 17 * SECTOR;
+    size_t off = 0;
+    off += iso_dir_record(root + off, dot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, (const uint8_t *)"PSP_GAME", 8, 18, SECTOR, true);
+    uint8_t *game = image + 18 * SECTOR;
+    off = 0;
+    off += iso_dir_record(game + off, dot, 1, 18, SECTOR, true);
+    off += iso_dir_record(game + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(game + off, (const uint8_t *)"SYSDIR", 6, 19, SECTOR, true);
+    uint8_t *sysdir = image + 19 * SECTOR;
+    off = 0;
+    off += iso_dir_record(sysdir + off, dot, 1, 19, SECTOR, true);
+    off += iso_dir_record(sysdir + off, dotdot, 1, 18, SECTOR, true);
+    iso_dir_record(sysdir + off, (const uint8_t *)"EBOOT.BIN", 9, DATA_LBA,
+                   (uint32_t)eboot_size, false);
+    memcpy(image + (size_t)DATA_LBA * SECTOR, eboot, eboot_size);
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, total, file) == total);
+    assert(fclose(file) == 0);
+    free(image);
+}
+
+/* One built-in value by name (kirk.cmd1.key, kirk.keyvault.<code>). */
+static const uint8_t *builtin_value(const char *name) {
+    for (size_t i = 0; i < nk_psp_builtin_value_count; i++) {
+        if (strcmp(nk_psp_builtin_values[i].name, name) == 0) {
+            assert(nk_psp_builtin_values[i].len == 16u);
+            return nk_psp_builtin_values[i].bytes;
+        }
+    }
+    assert(!"built-in value missing");
+    return NULL;
+}
+
+/* payload sealed under one built-in game tag recipe, with the built-in
+   keyvault row and command-1 key; seal_tag may differ from recipe_tag to
+   put another tag in the header. */
+static size_t seal_with_builtin_recipe(uint8_t *out, size_t cap, const uint8_t *payload,
+                                       size_t payload_len, uint32_t recipe_tag,
+                                       uint32_t seal_tag) {
+    const NkPspBuiltinTag *recipe = NULL;
+    char vault_name[32];
+    for (size_t i = 0; i < nk_psp_builtin_tag_count; i++) {
+        if (nk_psp_builtin_tags[i].tag == recipe_tag) recipe = &nk_psp_builtin_tags[i];
+    }
+    assert(recipe != NULL && recipe->key != NULL);
+    snprintf(vault_name, sizeof(vault_name), "kirk.keyvault.%d", recipe->code);
+    return psp_seal_type2(out, cap, payload, payload_len, 0, (uint32_t)payload_len,
+                          seal_tag, recipe->key, builtin_value(vault_name),
+                          builtin_value("kirk.cmd1.key"));
 }
 
 static const char *const FIXTURE_SHA256 =
@@ -2184,7 +2261,7 @@ static void test_error_cards_are_plain(void) {
     snprintf(check->code, sizeof(check->code), "EXECUTABLE");
     check->status = PREFLIGHT_UNSUPPORTED;
     snprintf(check->message, sizeof(check->message),
-             "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
+             "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.");
     assert(strcmp(player_preflight_label(check), "Game program") == 0);
     assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
     assert(strcmp(player_preflight_plain_message(check),
@@ -2843,6 +2920,82 @@ static void test_tree_helpers_walk_a_deep_tree(void) {
     printf("PASS: tree size and removal walk a 48-level tree and keep the named child\n");
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+/* Walkthrough blocker #4: Remove from library on a package cache deeper than
+   MAX_PATH. The player has no long-path manifest and a default Windows install
+   has long paths off, so the plain path API could neither list nor delete the
+   tree: removal failed after deleting the cache's ownership marker, leaving a
+   game that could neither rebuild nor be removed. The tree is made here with
+   extended-length paths, as the package build makes it. */
+static bool long_tree_mkdir(const WCHAR *path) {
+    return CreateDirectoryW(path, NULL) != 0 || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static void long_tree_file(const WCHAR *dir, const WCHAR *name) {
+    WCHAR file[2048];
+    HANDLE handle;
+    DWORD written = 0;
+    _snwprintf(file, sizeof(file) / sizeof(file[0]), L"%ls\\%ls", dir, name);
+    file[sizeof(file) / sizeof(file[0]) - 1u] = L'\0';
+    handle = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(handle != INVALID_HANDLE_VALUE);
+    assert(WriteFile(handle, "x", 1, &written, NULL) && written == 1);
+    assert(CloseHandle(handle));
+}
+
+static void test_remove_tree_deeper_than_max_path(void) {
+    char root[NK_MAX_PATH];
+    char marker[NK_MAX_PATH * 2];
+    WCHAR wroot[1024];
+    WCHAR deep[2048];
+    WCHAR held[2048];
+    HANDLE open_file;
+    removal_test_path(root, sizeof(root), native_test_get_root(), "cache-long-paths", NULL, NULL);
+    assert(MultiByteToWideChar(CP_UTF8, 0, root, -1, wroot, 1024) > 0);
+    for (WCHAR *c = wroot; *c; ++c) if (*c == L'/') *c = L'\\';
+    _snwprintf(deep, sizeof(deep) / sizeof(deep[0]), L"\\\\?\\%ls", wroot);
+    deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+    assert(long_tree_mkdir(deep));
+    long_tree_file(deep, L".nk-aot-package-cache-v1");
+    removal_test_path(marker, sizeof(marker), root, ".nk-aot-package-cache-v1", NULL, NULL);
+    /* entries\<64 hex>\<64 hex>\package\.build-package-xxxxxxxx: the old
+       layout, well past 260 characters. */
+    {
+        static const WCHAR *const parts[] = {
+            L"entries",
+            L"859fc2090e790b33178fbc2fac7cad1f4373b8329d93853391bbaec122ff47c4",
+            L"b1d2d67321a0b2f2256602e755b7ba5ab15922486ecfb74cced10098475e51ac",
+            L"package", L".build-package-9vu6x8d0"
+        };
+        for (size_t i = 0u; i < sizeof(parts) / sizeof(parts[0]); ++i) {
+            size_t length = wcslen(deep);
+            _snwprintf(deep + length, sizeof(deep) / sizeof(deep[0]) - length, L"\\%ls", parts[i]);
+            deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+            assert(long_tree_mkdir(deep));
+        }
+    }
+    long_tree_file(deep, L".title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081");
+
+    /* A file still open stops the removal; the folder's own files, the
+       ownership marker among them, are left for the next try. */
+    _snwprintf(held, sizeof(held) / sizeof(held[0]),
+               L"%ls\\.title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081",
+               deep);
+    held[sizeof(held) / sizeof(held[0]) - 1u] = L'\0';
+    assert(wcslen(held) - 4u > 280u); /* well past MAX_PATH without the prefix */
+    open_file = CreateFileW(held, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(open_file != INVALID_HANDLE_VALUE);
+    assert(!nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_file_exists(marker));
+    assert(CloseHandle(open_file));
+
+    assert(nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_path_missing(root));
+    printf("PASS: removal deletes a cache tree deeper than MAX_PATH, marker last\n");
+}
+#endif
+
 /* #1304: Remove from library deletes the package, the build cache and the disc
    files Nakagawa copied, keeps the saves unless asked, and never touches the
    disc image, the user's decrypted files or another title's data. */
@@ -2926,6 +3079,387 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
            "image and, unless asked, the saves\n");
 }
 
+/* #1285: a release zip's verified prereqs/ tree beside bin/ runs BUILD PACKAGE
+   with no consent card and no download, even with nothing on PATH; a damaged
+   tree is refused by name and never falls back to a download. */
+static void write_bundle_state_file(const char *base, const char *relative, const char *text) {
+    char path[NATIVE_TEST_PATH_MAX + 128];
+    char sep = nk_platform_path_separator();
+    int n = snprintf(path, sizeof(path), "%s%c%s", base, sep, relative);
+    assert(n > 0 && (size_t)n < sizeof(path));
+    for (char *p = path + strlen(base); *p; p++) {
+        if (*p == '/') *p = sep;
+    }
+    char parent[NATIVE_TEST_PATH_MAX + 128];
+    memcpy(parent, path, strlen(path) + 1);
+    *strrchr(parent, sep) = '\0';
+    assert(nk_platform_mkdir_p(parent));
+    write_text_file(path, text);
+}
+
+static void test_bundled_prerequisite_build(const char *self_executable) {
+    printf("[PLAYER_STATE_TEST] bundled prerequisites: BUILD PACKAGE without consent or download\n");
+    fflush(stdout);
+    char sep = nk_platform_path_separator();
+#if defined(_WIN32) || defined(_WIN64)
+    const char *python_rel = "python/python.exe";
+    const char *gcc_rel = "msys64/ucrt64/bin/gcc.exe";
+    const char *make_rel = "msys64/ucrt64/bin/mingw32-make.exe";
+#else
+    const char *python_rel = "python/python";
+    const char *gcc_rel = "msys64/ucrt64/bin/gcc";
+    const char *make_rel = "msys64/ucrt64/bin/mingw32-make";
+#endif
+    char root[NK_MAX_PATH + 32];
+    char release[NK_MAX_PATH + 48];
+    char install_root[NK_MAX_PATH + 64];
+    char prereqs[NK_MAX_PATH + 64];
+    char user_root[NK_MAX_PATH + 48];
+    char iso_path[NK_MAX_PATH + 48];
+    char path[NK_MAX_PATH + 128];
+    assert(nk_platform_get_path(NK_PATH_CACHE, root, NK_MAX_PATH));
+    size_t root_len = strlen(root);
+    snprintf(root + root_len, sizeof(root) - root_len, "%cbundle-build-state", sep);
+    if (nk_platform_dir_exists(root)) assert(native_test_remove_tree(root));
+    snprintf(release, sizeof(release), "%s%crelease", root, sep);
+    snprintf(install_root, sizeof(install_root), "%s%cbin", release, sep);
+    snprintf(prereqs, sizeof(prereqs), "%s%cprereqs", release, sep);
+    snprintf(user_root, sizeof(user_root), "%s%cuser", root, sep);
+    snprintf(iso_path, sizeof(iso_path), "%s%cbundle.iso", root, sep);
+    assert(nk_platform_mkdir_p(install_root));
+    assert(nk_platform_mkdir_p(user_root));
+
+    write_bundle_state_file(release, "source/tools/nk_cli.py", "# synthetic CLI\n");
+    write_bundle_state_file(release, "source/assets/prereq_manifest.json",
+        "{\"schema_version\": 1, \"total_download_bytes\": 100, \"artifacts\": [\n"
+        " {\"id\": \"cpython-embed-amd64\", \"name\": \"Synthetic CPython\", \"version\": \"3.15.1\",\n"
+        "  \"url\": \"https://www.python.org/ftp/synthetic.zip\", \"allowed_hosts\": [\"www.python.org\"],\n"
+        "  \"filename\": \"synthetic.zip\", \"size_bytes\": 100,\n"
+        "  \"sha256\": \"1111111111111111111111111111111111111111111111111111111111111111\",\n"
+        "  \"license\": \"PSF-2.0\", \"status\": \"ready\"}]}\n");
+    write_bundle_state_file(prereqs, python_rel, "");
+    snprintf(path, sizeof(path), "%s%c%s", prereqs, sep, python_rel);
+    for (char *p = path + strlen(prereqs); *p; p++) if (*p == '/') *p = sep;
+    copy_executable_file(self_executable, path);
+    int64_t python_size = nk_platform_get_file_size(path);
+    assert(python_size > 0);
+    write_bundle_state_file(prereqs, gcc_rel, "gcc\n");
+    write_bundle_state_file(prereqs, make_rel, "make\n");
+    char inventory[NATIVE_TEST_PATH_MAX * 2];
+    snprintf(inventory, sizeof(inventory),
+             "%064d %lld %s\n%064d 4 %s\n%064d 5 %s\n",
+             0, (long long)python_size, python_rel, 0, gcc_rel, 0, make_rel);
+    write_bundle_state_file(prereqs, "bundle-inventory.txt", inventory);
+    char record[1024];
+    snprintf(record, sizeof(record),
+             "{\"schema_version\": 1, \"bundle\": {\"schema_version\": 1, "
+             "\"inventory\": \"bundle-inventory.txt\", \"file_count\": 3, \"unpacked_bytes\": %lld},\n"
+             " \"installed\": {\"cpython-embed-amd64\": {\"version\": \"3.15.1\", \"size_bytes\": 100,\n"
+             "  \"sha256\": \"1111111111111111111111111111111111111111111111111111111111111111\",\n"
+             "  \"license\": \"PSF-2.0\", \"notices\": []}}}\n",
+             (long long)python_size + 9);
+    write_bundle_state_file(prereqs, "installed.json", record);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    app->game_count = 1;
+    app->selected_game_index = 0;
+    write_player_package_preflight_iso(iso_path, "TEST00011", "Bundle fixture", false);
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00011");
+    snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "experimental-test00011");
+    snprintf(app->games[0].title_name, sizeof(app->games[0].title_name), "Bundle fixture");
+    snprintf(app->games[0].disc_version, sizeof(app->games[0].disc_version), "1.00");
+    snprintf(app->games[0].selected_executable, sizeof(app->games[0].selected_executable),
+             "EBOOT.BIN");
+    assert(strlen(iso_path) < sizeof(app->games[0].iso_path));
+    memcpy(app->games[0].iso_path, iso_path, strlen(iso_path) + 1u);
+    app->games[0].iso_size_bytes = (uint64_t)nk_platform_get_file_size(iso_path);
+    app->games[0].is_experimental = true;
+    app->games[0].executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+    app->games[0].executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
+    assert(strlen(user_root) < sizeof(app->runtime_root));
+    assert(strlen(install_root) < sizeof(app->install_root));
+    memcpy(app->runtime_root, user_root, strlen(user_root) + 1u);
+    memcpy(app->install_root, install_root, strlen(install_root) + 1u);
+    write_experimental_profile_fixture(user_root, app->games[0].disc_id, app->games[0].title_id,
+                                       app->games[0].selected_executable, FIXTURE_SHA256);
+
+    bool had_path = false;
+    bool had_python = false;
+    bool had_override = false;
+    bool had_mode = false;
+    char *saved_path = capture_environment_value("PATH", &had_path);
+    char *saved_python = capture_environment_value("PYTHON", &had_python);
+    char *saved_override = capture_environment_value("NK_INSTALL_ROOT", &had_override);
+    char *saved_mode = capture_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", &had_mode);
+    /* Nothing on the host can stand in for the bundle. */
+    nk_ps_set_env("PATH", "");
+#if defined(_WIN32) || defined(_WIN64)
+    nk_ps_set_env("PYTHON", "C:/Windows/System32/where.exe");
+#else
+    nk_ps_set_env("PYTHON", "/bin/sh");
+#endif
+    nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "reuse");
+
+    bool started = player_app_start_package_build(app, 0);
+    if (!started) {
+        fprintf(stderr, "bundled build refused: %s: %s\n", app->last_error.error_code,
+                app->last_error.message);
+    }
+    assert(started);
+    assert(app->active_view == VIEW_BUILDING_PACKAGE);
+    assert(app->prerequisites.phase == PLAYER_PREREQ_IDLE);
+    assert(!app->prerequisite_job_started && !app->prerequisite_fetcher_started);
+    char expected_root[NK_MAX_PATH];
+    assert(nk_platform_absolute_path(prereqs, expected_root, sizeof(expected_root)));
+    assert(strcmp(app->build_session.prerequisites_root, expected_root) == 0);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_complete);
+    snprintf(path, sizeof(path), "%s%cprerequisites", user_root, sep);
+    assert(!nk_platform_dir_exists(path));
+
+    /* About & Licenses lists the bundle and opens its notices. */
+    assert(player_app_open_prerequisite_about(app));
+    assert(app->prerequisites.item_count == 1);
+    assert(strcmp(app->prerequisites.bundle_root, expected_root) == 0);
+    assert(player_app_request_license_folder(app));
+    snprintf(path, sizeof(path), "%s%cnotices", expected_root, sep);
+    assert(strcmp(app->requested_open_path, path) == 0);
+
+    /* A record that no longer matches the pinned manifest is refused by name. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    char *stale_version = strstr(record, "\"3.15.1\"");
+    assert(stale_version != NULL);
+    stale_version[6] = '0';
+    write_bundle_state_file(prereqs, "installed.json", record);
+    assert(!player_app_start_package_build(app, 0));
+    assert(app->active_view == VIEW_ERROR);
+    assert(strcmp(app->last_error.error_code, "PREREQUISITE_BUNDLE_INVALID") == 0);
+    assert(strstr(app->last_error.message, "cpython-embed-amd64") != NULL);
+    assert(app->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+    assert(!app->build_session.is_building);
+
+    restore_environment_value("PATH", saved_path, had_path);
+    restore_environment_value("PYTHON", saved_python, had_python);
+    restore_environment_value("NK_INSTALL_ROOT", saved_override, had_override);
+    restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", saved_mode, had_mode);
+    free(saved_path);
+    free(saved_python);
+    free(saved_override);
+    free(saved_mode);
+    free(app);
+    assert(native_test_remove_tree(root));
+    printf("[PLAYER_STATE_TEST] bundled prerequisites PASS\n");
+}
+
+/* ---- PSN releases of UMD games (#295 phase 2) ---------------------------- */
+
+typedef struct {
+    int calls;
+    uint64_t done;
+    uint64_t total;
+} PsnTestProgress;
+
+static void psn_test_progress(uint64_t done, uint64_t total, void *userdata) {
+    PsnTestProgress *progress = (PsnTestProgress *)userdata;
+    progress->calls++;
+    progress->done = done;
+    progress->total = total;
+}
+
+static bool psn_test_never(void *userdata) {
+    (void)userdata;
+    return false;
+}
+
+static bool psn_test_cancel_now(void *userdata) {
+    (void)userdata;
+    return true;
+}
+
+static uint8_t *psn_test_read_file(const char *path, size_t *size) {
+    FILE *file = fopen(path, "rb");
+    long length;
+    uint8_t *bytes;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length > 0);
+    assert(fseek(file, 0, SEEK_SET) == 0);
+    bytes = (uint8_t *)malloc((size_t)length);
+    assert(bytes != NULL);
+    assert(fread(bytes, 1, (size_t)length, file) == (size_t)length);
+    fclose(file);
+    *size = (size_t)length;
+    return bytes;
+}
+
+/* A refused package: the named code, a plain sentence, nothing written. */
+static void psn_test_refused(const char *path, const char *want_code, const char *want_text) {
+    PlayerPsnPackage package;
+    char code[64];
+    char message[512];
+    assert(!player_psn_package_inspect(path, &package, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, want_code) == 0);
+    assert(strstr(message, want_text) != NULL);
+    assert(package.iso_path[0] == '\0');
+}
+
+/* A synthetic PSN package imports as its ISO: converted once into
+   <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
+   nothing, reuse of a checked conversion, and the wizard panel returning to
+   the view the package was picked from. PSOne Classics, updaters and other
+   packages are refused by name before any key lookup. */
+static void test_psn_package_imports_as_its_iso(void) {
+    const char sep = nk_platform_path_separator();
+    char cache_root[NK_MAX_PATH];
+    char base[NATIVE_TEST_PATH_MAX + 64];
+    char data_root[NATIVE_TEST_PATH_MAX + 96];
+    char source_iso[NATIVE_TEST_PATH_MAX + 96];
+    char pbp_path[NATIVE_TEST_PATH_MAX + 96];
+    char other_path[NATIVE_TEST_PATH_MAX + 96];
+    char expected_iso[NATIVE_TEST_PATH_MAX + 160];
+    char partial[NATIVE_TEST_PATH_MAX + 192];
+    char key_error[160];
+    char code[64];
+    char message[512];
+    uint8_t *iso;
+    uint8_t *pbp;
+    uint8_t *converted;
+    size_t iso_len = 0, pbp_len = 0, converted_len = 0;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    PlayerPsnPackage package;
+    PlayerPsnPackage again;
+    PsnTestProgress progress;
+    PlayerPsnConvertCallbacks cancel_hooks = { NULL, psn_test_cancel_now, NULL };
+    PlayerPsnConvertCallbacks hooks = { psn_test_progress, psn_test_never, NULL };
+    IsoInspectResult inspected;
+    PlayerApp *app;
+
+    printf("[PLAYER_STATE_TEST] Subtest: a PSN package (NPUMDIMG) imports as its ISO\n");
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(base, sizeof(base), "%s%cpsn-package-state", cache_root, sep);
+    assert(test_remove_tree(base));
+    snprintf(data_root, sizeof(data_root), "%s%cdata", base, sep);
+    assert(nk_platform_mkdir_p(data_root));
+    snprintf(source_iso, sizeof(source_iso), "%s%csource.iso", base, sep);
+    snprintf(pbp_path, sizeof(pbp_path), "%s%cEBOOT.PBP", base, sep);
+    snprintf(expected_iso, sizeof(expected_iso), "%s%cdiscs%cTEST80901%cTEST80901.iso",
+             data_root, sep, sep, sep);
+    snprintf(partial, sizeof(partial), "%s.converting", expected_iso);
+
+    write_player_package_preflight_iso(source_iso, "TEST80901", "Synthetic PSN Game", false);
+    iso = psn_test_read_file(source_iso, &iso_len);
+    keys = nk_keystore_create();
+    assert(keys != NULL);
+    assert(nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) == NK_PSP_OK);
+    nk_psp_ctx_init(&ctx, keys);
+    pbp = psp_seal_npumdimg_pbp(&ctx, "TEST80901", iso, iso_len, 4u, &pbp_len);
+    nk_keystore_free(keys);
+    write_binary_file(pbp_path, pbp, pbp_len);
+    free(pbp);
+    assert(nk_platform_set_app_data_dir_override(data_root));
+
+    assert(player_path_is_pbp_package(pbp_path));
+    assert(!player_path_is_pbp_package(source_iso));
+    assert(player_psn_package_inspect(pbp_path, &package, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(strcmp(package.iso_path, expected_iso) == 0);
+    assert(strcmp(package.disc_id, "TEST80901") == 0);
+    assert(strcmp(package.title, "Synthetic PSN package") == 0);
+    assert(!package.iso_ready);
+
+    /* A cancel removes the partial image and keeps nothing. */
+    assert(!player_psn_package_convert(&package, &cancel_hooks, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, "CANCELLED") == 0);
+    assert(strstr(message, "partial disc image was removed") != NULL);
+    assert(nk_platform_path_missing(expected_iso));
+    assert(nk_platform_path_missing(partial));
+
+    /* The conversion restores the ISO byte for byte, reporting progress. */
+    memset(&progress, 0, sizeof(progress));
+    hooks.userdata = &progress;
+    assert(player_psn_package_convert(&package, &hooks, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(progress.calls == (int)((iso_len / 2048u + 3u) / 4u));
+    assert(progress.done == progress.total && progress.total == iso_len);
+    assert(nk_platform_path_missing(partial));
+    converted = psn_test_read_file(expected_iso, &converted_len);
+    assert(converted_len == iso_len && memcmp(converted, iso, iso_len) == 0);
+    free(converted);
+
+    /* The ISO is then imported exactly as a picked disc image. */
+    assert(iso_inspect_file(package.iso_path, &inspected));
+    assert(strcmp(inspected.disc_id, "TEST80901") == 0);
+    assert(strcmp(inspected.title_name, "Synthetic PSN Game") == 0);
+
+    /* Picking the package again reuses the checked conversion. */
+    assert(player_psn_package_inspect(pbp_path, &again, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(again.iso_ready);
+
+    /* The wizard's panel shows the conversion and hands back the view the
+       package was picked from. */
+    app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_LIBRARY;
+    player_app_psn_conversion_begin(app, &package);
+    assert(app->active_view == VIEW_SETUP_WIZARD);
+    assert(app->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+    assert(app->wizard.is_extracting && app->psn_conversion_active);
+    assert(strcmp(app->inspecting_game.disc_id, "TEST80901") == 0);
+    assert(strstr(app->wizard.status_message, "PSN package") != NULL);
+    assert(player_app_psn_conversion_take_request(app));
+    assert(!player_app_psn_conversion_take_request(app));
+    player_app_psn_conversion_progress(app, iso_len / 2u, iso_len);
+    assert(app->wizard.extraction_percent == 50);
+    player_app_wizard_cancel(app);
+    assert(player_app_wizard_cancel_requested(app));
+    assert(strcmp(app->wizard.status_message, "Cancelling the conversion...") == 0);
+    player_app_psn_conversion_finish(app);
+    assert(app->active_view == VIEW_LIBRARY);
+    assert(!app->wizard.is_extracting && !app->psn_conversion_active);
+    assert(!player_app_wizard_cancel_requested(app));
+    free(app);
+
+    /* PSOne Classics, updaters and other packages keep a named refusal. */
+    snprintf(other_path, sizeof(other_path), "%s%cOTHER.PBP", base, sep);
+    {
+        static const char *const magics[3] = { "PSISOIMG0000", "PSTITLEIMG000000", "NOTANIMAGE" };
+        static const char *const categories[3] = { "ME", "ME", "EG" };
+        static const char *const codes[3] = { "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PBP_PACKAGE_UNSUPPORTED" };
+        static const char *const texts[3] = { "is a PSOne Classic", "is a PSOne Classic",
+                                              "Only PSN releases of UMD games" };
+        uint8_t psar[0x400];
+        for (unsigned i = 0; i < 3u; i++) {
+            memset(psar, 0, sizeof(psar));
+            memcpy(psar, magics[i], strlen(magics[i]));
+            pbp = psp_seal_pbp(categories[i], "SLUS99999", psar, sizeof(psar), &pbp_len);
+            write_binary_file(other_path, pbp, pbp_len);
+            free(pbp);
+            psn_test_refused(other_path, codes[i], texts[i]);
+        }
+        memset(psar, 0, sizeof(psar));
+        memcpy(psar, "PSAR", 4);
+        pbp = psp_seal_pbp("MG", "MSTKUPDAT", psar, sizeof(psar), &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "FIRMWARE_OUT_OF_SCOPE", "never decrypts firmware");
+    }
+    psn_test_refused(source_iso, "PBP_PACKAGE_UNSUPPORTED", "not a PSP package");
+
+    assert(nk_platform_set_app_data_dir_override(NULL));
+    free(iso);
+    assert(test_remove_tree(base));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2935,7 +3469,13 @@ int main(int argc, char **argv) {
             "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
             "sysconfig.get_platform().startswith('mingw') or "
             "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
-        return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
+        /* The pinned runtime (a bundled or downloaded CPython) must be 3.15. */
+        static const char python_probe_315[] =
+            "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+            "sysconfig.get_platform().startswith('mingw') or "
+            "sys.version_info[:2] != (3, 15))";
+        return strcmp(argv[2], python_probe) == 0 ||
+               strcmp(argv[2], python_probe_315) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
         return player_state_package_builder_child(argc, argv);
@@ -2977,10 +3517,10 @@ int main(int argc, char **argv) {
         snprintf(self_executable, sizeof(self_executable), "%s", argv[0]);
     }
     {
-        /* Nakagawa does not decrypt games and reads no key file. Leave the old
-         * key-file override pointing at an existing file for the whole run:
-         * the encrypted-executable and encrypted-module checks below must
-         * ignore it, decrypt nothing and never name it. */
+        /* Nakagawa reads no key file: the built-in tables are its only key
+         * source. Leave the old key-file override pointing at an existing file
+         * for the whole run: the encrypted-executable and encrypted-module
+         * checks below must ignore it and never name it. */
         int written = snprintf(g_decoy_key_path, sizeof(g_decoy_key_path),
                                "%s%cdeveloper-keyfile.json",
                                native_test_get_root(), nk_platform_path_separator());
@@ -2996,10 +3536,15 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
+#if defined(_WIN32) || defined(_WIN64)
+    test_remove_tree_deeper_than_max_path();
+#endif
     test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
+    test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
@@ -3972,9 +4517,13 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
-                                      "Nakagawa does not decrypt games. Place a decrypted "
-                                      "EBOOT.elf from your own copy in ") != NULL);
+        /* Built-in decryption runs and stops with a named result (this disc's
+           EBOOT.BIN is not a sealed container); the card still names the
+           folder a decrypted copy from the user's own disc can go in. */
+        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                                      "built-in decryption stopped: ") != NULL);
+        assert(strstr(check->message, "Place a decrypted EBOOT.elf from your own copy in ")
+               != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
         assert(strstr(check->message, "key file") == NULL && strstr(check->message, "keyfile") == NULL);
         assert(strstr(check->message, g_decoy_key_path) == NULL);
@@ -4011,6 +4560,88 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "decryption is in the works") == NULL);
         assert(check->issue_count == 0);
         assert(remove(decrypted_elf) == 0);
+
+        /* Built-in decryption (#295, owner decision 2026-10-27): an EBOOT.BIN
+           sealed under one built-in game tag recipe comes out as a valid
+           EBOOT.elf in the title's folder and the check passes; the next check
+           uses that file; a copy the user put there is never replaced; and a
+           firmware updater tag is refused by name, writing nothing. */
+        {
+            char sealed_iso[sizeof(wiz->inspecting_game.iso_path)];
+            char staged_leftover[1300];
+            int sealed_written;
+            char saved_iso_path[sizeof(wiz->inspecting_game.iso_path)];
+            unsigned char plain_elf[88];
+            unsigned char user_elf[88];
+            uint8_t sealed[0x150 + 96];
+            unsigned char read_back[128];
+            size_t sealed_len;
+            FILE *produced;
+
+            build_synthetic_mips_elf(plain_elf);
+            sealed_len = seal_with_builtin_recipe(sealed, sizeof(sealed), plain_elf,
+                                                  sizeof(plain_elf), 0xD91613F0u, 0xD91613F0u);
+            sealed_written = snprintf(sealed_iso, sizeof(sealed_iso), "%s%cbuiltin-sealed.iso",
+                                      preflight_root, nk_platform_path_separator());
+            assert(sealed_written > 0 && (size_t)sealed_written < sizeof(sealed_iso));
+            write_sysdir_eboot_iso(sealed_iso, sealed, sealed_len);
+            snprintf(saved_iso_path, sizeof(saved_iso_path), "%s",
+                     wiz->inspecting_game.iso_path);
+            memcpy(wiz->inspecting_game.iso_path, sealed_iso, sizeof(sealed_iso));
+            sealed_written = snprintf(staged_leftover, sizeof(staged_leftover), "%s.decrypting",
+                                      decrypted_elf);
+            assert(sealed_written > 0 && (size_t)sealed_written < sizeof(staged_leftover));
+
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            assert(strstr(check->message, "decrypted from the disc with the built-in tables") != NULL);
+            produced = fopen(decrypted_elf, "rb");
+            assert(produced != NULL);
+            assert(fread(read_back, 1, sizeof(read_back), produced) == sizeof(plain_elf));
+            assert(fclose(produced) == 0);
+            assert(memcmp(read_back, plain_elf, sizeof(plain_elf)) == 0);
+            assert(!nk_platform_file_exists(staged_leftover));
+
+            /* The next check takes the copy now in the folder as it is. */
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            assert(strstr(check->message, "The decrypted EBOOT.elf in the title's folder") != NULL);
+
+            /* A copy the user put there wins and is never replaced. */
+            build_synthetic_mips_elf(user_elf);
+            user_elf[sizeof(user_elf) - 1] ^= 0x5Au; /* differs from the disc's */
+            produced = fopen(decrypted_elf, "wb");
+            assert(produced != NULL);
+            assert(fwrite(user_elf, 1, sizeof(user_elf), produced) == sizeof(user_elf));
+            assert(fclose(produced) == 0);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            produced = fopen(decrypted_elf, "rb");
+            assert(produced != NULL);
+            assert(fread(read_back, 1, sizeof(read_back), produced) == sizeof(user_elf));
+            assert(fclose(produced) == 0);
+            assert(memcmp(read_back, user_elf, sizeof(user_elf)) == 0);
+            assert(remove(decrypted_elf) == 0);
+
+            /* A firmware updater tag is refused before any key is read. */
+            sealed_len = seal_with_builtin_recipe(sealed, sizeof(sealed), plain_elf,
+                                                  sizeof(plain_elf), 0xD91613F0u, 0x0B000000u);
+            write_sysdir_eboot_iso(sealed_iso, sealed, sealed_len);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_UNSUPPORTED);
+            assert(strstr(check->message, "built-in decryption stopped: FIRMWARE_OUT_OF_SCOPE") != NULL);
+            assert(strstr(check->message, "never decrypts firmware") != NULL);
+            assert(!nk_platform_file_exists(decrypted_elf));
+            assert(!nk_platform_file_exists(staged_leftover));
+
+            assert(remove(sealed_iso) == 0);
+            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
+                     "%s", saved_iso_path);
+        }
 
         /* Issue #729: a PSP PRX guest module whose e_entry is the unset
            0xFFFFFFFF is ready under the module rule, as a plain disc copy and
@@ -4079,9 +4710,10 @@ int main(int argc, char **argv) {
                                        sizeof(prx_bytes));
             }
 
-            /* An encrypted disc module with no plain copy is not ready: Nakagawa
-               does not decrypt games and ignores the key-file override, so the
-               check names the module and the folder, and writes nothing. */
+            /* An encrypted disc module with no plain copy that the built-in
+               tables cannot decrypt (this one is not a sealed container) is not
+               ready: the check names the module, the result and the folder,
+               ignores the key-file override, and writes nothing. */
             {
                 unsigned char encrypted_prx[0x100];
                 memset(encrypted_prx, 0, sizeof(encrypted_prx));
@@ -4096,8 +4728,9 @@ int main(int argc, char **argv) {
                 assert(module_check && module_check->status == PREFLIGHT_MISSING);
                 assert(strstr(module_check->message, "Guest modules: 0 of 1 ready; "
                                                      "ENCRYPTED_MODULE: libfont.prx is "
-                                                     "encrypted. Nakagawa does not decrypt "
-                                                     "games. Place a decrypted libfont.prx "
+                                                     "encrypted and built-in decryption "
+                                                     "stopped: MALFORMED_INPUT (") != NULL);
+                assert(strstr(module_check->message, "Place a decrypted libfont.prx "
                                                      "from your own copy in ") != NULL);
                 assert(strstr(module_check->message, module_dir) != NULL);
                 assert(strstr(module_check->message, "key file") == NULL &&
@@ -4266,6 +4899,75 @@ int main(int argc, char **argv) {
             assert(false);
         }
         assert(strcmp(written_profile_id, "experimental-ulus99997") == 0);
+        /* Launcher review B1: that profile, written for a disc whose EBOOT.BIN
+           is encrypted, names no executable yet. It reads back unbound, and
+           never as bound to EBOOT.BIN. Before the fix the reader refused its
+           empty selected_executable, so the title page said "Add the disc
+           again" forever and BUILD PACKAGE stayed off. */
+        {
+            NkTitleEntrySnapshot unbound = {0};
+            char unbound_error[512] = "";
+            char unbound_hash[65] = "";
+            if (!nk_title_manifest_read_unbound_experimental_profile(
+                    preflight_root, "ULUS99997", "experimental-ulus99997", &unbound,
+                    unbound_error, sizeof(unbound_error))) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] unbound profile read: %s\n",
+                        unbound_error);
+                assert(false);
+            }
+            assert(strcmp(unbound.entry.id, "experimental-ulus99997") == 0);
+            assert(strcmp(unbound.entry.primary_disc_id, "ULUS99997") == 0);
+            nk_title_catalog_snapshot_release(&unbound);
+            assert(!nk_title_manifest_read_experimental_profile(
+                preflight_root, "ULUS99997", "experimental-ulus99997", "EBOOT.BIN",
+                &unbound, unbound_hash, unbound_error, sizeof(unbound_error)));
+            nk_title_catalog_snapshot_release(&unbound);
+
+            /* The title page's check: an experimental disc with an encrypted
+               EBOOT.BIN, its decrypted EBOOT.elf in the title's folder and
+               that unbound profile has valid title settings. */
+            GameRecord saved_game = wiz->inspecting_game;
+            NkIsoExecutableReport encrypted;
+            char elf_dir[1024], elf_path[1280];
+            unsigned char elf[88];
+            FILE *elf_file;
+            const PlayerPreflightCheck *profile_check;
+            int elf_written = snprintf(elf_dir, sizeof(elf_dir), "%s%ctitles%cULUS99997%cdecrypted",
+                                       preflight_root, nk_platform_path_separator(),
+                                       nk_platform_path_separator(),
+                                       nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_dir));
+            assert(nk_platform_mkdir_p(elf_dir));
+            elf_written = snprintf(elf_path, sizeof(elf_path), "%s%cEBOOT.elf", elf_dir,
+                                   nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_path));
+            build_synthetic_mips_elf(elf);
+            elf_file = fopen(elf_path, "wb");
+            assert(elf_file != NULL);
+            assert(fwrite(elf, 1, sizeof(elf), elf_file) == sizeof(elf));
+            assert(fclose(elf_file) == 0);
+            memset(&wiz->inspecting_game, 0, sizeof(wiz->inspecting_game));
+            snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                     "ULUS99997");
+            snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
+                     "experimental-ulus99997");
+            wiz->inspecting_game.is_experimental = true;
+            wiz->inspecting_game.status = NK_STATUS_IDENTIFIED;
+            memset(&encrypted, 0, sizeof(encrypted));
+            encrypted.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+            encrypted.selected = NK_ISO_EXEC_SELECTION_NONE;
+            player_app_build_compatibility_preflight(wiz, true, true, &encrypted);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(profile_check && profile_check->status == PREFLIGHT_OK);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "TITLE_PROFILE");
+            if (!profile_check || profile_check->status != PREFLIGHT_OK) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] title profile: %s\n",
+                        profile_check ? profile_check->message : "(missing)");
+                assert(false);
+            }
+            assert(remove(elf_path) == 0);
+            wiz->inspecting_game = saved_game;
+        }
         assert(nk_title_catalog_epoch() == epoch_before_profile_read);
         for (int slot = 0; slot < 8; slot++) {
             char slot_id[32];
@@ -4497,7 +5199,7 @@ int main(int argc, char **argv) {
         for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
             assert(states[slot].source == NK_FONT_SOURCE_USER);
         }
-        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "imported from your PSP") != NULL);
+        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "your imported font") != NULL);
 
         /* 14c: removal drops only the cache's slot files and the manifest; originals stay. */
         assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 3);
@@ -4584,7 +5286,7 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
         assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
-        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "your imported font") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
         assert(nk_font_remove_imports(font_root, remove_korean, err, sizeof(err)) == 1);
@@ -4608,7 +5310,7 @@ int main(int argc, char **argv) {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
-            assert(strstr(fcheck->message, "Japanese: imported from your PSP") != NULL);
+            assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
@@ -4793,7 +5495,7 @@ int main(int argc, char **argv) {
 
         player_app_refresh_font_status(runtime_app);
         assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                      "imported from your PSP") != NULL);
+                      "your imported font") != NULL);
         assert(player_app_fonts_remove_imports(runtime_app));
         free(runtime_app);
 
@@ -4917,13 +5619,13 @@ int main(int argc, char **argv) {
         assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(nk_platform_file_exists(manifest_path));
         assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
-                      "Korean: imported from your PSP.") != NULL);
+                      "Korean: your imported font.") != NULL);
         player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
-            assert(strstr(fcheck->message, "Korean: imported from your PSP.") != NULL);
+            assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
         /* 3. Removing the imports leaves the project font, and both surfaces name it again. */
@@ -4944,6 +5646,123 @@ int main(int argc, char **argv) {
         assert(test_remove_tree(fonts_dir));
         assert(test_remove_tree(project_dir));
         assert(test_remove_tree(source_dir));
+    }
+
+    /* 14s (#1300): the Fonts check names, by PSP file name, every system font that is not the
+       user's own import, and says what a game asking for one gets: a stand-in that looks
+       different, or no font. Only ltn0-2 and ltn4-6 and the Japanese font are imported first. */
+    printf("[PLAYER_STATE_TEST] Subtest 14s: the Fonts check names the PSP fonts not imported\n");
+    fflush(stdout);
+    {
+        static const int first_latin[] = { 0, 1, 2, 4, 5, 6 };
+        static const int rest_latin[] = { 3, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+        char base[512];
+        char per_user[768];
+        char runtime[768];
+        char first[800];
+        char rest[800];
+        char korean[800];
+        char path[1024];
+        const char sep = nk_platform_path_separator();
+        NkIsoExecutableReport exec_rep;
+        const PlayerPreflightCheck *fcheck;
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, base, sizeof(base)));
+        snprintf(per_user, sizeof(per_user), "%s%cfont_missing_user", base, sep);
+        snprintf(runtime, sizeof(runtime), "%s%cfont_missing_runtime", base, sep);
+        snprintf(first, sizeof(first), "%s%cfont_missing_first", base, sep);
+        snprintf(rest, sizeof(rest), "%s%cfont_missing_rest", base, sep);
+        snprintf(korean, sizeof(korean), "%s%cfont_missing_korean", base, sep);
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
+        assert(nk_platform_mkdir_p(per_user));
+        assert(nk_platform_mkdir_p(runtime));
+        assert(nk_platform_mkdir_p(first));
+        assert(nk_platform_mkdir_p(rest));
+        assert(nk_platform_mkdir_p(korean));
+        snprintf(path, sizeof(path), "%s%cdump_japanese.pgf", first, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        for (size_t i = 0; i < sizeof(first_latin) / sizeof(first_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", first, sep, first_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        for (size_t i = 0; i < sizeof(rest_latin) / sizeof(rest_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", rest, sep, rest_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        snprintf(path, sizeof(path), "%s%cdump_korean.pgf", korean, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *missing_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(missing_app != NULL);
+        nk_library_init(&missing_app->library);
+        player_app_set_runtime_root(missing_app, runtime);
+        snprintf(missing_app->inspecting_game.disc_id,
+                 sizeof(missing_app->inspecting_game.disc_id), "TEST80001");
+        snprintf(missing_app->inspecting_game.title_id,
+                 sizeof(missing_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* 1. ltn3 and ltn7 are served by a same-size import; ltn8-15 and Korean have no font. */
+        assert(player_app_fonts_import_folder(missing_app, first));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different; for 8 of the 16 Latin fonts and the Korean font they get no "
+                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
+           it still names the fonts a game gets a stand-in for. */
+        snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cfont%cnkkr.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 3. Every Latin file imported: only the Korean font is named. */
+        assert(player_app_fonts_import_folder(missing_app, rest));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "This PSP system font was not found: the Korean font. Games that ask for it "
+                      "get a stand-in font that looks different. Import it from your own PSP in "
+                      "the setup wizard.") == 0);
+
+        /* 4. Every font is the user's own: nothing is named. */
+        assert(player_app_fonts_import_folder(missing_app, korean));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
+
+        free(missing_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
     }
 
     /* 15. Player settings persistence.
@@ -5036,6 +5855,64 @@ int main(int argc, char **argv) {
         player_app_note_close_confirmation_failure(s_app2);
         assert(player_app_take_close_confirmation_fallback(s_app2));
         assert(!player_app_take_close_confirmation_fallback(s_app2));
+
+        /* The quit confirmation's buttons fit SDL3's Windows message box,
+           which showed "Close game and quit" as "ose game and qu". */
+        assert(PLAYER_DIALOG_BUTTON_LABEL_MAX <= 12);
+        assert(strcmp(PLAYER_QUIT_DIALOG_TITLE, "Quit Nakagawa?") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_QUIT_LABEL, "Quit") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_CANCEL_LABEL, "Cancel") == 0);
+        assert(strlen(PLAYER_QUIT_DIALOG_QUIT_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        assert(strlen(PLAYER_QUIT_DIALOG_CANCEL_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        /* Its message names the running game when the launch knows it. */
+        {
+            static const char unnamed[] =
+                "A game is still running.\nQuitting closes it, and anything since "
+                "the game's last save is lost.";
+            static const char named[] =
+                "Hot Shots Tennis is still running.\nQuitting closes it, and anything "
+                "since the game's last save is lost.";
+            char quit_message[NK_MAX_TITLE_LEN + 128];
+            s_app2->launch_session.game_title[0] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), "Hot Shots Tennis");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title's line breaks and tabs fold to one space, so the only
+               line break is the message's own. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title),
+                     "  Hot Shots\r\n\tTennis \n");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title that is only blanks is no name. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), " \r\n\t ");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            /* The longest title still fits the caller's buffer whole. */
+            memset(s_app2->launch_session.game_title, 'T',
+                   sizeof(s_app2->launch_session.game_title) - 1);
+            s_app2->launch_session.game_title[
+                sizeof(s_app2->launch_session.game_title) - 1] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strlen(quit_message) ==
+                   (sizeof(s_app2->launch_session.game_title) - 1) +
+                       (sizeof(unnamed) - 1) - strlen("A game"));
+            assert(player_app_quit_confirmation_message(NULL, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            assert(!player_app_quit_confirmation_message(s_app2, NULL, 16));
+            assert(!player_app_quit_confirmation_message(s_app2, quit_message, 0));
+            s_app2->launch_session.game_title[0] = '\0';
+        }
 
         /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
            Canceling the first confirmation leaves the child running, but a
@@ -5560,14 +6437,14 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
+                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         /* #1286: a preflight refusal is not a failed build. The card leads with
            the reason, without its code. */
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
         assert(strcmp(bapp->last_error.title, "Build Not Started") == 0);
-        assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted.", 23) == 0);
+        assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted and built-in", 35) == 0);
         assert(strstr(bapp->last_error.message, "ENCRYPTED_EXECUTABLE") == NULL);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
         assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);
@@ -5826,6 +6703,17 @@ int main(int argc, char **argv) {
         char identity_before[65];
         char identity_after[65];
         char reason[1024];
+        /* Launcher review B5: a player that is closing cancels a validation
+           that is still hashing the package, so the window does not wait for
+           it. The cancelled result says so and is never cached: the next
+           validation hashes the package again and passes. */
+        nk_title_manifest_set_cancel_check(test_cancel_always, NULL);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &first_info, reason, sizeof(reason)) !=
+               NK_RUNTIME_PACKAGE_OK);
+        assert(strcmp(reason, "Package validation was cancelled.") == 0);
+        assert(!first_info.validation_cache_hit && first_info.package_root[0] == '\0');
+        nk_title_manifest_set_cancel_check(NULL, NULL);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &first_info, reason, sizeof(reason)) ==
                NK_RUNTIME_PACKAGE_OK);

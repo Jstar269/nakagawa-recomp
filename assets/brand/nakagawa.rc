@@ -1,0 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+
+/* The app icon of the Windows player and game executables: the N1 mark on its
+   ink tile, drawn by tools/make_app_icon.py. Explorer, the taskbar and SDL's
+   windows all take the executable's first icon group. */
+1 ICON "nakagawa.ico"

@@ -142,6 +142,33 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
     },
+    # The sampling setters' accepted ranges and error codes follow PSPAutotests
+    # tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files recorded on a PSP);
+    # the stored values do not yet drive sampling (#1390).
+    "h_CtrlSetSamplingMode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)",
+        ],
+        "limitation": "validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured",
+    },
+    "h_CtrlSetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)",
+        ],
+        "limitation": "validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)",
+    },
+    "h_CtrlGetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)",
+        ],
+        "limitation": "reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code",
+    },
     # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
     # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
     # code and "a non-zero handler return reschedules"; the rest is project-defined.
@@ -457,7 +484,7 @@ HANDLER_METADATA = {
     # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled (#341)",
+        "limitation": "Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)",
     },
     "h_IoDopen": {
         "status": "partial",
@@ -471,8 +498,9 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence, raw devices and error precedence remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; on a file, a destination before the start or past the end fails closed with IO_LSEEK_OUT_OF_RANGE (#1380); large offsets, invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -488,15 +516,16 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)",
+        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek",
     },
     "h_IoRead": {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer",
     },
     "h_IoRemove": {
         "status": "complete",
@@ -844,15 +873,25 @@ HANDLER_METADATA = {
     },
     "h_RtcGetCurrentClockLocal": {
         "status": "partial",
-        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+            "src/rt/hle.c:psp_profile_local_offset_minutes",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcConvertLocalToUtc": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcGetTick": {
         "status": "complete",
@@ -996,6 +1035,14 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)",
         ],
         "limitation": "the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering",
+    },
+    "h_CancelMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/msgpipe (cancel case: waiters released with WAIT_CANCEL, counts and remaining timeout written)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "releases every active send and receive waiter with WAIT_CANCEL, writes both waiter counts and each timed waiter's remaining timeout and empties the buffer; a waiter paused inside a callback, the unknown-UID code and error precedence are not hardware measured (#1381)",
     },
     "h_CancelSema": {
         "status": "partial",
@@ -1178,6 +1225,15 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)",
         ],
         "limitation": "valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established",
+    },
+    "h_ReferMsgPipeStatus": {
+        "status": "partial",
+        "evidence": [
+            "public ABI (PSPSDK pspthreadman.h: SceKernelMppInfo, 56 bytes)",
+            "PSPAutotests tests/threads/msgpipe (refer counts beside the cancel and delete cases)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "reports name, attr, buffer size, free size and the active send and receive waiter counts for a known pipe, honours a short or zero size word and checks the whole span before writing; the unknown-UID and NULL-pointer codes and error precedence are source-selftested, not hardware measured (#1381)",
     },
     "h_ReferMutexStatus": {
         "status": "partial",
@@ -1465,7 +1521,6 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
     0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
-    0x1F4011E6: {"name": "sceCtrlSetSamplingMode", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingMode
     0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
     0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
     0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
@@ -1473,7 +1528,6 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
     0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
     0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
-    0x6A2774F3: {"name": "sceCtrlSetSamplingCycle", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingCycle
     0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
     0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
     0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
@@ -1632,6 +1686,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelUnloadModule": "kernel_module",
     # --- kernel: semaphores, event flags, mutexes, message boxes and pipes ---
     "sceKernelCancelEventFlag": "kernel_sync",
+    "sceKernelCancelMsgPipe": "kernel_sync",
     "sceKernelCancelMutex": "kernel_sync",
     "sceKernelCancelReceiveMbx": "kernel_sync",
     "sceKernelCancelSema": "kernel_sync",
@@ -1658,6 +1713,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelReferEventFlagStatus": "kernel_sync",
     "sceKernelReferLwMutexStatus": "kernel_sync",
     "sceKernelReferMbxStatus": "kernel_sync",
+    "sceKernelReferMsgPipeStatus": "kernel_sync",
     "sceKernelReferMutexStatus": "kernel_sync",
     "sceKernelReferSemaStatus": "kernel_sync",
     "sceKernelSendMbx": "kernel_sync",

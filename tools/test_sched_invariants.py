@@ -380,9 +380,11 @@ class PerCallPathsReadNoEnvironmentTests(unittest.TestCase):
         ("hle.c", HLE, (
             "sr_syscall", "h_CpuSuspendIntr", "h_CpuResumeIntr", "sr_alloc_uid",
             "h_SleepThread", "h_SleepThreadCB", "h_WakeupThread", "h_CancelWakeupThread",
-            "h_ReferThreadRunStatus",
+            "h_ReferThreadRunStatus", "sr_ctrl_sample", "ctrl_fill_n", "display_present_frame",
         )),
-        ("sched.c", SCHED, ("sched_delay_current", "sched_block_on", "sched_thread_sleep_cb")),
+        ("sched.c", SCHED, (
+            "sched_delay_current", "sched_block_on", "sched_thread_sleep_cb", "deliver_vblank",
+        )),
     )
 
     def test_per_call_paths_do_not_search_the_environment(self):
