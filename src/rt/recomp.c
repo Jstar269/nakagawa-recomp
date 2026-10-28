@@ -257,6 +257,9 @@ uint32_t sr_loaded_end(void) { return g_loaded_end; }
 static uint32_t g_loaded_base = UINT32_MAX;
 uint32_t sr_loaded_base(void) { return g_loaded_base; }
 
+/* Seeds only the end: the loader's allocation floor for a program LoadExec boots. The base
+ * stays UINT32_MAX until the host loader writes a segment, so no host-loaded main image
+ * exists; the booted program is a module record and resolves through the module table. */
 void sr_loaded_end_set(uint32_t end) {
     g_loaded_end = end;
 }
