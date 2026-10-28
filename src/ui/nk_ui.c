@@ -111,7 +111,13 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
     while (ui != NULL && i < ui->event_count) {
         NkUiEvent *event = &ui->events[i];
         NkUiId focused = 0;
-        if (event->type == NK_UI_EV_NAV) {
+        if (event->type == NK_UI_EV_NAV &&
+            (event->dir == NK_UI_DIR_LEFT || event->dir == NK_UI_DIR_RIGHT) &&
+            nk_ui_focus_owns_horizontal(ui->focus_graph)) {
+            /* Left and right belong to the focused control; the screen takes them
+               with nk_ui_take_event(NK_UI_EV_NAV). */
+            ++i;
+        } else if (event->type == NK_UI_EV_NAV) {
             focused = nk_ui_focus_move(ui->focus_graph, event->dir);
             if (focused != 0u) {
                 ui->focused = focused;
@@ -1075,6 +1081,9 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
         ? NK_UI_FOCUS_DISABLED : 0u;
     if ((flags & NK_UI_BUTTON_ROW) != 0u) {
         entry.flags |= NK_UI_FOCUS_ROW_MEMBER;
+    }
+    if ((flags & NK_UI_BUTTON_OWNS_HORIZONTAL) != 0u) {
+        entry.flags |= NK_UI_FOCUS_OWNS_HORIZONTAL;
     }
     /* A destructive action is never the default focus (PLAYER_UI_DESIGN.md). */
     if ((flags & NK_UI_BUTTON_DANGER) != 0u) {

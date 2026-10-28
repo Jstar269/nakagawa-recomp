@@ -1775,6 +1775,25 @@ void sdl3vk_wait_events(uint32_t timeout_ms) {
 
 int sdl3vk_present_scaling(void) { return s_scaling; }
 
+int sdl3vk_window_scales(float *display_scale, float *pixels_per_point) {
+    if (!s_win) return 0;
+    int pw = 0, ph = 0, ww = 0, wh = 0;
+    float scale = SDL_GetWindowDisplayScale(s_win);
+    if (!(scale > 0.0f)) scale = 1.0f;
+    (void)SDL_GetWindowSizeInPixels(s_win, &pw, &ph);
+    (void)SDL_GetWindowSize(s_win, &ww, &wh);
+    if (display_scale) *display_scale = scale;
+    if (pixels_per_point) *pixels_per_point = ww > 0 && pw > 0 ? (float)pw / (float)ww : scale;
+    return 1;
+}
+
+int sdl3vk_set_present_scaling(int mode) {
+    if (mode != SDL3VK_SCALING_SHARP && mode != SDL3VK_SCALING_INTEGER &&
+        mode != SDL3VK_SCALING_BILINEAR) return 0;
+    s_scaling = mode;
+    return 1;
+}
+
 uint64_t sdl3vk_display_period_ns(void) {
     if (!s_win) return 0;
     const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(s_win));

@@ -865,6 +865,7 @@ void  sr_mem_init(void);
 void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
 void  sr_load_segment(uint32_t vaddr, const void *data, uint32_t len);
 uint32_t sr_loaded_end(void);   /* highest guest address the loader wrote (module end incl. BSS) */
+uint32_t sr_loaded_base(void);  /* lowest guest address the loader wrote; UINT32_MAX when none */
 void  sr_loaded_end_set(uint32_t end); /* host loader seed for a new package program */
 
 /* Backing store for the game's newlib allocation API (see tools/codegen.py custom
@@ -1568,8 +1569,17 @@ int          gui_pause_busy_reason(void);
 void         gui_pause_enter(void);
 SrPauseFrame gui_pause_frame(void);
 void         gui_pause_leave(void);
+/* A player quit request notifies the guest's registered exit callback (src/rt/hle.c, #1392).
+ * sr_exit_request_quit returns 1 while the guest has its bounded window to call
+ * sceKernelExitGame, 0 when the player should exit now; sr_exit_request_expired is 1 once that
+ * window has passed. */
+int      sr_exit_request_quit(void);
+int      sr_exit_request_expired(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
+/* The source of the pause requested or open now (the presenter opens on the controller
+ * dialog for SR_PAUSE_SRC_PAD_LOST); meaningful while sched_pause_pending() is nonzero. */
+SrPauseSource sched_pause_source(void);
 int      sched_pause_pending(void);
 uint64_t sched_pause_total_ns(void);
 uint32_t sr_display_vcount(void);
@@ -1747,6 +1757,12 @@ int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake r
 int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
 int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+/* Device transfer window (#303): the current thread starts a transfer whose guest-time
+ * duration is unmeasured; the scheduler closes the window at the decision after one
+ * other thread was dispatched (at once when none is runnable) and wakes obj's waiters.
+ * begin returns 0 when a window is already open or no thread is current. */
+int      sched_transfer_begin(uint32_t obj);
+int      sched_transfer_pending(uint32_t obj, uint32_t *owner_uid); /* 1 while obj's window is open */
 /* Semantic wait lifetime, independent of SrCoro's executable stack. Only the
  * innermost block attaches to the TCB; callback-parked parents remain live.
  * Detach hooks are object policy and MUST NOT preempt during owner teardown. */
@@ -1905,6 +1921,7 @@ typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
  * one of those classes, 0 otherwise (nothing visited). */
 int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
+uint32_t sched_thread_stack_free_size(uint32_t uid);  /* sceKernelGetThreadStackFreeSize */
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);

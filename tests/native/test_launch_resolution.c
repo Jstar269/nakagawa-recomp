@@ -154,6 +154,10 @@ static int write_launch_environment_probe(void) {
     const char *novbpace = getenv("SR_NOVBPACE");
     const char *font_dir = getenv("SR_FONTDIR");
     const char *user_data_root = getenv("SR_USER_DATA_ROOT");
+    const char *game_title = getenv("SR_GAME_TITLE");
+    const char *disc_id = getenv("SR_DISC_ID");
+    const char *ui_root = getenv("SR_UI_ROOT");
+    const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -166,7 +170,11 @@ static int write_launch_environment_probe(void) {
                      "NK_INPUT_PROFILE=%s\n"
                      "SR_NOVBPACE=%s\n"
                      "SR_FONTDIR=%s\n"
-                     "SR_USER_DATA_ROOT=%s\n",
+                     "SR_USER_DATA_ROOT=%s\n"
+                     "SR_GAME_TITLE=%s\n"
+                     "SR_DISC_ID=%s\n"
+                     "SR_UI_ROOT=%s\n"
+                     "SR_EXPERIMENTAL_60HZ=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -178,7 +186,11 @@ static int write_launch_environment_probe(void) {
                      input_profile ? input_profile : "<unset>",
                      novbpace ? novbpace : "<unset>",
                      font_dir ? font_dir : "<unset>",
-                     user_data_root ? user_data_root : "<unset>") >= 0;
+                     user_data_root ? user_data_root : "<unset>",
+                     game_title ? game_title : "<unset>",
+                     disc_id ? disc_id : "<unset>",
+                     ui_root ? ui_root : "<unset>",
+                     experimental_60hz ? experimental_60hz : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -312,15 +324,32 @@ static void test_no_iso_child_environment(const char *test_executable,
     char *old_novbpace = capture_environment_value("SR_NOVBPACE", &had_novbpace);
     bool had_user_root;
     char *old_user_root = capture_environment_value("SR_USER_DATA_ROOT", &had_user_root);
+    bool had_game_title;
+    char *old_game_title = capture_environment_value("SR_GAME_TITLE", &had_game_title);
+    bool had_ui_root;
+    char *old_ui_root = capture_environment_value("SR_UI_ROOT", &had_ui_root);
     set_environment_value("PSP_ISO", "poisoned-parent.iso");
     set_environment_value("SR_NOVBPACE", "1");
     set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
     /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
     set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
+    /* Nor another game's name or another player's folder (the pause overlay's, #1159). */
+    set_environment_value("SR_GAME_TITLE", "poisoned-parent-title");
+    set_environment_value("SR_UI_ROOT", "poisoned-parent-ui-root");
+    /* An inherited 60 Hz opt-in must not reach the child: only the session decides. */
+    bool had_60hz;
+    char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
+    set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
+    assert(strcmp(session.game_title, "Launch Resolution Fixture") == 0);
+    /* The player names its own folder after preparation (player_state.c). */
+    char player_folder[sizeof(session.ui_root)];
+    int player_folder_len = snprintf(player_folder, sizeof(player_folder), "%s%cplayer", root, sep);
+    assert(player_folder_len > 0 && (size_t)player_folder_len < sizeof(player_folder));
+    memcpy(session.ui_root, player_folder, (size_t)player_folder_len + 1);
     assert(session.staged_executable_checked);
     assert(session.config.fps_cap == -1);
     assert(ends_with(session.executable_path, "display-smoke") ||
@@ -377,7 +406,7 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     FILE *report = fopen(report_path, "rb");
     assert(report != NULL);
-    char observed[2048];
+    char observed[8192];
     size_t observed_size = fread(observed, 1, sizeof(observed) - 1, report);
     observed[observed_size] = '\0';
     assert(!ferror(report));
@@ -418,11 +447,23 @@ static void test_no_iso_child_environment(const char *test_executable,
         /* The inherited poison is replaced by the session root. */
         assert(strstr(observed, "poisoned-parent-root") == NULL);
     }
+    /* The pause overlay's name, disc ID and font folder (#1159) come from the session. */
+    {
+        char expected[NK_MAX_PATH + 32];
+        assert(strstr(observed, "SR_GAME_TITLE=Launch Resolution Fixture\n") != NULL);
+        assert(strstr(observed, "SR_DISC_ID=TEST00006\n") != NULL);
+        snprintf(expected, sizeof(expected), "SR_UI_ROOT=%s\n", player_folder);
+        assert(strstr(observed, expected) != NULL);
+        assert(strstr(observed, "poisoned-parent-title") == NULL);
+        assert(strstr(observed, "poisoned-parent-ui-root") == NULL);
+    }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
+    session.config.experimental_60hz = true;
     session.config.fps_cap = -1;
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
@@ -436,7 +477,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(fclose(report) == 0);
     assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
+    session.config.experimental_60hz = false;
 
+    restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
+    free(old_60hz);
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
@@ -444,11 +489,15 @@ static void test_no_iso_child_environment(const char *test_executable,
     restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
                               had_unrelated);
     restore_environment_value("SR_USER_DATA_ROOT", old_user_root, had_user_root);
+    restore_environment_value("SR_GAME_TITLE", old_game_title, had_game_title);
+    restore_environment_value("SR_UI_ROOT", old_ui_root, had_ui_root);
     free(old_iso);
     free(old_novbpace);
     free(old_report);
     free(old_unrelated);
     free(old_user_root);
+    free(old_game_title);
+    free(old_ui_root);
     assert(nk_platform_set_app_data_dir_override(NULL));
 
     remove(report_path);
