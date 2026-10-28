@@ -72,9 +72,34 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>            /* wcsstr: assert the built child command line */
-#include <windows.h>
-#include <process.h>
-#include <io.h>              /* _dup/_dup2/_fileno/_close: capture the runtime's stderr */
+#include <strings.h>          /* strncasecmp: the ms0:/fatms0: device prefix */
+#include <unistd.h>           /* dup/dup2/fileno/close, getpid, getcwd/chdir, rmdir: POSIX, and
+                                 the same names in MinGW's CRT */
+#ifdef _WIN32
+#include <windows.h>          /* the Win32-only fixtures: CreateProcessW respawn, the FindFirstFileW
+                                 error classifier, the junction, GetModuleFileNameA */
+#endif
+
+/* The fixture path buffers are sized by the Win32 MAX_PATH. POSIX publishes no such
+ * constant, so the same 260-byte buffers are used there. */
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+/* Set an environment variable for the code under test, or remove it when value is NULL or
+ * empty (an empty _putenv_s value removes the variable on Win32, and the fixtures were
+ * written against that). Win32 writes both the process environment block, which the
+ * runtime's wide-character lookups read, and the CRT table getenv reads; POSIX has the one
+ * environment getenv reads. Returns nonzero on success. */
+static int hle_test_setenv(const char *name, const char *value) {
+#ifdef _WIN32
+    int os_ok = SetEnvironmentVariableA(name, value && value[0] ? value : NULL) != 0;
+    return _putenv_s(name, value ? value : "") == 0 && (os_ok || !value || !value[0]);
+#else
+    if (!value || !value[0]) return unsetenv(name) == 0;
+    return setenv(name, value, 1) == 0;
+#endif
+}
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
@@ -791,6 +816,9 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
  * sr_hle_test_partition_reset() and restores the default afterwards. */
 static uint32_t s_fixture_loaded_end = 0x00400000u;
 uint32_t sr_loaded_end(void) { return s_fixture_loaded_end; }
+/* The main image's lowest loaded address; UINT32_MAX (nothing loaded) by default. */
+static uint32_t s_fixture_loaded_base = UINT32_MAX;
+uint32_t sr_loaded_base(void) { return s_fixture_loaded_base; }
 
 int g_hle_depth;
 jmp_buf g_hle_jmp;
@@ -1375,7 +1403,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(write_synthetic_libfont_prx(path, base),
            "source-owned libfont PRX fixture is written");
 
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
@@ -1489,7 +1517,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     }
 
     /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_hle_test_module_reset();
     uint32_t uid_on = sr_hle_test_register_module("libfont.prx", base + 0x70u, 0u);
     uint32_t starts_before = s_synth_libfont_start_calls;
@@ -1503,11 +1531,11 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
      * (the harness counts the stop and returns the refusal). Phase 5 repeats it for an
      * untranslated entry. Every stop writes the player's semantic-boundary event line. */
     const char *events_path = HLE_BUILD_ROOT "/hle_libfont_stop_events.txt";
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
     remove(events_path);
-    _putenv_s("SR_BOOT_EVENT_FILE", events_path);
+    hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
     uint32_t stops_before = sr_hle_test_libfont_startup_stops();
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
                                                    base + 0x70u, 0u);
@@ -1530,14 +1558,14 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
            "a repeated kill-switched libfont StartModule keeps failing closed");
 
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     expect(libfont_start_call(&cpu, uid_off) == 0u &&
                s_synth_libfont_start_calls == starts_before + 1u &&
                MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
            "translated startup can establish readiness after a refused attempt");
 
     /* Phase 5: an untranslated libfont entry takes the same named refusal. */
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
                                                             0x089b0000u, 0u);
@@ -1548,7 +1576,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "repeated untranslated libfont starts fail closed");
 
     /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     starts_before = s_synth_libfont_start_calls;
     uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
@@ -1569,7 +1597,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
                                          "boundary=libfont-startup-unavailable issue=299\n") == 4,
                "each libfont stop writes the player's semantic-boundary event line");
     }
-    _putenv_s("SR_BOOT_EVENT_FILE", "");
+    hle_test_setenv("SR_BOOT_EVENT_FILE", NULL);
     remove(events_path);
     if (capturing) {
         captured[0] = '\0';
@@ -1592,7 +1620,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
                "the look-alike module is refused by name, not by a libfont fallback");
     }
 
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_hle_test_module_reset();
     remove(path);
 }
@@ -1960,7 +1988,7 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
 
     /* Shipped default: host HLE implements the export, so the host keeps serving it and
      * module_start is bypassed; the export never links. */
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     uint32_t uid = rt_load(alpha_guest, 0u);
     expect(uid != 0u && (uid & 0x80000000u) == 0u &&
                sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
@@ -1977,7 +2005,7 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
 
     /* Real module start: before start the host handler runs; once module_start has run the
      * guest body owns the NID; unload hands it back to the host handler. */
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     uid = rt_load(alpha_guest, 0u);
     expect(uid != 0u && (uid & 0x80000000u) == 0u &&
                sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
@@ -2000,7 +2028,7 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     expect(rt_shadow_import() == RT_HLE_SHADOW_HOST,
            "runtime placement: after unload the shadowed import reaches host HLE again");
 
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
@@ -2040,7 +2068,7 @@ static void test_runtime_placed_modules(void) {
                runtime_module_identity(delta_path, &s_rt_delta_code),
            "runtime placement: descriptors record the fixture identities");
 
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
@@ -2222,11 +2250,10 @@ static void test_runtime_placed_modules(void) {
         char saved_memstick[512] = "";
         int had_memstick = old_memstick != NULL;
         if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
-        CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT", NULL);
-        SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-        _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        nk_platform_mkdir_p(HLE_BUILD_ROOT);
+        nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT");
+        hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
         fd_host_path(host, sizeof(host), alpha_guest);
         FILE *marker = fopen(host, "wb");
         if (marker) {
@@ -2284,8 +2311,7 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
-        SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
-        _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+        hle_test_setenv("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
     }
 
     /* LoadModuleByID of a descriptor that names no recorded file: there is no module to
@@ -2566,6 +2592,13 @@ static void fd_guest_copy(uint32_t address, const void *data, size_t size) {
     for (size_t i = 0; i < size; i++) MEM_W8(address + (uint32_t)i, bytes[i]);
 }
 
+/* Count the savedata staging temporaries (".nakagawa-stage-<n>", src/rt/savedata.c) among
+ * the regular files of a save directory. */
+static bool hle_test_count_stage_file(const char *name, void *ctx) {
+    if (strncmp(name, ".nakagawa-stage-", 16) == 0) ++*(int *)ctx;
+    return true;
+}
+
 static void fd_host_path(char *out, size_t capacity, const char *guest) {
     /* Hierarchical path under the unified Memory Stick root (issue #334):
      * strip a known ms0:/fatms0: device prefix and keep guest separators. */
@@ -2577,13 +2610,13 @@ static void fd_host_path(char *out, size_t capacity, const char *guest) {
     size_t at = 0;
     if (!out || capacity == 0) return;
     for (size_t i = 0; root[i] && at + 1 < capacity; i++) out[at++] = root[i];
-    if (_strnicmp(rel, "ms0:", 4) == 0) rel += 4;
-    else if (_strnicmp(rel, "fatms0:", 7) == 0) rel += 7;
+    if (strncasecmp(rel, "ms0:", 4) == 0) rel += 4;
+    else if (strncasecmp(rel, "fatms0:", 7) == 0) rel += 7;
     while (*rel == '/' || *rel == '\\') rel++;
-    if (at + 1 < capacity) out[at++] = '\\';
+    if (at + 1 < capacity) out[at++] = '/';
     for (size_t i = 0; rel[i] && at + 1 < capacity; i++) {
         char c = rel[i];
-        out[at++] = (c == '/') ? '\\' : c;
+        out[at++] = (c == '\\') ? '/' : c;
     }
     out[at] = '\0';
 }
@@ -2644,7 +2677,7 @@ static void test_io_async_and_path_imports(void) {
            "synthetic file-I/O callback registers for the async completion test");
 
     fd_host_path(async_host, sizeof(async_host), async_guest);
-    DeleteFileA(async_host);
+    nk_remove_utf8(async_host);
     fd_set_path(&cpu, PATH_ADDR, async_guest);
     uint32_t fd = sr_hle_test_io_open(&cpu);
     expect(fd == 3u, "async fixture opens under the synthetic Memory Stick root");
@@ -3026,14 +3059,15 @@ static void test_fd_namespace(void) {
     if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
-    DeleteFileA(result_host);
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-    _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    nk_remove_utf8(result_host);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
+#ifdef _WIN32
+    /* The classifier maps FindFirstFileW's initial error codes; it exists on Win32 only. */
     int initial_find_found = 0;
     expect(sr_hle_test_vfs_initial_find_error(ERROR_FILE_NOT_FOUND,
                                                &initial_find_found) == 0u &&
@@ -3044,6 +3078,7 @@ static void test_fd_namespace(void) {
                                                &initial_find_found) == 0x80010005u &&
                !initial_find_found,
            "an initial overlay enumeration failure stays a loud I/O error");
+#endif
     expect(sr_hle_test_fd_kind(0) == FD_KIND_STD &&
            sr_hle_test_fd_kind(1) == FD_KIND_STD &&
            sr_hle_test_fd_kind(2) == FD_KIND_STD,
@@ -3122,7 +3157,7 @@ static void test_fd_namespace(void) {
         };
         char flags_host[256];
         fd_host_path(flags_host, sizeof(flags_host), flags_guest);
-        DeleteFileA(flags_host);
+        remove(flags_host);
         for (size_t i = 0; i < sizeof(no_create) / sizeof(no_create[0]); i++) {
             fd_set_path(&cpu, path_addr, flags_guest);
             cpu.r[5] = no_create[i];
@@ -3132,9 +3167,9 @@ static void test_fd_namespace(void) {
                 cpu.r[4] = rc;
                 (void)sr_hle_test_io_close(&cpu);
             }
-            expect(rc == 0x80010002u && GetFileAttributesA(flags_host) == INVALID_FILE_ATTRIBUTES,
+            expect(rc == 0x80010002u && nk_platform_path_missing(flags_host),
                    "an open without PSP_O_CREAT of a missing file fails and creates nothing");
-            DeleteFileA(flags_host);
+            remove(flags_host);
         }
         fd_set_path(&cpu, path_addr, flags_guest);
         cpu.r[5] = 0x0A02u;
@@ -3181,7 +3216,7 @@ static void test_fd_namespace(void) {
         expect(sr_hle_test_io_close(&cpu) == 0u &&
                    fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
                "TRUNC without PSP_O_CREAT truncates the existing file");
-        DeleteFileA(flags_host);
+        remove(flags_host);
     }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
@@ -3321,7 +3356,7 @@ static void test_fd_namespace(void) {
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
      * directory. Lives under the unified Memory Stick root (issue #334). */
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty", NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -3337,7 +3372,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
+    rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -3527,7 +3562,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = realloc_fd;
     expect(sr_hle_test_io_close(&cpu) == 0u, "reallocated descriptor closes cleanly");
     fd_host_path(host_path, sizeof(host_path), "ms0:/NAKAGAWA_FD_REALLOC.TXT");
-    DeleteFileA(host_path);
+    nk_remove_utf8(host_path);
 
     for (uint32_t i = 1; i < 61u; i++) {
         memset(&cpu, 0, sizeof(cpu));
@@ -3535,11 +3570,11 @@ static void test_fd_namespace(void) {
         expect(sr_hle_test_io_close(&cpu) == 0u, "each exhausted-table descriptor closes cleanly");
         snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_%02u.TXT", i);
         fd_host_path(host_path, sizeof(host_path), guest_path);
-        DeleteFileA(host_path);
+        nk_remove_utf8(host_path);
     }
     snprintf(guest_path, sizeof(guest_path), "ms0:/NAKAGAWA_FD_SLOT_00.TXT");
     fd_host_path(host_path, sizeof(host_path), guest_path);
-    DeleteFileA(host_path);
+    nk_remove_utf8(host_path);
 
     /* Closing a standard descriptor makes it invalid for I/O but does not turn
      * its reserved identity into an ordinary allocation slot. */
@@ -3564,7 +3599,7 @@ static void test_fd_namespace(void) {
     static const char rename_dst_guest[] = "ms0:/NAKAGAWA_RENAMED_RESULT.TXT";
     char rename_dst_host[256];
     fd_host_path(rename_dst_host, sizeof(rename_dst_host), rename_dst_guest);
-    DeleteFileA(rename_dst_host);
+    nk_remove_utf8(rename_dst_host);
 
     /* 1. Rename on non-existent file returns 0x80010002 */
     fd_guest_copy(rename_src_addr, rename_nonexist, sizeof(rename_nonexist));
@@ -3587,7 +3622,7 @@ static void test_fd_namespace(void) {
     static const uint8_t rename_payload[] = "RENAME_TEST_PAYLOAD\n";
     char rename_src_host[256];
     fd_host_path(rename_src_host, sizeof(rename_src_host), rename_src_guest);
-    DeleteFileA(rename_src_host);
+    nk_remove_utf8(rename_src_host);
     fd_set_path(&cpu, rename_src_addr, rename_src_guest);
     uint32_t rn_fd = sr_hle_test_io_open(&cpu);
     expect(rn_fd == 3u, "open rename source file succeeds");
@@ -3604,7 +3639,7 @@ static void test_fd_namespace(void) {
     cpu.r[5] = rename_dst_addr;
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename on existing source file succeeds");
-    expect(GetFileAttributesA(rename_src_host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(rename_src_host),
            "sceIoRename removes original source file from host");
     expect(fd_host_bytes_equal(rename_dst_host, rename_payload, sizeof(rename_payload) - 1u),
            "sceIoRename preserves file content at destination path");
@@ -3614,7 +3649,7 @@ static void test_fd_namespace(void) {
     static const uint8_t overwrite_payload[] = "OVERWRITE_PAYLOAD_NEW\n";
     char overwrite_src_host[256];
     fd_host_path(overwrite_src_host, sizeof(overwrite_src_host), overwrite_src_guest);
-    DeleteFileA(overwrite_src_host);
+    nk_remove_utf8(overwrite_src_host);
     fd_set_path(&cpu, rename_src_addr, overwrite_src_guest);
     uint32_t ow_fd = sr_hle_test_io_open(&cpu);
     expect(ow_fd == 3u, "open overwrite source file succeeds");
@@ -3631,18 +3666,15 @@ static void test_fd_namespace(void) {
     cpu.r[5] = rename_dst_addr;
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename replacing existing destination file succeeds");
-    expect(GetFileAttributesA(overwrite_src_host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(overwrite_src_host),
            "sceIoRename source file removed after replace");
     expect(fd_host_bytes_equal(rename_dst_host, overwrite_payload, sizeof(overwrite_payload) - 1u),
            "sceIoRename replaced destination contains new payload");
-    DeleteFileA(rename_dst_host);
+    nk_remove_utf8(rename_dst_host);
 
-    DeleteFileA(result_host);
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
-    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
-    else _putenv_s("SR_MEMSTICK", "");
+    nk_remove_utf8(result_host);
+    rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
 }
 
@@ -4021,13 +4053,11 @@ static void test_ms0_unified_namespace(void) {
     if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
     if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
 
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(ms_root, NULL);
-    CreateDirectoryA(legacy_root, NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
-    SetEnvironmentVariableA("SR_FSDIR", legacy_root);
-    _putenv_s("SR_MEMSTICK", ms_root);
-    _putenv_s("SR_FSDIR", legacy_root);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(ms_root);
+    nk_platform_mkdir_p(legacy_root);
+    hle_test_setenv("SR_MEMSTICK", ms_root);
+    hle_test_setenv("SR_FSDIR", legacy_root);
     sr_hle_init();
 
     /* --- ordinary sceIo mkdir/open/write/read/seek/stat/remove --- */
@@ -4035,9 +4065,9 @@ static void test_ms0_unified_namespace(void) {
     static const char file_guest[] = "ms0:/TESTDIR/UNIFIED.TXT";
     static const char file_guest2[] = "ms0:/TESTDIR/UNIFIED_RENAMED.TXT";
     fd_host_path(host, sizeof(host), file_guest);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_host_path(host, sizeof(host), file_guest2);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
 
     fd_guest_copy(PATH_ADDR, dir_guest, sizeof(dir_guest));
     memset(&cpu, 0, sizeof cpu);
@@ -4047,8 +4077,8 @@ static void test_ms0_unified_namespace(void) {
     /* mkdir result is hierarchical under SR_MEMSTICK, not flat fs/ */
     {
         char mkdir_host[512];
-        snprintf(mkdir_host, sizeof mkdir_host, "%s\\TESTDIR", ms_root);
-        expect(GetFileAttributesA(mkdir_host) != INVALID_FILE_ATTRIBUTES,
+        snprintf(mkdir_host, sizeof mkdir_host, "%s/TESTDIR", ms_root);
+        expect(nk_platform_dir_exists(mkdir_host),
                "mkdir result is hierarchical under SR_MEMSTICK, not flat fs/");
     }
     memset(&cpu, 0, sizeof cpu);
@@ -4090,14 +4120,14 @@ static void test_ms0_unified_namespace(void) {
     expect(sr_hle_test_io_rename(&cpu) == 0u,
            "sceIoRename moves a file within the unified Memory Stick root");
     fd_host_path(host, sizeof(host), file_guest2);
-    expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_file_exists(host),
            "rename destination exists under SR_MEMSTICK hierarchy");
 
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = PATH2_ADDR;
     expect(sr_hle_test_io_remove(&cpu) == 0u,
            "sceIoRemove deletes a regular file under the unified root");
-    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(host),
            "removed file is gone from the unified Memory Stick hierarchy");
 
     /* foreign device / traversal fail closed */
@@ -4119,7 +4149,7 @@ static void test_ms0_unified_namespace(void) {
 
     /* disc0 open does not create under the ms root */
     fd_host_path(host, sizeof host, "ms0:/PSP_GAME");
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_guest_copy(PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN",
                   sizeof("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN"));
     fd_set_path(&cpu, PATH_ADDR, "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
@@ -4130,14 +4160,14 @@ static void test_ms0_unified_namespace(void) {
         cpu.r[4] = disc_fd;
         sr_hle_test_io_close(&cpu);
     }
-    expect(GetFileAttributesA(host) == INVALID_FILE_ATTRIBUTES,
+    expect(nk_platform_path_missing(host),
            "foreign disc0 open never materializes a host path under SR_MEMSTICK");
 
     /* --- legacy flat import (read-open miss copies once) --- */
     {
         char legacy_flat[512];
         snprintf(legacy_flat, sizeof legacy_flat,
-                 "%s\\ms0__LEGACY_FLAT.TXT", legacy_root);
+                 "%s/ms0__LEGACY_FLAT.TXT", legacy_root);
         FILE *lf = fopen(legacy_flat, "wb");
         expect(lf != NULL, "legacy flat fixture file can be created");
         if (lf) {
@@ -4148,7 +4178,7 @@ static void test_ms0_unified_namespace(void) {
          * (sr_vfs_host_flat_path maps "ms0:/LEGACY_FLAT.TXT" -> "ms0__LEGACY_FLAT.TXT"). */
         static const char legacy_guest[] = "ms0:/LEGACY_FLAT.TXT";
         fd_host_path(host, sizeof(host), legacy_guest);
-        DeleteFileA(host);
+        nk_remove_utf8(host);
         uint32_t before = sr_hle_test_ms0_legacy_import_count();
         fd_set_path(&cpu, PATH_ADDR, legacy_guest);
         cpu.r[5] = 1u; /* O_RDONLY: import only on read miss */
@@ -4168,10 +4198,10 @@ static void test_ms0_unified_namespace(void) {
         }
         expect(sr_hle_test_ms0_legacy_import_count() == before + 1u,
                "legacy flat import increments the source-owned counter exactly once");
-        expect(GetFileAttributesA(host) != INVALID_FILE_ATTRIBUTES,
+        expect(nk_platform_file_exists(host),
                "imported legacy content lives under SR_MEMSTICK, not SR_FSDIR only");
-        DeleteFileA(host);
-        DeleteFileA(legacy_flat);
+        nk_remove_utf8(host);
+        nk_remove_utf8(legacy_flat);
     }
 
     /* --- savedata SAVE and ordinary sceIoOpen see the same host path --- */
@@ -4219,14 +4249,15 @@ static void test_ms0_unified_namespace(void) {
          * the SAVE and keeps the previous save.  A load whose buffer is too
          * small is refused instead of truncated. */
         static const char shorter[] = "NEW\n";
-        char save_host[512], stage_glob[600], planted[600];
+        char save_host[512], save_dir[512], planted[600];
         fd_host_path(save_host, sizeof save_host, guest_open);
-        char *slot_end = strrchr(save_host, '\\');
+        snprintf(save_dir, sizeof save_dir, "%s", save_host);
+        char *slot_end = strrchr(save_dir, '/');
+        char *slot_end_win = strrchr(save_dir, '\\');
+        if (!slot_end || (slot_end_win && slot_end_win > slot_end)) slot_end = slot_end_win;
         expect(slot_end != NULL, "savedata host path names its save directory");
         if (slot_end) *slot_end = '\0';
-        snprintf(stage_glob, sizeof stage_glob, "%s\\.nakagawa-stage-*", save_host);
-        snprintf(planted, sizeof planted, "%s\\.nakagawa-stage-1", save_host);
-        if (slot_end) *slot_end = '\\';
+        snprintf(planted, sizeof planted, "%s/.nakagawa-stage-1", save_dir);
 
         fd_set_path(&cpu, PATH_ADDR, guest_open);
         cpu.r[5] = 1u; /* O_RDONLY */
@@ -4249,33 +4280,25 @@ static void test_ms0_unified_namespace(void) {
             cpu.r[4] = held;
             sr_hle_test_io_close(&cpu);
         }
-        WIN32_FILE_ATTRIBUTE_DATA fad;
-        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
-                   fad.nFileSizeHigh == 0u && fad.nFileSizeLow == sizeof(shorter) - 1u,
+        expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
                "savedata overwrite replaces the whole file, no stale tail");
-        WIN32_FIND_DATAA found;
-        HANDLE scan = FindFirstFileA(stage_glob, &found);
-        expect(scan == INVALID_HANDLE_VALUE,
+        int stage_files = 0;
+        expect(nk_platform_list_files(save_dir, hle_test_count_stage_file, &stage_files) &&
+                   stage_files == 0,
                "savedata overwrite leaves no temporary file behind");
-        if (scan != INVALID_HANDLE_VALUE) FindClose(scan);
 
-        expect(CreateDirectoryA(planted, NULL) != 0,
-               "a directory planted at a temporary's name");
+        expect(nk_platform_mkdir_p(planted), "a directory planted at a temporary's name");
         fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
         MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
         expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
                "a SAVE whose PARAM.SFO cannot be staged fails");
-        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
-                   fad.nFileSizeLow == sizeof(shorter) - 1u,
+        expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
                "a SAVE that failed while staging keeps the previous data file");
-        scan = FindFirstFileA(stage_glob, &found);
-        int stage_entries = 0;
-        if (scan != INVALID_HANDLE_VALUE) {
-            do stage_entries++; while (FindNextFileA(scan, &found));
-            FindClose(scan);
-        }
-        expect(stage_entries == 1, "a failed SAVE leaves only the planted directory");
-        RemoveDirectoryA(planted);
+        stage_files = 0;
+        expect(nk_platform_list_files(save_dir, hle_test_count_stage_file, &stage_files) &&
+                   stage_files == 0 && !nk_platform_path_missing(planted),
+               "a failed SAVE leaves no temporary file beside the planted directory");
+        nk_platform_remove_tree(planted, NULL);
 
         MEM_W32(PARAM_ADDR + 0x30, 2u); /* SD_LOAD */
         MEM_W32(PARAM_ADDR + 0x78, 2u);
@@ -4288,16 +4311,23 @@ static void test_ms0_unified_namespace(void) {
 
     /* --- junction rejection: open through a planted link fails closed --- */
     {
-        char victim[512], jpath[512], jcmd[1200];
-        snprintf(victim, sizeof victim, "%s\\..\\ms0_victim_outside.txt", ms_root);
+        char victim[512], jpath[512];
+        const char sep = nk_platform_path_separator();
+        snprintf(victim, sizeof victim, "%s%c..%cms0_victim_outside.txt", ms_root, sep, sep);
         FILE *vf = fopen(victim, "wb");
         if (vf) { fwrite(payload, 1, sizeof(payload) - 1u, vf); fclose(vf); }
-        snprintf(jpath, sizeof jpath, "%s\\JCT_LINK.TXT", ms_root);
-        DeleteFileA(jpath);
+        snprintf(jpath, sizeof jpath, "%s%cJCT_LINK.TXT", ms_root, sep);
+        nk_remove_utf8(jpath);
+#ifdef _WIN32
+        char jcmd[1200];
         snprintf(jcmd, sizeof jcmd,
                  "cmd /c mklink \"%s\" \"%s\" >nul 2>&1", jpath, victim);
         int made = system(jcmd) == 0 &&
-                   GetFileAttributesA(jpath) != INVALID_FILE_ATTRIBUTES;
+#else
+        /* POSIX's planted link is a symlink; its target resolves from the link's own directory. */
+        int made = symlink("../ms0_victim_outside.txt", jpath) == 0 &&
+#endif
+                   !nk_platform_path_missing(jpath);
         if (made) {
             fd_guest_copy(PATH_ADDR, "ms0:/JCT_LINK.TXT", sizeof("ms0:/JCT_LINK.TXT"));
             fd_set_path(&cpu, PATH_ADDR, "ms0:/JCT_LINK.TXT");
@@ -4310,33 +4340,27 @@ static void test_ms0_unified_namespace(void) {
                 cpu.r[4] = jfd;
                 sr_hle_test_io_close(&cpu);
             }
-            DeleteFileA(jpath);
+            nk_remove_utf8(jpath);
         } else {
-            fprintf(stderr, "SKIP: junction fixture needs mklink privilege\n");
+            fprintf(stderr, "SKIP: junction fixture needs mklink (Win32) or symlink privilege\n");
         }
-        DeleteFileA(victim);
+        nk_remove_utf8(victim);
     }
 
     /* cleanup */
     fd_host_path(host, sizeof(host), file_guest);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     fd_host_path(host, sizeof(host), file_guest2);
-    DeleteFileA(host);
+    nk_remove_utf8(host);
     {
         char d[512];
-        snprintf(d, sizeof d, "%s\\TESTDIR", ms_root);
-        RemoveDirectoryA(d);
+        snprintf(d, sizeof d, "%s/TESTDIR", ms_root);
+        rmdir(d);
     }
-    RemoveDirectoryA(ms_root);
-    RemoveDirectoryA(legacy_root);
-    if (save_ms) SetEnvironmentVariableA("SR_MEMSTICK", save_ms);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (save_fs) SetEnvironmentVariableA("SR_FSDIR", save_fs);
-    else SetEnvironmentVariableA("SR_FSDIR", NULL);
-    if (save_ms) _putenv_s("SR_MEMSTICK", save_ms);
-    else _putenv_s("SR_MEMSTICK", "");
-    if (save_fs) _putenv_s("SR_FSDIR", save_fs);
-    else _putenv_s("SR_FSDIR", "");
+    rmdir(ms_root);
+    rmdir(legacy_root);
+    hle_test_setenv("SR_MEMSTICK", save_ms);
+    hle_test_setenv("SR_FSDIR", save_fs);
     free(save_ms);
     free(save_fs);
 }
@@ -4612,21 +4636,19 @@ static int sysreg_keys_slot_is(uint32_t idx, const char *name) {
 }
 
 static void sysreg_env(const char *value) {
-    SetEnvironmentVariableA("SR_SYSTEM_REGISTRY", value);
-    _putenv_s("SR_SYSTEM_REGISTRY", value ? value : "");
+    hle_test_setenv("SR_SYSTEM_REGISTRY", value);
 }
 
 static void sysreg_scratch_clean(void) {
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(SYSREG_SCRATCH_DIR, NULL);
-    DeleteFileA(SYSREG_SCRATCH_FILE);
-    DeleteFileA(SYSREG_SCRATCH_FILE ".tmp");
-    DeleteFileA(SYSREG_SCRATCH_FILE ".corrupt");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(SYSREG_SCRATCH_DIR);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE ".tmp");
+    nk_remove_utf8(SYSREG_SCRATCH_FILE ".corrupt");
 }
 
 static int sysreg_file_exists(const char *path) {
-    DWORD attrs = GetFileAttributesA(path);
-    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    return nk_platform_file_exists(path);
 }
 
 static int sysreg_write_file(const char *path, const char *text, size_t len) {
@@ -5358,7 +5380,7 @@ static void test_sysreg_persistence_round_trip(void) {
            "a nickname a game wrote to owner_name persists with its own size");
 
     /* A flush after reads only writes nothing. */
-    DeleteFileA(SYSREG_SCRATCH_FILE);
+    nk_remove_utf8(SYSREG_SCRATCH_FILE);
     expect(sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u &&
                sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, made, 0u, 0u, 0u, 0u) == 0u &&
                !sysreg_file_exists(SYSREG_SCRATCH_FILE),
@@ -5496,7 +5518,7 @@ static void test_sysreg_flush_failure(void) {
            "a failed flush keeps the written value live in memory");
     sysreg_env(SYSREG_SCRATCH_FILE);
     sysreg_restart();
-    DeleteFileA(blocker);
+    nk_remove_utf8(blocker);
     sysreg_scratch_clean();
 }
 
@@ -5657,6 +5679,16 @@ static void test_adhoc_named_refusals(void) {
 }
 
 extern void sr_hle_test_volatile_mem_reset(void);
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+/* Lock may block, so it is called from a current guest thread: with no thread current the
+ * runtime is in interrupt context, where Lock returns ILLEGAL_CONTEXT (#1383). */
+static TCB *volatile_mem_current_thread(uint32_t uid, int priority) {
+    TCB *t = fixture_thread(uid, TH_RUNNING, priority);
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    return t;
+}
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
@@ -5666,7 +5698,9 @@ static void test_volatile_mem_output_preflight(void) {
     const uint32_t size_out = 0x08a10004u;
     const uint32_t sentinel = 0xa5c35a3cu;
     CpuState cpu;
+    reset_fixture();
     sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b00u, 32);
 
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
@@ -5715,6 +5749,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory TryLock writes both valid outputs");
 
+    sr_hle_test_volatile_mem_reset();   /* a Lock while held would block (#1383) */
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -5735,7 +5770,8 @@ static void test_volatile_mem_output_preflight(void) {
            "volatile-memory TryLock retains NULL size-output tolerance");
     expect(MEM_R32(paddr_out) == 0x08400000u,
            "volatile-memory TryLock still writes the non-NULL address output");
-
+    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
 }
 
 /* ---- sceUtilityOsk. A person answers the keyboard in the native Win32 box
@@ -5868,12 +5904,11 @@ static uint32_t osk_poll_past_visible(CpuState *cpu) {
 }
 
 static void osk_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");      /* an empty value removes it from the CRT env */
+    hle_test_setenv(name, value);
 }
 
 static int osk_write_script(const char *const *lines, int count) {
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
     FILE *f = fopen(OSK_SCRIPT_PATH, "w");
     if (!f) return 0;
     for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
@@ -6589,6 +6624,193 @@ static void test_utility_dialog_single_slot(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* ---- Utility dialog status sequence (#1386): which call drives each transition, as the
+ * PSPAutotests hardware captures show it (hrydgard/pspautotests e2d098fc). Update never moves
+ * INIT (tests/utility/dialog/status.expected: a message Update during INIT returns
+ * INVALID_STATUS), so a caller that updates before it polls still sees INIT first. A savedata
+ * shutdown ends at priority 0x20 (tests/utility/savedata/shutdownstatus.expected): a caller at
+ * 0x20 sees SHUTDOWN, then NONE; one at 0x21 or 0x6F sees only NONE and can start the next
+ * dialog straight after ShutdownStart. A message dialog shows SHUTDOWN to a caller at 0x6F
+ * (tests/utility/dialog/priority.expected). */
+#define NID_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define UTILITY_SAVEDATA_MODE_GETSIZE     22u /* with no sizeInfo: no memory-stick I/O */
+
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+static uint32_t utility_change_priority(CpuState *cpu, uint32_t priority) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[5] = priority;  /* a0 = 0: the current thread */
+    return sr_syscall(cpu, NID_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void utility_savedata_block(void) {
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+}
+
+/* Poll a started dialog the way a game does, GetStatus and then Update while RUNNING, until it
+ * reports FINISHED. Eight frames bound the test, not the dialog. */
+static int utility_poll_to_finished(CpuState *cpu, uint32_t update, uint32_t status) {
+    for (int frame = 0; frame < 8; frame++) {
+        const uint32_t st = utility_call(cpu, status, 0u);
+        if (st == 3u) return 1;
+        if (st == 2u) (void)utility_call(cpu, update, 0u);
+        else if (st != 1u) return 0;
+    }
+    return 0;
+}
+
+static int utility_savedata_start_to_finished(CpuState *cpu) {
+    utility_savedata_block();
+    return utility_call(cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+           utility_poll_to_finished(cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS);
+}
+
+/* A caller that updates before it polls: each frame Update, then GetStatus. Records each
+ * frame's status as a digit until FINISHED (3) and counts the Updates refused with
+ * INVALID_STATUS. */
+static void utility_update_first_frames(CpuState *cpu, uint32_t update, uint32_t status,
+                                        char seen[16], unsigned *refused) {
+    size_t n = 0;
+    *refused = 0;
+    for (int frame = 0; frame < 8; frame++) {
+        if (utility_call(cpu, update, 0u) == 0x80110001u) (*refused)++;
+        const uint32_t st = utility_call(cpu, status, 0u);
+        seen[n++] = st <= 4u ? (char)('0' + st) : '?';
+        if (st == 3u || st > 4u) break;
+    }
+    seen[n] = '\0';
+}
+
+static void test_utility_dialog_status_sequence(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256], seen[16];
+    unsigned refused = 0;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+
+    /* Update during INIT is refused and moves nothing: the next GetStatus still reports INIT,
+     * and RUNNING follows without an Update. (The test reset frees the slot afterwards; the
+     * gamedata and sharing work would create memory-stick directories.) */
+    for (size_t i = 0; i < count; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
+                 "still reports INIT, then RUNNING", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* A caller that updates before it polls sees every state: INIT, RUNNING while the work and
+     * the two further Updates run, then FINISHED. */
+    for (size_t i = 0; i < 3; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
+        utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
+        snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
+                 "FINISHED, one Update refused (saw %s, %u refused)", dialogs[i].name, seen,
+                 refused);
+        expect(strcmp(seen, "1223") == 0 && refused == 1u, what);
+        snprintf(what, sizeof(what), "%s: ShutdownStart at FINISHED, then SHUTDOWN and NONE",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* The savedata shutdown by caller priority, from a running guest thread. */
+    TCB *self = fixture_thread(0x5c0u, TH_RUNNING, 0x20);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(utility_change_priority(&cpu, 0x20u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x20");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x20 sees SHUTDOWN after a savedata ShutdownStart, cannot start another "
+           "dialog yet, then sees NONE");
+
+    expect(utility_change_priority(&cpu, 0x21u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x21");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x21 sees NONE straight after a savedata ShutdownStart, never SHUTDOWN");
+
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x6F");
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u,
+           "a caller at 0x6F starts the next savedata dialog straight after ShutdownStart");
+    expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the next savedata dialog runs to NONE");
+
+    /* The edges: a cancel from RUNNING, and a caller better than 0x20, are unmeasured and keep
+     * the reported SHUTDOWN. */
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a savedata ShutdownStart during RUNNING still reports SHUTDOWN to a caller at 0x6F");
+    expect(utility_change_priority(&cpu, 0x10u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x10");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x10 sees SHUTDOWN, then NONE");
+
+    /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
+     * a savedata InitStart right after it is refused. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_savedata_block();
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) ==
+                   0x80110001u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "a message dialog shows SHUTDOWN to a caller at 0x6F and refuses a savedata InitStart "
+           "until NONE");
+
+    s_cur = -1;
+    sr_hle_test_osk_slot_reset();
+}
+
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
                                uint32_t indata, uint32_t inlen,
                                uint32_t outdata, uint32_t outlen) {
@@ -6623,10 +6845,9 @@ static void test_io_devctl_memory_stick(void) {
         return;
     }
 
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
-    expect(SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") &&
-               _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") == 0,
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    expect(hle_test_setenv("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms"),
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -6705,10 +6926,7 @@ static void test_io_devctl_memory_stick(void) {
                sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
            "sceIoDevctl refuses an unknown command and logs each device/command pair once");
 
-    if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
-    else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
-    if (old_root) _putenv_s("SR_MEMSTICK", old_root);
-    else _putenv_s("SR_MEMSTICK", "");
+    hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
 }
 
@@ -6811,6 +7029,7 @@ static void reset_fixture(void) {
     audio_fixture_reset();
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
+    sr_hle_test_volatile_mem_reset();
     sched_alarm_reset();
     sched_transfer_reset();
 }
@@ -9596,8 +9815,8 @@ static void test_route_observer_waits_for_guest_scanout_state(void) {
 static char s_prewarm_root[MAX_PATH];
 
 static void prewarm_env_restore(void) {
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
-    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", NULL);
 }
 
 typedef struct {
@@ -9685,17 +9904,19 @@ static int hle_xb_write(const char *path, const HleXbEntry *entries, size_t coun
 }
 
 static int hle_make_directory(const char *path) {
-    return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+    return nk_platform_mkdir_p(path);
 }
 
 /* The absolute form of HLE_BUILD_ROOT, for the fixtures below that build a path from it.
- * GetFullPathNameA resolves a relative root (the default "build") against the working
- * directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in its
- * scratch tree. Separators are normalised and trailing ones stripped. Returns 0 when the
- * root cannot be resolved or does not fit in the buffer. */
+ * nk_platform_absolute_path resolves a relative root (the default "build") against the
+ * working directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in
+ * its scratch tree; POSIX resolves through realpath, so the root is created first. Trailing
+ * separators are stripped. Returns 0 when the root cannot be resolved or does not fit in
+ * the buffer. */
 static int hle_scratch_root(char *out, size_t capacity) {
-    DWORD length = GetFullPathNameA(HLE_BUILD_ROOT, (DWORD)capacity, out, NULL);
-    if (length == 0 || length >= capacity) return 0;
+    if (!nk_platform_mkdir_p(HLE_BUILD_ROOT) ||
+        !nk_platform_absolute_path(HLE_BUILD_ROOT, out, capacity)) return 0;
+    size_t length = strlen(out);
     while (length > 3u && (out[length - 1u] == '\\' || out[length - 1u] == '/')) {
         out[--length] = '\0';
     }
@@ -9706,13 +9927,13 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, root_capacity, "%s\\archive_vfs_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, root_capacity, "%s/archive_vfs_%lu", scratch,
+              (unsigned long)getpid());
     if (!hle_make_directory(root)) return 0;
     char dir[3][MAX_PATH];
-    _snprintf(dir[0], sizeof(dir[0]), "%s\\data", root);
-    _snprintf(dir[1], sizeof(dir[1]), "%s\\data\\menu", root);
-    _snprintf(dir[2], sizeof(dir[2]), "%s\\data\\sound", root);
+    snprintf(dir[0], sizeof(dir[0]), "%s/data", root);
+    snprintf(dir[1], sizeof(dir[1]), "%s/data/menu", root);
+    snprintf(dir[2], sizeof(dir[2]), "%s/data/sound", root);
     for (size_t i = 0; i < 3; i++) if (!hle_make_directory(dir[i])) return 0;
     static const uint8_t archived[] = "archive-only";
     static const uint8_t overridden[] = "archive-override";
@@ -9725,10 +9946,10 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
         { "data/menu/nested/child.bin", child, sizeof(child) - 1u }
     };
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\assets.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/assets.xb", root);
     if (!hle_xb_write(archive_path, entries, sizeof(entries) / sizeof(entries[0]))) return 0;
     char loose_path[MAX_PATH];
-    _snprintf(loose_path, sizeof(loose_path), "%s\\data\\menu\\overridden.to", root);
+    snprintf(loose_path, sizeof(loose_path), "%s/data/menu/overridden.to", root);
     FILE *loose = fopen(loose_path, "wb");
     if (!loose) return 0;
     fputs("loose-override", loose);
@@ -9738,12 +9959,12 @@ static int hle_archive_fixture_make(char *root, size_t root_capacity) {
 
 static void hle_archive_fixture_remove(const char *root) {
     char path[MAX_PATH];
-    _snprintf(path, sizeof(path), "%s\\assets.xb", root); DeleteFileA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\menu\\overridden.to", root); DeleteFileA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\menu", root); RemoveDirectoryA(path);
-    _snprintf(path, sizeof(path), "%s\\data\\sound", root); RemoveDirectoryA(path);
-    _snprintf(path, sizeof(path), "%s\\data", root); RemoveDirectoryA(path);
-    RemoveDirectoryA(root);
+    snprintf(path, sizeof(path), "%s/assets.xb", root); nk_remove_utf8(path);
+    snprintf(path, sizeof(path), "%s/data/menu/overridden.to", root); nk_remove_utf8(path);
+    snprintf(path, sizeof(path), "%s/data/menu", root); rmdir(path);
+    snprintf(path, sizeof(path), "%s/data/sound", root); rmdir(path);
+    snprintf(path, sizeof(path), "%s/data", root); rmdir(path);
+    rmdir(root);
 }
 
 static uint32_t hle_archive_set_path(CpuState *cpu, uint32_t address, const char *path) {
@@ -9776,7 +9997,7 @@ static void test_direct_xb_read_precedence_and_listing(void) {
     reset_fixture();
     sr_hle_init();
     expect(hle_archive_fixture_make(root, sizeof(root)), "the synthetic XB fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
            "the direct XB route reaches READY without an extracted tree");
@@ -9826,12 +10047,12 @@ static void test_direct_xb_read_precedence_and_listing(void) {
     expect(sr_hle_test_io_dclose(&cpu) == 0u, "the archive directory descriptor closes");
 
     char extracted[2][MAX_PATH];
-    _snprintf(extracted[0], sizeof(extracted[0]), "%s\\data\\menu\\archived.to", root);
-    _snprintf(extracted[1], sizeof(extracted[1]), "%s\\data\\menu\\nested\\child.bin", root);
-    expect(GetFileAttributesA(extracted[0]) == INVALID_FILE_ATTRIBUTES &&
-               GetFileAttributesA(extracted[1]) == INVALID_FILE_ATTRIBUTES,
+    snprintf(extracted[0], sizeof(extracted[0]), "%s/data/menu/archived.to", root);
+    snprintf(extracted[1], sizeof(extracted[1]), "%s/data/menu/nested/child.bin", root);
+    expect(nk_platform_path_missing(extracted[0]) &&
+               nk_platform_path_missing(extracted[1]),
            "archive reads do not extract members to the host tree");
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
     hle_archive_fixture_remove(root);
 }
@@ -9843,25 +10064,25 @@ static void test_direct_xb_malformed_archive_fails_closed(void) {
     sr_hle_init();
     expect(hle_scratch_root(scratch, sizeof(scratch)), "the malformed XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\archive_vfs_bad_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, sizeof(root), "%s/archive_vfs_bad_%lu", scratch,
+              (unsigned long)getpid());
     expect(hle_make_directory(root), "the malformed XB fixture root was created");
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\bad.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/bad.xb", root);
     const uint8_t truncated[] = { 0x78, 0x65, 0x00, 0x01, 0x01, 0x00, 0x00 };
     FILE *file = fopen(archive_path, "wb");
     expect(file != NULL && fwrite(truncated, 1u, sizeof(truncated), file) == sizeof(truncated) &&
                fclose(file) == 0, "the malformed XB fixture was written");
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_FAILED,
            "a malformed archive fails the production data route closed");
     expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_FAILED,
            "the malformed archive leaves no READY index");
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
-    DeleteFileA(archive_path);
-    RemoveDirectoryA(root);
+    nk_remove_utf8(archive_path);
+    rmdir(root);
 }
 
 static void test_direct_xb_many_members_skip_loose_walk(void) {
@@ -9872,8 +10093,8 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     sr_hle_init();
     expect(hle_scratch_root(scratch, sizeof(scratch)), "the large XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\archive_vfs_many_%lu", scratch,
-              (unsigned long)GetCurrentProcessId());
+    snprintf(root, sizeof(root), "%s/archive_vfs_many_%lu", scratch,
+              (unsigned long)getpid());
     expect(hle_make_directory(root), "the large XB fixture root was created");
     HleXbEntry *entries = (HleXbEntry *)calloc(count, sizeof(*entries));
     char (*paths)[32] = (char (*)[32])calloc(count, sizeof(*paths));
@@ -9881,17 +10102,17 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     expect(entries != NULL && paths != NULL, "large XB fixture allocation succeeded");
     char data_dir[MAX_PATH];
     char gen_dir[MAX_PATH];
-    _snprintf(data_dir, sizeof(data_dir), "%s\\data", root);
-    _snprintf(gen_dir, sizeof(gen_dir), "%s\\gen", data_dir);
+    snprintf(data_dir, sizeof(data_dir), "%s/data", root);
+    snprintf(gen_dir, sizeof(gen_dir), "%s/gen", data_dir);
     expect(hle_make_directory(data_dir) && hle_make_directory(gen_dir),
            "the loose baseline directories were created");
     for (size_t i = 0; i < count; i++) {
-        _snprintf(paths[i], sizeof(paths[i]), "data/gen/file%04zu.bin", i);
+        snprintf(paths[i], sizeof(paths[i]), "data/gen/file%04zu.bin", i);
         entries[i].path = paths[i];
         entries[i].data = &byte;
         entries[i].size = 1u;
         char loose_path[MAX_PATH];
-        _snprintf(loose_path, sizeof(loose_path), "%s\\%s", root, paths[i]);
+        snprintf(loose_path, sizeof(loose_path), "%s/%s", root, paths[i]);
         FILE *file = fopen(loose_path, "wb");
         expect(file != NULL, "the loose baseline member was created");
         if (file) {
@@ -9900,11 +10121,11 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
         }
     }
 
-    SetEnvironmentVariableA("SR_DATAROOT", root);
+    hle_test_setenv("SR_DATAROOT", root);
     sr_hle_test_data_reset(0);
-    ULONGLONG loose_started = GetTickCount64();
+    uint64_t loose_started = SDL_GetTicks();
     int loose_state = sr_host_data_prepare();
-    ULONGLONG loose_elapsed = GetTickCount64() - loose_started;
+    uint64_t loose_elapsed = SDL_GetTicks() - loose_started;
     expect(loose_state == SR_DATA_TEST_STATE_READY, "the loose baseline reaches READY");
     expect(sr_hle_test_data_entry_count() == count, "the loose baseline indexes every member");
     fprintf(stderr, "[ARCHIVE_VFS] loose baseline indexed %zu members in %llu ms; directory walks=%lu\n",
@@ -9912,31 +10133,31 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
 
     for (size_t i = 0; i < count; i++) {
         char loose_path[MAX_PATH];
-        _snprintf(loose_path, sizeof(loose_path), "%s\\%s", root, paths[i]);
-        DeleteFileA(loose_path);
+        snprintf(loose_path, sizeof(loose_path), "%s/%s", root, paths[i]);
+        nk_remove_utf8(loose_path);
     }
-    RemoveDirectoryA(gen_dir);
-    RemoveDirectoryA(data_dir);
+    rmdir(gen_dir);
+    rmdir(data_dir);
 
     char archive_path[MAX_PATH];
-    _snprintf(archive_path, sizeof(archive_path), "%s\\many.xb", root);
+    snprintf(archive_path, sizeof(archive_path), "%s/many.xb", root);
     expect(hle_xb_write(archive_path, entries, count), "the large synthetic XB archive was written");
     free(entries);
     free(paths);
     sr_hle_test_data_reset(0);
-    ULONGLONG archive_started = GetTickCount64();
+    uint64_t archive_started = SDL_GetTicks();
     int archive_state = sr_host_data_prepare();
-    ULONGLONG archive_elapsed = GetTickCount64() - archive_started;
+    uint64_t archive_elapsed = SDL_GetTicks() - archive_started;
     expect(archive_state == SR_DATA_TEST_STATE_READY, "the large synthetic archive reaches READY");
     expect(sr_hle_test_data_entry_count() == count, "the large archive index has every member");
     expect(sr_hle_test_data_walk_calls() <= 2ul,
            "large archive indexing does not walk one host directory per member");
     fprintf(stderr, "[ARCHIVE_VFS] startup indexed %zu members in %llu ms; directory walks=%lu\n",
             count, (unsigned long long)archive_elapsed, sr_hle_test_data_walk_calls());
-    SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    hle_test_setenv("SR_DATAROOT", NULL);
     sr_hle_test_data_reset(0);
-    DeleteFileA(archive_path);
-    RemoveDirectoryA(root);
+    nk_remove_utf8(archive_path);
+    rmdir(root);
 }
 
 enum {
@@ -9958,7 +10179,7 @@ static int host_data_bench_dir(const char *base, size_t bucket, char *path,
     size_t used = (size_t)snprintf(path, capacity, "%s", base);
     if (used >= capacity) return 0;
     unsigned depth = 1u + (unsigned)(bucket % 4u);
-    int written = snprintf(path + used, capacity - used, "\\Pack%03zu.XB%u.D",
+    int written = snprintf(path + used, capacity - used, "/Pack%03zu.XB%u.D",
                            bucket, (unsigned)(bucket % 3u));
     if (written < 0 || (size_t)written >= capacity - used) return 0;
     used += (size_t)written;
@@ -9973,7 +10194,7 @@ static int host_data_bench_dir(const char *base, size_t bucket, char *path,
     };
     static const char *const names[] = { "Group", "Scope", "Cell" };
     for (unsigned level = 1; level < depth; level++) {
-        written = snprintf(path + used, capacity - used, "\\%s%03u",
+        written = snprintf(path + used, capacity - used, "/%s%03u",
                            names[level - 1u], components[level - 1u]);
         if (written < 0 || (size_t)written >= capacity - used) return 0;
         used += (size_t)written;
@@ -9996,7 +10217,7 @@ static int host_data_bench_write_files(const char *base, size_t count,
     for (size_t i = 0; i < count; i++) {
         if (!host_data_bench_dir(base, i % 80u, directory,
                                  sizeof(directory), 0, dirs_created)) return 0;
-        int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
+        int written = snprintf(path, sizeof(path), "%s/%c%05zu.DaTa",
                               directory, prefix, i);
         if (written < 0 || (size_t)written >= sizeof(path)) return 0;
         FILE *file = fopen(path, "wb");
@@ -10010,28 +10231,7 @@ static int host_data_bench_write_files(const char *base, size_t count,
 
 static void host_data_bench_remove_tree(const char *root) {
     if (!root || !root[0]) return;
-    char pattern[MAX_PATH];
-    int pattern_size = snprintf(pattern, sizeof(pattern), "%s\\*", root);
-    if (pattern_size < 0 || (size_t)pattern_size >= sizeof(pattern)) return;
-    WIN32_FIND_DATAA data;
-    HANDLE handle = FindFirstFileA(pattern, &data);
-    if (handle != INVALID_HANDLE_VALUE) {
-        do {
-            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0)
-                continue;
-            char child[MAX_PATH];
-            int child_size = snprintf(child, sizeof(child), "%s\\%s", root, data.cFileName);
-            if (child_size < 0 || (size_t)child_size >= sizeof(child)) continue;
-            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                host_data_bench_remove_tree(child);
-                RemoveDirectoryA(child);
-            } else {
-                DeleteFileA(child);
-            }
-        } while (FindNextFileA(handle, &data));
-        FindClose(handle);
-    }
-    RemoveDirectoryA(root);
+    (void)nk_platform_remove_tree(root, NULL);
 }
 
 static int host_data_bench_make_tree(const char *root, size_t total_files,
@@ -10039,11 +10239,11 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
                                      size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
-    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\primary", root);
+    int n = snprintf(dataroot, dataroot_capacity, "%s/USRDIR/primary", root);
     if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
-    n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
+    n = snprintf(usrdir, sizeof(usrdir), "%s/USRDIR", root);
     if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
-    n = snprintf(loose, sizeof(loose), "%s\\data", usrdir);
+    n = snprintf(loose, sizeof(loose), "%s/data", usrdir);
     if (n < 0 || (size_t)n >= sizeof(loose) ||
         !hle_make_directory(root) || !hle_make_directory(usrdir) ||
         !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
@@ -10095,9 +10295,9 @@ static void test_host_data_scan_scaling(void) {
         char dataroot[MAX_PATH];
         size_t dirs_created = 0;
         root[0] = '\0';
-        int n = snprintf(root, sizeof(root), "%s\\host_data_scan_%lu_%llu",
-                         scratch, (unsigned long)GetCurrentProcessId(),
-                         (unsigned long long)GetTickCount64());
+        int n = snprintf(root, sizeof(root), "%s/host_data_scan_%lu_%llu",
+                         scratch, (unsigned long)getpid(),
+                         (unsigned long long)SDL_GetTicks());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
             host_data_bench_make_tree(root, counts[sample], dataroot,
@@ -10108,7 +10308,7 @@ static void test_host_data_scan_scaling(void) {
             continue;
         }
         char loose_root[MAX_PATH], loose_binding[MAX_PATH + 32];
-        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s\\USRDIR", root);
+        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s/USRDIR", root);
         int loose_binding_len = loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root)
             ? snprintf(loose_binding, sizeof(loose_binding), "%s\t\t10\n", loose_root) : -1;
         expect(loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root) &&
@@ -10118,12 +10318,12 @@ static void test_host_data_scan_scaling(void) {
             host_data_bench_remove_tree(root);
             continue;
         }
-        SetEnvironmentVariableA("SR_DATAROOT", dataroot);
-        SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", loose_binding);
+        hle_test_setenv("SR_DATAROOT", dataroot);
+        hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose_binding);
         sr_hle_test_data_reset(0);
-        ULONGLONG started = GetTickCount64();
+        uint64_t started = SDL_GetTicks();
         int state = sr_host_data_prepare();
-        elapsed_ms[sample] = GetTickCount64() - started;
+        elapsed_ms[sample] = SDL_GetTicks() - started;
         expect(state == SR_DATA_TEST_STATE_READY,
                "the synthetic prepared-tree route reaches READY");
         expect(sr_hle_test_data_entry_count() == counts[sample],
@@ -10146,7 +10346,7 @@ static void test_host_data_scan_scaling(void) {
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_FINALIZE),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_VALIDATE),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PUBLISH));
-        SetEnvironmentVariableA("SR_DATAROOT", NULL);
+        hle_test_setenv("SR_DATAROOT", NULL);
         sr_hle_test_data_reset(0);
         host_data_bench_remove_tree(root);
     }
@@ -10181,30 +10381,30 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     char scratch[MAX_PATH];
     if (!fixture || !hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(fixture->root, sizeof(fixture->root), "%s\\archive_route_%lu_%llu",
-              scratch, (unsigned long)GetCurrentProcessId(),
-              (unsigned long long)GetTickCount64());
-    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
+    snprintf(fixture->root, sizeof(fixture->root), "%s/archive_route_%lu_%llu",
+              scratch, (unsigned long)getpid(),
+              (unsigned long long)SDL_GetTicks());
+    snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s/USRDIR/primary",
              fixture->root);
-    _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
-              "%s\\" "USRDIR\t\t0\t1\t0\n", fixture->root);
-    _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
-    _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
-    _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
-    _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
+    snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
+              "%s/" "USRDIR\t\t0\t1\t0\n", fixture->root);
+    snprintf(fixture->memstick, sizeof(fixture->memstick), "%s/memstick", fixture->root);
+    snprintf(fixture->legacy, sizeof(fixture->legacy), "%s/legacy", fixture->root);
+    snprintf(fixture->archive, sizeof(fixture->archive), "%s/assets.xb", fixture->dataroot);
+    snprintf(fixture->hidden, sizeof(fixture->hidden), "%s/assets.xb.hidden", fixture->dataroot);
 
     static const char *const dirs[] = {
-        "", "\\USRDIR", "\\USRDIR\\primary",
-        "\\USRDIR\\primary\\data", "\\USRDIR\\primary\\data\\menu",
-        "\\USRDIR\\data", "\\USRDIR\\data\\menu",
-        "\\USRDIR\\packed_archives", "\\USRDIR\\module",
-        "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
-        "\\memstick", "\\legacy"
+        "", "/USRDIR", "/USRDIR/primary",
+        "/USRDIR/primary/data", "/USRDIR/primary/data/menu",
+        "/USRDIR/data", "/USRDIR/data/menu",
+        "/USRDIR/packed_archives", "/USRDIR/module",
+        "/USRDIR/PSP", "/USRDIR/PSP/SAVEDATA",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA",
+        "/memstick", "/legacy"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
         if (!hle_make_directory(path)) return 0;
     }
 
@@ -10221,16 +10421,16 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
         const char *relative;
         const char *body;
     } loose_files[] = {
-        { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
-        { "\\USRDIR\\data\\menu\\archived.to", "loose-over-archive-route" },
-        { "\\USRDIR\\primary\\data\\menu\\loose.to", "primary-route" },
-        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" },
-        { "\\USRDIR\\packed_archives\\packed.xb", "packed-archive" },
-        { "\\USRDIR\\module\\start.prx", "module-file" }
+        { "/USRDIR/data/menu/loose.to", "loose-route" },
+        { "/USRDIR/data/menu/archived.to", "loose-over-archive-route" },
+        { "/USRDIR/primary/data/menu/loose.to", "primary-route" },
+        { "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL", "savedata-route" },
+        { "/USRDIR/packed_archives/packed.xb", "packed-archive" },
+        { "/USRDIR/module/start.prx", "module-file" }
     };
     for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, loose_files[i].relative);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, loose_files[i].relative);
         FILE *file = fopen(path, "wb");
         if (!file) return 0;
         size_t size = strlen(loose_files[i].body);
@@ -10244,45 +10444,45 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
 static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
     if (!fixture) return;
     static const char *const files[] = {
-        "\\USRDIR\\primary\\assets.xb",
-        "\\USRDIR\\primary\\assets.xb.hidden",
-        "\\USRDIR\\primary\\data\\menu\\loose.to",
-        "\\USRDIR\\data\\menu\\loose.to",
-        "\\USRDIR\\data\\menu\\archived.to",
-        "\\USRDIR\\data\\dupe.to",
-        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL",
-        "\\USRDIR\\packed_archives\\packed.xb",
-        "\\USRDIR\\module\\start.prx"
+        "/USRDIR/primary/assets.xb",
+        "/USRDIR/primary/assets.xb.hidden",
+        "/USRDIR/primary/data/menu/loose.to",
+        "/USRDIR/data/menu/loose.to",
+        "/USRDIR/data/menu/archived.to",
+        "/USRDIR/data/dupe.to",
+        "/USRDIR/data/menu/collision.xb.d/DATA/DUPE.TO",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
+        "/USRDIR/packed_archives/packed.xb",
+        "/USRDIR/module/start.prx"
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, files[i]);
-        DeleteFileA(path);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, files[i]);
+        nk_remove_utf8(path);
     }
     static const char *const dirs[] = {
-        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA",
-        "\\USRDIR\\data\\menu\\collision.xb.d",
-        "\\USRDIR\\data\\menu",
-        "\\USRDIR\\packed_archives",
-        "\\USRDIR\\module",
-        "\\USRDIR\\data",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
-        "\\USRDIR\\PSP\\SAVEDATA",
-        "\\USRDIR\\PSP",
-        "\\USRDIR\\primary\\data\\menu",
-        "\\USRDIR\\primary\\data",
-        "\\USRDIR\\primary",
-        "\\USRDIR",
-        "\\memstick",
-        "\\legacy"
+        "/USRDIR/data/menu/collision.xb.d/DATA",
+        "/USRDIR/data/menu/collision.xb.d",
+        "/USRDIR/data/menu",
+        "/USRDIR/packed_archives",
+        "/USRDIR/module",
+        "/USRDIR/data",
+        "/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA",
+        "/USRDIR/PSP/SAVEDATA",
+        "/USRDIR/PSP",
+        "/USRDIR/primary/data/menu",
+        "/USRDIR/primary/data",
+        "/USRDIR/primary",
+        "/USRDIR",
+        "/memstick",
+        "/legacy"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char path[MAX_PATH];
-        _snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
-        RemoveDirectoryA(path);
+        snprintf(path, sizeof(path), "%s%s", fixture->root, dirs[i]);
+        rmdir(path);
     }
-    RemoveDirectoryA(fixture->root);
+    rmdir(fixture->root);
 }
 
 static char *hle_archive_route_env_copy(const char *value) {
@@ -10294,8 +10494,7 @@ static char *hle_archive_route_env_copy(const char *value) {
 }
 
 static void hle_archive_route_set_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");
+    hle_test_setenv(name, value);
 }
 
 static uint32_t hle_archive_route_open_result(const char *path) {
@@ -10358,9 +10557,9 @@ static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd) {
     *saved_fd = -1;
     if (!*capture) return 0;
     fflush(stderr);
-    *saved_fd = _dup(_fileno(stderr));
-    if (*saved_fd < 0 || _dup2(_fileno(*capture), _fileno(stderr)) < 0) {
-        if (*saved_fd >= 0) _close(*saved_fd);
+    *saved_fd = dup(fileno(stderr));
+    if (*saved_fd < 0 || dup2(fileno(*capture), fileno(stderr)) < 0) {
+        if (*saved_fd >= 0) close(*saved_fd);
         *saved_fd = -1;
         fclose(*capture);
         *capture = NULL;
@@ -10378,8 +10577,8 @@ static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
     output[length] = '\0';
     clearerr(capture);
     if (saved_fd >= 0) {
-        _dup2(saved_fd, _fileno(stderr));
-        _close(saved_fd);
+        dup2(saved_fd, fileno(stderr));
+        close(saved_fd);
     }
     fclose(capture);
     return length;
@@ -10439,7 +10638,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
     unsigned long long migration_scan_names = 0u;
     unsigned long long migration_scan_probes = 0u;
     unsigned long migration_walk_calls = 0ul;
-    int moved = MoveFileA(fixture.archive, fixture.hidden);
+    int moved = nk_rename_utf8(fixture.archive, fixture.hidden) == 0;
     expect(moved != 0, "the archive is hidden for the loose-mode comparison");
     if (moved) {
         sr_hle_test_data_reset(0);
@@ -10458,7 +10657,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
         }
     }
 
-    int restored = MoveFileA(fixture.hidden, fixture.archive);
+    int restored = nk_rename_utf8(fixture.hidden, fixture.archive) == 0;
     expect(restored != 0, "the archive is restored for archive-mode comparison");
     if (restored) {
         sr_hle_test_data_reset(0);
@@ -10524,7 +10723,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
 
     char filtered_roots[MAX_PATH + 96];
     int filtered_len = snprintf(filtered_roots, sizeof(filtered_roots),
-        "%s\\" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
+        "%s/" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
     expect(filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots),
            "the two-exclusion manifest transport fits its bounded environment field");
     if (filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots)) {
@@ -10552,13 +10751,13 @@ static void test_archive_mode_preserves_loose_routes(void) {
     char duplicate_alias_path[MAX_PATH];
     int duplicate_paths_ok =
         snprintf(duplicate_directory, sizeof(duplicate_directory),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d", fixture.root) > 0 &&
+                 "%s/USRDIR/data/menu/collision.xb.d", fixture.root) > 0 &&
         snprintf(duplicate_data_directory, sizeof(duplicate_data_directory),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA", fixture.root) > 0 &&
+                 "%s/USRDIR/data/menu/collision.xb.d/DATA", fixture.root) > 0 &&
         snprintf(duplicate_path, sizeof(duplicate_path),
-                 "%s\\USRDIR\\data\\dupe.to", fixture.root) > 0 &&
+                 "%s/USRDIR/data/dupe.to", fixture.root) > 0 &&
         snprintf(duplicate_alias_path, sizeof(duplicate_alias_path),
-                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+                 "%s/USRDIR/data/menu/collision.xb.d/DATA/DUPE.TO",
                  fixture.root) > 0;
     if (duplicate_paths_ok) {
         duplicate_paths_ok = hle_make_directory(duplicate_directory) &&
@@ -10619,33 +10818,32 @@ static void test_archive_mode_preserves_loose_routes(void) {
 static int prewarm_make_fixture(int with_asset) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\data_prewarm_%lu",
-             scratch, (unsigned long)GetCurrentProcessId());
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s/data_prewarm_%lu",
+             scratch, (unsigned long)getpid());
     /* A stale fixture from an earlier run must not inflate the counts. */
     char clean_root[MAX_PATH];
     snprintf(clean_root, sizeof clean_root, "\\\\?\\%s", s_prewarm_root);
     /* Best-effort removal of a previous run's deepest file only. */
     {
         char old_file[MAX_PATH];
-        snprintf(old_file, sizeof old_file, "\\\\?\\%s\\data\\menu\\text\\common.to",
-                 s_prewarm_root);
-        DeleteFileA(old_file);
+        snprintf(old_file, sizeof old_file, "%s/data/menu/text/common.to", s_prewarm_root);
+        nk_remove_utf8(old_file);
     }
     (void)clean_root;
     char dir[MAX_PATH];
-    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
-    if (!(CreateDirectoryA(s_prewarm_root, NULL) || GetLastError() == ERROR_ALREADY_EXISTS))
+    snprintf(dir, sizeof dir, "%s/data/menu/text", s_prewarm_root);
+    if (!nk_platform_mkdir_p(s_prewarm_root))
         return 0;
-    snprintf(dir, sizeof dir, "%s\\data", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
-    snprintf(dir, sizeof dir, "%s\\data\\menu", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
-    snprintf(dir, sizeof dir, "%s\\data\\menu\\text", s_prewarm_root);
-    CreateDirectoryA(dir, NULL);
+    snprintf(dir, sizeof dir, "%s/data", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
+    snprintf(dir, sizeof dir, "%s/data/menu", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
+    snprintf(dir, sizeof dir, "%s/data/menu/text", s_prewarm_root);
+    nk_platform_mkdir_p(dir);
     if (with_asset) {
         char file[MAX_PATH];
-        snprintf(file, sizeof file, "%s\\common.to", dir);
+        snprintf(file, sizeof file, "%s/common.to", dir);
         FILE *f = fopen(file, "wb");
         if (!f) return 0;
         fputs("common", f);
@@ -10680,7 +10878,7 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(0);
 
     expect(sr_hle_test_data_state() == SR_DATA_TEST_STATE_UNINITIALIZED,
@@ -10714,9 +10912,9 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
     if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
-    SetEnvironmentVariableA("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    CreateDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs", NULL);
+    hle_test_setenv("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     static const uint32_t dir_path_addr = 0x09101000u;
     static const uint32_t dirent_addr = 0x09102000u;
     static const char dir_path[] = "disc0:/data/menu/text";
@@ -10750,8 +10948,8 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     cpu.r[4] = dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the full disc0 indexed directory descriptor closes cleanly");
-    SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
-    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    hle_test_setenv("SR_FSDIR", old_fs ? old_fs : NULL);
+    rmdir(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     free(old_fs);
 
     prewarm_env_restore();
@@ -10765,7 +10963,7 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(0);
     sr_hle_test_data_mark_guest_start();
 
@@ -10790,36 +10988,36 @@ static char s_disc_route_root[MAX_PATH];
 static int disc_route_make_fixture(void) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
-    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
     snprintf(s_disc_route_root, sizeof s_disc_route_root,
-             "%s\\disc_route_%lu", scratch, (unsigned long)GetCurrentProcessId());
+             "%s/disc_route_%lu", scratch, (unsigned long)getpid());
 
-    /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
-     * fixture cannot depend on an earlier test having left a parent behind. */
+    /* Every intermediate is listed so the fixture cannot depend on an earlier test
+     * having left a parent behind. */
     static const char *const dirs[] = {
-        "", "\\USRDIR",
-        "\\USRDIR\\primary",
-        "\\USRDIR\\primary\\menu",
-        "\\USRDIR\\primary\\menu\\a.xb0.d",
-        "\\USRDIR\\primary\\menu\\a.xb0.d\\data",
-        "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu",
-        "\\USRDIR\\root_a",
-        "\\USRDIR\\root_a\\sound",
-        "\\USRDIR\\root_a\\sound\\bgm",
-        "\\USRDIR\\root_b",
-        "\\USRDIR\\root_b\\sound",
-        "\\USRDIR\\root_b\\sound\\bgm"
+        "", "/USRDIR",
+        "/USRDIR/primary",
+        "/USRDIR/primary/menu",
+        "/USRDIR/primary/menu/a.xb0.d",
+        "/USRDIR/primary/menu/a.xb0.d/data",
+        "/USRDIR/primary/menu/a.xb0.d/data/menu",
+        "/USRDIR/root_a",
+        "/USRDIR/root_a/sound",
+        "/USRDIR/root_a/sound/bgm",
+        "/USRDIR/root_b",
+        "/USRDIR/root_b/sound",
+        "/USRDIR/root_b/sound/bgm"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char dir[MAX_PATH];
         snprintf(dir, sizeof dir, "%s%s", s_disc_route_root, dirs[i]);
-        if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
+        if (!nk_platform_mkdir_p(dir)) return 0;
     }
     static const struct { const char *rel; const char *body; } files[] = {
-        { "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
-        { "\\USRDIR\\root_a\\sound\\bgm\\bgm_title.sgb", "first-root" },
-        { "\\USRDIR\\root_b\\sound\\bgm\\bgm_title.sgb", "second-root" },
-        { "\\USRDIR\\root_b\\sound\\bgm\\only_second.bin", "second-only" }
+        { "/USRDIR/primary/menu/a.xb0.d/data/menu/archived.to", "archived" },
+        { "/USRDIR/root_a/sound/bgm/bgm_title.sgb", "first-root" },
+        { "/USRDIR/root_b/sound/bgm/bgm_title.sgb", "second-root" },
+        { "/USRDIR/root_b/sound/bgm/only_second.bin", "second-only" }
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char file[MAX_PATH];
@@ -10850,13 +11048,13 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
 
     char dataroot[MAX_PATH];
     char root_a[MAX_PATH], root_b[MAX_PATH], serialized_roots[MAX_PATH * 5];
-    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\primary", s_disc_route_root);
-    snprintf(root_a, sizeof root_a, "%s\\USRDIR\\root_a", s_disc_route_root);
-    snprintf(root_b, sizeof root_b, "%s\\USRDIR\\root_b", s_disc_route_root);
+    snprintf(dataroot, sizeof dataroot, "%s/USRDIR/primary", s_disc_route_root);
+    snprintf(root_a, sizeof root_a, "%s/USRDIR/root_a", s_disc_route_root);
+    snprintf(root_b, sizeof root_b, "%s/USRDIR/root_b", s_disc_route_root);
     snprintf(serialized_roots, sizeof serialized_roots,
              "%s\tdata\t10\n%s\tdata\t20\n", root_a, root_b);
-    SetEnvironmentVariableA("SR_DATAROOT", dataroot);
-    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
     sr_hle_test_data_reset(0);
 
     int state = sr_host_data_prepare();
@@ -10949,21 +11147,21 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
     char scratch[MAX_PATH];
     if (!hle_scratch_root(scratch, sizeof(scratch))) root_ok = 0;
     if (root_ok) {
-        int length = snprintf(root, sizeof(root), "%s\\primary_archive_dupes_%lu_%llu",
-                              scratch, (unsigned long)GetCurrentProcessId(),
-                              (unsigned long long)GetTickCount64());
+        int length = snprintf(root, sizeof(root), "%s/primary_archive_dupes_%lu_%llu",
+                              scratch, (unsigned long)getpid(),
+                              (unsigned long long)SDL_GetTicks());
         root_ok = length >= 0 && (size_t)length < sizeof(root);
     }
     if (root_ok) {
-        int length = snprintf(dataroot, sizeof(dataroot), "%s\\primary", root);
+        int length = snprintf(dataroot, sizeof(dataroot), "%s/primary", root);
         root_ok = length >= 0 && (size_t)length < sizeof(dataroot) &&
                   hle_make_directory(root) && hle_make_directory(dataroot);
     }
 
     static const char *const directories[] = {
-        "\\primary\\zeta", "\\primary\\zeta\\z.xb.d",
-        "\\primary\\zeta\\z.xb.d\\data", "\\primary\\alpha",
-        "\\primary\\alpha\\a.xb.d", "\\primary\\alpha\\a.xb.d\\data"
+        "/primary/zeta", "/primary/zeta/z.xb.d",
+        "/primary/zeta/z.xb.d/data", "/primary/alpha",
+        "/primary/alpha/a.xb.d", "/primary/alpha/a.xb.d/data"
     };
     for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]) && root_ok; i++) {
         char path[MAX_PATH];
@@ -10972,13 +11170,13 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
     }
     if (root_ok) {
         root_ok = host_data_duplicate_write_file(root,
-                    "\\primary\\zeta\\z.xb.d\\data\\identical.bin", "same-copy") &&
+                    "/primary/zeta/z.xb.d/data/identical.bin", "same-copy") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\alpha\\a.xb.d\\data\\identical.bin", "same-copy") &&
+                    "/primary/alpha/a.xb.d/data/identical.bin", "same-copy") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\zeta\\z.xb.d\\data\\different.bin", "zeta-loses") &&
+                    "/primary/zeta/z.xb.d/data/different.bin", "zeta-loses") &&
                   host_data_duplicate_write_file(root,
-                    "\\primary\\alpha\\a.xb.d\\data\\different.bin", "alpha-wins");
+                    "/primary/alpha/a.xb.d/data/different.bin", "alpha-wins");
     }
     expect(root_ok, "the synthetic primary extracted-archive duplicate tree was created");
 
@@ -10996,10 +11194,10 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
                "the bytewise-first extracted archive matches the origin/main winner");
 
         char direct_directory[MAX_PATH];
-        int length = snprintf(direct_directory, sizeof(direct_directory), "%s\\data", dataroot);
+        int length = snprintf(direct_directory, sizeof(direct_directory), "%s/data", dataroot);
         int direct_ok = length >= 0 && (size_t)length < sizeof(direct_directory) &&
                         hle_make_directory(direct_directory) &&
-                        host_data_duplicate_write_file(dataroot, "\\data\\identical.bin",
+                        host_data_duplicate_write_file(dataroot, "/data/identical.bin",
                                                        "direct-copy");
         expect(direct_ok, "the primary-root ambiguity fixture was added");
         if (direct_ok) {
@@ -11040,7 +11238,7 @@ static void test_slow_enumeration_completes_before_guest_start(void) {
     reset_fixture();
     sr_hle_init();
     expect(prewarm_make_fixture(1), "the source-owned data fixture was created");
-    SetEnvironmentVariableA("SR_DATAROOT", s_prewarm_root);
+    hle_test_setenv("SR_DATAROOT", s_prewarm_root);
     sr_hle_test_data_reset(20 /* ms per directory */);
 
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
@@ -11089,9 +11287,9 @@ static void test_missing_root_fails_once_and_stays_failed(void) {
     reset_fixture();
     sr_hle_init();
     char missing[MAX_PATH];
-    snprintf(missing, sizeof missing, "%s\\absent\\data_prewarm_missing_%lu",
-             s_prewarm_root, (unsigned long)GetCurrentProcessId());
-    SetEnvironmentVariableA("SR_DATAROOT", missing);
+    snprintf(missing, sizeof missing, "%s/absent/data_prewarm_missing_%lu",
+             s_prewarm_root, (unsigned long)getpid());
+    hle_test_setenv("SR_DATAROOT", missing);
     sr_hle_test_data_reset(0);
 
     expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_FAILED,
@@ -11200,7 +11398,7 @@ static void test_display_capture_arms_on_latched_flip(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
     /* The policy reads SR_FBSNAP once and caches it, so arm it before the first flip. */
-    _putenv_s("SR_FBSNAP", "1");
+    hle_test_setenv("SR_FBSNAP", "1");
 
     /* With no presenter a flip is never shown, so nothing may be armed for it. */
     s_cap_arm_calls = 0;
@@ -11242,7 +11440,7 @@ static void test_display_capture_arms_on_latched_flip(void) {
            "an arm no presenter serviced is resolved before the immediate flip returns");
 
     s_test_gui_on = 0;
-    _putenv_s("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBSNAP", "");
 }
 
 /* Immediate flip at the next vblank; returns how many captures the policy armed for it and
@@ -11272,12 +11470,12 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     sr_hle_init();
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    _putenv_s("SR_FBSNAP", "");
-    _putenv_s("SR_FBDUMP", "");
+    hle_test_setenv("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBDUMP", "");
     uint32_t first = sr_syscall(&cpu, NID_DISPLAY_GET_VCOUNT) + 2u;
     char window[32], expected[32];
     snprintf(window, sizeof window, "%u-%u", (unsigned)first, (unsigned)(first + 1u));
-    _putenv_s("SR_FBSNAP_WINDOWS", window);
+    hle_test_setenv("SR_FBSNAP_WINDOWS", window);
     sr_fbcap_test_reset_config();
     s_cap_arm_accept = 0;
     s_test_gui_on = 1;
@@ -11294,8 +11492,8 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     }
 
     snprintf(window, sizeof window, "%u-%u", (unsigned)(first + 4u), (unsigned)(first + 5u));
-    _putenv_s("SR_FBSNAP_WINDOWS", window);
-    _putenv_s("SR_FBSNAP", "0");
+    hle_test_setenv("SR_FBSNAP_WINDOWS", window);
+    hle_test_setenv("SR_FBSNAP", "0");
     sr_fbcap_test_reset_config();
     for (int i = 0; i < 4; i++) {
         uint32_t v = 0;
@@ -11303,8 +11501,8 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
                "an explicit SR_FBSNAP=0 keeps FBSNAP off even inside a window");
     }
 
-    _putenv_s("SR_FBSNAP", "");
-    _putenv_s("SR_FBSNAP_WINDOWS", "");
+    hle_test_setenv("SR_FBSNAP", "");
+    hle_test_setenv("SR_FBSNAP_WINDOWS", "");
     s_cap_arm_accept = 1;
     s_test_gui_on = 0;
     sr_fbcap_test_reset_config();
@@ -14888,6 +15086,181 @@ static void test_refer_thread_status(void) {
            "ReferThreadStatus validates the complete output structure span");
 }
 
+/* -------------------------------------------------------------------------
+ * sceKernelGetThreadStackFreeSize (#1388)
+ * -------------------------------------------------------------------------
+ * The cells of the public PSPAutotests tests/threads/threads/stackfree.c and
+ * stackfree.expected (hrydgard/pspautotests e821a1ba), entered through sr_syscall from
+ * guest bodies that the real scheduler runs: the caller by UID 0 and by its own UID,
+ * another thread's own stack (created, ready, suspended, finished), a 0xFF creation fill
+ * that 0xFF writes leave intact and 0x00 writes consume, a NO_FILLSTACK thread answering
+ * 0, and UNKNOWN_THID for -1, an invalid UID and a deleted thread.  Counting starts 0x10
+ * bytes above a stack's low end (see sched_thread_stack_free_size).
+ * ------------------------------------------------------------------------- */
+#define SFS_NID_GET_STACK_FREE 0x52089ca1u
+#define SFS_MAIN_ENTRY         0x08a30000u
+#define SFS_WORKER_ENTRY       0x08a30080u
+#define SFS_IDLE_ENTRY         0x08a30100u
+#define SFS_ARG_ADDR           0x08303000u
+#define SFS_SKIP               0x10u
+#define SFS_UNKNOWN_THID       0x80020198u
+#define SFS_ATTR_NO_FILLSTACK  0x00100000u   /* PSPSDK PSP_THREAD_ATTR_NO_FILLSTACK */
+
+static struct {
+    int main_done;
+    int worker_ran;
+    uint32_t worker_sp;
+    uint32_t worker_free_untouched;
+    uint32_t worker_free_used;
+} s_sfs;
+
+static uint32_t sfs_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2,
+                         uint32_t t0) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = 0x1000u;   /* stack size, read only by CreateThread */
+    cpu->r[8] = t0;        /* attribute, the fifth argument: read only by CreateThread */
+    return sr_syscall(cpu, nid);
+}
+
+static uint32_t sfs_free(CpuState *cpu, uint32_t uid) {
+    return sfs_call(cpu, SFS_NID_GET_STACK_FREE, uid, 0u, 0u, 0u);
+}
+
+static void sfs_fill(uint32_t lo, uint32_t hi, uint8_t value) {
+    for (uint32_t a = lo; a < hi; a++) MEM_W8(a, value);
+}
+
+static void sfs_idle_fn(CpuState *cpu) { cpu->r[2] = 0u; }
+
+/* A stronger thread started by the main body: it measures itself by UID 0 before and after
+ * using 0x100 bytes below its SP, then returns. */
+static void sfs_worker_fn(CpuState *cpu) {
+    s_sfs.worker_ran = 1;
+    s_sfs.worker_sp = cpu->r[29];
+    s_sfs.worker_free_untouched = sfs_free(cpu, 0u);
+    sfs_fill(s_sfs.worker_sp - 0x100u, s_sfs.worker_sp, 0x00u);
+    s_sfs.worker_free_used = sfs_free(cpu, 0u);
+    cpu->r[2] = 0u;
+}
+
+static void sfs_main_fn(CpuState *cpu) {
+    const uint32_t self_uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(self_uid);
+    const uint32_t sp = cpu->r[29];
+    expect(self && self->stack_size >= 0x1000u && sp > self->stack_base + 0x800u &&
+           sp <= self->stack_base + self->stack_size,
+           "stack free: the main thread runs on its own scheduler stack");
+    if (!self) return;
+    const uint32_t self_first = self->stack_base + SFS_SKIP;
+
+    /* The caller, by UID 0 and by its own UID ("Current thread" and "Current"). */
+    const uint32_t untouched = sfs_free(cpu, 0u);
+    expect(untouched == self->stack_base + self->stack_size - self_first,
+           "stack free: UID 0 counts the caller's untouched stack above its low 0x10 bytes");
+    expect(sfs_free(cpu, self_uid) == untouched,
+           "stack free: the caller's own UID answers what UID 0 answers");
+    sfs_fill(sp - 0x400u, sp, 0xffu);
+    expect(sfs_free(cpu, 0u) == untouched,
+           "stack free: 1 KiB of 0xFF written into the frame leaves the free size unchanged");
+    sfs_fill(sp - 0x400u, sp, 0x00u);
+    const uint32_t used = sfs_free(cpu, 0u);
+    expect(used == (sp - 0x400u) - self_first && used < untouched,
+           "stack free: 1 KiB of 0x00 below SP ends the free run where it starts");
+    expect(sfs_free(cpu, self_uid) == used,
+           "stack free: the caller's own UID sees the same used stack as UID 0");
+
+    /* Created, never started: its own stack, filled at creation ("Created"). */
+    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                      0x30u, 0u);
+    TCB *ct = tcb_by_uid(created);
+    expect(ct && ct->stack_size == 0x1000u && MEM_R8(ct->stack_base) == 0xffu &&
+           MEM_R8(ct->stack_base + ct->stack_size - 1u) == 0xffu,
+           "stack free: CreateThread fills the whole requested stack with 0xFF");
+    expect(ct && MEM_R32(ct->k0_init + 4u) == ct->k0_init + 0x10u,
+           "stack free: the fill leaves the runtime's k0/TLS block above the stack seeded");
+    expect(ct && sfs_free(cpu, created) == ct->stack_size - SFS_SKIP,
+           "stack free: a created thread answers its own untouched stack, not the caller's");
+
+    /* NO_FILLSTACK: nothing is filled and the free size is 0. */
+    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                     0x30u, SFS_ATTR_NO_FILLSTACK);
+    TCB *nt = tcb_by_uid(nofill);
+    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u &&
+           MEM_R8(nt->stack_base + nt->stack_size - 1u) == 0u,
+           "stack free: NO_FILLSTACK leaves the new stack as it was");
+    expect(nt && sfs_free(cpu, nofill) == 0u,
+           "stack free: a NO_FILLSTACK thread answers 0");
+
+    /* Ready, started with a 4-byte argument block, then suspended ("Ready", "Suspended"). */
+    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                    0x30u, 0u);
+    MEM_W32(SFS_ARG_ADDR, 0x01020304u);   /* no 0xFF byte in the copied argument */
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, ready, 4u, SFS_ARG_ADDR, 0u) == 0u,
+           "stack free: the weaker thread starts");
+    TCB *rt = tcb_by_uid(ready);
+    const uint32_t ready_free = sfs_free(cpu, ready);
+    expect(rt && rt->state == TH_READY && rt->argp != 0u && ready_free > 0x200u &&
+           ready_free == rt->argp - (rt->stack_base + SFS_SKIP),
+           "stack free: a ready thread's copied argument block ends its free run");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_SUSPEND_THREAD, ready, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, ready) == ready_free,
+           "stack free: a suspended thread answers its free size");
+
+    /* A stronger thread runs at StartThread, measures itself and finishes ("Finished"). */
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_WORKER_ENTRY,
+                                     0x10u, 0u);
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
+           "stack free: the stronger thread starts");
+    TCB *wt = tcb_by_uid(worker);
+    expect(s_sfs.worker_ran && wt && wt->state == TH_DORMANT,
+           "stack free: the stronger thread ran to its end at StartThread");
+    if (wt) {
+        const uint32_t worker_first = wt->stack_base + SFS_SKIP;
+        expect(s_sfs.worker_free_untouched == wt->stack_base + wt->stack_size - worker_first &&
+               s_sfs.worker_free_used == (s_sfs.worker_sp - 0x100u) - worker_first,
+               "stack free: UID 0 measures the calling worker's own stack");
+    }
+    expect(sfs_free(cpu, worker) == s_sfs.worker_free_used,
+           "stack free: a finished thread keeps the free size it measured itself");
+    expect(sfs_free(cpu, 0u) == used,
+           "stack free: another thread's stack use leaves the caller's free size unchanged");
+
+    /* -1, an invalid UID and a deleted thread ("-1", "Invalid", "Deleted"). */
+    expect(sfs_free(cpu, 0xffffffffu) == SFS_UNKNOWN_THID,
+           "stack free: UID -1 answers UNKNOWN_THID");
+    expect(sfs_free(cpu, 0xdeadbeefu) == SFS_UNKNOWN_THID,
+           "stack free: an invalid UID answers UNKNOWN_THID");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, created, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, created) == SFS_UNKNOWN_THID,
+           "stack free: a deleted thread answers UNKNOWN_THID");
+
+    (void)sfs_call(cpu, NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, ready, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, nofill, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, worker, 0u, 0u, 0u);
+    s_sfs.main_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void test_thread_stack_free_size_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    memset(&s_sfs, 0, sizeof s_sfs);
+    const int registered = sr_hle_test_is_registered(SFS_NID_GET_STACK_FREE);
+    expect(registered, "stack free: GetThreadStackFreeSize has its production registration");
+    if (!registered) return;
+    sr_test_register_guest_fn(SFS_MAIN_ENTRY, sfs_main_fn);
+    sr_test_register_guest_fn(SFS_WORKER_ENTRY, sfs_worker_fn);
+    sr_test_register_guest_fn(SFS_IDLE_ENTRY, sfs_idle_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(SFS_MAIN_ENTRY, 0u, 0u);
+    expect(s_sfs.main_done, "stack free: the main body ran to its end");
+    sr_test_guest_fn_reset();
+}
+
 static void test_change_current_thread_attr(void) {
     enum {
         NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
@@ -16310,6 +16683,74 @@ static void test_callback_check_pump_services_pending_in_slot_order(void) {
     sr_test_guest_fn_reset();
 }
 
+/* A player quit request (#1392) notifies the callback registered with
+ * sceKernelRegisterExitCallback once, through sr_callback_notify, and its body runs on the
+ * owner thread at the next callback-servicing point. A repeat request does not notify again;
+ * the request expires when SR_EXIT_REQUEST_WINDOW_US of guest time has passed without an
+ * exit; with no registered callback the player exits at once. */
+#define NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK 0x4ac57943u
+#define EXIT_REQUEST_WINDOW_US 5000000u   /* SR_EXIT_REQUEST_WINDOW_US in hle.c */
+
+static uint32_t exit_request_register(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK);
+}
+
+static void test_quit_request_notifies_registered_exit_callback(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+
+    TCB *owner = fixture_thread(0x3420u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    expect(sr_exit_request_quit() == 0 && !sr_exit_request_expired(),
+           "quit request: with no exit callback registered the player exits at once");
+
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u,
+           "quit request: the exit callback is registered through sceKernelRegisterExitCallback");
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "quit request: registering the exit callback notifies nothing");
+
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a registered exit callback keeps the player running for the guest");
+    expect(sr_thread_has_pending_callbacks(owner->uid) && s_wakeup_log_len == 0u,
+           "quit request: the owner's exit callback is pending, its body not run inline");
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a repeat request inside the window keeps waiting");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 1u,
+           "quit request: the owner's callback pump services the exit callback");
+    expect(s_wakeup_log_len == 1u && wakeup_log_is(0u, 1u, 0u, WAKEUP_FIRST_COMMON),
+           "quit request: the exit callback runs once (count 1, notify argument 0, its common "
+           "argument), a repeat request does not notify it again");
+
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(!sr_exit_request_expired() && sr_exit_request_quit() == 1,
+           "quit request: the window is still open one microsecond before it ends");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_expired() && sr_exit_request_quit() == 0,
+           "quit request: a guest that has not exited when the window ends is ended by the player");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 0u &&
+               s_wakeup_log_len == 1u,
+           "quit request: the expired request notified nothing more");
+
+    wakeup_delete_callback(cb);
+    sr_test_guest_fn_reset();
+    s_vtime_us = 0u;
+}
+
 static uint32_t memstick_check_callback(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -16675,14 +17116,13 @@ static void ctrl_drain(CpuState *cpu) {
 
 static void ctrl_env(const char *noinput, const char *pad,
                      const char *period, const char *width) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "SR_NOINPUT=%s", noinput);  _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PAD=%s", pad);          _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PADPERIOD=%s", period); _putenv(buf);
-    snprintf(buf, sizeof buf, "SR_PADWIDTH=%s", width);   _putenv(buf);
-    _putenv("SR_PADSTART=");
-    _putenv("SR_PADSCRIPT=");
-    _putenv("SR_INLOG=");
+    hle_test_setenv("SR_NOINPUT", noinput);
+    hle_test_setenv("SR_PAD", pad);
+    hle_test_setenv("SR_PADPERIOD", period);
+    hle_test_setenv("SR_PADWIDTH", width);
+    hle_test_setenv("SR_PADSTART", NULL);
+    hle_test_setenv("SR_PADSCRIPT", NULL);
+    hle_test_setenv("SR_INLOG", NULL);
 }
 
 /* The auto-START bootstrap pulse must stop once a human is seen driving on ANY
@@ -18729,6 +19169,113 @@ static void test_ge_guest_sentinel(void) {
     /* Purple rectangle is now rendered */
     expect(fb[60 * fb_stride + 60] == purple_color,
            "resumed list rendered purple rectangle to completion");
+}
+
+/* #1374: a blocking sceGeListSync / sceGeDrawSync on a stalled list waits until a
+ * producer thread advances the stall address (or a sceGeBreak(1) reset removes the
+ * list); the producer first sleeps longer than any one scheduler yield, so a sync
+ * that reports completion before the list completes is caught. */
+enum {
+    GSW_MAIN_ENTRY = 0x08a60000u,
+    GSW_PRODUCER_ENTRY = 0x08a60040u,
+    GSW_NAME = 0x08a60080u,
+    GSW_LIST = 0x08a61000u,
+    GSW_PRODUCER_DELAY_US = 5000u,
+};
+static uint32_t s_gsw_qid;
+static int s_gsw_reset;              /* producer resets the queue instead of advancing it */
+static unsigned s_gsw_producer_done;  /* producer finished advancing or resetting */
+static uint32_t s_gsw_list_rc, s_gsw_list_poll, s_gsw_draw_rc, s_gsw_draw_poll, s_gsw_reset_rc;
+static unsigned s_gsw_list_done_at_return, s_gsw_draw_done_at_return, s_gsw_reset_done_at_return;
+void sr_hle_test_ge_lists_reset(void);
+
+static uint32_t gsw_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0; c.r[5] = a1; c.r[6] = a2; c.r[7] = a3;
+    return sr_syscall(&c, nid);
+}
+
+static void gsw_producer_fn(CpuState *cpu) {
+    (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
+    if (s_gsw_reset) {
+        (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+    } else {
+        /* The guest writes the rest of the list, then moves the stall past it. */
+        MEM_W32(GSW_LIST, 0x0f000000u);       /* FINISH */
+        MEM_W32(GSW_LIST + 4u, 0x0c000000u);  /* END */
+        (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, s_gsw_qid, GSW_LIST + 8u, 0u, 0u);
+    }
+    s_gsw_producer_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+/* Enqueue an empty ring (stall == list) and start a producer that is less urgent
+ * than the caller, so it runs only once the caller blocks. */
+static void gsw_arm(int reset) {
+    MEM_W32(GSW_LIST, 0u);
+    MEM_W32(GSW_LIST + 4u, 0u);
+    s_gsw_reset = reset;
+    s_gsw_producer_done = 0u;
+    s_gsw_qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GSW_NAME, GSW_PRODUCER_ENTRY, 48u, 0x1000u);
+    (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);
+}
+
+static void gsw_main_fn(CpuState *cpu) {
+    gsw_arm(0);
+    s_gsw_list_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_list_done_at_return = s_gsw_producer_done;
+    s_gsw_list_poll = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 1u, 0u, 0u);
+
+    gsw_arm(0);
+    s_gsw_draw_rc = gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+    s_gsw_draw_done_at_return = s_gsw_producer_done;
+    s_gsw_draw_poll = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+
+    gsw_arm(1);
+    s_gsw_reset_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_reset_done_at_return = s_gsw_producer_done;
+    cpu->r[2] = 0u;
+}
+
+static void test_ge_blocking_sync_waits_for_stalled_list(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+    title_hle_write_cstr(GSW_NAME, "ge-producer");
+    sr_test_register_guest_fn(GSW_MAIN_ENTRY, gsw_main_fn);
+    sr_test_register_guest_fn(GSW_PRODUCER_ENTRY, gsw_producer_fn);
+    s_gsw_list_rc = s_gsw_list_poll = s_gsw_draw_rc = s_gsw_draw_poll = s_gsw_reset_rc = 0xdeadbeefu;
+    s_gsw_list_done_at_return = s_gsw_draw_done_at_return = s_gsw_reset_done_at_return = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(GSW_MAIN_ENTRY, 0u, 0u);
+
+    expect(s_gsw_list_rc == 0u && s_gsw_list_done_at_return == 1u,
+           "blocking sceGeListSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_list_poll == 0u,
+           "sceGeListSync(syncType=1) after the blocking return reads the list completed");
+    expect(s_gsw_draw_rc == 0u && s_gsw_draw_done_at_return == 1u,
+           "blocking sceGeDrawSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_draw_poll == 0u,
+           "sceGeDrawSync(1) after the blocking return reads no list busy");
+    expect(s_gsw_reset_rc == 0x80000100u && s_gsw_reset_done_at_return == 1u,
+           "blocking sceGeListSync wakes on a sceGeBreak(1) reset with the removed-list code");
+
+    /* Outside a waitable guest thread nothing can advance the list: refused, not completed. */
+    MEM_W32(GSW_LIST, 0u);
+    uint32_t qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeListSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeDrawSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 1u, 0u, 0u) == 3u,
+           "the refused blocking sync leaves the list stalled");
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
 }
 
 static void test_kernel_import_sweep_ge_head(void) {
@@ -25028,6 +25575,75 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* #1385: sceKernelGetModuleIdByAddress and sceKernelGetModuleId resolve through the
+ * live module records and the main image, not a constant shared by every module. */
+static void test_module_id_queries_resolve_owning_module(void) {
+    const uint32_t NID_GET_ID = 0xf0a26395u;
+    const uint32_t NID_GET_ID_BY_ADDR = 0xd8b73127u;
+    const uint32_t UNKNOWN_MODULE = 0x8002012eu;
+    const uint32_t A_BASE = 0x08a10000u, B_BASE = 0x08a20000u, SPAN = 0x10000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(main_id != 0u && (main_id & 0x80000000u) == 0u,
+           "an address in the main image resolves to the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08a00000u - 4u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == main_id,
+           "the main image's last word resolves to the same main module");
+    uint32_t thread_uid = sched_create_thread(0x2000u, 32, 0x8000u);
+    expect(thread_uid != 0u && thread_uid != main_id,
+           "the main module's UID is not another kernel object's");
+
+    uint32_t uid_a = sr_hle_test_register_module("late_a.prx", A_BASE + 0x70u, 0u);
+    uint32_t uid_b = sr_hle_test_register_module("late_b.prx", B_BASE + 0x70u, 0u);
+    expect(uid_a != 0u && uid_b != 0u &&
+               sr_hle_test_set_module_image(uid_a, A_BASE, A_BASE + SPAN, 0u) &&
+               sr_hle_test_set_module_image(uid_b, B_BASE, B_BASE + SPAN, 0u),
+           "two late modules are loaded at the same time");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE + 0x40u;
+    uint32_t got_a = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE;
+    uint32_t got_b = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(got_a == uid_a && got_b == uid_b && got_a != got_b && got_a != main_id,
+           "each late module's address resolves to its own distinct UID");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = A_BASE + 0x100u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == uid_a,
+           "sceKernelGetModuleId from late module code returns that module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x08804200u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == main_id,
+           "sceKernelGetModuleId from main-image code returns the main module");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "a null address is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an address outside every image is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == UNKNOWN_MODULE,
+           "sceKernelGetModuleId from code no module owns is refused");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_hle_test_unload_module(&cpu) == 0u, "the second late module is unloaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE + 0x40u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an unloaded module's range resolves to no module, not the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == uid_a,
+           "the module still loaded keeps its UID");
+
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
+    s_fixture_loaded_end = 0x00400000u;
+}
+
 /* The runtime keeps none of the PSP user partition for itself. Its VBLANK interrupt stack and
  * nested host->guest frames used to occupy [0x09ef0000, 0x0a000000), the partition's top
  * 1.06 MiB, so with a main image ending at 0x08a00000 and a module_start and a main thread
@@ -27363,8 +27979,9 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
-        char msg[768];
+        extern int s_vm_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
@@ -27377,9 +27994,10 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 callback-wakeup delay body "
                  "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
-                 "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
+                 "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
+                 "= %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
-                 s_msgpipe_parks, expected_parks, s_parks);
+                 s_msgpipe_parks, s_vm_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -27600,8 +28218,16 @@ static int oracle_sha256_file(const char *path, char out[65]) {
  * different module. */
 static int oracle_running_executable(char *path, size_t capacity) {
     if (!path || capacity == 0 || capacity > (size_t)UINT32_MAX) return 0;
+#ifdef _WIN32
     const DWORD length = GetModuleFileNameA(NULL, path, (DWORD)capacity);
     return length != 0 && length < (DWORD)capacity;
+#else
+    /* The kernel's link to the running image, as hle.c's module directory reads it. */
+    const ssize_t length = readlink("/proc/self/exe", path, capacity);
+    if (length <= 0 || (size_t)length >= capacity) return 0;
+    path[length] = '\0';
+    return 1;
+#endif
 }
 
 static int oracle_field_safe(const char *value) {
@@ -29617,7 +30243,7 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     /* --- route program: a guest that never reads fails the run by name ---------- */
     sr_route_reset();
     ctrl_drain(&cpu);
-    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
     rt_write("PRESS START 4\nEND\n");
     expect(sr_route_load(RT_PATH) == 1, "a single-press route loads with a 30-vblank read budget");
     starve_batch(1u);
@@ -29626,12 +30252,12 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     starve_batch(2u);
     expect(sr_route_status() == RT_FAILED,
            "a press the guest never reads fails the route instead of vanishing");
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     sr_route_reset();
-    _putenv("SR_PADSCRIPT_READ_BUDGET=0");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "0");
     expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
            "a read budget that is not a vblank count >= 1 is refused at load");
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     remove(RT_PATH);
 
     /* --- auto-START pulse: one batch steps over its whole window ---------------- */
@@ -29706,7 +30332,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
     sr_route_reset();
     ctrl_drain(&cpu);
     starve_reset();
-    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
     rt_write("WIDTHS READS\nPRESS START 3\nEND\n");
     expect(sr_route_load(RT_PATH) == 1, "a three-read press loads with a 30-vblank read budget");
     starve_batch(1u);
@@ -29722,7 +30348,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
         expect(strstr(err, "the guest read the controller only 1 of the 3 reads START was held for") != NULL,
                "the failure names how many of its reads the guest made");
     }
-    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
     remove(RT_PATH);
     sr_route_reset();
 }
@@ -29739,6 +30365,13 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
  * the observed process result. */
 #define EXITGAME_POISON 0xDEADBEEFu
 #define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
+#define EXITGAME_REENTERED 91  /* sceKernelExitGame ran the pending exit callback (#1392) */
+#define EXITGAME_NO_REQUEST 92 /* the exit-callback quit request could not be set up */
+
+static void exit_game_reentered_guest_fn(CpuState *cpu) {
+    (void)cpu;
+    _Exit(EXITGAME_REENTERED);
+}
 
 static int run_exit_game_poisoned(void) {
     CpuState cpu;
@@ -29748,6 +30381,19 @@ static int run_exit_game_poisoned(void) {
     s_cpu = &s_cpu_store;
     sched_init(&s_cpu_store);
     sr_hle_init();
+    /* A quit request leaves the registered exit callback pending, as when the guest's
+     * callback answers it with sceKernelExitGame. Measured under PSPLink, ExitGame does not run
+     * a registered exit callback, so it must end the process without servicing it (#1392). */
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, exit_game_reentered_guest_fn);
+    TCB *owner = fixture_thread(0x3430u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    if (cb == 0u || exit_request_register(cb) != 0u || sr_exit_request_quit() != 1 ||
+        !sr_thread_has_pending_callbacks(owner->uid))
+        return EXITGAME_NO_REQUEST;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = EXITGAME_POISON;   /* $a0 */
     cpu.r[5] = EXITGAME_POISON;   /* $a1 */
@@ -29776,6 +30422,7 @@ static int run_exit_game_poisoned(void) {
  * quoted command line, so the command line is built here.
  * ---------------------------------------------------------------------- */
 
+#ifdef _WIN32
 #define EXITGAME_SPAWN_CAP 4096
 
 /* Append *arg* to *out* quoted for a CreateProcess command line; returns the
@@ -29912,6 +30559,22 @@ static void exit_game_command_line_is_quoted(void) {
                                   L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe") == 0,
            "an undersized buffer is refused instead of truncated");
 }
+#else
+/* POSIX hands execv the arguments as a vector, so a spaced program path stays one argument
+ * and there is no command line to quote: the platform spawn seam starts the child. Returns
+ * the child's exit status, or -1 when it could not be started or did not exit normally. */
+static intptr_t exit_game_spawn_child(const char *self) {
+    const char *const argv[] = { self, "--exit-game-poisoned", NULL };
+    NkProcessHandle child;
+    if (!nk_platform_spawn_process(self, argv, NULL, NULL, NULL, &child)) return -1;
+    int status = nk_platform_wait_process(&child, -1);
+    nk_platform_close_process(&child);
+    return (intptr_t)status;
+}
+
+/* The quoting regression above is about the Win32 command line; POSIX builds none. */
+static void exit_game_command_line_is_quoted(void) { }
+#endif
 
 static void test_exit_game_ignores_argument_registers(const char *self) {
     intptr_t rc;
@@ -29923,6 +30586,10 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
     rc = exit_game_spawn_child(self);
     expect(rc != -1, "exit-game child process starts");
     if (rc == -1) return;
+    expect(rc != (intptr_t)EXITGAME_NO_REQUEST,
+           "exit-game child leaves a quit request's exit callback pending before ExitGame");
+    expect(rc != (intptr_t)EXITGAME_REENTERED,
+           "sceKernelExitGame does not run the pending exit callback (#1392)");
     expect(rc != (intptr_t)EXITGAME_RETURNED,
            "dispatching sceKernelExitGame terminates the process instead of returning");
     expect(((unsigned long long)rc & 0xffffffffull) != (unsigned long long)EXITGAME_POISON,
@@ -29978,7 +30645,7 @@ static void test_real_module_start_lifecycle(void) {
     /* -------------------------------------------------------------------------
      * Phase 1: Gate OFF (default / legacy behaviour)
      * ------------------------------------------------------------------------- */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     s_synth_start_calls = 0;
     s_synth_stop_calls = 0;
 
@@ -30019,7 +30686,7 @@ static void test_real_module_start_lifecycle(void) {
     /* -------------------------------------------------------------------------
      * Phase 2: Gate ON (real module_start / stop / unload lifecycle)
      * ------------------------------------------------------------------------- */
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_hle_test_module_reset();
     s_synth_start_calls = 0;
     s_synth_stop_calls = 0;
@@ -30145,7 +30812,7 @@ static void test_real_module_start_lifecycle(void) {
            "gate on: a module that could not stop cannot be unloaded");
 
     /* Clean up */
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -30157,7 +30824,7 @@ static void test_prx_stop_entry_boundaries(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     sr_test_register_guest_fn(SYNTH_MOD_START, synth_module_start_fn);
     sr_test_register_guest_fn(SYNTH_MOD_STOP, synth_module_stop_fn);
     s_synth_start_calls = 0;
@@ -30204,7 +30871,7 @@ static void test_prx_stop_entry_boundaries(void) {
     expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_ALREADY_LOADED,
            "untranslated-stop: module remains started after stop refusal");
 
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -30378,7 +31045,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     /* The real load path: the manifest binding this suite runs under declares one
      * module, so drive the production loader directly with a file it parses. */
@@ -30395,7 +31062,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
          * later test in an environment it was not written for. */
         remove(path_a);
         remove(path_b);
-        _putenv("SR_REAL_MODULE_START=0");
+        hle_test_setenv("SR_REAL_MODULE_START", "0");
         sr_test_guest_fn_reset();
         sr_hle_test_module_reset();
         return;
@@ -30714,7 +31381,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     remove(path_a);
     remove(path_b);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -30728,7 +31395,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=");
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
     s_lifecycle_start_calls = 0;
     s_lifecycle_stop_calls = 0;
     expect(write_lifecycle_prx(path, 0x4444dddd),
@@ -30766,7 +31433,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
     uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
                                      LIFECYCLE_PATCH_OFF_A_1);
     expect(uid != 0, "host-skip: PRX reloads at its released address");
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid;
     expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
@@ -30785,7 +31452,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
            "host-skip: reloaded module unloads");
 
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -30804,7 +31471,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     expect(write_lifecycle_prx(path, 0x3333ccccu),
            "duplicate-base: synthetic module image written");
@@ -30860,7 +31527,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
            "duplicate-base: both handles' records are reclaimed");
 
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -30893,7 +31560,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
 static int s_stderr_saved_fd = -1;
 static int stderr_capture_begin(void) {
     fflush(stderr);
-    s_stderr_saved_fd = _dup(_fileno(stderr));
+    s_stderr_saved_fd = dup(fileno(stderr));
     if (s_stderr_saved_fd < 0) return 0;
     return freopen(HLE_BUILD_ROOT "/psmf_boundary_capture.txt", "w+", stderr) != NULL;
 }
@@ -30904,8 +31571,8 @@ static size_t stderr_capture_end(char *out, size_t capacity) {
     out[n] = '\0';
     clearerr(stderr);
     if (s_stderr_saved_fd >= 0) {
-        _dup2(s_stderr_saved_fd, _fileno(stderr));
-        _close(s_stderr_saved_fd);
+        dup2(s_stderr_saved_fd, fileno(stderr));
+        close(s_stderr_saved_fd);
         s_stderr_saved_fd = -1;
     }
     remove(HLE_BUILD_ROOT "/psmf_boundary_capture.txt");
@@ -30964,7 +31631,9 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
-    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
+    sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b01u, 32);
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
@@ -30996,7 +31665,7 @@ static void test_volatile_mem_unlock_states(void) {
     MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
     MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
-    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    cpu.r[4] = 0u; cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
     expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
            "VolatileMemTryLock while held leaves outputs unchanged");
@@ -31005,6 +31674,194 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
+    sr_hle_test_volatile_mem_reset();
+    s_cur = -1;
+}
+
+/* ---- #1383: a held volatile-memory lock blocks Lock and Unlock hands it on in FIFO order ----
+ *
+ * Production NIDs under the real scheduler: each waiter is a guest-thread coroutine whose Lock
+ * parks in a scheduler wait; Unlock completes the oldest live waiter's wait and writes its
+ * outputs. A Lock that can block is only ever entered on a waiter coroutine here, never on the
+ * scheduler's own. */
+#define VM_A_OUT     0x00250e10u   /* address output; the size output follows at +4 */
+#define VM_PROBE_OUT 0x00250e18u
+#define VM_SENTINEL  0x5a5a5a5au
+
+static uint32_t s_vm_waiter_out[3];
+static uint32_t s_vm_waiter_ret[3];
+static int s_vm_waiter_returned[3];
+static int s_vm_waiter_next;
+int s_vm_parks = 0;   /* waiter bodies that returned and parked; check_coroutine_lifecycle */
+
+static void vm_lock_waiter(void *arg) {
+    (void)arg;
+    int i = s_vm_waiter_next++;
+    CpuState cpu = {0};
+    cpu.r[5] = s_vm_waiter_out[i];
+    cpu.r[6] = s_vm_waiter_out[i] + 4u;
+    s_vm_waiter_ret[i] = sr_syscall(&cpu, NID_VM_LOCK);
+    s_vm_waiter_returned[i] = 1;
+    s_vm_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void vm_out_fill(uint32_t out) {
+    MEM_W32(out, VM_SENTINEL);
+    MEM_W32(out + 4u, VM_SENTINEL);
+}
+
+static int vm_out_holds_region(uint32_t out) {
+    return MEM_R32(out) == 0x08400000u && MEM_R32(out + 4u) == 0x00400000u;
+}
+
+static int vm_out_untouched(uint32_t out) {
+    return MEM_R32(out) == VM_SENTINEL && MEM_R32(out + 4u) == VM_SENTINEL;
+}
+
+static uint32_t vm_call(uint32_t nid, uint32_t a0, uint32_t out) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    cpu.r[5] = out;
+    cpu.r[6] = out ? out + 4u : 0u;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Queue n Lock callers (outputs at 0x00250e40 + 0x10 * i) behind the holder, oldest first, then
+ * make the holder current again. */
+static void vm_start_waiters(TCB **waiters, const int *priority, int n, uint32_t uid0,
+                             TCB *holder) {
+    s_vm_waiter_next = 0;
+    for (int i = 0; i < n; i++) {
+        s_vm_waiter_out[i] = 0x00250e40u + 0x10u * (uint32_t)i;
+        s_vm_waiter_ret[i] = 0xffffffffu;
+        s_vm_waiter_returned[i] = 0;
+        vm_out_fill(s_vm_waiter_out[i]);
+    }
+    for (int i = 0; i < n; i++)
+        waiters[i] = liveness_start_waiter(vm_lock_waiter, uid0 + (uint32_t)i, priority[i]);
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+}
+
+static void vm_run(TCB *t) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+}
+
+static void test_volatile_mem_lock_blocks_and_hands_off(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b10u, 40);
+    vm_out_fill(VM_A_OUT);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u && vm_out_holds_region(VM_A_OUT),
+           "VolatileMemLock on a free lock returns 0 and writes the region");
+
+    /* The second caller is stronger: FIFO order, not priority, picks the next holder. */
+    TCB *w[2];
+    const int prio[2] = { 30, 20 };
+    vm_start_waiters(w, prio, 2, 0x2b11u, holder);
+    expect(w[0]->coro && w[1]->coro && w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           !s_vm_waiter_returned[0] && !s_vm_waiter_returned[1],
+           "VolatileMemLock while held blocks each later caller in a scheduler wait (#1383)");
+    expect(w[0]->wait_obj == w[1]->wait_obj && sched_count_waiters(w[0]->wait_obj) == 2,
+           "both blocked Lock callers wait on the one volatile-memory object");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "a blocked VolatileMemLock writes neither output");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock while held still returns 0x802b0200 and writes nothing");
+
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u, "VolatileMemUnlock by the holder returns 0");
+    expect(w[0]->state == TH_READY && w[1]->state == TH_WAIT_OBJ,
+           "VolatileMemUnlock readies the oldest waiter only (FIFO, not priority)");
+    expect(vm_out_holds_region(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "VolatileMemUnlock writes the new holder's address and size outputs");
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "the lock stays held across the handoff");
+    vm_run(w[0]);
+    expect(s_vm_waiter_returned[0] && s_vm_waiter_ret[0] == 0u,
+           "the woken waiter's VolatileMemLock returns 0 holding the region");
+
+    s_cur = (int)(w[0] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[1]->state == TH_READY &&
+           vm_out_holds_region(s_vm_waiter_out[1]),
+           "the second holder's Unlock hands the lock to the next waiter");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0u,
+           "the last waiter's VolatileMemLock returns 0");
+    s_cur = (int)(w[1] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "VolatileMemUnlock with no waiter releases the lock");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "VolatileMemUnlock when free still returns 0x800201ae");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
+ * lock; terminating the thread that holds the lock leaves it held (the lock has no owning
+ * thread); a type other than 0 is refused by name and takes nothing. */
+static void test_volatile_mem_lock_departures_and_type(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b20u, 40);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u, "the first VolatileMemLock takes the lock");
+    TCB *w[3];
+    const int prio[3] = { 30, 30, 30 };
+    vm_start_waiters(w, prio, 3, 0x2b21u, holder);
+    expect(w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           w[2]->state == TH_WAIT_OBJ, "three Lock callers queue behind the holder");
+
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, w[0]->uid, 0u) == 0u,
+           "the oldest waiter is terminated and deleted while blocked");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_WCR_RELEASE_WAIT, w[1]->uid, 0u) == 0u && w[1]->state == TH_READY,
+           "sceKernelReleaseWaitThread releases the second waiter");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[2]->state == TH_READY,
+           "Unlock passes over the deleted and released waiters to the next live one");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]) &&
+           vm_out_holds_region(s_vm_waiter_out[2]),
+           "only the waiter handed the lock has its outputs written");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0x800201aau,
+           "the released waiter's VolatileMemLock returns WAIT_RELEASE without the lock");
+    vm_run(w[2]);
+    expect(s_vm_waiter_returned[2] && s_vm_waiter_ret[2] == 0u,
+           "the next live waiter's VolatileMemLock returns 0");
+
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_THREAD, w[2]->uid, 0u) == 0u,
+           "the thread holding the lock is terminated");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "terminating the holder leaves the lock held (it has no owning thread)");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "another thread's VolatileMemUnlock releases it");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemLock type 1 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock type 2 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "a refused type took no lock");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    liveness_finish_waiter(w[2]);
     sr_hle_test_volatile_mem_reset();
 }
 
@@ -31180,7 +32037,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=1");
+    hle_test_setenv("SR_REAL_MODULE_START", "1");
 
     expect(write_lifecycle_prx(path, 0x1106aaaau), "late-objects: synthetic module image written");
     uint32_t uid = sr_hle_test_load_prx_image(path, LATE_OBJ_BASE, LATE_OBJ_EXPORT,
@@ -31188,7 +32045,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     expect(uid != 0, "late-objects: module image loads at its declared base");
     if (uid == 0) {
         remove(path);
-        _putenv("SR_REAL_MODULE_START=0");
+        hle_test_setenv("SR_REAL_MODULE_START", "0");
         sr_test_guest_fn_reset();
         sr_hle_test_module_reset();
         return;
@@ -31246,7 +32103,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
            "late-objects: callback was already removed with its owner thread");
     s_cur = -1;
     remove(path);
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
 }
@@ -31451,14 +32308,14 @@ static void test_flight_recorder_trace(void) {
     size_t bundle_size;
 
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_hle_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_hle_selftest.json");
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_PRX | SR_FLIGHT_CLASS_SCHED |
                              SR_FLIGHT_CLASS_FATAL,
                          4u);
     sr_hle_init();
     sr_hle_test_module_reset();
-    _putenv("SR_REAL_MODULE_START=0");
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
 
     first = fixture_thread(0x310u, TH_READY, 20);
     s_cur = (int)(first - s_tcb);
@@ -31578,7 +32435,7 @@ static void test_flight_recorder_trace(void) {
            "unsupported refusal event is retained");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static size_t flight_refusal_read_bundle(const char *path, char *bundle, size_t capacity) {
@@ -31602,7 +32459,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
 
     /* Refused calls, then a later fatal: the fatal is the terminal record. */
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_refusal_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_refusal_selftest.json");
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
@@ -31699,7 +32556,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "hang bundle names the hang terminal and the vblanks without a frame");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_fault_trigger(void) {
@@ -31711,7 +32568,7 @@ static void test_flight_recorder_fault_trigger(void) {
     FILE *bundle_file;
 
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_fault_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_fault_selftest.json");
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
     sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900000u, 0xdead0001u, 0u);
     sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900004u, 0xdead0002u, 0u);
@@ -31735,10 +32592,13 @@ static void test_flight_recorder_fault_trigger(void) {
            "first-exception bundle carries the fatal terminal with the fault kind");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_host_fault(void) {
+    /* The recorder stores the host code verbatim; this is the Win32 access-violation code
+     * driver.c's exception handler reports. */
+    const uint32_t access_violation = 0xc0000005u;
     const char *output = "flight_recorder_host_fault_selftest.json";
     char bundle[16384];
     SrFlightSnapshot snapshot;
@@ -31749,10 +32609,10 @@ static void test_flight_recorder_host_fault(void) {
     /* Fault inside guest memory: exactly one bundle whose fatal terminal names
      * the fault kind and carries the host exception code and guest address. */
     remove(output);
-    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_host_fault_selftest.json");
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_host_fault_selftest.json");
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
-    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012345u);
-    sr_flight_host_fault(0x08901238u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012349u);
+    sr_flight_host_fault(0x08901234u, access_violation, 0x08012345u);
+    sr_flight_host_fault(0x08901238u, access_violation, 0x08012349u);
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 1u && snapshot.retained == 1u,
            "host fault freezes the recorder after the first fault");
@@ -31760,13 +32620,13 @@ static void test_flight_recorder_host_fault(void) {
            "host fault triggers exactly one recorder dump");
     expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_FATAL &&
                snapshot.terminal_kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
-               snapshot.terminal_arg == (uint32_t)EXCEPTION_ACCESS_VIOLATION,
+               snapshot.terminal_arg == access_violation,
            "host fault terminal names the fault kind and carries the exception code");
     expect(sr_flight_event_count() == 1 && sr_flight_event_at(0, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_FAULT &&
                flight_event.kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
                flight_event.arg0 == 0x08901234u &&
-               flight_event.arg1 == (uint32_t)EXCEPTION_ACCESS_VIOLATION &&
+               flight_event.arg1 == access_violation &&
                flight_event.arg2 == 0x08012345u,
            "host fault event carries the guest pc and fault address");
     bundle[0] = '\0';
@@ -31783,7 +32643,7 @@ static void test_flight_recorder_host_fault(void) {
     /* Fault outside guest memory records address 0 and still dumps one bundle. */
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
-    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0u);
+    sr_flight_host_fault(0x08901234u, access_violation, 0u);
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
            "host fault outside guest memory still triggers one recorder dump");
@@ -31792,7 +32652,7 @@ static void test_flight_recorder_host_fault(void) {
            "host fault outside guest memory records address 0");
     remove(output);
     sr_flight_test_disable();
-    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
 }
 
 static void test_flight_recorder_ge_present_events(void) {
@@ -32500,8 +33360,7 @@ static uint32_t f0t_rename(const char *from, const char *to) {
 /* Sets or clears one environment variable in both views the runtime reads: the wide block that
  * sr_wide_env_alloc uses on Win32, and the CRT table that getenv reads. */
 static void f0t_set_env(const char *name, const char *value) {
-    SetEnvironmentVariableA(name, value);
-    _putenv_s(name, value ? value : "");
+    hle_test_setenv(name, value);
 }
 
 /* ---- The registry view of the font device (FONT_PLAN section 4) ----
@@ -33192,8 +34051,7 @@ static void test_flash0_font_device(void) {
         expect(saved_fontdir != NULL && strlen(saved_fontdir) < sizeof(saved),
                "the test's SR_FONTDIR is set and fits the save buffer");
         if (saved_fontdir) snprintf(saved, sizeof(saved), "%s", saved_fontdir);
-        SetEnvironmentVariableA("SR_FONTDIR", cache_dir);
-        _putenv_s("SR_FONTDIR", cache_dir);
+        hle_test_setenv("SR_FONTDIR", cache_dir);
         uint32_t cache_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
         if (user_refused) {
             expect(cache_fd == F0T_ERR_NOT_FOUND,
@@ -33204,8 +34062,7 @@ static void test_flash0_font_device(void) {
                    "with SR_FONTDIR at the imported cache and its file vouched for, the cache file is served");
         }
         if (cache_fd >= 3u) (void)f0t_close(cache_fd);
-        SetEnvironmentVariableA("SR_FONTDIR", saved);
-        _putenv_s("SR_FONTDIR", saved);
+        hle_test_setenv("SR_FONTDIR", saved);
     }
 
     /* Case-insensitive device, prefix and name, and project fallback for japanese. */
@@ -34644,7 +35501,7 @@ int main(int argc, char **argv) {
         return hle_selftest_main(argc, argv);
     static const char scratch_rel[] = HLE_BUILD_ROOT "/hle_selftest_cwd";
     char original[MAX_PATH];
-    if (!GetCurrentDirectoryA((DWORD)sizeof(original), original)) {
+    if (!getcwd(original, sizeof(original))) {
         fprintf(stderr, "hle_thread_selftest: cannot read the working directory\n");
         return 2;
     }
@@ -34653,20 +35510,19 @@ int main(int argc, char **argv) {
      * working directory. Resolve it while that is still the caller's directory. */
     static char s_abs_argv0[MAX_PATH];
     if (argc > 0 && argv[0]) {
-        DWORD n = GetFullPathNameA(argv[0], (DWORD)sizeof(s_abs_argv0), s_abs_argv0, NULL);
-        if (n == 0 || n >= sizeof(s_abs_argv0)) {
+        if (!nk_platform_absolute_path(argv[0], s_abs_argv0, sizeof(s_abs_argv0))) {
             fprintf(stderr, "hle_thread_selftest: cannot resolve argv[0] '%s'\n", argv[0]);
             return 2;
         }
         argv[0] = s_abs_argv0;
     }
     hle_make_directory(HLE_BUILD_ROOT);
-    if (!hle_make_directory(scratch_rel) || !SetCurrentDirectoryA(scratch_rel)) {
+    if (!hle_make_directory(scratch_rel) || chdir(scratch_rel) != 0) {
         fprintf(stderr, "hle_thread_selftest: cannot enter scratch directory '%s'\n", scratch_rel);
         return 2;
     }
     int rc = hle_selftest_main(argc, argv);
-    if (!SetCurrentDirectoryA(original)) {
+    if (chdir(original) != 0) {
         fprintf(stderr, "hle_thread_selftest: cannot restore the working directory\n");
         return 2;
     }
@@ -34800,6 +35656,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_adhoc_named_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
+    test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_break_continue();
     test_ge_completion_timing();
     test_volatile_mem_output_preflight();
@@ -34809,6 +35666,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
     test_utility_dialog_single_slot();
+    test_utility_dialog_status_sequence();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -34854,6 +35712,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
+    test_thread_stack_free_size_contract();
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
@@ -34891,6 +35750,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
+    test_quit_request_notifies_registered_exit_callback();
     test_io_devctl_memstick_callback_notify();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
@@ -34984,6 +35844,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
+    test_module_id_queries_resolve_owning_module();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
@@ -35000,6 +35861,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
+    test_volatile_mem_lock_blocks_and_hands_off();
+    test_volatile_mem_lock_departures_and_type();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
@@ -35013,7 +35876,7 @@ static int hle_selftest_main(int argc, char **argv) {
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can
      * never be archived as a completed route. */
-    _putenv("SR_ROUTE_NO_EXIT=1");
+    hle_test_setenv("SR_ROUTE_NO_EXIT", "1");
     test_route_program_advances_only_on_observed_state();
     test_route_wait_timeout_fails_loudly();
     test_route_expect_rejects_the_wrong_screen();
@@ -35072,6 +35935,7 @@ void sr_recomp_test_unused_trace_close(void);
 #define sr_heap_note_bulk_write sr_recomp_test_unused_heap_note_bulk_write
 #define sr_newlib_malloc sr_recomp_test_unused_newlib_malloc
 #define sr_loaded_end sr_recomp_test_unused_loaded_end
+#define sr_loaded_base sr_recomp_test_unused_loaded_base
 #define g_hle_depth sr_recomp_test_unused_hle_depth
 #define g_hle_jmp sr_recomp_test_unused_hle_jmp
 #define sr_trace_close sr_recomp_test_unused_trace_close
@@ -35080,6 +35944,7 @@ void sr_recomp_test_unused_trace_close(void);
 #undef g_hle_jmp
 #undef g_hle_depth
 #undef sr_loaded_end
+#undef sr_loaded_base
 #undef sr_newlib_malloc
 #undef sr_heap_note_bulk_write
 #undef sr_heap_note_write

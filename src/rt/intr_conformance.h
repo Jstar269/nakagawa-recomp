@@ -433,10 +433,10 @@ static const IcProbe kIcMatrix[] = {
 
 /* ---- group H: volatile memory ------------------------------------------- */
 { "sceKernelVolatileMemLock", 0x3e0271d3u, "While not locked", ICG_VOLATILE, 0,
-  {0, 290, 412, 291}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 290, 412, 291}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, ILCTX, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelVolatileMemLock", 0x3e0271d3u, "While locked", ICG_VOLATILE, 1,
-  {0, 292, 0, 293}, {ICU, CNW, ICU, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
+  {0, 292, 0, 293}, {ICU, CNW, ICU, CNW}, {ICB, CNW, IC_NOTRUN, CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_UNKNOWN, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK},
 
 /* ---- group I: UMD ------------------------------------------------------- */

@@ -147,10 +147,24 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("MEM_W32(infop + 0, 56u)", body)
         self.assertNotIn("snprintf", body)
 
-    def test_exit_game_does_not_fire_registered_exit_callback(self):
+    def test_exit_callback_is_notified_only_by_a_quit_request(self):
+        """A player quit request is the one notifier of the registered exit callback (#1392);
+        sceKernelExitGame stays terminal and never reaches it, so the old recursion through
+        ExitGame cannot come back. hle-thread-selftest checks the behaviour."""
         body = strip_comments(function_body(HLE_SOURCE, "h_ExitGame"))
-        self.assertNotIn("sr_fire_exit_callbacks", body)
+        for name in ("sr_fire_exit_callbacks", "sr_exit_request_quit", "s_exit_cb_uid",
+                     "sr_callback_notify", "sr_thread_dispatch"):
+            self.assertNotIn(name, body)
         self.assertNotIn("sr_fire_exit_callbacks", HLE_SOURCE)
+        quit_body = strip_comments(function_body(HLE_SOURCE, "sr_exit_request_quit"))
+        self.assertIn("sr_callback_notify(s_exit_cb_uid, 0u)", quit_body)
+        notifies = re.findall(r"sr_callback_notify\(\s*s_exit_cb_uid\b", strip_comments(HLE_SOURCE))
+        self.assertEqual(len(notifies), 1)
+        gui = strip_comments((ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8"))
+        self.assertIn(
+            "int alive = sdl3vk_poll() ? !sr_exit_request_expired() : sr_exit_request_quit();",
+            gui,
+        )
         reg = strip_comments(function_body(HLE_SOURCE, "h_RegisterExitCallback"))
         self.assertIn("0x03090510u", reg)
         self.assertIn("0x800200D2u", reg)
