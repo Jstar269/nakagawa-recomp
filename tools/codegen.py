@@ -1191,10 +1191,11 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         if fn == 0x00: return wr(d, f"({R(b)} << {sh})"), None, 0           # sll
         if fn == 0x02:
             # Allegrex: rs=1 makes SRL the rotate ROTR; any other rs value is reserved.
-            if a == 1:
+            rs_field = rs(w)
+            if rs_field == 1:
                 if sh == 0: return wr(d, R(b)), None, 0                     # rotr by 0
                 return wr(d, f"(({R(b)} >> {sh}) | ({R(b)} << {32 - sh}))"), None, 0  # rotr
-            if a != 0: raise Unsupported(f"SRL reserved rs field {a} at 0x{addr:08x}")
+            if rs_field != 0: raise Unsupported(f"SRL reserved rs field {rs_field} at 0x{addr:08x}")
             return wr(d, f"({R(b)} >> {sh})"), None, 0                      # srl
         if fn == 0x03: return wr(d, f"((uint32_t)((int32_t){R(b)} >> {sh}))"), None, 0  # sra
         if fn == 0x04: return wr(d, f"({R(b)} << ({R(a)} & 31))"), None, 0  # sllv
