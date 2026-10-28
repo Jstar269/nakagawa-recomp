@@ -2647,6 +2647,91 @@ static void fd_set_write(CpuState *cpu, uint32_t fd, uint32_t source, uint32_t c
     cpu->r[6] = count;
 }
 
+/* #308: sceIoOpenAsync returns the fd at once, but the open is a pending request on
+ * it. A completion callback the game registers on the returned fd afterwards must be
+ * notified when the open completes, and sceIoPollAsync reports pending until then and
+ * the fd as the result after (PPSSPP's sceIoOpenAsync completes on its async I/O
+ * thread the same way). Before the fix the open was complete on return, nothing was
+ * notified, and PATAPON's loader waited forever. */
+static uint32_t open_async_nid_call(uint32_t nid, uint32_t a0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_io_open_async_notifies_later_callback(void) {
+    enum {
+        PATH_ADDR = 0x09018000u,
+        RESULT_ADDR = 0x09018100u,
+        CALLBACK_NAME_ADDR = 0x09018200u,
+        NID_GET_CALLBACK_COUNT = 0x2a3d44ffu,
+        NID_CANCEL_CALLBACK = 0xba4051d6u,
+    };
+    static const char guest[] = "ms0:/NAKAGAWA_IO_OPEN_ASYNC.TXT";
+    static const char callback_name[] = "io-open-async-test";
+    static const uint8_t bytes[] = "open";
+    char host[256];
+    CpuState cpu;
+    uint32_t callback_error = 0u;
+
+    fd_host_path(host, sizeof(host), guest);
+    nk_remove_utf8(host);
+    fd_set_path(&cpu, PATH_ADDR, guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd < 64u, "open-async fixture file is created");
+    if (fd >= 64u) return;
+    fd_guest_copy(PATH_ADDR + 0x80u, bytes, sizeof(bytes) - 1u);
+    fd_set_write(&cpu, fd, PATH_ADDR + 0x80u, (uint32_t)(sizeof(bytes) - 1u));
+    (void)sr_hle_test_io_write(&cpu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "open-async fixture closes");
+
+    fd_guest_copy(CALLBACK_NAME_ADDR, callback_name, sizeof(callback_name));
+    uint32_t callback_uid = sr_callback_table_register(CALLBACK_NAME_ADDR, 0u, 0u,
+                                                        &callback_error);
+    expect(callback_uid != 0u && callback_error == 0u,
+           "open-async completion callback registers");
+
+    fd_set_path(&cpu, PATH_ADDR, guest);
+    cpu.r[5] = 1u; /* O_RDONLY */
+    fd = sr_hle_test_io_open_async(&cpu);
+    expect(fd < 64u, "sceIoOpenAsync returns a descriptor at once");
+    if (fd >= 64u) return;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = callback_uid;
+    cpu.r[6] = 0x0a5c0de5u;
+    expect(sr_hle_test_io_set_async_callback(&cpu) == 0u,
+           "sceIoSetAsyncCallback on the returned descriptor succeeds");
+    expect(open_async_nid_call(NID_GET_CALLBACK_COUNT, callback_uid) == 0u,
+           "the open has not notified its callback before it completes");
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u && MEM_R32(RESULT_ADDR) == 0xfeedfaceu,
+           "sceIoPollAsync reports the async open pending");
+
+    sr_hle_test_io_async_import_boundary();
+    sr_hle_test_io_async_import_boundary();
+    expect(open_async_nid_call(NID_GET_CALLBACK_COUNT, callback_uid) == 1u,
+           "completing the async open notifies the callback registered after the call");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == fd,
+           "sceIoPollAsync reports the completed open with the descriptor as its result");
+
+    (void)open_async_nid_call(NID_CANCEL_CALLBACK, callback_uid);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the async-opened descriptor closes");
+    (void)sr_callback_table_unregister(callback_uid);
+    nk_remove_utf8(host);
+}
+
 static void test_io_async_and_path_imports(void) {
     enum {
         PATH_ADDR = 0x09010000u,
@@ -3521,6 +3606,14 @@ static void test_fd_namespace(void) {
     expect(async_fd == 3u, "async open also allocates from the ordinary fd namespace");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = async_fd;
+    expect(sr_hle_test_io_close_async(&cpu) == 0x80020329u,
+           "async close while the async open is pending reports ASYNC_BUSY");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = async_fd;
+    expect(sr_hle_test_io_wait_async(&cpu) == 0u,
+           "waiting on the async open completes it");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = async_fd;
     expect(sr_hle_test_io_close_async(&cpu) == 0u,
            "async close releases the ordinary descriptor through shared teardown");
     memset(&cpu, 0, sizeof(cpu));
@@ -3536,6 +3629,7 @@ static void test_fd_namespace(void) {
            "the descriptor reused after async close closes cleanly");
 
     test_io_async_and_path_imports();
+    test_io_open_async_notifies_later_callback();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */

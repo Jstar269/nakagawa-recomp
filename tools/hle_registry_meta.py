@@ -550,8 +550,11 @@ HANDLER_METADATA = {
     # a PSP scheduler measurement; open also returns its descriptor at submit.
     "h_IoOpenAsync": {
         "status": "partial",
-        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
-        "limitation": "open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_fd_namespace",
+            "src/rt/hle_thread_selftest.c:test_io_open_async_notifies_later_callback",
+        ],
+        "limitation": "open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it",
     },
     "h_IoReadAsync": {
         "status": "partial",
