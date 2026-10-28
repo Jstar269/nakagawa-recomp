@@ -651,6 +651,7 @@ have_image:;
          * the declared project program from the same runtime module package. sched_init
          * is process-start-only; LoadExec uses the explicit teardown/rebind seam below. */
         sched_init(&s);
+        sched_preempt_timer_start();
         for (;;) {
             sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
             sched_run(entry, s.r[4], s.r[5]);
