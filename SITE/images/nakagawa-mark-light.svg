@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="34 34 172 172" width="172" height="172" role="img" aria-labelledby="t">
-  <title id="t">Nakagawa</title>
-  <rect x="34" y="34" width="46" height="62.8" fill="#6E9600"/>
-  <rect x="34" y="104" width="46" height="29.2" fill="#6E9600"/>
-  <rect x="34" y="140.4" width="46" height="29.2" fill="#6E9600"/>
-  <rect x="34" y="176.8" width="46" height="29.2" fill="#6E9600"/>
-  <polygon points="34,34 88,34 206,195.1 206,206 160,206" fill="#10151C"/>
-  <rect x="160" y="34" width="46" height="172" fill="#10151C"/>
-</svg>
