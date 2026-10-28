@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "583ba84a78ba5bd6fce5b7db46dac1b5c6c0947c6a47b0f9a8d4854fe99a9689"
+      "sha256": "8220f0bcea66c779935f64a680d53cbf6077d745c8590983878858c85078fada"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -2116,7 +2116,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "239cd2df5dfa5169fca9c2b19d21784095485c1fd377a23e3a81a20ff9871803"
+      "sha256": "fc313c55826c3c1d623bbfac7efa64097d7ca00a56030505c83899e9c0744a41"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -2152,7 +2152,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "53461922ad55e34b6a9063faf6479aa240e2025275b9078a9af327943a18f7bd"
+      "sha256": "16bd56e2b3b0087b2b4fd7c94c01849af0a8e83f5c9466351df804df6cb15129"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -5943,7 +5943,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1861e8e04c04cdce77899612c897ede4e09f5c089a9aea9921121b7bc339002"
+      "sha256": "3c4734a5de9e47ee424d364ac200cef97a076ec15918bca3645de570c3c0e5e0"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -5955,7 +5955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b139a80e2a36e32fa7004d69fd5c8c7f5e8fe73ed19b387dcae43c979bfca72"
+      "sha256": "cf9002bdf14c9f32ac9469f6b4ce0a08cd5d555b3d5efb560fe669f6b37fd844"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -11755,7 +11755,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "251fa48b7bea129a425b74eca772825c4d146f162e5e3e7f21451680fcb53cee"
+      "sha256": "007d1bdfc6e18a50f3e902713fc2d4ee9dcdb0c6191d1cb80fa97501cb4ae654"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -13541,7 +13541,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ff4b877993eea74e3a70805b5edfa3d5451570ac8f3a52e9b221dd88dfa4c8b"
+      "sha256": "4aa5c1ec2fac40fc7d6d869fd0d43dd4c4e33f0c573ffbafce85564db61169a2"
     },
     {
       "path": "tools/test_codegen_nan_trap.py",
