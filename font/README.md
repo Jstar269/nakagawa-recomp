@@ -1,87 +1,47 @@
-# PPSSPP replacement fonts
+# Fonts
 
-The active public source tree contains only this provenance summary in `font/`;
-no generated PGF is committed here. The four replacement PGF payloads evaluated
-for local development remain excluded. The runtime build generates the project
-Japanese slot from the pinned open-font input documented below. Other slots
-still use an imported font when available, otherwise their absence is reported.
+This folder is where Nakagawa Recomp looks for fonts. In the source tree it holds only this file. A build copies the
+folder next to the program (for example `build/font/`) and adds the project's own fonts to it.
 
-The public evidence summary below identifies the compared upstream bytes. The
-active public source profile continues to exclude the compared PGF payloads.
-`make project-japanese-font` builds `nkjpn.pgf` under the configured build
-directory from the pinned M PLUS 1p input; the runtime `compile` target stages
-that file and its OFL text beside the executable. See [NOTICE.md](../NOTICE.md)
-and the [public source profile](../docs/PUBLIC_SOURCE_PROFILE.md) for the
-enforced exclusion of the compared payloads.
+## The project's own fonts
 
-## Byte provenance
+The build makes three fonts in the PSP's font format (`.pgf`) from open fonts, with the project's converter
+`tools/ttf2pgf.py`:
 
-Source repository: <https://github.com/hrydgard/ppsspp>
+| File | Used for | Made from | Licence |
+| --- | --- | --- | --- |
+| `nkjpn.pgf` | Japanese text | M PLUS 1p Regular | SIL Open Font License 1.1 |
+| `nkltn.pgf` | Latin text | M PLUS 1p Regular | SIL Open Font License 1.1 |
+| `nkkr.pgf` | Korean text | Gowun Dodum Regular | SIL Open Font License 1.1 |
 
-Pinned comparison commit:
-f0baf3ade7bcb6c86f0835962b36eb4e51559d8f
+Each font comes with its licence text (`nkjpn-OFL.txt` and so on) and a manifest (`nkjpn.json` and so on) that names
+its exact source file and the converter settings. The source fonts are pinned in
+[`fixtures/fonts/mplus1p/`](../fixtures/fonts/mplus1p/) and [`fixtures/fonts/gowundodum/`](../fixtures/fonts/gowundodum/):
+each `PIN.json` gives the file's SHA-256 and where it came from. Generated fonts are never committed.
 
-Upstream path: assets/flash0/font/
+These fonts are stand-ins. They let a game draw its text when you have not imported your PSP's fonts, but they look
+different from the PSP's.
 
-| Filename | Bytes | Git blob ID |
-| --- | ---: | --- |
-| jpn0.pgf | 4,316,284 | 17304b24f6175f7a221f167425b307e761ccb6bb |
-| kr0.pgf | 1,641,624 | 9f8cce0390c827fa2195a5dc3e9885a997db6488 |
-| ltn0.pgf | 38,236 | 1f3d907ac717270a005c2e8a00e05c385d718d22 |
-| ltn8.pgf | 29,976 | a58450c7675c6f1b4e0840cef5f2dd9787eed68c |
+## Your PSP's own fonts
 
-## Current evidence summary
+For the PSP's original look, import the system fonts from your own PSP: the setup wizard's fonts step does it, and so
+does `python tools/nk_cli.py fonts import <folder>` (see [System fonts](../docs/SETUP.md#system-fonts)). Imported fonts
+are kept in your user data folder (`<user data>/fonts/v2`), not here. The project never includes, downloads or uploads
+the PSP's fonts.
 
-Determined facts (full evidence in
-[docs/provenance/FONT_ORIGINS.md](../docs/provenance/FONT_ORIGINS.md); PGF
-headers parsed per PPSSPP `Core/Font/PGF.h` from exact upstream bytes):
+## How a game finds its fonts
 
-- jpn0.pgf descends from a **Source Han Sans** (SIL OFL 1.1, Adobe, Reserved
-  Font Name 'Source') conversion: header `Source Han Sans / Regular` at
-  `388ac3c` (2020-11-23, "Update jpn0.pgf … Fixes
-  [#13702](https://github.com/hrydgard/ppsspp/pull/13702)"). The October 2020
-  predecessors named Ume Gothic S5 (`77c1e96`) and Ume Hy Gothic (`f68e0fe`,
-  PR [#13588](https://github.com/hrydgard/ppsspp/pull/13588), "fixed manually
-  all of JIS Kanji-Level1 (2946 character)").
-- kr0.pgf descends from a **Source Han Sans** conversion: header
-  `Source Han Sans / Regular` at `75bdb5f` (2020-11-30, "Switch to
-  nassau-tk's latest Korean font. See issue
-  [#13190](https://github.com/hrydgard/ppsspp/issues/13190)").
-- ltn0.pgf and ltn8.pgf descend from **Ume Hy Gothic** (Ume-family licence,
-  modified BSD) conversions: header `Ume Hy Gothic / Regular` at `b5e2300`
-  (2020-11-29, PR [#13721](https://github.com/hrydgard/ppsspp/pull/13721)) and
-  `737e0d5` (2020-11-23). The Ume P Mincho
-  history applies to odd ltn1/3/5/7, not ltn0.
-- Conversion chain (contributor's own notes, PPSSPP
-  [#13718](https://github.com/hrydgard/ppsspp/issues/13718)/[#13589](https://github.com/hrydgard/ppsspp/issues/13589)):
-  TTF → PGF via tpunix pgftool / ttf2pgfj.exe, glyph shaping in a font editor,
-  and hex-editor metric patching (ascender/descender in 26.6 fixed point).
-- On 2021-01-20 (`dc34bea`, "PGF Fixed Bold & Italic property and
-  **camouflage the Font name**") the headers were rewritten to compatibility
-  names: jpn0 → `FTT-NewRodin Pro DB`, kr0 → `AsiaKNHH-SONY-uni`, ltn0/ltn8 →
-  `FTT-NewRodin Pro Latin` (all `Regular`). Those names are admitted
-  camouflage, not evidence of Sony or Fontworks outlines; redistributing the
-  payloads under those names would misattribute Adobe/Ume outlines.
+When a game asks for one of the PSP's system fonts, it gets your imported copy of that font first. A Latin font you
+have not imported is served by your nearest imported font of the same size, and otherwise by `nkltn.pgf`; a Japanese
+or Korean font you have not imported is served by `nkjpn.pgf` or `nkkr.pgf`. The full order, and how to see which
+file serves each font, is in [System fonts](../docs/SETUP.md#system-fonts).
 
-Residual unknowns: the exact Source Han Sans release/variant file (never named
-by the contributor and not narrowed by any byte comparison), the exact Ume Hy
-Gothic release, and the converter tools' licence terms (pgftool ships no
-licence file). See FONT_ORIGINS.md §7.
+The `SR_FONTDIR` environment variable points the runtime at another folder instead of the one next to the program. A
+folder that is missing or cannot be read is reported as an error; nothing quietly takes its place.
 
-## Chosen route
+## The earlier comparison with PPSSPP's fonts
 
-The Japanese slot is generated from the pinned M PLUS 1p input by the
-project-owned deterministic converter. The PGF uses the project-owned name
-`Nakagawa Open Japanese`; its manifest and OFL text are staged beside it in the
-build output. The source TTF, pin and licence are under
-[`fixtures/fonts/mplus1p/`](../fixtures/fonts/mplus1p/). The four compared PGF
-payloads remain excluded, and generated PGFs are not checked in.
-
-## Runtime lookup
-
-font_load() in ../src/rt/hle.c honors an absolute SR_FONTDIR or the executable's
-sibling font directory. A missing or invalid root is reported as an error.
-
-The public source tree excludes the payloads. Public builds read fonts through
-the project-authored reader (`src/rt/pgf_public.c`, #349), which fails closed on
-malformed or unsupported fonts; point SR_FONTDIR at fonts you supplied yourself.
+Before the project made its own fonts, it compared the replacement fonts that PPSSPP ships. This project does not use,
+copy or distribute those files. Their origins (conversions of Source Han Sans and Ume Gothic, renamed to match the
+PSP's font names) and the exact bytes compared are recorded in
+[docs/provenance/FONT_ORIGINS.md](../docs/provenance/FONT_ORIGINS.md).

@@ -678,6 +678,7 @@ python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --priva
 
 This reissues a chain from the existing admission documents and records no new decision. If Git conflicts on, or reorders,
 `assets/public_source_profile.json` during a merge, run `python tools/admit_paths.py --merge-profile <worktree>` and
-then `git add assets/public_source_profile.json`; the command unions `include_paths` and `exclude_paths` and refuses
-if another profile field differs. A path-adding PR outside a batch still needs `--rekey` after another path-adding
+then `git add assets/public_source_profile.json`; the command merges `include_paths` and `exclude_paths` three ways
+against the merge base, so a path either side added stays and a path either side removed or moved stays out, and it
+refuses if another profile field differs or a path would end up both included and excluded. A path-adding PR outside a batch still needs `--rekey` after another path-adding
 PR lands, so the next delta binds the updated baseline. Keep unrelated ready PRs moving.
