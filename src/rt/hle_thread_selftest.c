@@ -6607,6 +6607,193 @@ static void test_utility_dialog_single_slot(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* ---- Utility dialog status sequence (#1386): which call drives each transition, as the
+ * PSPAutotests hardware captures show it (hrydgard/pspautotests e2d098fc). Update never moves
+ * INIT (tests/utility/dialog/status.expected: a message Update during INIT returns
+ * INVALID_STATUS), so a caller that updates before it polls still sees INIT first. A savedata
+ * shutdown ends at priority 0x20 (tests/utility/savedata/shutdownstatus.expected): a caller at
+ * 0x20 sees SHUTDOWN, then NONE; one at 0x21 or 0x6F sees only NONE and can start the next
+ * dialog straight after ShutdownStart. A message dialog shows SHUTDOWN to a caller at 0x6F
+ * (tests/utility/dialog/priority.expected). */
+#define NID_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define UTILITY_SAVEDATA_MODE_GETSIZE     22u /* with no sizeInfo: no memory-stick I/O */
+
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+static uint32_t utility_change_priority(CpuState *cpu, uint32_t priority) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[5] = priority;  /* a0 = 0: the current thread */
+    return sr_syscall(cpu, NID_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void utility_savedata_block(void) {
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+}
+
+/* Poll a started dialog the way a game does, GetStatus and then Update while RUNNING, until it
+ * reports FINISHED. Eight frames bound the test, not the dialog. */
+static int utility_poll_to_finished(CpuState *cpu, uint32_t update, uint32_t status) {
+    for (int frame = 0; frame < 8; frame++) {
+        const uint32_t st = utility_call(cpu, status, 0u);
+        if (st == 3u) return 1;
+        if (st == 2u) (void)utility_call(cpu, update, 0u);
+        else if (st != 1u) return 0;
+    }
+    return 0;
+}
+
+static int utility_savedata_start_to_finished(CpuState *cpu) {
+    utility_savedata_block();
+    return utility_call(cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+           utility_poll_to_finished(cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS);
+}
+
+/* A caller that updates before it polls: each frame Update, then GetStatus. Records each
+ * frame's status as a digit until FINISHED (3) and counts the Updates refused with
+ * INVALID_STATUS. */
+static void utility_update_first_frames(CpuState *cpu, uint32_t update, uint32_t status,
+                                        char seen[16], unsigned *refused) {
+    size_t n = 0;
+    *refused = 0;
+    for (int frame = 0; frame < 8; frame++) {
+        if (utility_call(cpu, update, 0u) == 0x80110001u) (*refused)++;
+        const uint32_t st = utility_call(cpu, status, 0u);
+        seen[n++] = st <= 4u ? (char)('0' + st) : '?';
+        if (st == 3u || st > 4u) break;
+    }
+    seen[n] = '\0';
+}
+
+static void test_utility_dialog_status_sequence(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256], seen[16];
+    unsigned refused = 0;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+
+    /* Update during INIT is refused and moves nothing: the next GetStatus still reports INIT,
+     * and RUNNING follows without an Update. (The test reset frees the slot afterwards; the
+     * gamedata and sharing work would create memory-stick directories.) */
+    for (size_t i = 0; i < count; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
+                 "still reports INIT, then RUNNING", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* A caller that updates before it polls sees every state: INIT, RUNNING while the work and
+     * the two further Updates run, then FINISHED. */
+    for (size_t i = 0; i < 3; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, 0x40u);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
+        utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
+        snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
+                 "FINISHED, one Update refused (saw %s, %u refused)", dialogs[i].name, seen,
+                 refused);
+        expect(strcmp(seen, "1223") == 0 && refused == 1u, what);
+        snprintf(what, sizeof(what), "%s: ShutdownStart at FINISHED, then SHUTDOWN and NONE",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* The savedata shutdown by caller priority, from a running guest thread. */
+    TCB *self = fixture_thread(0x5c0u, TH_RUNNING, 0x20);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(utility_change_priority(&cpu, 0x20u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x20");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x20 sees SHUTDOWN after a savedata ShutdownStart, cannot start another "
+           "dialog yet, then sees NONE");
+
+    expect(utility_change_priority(&cpu, 0x21u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x21");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x21 sees NONE straight after a savedata ShutdownStart, never SHUTDOWN");
+
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x6F");
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u,
+           "a caller at 0x6F starts the next savedata dialog straight after ShutdownStart");
+    expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the next savedata dialog runs to NONE");
+
+    /* The edges: a cancel from RUNNING, and a caller better than 0x20, are unmeasured and keep
+     * the reported SHUTDOWN. */
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a savedata ShutdownStart during RUNNING still reports SHUTDOWN to a caller at 0x6F");
+    expect(utility_change_priority(&cpu, 0x10u) == 0u && utility_savedata_start_to_finished(&cpu),
+           "savedata reaches FINISHED for a caller at 0x10");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a caller at 0x10 sees SHUTDOWN, then NONE");
+
+    /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
+     * a savedata InitStart right after it is refused. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_savedata_block();
+    expect(utility_change_priority(&cpu, 0x6fu) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) ==
+                   0x80110001u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "a message dialog shows SHUTDOWN to a caller at 0x6F and refuses a savedata InitStart "
+           "until NONE");
+
+    s_cur = -1;
+    sr_hle_test_osk_slot_reset();
+}
+
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
                                uint32_t indata, uint32_t inlen,
                                uint32_t outdata, uint32_t outlen) {
@@ -35055,6 +35242,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
     test_utility_dialog_single_slot();
+    test_utility_dialog_status_sequence();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
