@@ -23,8 +23,9 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
 4. **`mingw32-make GAME_NAME=<g> GAME_ELF=<elf> GAME_BASE=<b> GAME_ENTRY=<e> all`**
    Drives the two-phase pipeline and compile. Set `VULKAN_SDK` for direct Make invocations; the
    manager discovers and validates it automatically. Do not replace `all` with a single dependency
-   line: generated chunk discovery occurs in the second Make process. For HST, use
-   `.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` from the repository root.
+   line: generated chunk discovery occurs in the second Make process. For a title with a local manifest, use
+   `.\nk_manager.ps1 -Action BuildFull -TitleManifest <manifest> -GameName <name>` from the repository root; the
+   maintainer's HST manifest (`assets/titles/hst-ucus98701.json`) is local and not in the repository.
 
 ## Gates
 
@@ -218,6 +219,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
 | `enhancement_package.py` | Validate and verify enhancement package declarations. |
 | `stage_runtime_dlls.py` | Stage the host runtime library closure beside a built player or title package. |
+| `make_app_icon.py` | Draw the app icon, `assets/brand/nakagawa.ico`, from the N1 mark SVG at seven sizes; `--check` reports a stale icon. |
 | `stage_install.py` | Stage a runnable player install (bin/, source/, icon) outside the build tree and write its desktop shortcut: a Windows `.lnk`, or on Linux a per-user `.desktop` entry and icon under `$XDG_DATA_HOME`. |
 | `build_profile.py` | Hash and record the build identities the native build depends on. |
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
@@ -422,9 +424,10 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_app_icon.py` | The committed app icon is a fresh drawing of the brand SVG, the C drawer draws the same pixels, and the Windows builds link it. |
 | `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
-| `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path. |
+| `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path, the release bundle and source archive, and the network egress allowlist. |
 | `test_profile_zero_e2e.py` | Manifest-driven production-route checks for the two profile-zero fixtures. |
 | `test_public_title_isolation.py` | Regression suite for public and private title isolation. |
 | `test_second_title_ingest.py` | Multi-title scalability: two distinct profiles ingest through one generic path. |
@@ -555,6 +558,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
 | `test_scratch_dir.py` | The scratch directory retries only Windows lock errors, within its bound; on Windows a real held file reproduces the WinError 32 cleanup failure. |
+| `test_site_mobile.py` | The project website, rendered headless at phone and desktop widths in every theme: no sideways overflow, one theme top to bottom, AA contrast, 44 px tap targets, the theme picker, and every reference resolving. SKIP without Playwright. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |

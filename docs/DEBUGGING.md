@@ -51,6 +51,12 @@ are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AO
 removes the generated per-instruction hook entirely. The benchmark command measures the remaining
 runtime branch cost rather than assuming a zero-cost binary.
 
+The CSV's `fps` and `present_submits` columns count presents, re-presents of one finished frame
+included. Its last three columns count new game frames as the overlay does: `new_frames`, and over
+`new_frame_intervals` intervals between them, `new_frame_vblanks` VBlanks. Game frames per second are
+`new_frames` divided by the interval's `wall_ms`, and VBlanks per frame are
+`new_frame_vblanks / new_frame_intervals`.
+
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
 run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
 the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
@@ -1107,7 +1113,7 @@ committed.
 | `SR_SYSLOG=1` | Log system calls |
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
-| `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module. For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and does not write readiness. Any other value is refused with one diagnostic and the default is used. Tracked runtime-placed module records use real stop/unload transitions; stop invokes `module_stop` only if the start entry ran and its translation is available. Unknown IDs keep trace behavior when the gate is disabled. |
+| `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module. For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, does not write readiness, writes the semantic boundary `libfont-startup-unavailable` (issue 299) to `SR_BOOT_EVENT_FILE` and stops the run with exit status 11. Any other value is refused with one diagnostic and the default is used. Tracked runtime-placed module records use real stop/unload transitions; stop invokes `module_stop` only if the start entry ran and its translation is available. Unknown IDs keep trace behavior when the gate is disabled. |
 | `SR_USER_DATA_ROOT=ABSOLUTE_PATH` | The per-user data directory, which is the one font root: the runtime reads the imported font cache at `<this>/fonts/v2` for the `flash0:` font device and the HLE `sceFont` shim. The launcher sets it for the child, overriding any inherited value. Unset uses the platform per-user directory; a runtime root does not move it. A relative or empty value is named once on stderr (`flash0: SR_USER_DATA_ROOT ...`) and skips the user-imported source, so the project font is served; it never falls back to another root. "Unreadable" means the environment read itself failed (the process could not read its own environment); that is named the same way, and skips the source too. Only an absent variable takes the platform directory. |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
@@ -1122,8 +1128,6 @@ committed.
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
-| `SR_NO_RELAUNCH=1` | Disable thread relaunch |
-| `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
 | `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
@@ -1389,11 +1393,17 @@ ball_table = 0x0030a000;  // type:data (not a function: ignored)
 - A named callable becomes `f_<address>_<name>`. The address stays in the name, so two static functions
   that share a name stay distinct, and searching for the address still finds the function. A resume
   body takes the name of the callable that owns it: `r_<address>_<owner>`.
+- Any other generated entry that lies inside a function whose `size:` the map gives, past its start, is
+  named after it with `in_`: `f_<address>_in_<name>`, or `r_<address>_in_<name>` for a resume body whose
+  owner has no name. The analyzer can start an entry inside a function, such as a jump target or a
+  continuation, so these are parts of the named function, not functions of their own.
 - Every reference is renamed with its definition. Without a map, or with a map that names no generated
-  entry, the generated C is byte-identical to a build without the option.
+  entry and holds none inside a sized function, the generated C is byte-identical to a build without the
+  option.
 - Host tools read the C names, so a link map, a debugger backtrace or a sampling profiler's
   per-symbol shares show them with no further step.
-- The generated registration file hands the runtime a table of the named functions. The crash report
+- The generated registration file hands the runtime a table of the named functions, including a sized
+  function whose start is not an entry but which holds one. The crash report
   then adds `PC symbol: ball_update+0x40` and `RA symbol: game_loop` lines, and the dispatch trace adds
   `tgt_sym=` and `ra_sym=`. An address inside a function is named only when the map gives its `size:`.
 - A malformed line, an address wider than 32 bits, two different names for one address, or a name that
@@ -1437,7 +1447,14 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
 - **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
 - **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off. (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
 - **Telemetry Displayed**:
-  - **FPS & Frame Time**: Presented frames per second and average millisecond latency per presented frame.
+  - **Game FPS**: New game frames per second. A new frame is a present whose guest framebuffer differs from the
+    previous present's, the flip that `tools/perf_attribution.py` counts. This is the frame rate a player sees.
+  - **Per frame**: The mean number of VBlanks between new frames. 2.0 is a game built for 30 frames per second running
+    on time, and 1.0 is a 60-frame game on time. Hot Shots Tennis waits for two VBlanks per frame, so it is a
+    30-frame game, and 3.0 means it is running at two-thirds of its own rate.
+  - **Presents**: Frames handed to the window per second, re-presents of the same finished frame included. Some games
+    set the same buffer twice per frame (once immediately and once for the next frame), so this can be about twice
+    the game's frame rate. It used to be the overlay's "FPS" line.
   - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
   - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
 - **Timing and Performance Guarantees**:

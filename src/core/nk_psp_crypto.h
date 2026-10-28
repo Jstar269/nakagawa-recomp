@@ -40,7 +40,10 @@ enum {
     NK_PSP_ERR_UNSUPPORTED = -6, /* container form or mode not enabled */
     NK_PSP_ERR_DECOMPRESS = -7,  /* payload decompression failed */
     NK_PSP_ERR_INTERNAL = -8,
-    NK_PSP_ERR_FIRMWARE = -9     /* firmware container: never decrypted */
+    NK_PSP_ERR_FIRMWARE = -9,    /* firmware container: never decrypted */
+    NK_PSP_ERR_CONTEXT = -10,    /* needs the user's console (fuse ID, licence) */
+    NK_PSP_ERR_PSONE = -11,      /* PSOne Classic package: out of scope */
+    NK_PSP_ERR_CANCELLED = -12   /* the caller cancelled; nothing was kept */
 };
 
 /* Operation context: the KeyStore plus fail-closed diagnostics. */
@@ -66,7 +69,8 @@ int nk_psp_fail(NkPspCtx *ctx, int code, const char *entry, const char *fmt, ...
 /* The named result for a boundary return code, shared by the player and the
  * tools: VALIDATED_DECRYPTED for NK_PSP_OK, KEY_REQUIRED, MALFORMED_INPUT,
  * INTEGRITY_FAILURE, KEY_FILE_INVALID, UNSUPPORTED_SCHEME,
- * DECOMPRESS_FAILURE, IO_FAILURE, FIRMWARE_OUT_OF_SCOPE or INTERNAL_ERROR. */
+ * DECOMPRESS_FAILURE, IO_FAILURE, FIRMWARE_OUT_OF_SCOPE, CONTEXT_REQUIRED,
+ * PSONE_CLASSIC_UNSUPPORTED, CANCELLED or INTERNAL_ERROR. */
 const char *nk_psp_status_name(int code);
 
 #ifdef __cplusplus

@@ -100,7 +100,7 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 Not done yet:
 
 - **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
-- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
+- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. It is the only launcher: the shipped player has no switch to the old renderer, and when the launcher cannot start (its fonts missing from an incomplete ZIP extraction) the player says why in a message box, tells the user to extract the ZIP again, and exits with code 4. The old `ui_renderer.c` stays only for regression tests that still pin it (`--ui=legacy`, in the `NK_PLAYER_UI_REGRESSION_TEST` build).
 - Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
 
 ---
@@ -153,8 +153,8 @@ capability layers rather than being reimplemented in the launcher.
 The flow below is the complete productization target, not a description of the current
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
-live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI use decrypted
-files from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player decrypts the encrypted
+executable and modules of a UMD disc image you own, locally, when it checks the disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -185,7 +185,7 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
      under those roots (for example `xbdata`) must be present, or the disc is
      refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files, and neither does any other part of the player ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the disc check before it decrypts the encrypted `EBOOT.BIN` and modules that have no plain copy yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.

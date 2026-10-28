@@ -82,7 +82,7 @@ def _metric_missing_sentinel() -> bytes:
     if glyph_id is None:
         raise AssertionError("the base fixture must map uppercase A")
     record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
-    flags = fonts._get_bits(image, record, len(image) - record, 45, 3)
+    flags = fonts._get_bits(image, record, len(image) - record, 44, 4)
     if flags is None or not flags & 1:
         raise AssertionError("the base fixture must index its dimension metric")
     image[record + 8] = 255
@@ -104,8 +104,12 @@ def _metric_255_with_short_table() -> bytes:
     return bytes(image)
 
 
-def _shadow_prefix_at_eof() -> bytes:
-    """Give lowercase a a mapped shadow whose optional prefix begins exactly at EOF."""
+def _shadow_prefix_at_eof(shadow_code: int = 0x61) -> bytes:
+    """Give lowercase a a shadow whose optional prefix begins exactly at EOF.
+
+    The shadow map names ``shadow_code``: lowercase a by default (a mapped shadow), or 0,
+    which console fonts use for a record with no shadow glyph.
+    """
     image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
     metric_end = fonts.BASE_HEADER_SIZE + sum(image[0x102:0x106]) * 8
     image[metric_end:metric_end] = b"\x61\x00\x00\x00"
@@ -128,7 +132,53 @@ def _shadow_prefix_at_eof() -> bytes:
     word = (word & ~((1 << 14) - 1)) | shadow_offset
     word = (word & ~(((1 << 9) - 1) << 55)) | (1 << 55)
     image[record:record + 8] = word.to_bytes(8, "little")
-    struct.pack_into("<H", image, metric_end, 0x61)
+    struct.pack_into("<H", image, metric_end, shadow_code)
+    return bytes(image)
+
+
+def _record_bit(image: bytes, code: int, bit: int, value: int) -> bytes:
+    """Set one bit of the fixed prefix of the record that ``code`` maps to."""
+    parser = fonts._Image(image)
+    parser.parse_directory()
+    glyph_id = parser.map_entry(code)
+    if glyph_id is None:
+        raise AssertionError(f"the base fixture must map U+{code:04X}")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    patched = bytearray(image)
+    if value:
+        patched[record + bit // 8] |= 1 << (bit % 8)
+    else:
+        patched[record + bit // 8] &= ~(1 << (bit % 8)) & 0xFF
+    return bytes(patched)
+
+
+def _revision_3_subcharmap(ranges: list) -> bytes:
+    """The dense Latin font as revision 3 with a 412-byte header whose first extension table
+    holds ``ranges`` as (start, length) pairs; these index the character map."""
+    base = _latin_dense()
+    metric_end = fonts.BASE_HEADER_SIZE + sum(base[0x102:0x106]) * 8
+    table = b"".join(struct.pack("<HH", start, length) for start, length in ranges)
+    image = bytearray(base[:392] + bytes(20) + base[392:metric_end] + table + base[metric_end:])
+    struct.pack_into("<H", image, 2, 412)
+    struct.pack_into("<i", image, 8, 3)
+    struct.pack_into("<I", image, 0x188, 16)
+    struct.pack_into("<H", image, 0x18C, len(ranges))
+    return bytes(image)
+
+
+def _composite(codes: tuple) -> bytes:
+    """Make uppercase A a three-part composite naming ``codes`` (0 names no part)."""
+    image = bytearray(build_pgf([_glyph(0x41, 4, 4)] + [_glyph(code) for code in range(0x42, 0x46)],
+                                font_name="Nakagawa Test Latin"))
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph = parser.primary_glyph(parser.map_entry(0x41))
+    if glyph is None or glyph["record_size"] + 6 > parser.size - glyph["record_offset"]:
+        raise AssertionError("the base fixture must leave room for a composite payload")
+    record = glyph["record_offset"]
+    image[record + 5] = (image[record + 5] & ~0x0C) | (3 << 2)  # row order (bits 42-43) = 3
+    for part, code in enumerate(codes):
+        struct.pack_into("<H", image, glyph["bitmap_offset"] + 2 * part, code)
     return bytes(image)
 
 
@@ -223,6 +273,20 @@ def _corpus(rng: random.Random) -> dict:
             0x18C,
             struct.pack("<H", 1),
         ),
+        # Revision 3: the subcharmap ranges index the character map (PGF_SPEC.md 3.2).
+        "revision_3_subcharmap_whole": _revision_3_subcharmap([(0x41, 26)]),
+        "revision_3_subcharmap_reordered": _revision_3_subcharmap([(0x61, 1), (0x41, 25)]),
+        "revision_3_subcharmap_misses": _revision_3_subcharmap([(0x3000, 26)]),
+        # Bits 44-47 flag the dimension, X, Y and advance groups (PGF_SPEC.md 3.5).
+        "dimension_inline_bit_44": _record_bit(dense, 0x41, 44, 0),
+        "advance_inline_bit_47": _record_bit(dense, 0x41, 47, 0),
+        # A shadow entry naming character 0 names no shadow glyph (PGF_SPEC.md 3.3).
+        "shadow_code_zero": _shadow_prefix_at_eof(0),
+        # Composite parts: code 0 names no component; all absent or a stray code is refused.
+        "composite_all_parts": _composite((0x42, 0x43, 0x44)),
+        "composite_part_zero": _composite((0x42, 0x43, 0)),
+        "composite_no_parts": _composite((0, 0, 0)),
+        "composite_stray_code": _composite((0x42, 0x43, 0x01)),
     }
     # Glyph-level refusal: the first pointer entry points past the end of the image.
     pointer_offset = fonts._Image(dense)
@@ -342,8 +406,34 @@ class PgfValidatorParityTests(unittest.TestCase):
         self.assertEqual(fonts.pgf_verdict(_patched(dense, 2, struct.pack("<H", 412)))["refusal"], "HEADER_SIZE")
         self.assertEqual(fonts.pgf_verdict(bytes(16 * 1024 * 1024 + 1))["refusal"], "TOO_LARGE")
 
+    def test_console_font_rules_have_their_verdicts(self) -> None:
+        """The rules measured on console fonts accept what those fonts use and still refuse
+        their edges, in the Python mirror (the corpus test pins the native reader to it)."""
+        corpus = _corpus(random.Random(0))
+        expected = {
+            "revision_3_subcharmap_whole": "NONE",
+            "revision_3_subcharmap_reordered": "NONE",
+            "revision_3_subcharmap_misses": "NONE",
+            "dimension_inline_bit_44": "GLYPH",
+            "advance_inline_bit_47": "GLYPH",
+            "shadow_code_zero": "NONE",
+            "composite_all_parts": "NONE",
+            "composite_part_zero": "NONE",
+            "composite_no_parts": "GLYPH",
+            "composite_stray_code": "GLYPH",
+        }
+        for name, refusal in expected.items():
+            self.assertEqual(fonts.pgf_verdict(corpus[name])["refusal"], refusal, name)
+        reordered = fonts.pgf_verdict(corpus["revision_3_subcharmap_reordered"])
+        whole = fonts.pgf_verdict(corpus["revision_3_subcharmap_whole"])
+        self.assertEqual((whole["has_latin"], reordered["has_latin"]), (0, 1))
+        misses = fonts._Image(corpus["revision_3_subcharmap_misses"])
+        misses.parse_directory()
+        self.assertIsNone(misses.map_entry(0x41))
+
     def test_firmware_compatible_records_import_and_match_native_reader(self) -> None:
-        """A missing metric and an absent EOF shadow stay bounded and import as Latin PGFs."""
+        """Index 255 in any table, an absent EOF shadow and a shadow naming code 0 stay
+        bounded and import as Latin PGFs; a short shadow prefix is still refused."""
         folder = Path(self.tmp.name) / "firmware_compatible"
         folder.mkdir()
         fixtures = {
@@ -351,6 +441,7 @@ class PgfValidatorParityTests(unittest.TestCase):
             "ltn8.pgf": _shadow_prefix_at_eof(),
             "short_metric_table.pgf": _metric_255_with_short_table(),
             "short_shadow.pgf": _short_shadow_prefix(),
+            "ltn5.pgf": _shadow_prefix_at_eof(0),
         }
         paths = []
         for name, data in fixtures.items():
@@ -361,9 +452,7 @@ class PgfValidatorParityTests(unittest.TestCase):
         native = _native_verdicts(self.exe, paths)
         for path, line in zip(paths, native, strict=True):
             tokens = line.split()
-            expected = ("10", "0") if path.name in (
-                "short_metric_table.pgf", "short_shadow.pgf"
-            ) else ("0", "1")
+            expected = ("10", "0") if path.name == "short_shadow.pgf" else ("0", "1")
             self.assertEqual((tokens[0], tokens[1]), expected, path.name)
             verdict = fonts.pgf_verdict(fixtures[path.name])
             self.assertEqual(verdict["ok"], expected[1] == "1", path.name)
@@ -371,8 +460,9 @@ class PgfValidatorParityTests(unittest.TestCase):
                 self.assertEqual(verdict["refusal"], "GLYPH", path.name)
 
         result = fonts.import_fonts(folder, user_data_root=folder / "user")
-        self.assertEqual(result["imported_count"], 2)
-        self.assertEqual(result["latin_indices"], {"3": "ltn3.pgf", "8": "ltn8.pgf"})
+        self.assertEqual(result["imported_count"], 4)
+        self.assertEqual(result["latin_indices"], {"3": "ltn3.pgf", "5": "ltn5.pgf", "8": "ltn8.pgf"})
+        self.assertEqual(result["slots"], {"latin": "nkltn.pgf"})
         details = {outcome["name"]: outcome["detail"] for outcome in result["outcomes"]}
         self.assertTrue(details["short_shadow.pgf"].startswith("refused:"))
 

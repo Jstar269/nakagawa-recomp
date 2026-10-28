@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "nakagawa-recomp",
   "description": "Reproducible release and asset provenance manifest for Nakagawa Recomp public releases",
-  "version": "0.1.0",
+  "version": "0.0.2-dev",
   "license": "GPL-3.0-or-later",
-  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Two remain open and each closes on provenance evidence (project-authored replacement code or confirmed license terms), not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices. PGD/amctrl support is engineering work: it is published when it works, and the project ships no keys. See NOTICE.md.",
+  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Two remain open and each closes on provenance evidence (project-authored replacement code or confirmed license terms), not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices. PGD/amctrl support is engineering work: it is published when it works. The project ships no keys bound to a console or a user and no firmware keys; its only key material is the public game-decryption tables PPSSPP also ships, in src/core/nk_psp_builtin_keys.c. See NOTICE.md.",
   "reference_environment": {
     "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
     "make": "GNU Make >= 4.4",
@@ -170,10 +170,6 @@
     }
   ],
   "excluded_paths": [
-    {
-      "path": "assets/titles/hst-ucus98701.json",
-      "comment": "Title-specific manifest excluded by the public profile."
-    },
     {
       "path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
       "comment": "Private title-run acceptance evidence excluded from public scope."
@@ -720,6 +716,40 @@
       "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
     },
     {
+      "id": "app-icon-nakagawa",
+      "name": "App icon: the N1 mark on its ink tile",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "assets/brand/nakagawa.ico",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5510ec6f1154f9f0eb0f5c3b6c671912d269f2db78703622c6fece3b7b61ef7d"
+      },
+      "comment": "Project-authored app icon drawn from docs/images/brand/nakagawa-mark-dark.svg by tools/make_app_icon.py; linked into the Windows executables through assets/brand/nakagawa.rc."
+    },
+    {
+      "id": "site-og-card",
+      "name": "Website share card (Open Graph image)",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/og-card.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
+      },
+      "comment": "Project-authored link preview: the N1 mark, the site's tennis court and text in Geist (OFL-1.1). No game imagery."
+    },
+    {
       "id": "readme-showcase-ge-scene-v240",
       "name": "README screenshot: GE scene demo at vblank 240",
       "type": "asset",
@@ -788,6 +818,74 @@
       "comment": "41-frame present-truthful capture from the normal player route for the source-owned TEST00008 Breakout showcase; no retail bytes."
     },
     {
+      "id": "site-hst-rally-clip",
+      "name": "Website presentation clip: a Hot Shots Tennis rally with sound",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/hst-rally.mp4",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "a6ffaeb082a09078c7895e355bb38fb51690f0dfbf86600d33a8d6d7d5ff6dac"
+      },
+      "comment": "Presentation media of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp, approved by the maintainer for v0.0.1. The game belongs to its publisher; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
+      "id": "site-hst-rally-poster",
+      "name": "Website presentation poster: a frame of the Hot Shots Tennis rally clip",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/hst-rally-poster.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "55523ab5a86ea6dfdd2c128eb032b212c7744f4fe6b034d966bd86d55a62e31e"
+      },
+      "comment": "Presentation media of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp, approved by the maintainer for v0.0.1. The game belongs to its publisher; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
+      "id": "site-launcher-library",
+      "name": "Website screenshot: the launcher's library",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/launcher-library.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "0e40d1d521ca853bb711cf8fc369f6aba0f7666576d4665ef4f2a3b7898596ac"
+      },
+      "comment": "Presentation screenshot of the Nakagawa player from the v0.0.1 release build, approved by the maintainer on 2026-10-27. Game art and names shown belong to their publishers; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
+      "id": "site-launcher-building",
+      "name": "Website screenshot: the launcher building a game",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/launcher-building.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "1f1706c9a8aa1c11e7a3b44f3c9eb9cc8edbad059233f51fc7e6e6eea91c40db"
+      },
+      "comment": "Presentation screenshot of the Nakagawa player from the v0.0.1 release build, approved by the maintainer on 2026-10-27. Game art and names shown belong to their publishers; not licensed under this repository. Published with its notice under the presentation-media rule (AGENTS.md section 5)."
+    },
+    {
       "id": "fixture-fonts-gowundodum-regular",
       "name": "Pinned permissively redistributable Korean font source: GowunDodum-Regular.ttf",
       "source_path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",
@@ -854,9 +952,26 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "2dbf23ef3047b9c8b4d2adaf782e332cb3e0b4da2b30b8a9afbe3dae907888cc"
+        "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
       },
       "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
+    },
+    {
+      "id": "site-hst-title-screen-960",
+      "name": "Website presentation screenshot: Hot Shots Tennis title screen, 960 px",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/hst-title-screen-960.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "8abe8ddfc74d02d04cf74791b3924c8b2ae5daf4000403f3b6e01134a775b878"
+      },
+      "comment": "docs/media/hst-title-screen.png reduced to 960 x 540 and a 256-colour palette for the project website. The game belongs to its publisher; not licensed under this repository. Shown with its notice under the maintainer authorization of 2026-10-21 for presentation screenshots."
     },
     {
       "id": "ui-font-chakrapetch-semibold",

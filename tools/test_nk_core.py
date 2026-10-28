@@ -237,8 +237,12 @@ class NkCoreTests(unittest.TestCase):
         self.assertIsNotNone(p5)
         self.assertEqual(p5.id, "pspdev-phase5-v1")
 
-        # Check retail disc IDs are not in public registry
-        self.assertIsNone(reg.lookup_by_disc_id("UCUS98701"))
+        # The public HST manifest is the built-in hst title; another region's id is not catalogued
+        hst = reg.lookup_by_disc_id("UCUS-98701")
+        self.assertIsNotNone(hst)
+        self.assertEqual(hst.id, "hst-ucus98701-v1")
+        self.assertEqual(hst.codegen_profile, "hst")
+        self.assertEqual(hst.runtime_profile, "hst-current")
         self.assertIsNone(reg.lookup_by_disc_id("UCES01402"))
 
         # Check unsupported disc ID
@@ -1046,23 +1050,39 @@ def _retail_fallback_findings(text: str) -> list[str]:
     return [token for token in RETAIL_FALLBACK_TOKENS if token in text]
 
 
+def _without_catalog_entries(text: str) -> str:
+    """``text`` minus the generated catalog's title-entry table.
+
+    That table is data projected from the policy-included manifests (the public
+    HST manifest among them), not launcher logic; everything else in the
+    generated catalog is generic code and must stay free of title literals.
+    """
+    start = text.find("const NkTitleEntry nk_title_catalog_entries[] = {")
+    if start < 0:
+        return text
+    end = text.index("\n};\n", start)
+    return text[:start] + text[end + 4:]
+
+
 def _legacy_retail_manifest() -> dict:
     """Source-owned stand-in for an explicitly retail-identified title.
 
-    It mirrors the shape of the local legacy retail title manifest (zero base
-    and entry are the declared launch values) without carrying any private
-    byte or private address: the addresses here are synthetic.
+    It mirrors the shape of a legacy retail title manifest (zero base and
+    entry are the declared launch values) without carrying any private byte or
+    private address: the addresses here are synthetic. Its identity is a
+    retail-format placeholder no catalog title owns, so it never collides with
+    the public HST manifest.
     """
     base = json.loads(
         (REPO_ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
     )
-    base["id"] = "hst-ucus98701-v1"
+    base["id"] = "legacy-retail-fixture-v1"
     base["display_name"] = "Legacy Retail Fixture (synthetic stand-in)"
     base["kind"] = "retail"
     base["game_name"] = "hst"
     base["disc"] = {
-        "id": "UCUS98701",
-        "region": "NA",
+        "id": "UCES01402",
+        "region": "EU",
         "revision_policy": "exact-disc-id",
     }
     base["executable"]["base"] = 0
@@ -1362,7 +1382,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         registry.load_private_manifest(manifest_path)
 
         exe, img = _write_title_runtime(self.temp_dir, "hst", exe_ext=".exe")
-        data = {"title_id": "hst-ucus98701-v1", "disc_id": "UCUS98701"}
+        data = {"title_id": "legacy-retail-fixture-v1", "disc_id": "UCES01402"}
 
         # With the validated identity loaded: resolves its own build.
         launcher = RuntimeLauncher(repo_root=self.temp_dir, registry=registry)
@@ -1859,6 +1879,9 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
     def test_generic_launcher_sources_carry_no_retail_fallbacks(self) -> None:
         for rel in GENERIC_LAUNCHER_SOURCES:
             text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            if rel.endswith("generated/nk_title_catalog.c"):
+                self.assertIn("nk_title_catalog_entries[] = {", text)
+                text = _without_catalog_entries(text)
             findings = _retail_fallback_findings(text)
             self.assertEqual(
                 findings, [],
