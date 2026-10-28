@@ -1271,7 +1271,10 @@ def _make_input_images(
             analysis_summary["executable_regions"] += len(ranges)
 
             try:
-                stubs, findings = _import_model(elf)
+                with source["path"].open("rb") as stream:
+                    overlay = analyze.is_code_overlay(stream.read(4))
+                # A code overlay has no import table: it calls the executable's stubs.
+                stubs, findings = ({}, []) if overlay else _import_model(elf)
             except ImportTableError as exc:
                 raise PackageRouteError(
                     exc.code, f"{source['name']}: {exc}"

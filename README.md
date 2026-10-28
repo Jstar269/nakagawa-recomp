@@ -98,9 +98,8 @@ byte-matching decompilation, and a general PSP toolkit ([`docs/PROJECT_MODEL.md`
 [![hst-decomp code matched](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJstar269%2Fhst-decomp%2Fmain%2Fdocs%2Fobjdiff-report.json&query=%24.measures.matched_code_percent&suffix=%25&label=hst-decomp%20code%20matched&color=6E9600)](https://github.com/Jstar269/hst-decomp)
 
 Hot Shots Tennis also has a project of its own: [hst-decomp](https://github.com/Jstar269/hst-decomp), a matching
-decompilation that rebuilds the game's code as C and C++ that compiles back to the exact original bytes. On
-27 October 2026 it had 35.9% of the game's code matched (12,199 of 19,634 functions); the badge shows today's
-figure.
+decompilation that rebuilds the game's code as C and C++ that compiles back to the exact original bytes. The badge
+shows how much of the game's code it has matched so far.
 
 The two projects share findings, not code. The decomp's function names can label the C that Nakagawa generates
 ([#1495](https://github.com/Jstar269/nakagawa-recomp/pull/1495)), and what it shows about the game helps replace
@@ -123,7 +122,7 @@ The full rules, including what may never be sent to an AI service, are in [`docs
 
 ## Build it yourself
 
-This is the developer route, and today the only way to play. New to this? The
+This is the developer route; the [release ZIP](#can-i-play-it) is the easier one. New to this? The
 [prerequisites](docs/SETUP.md#prerequisites) are one list in [`docs/SETUP.md`](docs/SETUP.md).
 
 1. **Build the player** from a checkout: `mingw32-make player` (Windows 11 x64 with a Vulkan GPU, PowerShell 7.4+ and

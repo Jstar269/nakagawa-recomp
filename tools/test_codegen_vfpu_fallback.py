@@ -37,10 +37,10 @@ class VfpuFallbackTests(unittest.TestCase):
             codegen.vfpu_effect(0x08804000, 0x486200FF)  # mfvc $v0, 255
 
     def test_unknown_vfpu_form_stays_inside_translated_function(self):
-        word=(0x34<<26)|(31<<21)  # unsupported VFPU4 jump group
+        word=(0x34<<26)|(31<<21)|0x8080  # vwbn.q: no measured rule (issue #326)
         line=codegen.normal_line(0x1234,word)
         self.assertIn("s->pc=0x00001234u",line)
-        self.assertIn("sr_vfpu_interp(s,0xd3e00000u)",line)
+        self.assertIn("sr_vfpu_interp(s,0xd3e08080u)",line)
         self.assertIn("SR_VFPU_OTHER",line)
         self.assertIn("VFPU_UNSUPPORTED",line)
         self.assertIn("sr_unimplemented",line)
@@ -49,7 +49,7 @@ class VfpuFallbackTests(unittest.TestCase):
 
     @unittest.skipUnless(CC, "a host C compiler is required")
     def test_unknown_vfpu_form_stops_before_following_instruction(self):
-        word = (0x34 << 26) | (31 << 21)
+        word = (0x34 << 26) | (31 << 21) | 0x8080  # vwbn.q: no measured rule
         line = codegen.normal_line(0x1234, word)
         source = f'''#include <stdint.h>
 #include <stdio.h>
@@ -57,7 +57,7 @@ class VfpuFallbackTests(unittest.TestCase):
 typedef struct CpuState {{ uint32_t pc; uint32_t r[32]; }} CpuState;
 static void sr_begin(CpuState *s, uint32_t pc, uint32_t op) {{ (void)s; (void)pc; (void)op; }}
 static void sr_end(CpuState *s, uint32_t addr, uint32_t size) {{ (void)s; (void)addr; (void)size; }}
-static int sr_vfpu_interp(CpuState *s, uint32_t op) {{ (void)s; return op == 0xd3e00000u ? SR_VFPU_OTHER : 1; }}
+static int sr_vfpu_interp(CpuState *s, uint32_t op) {{ (void)s; return op == 0xd3e08080u ? SR_VFPU_OTHER : 1; }}
 static int unsupported;
 static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void)reason; unsupported = 1; }}
 static void generated(CpuState *s) {{ {line} s->r[0] = 0xdeadbeefu; }}
@@ -78,12 +78,13 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
             self.assertEqual(ran.returncode, 0, ran.stderr)
 
     def test_vfpu4_public_identity_rows_still_fail_closed(self):
-        # vrnds and the vrndf1/vrndf2 float draws have no recorded rule (issue #326);
-        # vrndi is measured at .s only (PSP-HLE-ISSUES-001), so .p/.t/.q stay closed.
+        # vrnds has no recorded rule (issue #326); vrndi (PSP-HLE-ISSUES-001) and the
+        # vrndf1/vrndf2 float draws (PSP-VFPU-FORMS-001) are measured at .s only, so
+        # .p/.t/.q stay closed.
         cases = (
             (0x01, 0x00, 0x0000, "vrnds"),
-            (0x01, 0x02, 0x0000, "vrndf1"),
-            (0x01, 0x03, 0x0000, "vrndf2"),
+            (0x01, 0x02, 0x0080, "vrndf1"),
+            (0x01, 0x03, 0x8080, "vrndf2"),
             (0x01, 0x01, 0x0080, "vrndi"),
             (0x01, 0x01, 0x8000, "vrndi"),
             (0x01, 0x01, 0x8080, "vrndi"),
@@ -155,6 +156,96 @@ int main(void) {{
             root = Path(tmp)
             source_path = root / "vrndi.c"
             exe_path = root / ("vrndi.exe" if Path(CC).suffix.lower() == ".exe" else "vrndi")
+            source_path.write_text(source, encoding="ascii", newline="\n")
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", str(source_path), "-o", str(exe_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+
+    def test_vfpu_forms_are_direct_at_their_measured_widths(self):
+        # PSP-VFPU-FORMS-001 (issue #326): vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and
+        # vrndf1.s/vrndf2.s are emitted without the interpreter, through the recomp.h
+        # helpers sr_vfpu_interp also calls. Every other width raises Unsupported.
+        direct = {
+            0xD0330080: ("s->vi[3]=sr_vfpu_h2f(_s1>>16);",),           # FF III's vh2f.p
+            0xD0330008: ("s->vi[33]=sr_vfpu_h2f(_s0>>16);",),
+            0xD0380100: ("uint32_t _s=s->vi[4];", "s->vi[3]=sr_vfpu_uc2i(_s>>24);"),
+            0xD0456041: ("_x[0]=s->vi[3];", "s->vi[7]=_d[1];"),          # SSP's vsocp.s
+            0xD0450088: ("sr_vfpu_socp(_x[1],&_d[2]);", "s->vi[35]=_d[3];"),
+            0xD37F0007: ("s->vi[28]=sr_vfpu_wbn(s->vi[0],127u);",),      # SSP's vwbn.s
+            0xD0220000: ("s->vi[0]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],0);",),
+            0xD0230000: ("s->vi[0]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],1);",),
+        }
+        for word, fragments in direct.items():
+            with self.subTest(word=f"0x{word:08x}"):
+                body, saddr, ssize = codegen.vfpu_effect(0x3400, word)
+                self.assertEqual((saddr, ssize), (None, 0))
+                self.assertNotIn("sr_vfpu_interp", body)
+                for fragment in fragments:
+                    self.assertIn(fragment, body)
+                for token in ("VFPU_UNSUPPORTED", "issue=326", "sr_unimplemented", "return;"):
+                    self.assertIn(token, body)
+        # The in-place vh2f.p reads both source words before the first write.
+        body = codegen.vfpu_effect(0x3400, 0xD0330080)[0]
+        self.assertLess(body.index("uint32_t _s1=s->vi[1];"), body.index("s->vi[0]=sr_vfpu_h2f"))
+        for word in (0xD0338008, 0xD0338088, 0xD0380088, 0xD0458008, 0xD0458088,
+                     0xD37F0088, 0xD3E08080, 0xD0220080, 0xD0238080):
+            with self.subTest(word=f"0x{word:08x}"):
+                with self.assertRaises(codegen.Unsupported):
+                    codegen.vfpu_effect(0x3400, word)
+                line = codegen.normal_line(0x3400, word)
+                self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", line)
+                self.assertIn("issue=326", line)
+
+    @unittest.skipUnless(CC, "a host C compiler is required")
+    def test_vfpu_forms_under_a_prefix_stop_before_following_instruction(self):
+        # A pending S, T or D prefix on these forms is unmeasured: the generated body must
+        # stop the run with the state untouched, as sr_vfpu_interp refuses it. With
+        # identity prefixes the destination lanes change and the next instruction runs.
+        line = codegen.normal_line(0x1234, 0xD0330080)  # vh2f.p C000, C000
+        source = f'''#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef struct CpuState {{ uint32_t pc; uint32_t r[32]; uint32_t vi[128]; uint32_t vfpuCtrl[16]; }} CpuState;
+static void sr_begin(CpuState *s, uint32_t pc, uint32_t op) {{ (void)s; (void)pc; (void)op; }}
+static void sr_end(CpuState *s, uint32_t addr, uint32_t size) {{ (void)s; (void)addr; (void)size; }}
+static uint32_t sr_vfpu_h2f(uint32_t h) {{ return 0x10000u | h; }}
+static int unsupported;
+static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void)reason; unsupported = 1; }}
+static void generated(CpuState *s) {{ {line} s->r[1] = 0xdeadbeefu; }}
+static int run(uint32_t sp, uint32_t tp, uint32_t dp, int expect_write) {{
+    CpuState s, before;
+    memset(&s, 0, sizeof(s));
+    s.vi[0] = 0x22221111u; s.vi[1] = 0x44443333u;
+    s.vfpuCtrl[0] = sp; s.vfpuCtrl[1] = tp; s.vfpuCtrl[2] = dp;
+    before = s;
+    unsupported = 0;
+    generated(&s);
+    if (expect_write)
+        return !unsupported && s.vi[0] == 0x11111u && s.vi[1] == 0x12222u &&
+               s.vi[2] == 0x13333u && s.vi[3] == 0x14444u && s.r[1] == 0xdeadbeefu &&
+               s.pc == 0u && memcmp(s.vfpuCtrl, before.vfpuCtrl, sizeof(s.vfpuCtrl)) == 0;
+    return unsupported && s.r[1] == 0u && s.pc == 0x1234u &&
+           memcmp(s.vi, before.vi, sizeof(s.vi)) == 0 &&
+           memcmp(s.vfpuCtrl, before.vfpuCtrl, sizeof(s.vfpuCtrl)) == 0;
+}}
+int main(void) {{
+    int ok = run(0xe4u, 0xe4u, 0u, 1);
+    ok &= run(0xf00e4u, 0xe4u, 0u, 0);
+    ok &= run(0xe4u, 0x1bu, 0u, 0);
+    ok &= run(0xe4u, 0xe4u, 0x100u, 0);
+    ok &= run(0xe4u, 0xe4u, 0x1u, 0);
+    return ok ? 0 : 1;
+}}
+'''
+        with scratch_dir.TemporaryDirectory(prefix="vfpu_forms_prefix_") as tmp:
+            root = Path(tmp)
+            source_path = root / "forms.c"
+            exe_path = root / ("forms.exe" if Path(CC).suffix.lower() == ".exe" else "forms")
             source_path.write_text(source, encoding="ascii", newline="\n")
             compiled = subprocess.run(
                 [CC, "-std=c11", "-O0", str(source_path), "-o", str(exe_path)],

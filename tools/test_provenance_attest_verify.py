@@ -2966,6 +2966,65 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             next((item for item in verdict["findings"] if item["code"] == "POLICY_SUBSTITUTION"), None),
         )
 
+    def _rule_change_head(self) -> tuple[str, bytes, bytes, dict, dict]:
+        """A head whose only profile change is a rule field: one exclude_rationale entry is dropped."""
+        self.repo.branch("rule-change", self.base)
+        policy_path = self.repo.root / verifier.POLICY_PATH
+        baseline_raw = policy_path.read_bytes()
+        baseline = json.loads(baseline_raw.decode("utf-8"))
+        candidate = json.loads(baseline_raw.decode("utf-8"))
+        rationale = dict(candidate.get("exclude_rationale", {}))
+        rationale["docs/retired-note.md"] = "Synthetic orphan rationale."
+        candidate["exclude_rationale"] = rationale
+        candidate_raw = _canonical(candidate)
+        self.repo.write(verifier.POLICY_PATH, candidate_raw)
+        head = self.repo.commit("rule change: one rationale entry")
+        return head, baseline_raw, candidate_raw, baseline, candidate
+
+    def _rule_authority(self, baseline_raw: bytes, candidate_raw: bytes, rule_changes: list) -> tuple[Path, Path]:
+        blessed_policy = self.outside / "blessed-candidate-policy.json"
+        blessed_policy.write_bytes(candidate_raw)
+        authority = self.outside / "policy-delta-authority.json"
+        authority.write_bytes(_canonical({
+            "schema_version": 2,
+            "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(baseline_raw),
+            "candidate_policy_sha256": _sha(candidate_raw),
+            "allowed_delta": {
+                "include_added": [], "include_removed": [], "exclude_added": [], "exclude_removed": [],
+                "rule_changes": rule_changes,
+            },
+        }))
+        return blessed_policy, authority
+
+    def test_a_v2_delta_authorizes_a_rule_change_bound_to_its_values(self) -> None:
+        head, baseline_raw, candidate_raw, baseline, candidate = self._rule_change_head()
+        bound = {
+            "key": "exclude_rationale",
+            "baseline_sha256": provenance_ledger.policy_rule_value_sha256(baseline, "exclude_rationale"),
+            "candidate_sha256": provenance_ledger.policy_rule_value_sha256(candidate, "exclude_rationale"),
+        }
+        blessed_policy, authority = self._rule_authority(baseline_raw, candidate_raw, [bound])
+
+        verdict = self.run_ephemeral(head, trusted_candidate_policy=blessed_policy, policy_delta_authority=authority)
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["policy_delta"]["rule_changes"], ["exclude_rationale"])
+
+    def test_a_v2_delta_refuses_a_rule_change_bound_to_another_value(self) -> None:
+        head, baseline_raw, candidate_raw, baseline, _candidate = self._rule_change_head()
+        other = dict(baseline, exclude_rationale={"docs/other.md": "Not what was reviewed."})
+        bound = {
+            "key": "exclude_rationale",
+            "baseline_sha256": provenance_ledger.policy_rule_value_sha256(baseline, "exclude_rationale"),
+            "candidate_sha256": provenance_ledger.policy_rule_value_sha256(other, "exclude_rationale"),
+        }
+        blessed_policy, authority = self._rule_authority(baseline_raw, candidate_raw, [bound])
+
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.run_ephemeral(head, trusted_candidate_policy=blessed_policy, policy_delta_authority=authority)
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_RULE_VALUE_MISMATCH")
+
     def test_external_policy_delta_inputs_cannot_share_generated_output_paths(self) -> None:
         self.repo.branch("output-collision-policy-change", self.base)
         policy_path = self.repo.root / verifier.POLICY_PATH
