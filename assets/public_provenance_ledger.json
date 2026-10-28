@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8583573b4be126cd9436173aae2d4e7883b93ace7556fbf4b00a429eb59d4fd9"
+      "sha256": "93b048ecbee7c891f4bb3f49cc892330730f3aa77a743d58e22d32498046f9a6"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -13688,7 +13688,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "066052630c5857e32c74653784c347e71efdcb166349f1f4a77142bd69bad3de"
+      "sha256": "be7b20fcbd25ab8f86149040db644935128f82cec31a5bbb3af5e08782a7ba28"
     },
     {
       "path": "tools/test_dmac_semantics.py",
