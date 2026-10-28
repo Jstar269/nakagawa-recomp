@@ -3200,7 +3200,7 @@
         "source": "public documentation review",
         "statement": "generic user-supplied optional font instructions; unresolved font binaries and license packet are excluded"
       },
-      "sha256": "9917d3372eb650454a4356c3f2bef434f7789b0dc6dd8670080f7dbf2b8b4d86"
+      "sha256": "9791de9fe8295d7a56a09feee63b8eb79a6512da85a548b9771051170bc1a9c7"
     },
     {
       "path": "mk/build_common.mk",
