@@ -145,6 +145,11 @@ typedef struct {
     size_t arena_bytes; /* 0 selects Clay_MinMemorySize(). */
     const NkUiTextBackend *text;
     const NkUiTheme *theme; /* NULL selects the N1 theme, same as nk_ui_theme_n1(). */
+    /* The host's display rules, applied to every string before it is measured,
+       clamped or drawn: the launcher shows the profile folder as "~" so that
+       screenshots carry no user name. The rewrite must never grow its input;
+       it writes at most out_size bytes, NUL included. NULL draws text as given. */
+    size_t (*display_text)(const char *in, char *out, size_t out_size);
 } NkUiConfig;
 
 /* The only theme shipped today. The pointer is static, never NULL, and stays

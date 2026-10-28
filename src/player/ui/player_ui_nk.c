@@ -290,6 +290,9 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &player->text;
+    /* The launcher's display rules, as the old renderer applied them to every
+       string it drew: the profile folder shows as "~". */
+    config.display_text = player_display_text;
     player->ui = nk_ui_create(&config);
     if (player->ui == NULL) {
         player_ui_set_error(error, error_size,

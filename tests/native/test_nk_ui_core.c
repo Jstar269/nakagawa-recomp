@@ -770,6 +770,68 @@ static int test_app_icon(void) {
     return 1;
 }
 
+/* A host's display rule for the test: the synthetic profile folder becomes "~",
+   which never grows the text. */
+#define SYNTH_HOME "C:\\Users\\SYNTHETIC-USER"
+static size_t synth_display_text(const char *in, char *out, size_t out_size) {
+    size_t home_len = strlen(SYNTH_HOME);
+    size_t used = 0u;
+    while (*in != '\0' && used + 1u < out_size) {
+        if (strncmp(in, SYNTH_HOME, home_len) == 0) {
+            out[used++] = '~';
+            in += home_len;
+        } else {
+            out[used++] = *in++;
+        }
+    }
+    out[used] = '\0';
+    return used;
+}
+
+/* Every string reaches the frame through the host's display rules: copied
+   text, labels, styled text, and a clamp, which measures the rewritten text
+   so that its cut never keeps part of the profile folder. */
+static int test_display_text_rules(void) {
+    static const char path[] = SYNTH_HOME "\\Games\\PSP\\disc.iso";
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiTextStyle style = nk_ui_type(NK_UI_TYPE_DATA, 0xFFFFFFFFu);
+    NkUiConfig config;
+    NkUiLayout layout;
+    NkUi *ui;
+    char dump[4096];
+    const char *shown;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.display_text = synth_display_text;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 400.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create context with display rules");
+    nk_ui_begin(ui, 0.0);
+    CHECK(nk_ui_begin_container(ui, 1u, &layout, NULL), "open display rules container");
+    shown = nk_ui_frame_text(ui, path);
+    CHECK(strcmp(shown, "~\\Games\\PSP\\disc.iso") == 0, "frame text shows the profile as ~");
+    shown = nk_ui_text_clamp(ui, path, &style, 2000.0f, 1);
+    CHECK(strcmp(shown, "~\\Games\\PSP\\disc.iso") == 0, "a clamp that fits returns the rewritten text");
+    shown = nk_ui_text_clamp(ui, "Copied from " SYNTH_HOME "\\Games\\PSP\\a-long-file-name.iso",
+                             &style, 60.0f, 1);
+    CHECK(strstr(shown, "SYNTHETIC") == NULL && strstr(shown, "Users") == NULL,
+          "a clamp cuts the rewritten text, never a part of the profile folder");
+    nk_ui_label(ui, 2u, path, 0, 16);
+    nk_ui_text(ui, 3u, "Log file: " SYNTH_HOME "\\logs\\player.txt", &style);
+    nk_ui_end_container(ui);
+    CHECK(nk_ui_end(ui) != NULL, "complete display rules frame");
+    CHECK(nk_ui_dump(ui, dump, sizeof(dump)) < sizeof(dump), "display rules dump fits");
+    CHECK(strstr(dump, "SYNTHETIC-USER") == NULL, "no drawn run carries the profile folder");
+    CHECK(strstr(dump, "~\\\\Games") != NULL || strstr(dump, "~\\Games") != NULL,
+          "the label run shows the rewritten path");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -780,7 +842,8 @@ int main(int argc, char **argv) {
         !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() ||
         !test_input_waits_for_a_new_screen_layout() ||
         !test_control_owns_horizontal() || !test_wave_caps() ||
-        !test_image_decode() || !test_image_command() || !test_app_icon()) {
+        !test_image_decode() || !test_image_command() || !test_app_icon() ||
+        !test_display_text_rules()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {
