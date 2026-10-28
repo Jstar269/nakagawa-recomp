@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import admit_paths  # noqa: E402
 from admit_paths import AdmitError  # noqa: E402
+import provenance_ledger  # noqa: E402
 
 #: Commits run by the tool need an identity, and a host's own Git configuration
 #: must not change what the tests observe.
@@ -975,6 +976,113 @@ class BatchAdmissionTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("MERGE_PROFILE_NON_PATH_FIELD_CHANGED", err.getvalue())
         self.assertEqual((ours / admit_paths.POLICY).read_bytes(), conflicted)
+
+
+class PolicyDeltaIssueTest(unittest.TestCase):
+    """``--policy-delta``: deltas that add no path, including V2 rule changes."""
+
+    BASIS = "Owner decision: synthetic profile cleanup."
+
+    def _commit_profile(self, fixture: _Fixture, change) -> tuple[bytes, bytes]:
+        baseline = (fixture.pr / admit_paths.POLICY).read_bytes()
+        policy = json.loads(baseline.decode("utf-8"))
+        change(policy)
+        candidate = admit_paths._canonical_profile_bytes(policy)
+        (fixture.pr / admit_paths.POLICY).write_bytes(candidate)
+        git(fixture.pr, "add", admit_paths.POLICY)
+        git(fixture.pr, "commit", "-qm", "profile change")
+        return baseline, candidate
+
+    def _issue(self, fixture: _Fixture, **kwargs) -> dict:
+        kwargs.setdefault("approval_basis", self.BASIS)
+        return admit_paths.issue_policy_delta(pr_worktree=fixture.pr, private_repo=fixture.authority, **kwargs)
+
+    def _authority(self, fixture: _Fixture, result: dict) -> tuple[Path, dict]:
+        path = fixture.authority / next(r for r in result["records"] if r.endswith("policy-delta-authority.json"))
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    def test_rule_change_issues_a_v2_delta_the_gate_reads(self) -> None:
+        fixture = _Fixture(self)
+
+        def change(policy: dict) -> None:
+            policy["include_paths"].remove("docs/guide.md")
+            policy["build_mode"] = "PUBLIC_SAFE=2"
+
+        baseline, candidate = self._commit_profile(fixture, change)
+        result = self._issue(fixture, push=True)
+
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["base"], fixture.base)
+        self.assertEqual(fixture.remote_main(), result["private_commit"])
+        path, authority = self._authority(fixture, result)
+        self.assertEqual(path.parent.name, hashlib.sha256(baseline).hexdigest())
+        self.assertEqual(path.parent.parent.name, hashlib.sha256(candidate).hexdigest())
+        self.assertEqual((path.parent / "candidate-policy.json").read_bytes(), candidate)
+        self.assertEqual(authority["allowed_delta"]["include_removed"], ["docs/guide.md"])
+        self.assertEqual(authority["allowed_delta"]["rule_changes"], [{
+            "key": "build_mode",
+            "baseline_sha256": hashlib.sha256(b'"PUBLIC_SAFE=1"').hexdigest(),
+            "candidate_sha256": hashlib.sha256(b'"PUBLIC_SAFE=2"').hexdigest(),
+        }])
+        self.assertIn(self.BASIS, git(fixture.authority, "log", "-1", "--format=%B"))
+        allowed = provenance_ledger._read_policy_delta_authority(
+            path, candidate_root=fixture.pr, baseline_policy_bytes=baseline, candidate_policy_bytes=candidate)
+        self.assertEqual(allowed, provenance_ledger._classify_policy_delta(
+            json.loads(baseline), json.loads(candidate)))
+
+    def test_a_removed_rule_entry_binds_the_whole_field(self) -> None:
+        fixture = _Fixture(self)
+
+        def seed(policy: dict) -> None:
+            policy["exclude_rationale"] = {"docs/private-notes.md": "Private.", "docs/gone.md": "Orphan."}
+
+        self._commit_profile(fixture, seed)
+        git(fixture.pr, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _, candidate = self._commit_profile(fixture, lambda policy: policy["exclude_rationale"].pop("docs/gone.md"))
+        result = self._issue(fixture)
+
+        _, authority = self._authority(fixture, result)
+        self.assertEqual(authority["schema_version"], 2)
+        self.assertEqual(authority["allowed_delta"]["rule_changes"][0]["candidate_sha256"],
+                         hashlib.sha256(json.dumps({"docs/private-notes.md": "Private."}).encode()).hexdigest())
+        self.assertFalse(result["pushed"])
+        self.assertNotEqual(fixture.remote_main(), result["private_commit"], "nothing is pushed without --push")
+
+    def test_path_only_removal_stays_v1(self) -> None:
+        fixture = _Fixture(self)
+        self._commit_profile(fixture, lambda policy: policy["exclude_paths"].remove("docs/private-notes.md"))
+        result = self._issue(fixture)
+        _, authority = self._authority(fixture, result)
+        self.assertEqual(authority["schema_version"], 1)
+        self.assertEqual(authority["allowed_delta"]["exclude_removed"], ["docs/private-notes.md"])
+        self.assertEqual(authority["allowed_delta"]["rule_changes"], [])
+
+    def test_refusals(self) -> None:
+        fixture = _Fixture(self)
+        with self.assertRaises(AdmitError) as caught:
+            self._issue(fixture)
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_EMPTY")
+        with self.assertRaises(AdmitError) as caught:
+            self._issue(fixture, approval_basis=" ")
+        self.assertEqual(caught.exception.code, "APPROVAL_BASIS_REQUIRED")
+        fixture.add_pr_path(fixture.pr, "docs/new-page.md", "# New page\n")
+        with self.assertRaises(AdmitError) as caught:
+            self._issue(fixture)
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_ADDS_PATHS")
+        self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
+
+    def test_cli_mode(self) -> None:
+        fixture = _Fixture(self)
+        self._commit_profile(fixture, lambda policy: policy.update(build_mode="PUBLIC_SAFE=2"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = admit_paths.main([
+                "--policy-delta", str(fixture.pr), "--private-repo", str(fixture.authority),
+                "--approval-basis", self.BASIS,
+            ])
+        self.assertEqual(code, 0)
+        self.assertIn("issued a V2 policy delta", out.getvalue())
+        self.assertIn("rule_changes: build_mode", out.getvalue())
 
 
 class RecompJsonRegressionTest(unittest.TestCase):
