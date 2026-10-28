@@ -23991,6 +23991,13 @@ static void hle_register_mbx_handlers(void) {
 
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
+/* Semaphores, event flags and LwMutexes share this table, so every slot carries
+ * the kind of object it holds and every lookup names the kind it accepts
+ * (issue #1389). A UID of another kind is the calling API's own unknown-ID
+ * error, as for an unknown or deleted UID: UNKNOWN_SEMID, UNKNOWN_EVFID or
+ * LWMUTEX_NOT_FOUND. Before this, SetEventFlag on a semaphore UID ORed bits
+ * into the semaphore's slot and DeleteEventFlag freed the semaphore. The kind also
+ * lets sceKernelGetThreadmanIdList list one class at a time. */
 typedef struct {
     int used; uint32_t uid; int count, maxc; uint32_t pattern;
     uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
@@ -23999,18 +24006,22 @@ typedef struct {
     char name[32];                 /* LwMutex name */
     int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
-/* Semaphores, event flags and LwMutexes share s_sync; the kind keeps them apart for
- * sceKernelGetThreadmanIdList, which lists one class at a time. */
 enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
 static Sync s_sync[128];
-static Sync *sync_find(uint32_t uid) {
-    for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
+static Sync *sync_find(uint32_t uid, int kind) {
+    for (int i = 0; i < 128; i++)
+        if (s_sync[i].used && s_sync[i].uid == uid && s_sync[i].kind == kind) return &s_sync[i];
     return NULL;
 }
+/* The slot is cleared, so no field of a previous object (of any kind) survives
+ * into the new one. */
 static Sync *sync_new(int kind) {
     for (int i = 0; i < 128; i++)
         if (!s_sync[i].used) {
-            s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); s_sync[i].kind = kind;
+            memset(&s_sync[i], 0, sizeof(s_sync[i]));
+            s_sync[i].used = 1;
+            s_sync[i].kind = kind;
+            s_sync[i].uid = sr_alloc_uid();
             return &s_sync[i];
         }
     return NULL;
@@ -24028,8 +24039,7 @@ static uint32_t h_CreateSema(CpuState *s) {
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
-    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
-     * these fields, so both are written on every create (an unreadable name
+    /* Create-time name and attr for ReferSemaStatus (an unreadable name
      * pointer yields an empty name, never a failed create). */
     m->attr = A1;
     guest_cstr(A0, m->name, sizeof(m->name));
@@ -24107,7 +24117,7 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
 
     if (mode == 1) {
         uint32_t sema = MEM_R32(config_base + 0x0cu);
-        if (!sync_find(sema)) {
+        if (!sync_find(sema, SYNC_KIND_SEMA)) {
             CpuState call = *s;
             call.r[4] = sema_name_ptr;
             call.r[5] = 0;
@@ -24140,7 +24150,7 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
 static uint32_t h_DeleteSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     /* PSP-B2-01 (psp-hw-20260917): deleting a semaphore with a waiter succeeds
      * and the waiter leaves with WAIT_DELETE (0x800201B5). With no waiter there
      * is nothing to wake and no wake result to latch (a stale result would be
@@ -24204,7 +24214,7 @@ static uint32_t sema_wait_entry(const char *who, uint32_t uid, int need, Sync **
     Sync *m = NULL;
     if (!sched_wait_permitted()) {
         err = SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    } else if ((m = sync_find(uid)) == NULL) {
+    } else if ((m = sync_find(uid, SYNC_KIND_SEMA)) == NULL) {
         err = SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     } else if (need <= 0 || need > m->maxc) {
         err = SCE_KERNEL_ERROR_ILLEGAL_COUNT;
@@ -24267,7 +24277,7 @@ static uint32_t h_WaitSema(CpuState *s) {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) return woken;
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
     }
     m->count -= need;
     return 0;
@@ -24289,7 +24299,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
     while (m->count < need) {
         if (sr_thread_has_pending_callbacks(sched_current_uid())) {
             sr_thread_dispatch_callbacks();
-            m = sync_find(uid); if (!m) return 0x80020000;
+            m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
             sched_vtime_refresh();
             continue;
         }
@@ -24326,7 +24336,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) return woken;
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
     m->count -= need;
@@ -24335,7 +24345,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
 static uint32_t h_SignalSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID, replacing the generic 0x80020000 seam. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int signals = (int)A1;
     int64_t new_count = (int64_t)m->count + signals;
     /* PSP-B1-01 (psp-hw-20260917): an overflow past maxCount rejects with
@@ -24350,7 +24360,7 @@ static uint32_t h_SignalSema(CpuState *s) {
  * blocking forms use, so the family cannot drift to two different spellings of
  * one error. sceKernelPollSema has no context gate because it never blocks. */
 static uint32_t h_PollSema(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int need = (int)A1;
     /* PSP-B1-01 (psp-hw-20260917): count validation answers ILLEGAL_COUNT even
      * on an empty semaphore; SEMA_ZERO is only for a valid count it cannot
@@ -24380,7 +24390,7 @@ static uint32_t h_ReferSemaStatus(CpuState *s) {
     uint32_t info_addr = A1;
     if (!info_addr || !sr_guest_span_readable(info_addr, 4))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_SEMA);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     uint32_t input_size = MEM_R32(info_addr);
     if (input_size == 0) return 0;
@@ -24411,7 +24421,7 @@ static uint32_t h_ReferSemaStatus(CpuState *s) {
  * registered. This reads the real production Sync entry and is compiled only
  * into the test executable. It adds no field and changes no layout. */
 int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_SEMA);
     if (!m) return 0;
     if (count_out) *count_out = m->count;
     if (max_out)   *max_out   = m->maxc;
@@ -24542,7 +24552,7 @@ static uint32_t h_DeleteLwMutex(CpuState *s) {
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
     uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     /* PSP-B1-01: deleting an already-deleted workarea is NOT_FOUND. */
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     m->used = 0;
@@ -24610,7 +24620,7 @@ static uint32_t h_ReferLwMutexStatus(CpuState *s) {
     uint32_t info_addr = A1;
     if (!lwmutex_workarea_ok(wa)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     return lwmutex_refer_status(m, info_addr);
 }
@@ -24619,7 +24629,7 @@ static uint32_t h_ReferLwMutexStatus(CpuState *s) {
 static uint32_t h_ReferLwMutexStatusByID(CpuState *s) {
     uint32_t uid = A0;
     uint32_t info_addr = A1;
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     return lwmutex_refer_status(m, info_addr);
 }
@@ -24649,7 +24659,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
         has_timeout = 1;
     }
     for (;;) {
-        if (!sync_find(MEM_R32(wa + LWMUTEX_UID))) return LWMUTEX_GONE;
+        if (!sync_find(MEM_R32(wa + LWMUTEX_UID), SYNC_KIND_LWMUTEX)) return LWMUTEX_GONE;
         int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
         uint32_t owner = MEM_R32(wa + LWMUTEX_LOCK_THREAD);
         if (level == 0) {
@@ -24699,7 +24709,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
         }
         uint32_t waiters = MEM_R32(wa + LWMUTEX_NUM_WAIT);
         if (waiters) MEM_W32(wa + LWMUTEX_NUM_WAIT, waiters - 1u);
-        if (!sync_find(uid)) { lww_remove_thread(cur); return LWMUTEX_GONE; }
+        if (!sync_find(uid, SYNC_KIND_LWMUTEX)) { lww_remove_thread(cur); return LWMUTEX_GONE; }
         /* PSP-B2-01 (psp-hw-20260917): the unlocker hands ownership directly to
          * the waiter, so a woken waiter that now owns the mutex takes it. */
         if (MEM_R32(wa + LWMUTEX_LOCK_THREAD) == cur) {
@@ -24824,7 +24834,7 @@ static uint32_t h_CancelSema(CpuState *s) {
      * count, n <= max sets it, n > max rejects with ILLEGAL_COUNT (and numWait
      * stays untouched). Wake waiters with WAIT_CANCEL and report their number;
      * a NULL numWait is allowed. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int new_count = (int32_t)A1;
     if (new_count > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (hle_log_on())
@@ -24847,7 +24857,7 @@ static uint32_t h_CancelEventFlag(CpuState *s) {
     /* a0=evid, a1=newPattern, a2=numWaitThreads out (stack_arg 0).
      * PSP-B2-01 (psp-hw-20260917): Cancel sets the pattern, reports the waiter
      * count and wakes every waiter with WAIT_CANCEL. */
-    Sync *m = sync_find(A0); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
+    Sync *m = sync_find(A0, SYNC_KIND_EVENT_FLAG); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
     int waiters = sched_count_waiters(A0);
     m->pattern = A1;
     uint32_t nump = stack_arg(s, 0);
@@ -25412,21 +25422,85 @@ static uint32_t h_CreateEventFlag(CpuState *s) {
     m->init_pattern = A2;
     return m->uid;
 }
-/* PSP-B1-01: unknown or deleted event-flag ids are UNKNOWN_EVFID. */
+/* PSP-B1-01: unknown or deleted event-flag ids are UNKNOWN_EVFID. PSPAutotests
+ * tests/threads/events gives Clear (clear.expected L15-L19), Wait
+ * (wait.expected L35) and Refer (refer.expected L23-L25) the same code, and a
+ * UID of another kind in the shared table answers it too (see sync_find). */
 #define SCE_KERNEL_ERROR_UNKNOWN_EVFID 0x8002019au
+static Sync *evf_find(uint32_t uid) { return sync_find(uid, SYNC_KIND_EVENT_FLAG); }
+
+/* Event-flag waiter records (issue #1389). A thread blocked in
+ * sceKernelWaitEventFlag[CB] holds one record naming the flag and its outBits
+ * address, so DeleteEventFlag can write each waiter's outBits when it ends the
+ * wait. A record is used only while its thread is still blocked on that flag
+ * (evf_waiter_live): a thread terminated in the wait leaves a dead record that
+ * is never written through and is reclaimed. A thread blocks on one object at a
+ * time, so live records never outnumber the scheduler's 128 threads. */
+#define EVF_WAITER_MAX 128
+typedef struct { uint32_t evf, thread, outp; int active; } EvfWaiter;
+static EvfWaiter s_evf_waiters[EVF_WAITER_MAX];
+
+static int evf_waiter_live(const EvfWaiter *w) {
+    SrThreadRunStatus rs;
+    /* PSP-B3-01 (psp-hw-20260917): an event-flag wait is waitType 4. */
+    return w->active && sched_thread_run_status(w->thread, &rs) == 0 &&
+           rs.waitType == 4u && rs.waitId == w->evf;
+}
+static void evf_waiter_end(void) {
+    uint32_t self = sched_current_uid();
+    for (int i = 0; i < EVF_WAITER_MAX; i++)
+        if (s_evf_waiters[i].active && s_evf_waiters[i].thread == self) s_evf_waiters[i].active = 0;
+}
+static void evf_waiter_begin(uint32_t evf, uint32_t outp) {
+    evf_waiter_end();
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < EVF_WAITER_MAX; i++)
+            if (!s_evf_waiters[i].active) {
+                s_evf_waiters[i] = (EvfWaiter){evf, sched_current_uid(), outp, 1};
+                return;
+            }
+        for (int i = 0; i < EVF_WAITER_MAX; i++)
+            if (!evf_waiter_live(&s_evf_waiters[i])) s_evf_waiters[i].active = 0;
+    }
+    fprintf(stderr, "HLE: event-flag waiter table full; uid=0x%x outBits=0x%08x not recorded\n",
+            evf, outp);
+}
+
 static uint32_t h_DeleteEventFlag(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
-    m->used = 0; return 0;
+    uint32_t uid = A0;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    uint32_t pattern = m->pattern;
+    m->used = 0;
+    /* PSPAutotests tests/threads/events: the delete returns 0 and a thread
+     * blocked on the flag leaves its wait with WAIT_DELETE (0x800201B5), the
+     * plain form (wait.expected L31) and the CB form (delete.expected L5-L7)
+     * alike. wait.expected L31 also shows outBits written: 00000000, over
+     * 0xDEADBEEF, from a flag whose pattern is 0. Writing the pattern at
+     * deletion follows the measured Cancel rule (PSP-B2-01: the canceller's
+     * pattern) and PPSSPP; a nonzero pattern at deletion is unmeasured. */
+    for (int i = 0; i < EVF_WAITER_MAX; i++) {
+        EvfWaiter *w = &s_evf_waiters[i];
+        if (!w->active || w->evf != uid) continue;
+        if (evf_waiter_live(w) && w->outp && sr_guest_span_writable(w->outp, 4u))
+            MEM_W32(w->outp, pattern);
+        w->active = 0;
+    }
+    /* No waiter: no wake result to latch (see h_DeleteSema). */
+    if (sched_count_waiters(uid)) {
+        sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();   /* delete.expected L6: a stronger waiter runs at once */
+    }
+    return 0;
 }
 static uint32_t h_SetEventFlag(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     m->pattern |= A1; sched_wake(A0); sched_preempt(); return 0;
 }
 static uint32_t h_ClearEventFlag(CpuState *s) {
     /* sceKernelClearEventFlag(evfid, bits): A1 is the mask of bits to KEEP
      * (currentPattern &= bits), matching PSP/PPSSPP. It is NOT a mask of bits
      * to remove — inverting A1 here inverts the contract. */
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     m->pattern = sr_evf_clear_pattern(m->pattern, A1); return 0;
 }
 static uint32_t h_WaitEventFlag(CpuState *s) {
@@ -25434,7 +25508,7 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3, toptr = stack_arg(s, 0);
     uint32_t rc = sr_evf_check_wait_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitEventFlag uid=0x%x bits=0x%x pattern=0x%x (from 0x%x)\n", uid, bits, m->pattern, sched_current_uid());
     /* Third in line, and the ordering is the whole point. sr_evf_check_wait_args()
@@ -25472,27 +25546,36 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
                     return 0x800201A8;
                 }
             }
-            if (sched_block_on_timeout(uid, usec)) {
+            evf_waiter_begin(uid, outp);
+            int timed_out = sched_block_on_timeout(uid, usec);
+            evf_waiter_end();
+            if (timed_out) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
                  * remaining timeout (0) and reports the current pattern. */
                 MEM_W32(toptr, 0u);
-                if (outp) MEM_W32(outp, m->pattern);
+                m = evf_find(uid);
+                if (outp && m) MEM_W32(outp, m->pattern);
                 return 0x800201A8;
             }
         } else {
+            evf_waiter_begin(uid, outp);
             sched_block_on(uid);
+            evf_waiter_end();
         }
         /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
          * (0x800201A9) with outBits = the canceller's new pattern. */
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = sync_find(uid);
+                m = evf_find(uid);
                 if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        /* Gone without a wake result: deleted while this thread sat READY after
+         * another wake. The flag existed when the wait began, so the wait ends
+         * as a deleted one (WAIT_DELETE above), not with the generic seam. */
+        m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
     }
     if (outp) MEM_W32(outp, m->pattern);         /* outBits = pre-consume pattern */
     m->pattern = sr_evf_consume(m->pattern, bits, mode);
@@ -25503,7 +25586,7 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3, toptr = stack_arg(s, 0);
     uint32_t rc = sr_evf_check_wait_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitEventFlagCB uid=0x%x bits=0x%x pattern=0x%x (from 0x%x)\n", uid, bits, m->pattern, sched_current_uid());
     /* Same ordering as the non-CB form, and ahead of the clock sample and callback
@@ -25524,7 +25607,9 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
     while (!sr_evf_matches(m->pattern, bits, mode)) {
         if (sr_thread_has_pending_callbacks(sched_current_uid())) {
             sr_thread_dispatch_callbacks();
-            m = sync_find(uid); if (!m) return 0x80020000;
+            /* Deleted while this waiter ran its callbacks: the wait ends as a
+             * deleted one, as PPSSPP ends it (unmeasured on hardware). */
+            m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
             sched_vtime_refresh();
             continue;
         }
@@ -25542,19 +25627,24 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
             sched_set_current_cb_wait(1);
             /* PSP-B3-01 (psp-hw-20260917): evf CB waits report waitType 4. */
             sched_set_current_wait_kind(4);
+            evf_waiter_begin(uid, outp);
             int timed_out = sched_block_on_timeout(uid, remaining);
+            evf_waiter_end();
             sched_set_current_cb_wait(0);
             if (timed_out) {
                 /* PSP-B2-01 (psp-hw-20260917): same remaining-0 contract after
                  * a real timed block. */
                 MEM_W32(toptr, 0u);
-                if (outp) MEM_W32(outp, m->pattern);
+                m = evf_find(uid);
+                if (outp && m) MEM_W32(outp, m->pattern);
                 return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
             }
         } else {
             sched_set_current_cb_wait(1);
             sched_set_current_wait_kind(4);
+            evf_waiter_begin(uid, outp);
             sched_block_on(uid);
+            evf_waiter_end();
             sched_set_current_cb_wait(0);
         }
         /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
@@ -25562,12 +25652,12 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = sync_find(uid);
+                m = evf_find(uid);
                 if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;   /* as in h_WaitEventFlag */
         sched_vtime_refresh();
     }
     if (outp) MEM_W32(outp, m->pattern);
@@ -25578,7 +25668,7 @@ static uint32_t h_PollEventFlag(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3;
     uint32_t rc = sr_evf_check_poll_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (!sr_evf_matches(m->pattern, bits, mode)) {
         if (outp) MEM_W32(outp, m->pattern);
         return SR_EVF_ERR_COND;
@@ -25592,7 +25682,7 @@ static uint32_t h_PollEventFlag(CpuState *s) {
  * wrote it. PSP-B1-01: attr and initPattern are the create-time values; waiters are not
  * tracked here. */
 static uint32_t h_ReferEventFlagStatus(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     uint32_t info = A1; if (!info) return 0x80020000;
     for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
     MEM_W32(info + 36, m->attr);
