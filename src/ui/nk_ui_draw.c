@@ -646,8 +646,8 @@ bool nk_ui_draw_add_convex(NkUiDrawBuffer *buffer, const float *xy, uint32_t cou
                            uint32_t rgba, uint32_t element_id) {
     const uint32_t vertex_count = count * 2u;
     const uint32_t index_count = (count - 2u) * 3u + count * 6u;
-    float area = 0.0f;
-    float orient;
+    float area = 0.0f; /* twice the signed area (shoelace) */
+    float winding_sign;
     uint32_t base;
     uint32_t index_base;
     uint32_t i;
@@ -657,15 +657,15 @@ bool nk_ui_draw_add_convex(NkUiDrawBuffer *buffer, const float *xy, uint32_t cou
         return false;
     }
     for (i = 0; i < count; ++i) {
-        const float *p = &xy[i * 2u];
-        const float *q = &xy[((i + 1u) % count) * 2u];
-        if (!isfinite(p[0]) || !isfinite(p[1])) return false;
-        area += p[0] * q[1] - q[0] * p[1];
+        const float *point = &xy[i * 2u];
+        const float *next_point = &xy[((i + 1u) % count) * 2u];
+        if (!isfinite(point[0]) || !isfinite(point[1])) return false;
+        area += point[0] * next_point[1] - next_point[0] * point[1];
     }
     if (fabsf(area) < 0.5f) {
         return true; /* degenerate: nothing visible */
     }
-    orient = area > 0.0f ? 1.0f : -1.0f;
+    winding_sign = area > 0.0f ? 1.0f : -1.0f;
     if (buffer->list.nv > UINT32_MAX - vertex_count ||
         buffer->list.ni > UINT32_MAX - index_count ||
         !nk_ui_reserve_vertices(buffer, buffer->list.nv + vertex_count) ||
@@ -680,20 +680,27 @@ bool nk_ui_draw_add_convex(NkUiDrawBuffer *buffer, const float *xy, uint32_t cou
         const float *prev = &xy[((i + count - 1u) % count) * 2u];
         const float *cur = &xy[i * 2u];
         const float *next = &xy[((i + 1u) % count) * 2u];
-        float e0x = cur[0] - prev[0], e0y = cur[1] - prev[1];
-        float e1x = next[0] - cur[0], e1y = next[1] - cur[1];
-        float l0 = sqrtf(e0x * e0x + e0y * e0y);
-        float l1 = sqrtf(e1x * e1x + e1y * e1y);
+        float in_dx = cur[0] - prev[0], in_dy = cur[1] - prev[1];
+        float out_dx = next[0] - cur[0], out_dy = next[1] - cur[1];
+        float in_len = sqrtf(in_dx * in_dx + in_dy * in_dy);
+        float out_len = sqrtf(out_dx * out_dx + out_dy * out_dy);
         float nx = 0.0f;
         float ny = 0.0f;
-        float nl;
+        float normal_len;
         float x = cur[0];
         float y = cur[1];
-        /* Outward normals of both edges (y grows down), averaged. */
-        if (l0 > 0.0f) { nx += orient * e0y / l0; ny -= orient * e0x / l0; }
-        if (l1 > 0.0f) { nx += orient * e1y / l1; ny -= orient * e1x / l1; }
-        nl = sqrtf(nx * nx + ny * ny);
-        if (nl > 0.0f) { nx /= nl; ny /= nl; }
+        /* Outward normals of both edges (y grows down), averaged. A zero-length
+           edge contributes nothing. */
+        if (in_len > 0.0f) {
+            nx += winding_sign * in_dy / in_len;
+            ny -= winding_sign * in_dx / in_len;
+        }
+        if (out_len > 0.0f) {
+            nx += winding_sign * out_dy / out_len;
+            ny -= winding_sign * out_dx / out_len;
+        }
+        normal_len = sqrtf(nx * nx + ny * ny);
+        if (normal_len > 0.0f) { nx /= normal_len; ny /= normal_len; }
         /* Solid to the edge and clear one pixel outside it: neighbouring faces
            (the showcase cube) overlap by their fringe instead of leaving a seam. */
         buffer->vertices[base + i] = nk_ui_vertex(x, y, rgba_pm);
