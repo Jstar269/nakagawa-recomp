@@ -4,7 +4,7 @@ Nakagawa Recomp turns a PSP game into a native Windows program you play with the
 people with disabilities, and people who use assistive technology, to be able to set the player up, use it and
 contribute to it. This page says what is true today, including what is missing, and how to tell us about a barrier.
 
-It describes the state of the `main` branch, which is also what the v0.0.1 release contains unless a section says otherwise.
+It describes the `main` branch. The v0.0.1 release is older, so a change made since may not be in it.
 The code and tests are the authority: where this page and the code disagree, the code is current, and a report that
 says so is welcome.
 
