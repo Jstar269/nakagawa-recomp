@@ -321,6 +321,15 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "mutex-interrupt-context": 120,
 }
 
+# The shortest --timeout a directly scheduled --campaign-case may use. At its case timeout the runner stops and
+# unloads the probe; a probe stopped mid-stream is stopped with its GE work in flight, so it must be given time
+# to finish. ge-timing completed in 46 s on a PSP-3000 (2026-10-25); with the 30 s default it was stopped at the
+# bus-166 pass (2026-10-26), the probe thread survived the stop, host0 went silent and the device needed a
+# power cycle.
+CAMPAIGN_CASE_MIN_TIMEOUT_SECONDS = {
+    "ge-timing": 180,
+}
+
 
 class UnsafeHost0OutputError(OSError):
     """A host0 result path is not a regular file owned by the scratch root."""
@@ -4238,6 +4247,12 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(f"campaign case {case_id} is retired and cannot be scheduled")
             if case_id in seen_case_ids:
                 parser.error(f"duplicate campaign case id: {case_id}")
+            minimum_timeout = CAMPAIGN_CASE_MIN_TIMEOUT_SECONDS.get(case_id)
+            if minimum_timeout is not None and args.timeout < minimum_timeout:
+                parser.error(
+                    f"campaign case {case_id} needs --timeout {minimum_timeout:g} or more "
+                    "so the probe is not stopped mid-stream"
+                )
             seen_case_ids.add(case_id)
             binary = Path(raw_path)
             if not binary.is_absolute():

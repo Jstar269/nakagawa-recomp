@@ -84,6 +84,14 @@ const NkUiShapeArt *nk_ui_art_picture(NkUiArtKind kind);
    card keeps its colour between runs. */
 uint32_t nk_ui_art_tint(const char *key);
 
+/* The app icon: the N1 mark on a rounded ink tile, `size` px square (16-256),
+   written as straight-alpha RGBA bytes, `stride` bytes per row, top row first.
+   tools/make_app_icon.py draws the Windows .ico with the same rules. Returns
+   false, writing nothing, for a size out of range or a short stride. */
+#define NK_UI_APP_ICON_MIN 16
+#define NK_UI_APP_ICON_MAX 256
+bool nk_ui_app_icon_rgba(int size, unsigned char *rgba, size_t stride);
+
 /* ---- Prompt glyphs ---------------------------------------------------------- */
 /* One prompt glyph in the current prompt style, `height` px tall (24 in bars). */
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height);

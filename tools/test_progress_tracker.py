@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Tests for tools/progress_tracker.py evidence checks (issue #48).
+"""Tests for tools/progress_tracker.py evidence checks (issues #48 and #1376).
 
 These assert the strengthened, revision/run-aware measurement model: the tracker
 selects runtime evidence by modification time (not filename order), requires the
@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import unittest
@@ -133,6 +134,232 @@ class TestVfpuEvidence(TrackerTestBase):
         # An unrelated log present, but no VFPU pass marker anywhere.
         self.write_log("stderr_run1.log", ["boot", "some unrelated line"])
         self.assertEqual(pt._check_vfpu(), "pending")
+
+
+class TestUmdWakeupCorrelation(TrackerTestBase):
+    """P2.5 credits a UMD wakeup only from the ordered, uid-correlated chain (#1376): a
+    thread enters a sleep, the registered UMD callback is notified with a drive state
+    carrying READY, and that callback's owner thread wakes the same sleeping thread."""
+
+    CHAIN = [
+        "CBLOG: UMD callback registered uid=0x5",
+        "DEBUG_SLEEP: thread=0x111 wakeups=0 state=2",
+        "CBLOG: NotifyCallback uid=0x5 count=1 arg=0x00000032 owner=0x10f",
+        "WAKEUP target=0x111 (from 0x10f)",
+        "DEBUG_WAKEUP: target=0x111 sleeping=1 state=4 wait_obj=0x111 wakeups=0",
+    ]
+
+    def check(self, lines) -> str:
+        self.write_log("stderr_run1.log", lines)
+        return pt._check_umd_wakeup(last_log="stderr_run1.log")
+
+    def test_correlated_chain_verifies(self):
+        self.assertEqual(self.check(self.CHAIN), "verified")
+
+    def test_bare_wakeup_line_is_not_a_umd_linkage(self):
+        # Any WakeupThread line used to verify P2.5, with nothing tying it to a UMD wait.
+        self.assertEqual(self.check([
+            "HLE: calling sceUmdWaitDriveStat (0x8ef08fce) from 0x111",
+            "HLE: calling sceKernelWakeupThread (0xd59ead2f) from 0x10f",
+            "WakeupThread: woke 0x111",
+        ]), "pending")
+
+    def test_umd_activity_without_wakeup_is_not_a_regression(self):
+        # A drive that is already ready needs no wakeup; absence proves no failure.
+        self.assertEqual(self.check([
+            "HLE: calling sceUmdActivate (0xc6183d47) from 0x10f",
+            "HLE: calling sceUmdWaitDriveStat (0x8ef08fce) from 0x10f",
+        ]), "pending")
+
+    def test_wake_before_the_drive_became_ready_is_refused(self):
+        chain = list(self.CHAIN)
+        chain.append(chain.pop(2))  # the READY notify now follows the wake
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_wake_from_a_thread_other_than_the_callback_owner_is_refused(self):
+        chain = list(self.CHAIN)
+        chain[3] = "WAKEUP target=0x111 (from 0x222)"
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_thread_that_slept_only_after_the_state_change_is_refused(self):
+        chain = list(self.CHAIN)
+        chain[1], chain[2] = chain[2], chain[1]
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_sleep_satisfied_by_a_banked_wakeup_is_not_a_wait(self):
+        chain = list(self.CHAIN)
+        chain[1] = "DEBUG_SLEEP: thread=0x111 wakeups=1 state=2"
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_wakeup_that_only_banks_is_not_a_woken_thread(self):
+        chain = list(self.CHAIN)
+        chain[4] = "DEBUG_WAKEUP: target=0x111 sleeping=0 state=4 wait_obj=0x554d44 wakeups=0"
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_notify_of_another_callback_is_not_a_drive_state_change(self):
+        chain = list(self.CHAIN)
+        chain[2] = "CBLOG: NotifyCallback uid=0x6 count=1 arg=0x00000032 owner=0x10f"
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_notify_without_drive_ready_is_not_the_ready_transition(self):
+        chain = list(self.CHAIN)
+        chain[2] = "CBLOG: NotifyCallback uid=0x5 count=1 arg=0x00000012 owner=0x10f"
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_thread_woken_and_asleep_again_is_a_new_wait(self):
+        # The wait that spanned the state change ended before the owner's wake.
+        chain = list(self.CHAIN)
+        chain[3:3] = [
+            "WAKEUP target=0x111 (from 0x333)",
+            "DEBUG_WAKEUP: target=0x111 sleeping=1 state=4 wait_obj=0x111 wakeups=0",
+            "DEBUG_SLEEP: thread=0x111 wakeups=0 state=2",
+        ]
+        self.assertEqual(self.check(chain), "pending")
+
+    def test_ready_state_value_matches_the_scheduler_enum(self):
+        # DEBUG_WAKEUP prints sched.c's numeric thread state; the readied branch needs
+        # TH_WAIT_OBJ, so the tracker's constant must follow that enum.
+        sched = Path(__file__).resolve().parent.parent / "src" / "rt" / "sched.c"
+        match = re.search(r"enum\s*\{\s*(TH_DORMANT\s*=\s*0\s*,[^}]*)\}", sched.read_text(encoding="utf-8"))
+        self.assertIsNotNone(match)
+        names = [part.split("=")[0].strip() for part in match.group(1).split(",") if part.strip()]
+        self.assertEqual(names.index("TH_WAIT_OBJ"), pt._TH_WAIT_OBJ)
+
+
+class TestFrameRenderingMeasurements(TrackerTestBase):
+    """P5.1 (GE submission), P5.2 (command recording) and P6.3 (more than one draw) are
+    separate measurements over the records the runtime writes (#1376)."""
+
+    GE_ENQ = "GE_ENQ: list_id=0x35000000 list=0x09a4b000 stall=0x09a4b100 cbid=0 -> next_pc=0x00000000 (DONE)"
+
+    def statuses(self, lines) -> dict:
+        self.write_log("stderr_run1.log", lines)
+        saved = pt._find_powershell
+        pt._find_powershell = lambda: None  # type: ignore[assignment]
+        try:
+            items = pt.verify_all()
+        finally:
+            pt._find_powershell = saved  # type: ignore[assignment]
+        return {it.id: it.status for it in items}
+
+    def test_enqueue_call_and_refusal_lines_are_not_a_submission(self):
+        status = self.statuses([
+            "HLE: calling sceGeListEnQueue (0xab49e76a) from 0x10f",
+            "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.",
+            "GE_UPDATE_STALL: ge_run_list returned 0x00000000 (COMPLETED)",
+        ])
+        self.assertEqual(status["P5.1"], "pending")
+
+    def test_accepted_enqueue_is_a_submission(self):
+        self.assertEqual(self.statuses([self.GE_ENQ])["P5.1"], "verified")
+        deferred = ("GE_ENQ: list_id=0x35000001 list=0x09a4b000 stall=0x09a4b000 cbid=0 "
+                    "-> DEFERRED (stall==list)")
+        self.assertEqual(self.statuses([deferred])["P5.1"], "verified")
+
+    def test_null_list_enqueue_is_not_a_display_list(self):
+        line = "GE_ENQ: list_id=0x35000000 list=0x00000000 stall=0x00000000 cbid=0 -> next_pc=0x00000000 (DONE)"
+        self.assertEqual(self.statuses([line])["P5.1"], "pending")
+
+    def test_enqueue_trace_needs_a_matching_result(self):
+        trace = ("GE_ENQUEUE_TRACE frame=3 op=enqueue thread=0x10f call_pc=0x0880a000 ra=0x0880a010 "
+                 "list_id=0x35000002 list=0x09a4b000 stall=0x09a4b100 cbid=0x00000000 "
+                 "prev_hle=none/0x00000000@0x00000000,ra=0x00000000,frame=0,seq=0 "
+                 "prev_cb=0x00000000@0x00000000,frame=0,seq=0")
+        result = ("GE_ENQUEUE_RESULT frame=3 op=enqueue thread=0x10f call_pc=0x0880a000 "
+                  "list_id=0x35000002 outcome=done next_pc=0x00000000 complete=1 sig=0x00000000 prims=4 "
+                  "through=0/0/0 transform=0/0/0 writes=0 nonblack=0 clearpx=0")
+        self.assertEqual(self.statuses([trace, result])["P5.1"], "verified")
+        self.assertEqual(self.statuses([trace])["P5.1"], "pending")
+        other = result.replace("list_id=0x35000002", "list_id=0x35000009")
+        self.assertEqual(self.statuses([trace, other])["P5.1"], "pending")
+        stall = result.replace("op=enqueue", "op=update_stall")
+        self.assertEqual(self.statuses([trace, stall])["P5.1"], "pending")
+
+    def test_submission_alone_records_no_command_buffer(self):
+        status = self.statuses([self.GE_ENQ])
+        self.assertEqual(status["P5.2"], "pending")
+        self.assertEqual(status["P6.3"], "pending")
+
+    def test_recorded_batch_is_a_command_buffer_but_one_draw_is_not_multiple(self):
+        status = self.statuses(["GEGPU submit #1 batches=1 verts=6 tgt=0x04000000/512 fmt=3"])
+        self.assertEqual(status["P5.2"], "verified")
+        self.assertEqual(status["P5.1"], "pending")
+        self.assertEqual(status["P6.3"], "pending")
+
+    def test_single_draw_line_does_not_verify_multiple_draws(self):
+        # One legacy draw line used to verify both P5.2 and "Multiple vkCmdDraw"; the
+        # runtime writes no such record, and one line is never more than one draw.
+        status = self.statuses(["vkCmdDraw: 12"])
+        self.assertEqual(status["P5.2"], "pending")
+        self.assertEqual(status["P6.3"], "pending")
+
+    def test_draws_counted_across_recorded_batches(self):
+        status = self.statuses([
+            "GEGPU submit #1 batches=1 verts=6 tgt=0x04000000/512 fmt=3",
+            "GEGPU submit #2 batches=1 verts=6 tgt=0x04000000/512 fmt=3",
+        ])
+        self.assertEqual(status["P6.3"], "verified")
+        stats = ("GEGPU stats: submits=2 batches=7 verts=84 avg_batches=3.50 tris=10 spr=4 lines=0 "
+                 "nonfinite=0 rtt=0 snap=0 present[gpu=2 cpu=0] upload=0 readback=0 texup=1 dirty=0 "
+                 "xferblit=0 pipes=2 texs=1 shadow[invalidations=0 checks=0 hits=0 misses=0 bytes=0 "
+                 "avoided=0 required=0] final=1")
+        status = self.statuses([stats])
+        self.assertEqual(status["P5.2"], "verified")
+        self.assertEqual(status["P6.3"], "verified")
+
+    def test_dropped_batch_leaves_the_draw_count_unknown(self):
+        status = self.statuses([
+            "GEGPU submit #1 batches=5 verts=30 tgt=0x04000000/512 fmt=3",
+            "gegpu: pipeline creation failed; a batch was dropped",
+        ])
+        self.assertEqual(status["P5.2"], "verified")
+        self.assertEqual(status["P6.3"], "pending")
+
+
+class TestDispatchTableContract(TrackerTestBase):
+    """P2.7 checks the live dispatch-table contract (dispatch_table.h, issue #45), not the
+    g_exact_hooks/DispatchHook markers removed in #566 (#1376)."""
+
+    HEADER = (
+        "typedef struct { uint32_t addr; uintptr_t fn; uint32_t state; } SrDispatchEntry;\n"
+        "typedef struct {\n    SrDispatchEntry *l1[256];\n} SrDispatchTable;\n"
+        "static inline void sr_dtab_register(SrDispatchTable *t, uint32_t addr, uintptr_t fn) { }\n"
+        "static inline uintptr_t sr_dtab_lookup(SrDispatchTable *t, uint32_t addr) { return 0; }\n"
+    )
+    RECOMP = (
+        '#include "dispatch_table.h"\n'
+        "static SrDispatchTable g_dtab;\n"
+        "void sr_register(uint32_t addr, RecompFn fn) {\n"
+        "    sr_dtab_register(&g_dtab, addr, (uintptr_t)fn);\n}\n"
+        "RecompFn sr_lookup(uint32_t addr) {\n"
+        "    return (RecompFn)sr_dtab_lookup(&g_dtab, addr);\n}\n"
+    )
+
+    def src(self, header: str, recomp: str) -> Path:
+        root = Path(self._tmp.name) / "src" / "rt"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "dispatch_table.h").write_text(header, encoding="utf-8")
+        (root / "recomp.c").write_text(recomp, encoding="utf-8")
+        return root
+
+    def test_live_source_meets_the_dispatch_table_contract(self):
+        # The removed markers kept P2.7 pending forever against the real source.
+        self.assertEqual(pt._check_dispatch_table(), "verified")
+
+    def test_removed_hook_markers_prove_nothing(self):
+        root = self.src("", "static DispatchHook g_exact_hooks[16];\n")
+        self.assertEqual(pt._check_dispatch_table(src_rt=root), "pending")
+
+    def test_contract_shape_verifies(self):
+        self.assertEqual(pt._check_dispatch_table(src_rt=self.src(self.HEADER, self.RECOMP)), "verified")
+
+    def test_lookup_that_bypasses_the_table_is_refused(self):
+        recomp = self.RECOMP.replace("(RecompFn)sr_dtab_lookup(&g_dtab, addr)", "s_linear_find(addr)")
+        self.assertEqual(pt._check_dispatch_table(src_rt=self.src(self.HEADER, recomp)), "pending")
+
+    def test_register_that_bypasses_the_table_is_refused(self):
+        recomp = self.RECOMP.replace("sr_dtab_register(&g_dtab, addr, (uintptr_t)fn);", "s_list_add(addr, fn);")
+        self.assertEqual(pt._check_dispatch_table(src_rt=self.src(self.HEADER, recomp)), "pending")
 
 
 class TestPs1Parse(TrackerTestBase):

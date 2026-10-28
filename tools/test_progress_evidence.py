@@ -99,13 +99,17 @@ class UmdWakeupEvidenceTests(EvidenceBase):
         self._log("create thread #1\nstart thread\nsched: idle\n")
         self.assertEqual(pt._check_umd_wakeup(last_log="stderr_run.log"), "pending")
 
-    def test_umd_route_exercised_without_wakeup_is_regressed(self) -> None:
+    def test_umd_route_exercised_without_wakeup_is_pending_not_regressed(self) -> None:
+        # A drive that is already ready needs no wakeup, so UMD activity without one
+        # proves no failure (#1376).
         self._log("sceUmdWaitDriveStat: waiting\nsceUmd: status poll\n")
-        self.assertEqual(pt._check_umd_wakeup(last_log="stderr_run.log"), "regressed")
+        self.assertEqual(pt._check_umd_wakeup(last_log="stderr_run.log"), "pending")
 
-    def test_wakeup_marker_verifies(self) -> None:
+    def test_bare_wakeup_marker_does_not_verify(self) -> None:
+        # Nothing ties this wakeup to the UMD state change or the waiting thread (#1376);
+        # tools/test_progress_tracker.py covers the correlated chain that does verify.
         self._log("sceUmdWaitDriveStat: waiting\nWakeupThread: woke 0x2\n")
-        self.assertEqual(pt._check_umd_wakeup(last_log="stderr_run.log"), "verified")
+        self.assertEqual(pt._check_umd_wakeup(last_log="stderr_run.log"), "pending")
 
 
 class HstExeEvidenceTests(EvidenceBase):

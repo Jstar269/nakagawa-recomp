@@ -14,12 +14,9 @@
 # routines out of this list: callers depend on their writes, not only r2.
 
 HST_SIMPLE_STUBS = {
-    0x00015f98: ("Config_LoadGameSettings", 1),
     0x0001c010: ("VFS_RegisterHeap",      0),
     0x0001c0fc: ("VFS_RegisterBuffer",    0),
     0x0001c104: ("Config_LoadProfile",    1),
-    0x0001c810: ("TexCache_Initialize",   0),
-    0x0001c818: ("VFS_RegisterCallback",  0),
     0x0001c560: ("main_GraphicsInit",     1),
     0x0001c604: ("World_LoadInitialState", 0),
 }

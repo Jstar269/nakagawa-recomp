@@ -4,8 +4,8 @@
 > boundary, a local developer AOT package build, and the library's build-package →
 > validate → launch route are implemented ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)).
 > `tools/nk_cli.py build-package <disc_id>` resolves the executable from a library disc
-> image, or from a decrypted `EBOOT.elf` you supply for an encrypted disc (Nakagawa does not
-> decrypt games; built-in decryption was removed, #295), and the
+> image, or from the decrypted `EBOOT.elf` in the title's folder for an encrypted disc (the
+> player decrypts it from the user's disc, #295), and the
 > player consumes the resulting package. Retail-disc hash validation, installers, and
 > one-click end-user preparation without the developer toolchain (#308) are not built.
 
@@ -84,7 +84,7 @@ list is not evidence that a distributable installer or title package exists:
 * `src/core/nk_platform_win32.c`: Win32 `CreateProcessW` with UTF-16 executable/command-line conversion, environment block generation, and wait handles.
 * `src/core/nk_platform_posix.c`: POSIX `fork` + `execv` with environment configuration.
 * `src/core/nk_launch.h` & `src/core/nk_launch.c`: typed `NkLaunchSession` candidate resolution, environment construction, and process lifecycle management.
-* `src/player/ui_renderer.c`: UI "PLAY NOW" / "STOP GAME" action triggers and active PID indicators.
+* `src/player/ui/player_ui_nk.c`: the default launcher's "PLAY" / "STOP GAME" action triggers; the older `src/player/ui_renderer.c`, kept only in the regression-test build (`--ui=legacy`), keeps its "PLAY NOW" trigger and active PID indicators.
 
 ---
 
@@ -146,6 +146,14 @@ the player's `build-package` action. The command refuses to reuse an existing
 package directory when its manifest, executable, selected PRXs, or PSP header
 hashes differ. The manifest remains unchanged. Make's `all` target still runs the generation and
 compile phases separately so generated chunks are linked on a clean build.
+A package build chunks generated C by size: `CHUNK_TARGET_BYTES` defaults to 4,000,000
+bytes of C per translation unit (a value the caller sets wins, and the cache key names
+it). Every function's C text, its order and the compile flags stay the same; only the
+boundaries between translation units move (gcc inlines the runtime header's static inline
+helpers into more functions of a smaller unit). Each compile job is then given memory in
+proportion to the target (256 bytes per byte, at least 1 GiB, at most the 3 GiB that
+count-based chunks need), so a host with little free memory still compiles several chunks
+at once.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
 `<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory
@@ -222,9 +230,8 @@ the supported JSON limit`; raising that native cap is a separate open gap.
 This package command still requires the developer toolchain. It takes a plain
 executable and does not unwrap a disc itself; `tools/nk_cli.py build-package
 <disc_id>` performs the library-disc extraction and the player consumes the
-resulting package. Checkout-independent run-directory provisioning (#297) is
-still tracked there; analyzer ownership and stack-balance gates remain tracked
-by #291.
+resulting package. Checkout-independent run-directory provisioning landed
+under #297, and the analyzer ownership and stack-balance gates under #291.
 
 ### Host runtime DLL staging (#421)
 
@@ -238,10 +245,10 @@ DLLs. The step runs from the Makefile's `player` target (beside
 built package). It never stages a partial closure: when an import is
 unresolved, it names it. The player target then fails. A package build still
 succeeds with its required SDL3, libiconv and Vulkan runtimes, and prints the
-unresolved import as a warning, because the prerequisite installer (#296) does
-not provide SDL3_ttf yet; that player draws with the bitmap fallback and logs
-why. Licence texts for every staged DLL are copied beside them
-as `THIRD_PARTY_NOTICES/` by `tools/package_notices.py`, driven by
+unresolved import as a warning. The prerequisite installer pins SDL3_ttf and its
+closure (`assets/prereq_manifest.json`), so this happens only on a host without
+them; that player draws with the bitmap fallback and logs why. Licence texts for
+every staged DLL are copied beside them as `THIRD_PARTY_NOTICES/` by `tools/package_notices.py`, driven by
 `assets/third_party_components.json`. Because the closure sits beside the
 executable, launching from Explorer or a plain `cmd.exe` without MSYS2 on `PATH`
 uses the readable TTF font; the 8x8 SDL bitmap font remains only as a logged

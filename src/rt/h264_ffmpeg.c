@@ -291,6 +291,9 @@ static int ff_to_host(const NkH264Picture *f, const FfPlanes *pl, const SrH264Fr
                       SrH264FrameInfo *info) {
     int w = f->width < t->host_width ? f->width : t->host_width;
     int h = f->height < FF_MOVIE_ROWS ? f->height : FF_MOVIE_ROWS;
+    /* The destination holds host_height rows: a picture taller than the buffer the
+     * caller sized (sceMpegAvcInitYCbCr geometry) delivers only the rows that fit. */
+    if (h > t->host_height) h = t->host_height;
     if (w <= 0 || h <= 0) return 0;
     for (int y = 0; y < h; y++) {
         uint8_t *row = t->host_buffer + (size_t)y * (size_t)t->host_stride;
@@ -402,7 +405,7 @@ static int ff_frame(int id, int eos, const SrH264FrameTarget *t, SrH264FrameInfo
             return -1;
     } else if (t->kind == SR_H264_TARGET_HOST) {
         if (!t->host_buffer || t->host_width <= 0 || t->host_width > INT_MAX / 4 ||
-            t->host_stride < t->host_width * 4)
+            t->host_height <= 0 || t->host_stride < t->host_width * 4)
             return -1;
     } else {
         return -1;

@@ -21,8 +21,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
-   decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
+7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, the player decrypts it
+   locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
 For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
@@ -342,7 +342,7 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
+ELF/PRX files. The player decrypts a disc's encrypted modules into the per-title folder (see [Encrypted executables](#encrypted-executables)). For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 copy of the game, place them at the paths the local manifest expects, for example:
 
@@ -359,7 +359,7 @@ Git history.
 ### Per-title decrypted input folder (standalone player and CLI)
 
 For the standalone player (`nakagawa_player.exe`) and `tools/nk_cli.py`:
-When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight checks in both the player and `nk_cli inspect` direct the user to supply their own decrypted modules in a per-title folder under the per-user data directory:
+When an imported ISO contains an encrypted executable (`EBOOT.BIN`), the player's disc check decrypts it and the disc's encrypted modules into a per-title folder under the per-user data directory, and `nk_cli inspect` and `nk_cli build-package` read them from there (the command-line tools decrypt nothing themselves):
 
 ```text
 <user data>/titles/<DISC_ID>/decrypted/
@@ -373,15 +373,17 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Encrypted executables
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the player and `nk_cli` never look for or read a key file.
+The player decrypts the encrypted `EBOOT.BIN` and modules of the disc you added, locally, the way PPSSPP does, with the public game key tables in `src/core/nk_psp_builtin_keys.c` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It reads no key file and makes no network request. Each output is written beside its destination in the per-title folder above, checked as a PSP ELF32/MIPS program, then renamed into place; a file already there is never replaced. Firmware is never decrypted: an updater archive (PSAR), a bare KIRK block (the boot loader's form) and any module with a firmware-only tag stop as `FIRMWARE_OUT_OF_SCOPE` before any key is read. `nk_decrypt` (built by `tools/nk_core/decrypt_tool.py`) runs the same boundary from the command line.
 
-An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
+A file the boundary can't decrypt stops with a named result:
 
 ```text
-ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
+ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED (<detail>). Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
 ```
 
-An encrypted guest module without a plain copy in the same folder stops the same way with `ENCRYPTED_MODULE: <name> is encrypted.`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
+The results are `KEY_REQUIRED` (a tag the built-in tables don't carry), `MALFORMED_INPUT`, `INTEGRITY_FAILURE`, `DECOMPRESS_FAILURE`, `VALIDATION_FAILURE`, `FIRMWARE_OUT_OF_SCOPE`, `IO_FAILURE`, `RESOURCE_LIMIT` and `INTERNAL_ERROR`. An encrypted guest module stops the same way with `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
+
+A PSN release of a UMD game (an `EBOOT.PBP` whose `DATA.PSAR` is an NPUMDIMG disc image) is picked like a disc. The player converts it once, on a background worker with progress and cancel, into `<user data>/discs/<DISC_ID>/<DISC_ID>.iso`: the image is written beside that name, checked (an ISO9660 volume descriptor and a `PARAM.SFO` `DISC_ID` equal to the package's), then renamed into place, and it is then added exactly as a picked ISO. A cancelled or failed conversion removes the partial file. `--iso=<EBOOT.PBP>` converts the same way before inspection, and `nk_decrypt npumdimg --in EBOOT.PBP --out game.iso` runs the conversion from the command line. A PSOne Classic stops as `PSONE_CLASSIC_UNSUPPORTED` and an updater as `FIRMWARE_OUT_OF_SCOPE` before any key is read; DRM bound to the console that bought the game stops as `CONTEXT_REQUIRED` and is never run with a default. Other PSN (NPDRM) packages and PGD-protected data are not decrypted yet.
 
 ### User title manifests (`<user data>/manifests`)
 
@@ -405,7 +407,7 @@ Authentic in-game typography requires PSP system fonts in Sony's PlayStation Gly
 
 #### What the user supplies
 
-From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose and checks each one with the same native reader the player uses. It keeps the source filename long enough to identify firmware Latin files:
+From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. Copy all eighteen: `jpn0.pgf`, `ltn0.pgf` through `ltn15.pgf`, and `kr0.pgf`. A game that asks for a font you have not imported gets a stand-in, which looks different from the PSP's font: a nearby imported Latin size, the older single Latin import, or the project's own font. Where nothing stands in, it gets no font. The import reads every `.pgf` file directly in the folder you choose and checks each one with the same native reader the player uses. It keeps the source filename long enough to identify firmware Latin files:
 
 - Japanese: covers kana (U+3042 or U+30A2).
 - Korean: covers Hangul (U+AC00 or U+D55C).
@@ -414,6 +416,25 @@ From your own PSP, copy its PGF font files to a folder on a USB drive, a memory 
 A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. Other Latin filenames retain the single legacy Latin import; if several such files name the same slot, none is imported until you choose one with `--choose latin=<file>`. Duplicate case variants of the same `ltnN.pgf` index are left unimported as ambiguous.
 
 Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
+
+#### Copying the fonts from your PSP
+
+The fonts are optional. Without them, games still run, and their text uses the project's own open fonts, which look different from the PSP's.
+
+The font files live in the PSP's system storage, `flash0:/font/`. They are plain files, not encrypted, but the PSP's official firmware doesn't show its system storage to a PC: on a PSP with official firmware only, there is no way to copy them yet. A PSP with custom firmware can show it as a read-only USB drive. These steps are for ARK (ARK-4 or ARK-5); the PSP only reads, and nothing on it changes:
+
+1. On the PSP, open **Settings > Custom Firmware Settings**.
+2. Set **USB Device** to **Flash 0**, and **USB Read-Only** to **On**.
+3. Connect the PSP to your PC with a USB cable, then open **Settings > USB Connection** and press **X**. A new drive appears on the PC. It holds the PSP's system files (folders such as `font`, `kd` and `vsh`), not your Memory Stick. If it shows your Memory Stick's folders (`PSP`, `ISO`) instead, end the connection and check step 2 again.
+4. On the PC, copy the drive's `font` folder to a folder of your own, for example `Documents\PSP fonts`. Copy only: don't delete, rename or add anything on that drive.
+5. On the PSP, press **O** to end the USB connection. In **Custom Firmware Settings**, set **USB Device** back to **Memory Stick**.
+6. In the player, open **Settings**, then **PSP FONTS**, choose **IMPORT FONTS FOLDER**, and pick the folder you copied. The page then says how many fonts it imported and lists where each font comes from.
+
+On PRO or LME custom firmware, the VSH menu (press **SELECT** in the XMB) has the same **USB DEVICE** setting: choose **Flash 0**, then follow steps 3 to 6, setting it back to **Memory Stick** afterwards.
+
+If no drive appears at all, a plugin that uses the USB port, such as PSPLink, is probably running. Turn it off in **Settings > Plugins**, restart the PSP, check step 2 again (after a restart **USB Device** can be back on **Memory Stick**), and repeat from step 3. Turn the plugin back on when you're done.
+
+You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`), the Japanese font `jpn0.pgf` and the Korean font `kr0.pgf` are all used exactly, so all 18 game font slots come from your own PSP ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)). If you imported fonts with an older build, import them again to pick up the Japanese and Korean ones.
 
 #### Importing fonts
 
@@ -442,7 +463,7 @@ The import copies each accepted file into the per-user cache and writes `manifes
 └── nkkr.pgf    (Korean slot)
 ```
 
-Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to project `nkltn.pgf`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
+Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to project `nkltn.pgf`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. The log line names the requested PSP file, the file that backs it and its source: `selection=exact` for the user's own file, `selection=substitute fallback=same-size`, `fallback=legacy` or `fallback=project` for a stand-in, and `backing=none fallback=missing` when nothing serves the index. The Japanese and Korean fonts (registry indices 0 and 17, `jpn0.pgf` and `kr0.pgf` on a PSP) get one such line each, where the project font is a substitute. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
 
 The per-user data directory is the one font root. The import, the status and the preflight in the player, the launcher, and the runtime all read `<user data>/fonts/v2`; the launcher hands that root to the runtime as `SR_USER_DATA_ROOT`. A runtime root (`--runtime-root`) does not hold fonts, so an import written under `<runtime root>/fonts/v2` by an earlier build is no longer read. The launcher's old lookup under a showcase demo's `<demos>/fonts/v2` is removed for the same reason: the demos read the per-user directory too, so an import placed there is no longer read. To use it again, run `python tools/nk_cli.py fonts import <folder>` on the original `.pgf` folder (with the same `--user-data-root` you use for the player), or copy that `fonts/v2` folder unchanged to `<user data>/fonts/v2`. The manifest's size and SHA-256 are checked on use, so a copy that does not match is refused rather than served.
 
@@ -454,8 +475,8 @@ The per-user data directory is the one font root. The import, the status and the
 To verify that system fonts are in place:
 
 1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
-2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
-3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check. Whenever a font is not your own import, the check's sentence in the player says which fonts in plain words (for example "the Japanese font, 10 of the 16 Latin fonts and the Korean font"), says that games asking for them get a stand-in font that looks different, or no font where nothing stands in, and points to the setup wizard; the check's message in the log keeps the exact file for every font ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
+3. **Player settings:** **Settings > PSP FONTS** shows the Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that page.
 
 ## 3. Build
 
@@ -471,7 +492,8 @@ verifies the presented framebuffer, builds the native player, and exercises its 
 route without private input. Use `mingw32-make --no-print-directory display-smoke` for
 the headless build/verification without opening a window. Generated C is split into a
 dynamic number of translation units based on the discovered function count and
-`FUNCS_PER_CHUNK`.
+`FUNCS_PER_CHUNK`, and on `CHUNK_TARGET_BYTES` when it is set (package builds set it to
+4,000,000 bytes).
 
 For a validated local title manifest, use the manager so every title-derived value
 comes from that manifest:
@@ -538,13 +560,14 @@ the finished package to the destination. If neither fallback is available, or if
 characters that Make recipes cannot quote, the route stops with the named `PACKAGE_UNSUPPORTED_PATH`
 boundary tracked by #296.
 
-`assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
+`assets/titles/hst-ucus98701.json` is the HST title manifest, part of the repository since 2026-10-27: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. See [`assets/titles/README.md`](../assets/titles/README.md).
 
-The local manifest must also declare its build name (`"game_name": "hst"`). Generic launch
-resolution (issue #366) derives every runtime and image path from validated title identity only:
-an HST session reaches `build/hst/hst[.exe]` because HST's own manifest says so, never because a
-launcher defaults to it. A manifest without `game_name` fails closed with a missing-runtime error
-instead of inheriting another title's build.
+The manifest declares no `game_name`, so its build name is derived from its id
+(`hst-ucus98701`); the manager's HST commands pass `-GameName hst`. Generic launch
+resolution (issue #366) derives every runtime and image path from validated title identity only,
+never from a launcher default: a developer runtime is found only under the build name the
+manifest gives, and a missing one fails closed with a missing-runtime error instead of inheriting
+another title's build.
 
 The requirement is enforced incrementally, not only on a clean tree: the generated title-config
 header is keyed to a content-addressed identity of the effective configuration, so dropping
@@ -668,6 +691,21 @@ it needs all of the following:
   (`Expand-Archive`) use it; PowerShell 7 remains the development baseline for
   the other repository scripts.
 
+A release folder can carry the pinned prerequisites itself, in `prereqs/` beside `bin/` and
+`source/` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE
+then uses that folder ahead of `PATH` and the per-user download, so it shows no consent card
+and opens no network connection. Before each build the player checks the folder against
+`source/assets/prereq_manifest.json`: `prereqs/installed.json` must record exactly the pinned
+artifacts with their pinned version, size and SHA-256, and every file listed in
+`prereqs/bundle-inventory.txt` (one `<sha256> <size> <path>` line per file) must exist with
+its recorded size. A folder that fails the check is refused with
+`PREREQUISITE_BUNDLE_INVALID`, naming the first missing or changed file, and nothing is
+downloaded in its place: extract the release zip again into a short folder path. The player
+does not hash the bundled files, about 7,600 files and 700 MB, because that would hold BUILD
+PACKAGE for seconds; packaging verifies them. **Settings → About & Licenses** then lists the
+bundled components and opens `prereqs/notices`, and **Remove Downloaded Build Tools** never
+touches `prereqs/`.
+
 When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
 card showing each component's name, version, source host, download size, and
 licence, plus the total. Nothing is downloaded until **DOWNLOAD** is selected;
@@ -693,6 +731,16 @@ CVE-2026-111497) records its own `sha256_source.retrieved_utc`; the locked devel
 date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
+
+Each artifact also names its corresponding source in the manifest's `sources` list: the MSYS2
+source package (`*.src.tar.zst`) of its pkgbase at the same version, or the CPython source
+release, pinned by URL, size and SHA-256 ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
+The CPython entry also names the source releases of the libraries built into its runtime
+(`bundled_sources`), and `source_notices` copies licence files out of the pinned sources for the
+packages whose binaries carry none. The player never downloads them. A release publishes them as one archive next to its zip, and
+the zip's bundled build tools leave out the GFDL-licensed manuals in `share/doc`, `share/info`
+and `share/man` while keeping every licence file; the policy is in
+[`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#bundled-prerequisite-licensing-policy).
 
 Downloaded tools, verified archives, and extracted licence texts live under the
 current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
@@ -725,10 +773,23 @@ connection, listed below; any future online feature will be opt-in and added her
 | --- | --- | --- | --- |
 | Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
 
+A release folder that carries a verified `prereqs/` tree never makes the build-tool
+download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
+
 There is no update check, telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
 offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
-prerequisite downloaders uses a network API.
+prerequisite downloaders uses a network API, or if a pinned download names a host not listed
+in this section.
+
+Release packaging is a maintainer step, not part of the player:
+`python -m tools.nk_core.prereq_fetcher` with `--bundle-dest` or `--source-archive` downloads
+the same pinned archives and their source files to build a release
+([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#recreate-the-package)). It uses the two hosts in
+the table and, for the source releases of the libraries built into the CPython runtime, also
+`github.com` (whose downloads redirect to `release-assets.githubusercontent.com` and
+`codeload.github.com`), `www.sqlite.org`, `sourceware.org` and `www.bytereef.org`. The player
+never passes those options.
 
 ### Build lifecycle and cleanup targets
 
@@ -783,8 +844,7 @@ Two limits are stated rather than implied, because that check does not reach the
   the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and
   the CPU-LLE and dispatch-isolation sites in PR #681, which also changed all three to decode
   `argv[0]` in the active code page rather than assuming UTF-8, since that is the encoding the CRT
-  produced it in. [Issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667) tracks the
-  remaining path handling.
+  produced it in. Those fixes closed [issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667).
 
 `BUILD_DIR` is a narrower contract. GNU Make splits a target or prerequisite name on whitespace, so a
 `BUILD_DIR` containing a space cannot be named by Make at all: the name silently becomes several
@@ -894,7 +954,7 @@ outside the published repository.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `tools/copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
-- **`PUBLIC_SAFE=1` active:** the runtime always compiles with `PUBLIC_SAFE=1`; the private-backend mode was retired on 2026-10-25. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; Nakagawa does not decrypt games (see [Encrypted executables](#encrypted-executables)).
+- **`PUBLIC_SAFE=1` active:** the runtime always compiles with `PUBLIC_SAFE=1`; the private-backend mode was retired on 2026-10-25. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; the player decrypts them before a build (see [Encrypted executables](#encrypted-executables)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts status` to see each slot's source, and `python tools/nk_cli.py fonts import <folder>` for any slot that is missing. Your imported fonts are in `<user data>/fonts/v2/` with a `manifest.json`. See [System fonts](#system-fonts).

@@ -252,39 +252,6 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
     return 0;
 }
 
-int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
-#if SR_TITLE_CONFIG_COMPAT_PROFILE
-    /* #363 compatibility debt, HST only: live runtime behavior, not a diagnostic.
-     * The validated manifest selects the flagship profile and its exact source id.
-     * Keep this legacy guest-layout knowledge inside the title-config boundary. */
-    if (s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0) {
-        if (out) {
-            out->master_reent_addr = 0x002cf338u;
-            out->guest_thread_table_addr = 0x0030aa88u;
-        }
-        return 1;
-    }
-#else
-    (void)out;
-#endif
-    return 0;
-}
-
-int sr_title_config_preserve_callee_saved_at_calls(void) {
-#if SR_TITLE_CONFIG_COMPAT_PROFILE
-    /* #363 compatibility debt, HST only: a returning dispatch CALL restores the
-     * callee-saved $s0-$s7/$fp. Real hardware does not; a generic title sees every
-     * register write its callee makes. Retire this once the flagship's clobber is
-     * root-caused. */
-    static int enabled = -1;
-    if (enabled < 0)
-        enabled = s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0;
-    return enabled;
-#else
-    return 0;
-#endif
-}
-
 int sr_title_config_frame_latch_addr(uint32_t *out) {
     if (!(s_config.valid & SR_TITLE_CFG_FRAME_LATCH)) return 0;
     if (out) *out = s_config.frame_ready_latch_addr;

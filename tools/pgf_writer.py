@@ -423,8 +423,8 @@ def _record_bytes(plan: _Planned, indexes: list[int]) -> bytes:
             (plan.adjust_x & 0x7F, 7),
             (plan.adjust_y & 0x7F, 7),
             (plan.row_order, 2),
-            (1, 1),  # role bit: 1 = character record; the console library reads 0 as a shadow layout
-            (0b111, 3),  # all three metric groups are indexed
+            (1, 1),  # bit 44: the dimension group is a table index (0 would be an inline pair)
+            (0b111, 3),  # bits 45-47: the X-adjustment, Y-adjustment and advance groups are indexed
             (0, 7),  # unassigned bits
             (0, 9),  # shadow identifier: none
         ]
