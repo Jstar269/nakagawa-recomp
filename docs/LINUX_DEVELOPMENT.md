@@ -136,7 +136,7 @@ python tools/lint_docs.py
 | Gate | Status | Issue |
 | --- | --- | --- |
 | Consumer ISO compatibility | The automated Linux CMake/player and runtime gates use only the source-owned TEST00007/TEST00008 showcase fixtures. Compatibility across consumer ISOs and title-specific semantics remains in the works. | #306 |
-| `hle-thread-selftest` and `hle-title-selftest` | These production-HLE harnesses still use Win32 test setup and are not built on Linux. The Linux showcase exercises the real runtime but does not replace those broader HLE suites, which remain in the works. | #306 |
+| `hle-title-selftest` | `hle-thread-selftest` now builds and runs on Linux, in hosted `native_tools` too. `hle-title-selftest` runs the same harness under the generic and both fixture title configurations; it has no Linux CI job yet. | #306 |
 | Interactive SDL3/Vulkan presentation | The showcase smoke uses dummy video/audio drivers and checks headless output. Interactive desktop presentation and a broader Linux device/display matrix remain in the works. | #306 |
 | Python suites that call `git` | `tools/test_lint_docs.py`, `tools/test_publication_policy_gate.py`, and `tools/publish_audit.py` use `git` on the checkout. They work in an ordinary Linux clone; they fail in a Windows checkout opened from WSL, because its worktree paths are Windows paths. Never set `GIT_DIR` to work around it. | #306 |
 | Full `python -m unittest discover -s tools` | Takes several minutes; CI splits it into shards. Run the focused suites above while developing. | #306 |

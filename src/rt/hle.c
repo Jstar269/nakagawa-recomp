@@ -14453,6 +14453,11 @@ static int data_walk(const wchar_t *root, const char *mount,
     int ok = 1;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        /* The Windows walk's test-only pacing hook and work counters, at the same points. */
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
         char *host_utf8 = NULL;
         if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
             fprintf(stderr, "host_data: host-path conversion failed during enumeration\n");
@@ -14480,6 +14485,9 @@ static int data_walk(const wchar_t *root, const char *mount,
                 }
                 break;
             }
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
             wchar_t *name = NULL;
             wchar_t *child_host = NULL;
@@ -14527,6 +14535,9 @@ static int data_walk(const wchar_t *root, const char *mount,
                                                     exclude_count)) {
                     /* An excluded file is not indexed or opened. */
                 } else {
+#ifdef SR_HLE_THREAD_SELFTEST
+                    s_data_test_scan_probes++;
+#endif
                     int probe_fd = openat(dirfd(dir), entry->d_name,
                                           O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
                     struct stat probe_st;
@@ -14799,6 +14810,10 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
     int found = 0;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
         char *host_utf8 = NULL;
         if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
             ok = 0;
@@ -14820,6 +14835,9 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                 if (errno != 0) ok = 0;
                 break;
             }
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
             wchar_t *name = NULL;
             wchar_t *child = NULL;
@@ -15158,7 +15176,7 @@ static char *data_loose_path_alloc(const char *root_utf8, const char *key) {
     size_t capacity = root_len + key_len + 2u;
     char *path = (char *)malloc(capacity);
     if (!path) return NULL;
-    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, '\\') <= 0) {
+    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, SR_HOST_PATH_SEP) <= 0) {
         free(path);
         return NULL;
     }
@@ -16423,6 +16441,79 @@ static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) 
     }
     return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
 }
+#else
+/* The POSIX overlay listing. The directory is reached through the contained seam's
+ * descriptor walk from the bound Memory Stick root, the walk every POSIX ms0: open
+ * already takes: each component is opened with O_NOFOLLOW, so a link on the way is
+ * refused where the Win32 arm refuses a directory resolving outside the root. The
+ * listing reads that same descriptor, so no path is resolved twice. */
+static uint32_t vfs_overlay_merge_dir_posix(const char *guest_path, SrVfsDirList *list,
+                                            int *found) {
+    char trimmed[SR_CD_REL_MAX + 16u], rel[SR_CD_REL_MAX];
+    const char *tail = NULL;
+    size_t n = strlen(guest_path);
+    if (n >= sizeof(trimmed)) return 0;
+    memcpy(trimmed, guest_path, n + 1u);
+    /* A trailing separator names the same directory, as the Win32 host path does. */
+    while (n > 0u && (trimmed[n - 1u] == '/' || trimmed[n - 1u] == '\\')) trimmed[--n] = '\0';
+    if (sr_ms0_classify(trimmed, &tail) != SR_MS0_OWNED || !tail) return 0;
+    while (*tail == '/' || *tail == '\\') tail++;
+    if (*tail == '\0') rel[0] = '\0'; /* the root itself */
+    else if (ms0_posix_guest_relpath(trimmed, rel, sizeof(rel)) != SR_CD_OK) return 0;
+    sr_cd_root root;
+    if (ms0_posix_root_open(&root) != SR_CD_OK) return 0;
+    int dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root.fd, rel, &dir_fd);
+    sr_cd_root_close(&root);
+    if (st == SR_CD_NOT_FOUND) return 0;
+    if (st != SR_CD_OK) {
+        fprintf(stderr, "sceIoDopen: refusing '%s': no directory reachable without a link "
+                        "inside the configured Memory Stick root (%s)\n",
+                guest_path, sr_cd_status_name(st));
+        fflush(stderr);
+        return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, as on Win32 */
+    }
+    DIR *dir = fdopendir(dir_fd);
+    if (!dir) {
+        close(dir_fd);
+        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+    }
+    *found = 1;
+    uint32_t rc = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) {
+                fprintf(stderr, "sceIoDopen: host enumeration of '%s' ended early (errno=%d); "
+                                "refusing a short listing\n", guest_path, errno);
+                rc = 0x80010005u;
+            }
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        struct stat child;
+        if (fstatat(dirfd(dir), entry->d_name, &child, AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno == ENOENT) continue; /* removed since readdir named it */
+            fprintf(stderr, "sceIoDopen: host child of '%s' cannot be classified (errno=%d); "
+                            "refusing a short listing\n", guest_path, errno);
+            rc = 0x80010005u;
+            break;
+        }
+        int is_dir = S_ISDIR(child.st_mode);
+        if (!is_dir && (uint64_t)child.st_size > UINT32_MAX) {
+            fprintf(stderr, "sceIoDopen: host file '%s' exceeds the guest size limit; "
+                            "skipping one entry\n", entry->d_name);
+            list->skipped++;
+        } else if (!sr_vfs_dirlist_merge(list, entry->d_name, is_dir,
+                                         is_dir ? 0u : (uint64_t)child.st_size)) {
+            rc = 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+            break;
+        }
+    }
+    closedir(dir);
+    return rc;
+}
 #endif
 
 /* Merge the writable host overlay's children for `guest_path` into `list`.
@@ -16569,7 +16660,7 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
             }
         }
 #else
-        (void)list;
+        rc = vfs_overlay_merge_dir_posix(guest_path, list, found);
 #endif
     }
     free(pattern);
@@ -17621,9 +17712,11 @@ uint32_t sr_hle_test_io_lseek32(CpuState *s) { return h_IoLseek32(s); }
 uint32_t sr_hle_test_io_dopen(CpuState *s) { return h_IoDopen(s); }
 uint32_t sr_hle_test_io_dread(CpuState *s) { return h_IoDread(s); }
 uint32_t sr_hle_test_io_dclose(CpuState *s) { return h_IoDclose(s); }
+#ifdef _WIN32 /* the classifier maps FindFirstFileW's error codes and exists on Win32 only */
 uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
     return vfs_overlay_initial_find_error(error, found);
 }
+#endif
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 void sr_hle_test_register_iofilemgr(void) { hle_register_iofilemgr_handlers(); }
 uint32_t sr_hle_test_io_devctl_callback_count(void) {
