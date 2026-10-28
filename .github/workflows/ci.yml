@@ -850,7 +850,15 @@ jobs:
         run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
 
       - name: Run Linux GPU snapshot sync selftest
-        run: make CC=gcc -j4 gpu-snapsync-selftest
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 make CC=gcc -j4 gpu-snapsync-selftest
 
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
