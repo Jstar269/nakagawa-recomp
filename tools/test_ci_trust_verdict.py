@@ -460,16 +460,27 @@ class ProtectedPathTests(unittest.TestCase):
             git("add", "-A")
             git("commit", "-q", "-m", "candidate")
             head = git("rev-parse", "HEAD")
+            git("update-ref", f"refs/pull/{PR}/head", head)
             git("checkout", "-q", "main")
-            trusted = ctv.tree_entries(repo, "HEAD")
-            candidate = ctv.tree_entries(repo, head)
-            texts = [(repo / ".github/workflows/ci.yml").read_text(encoding="utf-8")]
-            paths = ctv.protected_paths(trusted, candidate, texts)
-            self.assertEqual(ctv.protected_changes(trusted, candidate, trusted, paths), [
+
+            # The trusted checkout knows only main; the candidate arrives by fetch, as data.
+            trusted = Path(tmp) / "trusted"
+            subprocess.run(["git", "clone", "-q", "--single-branch", "-b", "main", str(repo), str(trusted)],
+                           check=True, capture_output=True, env=env)
+            facts = ctv.git_facts(trusted, "owner/repo", PR, head, remote=str(repo))
+            self.assertEqual(facts["fetched_head"], head)
+            self.assertEqual(facts["trusted_sha"], git("rev-parse", "main"))
+            self.assertEqual(facts["protected_changes"], [
                 {"path": ".github/workflows/spoof.yml", "kind": "added"},
                 {"path": "tools/gate.py", "kind": "modified"},
             ])
-            self.assertEqual(ctv.context_collisions(repo, head, candidate), [".github/workflows/spoof.yml"])
+            self.assertEqual(facts["context_collisions"], [".github/workflows/spoof.yml"])
+            # Nothing of the candidate was checked out in the trusted tree.
+            self.assertEqual((trusted / "tools/gate.py").read_text(encoding="utf-8"), "print('gate')\n")
+
+            moved = ctv.git_facts(trusted, "owner/repo", PR, OTHER, remote=str(repo))
+            self.assertEqual(moved["fetched_head"], head)
+            self.assertEqual(moved["protected_changes"], [])
 
 
 class WorkflowWiringTests(unittest.TestCase):
@@ -543,6 +554,150 @@ class WorkflowWiringTests(unittest.TestCase):
                 self.assertRegex(text, rf"(?m)^(    name: {re.escape(producer.context)}|  {re.escape(producer.context)}:)\s*$")
                 for event in producer.events:
                     self.assertRegex(text, rf"(?m)^  {event}:")
+
+
+class FakeGitHub(ctv.GitHub):
+    """Answers the collector's reads from a canned scenario and records posts."""
+
+    def __init__(self, scenario: Scenario, permission_error: bool = False) -> None:
+        super().__init__("Jstar269/nakagawa-recomp", "token")
+        self.raw = scenario.raw
+        self.permission_error = permission_error
+        self.posts: list[tuple[str, dict]] = []
+        self.reads: list[str] = []
+
+    def get(self, path: str) -> object:
+        self.reads.append(path)
+        if path == f"pulls/{PR}":
+            return self.raw["pull_request"]
+        if path.startswith("collaborators/"):
+            if self.permission_error:
+                raise ctv.urllib.error.HTTPError(path, 403, "forbidden", {}, None)  # type: ignore[arg-type]
+            return {"permission": self.raw.get("label_actor_permission")}
+        raise AssertionError(path)
+
+    def paginate(self, path: str, key: str | None = None) -> list:
+        self.reads.append(path)
+        if path == "pulls?state=open":
+            return self.raw["open_pull_requests"]
+        if path == f"issues/{PR}/events":
+            return self.raw["label_events"]
+        if path.startswith("actions/runs?head_sha="):
+            return self.raw["workflow_runs"]
+        if path.startswith("actions/runs/"):
+            return self.raw["jobs"][path.split("/")[2]]
+        if path.startswith(f"commits/{HEAD}/check-runs"):
+            return self.raw["check_runs"]
+        if path == f"commits/{HEAD}/statuses":
+            return self.raw["statuses"]
+        raise AssertionError(path)
+
+    def post(self, path: str, body: dict) -> object:
+        self.posts.append((path, body))
+        return None
+
+
+def _facts(changes: list[dict] | None = None) -> dict:
+    return {"fetched_head": HEAD, "trusted_sha": "c" * 40,
+            "protected_changes": changes or [], "context_collisions": []}
+
+
+class CollectorTests(unittest.TestCase):
+    """The live path: what the collector reads, and what main() posts."""
+
+    def test_collect_by_head_finds_the_pull_request_and_reads_every_source(self) -> None:
+        scenario = Scenario()
+        scenario.label(at="2026-10-28T10:05:00Z", permission="write")
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()) as facts:
+            raw = ctv.collect(gh, Path("."), "main", HEAD, None)
+        assert raw is not None
+        facts.assert_called_once_with(Path("."), gh.repository, PR, HEAD)
+        self.assertEqual(raw["label_actor_permission"], "write")
+        self.assertEqual(set(raw["jobs"]), {"1", "2", "3", "4"})  # producer workflows only
+        self.assertIn(f"commits/{HEAD}/check-runs?filter=all", gh.reads)
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "success")
+
+    def test_collect_finds_nothing_for_a_head_without_a_pull_request_into_main(self) -> None:
+        scenario = Scenario()
+        scenario.raw["open_pull_requests"][0]["base"]["ref"] = "release"
+        self.assertIsNone(ctv.collect(FakeGitHub(scenario), Path("."), "main", HEAD, None))
+
+    def test_unreadable_label_permission_does_not_approve(self) -> None:
+        scenario = Scenario()
+        scenario.change("tools/ci_paths.py")
+        scenario.label(at="2026-10-28T10:05:00Z")
+        gh = FakeGitHub(scenario, permission_error=True)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts(scenario.raw["protected_changes"])):
+            raw = ctv.collect(gh, Path("."), "main", HEAD, PR)
+        assert raw is not None
+        self.assertIsNone(raw["label_actor_permission"])
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "failure")
+
+    def _main(self, gh: FakeGitHub, *args: str) -> int:
+        with mock.patch.object(ctv, "GitHub", return_value=gh), \
+                mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token"}), \
+                mock.patch("sys.stdout"):
+            return ctv.main(["--repository", gh.repository, "--post", "--target-url", "https://run", *args])
+
+    def test_main_posts_one_status_bound_to_the_head(self) -> None:
+        gh = FakeGitHub(Scenario())
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()):
+            self.assertEqual(self._main(gh, "--head-sha", HEAD), 0)
+        self.assertEqual(gh.posts, [(f"statuses/{HEAD}", {
+            "state": "success", "context": ctv.VERDICT_CONTEXT,
+            "description": ctv.Verdict("success").description(), "target_url": "https://run",
+        })])
+
+    def test_main_posts_failure_and_exits_nonzero(self) -> None:
+        gh = FakeGitHub(Scenario())
+        with mock.patch.object(ctv, "git_facts", return_value=_facts([{"path": CI, "kind": "modified"}])):
+            self.assertEqual(self._main(gh, "--pull-request", str(PR)), 1)
+        self.assertEqual(gh.posts[0][1]["state"], "failure")
+        self.assertIn("CI_CHANGE_UNAPPROVED", gh.posts[0][1]["description"])
+
+    def test_main_replaces_an_old_verdict_with_error_when_it_cannot_judge(self) -> None:
+        gh = FakeGitHub(Scenario())
+        with mock.patch.object(ctv, "git_facts", side_effect=subprocess.CalledProcessError(128, "git")), \
+                self.assertRaises(subprocess.CalledProcessError):
+            self._main(gh, "--head-sha", HEAD)
+        self.assertEqual([body["state"] for _, body in gh.posts], ["error"])
+
+    def test_main_posts_nothing_when_no_pull_request_has_the_head(self) -> None:
+        scenario = Scenario()
+        scenario.raw["open_pull_requests"] = []
+        gh = FakeGitHub(scenario)
+        self.assertEqual(self._main(gh, "--head-sha", HEAD), 0)
+        self.assertEqual(gh.posts, [])
+
+    def test_paginate_follows_link_headers(self) -> None:
+        gh = ctv.GitHub("owner/repo", "token")
+        pages = {
+            "actions/runs?head_sha=x&per_page=100": ({"workflow_runs": [1, 2]},
+                                                     {"Link": '<https://api.github.com/next>; rel="next"'}),
+            "https://api.github.com/next": ({"workflow_runs": [3]}, {}),
+        }
+        with mock.patch.object(gh, "_request", side_effect=lambda method, url, body=None: pages[url]):
+            self.assertEqual(gh.paginate("actions/runs?head_sha=x", "workflow_runs"), [1, 2, 3])
+
+    def test_requests_carry_the_token_and_api_version(self) -> None:
+        gh = ctv.GitHub("owner/repo", "secret")
+        response = mock.MagicMock()
+        response.read.return_value = b'{"ok": true}'
+        response.headers = {}
+        response.__enter__.return_value = response
+        with mock.patch.object(ctv.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual(gh.post(f"statuses/{HEAD}", {"state": "pending"}), {"ok": True})
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, f"https://api.github.com/repos/owner/repo/statuses/{HEAD}")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        self.assertEqual(request.get_header("X-github-api-version"), "2022-11-28")
+
+    def test_main_rejects_a_malformed_head(self) -> None:
+        gh = FakeGitHub(Scenario())
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self._main(gh, "--head-sha", "HEAD")
 
 
 class CommandLineTests(unittest.TestCase):

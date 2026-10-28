@@ -573,11 +573,11 @@ def context_collisions(repo: Path, candidate_rev: str, candidate: dict[str, str]
     return hits
 
 
-def git_facts(repo: Path, repository: str, number: int, head_sha: str) -> dict:
+def git_facts(repo: Path, repository: str, number: int, head_sha: str, remote: str | None = None) -> dict:
     """Fetch ``refs/pull/N/head`` as objects only and compare its CI definitions."""
     ref = f"refs/nk-candidate/pr-{number}"
     _git(repo, "fetch", "--no-tags", "--no-recurse-submodules", "--quiet",
-         f"https://github.com/{repository}.git", f"+refs/pull/{number}/head:{ref}")
+         remote or f"https://github.com/{repository}.git", f"+refs/pull/{number}/head:{ref}")
     fetched = _git(repo, "rev-parse", ref).decode("ascii").strip()
     facts: dict = {"fetched_head": fetched, "trusted_sha": _git(repo, "rev-parse", "HEAD").decode("ascii").strip()}
     if fetched != head_sha:

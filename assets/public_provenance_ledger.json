@@ -11775,7 +11775,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d889e74fb1b6f62076e5dfa140797d192f9ed09982bc67b9e315366b4fd93a88"
+      "sha256": "c40203357505c02d35b8ac2d5c364a826302fcc2eb9215dcddad39684af57a39"
     },
     {
       "path": "tools/codegen.py",
@@ -13525,7 +13525,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "03ee67c34ced26ededc629eb3c70ae72454bfb41350eedd1a9265fe38f378c2e"
+      "sha256": "3cbe52aa34428bb2c53fe9805db1ce962555e698a123668b5fa8798820f2e834"
     },
     {
       "path": "tools/test_codegen_continuations.py",
