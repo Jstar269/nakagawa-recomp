@@ -32,6 +32,9 @@
 //   * vrndi.s steps the random unit by the PSP-HLE-ISSUES-001 rule in the
 //     generated code and the interpreter alike, and the vrnd forms and prefixes
 //     without a recorded rule fail closed;
+//   * vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s return the
+//     PSP-VFPU-FORMS-001 words in both lanes, and their unmeasured widths and
+//     prefixes fail closed;
 //   * valid aligned quad round-trips still work.
 //
 // The final check count is printed by the executable. No game inputs or private
@@ -1349,7 +1352,8 @@ static int check_vrndi_rule_cells(void) {
     /* Outside the measured domain the interpreter refuses with no state change (the AOT
      * body stops the run on the same prefix test; tools/test_codegen_vfpu_fallback.py
      * executes that branch): a pending S, T or D prefix, the .p/.t/.q widths, and the
-     * forms with no recorded rule (vrnds.s, vrndf1.s, vrndf2.s). */
+     * form with no recorded rule (vrnds.s), and vrndf1.s/vrndf2.s under a prefix
+     * (their identity-prefix draws are check_vfpu_forms_measured's). */
     static const struct { uint32_t w, pfx[3]; } refused[] = {
         {0xd0210000u, {0xf00e4u, 0xe4u, 0u}},    /* vrndi.s, S prefix pending */
         {0xd0210000u, {0xe4u, 0x1bu, 0u}},       /* vrndi.s, T prefix pending */
@@ -1359,8 +1363,8 @@ static int check_vrndi_rule_cells(void) {
         {0xd0218000u, {0xe4u, 0xe4u, 0u}},       /* vrndi.t */
         {0xd0218080u, {0xe4u, 0xe4u, 0u}},       /* vrndi.q */
         {0xd0200000u, {0xe4u, 0xe4u, 0u}},       /* vrnds.s */
-        {0xd0220000u, {0xe4u, 0xe4u, 0u}},       /* vrndf1.s */
-        {0xd0230000u, {0xe4u, 0xe4u, 0u}},       /* vrndf2.s */
+        {0xd0220000u, {0xf00e4u, 0xe4u, 0u}},    /* vrndf1.s, S prefix pending */
+        {0xd0230000u, {0xe4u, 0x1bu, 0u}},       /* vrndf2.s, T prefix pending */
     };
     for (size_t r = 0; r < sizeof(refused) / sizeof(refused[0]); r++) {
         CpuState s;
@@ -1375,10 +1379,279 @@ static int check_vrndi_rule_cells(void) {
     return bad;
 }
 
+/* Run one PSP-VFPU-FORMS-001 word in both lanes from the probe's image (word i =
+ * 0x3f800000 | i << 16, VFPU_CC 0x15, identity prefixes) with the source lanes at image
+ * 0 and 1 (C000 / S000) and, when rcx is given, RCX0-7 written. Both lanes must end with
+ * exactly want_n destination words at image dest.. (the measured ones) and every other
+ * register and control word unchanged, except RCX0-7 = rcx_after for a draw. */
+static int forms_cell(const char *form, uint32_t a, uint32_t b, const uint32_t *rcx,
+                      const uint32_t *want, int want_n, int dest, const uint32_t *rcx_after) {
+    const int c = find_overlap_diff_case(form);
+    CpuState before, expect, aot, interp;
+    setup_identity_compute(&before);
+    for (int i = 0; i < 128; i++) before.vi[i] = 0x3f800000u | ((uint32_t)i << 16);
+    before.vi[0] = a;
+    before.vi[1] = b;
+    before.vfpuCtrl[3] = 0x15u;
+    if (rcx) memcpy(&before.vfpuCtrl[8], rcx, 8 * sizeof(uint32_t));
+    else sr_vfpu_thread_ctrl_init(&before);
+    expect = before;
+    for (int i = 0; i < want_n; i++) expect.vi[dest + i] = want[i];
+    if (rcx_after) memcpy(&expect.vfpuCtrl[8], rcx_after, 8 * sizeof(uint32_t));
+    aot = interp = before;
+    const int kind = c >= 0 ? sr_vfpu_interp(&interp, overlap_diff_cases[c].w) : -1;
+    if (c >= 0) overlap_diff_run_codegen(&aot, c);
+    const int ok = c >= 0 && kind == SR_VFPU_COMPUTE &&
+                   memcmp(&interp, &expect, sizeof(expect)) == 0 &&
+                   memcmp(&aot, &expect, sizeof(expect)) == 0;
+    g_checks++;
+    if (!ok) {
+        g_failures++;
+        fprintf(stderr, "FAIL: PSP-VFPU-FORMS-001 %s in=0x%08x,0x%08x kind=%d lane0 psp=0x%08x "
+                "aot=0x%08x interp=0x%08x\n", form, a, b, kind, want[0], aot.vi[dest],
+                interp.vi[dest]);
+    }
+    return !ok;
+}
+
+static int check_vfpu_forms_measured(void) {
+    /* PSP-VFPU-FORMS-001 (PSP-3000, 6.61, 2026-10-28, probe case vfpu-forms, issue #326;
+     * docs/HARDWARE_ORACLE.md): the no-prefix result words of the probe's own words,
+     * copied from its stream (both passes were identical). Before this change the AOT
+     * raised Unsupported for every one of these forms and the interpreter answered
+     * SR_VFPU_OTHER, so each cell failed. Each runs the AOT body tools/codegen.py emits
+     * (via the overlap-diff header) and the production interpreter. */
+    /* vh2f.s C200, S000: the source word (low half first) and C200 lanes 0-1. */
+    static const uint32_t h2f_s[12][3] = {
+        {0x80000000u, 0x00000000u, 0x80000000u}, {0x80010001u, 0x00000000u, 0x80000000u},
+        {0x020003ffu, 0x00000000u, 0x00000000u}, {0x3c000400u, 0x38800000u, 0x3f800000u},
+        {0xc0007bffu, 0x477fe000u, 0xc0000000u}, {0xfc007c00u, 0x7f800000u, 0xff800000u},
+        {0x7e007c01u, 0x7f800001u, 0x7f800200u}, {0xfe007fffu, 0x7f8003ffu, 0xff800200u},
+        {0xb7ff3555u, 0x3eaaa000u, 0xbeffe000u}, {0x12345640u, 0x42c80000u, 0x3a468000u},
+        {0xfbff8400u, 0xb8800000u, 0xc77fe000u}, {0xfdff83ffu, 0x80000000u, 0xff8001ffu},
+    };
+    /* vh2f.p C200, C000 (and in place, C000, C000): two source words, four lanes. */
+    static const uint32_t h2f_p[6][6] = {
+        {0x80000000u, 0x80010001u, 0x00000000u, 0x80000000u, 0x00000000u, 0x80000000u},
+        {0x020003ffu, 0x3c000400u, 0x00000000u, 0x00000000u, 0x38800000u, 0x3f800000u},
+        {0xc0007bffu, 0xfc007c00u, 0x477fe000u, 0xc0000000u, 0x7f800000u, 0xff800000u},
+        {0x7e007c01u, 0xfe007fffu, 0x7f800001u, 0x7f800200u, 0x7f8003ffu, 0xff800200u},
+        {0xb7ff3555u, 0x12345640u, 0x3eaaa000u, 0xbeffe000u, 0x42c80000u, 0x3a468000u},
+        {0xfbff8400u, 0xfdff83ffu, 0xb8800000u, 0xc77fe000u, 0x80000000u, 0xff8001ffu},
+    };
+    /* vuc2i.s C200, S000: the source word and C200 lanes 0-3. */
+    static const uint32_t uc2i[10][5] = {
+        {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0xffffffffu, 0x7fffffffu, 0x7fffffffu, 0x7fffffffu, 0x7fffffffu},
+        {0x7f80ff01u, 0x00808080u, 0x7fffffffu, 0x40404040u, 0x3fbfbfbfu},
+        {0x80402010u, 0x08080808u, 0x10101010u, 0x20202020u, 0x40404040u},
+        {0x01020304u, 0x02020202u, 0x01818181u, 0x01010101u, 0x00808080u},
+        {0xfedcba98u, 0x4c4c4c4cu, 0x5d5d5d5du, 0x6e6e6e6eu, 0x7f7f7f7fu},
+        {0x3f800000u, 0x00000000u, 0x00000000u, 0x40404040u, 0x1f9f9f9fu},
+        {0x7fc00000u, 0x00000000u, 0x00000000u, 0x60606060u, 0x3fbfbfbfu},
+        {0x00000001u, 0x00808080u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x00ff00ffu, 0x7fffffffu, 0x00000000u, 0x7fffffffu, 0x00000000u},
+    };
+    /* vsocp.s C200, S000: the operand and C200 lanes 0-1. */
+    static const uint32_t socp_s[22][3] = {
+        {0x00000000u, 0x3f800000u, 0x00000000u}, {0x80000000u, 0x3f800000u, 0x00000000u},
+        {0x3e800000u, 0x3f400000u, 0x3e800000u}, {0x3f000000u, 0x3f000000u, 0x3f000000u},
+        {0x3f800000u, 0x00000000u, 0x3f800000u}, {0x3fc00000u, 0x00000000u, 0x3f800000u},
+        {0x40000000u, 0x00000000u, 0x3f800000u}, {0xbf000000u, 0x3f800000u, 0x00000000u},
+        {0xbf800000u, 0x3f800000u, 0x00000000u}, {0xc0000000u, 0x3f800000u, 0x00000000u},
+        {0x7f800000u, 0x00000000u, 0x3f800000u}, {0xff800000u, 0x3f800000u, 0x00000000u},
+        {0x7fc00000u, 0x7f800001u, 0x7f800001u}, {0xffc00000u, 0x7f800001u, 0x7f800001u},
+        {0x7f800001u, 0x7f800001u, 0x7f800001u}, {0x00000001u, 0x3f800000u, 0x00000000u},
+        {0x80000001u, 0x3f800000u, 0x00000000u}, {0x3f7fffffu, 0x33800000u, 0x3f7fffffu},
+        {0x3f800001u, 0x00000000u, 0x3f800000u}, {0x33800000u, 0x3f7fffffu, 0x33800000u},
+        {0xb3800000u, 0x3f800000u, 0x00000000u}, {0x3f400000u, 0x3e800000u, 0x3f400000u},
+    };
+    /* vsocp.p C200, C000: two operands and C200 lanes 0-3. */
+    static const uint32_t socp_p[11][6] = {
+        {0x00000000u, 0x80000000u, 0x3f800000u, 0x00000000u, 0x3f800000u, 0x00000000u},
+        {0x3e800000u, 0x3f000000u, 0x3f400000u, 0x3e800000u, 0x3f000000u, 0x3f000000u},
+        {0x3f800000u, 0x3fc00000u, 0x00000000u, 0x3f800000u, 0x00000000u, 0x3f800000u},
+        {0x40000000u, 0xbf000000u, 0x00000000u, 0x3f800000u, 0x3f800000u, 0x00000000u},
+        {0xbf800000u, 0xc0000000u, 0x3f800000u, 0x00000000u, 0x3f800000u, 0x00000000u},
+        {0x7f800000u, 0xff800000u, 0x00000000u, 0x3f800000u, 0x3f800000u, 0x00000000u},
+        {0x7fc00000u, 0xffc00000u, 0x7f800001u, 0x7f800001u, 0x7f800001u, 0x7f800001u},
+        {0x7f800001u, 0x00000001u, 0x7f800001u, 0x7f800001u, 0x3f800000u, 0x00000000u},
+        {0x80000001u, 0x3f7fffffu, 0x3f800000u, 0x00000000u, 0x33800000u, 0x3f7fffffu},
+        {0x3f800001u, 0x33800000u, 0x00000000u, 0x3f800000u, 0x3f7fffffu, 0x33800000u},
+        {0xb3800000u, 0x3f400000u, 0x3f800000u, 0x00000000u, 0x3e800000u, 0x3f400000u},
+    };
+    /* vwbn.s S200, S000, e: the 28 operands, then the result word at each exponent. */
+    static const uint32_t wbn_in[28] = {
+        0x00000000u, 0x80000000u, 0x3f800000u, 0x3fc00000u, 0x40000000u, 0x40400000u,
+        0x40b00000u, 0x3f000000u, 0x3f400000u, 0x3e800000u, 0x2edbe6ffu, 0x501502f9u,
+        0x4b000000u, 0x4b800001u, 0x4e800000u, 0xc0500000u, 0xbe99999au, 0x7f7fffffu,
+        0x00800000u, 0x00400000u, 0x00000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+        0x7f800001u, 0x40490fdbu, 0x12345678u, 0x8abcdef0u,
+    };
+    static const uint32_t wbn_e[8] = {0x00u, 0x01u, 0x7eu, 0x7fu, 0x80u, 0x96u, 0xfeu, 0xffu};
+    static const uint32_t wbn_out[8][28] = {
+        {
+            0x00000000u, 0x80000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00400000u,
+            0x00600000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x005fe000u, 0x001502f9u,
+            0x00000000u, 0x00000080u, 0x00000000u, 0x80500000u, 0x80334000u, 0x007fc000u,
+            0x00000000u, 0x00400000u, 0x00000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x00490fdbu, 0x00456780u, 0x801bde00u,
+        },
+        {
+            0x00800000u, 0x80800000u, 0x00800000u, 0x00800000u, 0x00800000u, 0x00800000u,
+            0x00b00000u, 0x00800000u, 0x00800000u, 0x00800000u, 0x00eff000u, 0x00fc8000u,
+            0x00800000u, 0x00800040u, 0x00800000u, 0x80800000u, 0x8099a000u, 0x00ffe000u,
+            0x00800000u, 0x00c00000u, 0x00800001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x00ed8000u, 0x00a2b3c0u, 0x80cdef00u,
+        },
+        {
+            0x3f000000u, 0xbf000000u, 0x3f000000u, 0x3f000000u, 0x3f000000u, 0x3f000000u,
+            0x3f000000u, 0x3f000000u, 0x3f400000u, 0x3f400000u, 0x3f6df37fu, 0x3f540be4u,
+            0x3f000000u, 0x3f000200u, 0x3f000000u, 0xbf400000u, 0xbf4ccccdu, 0x3f7fffffu,
+            0x3f000400u, 0x3f400000u, 0x3f000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x3f243f6cu, 0x3f002d15u, 0xbf005e6fu,
+        },
+        {
+            0x3f800000u, 0xbf800000u, 0x3f800000u, 0x3fc00000u, 0x3f800000u, 0x3f800000u,
+            0x3fc00000u, 0x3fc00000u, 0x3fe00000u, 0x3fa00000u, 0x3fb6f9bfu, 0x3faa05f2u,
+            0x3f800000u, 0x3f800100u, 0x3f800000u, 0xbfa00000u, 0xbfa66666u, 0x3fff8000u,
+            0x3f800200u, 0x3fc00000u, 0x3f800001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x3f921fb6u, 0x3f80168au, 0xbf802f37u,
+        },
+        {
+            0x40000000u, 0xc0000000u, 0x40400000u, 0x40600000u, 0x40000000u, 0x40400000u,
+            0x40600000u, 0x40200000u, 0x40300000u, 0x40100000u, 0x401b7cdfu, 0x401502f9u,
+            0x40000000u, 0x40000080u, 0x40000000u, 0xc0500000u, 0xc0133333u, 0x407fc000u,
+            0x40000100u, 0x40400000u, 0x40000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x40490fdbu, 0x40000b45u, 0xc000179bu,
+        },
+        {
+            0x4b000000u, 0xcb000000u, 0x4b010000u, 0x4b018000u, 0x4b020000u, 0x4b030000u,
+            0x4b058000u, 0x4b008000u, 0x4b00c000u, 0x4b004000u, 0x4b006df3u, 0x4b0be400u,
+            0x4b000000u, 0x4b000002u, 0x4b000000u, 0xcb034000u, 0xcb004cccu, 0x4b7fff00u,
+            0x4b040000u, 0x4b400000u, 0x4b000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x4b03243fu, 0x4b2d159eu, 0xcb5e6f78u,
+        },
+        {
+            0x7f000000u, 0xff000000u, 0x7f000100u, 0x7f000180u, 0x7f000200u, 0x7f000300u,
+            0x7f000580u, 0x7f000000u, 0x7f400000u, 0x7f400000u, 0x7f6df37fu, 0x7f000254u,
+            0x7f008000u, 0x7f010000u, 0x7f400000u, 0xff000340u, 0xff4ccccdu, 0x7f7fffffu,
+            0x7f000400u, 0x7f400000u, 0x7f000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x7f000324u, 0x7f002d15u, 0xff005e6fu,
+        },
+        {
+            0x7f800000u, 0xff800000u, 0x7f800000u, 0x7fc00000u, 0x7f800100u, 0x7f800180u,
+            0x7f8002c0u, 0x7fc00000u, 0x7fe00000u, 0x7fa00000u, 0x7fb6f9bfu, 0x7f80012au,
+            0x7f804000u, 0x7f808000u, 0x7fa00000u, 0xff8001a0u, 0xffa66666u, 0x7fffffffu,
+            0x7f800200u, 0x7fc00000u, 0x7f800001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+            0x7f800001u, 0x7f800192u, 0x7f80168au, 0xff802f37u,
+        },
+    };
+    /* vrndf1.s / vrndf2.s S000 from 17 written RCX states: RCX0-7 written, the vrndf1
+     * and vrndf2 words, and RCX0-7 after the draw (the same for both forms). */
+    static const uint32_t rndf[17][18] = {
+        {0x3f80ace0u, 0x3f809bdfu, 0x3f800000u, 0x3f800000u, 0x3f802468u, 0x3f801357u, 0x3f800000u, 0x3f800000u,
+         0x3fa7424au, 0x4027424au, 0x3f80cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f800000u, 0x3f802579u, 0x3f80e5adu, 0x3f800000u, 0x3f800000u},
+        {0x3f81bdf1u, 0x3f809bdfu, 0x3f800001u, 0x3f800000u, 0x3f803579u, 0x3f801347u, 0x3f800000u, 0x3f808000u,
+         0x3fd0cae1u, 0x4050cae1u, 0x3f8056feu, 0x3f8073e1u, 0x3f800000u, 0x3f800002u, 0x3f80bf13u, 0x3f80e7bdu, 0x3f808000u, 0x3f800000u},
+        {0x3f82cf02u, 0x3f809bdfu, 0x3f80ffffu, 0x3f80e6d8u, 0x3f80468au, 0x3f801377u, 0x3f807fffu, 0x3f80c4d5u,
+         0x3fe61d45u, 0x40661d45u, 0x3f80de9bu, 0x3f8070f9u, 0x3f80e6d8u, 0x3f80cdb1u, 0x3f8058acu, 0x3f80e18du, 0x3f80c4d5u, 0x3f8009abu},
+        {0x3f83e013u, 0x3f809bdfu, 0x3f800000u, 0x3f800001u, 0x3f80579bu, 0x3f801367u, 0x3f808000u, 0x3f800000u,
+         0x3fe3d82eu, 0x4063d82eu, 0x3f806638u, 0x3f8071f1u, 0x3f800001u, 0x3f800005u, 0x3f80f246u, 0x3f80e39du, 0x3f800000u, 0x3f808000u},
+        {0x3f8ff124u, 0x3f809bdfu, 0x3f80fffeu, 0x3f800000u, 0x3f8068acu, 0x3f801317u, 0x3f80ffffu, 0x3f80c000u,
+         0x3fcd64abu, 0x404d64abu, 0x3f81edd5u, 0x3f8076c9u, 0x3f800000u, 0x3f80000du, 0x3f808bdfu, 0x3f80ededu, 0x3f80c000u, 0x3f808000u},
+        {0x3f800235u, 0x3f819bdfu, 0x3f80ffffu, 0x3f80cdefu, 0x3f8079beu, 0x3f801307u, 0x3f80ffffu, 0x3f8089abu,
+         0x3fce8920u, 0x404e8920u, 0x3f817572u, 0x3f8077c1u, 0x3f80cdefu, 0x3f809bedu, 0x3f802579u, 0x3f80effdu, 0x3f8089abu, 0x3f801357u},
+        {0x3f8f1346u, 0x3f8f9bdfu, 0x3f8f6e50u, 0x3f8fffffu, 0x3f808acfu, 0x3f801337u, 0x3f80907fu, 0x3f807fffu,
+         0x3fe0e035u, 0x4060e035u, 0x3f80fd0fu, 0x3f8074d9u, 0x3f80ffffu, 0x3f806e4du, 0x3f80bf12u, 0x3f80e9cdu, 0x3f807fffu, 0x3f809080u},
+        {0x3f882457u, 0x3f879bdfu, 0x3f865a5au, 0x3f85ffffu, 0x3f849be0u, 0x3f831327u, 0x3f825a5au, 0x3f81ffffu,
+         0x3f98ab4du, 0x4018ab4du, 0x3f8084acu, 0x3f8075d1u, 0x3f80ffffu, 0x3f80b0d0u, 0x3f8058acu, 0x3f80ebddu, 0x3f80ffffu, 0x3f806c8eu},
+        {0x3f803568u, 0x3f809bdfu, 0x3f800000u, 0x3f800000u, 0x3f80acf1u, 0x3f8013d7u, 0x3f800000u, 0x3f800000u,
+         0x3ff386f2u, 0x407386f2u, 0x3f800c49u, 0x3f807aa9u, 0x3f800000u, 0x3f800000u, 0x3f80f246u, 0x3f80f52du, 0x3f800000u, 0x3f800000u},
+        {0x3f814679u, 0x3f809bdfu, 0x3f800001u, 0x3f800000u, 0x3f80be02u, 0x3f8013c7u, 0x3f800000u, 0x3f808000u,
+         0x3f9d0f89u, 0x401d0f89u, 0x3f8093e6u, 0x3f807ba1u, 0x3f800000u, 0x3f800002u, 0x3f808bdfu, 0x3f80f73du, 0x3f808000u, 0x3f800000u},
+        {0x3f82578au, 0x3f809bdfu, 0x3f80ffffu, 0x3f80e6d8u, 0x3f80cf13u, 0x3f8013f7u, 0x3f807fffu, 0x3f80c4d5u,
+         0x3fb261edu, 0x403261edu, 0x3f801b83u, 0x3f8078b9u, 0x3f80e6d8u, 0x3f80cdb1u, 0x3f802579u, 0x3f80f10du, 0x3f80c4d5u, 0x3f8009abu},
+        {0x3f83689bu, 0x3f809bdfu, 0x3f800000u, 0x3f800001u, 0x3f80e024u, 0x3f8013e7u, 0x3f808000u, 0x3f800000u,
+         0x3fb01cd6u, 0x40301cd6u, 0x3f80a320u, 0x3f8079b1u, 0x3f800001u, 0x3f800005u, 0x3f80bf12u, 0x3f80f31du, 0x3f800000u, 0x3f808000u},
+        {0x3f8f79acu, 0x3f809bdfu, 0x3f80fffeu, 0x3f800000u, 0x3f80f135u, 0x3f801397u, 0x3f80ffffu, 0x3f80c000u,
+         0x3f99a953u, 0x4019a953u, 0x3f812abdu, 0x3f807e89u, 0x3f800000u, 0x3f80000du, 0x3f8058acu, 0x3f80fd6du, 0x3f80c000u, 0x3f808000u},
+        {0x3f808abdu, 0x3f819bdfu, 0x3f80ffffu, 0x3f80cdefu, 0x3f800246u, 0x3f801387u, 0x3f80ffffu, 0x3f8089abu,
+         0x3f9acdc8u, 0x401acdc8u, 0x3f81b25au, 0x3f807f81u, 0x3f80cdefu, 0x3f809bedu, 0x3f80f245u, 0x3f80ff7du, 0x3f8089abu, 0x3f801357u},
+        {0x3f8f9bceu, 0x3f8f9bdfu, 0x3f8f6e50u, 0x3f8fffffu, 0x3f801357u, 0x3f8013b7u, 0x3f80907fu, 0x3f807fffu,
+         0x3fad24ddu, 0x402d24ddu, 0x3f8039f7u, 0x3f807c99u, 0x3f80ffffu, 0x3f806e4du, 0x3f808bdfu, 0x3f80f94du, 0x3f807fffu, 0x3f809080u},
+        {0x3f88acdfu, 0x3f879bdfu, 0x3f865a5au, 0x3f85ffffu, 0x3f842468u, 0x3f8313a7u, 0x3f825a5au, 0x3f81ffffu,
+         0x3fe4eff5u, 0x4064eff5u, 0x3f80c194u, 0x3f807d91u, 0x3f80ffffu, 0x3f80b0d0u, 0x3f802578u, 0x3f80fb5du, 0x3f80ffffu, 0x3f806c8eu},
+        {0x3f800001u, 0x3f800002u, 0x3f800004u, 0x3f800008u, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u,
+         0x3f894e24u, 0x40094e24u, 0x3f800dceu, 0x3f804042u, 0x3f800008u, 0x3f800014u, 0x3f800001u, 0x3f800008u, 0x3f800000u, 0x3f800000u},
+    };
+    static const char *const wbn_forms[8] = {"wbn-s-00", "wbn-s-01", "wbn-s-7e", "wbn-s-7f",
+                                             "wbn-s-80", "wbn-s-96", "wbn-s-fe", "wbn-s-ff"};
+    int bad = 0;
+    for (int i = 0; i < 12; i++)
+        bad |= forms_cell("h2f-s-forms", h2f_s[i][0], 0x7a5a5a5au, NULL, &h2f_s[i][1], 2, 32, NULL);
+    for (int i = 0; i < 6; i++) {
+        bad |= forms_cell("h2f-p-forms", h2f_p[i][0], h2f_p[i][1], NULL, &h2f_p[i][2], 4, 32, NULL);
+        bad |= forms_cell("h2f-p-inplace", h2f_p[i][0], h2f_p[i][1], NULL, &h2f_p[i][2], 4, 0, NULL);
+    }
+    for (int i = 0; i < 10; i++)
+        bad |= forms_cell("uc2i-s-forms", uc2i[i][0], 0x7a5a5a5au, NULL, &uc2i[i][1], 4, 32, NULL);
+    for (int i = 0; i < 22; i++)
+        bad |= forms_cell("socp-s-forms", socp_s[i][0], 0x7a5a5a5au, NULL, &socp_s[i][1], 2, 32, NULL);
+    for (int i = 0; i < 11; i++)
+        bad |= forms_cell("socp-p-forms", socp_p[i][0], socp_p[i][1], NULL, &socp_p[i][2], 4, 32, NULL);
+    for (int e = 0; e < 8; e++) {
+        const int c = find_overlap_diff_case(wbn_forms[e]);
+        CHECKB(bad, c >= 0 && ((overlap_diff_cases[c].w >> 16) & 0xffu) == wbn_e[e],
+               "vwbn.s probe word carries its exponent");
+        for (int i = 0; i < 28; i++)
+            bad |= forms_cell(wbn_forms[e], wbn_in[i], 0x7a5a5a5au, NULL, &wbn_out[e][i], 1, 32, NULL);
+    }
+    for (int k = 0; k < 17; k++) {
+        bad |= forms_cell("rndf1-s-forms", 0x7a5a5a5au, 0x7a5a5a5au, rndf[k], &rndf[k][8], 1, 0,
+                          &rndf[k][10]);
+        bad |= forms_cell("rndf2-s-forms", 0x7a5a5a5au, 0x7a5a5a5au, rndf[k], &rndf[k][9], 1, 0,
+                          &rndf[k][10]);
+    }
+    /* Outside the measured domain the interpreter refuses with no state change (the AOT
+     * body stops the run on the same prefix test; tools/test_codegen_vfpu_fallback.py
+     * executes that branch): a pending S, T or D prefix, and the widths no cell covered. */
+    static const struct { uint32_t w, pfx[3]; } refused[] = {
+        {0xd0330088u, {0xf00e4u, 0xe4u, 0u}},   /* vh2f.p, S prefix (negate-all) pending */
+        {0xd0330088u, {0xe4u, 0x1bu, 0u}},      /* vh2f.p, T prefix pending */
+        {0xd0330088u, {0xe4u, 0xe4u, 0x1u}},    /* vh2f.p, D saturation */
+        {0xd0338008u, {0xe4u, 0xe4u, 0u}},      /* vh2f.t */
+        {0xd0338088u, {0xe4u, 0xe4u, 0u}},      /* vh2f.q */
+        {0xd0380008u, {0x5001bu, 0xe4u, 0u}}, /* vuc2i.s, S prefix pending */
+        {0xd0380088u, {0xe4u, 0xe4u, 0u}},      /* vuc2i.p */
+        {0xd0450008u, {0xe4u, 0xe4u, 0x100u}},  /* vsocp.s, D write mask */
+        {0xd0458008u, {0xe4u, 0xe4u, 0u}},      /* vsocp.t */
+        {0xd37f0008u, {0xf00e4u, 0xe4u, 0u}},   /* vwbn.s, S prefix pending */
+        {0xd37f0088u, {0xe4u, 0xe4u, 0u}},      /* vwbn.p */
+        {0xd3e08080u, {0xe4u, 0xe4u, 0u}},      /* vwbn.q */
+        {0xd0220000u, {0xe4u, 0xe4u, 0x3u}},    /* vrndf1.s, D saturation */
+        {0xd0220080u, {0xe4u, 0xe4u, 0u}},      /* vrndf1.p */
+        {0xd0238080u, {0xe4u, 0xe4u, 0u}},      /* vrndf2.q */
+    };
+    for (size_t r = 0; r < sizeof(refused) / sizeof(refused[0]); r++) {
+        CpuState s;
+        setup_identity_compute(&s);
+        sr_vfpu_thread_ctrl_init(&s);
+        for (int i = 0; i < 128; i++) s.vi[i] = 0x3f800000u | ((uint32_t)i << 16);
+        for (int i = 0; i < 3; i++) s.vfpuCtrl[i] = refused[r].pfx[i];
+        const CpuState before = s;
+        const int kind = sr_vfpu_interp(&s, refused[r].w);
+        CHECKB(bad, kind == SR_VFPU_OTHER && memcmp(&s, &before, sizeof(s)) == 0,
+               "unmeasured vfpu-forms width or prefix fails closed with no state change");
+    }
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_psp_measured_vfpu9();
     bad |= check_vrndi_rule_cells();
+    bad |= check_vfpu_forms_measured();
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
