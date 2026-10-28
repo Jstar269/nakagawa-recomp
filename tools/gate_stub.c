@@ -271,6 +271,7 @@ uint32_t g_sr_store_context_mem_offset = 0;
 unsigned g_sr_store_context_mem_words = 0;
 int      g_sr_last_writer_enabled = 0;
 void     sr_debug_init_watches(void) {}
+int      sr_debug_streams_init(void) { return 0; }   /* the gate keeps the C runtime's streams */
 int      sr_check_mem_watch(uint32_t addr, uint32_t val, int write, uint32_t pc) {
     (void)addr; (void)val; (void)write; (void)pc;
     return 0;

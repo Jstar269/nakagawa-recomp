@@ -188,7 +188,8 @@ decode falls back to the project-drawn geometric form, which tests and SDL-free 
   label SDL reports on the south button, never from the pad's name: A south gives the Xbox-style set, B south (A
   east) the Switch-style set, a cross the PlayStation-style set, and anything else the neutral position dots.
   Confirm and back follow position (south confirms), so a pad with A east shows B for confirm. The chip names the
-  set.
+  pad the way a player would: XBOX-STYLE CONTROLLER, NINTENDO-STYLE CONTROLLER, PLAYSTATION-STYLE CONTROLLER, or
+  CONTROLLER for the neutral set.
 - A pad that connects switches the set at once; when it disconnects the set falls back to another connected pad or
   to the keyboard. Pointer motion alone never switches.
 
@@ -242,6 +243,15 @@ the project's test route and read as a claim about the user's game (#1297), so o
 `FOOTNOTE`. Under the card, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
 the showcase demos, and also while that game starts or runs, a package builds or a disc is being copied. Prompt
 bar: MOVE, SELECT, BACK.
+
+### Stop game (built)
+
+STOP GAME on the title page asks first, as quitting with a game running does. A flow card, 640 px wide, opened over
+the title page: the eyebrow STOP GAME with a `warning` triangle, then "Stop *game*?" in `TITLE` (the game that runs),
+and one `BODY_S` `muted` line: "The game closes now, and anything since its last save is lost." KEEP PLAYING has the
+first focus and Back closes the card as it does; STOP GAME is a `DANGER` button, never the default focus. The card
+closes by itself if the game ends meanwhile. Prompt bar: MOVE, SELECT, KEEP PLAYING. The no-new-frames card's own
+STOP GAME is already that choice, so it stops the game without a second question.
 
 ### Remove from library (built)
 
@@ -345,6 +355,12 @@ wait. A key another control already uses, or one that cannot be bound (the funct
 line says why in `error`: the profile refuses a key bound to two controls, and the runtime keeps Esc, F1 and F3. The
 stick card names the keys Nakagawa keeps and says the analog stick has no keys.
 
+A host input is named by the label a pad prints on it, with its other common name in brackets (`A (Cross)`,
+`LB (L1)`, `RT (R2)`), and a key pair of one modifier reads as the modifier alone (`Shift` for Left and Right Shift), so
+every default binding, two inputs included, and any one input fit their button whole: at most 20 characters
+(`INPUT_SETTINGS_BINDING_TEXT_MAX`), the width `test_binding_labels_fit` checks at every launcher size. The margin
+leaves room for the prompt glyph beside the binding (#1299).
+
 Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
 GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the
 first binding.
@@ -361,9 +377,11 @@ them. Esc or F12 closes it.
 
 ### First run (C7)
 
-Built now: the setup wizard's six steps (Welcome, Options, Game, Verify, Fonts, Ready) on the existing wizard state,
-in the dialog card the build and error screens use. Options ("Online and developer options",
-[`ONLINE_FEATURES.md`](ONLINE_FEATURES.md)) comes right after Welcome because it needs no game: two switch rows (a
+Built now: the setup wizard's four steps (Welcome, Options, Game, Verify) on the existing wizard state, in the
+dialog card the build and error screens use. Copying the disc's files at Verify ends on the library card, where the
+game is built and played, and the PSP fonts are imported in Settings > PSP fonts, so the step chips name only those
+four steps. The older Fonts and Ready step states remain only for state-only callers and the old renderer.
+Options ("Online and developer options", [`ONLINE_FEATURES.md`](ONLINE_FEATURES.md)) comes right after Welcome because it needs no game: two switch rows (a
 220 px button reading "Online mode: On" or "Off", accent while on, with its sentence beside it), the note that this
 version has no online features yet, then CONTINUE (the default focus, so Enter never flips a switch), SKIP and BACK. A strip of step chips sits at the top (current: accent fill; done:
 `ready` edge and a check); each step has one primary action first, then Back and Cancel. Every control returns
