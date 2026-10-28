@@ -97,7 +97,7 @@ class TestInventoryShape(unittest.TestCase):
     def test_upstream_production_gap_requires_campaign_disposition(self) -> None:
         """A derived production gap without a roadmap owner fails closed."""
         covered = gap.exact_paths_from_public_ledger(LEDGER)
-        victim = "src/rt/atrac3p/atrac3p_api.c"
+        victim = "src/core/nk_psp_aes.c"
         self.assertIn(victim, covered)
         item = next(
             item for item in gap.record_gaps(covered=covered - {victim})
@@ -196,7 +196,7 @@ class TestOutput(unittest.TestCase):
         FAILING_BEFORE: the gate only looked at paths without an exact trusted
         record, and every tracked path has one, so it could never fail.
         """
-        victim = "src/rt/atrac3p/atrac3p_api.c"
+        victim = "src/core/nk_psp_aes.c"
         self.assertIn(victim, gap.exact_paths_from_public_ledger(LEDGER))
         self.assertIn(victim, gap.KNOWN_DISPOSITION_GAPS)
         baseline = {path: entry for path, entry in gap.KNOWN_DISPOSITION_GAPS.items()
@@ -263,13 +263,13 @@ class TestOutput(unittest.TestCase):
                 self.assertFalse(gap._is_production_code(path))
                 self.assertNotIn(path, gap.KNOWN_DISPOSITION_GAPS)
                 self.assertNotIn(path, {str(item["path"]) for item in gap.disposition_gaps(repo=ROOT)})
-        self.assertTrue(gap._is_production_code("src/rt/atrac3p/atrac3p_api.c"))
+        self.assertTrue(gap._is_production_code("src/core/nk_psp_aes.c"))
 
     def test_trusted_classification_wins_over_the_public_projection(self) -> None:
         """A path the authority calls upstream-derived is a gap even if the public ledger disagrees."""
         from unittest import mock
 
-        victim = "src/rt/atrac3p/atrac3p_api.c"
+        victim = "src/core/nk_psp_aes.c"
         self.assertIn(victim, gap.KNOWN_DISPOSITION_GAPS)
         live_public = {str(item["path"]) for item in gap.disposition_gaps(repo=ROOT)}
         self.assertIn(victim, live_public)

@@ -60,7 +60,10 @@ void sr_hle_test_power_set_external(int external) { s_power_external = external 
  * Measured on the PSP-3000 oracle (2026-10-10, hle-power-clock) before any Set:
  * PLL 222, CPU 222, bus 111 MHz, from the Int getters and the Float getters
  * (222.0f and 111.0f). A title that wants 333 asks for it. */
-static uint32_t s_pll_freq = 222u, s_cpu_freq = 222u, s_bus_freq = 111u;
+static uint32_t s_pll_freq = SR_POWER_BOOT_PLL_MHZ, s_cpu_freq = SR_POWER_BOOT_CPU_MHZ,
+                s_bus_freq = SR_POWER_BOOT_BUS_MHZ;
+
+uint32_t sr_power_bus_clock_mhz(void) { return s_bus_freq; }
 
 uint32_t h_PowerGetPllClockFrequencyInt(CpuState *s) { (void)s; return s_pll_freq; }
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return s_cpu_freq; }
@@ -112,7 +115,9 @@ uint32_t h_PowerSetClockFrequency350(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only reset so the executable harness can isolate the retained
  * clock fixtures from one another. Adds no production behaviour. */
-void sr_hle_test_power_reset(void) { s_pll_freq = 222u; s_cpu_freq = 222u; s_bus_freq = 111u; }
+void sr_hle_test_power_reset(void) {
+    s_pll_freq = SR_POWER_BOOT_PLL_MHZ; s_cpu_freq = SR_POWER_BOOT_CPU_MHZ; s_bus_freq = SR_POWER_BOOT_BUS_MHZ;
+}
 #endif
 
 static uint32_t s_power_cb_slots[16];

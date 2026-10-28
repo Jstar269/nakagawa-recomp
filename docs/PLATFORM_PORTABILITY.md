@@ -33,7 +33,8 @@ but a successful object compile is not the same as a linked, running port.
    canonical build.
 2. Split portable SDL3 GUI code from the GDI fallback.
 3. Introduce host filesystem, time, sleep, and OSK interfaces; implement POSIX backends.
-4. Add a real H.264 backend after choosing its license and redistribution model.
+4. Validate the H.264 backend on Linux: the vendored FFmpeg decoder subset is the default off Windows
+   (see the decision record below).
 5. Link and run headless smoke tests, then visually validate SDL3/Vulkan and audio on Linux.
 
 ### 3. Android
@@ -59,10 +60,13 @@ material in this repository.
 
 ## H.264 backend decision record
 
-**Status: awaiting maintainer decision.** The shared stream path uses the project-authored PSMF
-producer for program-stream parsing and AU boundaries; no portable decoder dependency is added.
-The existing Windows backend remains the only real decoder. A build without a usable backend
-returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
+**Status: decided and built.** The maintainer chose the FFmpeg H.264 decoder subset on 2026-10-24
+([#283](https://github.com/Jstar269/nakagawa-recomp/issues/283)), and it landed in
+[#1263](https://github.com/Jstar269/nakagawa-recomp/pull/1263). The shared stream path uses the
+project-authored PSMF producer for program-stream parsing and AU boundaries, behind the `sr_h264`
+seam. Windows decodes with Media Foundation; elsewhere the vendored FFmpeg H.264 subset in the
+table below is the default backend. A build without a usable backend
+(`H264_FFMPEG=0` off Windows) returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
 
 ### Backend conformance contract
 

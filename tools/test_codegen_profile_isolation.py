@@ -105,8 +105,8 @@ HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
 HST_CUSTOM_STUBS = (
     0x000011B0, 0x0000260C, 0x0000FE3C, 0x0000F538, 0x000101C4, 0x00010738,
-    0x00013524, 0x00015EA0, 0x000143B0, 0x0001034C, 0x000468C8,
-    0x001D9EB0, 0x00011090, 0x000110DC, 0x000114A8, 0x000114C0, 0x000149A8,
+    0x00013524, 0x00015EA0, 0x000143B0, 0x000468C8,
+    0x00011090, 0x000110DC, 0x000114A8, 0x000114C0, 0x000149A8,
 )
 HST_NULL_BASE = tuple(sorted(codegen.NULL_BASE_WORD_LOADS))
 HST_GUEST_PATCHES = tuple(sorted(codegen.GUEST_PATCHES))
@@ -180,8 +180,10 @@ def _shape_for(addr: int) -> list[int]:
     return _body_leaf()
 
 
-def _build_specimen_words() -> dict[int, int]:
+def _build_specimen_words(extra: dict[int, list[int]] | None = None) -> dict[int, int]:
+    """The shared specimen; `extra` adds bodies (address -> words) reached from the entry."""
     words: dict[int, int] = {}
+    extra = extra or {}
 
     def place(base: int, body: list[int]) -> None:
         for i, w in enumerate(body):
@@ -205,6 +207,9 @@ def _build_specimen_words() -> dict[int, int]:
                       _beq_fwd(resume - (owner + 8)), NOP])
         place(resume, [_addiu_sp(32), NOP, JR_RA, NOP])
 
+    for addr, body in extra.items():
+        place(addr, body)
+
     # Fan-out entry: one jal per discovered body, so the analyzer finds every
     # address as a function start under both profiles.
     targets = (
@@ -212,6 +217,7 @@ def _build_specimen_words() -> dict[int, int]:
         + [a + CONTROL_DELTA for a in BODY_COUPLED]
         + list(HST_MANUAL_CALLABLES)
         + list(HST_RESUME_OWNERS.values())
+        + sorted(extra)
     )
     for i, tgt in enumerate(targets):
         words[ENTRY + i * 8] = _jal(tgt)
@@ -306,37 +312,42 @@ class _CodegenRun:
 
     @staticmethod
     def _run(profile: str, static_verify: bool) -> dict[str, str]:
-        words = _build_specimen_words()
-        sv_was = codegen.SV_ENABLED
-        with tempfile.TemporaryDirectory(prefix="nakagawa-profile-isolation-") as tmp:
-            tmp_path = Path(tmp)
-            elf_path = tmp_path / "specimen.elf"
-            _write_elf(elf_path, words, entry=ENTRY)
-            out_c = tmp_path / "out.c"
-            argv = [
-                "codegen.py", str(elf_path), str(out_c),
-                "--base=0", f"--profile={profile}", "--funcs-per-chunk=4000",
-            ]
-            if static_verify:
-                argv.append("--static-verify")
-            orig_out, orig_err = sys.stdout, sys.stderr
-            try:
-                sys.stdout, sys.stderr = StringIO(), StringIO()
-                rc = codegen.main(argv)
-                captured = sys.stdout.getvalue() + sys.stderr.getvalue()
-            finally:
-                sys.stdout, sys.stderr = orig_out, orig_err
-                # --static-verify flips a module global; never let it escape.
-                codegen.SV_ENABLED = sv_was
-            assert rc == 0, f"codegen failed profile={profile}: {captured}"
-            texts = []
-            if out_c.is_file():
-                texts.append(out_c.read_text(encoding="ascii", errors="ignore"))
-            for chunk in sorted(tmp_path.glob("out_*.c")):
-                texts.append(chunk.read_text(encoding="ascii", errors="ignore"))
-        combined = "\n".join(texts)
-        assert combined.strip(), f"empty codegen output for profile={profile}"
-        return _split_functions(combined)
+        return _codegen_functions(_build_specimen_words(), profile, static_verify)
+
+
+def _codegen_functions(words: dict[int, int], profile: str,
+                       static_verify: bool = False) -> dict[str, str]:
+    """Run codegen.main in process over `words` and return its emitted functions."""
+    sv_was = codegen.SV_ENABLED
+    with tempfile.TemporaryDirectory(prefix="nakagawa-profile-isolation-") as tmp:
+        tmp_path = Path(tmp)
+        elf_path = tmp_path / "specimen.elf"
+        _write_elf(elf_path, words, entry=ENTRY)
+        out_c = tmp_path / "out.c"
+        argv = [
+            "codegen.py", str(elf_path), str(out_c),
+            "--base=0", f"--profile={profile}", "--funcs-per-chunk=4000",
+        ]
+        if static_verify:
+            argv.append("--static-verify")
+        orig_out, orig_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = StringIO(), StringIO()
+            rc = codegen.main(argv)
+            captured = sys.stdout.getvalue() + sys.stderr.getvalue()
+        finally:
+            sys.stdout, sys.stderr = orig_out, orig_err
+            # --static-verify flips a module global; never let it escape.
+            codegen.SV_ENABLED = sv_was
+        assert rc == 0, f"codegen failed profile={profile}: {captured}"
+        texts = []
+        if out_c.is_file():
+            texts.append(out_c.read_text(encoding="ascii", errors="ignore"))
+        for chunk in sorted(tmp_path.glob("out_*.c")):
+            texts.append(chunk.read_text(encoding="ascii", errors="ignore"))
+    combined = "\n".join(texts)
+    assert combined.strip(), f"empty codegen output for profile={profile}"
+    return _split_functions(combined)
 
 
 # ---------------------------------------------------------------------------
@@ -447,13 +458,9 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "bypass loop 0x10950",
-            "s->r[16] = s->r[3];",
             "_c = 1u;",
             "== 0u ? 0u : MEM_R32",
             "custom stub: __register_frame_info bypass",
-            "custom stub: skip corrupted heap-statistics walk",
-            "title backdrop selector postcondition",
         )
         missing = [s for s in expected if s not in self.combined]
         self.assertEqual(missing, [], "profile=hst lost legacy HST emission")
@@ -884,7 +891,7 @@ class GateInventoryTests(unittest.TestCase):
 
 #: Independent inventory of retired HST override addresses that must NEVER be
 #: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
-RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00046D14})
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320})
 
 
 def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
@@ -931,6 +938,9 @@ class RetiredAddressGuardTests(unittest.TestCase):
     0x00046d14 was retired on 2026-08-29 after static and dynamic analysis
     proved it is an interior basic-block loop header label (L_00046d14) inside
     FUN_000468c8 (main_RunGameLoop), not a standalone function or resume entry.
+    0x00048320 was a GUEST_PATCHES "force single-iteration pass" override that
+    injected `_c = 1u;` into a guest branch; it was retired under #363 after a
+    private route run with the branch's own condition reached the same match.
     These tests enforce independent invariants so that no live metadata, AST
     helper, or classification change can silently revive an override at this
     address.
@@ -1018,6 +1028,71 @@ class RetiredAddressGuardTests(unittest.TestCase):
             "Enclosing function containing 0x00046d14 diverged between profile=none and profile=hst",
         )
 
+    def test_retired_10950_branch_runs_its_guest_condition_in_both_profiles(self):
+        """The branch at 0x00010950 is decided by its own operands under both profiles.
+
+        GUEST_PATCHES used to force that branch's condition to 0 and inject
+        `s->r[16] = s->r[3];` under profile=hst. Retired (#363), the enclosing
+        function emits the same C under both profiles."""
+        words = {
+            0x00010948: LUI_T0,
+            0x0001094C: NOP,
+            0x00010950: (5 << 26) | (3 << 21) | 3,  # bne $v1, $zero, 0x10960
+            0x00010954: NOP,
+            0x00010958: LUI_T0,
+            0x0001095C: ORI_T0,
+            0x00010960: JR_RA,
+            0x00010964: NOP,
+        }
+        elf = _FakeElf(words)
+        ranges = [(0, 0x00200000)]
+        known = {0x00010948}
+
+        none_lines = codegen.emit_function(elf, 0x00010948, ranges, known, profile="none")
+        hst_lines = codegen.emit_function(elf, 0x00010948, ranges, known, profile="hst")
+        hst_text = "\n".join(hst_lines)
+
+        self.assertIn("L_00010960:", hst_text, "the branch target label is missing")
+        self.assertNotIn("bypass loop 0x10950", hst_text, "profile=hst still forces the 0x10950 branch")
+        self.assertNotIn("s->r[16] = s->r[3];", hst_text, "profile=hst still injects the 0x10950 statement")
+        self.assertNotIn("sr_compat_fired", hst_text, "profile=hst still records a 0x10950 compat firing")
+        self.assertEqual(
+            none_lines, hst_lines,
+            "the function containing the 0x00010950 branch diverged between profile=none and profile=hst",
+        )
+
+    def test_retired_48320_branch_runs_its_guest_condition_in_both_profiles(self):
+        """The branch at 0x00048320 is decided by its own operands under both profiles.
+
+        GUEST_PATCHES used to inject `_c = 1u;` there under profile=hst, forcing the
+        branch taken whatever $s2 held, and recorded a compat firing. Retired (#363),
+        the enclosing function emits the same C under both profiles."""
+        words = {
+            0x00048318: LUI_T0,
+            0x0004831C: NOP,
+            0x00048320: (4 << 26) | (18 << 21) | 3,  # beq $s2, $zero, 0x48330
+            0x00048324: NOP,
+            0x00048328: LUI_T0,
+            0x0004832C: ORI_T0,
+            0x00048330: JR_RA,
+            0x00048334: NOP,
+        }
+        elf = _FakeElf(words)
+        ranges = [(0, 0x00200000)]
+        known = {0x00048318}
+
+        none_lines = codegen.emit_function(elf, 0x00048318, ranges, known, profile="none")
+        hst_lines = codegen.emit_function(elf, 0x00048318, ranges, known, profile="hst")
+        hst_text = "\n".join(hst_lines)
+
+        self.assertIn("L_00048330:", hst_text, "the branch target label is missing")
+        self.assertNotIn("_c = 1u;", hst_text, "profile=hst still forces the 0x48320 branch taken")
+        self.assertNotIn("sr_compat_fired", hst_text, "profile=hst still records a 0x48320 compat firing")
+        self.assertEqual(
+            none_lines, hst_lines,
+            "the function containing the 0x00048320 branch diverged between profile=none and profile=hst",
+        )
+
     # --- Mutant kills -----------------------------------------------------
 
     def test_mutant_killed_exact_old_override_restored(self):
@@ -1064,6 +1139,64 @@ class RetiredAddressGuardTests(unittest.TestCase):
             any(a in mutant_resume_owners for a in RETIRED_HST_ADDRESSES),
             "Synchronized resume mutant was not rejected by RETIRED_HST_ADDRESSES check",
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Bodies whose HST stubs were retired translate as written (#363)
+# ---------------------------------------------------------------------------
+
+#: Retired 2026-10-26 under #363. Under profile=hst each of these addresses used to
+#: emit a title stub (a static-success simple stub, the heap-statistics walk skip,
+#: or the backdrop chooser's postcondition wrapper) in place of, or around, its own
+#: body. Each now translates its own instructions under every profile.
+RETIRED_363_STUB_ADDRESSES: tuple[int, ...] = (
+    0x00015F98, 0x0001034C, 0x0001C810, 0x0001C818, 0x001D9EB0,
+)
+
+
+class RetiredStubBodyTests(unittest.TestCase):
+    """profile=hst emits the same C as profile=none at every retired stub address."""
+
+    @classmethod
+    def setUpClass(cls):
+        words = _build_specimen_words({a: _body_leaf() for a in RETIRED_363_STUB_ADDRESSES})
+        cls.hst = _codegen_functions(words, "hst")
+        cls.none = _codegen_functions(words, "none")
+
+    def test_retired_addresses_translate_their_own_body_under_hst(self):
+        diverged = []
+        for addr in RETIRED_363_STUB_ADDRESSES:
+            _, hst_text = _find(self.hst, addr)
+            _, none_text = _find(self.none, addr)
+            if hst_text != none_text:
+                diverged.append(f"0x{addr:08x}")
+        self.assertEqual(
+            diverged, [],
+            "profile=hst still replaces or wraps these retired bodies instead of "
+            "translating them",
+        )
+
+    def test_no_stub_wrapper_or_firing_survives(self):
+        combined = "\n".join(self.hst.values())
+        for addr in RETIRED_363_STUB_ADDRESSES:
+            with self.subTest(addr=f"0x{addr:08x}"):
+                self.assertFalse(f"f_{addr:08x}_real" in combined,
+                                 "the retired body is still wrapped")
+                self.assertFalse(f"0x{addr:08x}u, \"" in combined,
+                                 "a compatibility firing is still recorded")
+
+    def test_retired_addresses_left_every_override_table(self):
+        manifest = {
+            entry["address"]
+            for entry in compat_overrides.CODEGEN_CUSTOM_STUBS + compat_overrides.HST_SIMPLE_STUBS
+        }
+        for addr in RETIRED_363_STUB_ADDRESSES:
+            with self.subTest(addr=f"0x{addr:08x}"):
+                self.assertNotIn(addr, HST_SIMPLE_STUBS)
+                self.assertNotIn(addr, HST_CUSTOM_STUBS)
+                self.assertNotIn(addr, BODY_COUPLED)
+                self.assertNotIn(addr, codegen.GUEST_PATCHES)
+                self.assertNotIn(addr, manifest)
 
 
 if __name__ == "__main__":
