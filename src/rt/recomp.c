@@ -7,6 +7,25 @@
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
 // Copyright (c) 2012- PPSSPP Project and contributors
 
+/*
+ * Core services the generated C calls into:
+ *   - guest memory: sr_mem_init() and sr_load_segment() set up the PSP address space
+ *     and copy the program in;
+ *   - the guest heap behind sr_newlib_malloc/free/memalign/realloc, a free-list
+ *     allocator in its own region of guest RAM;
+ *   - instruction helpers too large to emit inline: unaligned loads and stores
+ *     (sr_lwl/lwr/swl/swr), break and raw syscall traps, and the VFPU's approximate
+ *     math (sin, cos, exp2, log2, rcp, sqrt, rsqrt, asin);
+ *   - the function table: sr_register() and sr_lookup() map a guest address to its
+ *     translated C function;
+ *   - dispatch: dispatch(), dispatch_call() and dispatch_tail_step() run a guest
+ *     address, falling back to the interpreter floor (guest_interp.c) only inside
+ *     analyzer-owned spans, and stop the run with a named error otherwise
+ *     (AGENTS.md section 7 has the contract);
+ *   - diagnostics: the guest-PC profiler, dispatch-miss and stack-census reports, and
+ *     the trace files.
+ */
+
 
 #include <stdio.h>
 #include <stdlib.h>

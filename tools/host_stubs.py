@@ -14,10 +14,7 @@
 # (just return success and do nothing). Keep real container/memory-management
 # routines out of this list: callers depend on their writes, not only r2.
 
-HST_SIMPLE_STUBS = {
-    0x0001c010: ("VFS_RegisterHeap",      0),
-    0x0001c0fc: ("VFS_RegisterBuffer",    0),
-    0x0001c104: ("Config_LoadProfile",    1),
-    0x0001c560: ("main_GraphicsInit",     1),
-    0x0001c604: ("World_LoadInitialState", 0),
-}
+# Retired under #363 (2026-10-27): the last five entries (0x0001c010, 0x0001c0fc,
+# 0x0001c104, 0x0001c560, 0x0001c604) were the title's archive open/close/seek/read path.
+# With the UMD block device readable in sectors, each now translates as written.
+HST_SIMPLE_STUBS: dict = {}

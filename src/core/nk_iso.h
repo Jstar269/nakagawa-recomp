@@ -146,6 +146,9 @@ typedef struct {
        error_message when the input was identified as a file kind Nakagawa
        cannot use. Empty for ordinary ISO errors, where the text is the result. */
     char boundary_code[48];
+    /* The image's root holds a PSP_GAME folder record. A valid ISO9660 image
+       without one is a disc image of something other than a PSP game. */
+    bool has_psp_game_folder;
 } NkIsoMetadata;
 
 /* Inspect a raw PSP ISO9660 disc image directly.

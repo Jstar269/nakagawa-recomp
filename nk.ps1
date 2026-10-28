@@ -5,10 +5,46 @@
 
 <#
 .SYNOPSIS
-    Simple, fail-closed entry point for normal Nakagawa Recomp setup and use.
+    Entry point for checking, building, running and cleaning a Nakagawa Recomp workspace.
 .DESCRIPTION
-    Exposes a smaller surface for diagnostics, incremental/full builds, verification,
-    and play while delegating the expert/developer console to nk_manager.ps1.
+    Runs one action, chosen with -Action (the first positional argument). Most actions run the
+    workspace doctor (tools\nk_doctor.py) before and after the step they wrap, stop at the first
+    failure and exit 1. The build, run and verify steps are carried out by the expert console,
+    nk_manager.ps1, which this script calls with the matching manager action.
+
+    Actions:
+      Doctor   (default) Run the workspace doctor for -Scope and print its report.
+      Build    Doctor (build), incremental build (manager BuildFast), Doctor (products).
+      Rebuild  Doctor (build), full build (manager BuildFull), Doctor (products).
+      Play     Doctor (inputs, build), incremental build, Doctor (products, run), then start the
+               game (manager Run).
+      Verify   Doctor (repo), then the manager's Verify action.
+      Clean    Run tools\nk_clean.py: it lists the build output it would remove and deletes
+               nothing unless -Yes is given.
+      Manager  Open the interactive expert/developer console (nk_manager.ps1).
+.PARAMETER Action
+    Doctor, Build, Rebuild, Play, Verify, Clean or Manager. Defaults to Doctor.
+.PARAMETER Scope
+    What the Doctor action checks: repo, inputs, build, products, run or all (default).
+.PARAMETER Json
+    Print the Doctor report as JSON (Doctor action only).
+.PARAMETER Strict
+    Treat doctor warnings as failures.
+.PARAMETER Yes
+    Pass --yes to the Clean action so it actually deletes what it lists (the default only previews).
+.PARAMETER MsysPath
+    MSYS2 UCRT64 bin folder. Defaults to $env:MSYS_PATH, or C:\msys64\ucrt64\bin.
+.PARAMETER VulkanSdk
+    Vulkan SDK folder, passed to the doctor and the manager when set.
+.PARAMETER TitleManifest
+    Title manifest to use, passed to the doctor and the manager when set. Without one the
+    public synthetic manifest is used.
+.PARAMETER GameName
+    Game name to select, passed to the doctor and the manager when set.
+.EXAMPLE
+    .\nk.ps1 Doctor -Scope build -Strict
+.EXAMPLE
+    .\nk.ps1 Build -TitleManifest C:\path\to\manifest.json -GameName game
 #>
 
 [CmdletBinding()]

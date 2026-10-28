@@ -55,6 +55,42 @@ if _PLAYER_EXE_BUILD_PATH.is_file():
     if (PLAYER_EXE.parent / "demos").exists():
         raise RuntimeError("player UI regression executable sandbox contains demos/")
 
+# Starts argv[1] (with the rest of argv) with no console and null standard handles, as
+# Explorer starts the GUI player, and exits with its exit code.
+CONSOLE_LESS_LAUNCHER = """
+import ctypes, subprocess, sys
+from ctypes import wintypes
+class STARTUPINFOW(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
+                ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR)] + [
+                (name, wintypes.DWORD) for name in ("dwX", "dwY", "dwXSize", "dwYSize",
+                "dwXCountChars", "dwYCountChars", "dwFillAttribute", "dwFlags")] + [
+                ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+                ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+class PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p,
+    ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+    ctypes.POINTER(STARTUPINFOW), ctypes.POINTER(PROCESS_INFORMATION)]
+info = STARTUPINFOW()
+info.cb = ctypes.sizeof(info)
+info.dwFlags = 0x00000100  # STARTF_USESTDHANDLES with every handle left null
+process = PROCESS_INFORMATION()
+command = ctypes.create_unicode_buffer(subprocess.list2cmdline(sys.argv[1:]))
+if not kernel32.CreateProcessW(None, command, None, None, False, 0x00000008,  # DETACHED_PROCESS
+                               None, None, ctypes.byref(info), ctypes.byref(process)):
+    sys.exit(100)
+kernel32.WaitForSingleObject(process.hProcess, 60000)
+code = wintypes.DWORD()
+kernel32.GetExitCodeProcess(process.hProcess, ctypes.byref(code))
+kernel32.CloseHandle(process.hThread)
+kernel32.CloseHandle(process.hProcess)
+sys.exit(code.value)
+"""
+
 # NAKAGAWA_PLAYER_UI_SHARD=<k>/<n> runs only the tests whose position in test-id order
 # is k modulo n. The Makefile's player-ui-regressions runs all n shards side by side,
 # so together they run every test exactly once; unset, every test runs here.
@@ -715,6 +751,7 @@ class NativePlayerUiTests(unittest.TestCase):
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
         drop_pbp_iso: bool = False,
+        drop_bytes: tuple[str, bytes] | None = None,
         art_iso: str | None = None,
         stale_package: bool = False,
         incompatible_package: bool = False,
@@ -954,6 +991,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 package_iso = scratch / "source-owned-store-package.iso"
                 synthetic_pbp_package(package_iso)
                 event_script.insert(0, f"DROP_FILE={package_iso}")
+            elif drop_bytes is not None:
+                dropped = scratch / drop_bytes[0]
+                dropped.write_bytes(drop_bytes[1])
+                event_script.insert(0, f"DROP_FILE={dropped}")
             args.append("--ui-test-events=" + ";".join(event_script))
             screenshot = scratch / "last-frame.bmp"
             args.append(f"--ui-test-screenshot={screenshot}")
@@ -1068,6 +1109,40 @@ class NativePlayerUiTests(unittest.TestCase):
         marker = f'LEGACY_DATA_DIR_FOUND: old_path="{expected_old_path}"'
         self.assertEqual(stderr.count(marker), 1, stderr)
         self.assertTrue(run["legacy_root_exists"])
+
+    @unittest.skipUnless(sys.platform == "win32", "player-output.txt is the Windows GUI player's console stand-in")
+    def test_player_output_file_holds_the_output_of_a_console_less_launch(self) -> None:
+        """A double-click start has no console and no standard handles, so the player writes
+        its output to logs/player-output.txt. Started like that (no console to attach to, null
+        standard handles), the file must hold what the player printed."""
+        with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            env = os.environ.copy()
+            for name in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
+                folder = scratch / name.lower()
+                folder.mkdir()
+                env[name] = str(folder)
+            env["SDL_VIDEODRIVER"] = "dummy"
+            env["SDL_AUDIO_DRIVER"] = "dummy"
+            # The launcher runs detached, so there is no parent console the player could
+            # attach to, and it starts the player detached with null standard handles: what
+            # Explorer gives the GUI-subsystem player (the test build is console-subsystem).
+            completed = subprocess.run(
+                [sys.executable, "-I", "-c", CONSOLE_LESS_LAUNCHER, str(PLAYER_EXE), "--help"],
+                cwd=scratch,
+                env=env,
+                creationflags=subprocess.DETACHED_PROCESS,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=90,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0)
+            outputs = list(scratch.rglob("player-output.txt"))
+            self.assertEqual(len(outputs), 1, outputs)
+            text = outputs[0].read_text(encoding="utf-8", errors="replace")
+            self.assertIn("Usage: nakagawa_player", text)
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
         run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
@@ -2951,6 +3026,61 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["view"], "error")
         self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
         self.assertEqual(frames[2]["picker"], "1")
+
+    def test_compressed_and_non_psp_disc_images_get_their_own_cards(self) -> None:
+        """A .cso is a compressed disc image, and an ISO9660 image without a PSP_GAME folder
+        is a disc image of something else: each gets its own plain card, not the generic
+        "isn't a PSP disc image" card or an "unknown PSP title" page."""
+        # A CISO header (magic, header size, uncompressed size, block size, version).
+        cso = b"CISO" + struct.pack("<IQIBB2x", 0x18, 2048 * 32, 2048, 1, 0) + bytes(4096)
+        # A valid ISO9660 image whose root holds only a text file.
+        sector = 2048
+        image = bytearray(sector * 20)
+
+        def both32(value: int) -> bytes:
+            return struct.pack("<I", value) + struct.pack(">I", value)
+
+        def record(name: bytes, lba: int, size: int, directory: bool) -> bytes:
+            length = 33 + len(name) + (1 - len(name) % 2)
+            body = bytearray(length)
+            body[0] = length
+            body[2:10] = both32(lba)
+            body[10:18] = both32(size)
+            body[25] = 2 if directory else 0
+            body[28:32] = struct.pack("<H", 1) + struct.pack(">H", 1)
+            body[32] = len(name)
+            body[33:33 + len(name)] = name
+            return bytes(body)
+
+        pvd = image[16 * sector:17 * sector]
+        pvd[0] = 1
+        pvd[1:6] = b"CD001"
+        pvd[6] = 1
+        pvd[40:72] = b"SYNTHETIC_DATA_DISC".ljust(32)
+        pvd[156:156 + 34] = record(b"\x00", 18, sector, True)
+        image[16 * sector:17 * sector] = pvd
+        image[17 * sector] = 255
+        image[17 * sector + 1:17 * sector + 6] = b"CD001"
+        root = (
+            record(b"\x00", 18, sector, True)
+            + record(b"\x01", 18, sector, True)
+            + record(b"README.TXT;1", 19, 16, False)
+        )
+        image[18 * sector:18 * sector + len(root)] = root
+        image[19 * sector:19 * sector + 16] = b"synthetic text\n\n"
+        cases = (
+            ("source-owned-compressed.cso", cso, "DISC_IMAGE_COMPRESSED", "Compressed_Disc_Image"),
+            ("source-owned-data-disc.iso", bytes(image), "DISC_NOT_PSP", "Not_a_PSP_Disc_Image"),
+        )
+        for name, payload, code, title in cases:
+            with self.subTest(code=code):
+                run = self.run_player("library", ("KEY_RETURN",), drop_bytes=(name, payload))
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[1]["view"], "error", run["stdout"])
+                self.assertEqual(frames[1]["error"], code)
+                self.assertEqual(frames[1]["error_title"], title)
+                self.assertEqual(frames[2]["picker"], "1")
 
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
