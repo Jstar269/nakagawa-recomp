@@ -88,7 +88,7 @@ See [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) for the fidel
 
 The project intends to:
 
-- publish the first Windows release, v0.0.1, with signed build provenance
+- keep publishing Windows releases with build provenance attestations after the first, v0.0.1 (2026-10-28)
   ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278));
 - broaden title support through generic fixes rather than per-title patches
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). PAC-MAN Championship Edition already reaches

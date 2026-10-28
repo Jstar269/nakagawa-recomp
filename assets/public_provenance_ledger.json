@@ -351,7 +351,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "90a92493bf2d842309931d448868bba045686a42319331f2add99aa4de369f67"
+      "sha256": "8d2ae9aab3642ac1d129d9f2ab91c31ed71c475298d1cf13f753ab065f889134"
     },
     {
       "path": "AGENTS.md",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "28e1761907be9c7fc17c0b7b7cf51ce3011711b81f1f8861a49084a9d112d658"
+      "sha256": "885c9ec9a3e97a6630d7381c2bbf827918952a6c3a06f13742afca68ab3cee38"
     },
     {
       "path": "REVIEW.md",
@@ -1531,7 +1531,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "08e081a96456b9de4e477094c450f8974edef455a3d8afaccae8f5215f944862"
+      "sha256": "de5cdb02888ce345fd1fbe1714ac2cb3b521d6e27b0dfcddf30919dcc92f3bf1"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1558,7 +1558,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a56f3462629e6acdbf1b4b28d9b9d336239d4631b22ba723950733038df7dd8f"
+      "sha256": "bd8bd15d7e13aa2ce95a7f6449a25ea489d45f0356191b05744e37812bfeb8fe"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1624,7 +1624,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd92fe7fb01b06728e40b3190f67a61e4f234c7aeb728b870320f5a2ad91e5ff"
+      "sha256": "01905ff42abcf1818fa21311f0d2e628f4067483b5940cda61d976259a6da2a8"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1633,7 +1633,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5af83b95914c09e22c2caf44e5dc73f93fb5415ba3018bd303e14847b88d6207"
+      "sha256": "388b9797bd18bfcc211230de0e88d45aa1ea32a47a30763a77082086a5a15c44"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a480291e096ccdab4ed32e1db0b25be5fc53d40f1fe101e5ab2dd6aec10783c5"
+      "sha256": "c0eb8e50fad44d1d61a5235cbba6bdf461859a64461daea351852dbf5dba53e6"
     },
     {
       "path": "docs/SETUP.md",
@@ -1756,7 +1756,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fd38d69731897609c6084fc1b11ede14cfd7e2e7cdf92bb8cb33382d16dfae3e"
+      "sha256": "aec58ee30867b6f3ce8cec15bc5a335096fd1b74e077be617d890498fb113357"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1783,7 +1783,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "12e0669a71c5bb798c1fb65a232154b92a43163bf55867f78522b2e105fe5294"
+      "sha256": "a6e0d11b6c35a0622b6e52d7e4478341acbc9e8ef9216f163aca36334a61e2cb"
     },
     {
       "path": "docs/TITLE_TESTING.md",
