@@ -173,6 +173,28 @@ void input_settings_format_key(int key, char *buf, size_t buf_sz) {
     }
 }
 
+/* A left-right pair of one modifier (Left Shift and Right Shift) reads as the modifier alone:
+   either key works, and the binding stays short enough for its button. */
+static const char *input_settings_key_pair_word(int a, int b) {
+    static const struct {
+        const char *left;
+        const char *right;
+        const char *word;
+    } kPairs[] = {
+        { "lshift", "rshift", "Shift" }, { "lctrl", "rctrl", "Ctrl" }, { "lalt", "ralt", "Alt" }
+    };
+    const char *first = nk_host_key_name(a);
+    const char *second = nk_host_key_name(b);
+    if (!first || !second) return NULL;
+    for (size_t i = 0; i < sizeof(kPairs) / sizeof(kPairs[0]); i++) {
+        if ((strcmp(first, kPairs[i].left) == 0 && strcmp(second, kPairs[i].right) == 0) ||
+            (strcmp(first, kPairs[i].right) == 0 && strcmp(second, kPairs[i].left) == 0)) {
+            return kPairs[i].word;
+        }
+    }
+    return NULL;
+}
+
 void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
                                        char *buf, size_t buf_sz) {
     char primary[32];
@@ -183,6 +205,11 @@ void input_settings_format_key_binding(const InputSettingsState *state, int cont
         return;
     }
     const NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    const char *pair = input_settings_key_pair_word(keys->primary, keys->secondary);
+    if (pair) {
+        snprintf(buf, buf_sz, "%s", pair);
+        return;
+    }
     input_settings_format_key(keys->primary, primary, sizeof(primary));
     if (keys->secondary != NK_HOST_KEY_NONE && keys->secondary != keys->primary) {
         input_settings_format_key(keys->secondary, secondary, sizeof(secondary));

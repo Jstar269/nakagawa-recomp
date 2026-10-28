@@ -962,7 +962,7 @@ static void test_keyboard_keys(void) {
 
     /* The profile's default keys (nk_input_profile_init_default) in the page's words. */
     static const char *const expected[INPUT_CONTROL_DIGITAL_COUNT] = {
-        "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow",
+        "Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow",
         "Left Arrow", "Q", "W", "S", "Z", "X", "A", "None", "None"
     };
     const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_keyboard_keys_profile.json";

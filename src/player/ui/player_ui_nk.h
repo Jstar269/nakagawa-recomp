@@ -432,7 +432,7 @@ typedef enum {
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
 /* The characters a binding's button shows whole at every launcher size: the
    label is mono caps, so this is a width (INPUT_SETTINGS_BINDING_TEXT_MAX). */
-#define PLAYER_UI_CONTROLLER_BINDING_CHARS 24u
+#define PLAYER_UI_CONTROLLER_BINDING_CHARS 20u
 #define PLAYER_UI_CONTROLLER_LIVE_LINES 4u
 
 typedef struct {

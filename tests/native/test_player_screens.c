@@ -313,7 +313,7 @@ static const char *const k_pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
 static const char *k_pad_bindings_override;
 /* input_settings.c's words for the profile's default keyboard keys (#1299). */
 static const char *const k_key_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
-    "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
+    "Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
     "Q", "W", "S", "Z", "X", "A", "None", "None"
 };
 

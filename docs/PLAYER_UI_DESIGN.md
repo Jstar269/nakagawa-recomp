@@ -351,9 +351,10 @@ line says why in `error`: the profile refuses a key bound to two controls, and t
 stick card names the keys Nakagawa keeps and says the analog stick has no keys.
 
 A host input is named by the label a pad prints on it, with its other common name in brackets (`A (Cross)`,
-`LB (L1)`, `RT (R2)`), so every default binding, two inputs included, and any one input fit their button whole: at
-most 24 characters (`INPUT_SETTINGS_BINDING_TEXT_MAX`), the width `test_binding_labels_fit` checks at every launcher
-size.
+`LB (L1)`, `RT (R2)`), and a key pair of one modifier reads as the modifier alone (`Shift` for Left and Right Shift), so
+every default binding, two inputs included, and any one input fit their button whole: at most 20 characters
+(`INPUT_SETTINGS_BINDING_TEXT_MAX`), the width `test_binding_labels_fit` checks at every launcher size. The margin
+leaves room for the prompt glyph beside the binding (#1299).
 
 Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
 GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the

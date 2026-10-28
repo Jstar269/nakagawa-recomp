@@ -248,7 +248,7 @@ const char *input_settings_control_name(int control_idx);
  * page's binding button shows whole (PLAYER_UI_CONTROLLER_BINDING_CHARS in player_ui_nk.h).
  * Two inputs the user binds to one control may be longer; the button then ends them with "...".
  */
-#define INPUT_SETTINGS_BINDING_TEXT_MAX 24
+#define INPUT_SETTINGS_BINDING_TEXT_MAX 20
 
 /**
  * @brief Format current host binding for a control index into a human-readable string.
@@ -343,7 +343,7 @@ void input_settings_set_device(InputSettingsState *state, InputSettingsDevice de
 void input_settings_format_key(int key, char *buf, size_t buf_sz);
 
 /**
- * @brief Format a PSP control's keyboard keys: "Left Shift / Right Shift", or "None".
+ * @brief Format a PSP control's keyboard keys: "Enter", "Space / X", "Shift" for both shift keys, or "None".
  */
 void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
                                        char *buf, size_t buf_sz);

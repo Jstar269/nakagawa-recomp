@@ -1597,7 +1597,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e37b7d2390afb03f63204839f955a5850bbc33492bcc8a3e66f05fd0c336db25"
+      "sha256": "5a61a6bc9e3f9b7ea9c49c98deb4aa8e0d0f6ee261f9e888923ff7d6b299a0d3"
     },
     {
       "path": "docs/PORTING.md",
@@ -3941,7 +3941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1071b1cc5978c434162be3efeefb1ff8a54a9d5f77db4d4e6d2a84c730f89c81"
+      "sha256": "2a3799a966c092ee6fdfe56113f542129b6b7b9e942e67f6ea1b5b5e8caadecd"
     },
     {
       "path": "src/player/input_settings.h",
@@ -3953,7 +3953,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c6c9ddeba1bff439df3b14698ab2826a0465b726620de42f6c0874b2bfa9c748"
+      "sha256": "6a9c7fb5345589fee2b44c95a9a1d4c555fc05633e11100b2c7b7d53872f6a55"
     },
     {
       "path": "src/player/iso_reader.c",
@@ -4109,7 +4109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae82bcee1497fd11670c65fdb8659f118686fde58cfb601e06a5c662b29bef3d"
+      "sha256": "e02f6c18424f02e86c672844ccee8a9625e68fc956bc165d535446333eb4a19d"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -10380,7 +10380,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96e4641c84e56428a65363be3d730c68728a71fecbcb1c9b4efd699c93b6e969"
+      "sha256": "a4cceadd4a372ddbe808f29950e0c55c8b1ceddc0db1c927298d2eb77feb5732"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
@@ -10536,7 +10536,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f6b3dc6d359ce76d7f65260482730d4383b7a5b8a8f6a022f2f5b15176c5eae"
+      "sha256": "fb2c66b23e17eaf375985a6a38046f435e5ce71a56e2df29800cbdabd192ec7b"
     },
     {
       "path": "tests/native/test_player_state.c",
