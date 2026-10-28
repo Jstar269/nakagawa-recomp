@@ -1,6 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * The launcher's state, kept apart from drawing: the game library and which
+ * card is selected or focused, the user's settings and where they are saved,
+ * the user-data folders (runtime packages, fonts, saves), and a cache of each
+ * title's runtime-package status, so the library does not re-check every
+ * package on every frame. main.c and the screens read and change it through
+ * the player_app_* functions.
+ *
+ * It also holds the compatibility preflight that checks a title before it is
+ * built (player_build_compatibility_preflight_for_game), which decrypts an
+ * encrypted EBOOT.BIN from the user's own disc (player_decrypt_disc_eboot).
+ */
+
 /* fileno/fsync are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L

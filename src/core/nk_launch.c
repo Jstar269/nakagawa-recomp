@@ -1,6 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Starts a built game. For a library entry it finds the staged executable and
+ * the title's runtime package, checks both again just before starting,
+ * resolves the folders the game reads its data from, and starts the game as a
+ * child process (nk_platform_spawn_process) with the arguments and environment
+ * the runtime expects. nk_launch_is_running(), nk_launch_wait() and
+ * nk_launch_stop() let the player follow and end that process, and
+ * nk_launch_keep_run_log() keeps the run's output in the player's logs folder.
+ */
+
 #include "nk_launch.h"
 #include "nk_font_slots.h"
 #include "generated/nk_title_catalog.h"
