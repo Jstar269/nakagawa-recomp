@@ -1,10 +1,11 @@
 # Linux development
 
-Status: bounded headless runtime route verified; broader Linux support is in progress.
+Status: the runtime builds and runs the showcase demos headlessly on Linux; games and an interactive
+window are in progress.
 
 This guide covers developing Nakagawa Recomp on Linux, either natively or under
-WSL 2. The runtime builds and runs source-owned showcase fixtures headlessly;
-general consumer-title support and interactive presentation remain in progress.
+WSL 2. The runtime builds and runs the project's own showcase demos without a
+window; retail games and interactive play are not supported on Linux yet.
 See [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) for the staged port plan.
 The supported desktop baseline remains Windows 11 x64 (see [`SETUP.md`](SETUP.md)).
 
@@ -59,11 +60,8 @@ Install PSPDEV v20261001 at `/usr/local/pspdev` (the official
 
 ## What works today
 
-The verification environment below is a recorded snapshot from before the current
-CPython 3.15.x host requirement; it is not a Python 3.15 verification result.
-
-Verified on Ubuntu 24.04 with gcc 13.3.0, SDL3 3.4.18, Vulkan 1.3.275, CMake
-3.28, Ninja, glslc, and Python 3.14.6.
+Last verified on Ubuntu 24.04 with gcc 13.3.0, SDL3 3.4.18, Vulkan 1.3.275, CMake
+3.28, Ninja, glslc, and Python 3.14.6, before Python 3.15 became the requirement.
 
 Linux `ms0:` file opens, reads, writes, renames, directory creation, and removal
 use the descriptor-relative containment seam. Absolute paths, traversal, symlinks,
@@ -136,7 +134,7 @@ python tools/lint_docs.py
 | Gate | Status | Issue |
 | --- | --- | --- |
 | Consumer ISO compatibility | The automated Linux CMake/player and runtime gates use only the source-owned TEST00007/TEST00008 showcase fixtures. Compatibility across consumer ISOs and title-specific semantics remains in the works. | #306 |
-| `hle-title-selftest` | `hle-thread-selftest` now builds and runs on Linux, in hosted `native_tools` too. `hle-title-selftest` runs the same harness under the generic and both fixture title configurations; it has no Linux CI job yet. | #306 |
+| `hle-title-selftest` | `hle-thread-selftest` builds and runs on Linux, in hosted `native_tools` too. `hle-title-selftest` runs the same harness under the generic and both fixture title configurations; it has no Linux CI job yet. | #306 |
 | Interactive SDL3/Vulkan presentation | The showcase smoke uses dummy video/audio drivers and checks headless output. Interactive desktop presentation and a broader Linux device/display matrix remain in the works. | #306 |
 | Python suites that call `git` | `tools/test_lint_docs.py`, `tools/test_publication_policy_gate.py`, and `tools/publish_audit.py` use `git` on the checkout. They work in an ordinary Linux clone; they fail in a Windows checkout opened from WSL, because its worktree paths are Windows paths. Never set `GIT_DIR` to work around it. | #306 |
 | Full `python -m unittest discover -s tools` | Takes several minutes; CI splits it into shards. Run the focused suites above while developing. | #306 |

@@ -46,6 +46,21 @@ def _parse_nonnegative_int(value: str | None) -> tuple[int, bool]:
     return (parsed, parsed >= 0) if parsed >= 0 else (0, False)
 
 
+def _frame_evidence(first_frame: dict[str, str] | None, nonzero_pixels: int) -> str:
+    """How much the first_frame event proves: none, content-validated, present-submitted or blank.
+
+    A GPU-sourced frame with no counted pixels was submitted for presentation but its content
+    was not validated, which is weaker than ``content-validated`` and is graded separately.
+    """
+    if first_frame is None:
+        return "none"
+    if nonzero_pixels > 0:
+        return "content-validated"
+    if first_frame.get("source", "cpu") == "gpu":
+        return "present-submitted"
+    return "blank-or-unvalidated"
+
+
 def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
     if type(allow_present_only) is not bool:
         raise TypeError("allow_present_only must be a boolean")
@@ -71,22 +86,16 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
 
     first_frame = next((event for event in events if event.get("phase") == "first_frame"), None)
     frame_source = first_frame.get("source", "cpu") if first_frame else None
-    nonzero, nonzero_valid = _parse_nonnegative_int(first_frame.get("nonzero_pixels") if first_frame else None)
+    nonzero_pixels, nonzero_valid = _parse_nonnegative_int(
+        first_frame.get("nonzero_pixels") if first_frame else None
+    )
     if first_frame and not nonzero_valid:
         faults.append(
             f"BOOT_GATE: invalid nonzero_pixels={first_frame.get('nonzero_pixels')!r} "
             f"at line {first_frame.get('line', '?')}"
         )
 
-    if first_frame is None:
-        frame_evidence = "none"
-    elif nonzero > 0:
-        frame_evidence = "content-validated"
-    elif frame_source == "gpu":
-        frame_evidence = "present-submitted"
-    else:
-        frame_evidence = "blank-or-unvalidated"
-
+    frame_evidence = _frame_evidence(first_frame, nonzero_pixels)
     frame_ok = frame_evidence == "content-validated" or (
         allow_present_only and frame_evidence == "present-submitted"
     )
@@ -133,7 +142,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
         "frameSource": frame_source,
         "frameEvidence": frame_evidence,
         "requiredFrameEvidence": "present-submitted" if allow_present_only else "content-validated",
-        "nonzeroPixels": nonzero,
+        "nonzeroPixels": nonzero_pixels,
         "malformedHostPaths": malformed_paths,
         "faultCount": len(faults),
         "faults": faults[-20:],

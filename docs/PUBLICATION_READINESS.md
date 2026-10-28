@@ -439,8 +439,23 @@ never judged by the old one. The semantic delta is classified element-by-element
 into `include_added`, `include_removed`, `exclude_added`, `exclude_removed`,
 and `rule_changes`, and the computed delta must equal the authority's
 `allowed_delta` exactly -- an extra include removal, an include addition, an
-exclusion change, or any rule/control change (which V1 refuses on its face,
-`POLICY_DELTA_AUTHORITY_INVALID`) fails closed. The policy's own ledger entry is
+exclusion change, or any rule/control change the authority does not bind fails
+closed. A V1 authority refuses every rule change on its face
+(`POLICY_DELTA_AUTHORITY_INVALID`). A V2 authority (`"schema_version": 2`) may
+carry rule changes, each an object naming the field and the SHA-256 of its exact
+baseline and candidate values (canonical JSON with sorted keys, `null` when the
+field is absent on that side):
+
+```json
+"rule_changes": [
+  {"key": "exclude_rationale", "baseline_sha256": "<64 hex>", "candidate_sha256": "<64 hex>"}
+]
+```
+
+A rule change named without its values, a V2 authority with no rule change (a
+path-only delta stays V1), a path list named as a rule, or a value digest that
+does not match the actual policy (`POLICY_DELTA_RULE_VALUE_MISMATCH`) fails
+closed. The policy's own ledger entry is
 then updated to the blessed bytes and `PUBLIC_EXPORT.json` is regenerated under
 the blessed policy; both are mechanical outputs of the trusted inputs, and the
 candidate's own policy ledger entry is never read. A blessed file that equals
@@ -688,3 +703,16 @@ then `git add assets/public_source_profile.json`; the command merges `include_pa
 against the merge base, so a path either side added stays and a path either side removed or moved stays out, and it
 refuses if another profile field differs or a path would end up both included and excluded. A path-adding PR outside a batch still needs `--rekey` after another path-adding
 PR lands, so the next delta binds the updated baseline. Keep unrelated ready PRs moving.
+
+A profile change that adds no path (a removed path, an exclude-list change, or a rule change such as an
+`exclude_rationale` edit) needs a policy delta but no admission. Commit the canonical profile on the PR branch, then:
+
+```text
+python tools/admit_paths.py --policy-delta <pr-worktree> --approval-basis "<the human decision>" \
+    --private-repo <authority checkout> [--push]
+```
+
+It binds the profile at the merge-base with `origin/main` (or `--base`) to the profile at `HEAD`, writes a V1
+authority, or V2 when a rule changes, and records the approval basis in the private commit. It refuses a delta that
+adds a path (`POLICY_DELTA_ADDS_PATHS`: admit those instead), an empty delta, and a non-canonical profile. After
+another profile change lands on `main`, merge it and issue the delta again for the new base.

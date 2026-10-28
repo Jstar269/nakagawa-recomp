@@ -422,7 +422,9 @@ python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> -
 
 The blessed policy must byte-match the candidate. The authority binds both
 policy digests and the complete semantic delta; version 1 permits only exact
-include/exclude path-list changes and refuses rule changes. Unpaired inputs,
+include/exclude path-list changes and refuses rule changes, and version 2 also
+permits rule changes, each bound to the digests of its field's exact baseline
+and candidate values ([format](PUBLICATION_READINESS.md)). Unpaired inputs,
 candidate-controlled inputs, empty deltas, digest mismatches, and any computed
 delta other than the approved one fail closed. The workflow supplies these
 files only when the candidate policy digest differs from the base digest, so
