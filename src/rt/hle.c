@@ -18877,7 +18877,9 @@ static uint32_t s_latch_seen_count = 0u;
 #define ROUTE_MAX_ALT    4
 #define ROUTE_MIN_ACTIVE_BYTES 12
 #define ROUTE_MAX_STEPS  256
-#define ROUTE_MAX_LEGACY 256
+/* A bare pad script is one line per press, so a timed sweep script runs to hundreds of lines
+ * (the v0.0.1 sweep's has 453); past this many the file is refused, never cut short. */
+#define ROUTE_MAX_LEGACY 4096
 #define ROUTE_NAME_MAX   32
 #define ROUTE_FAIL_EXIT  86
 
@@ -19360,7 +19362,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: bare frame line inside a route program\n", path, lineno);
             return -1;
         }
-        if (s_route_nlegacy >= ROUTE_MAX_LEGACY) return 0;
+        if (s_route_nlegacy >= ROUTE_MAX_LEGACY) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d pad-script lines\n",
+                    path, lineno, ROUTE_MAX_LEGACY);
+            return -1;
+        }
         char *m = strtok(NULL, " \t\r\n");
         char *w = strtok(NULL, " \t\r\n");
         if (!m || !w) {

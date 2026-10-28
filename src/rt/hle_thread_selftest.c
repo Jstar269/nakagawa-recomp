@@ -29528,6 +29528,24 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     expect(sr_route_step(8600, NULL) == 0u,
            "the program stepper stays inert for a legacy pad script");
 
+    /* A long timed script loads whole, and one past the table is refused by name instead
+     * of being cut short: the v0.0.1 sweep's 453-line script used to lose every press after
+     * its 256th line, so the game it drove waited at a screen with no input arriving. */
+    static char long_script[4097u * 24u];
+    size_t used = 0u;
+    for (unsigned line = 0; line < 4096u; line++)
+        used += (size_t)snprintf(long_script + used, sizeof long_script - used,
+                                 "%u 0x4000 4\n", 10u + line * 10u);
+    sr_route_reset();
+    rt_write(long_script);
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_LEGACY,
+           "a 4096-line pad script loads whole");
+    (void)snprintf(long_script + used, sizeof long_script - used, "99999 0x4000 4\n");
+    sr_route_reset();
+    rt_write(long_script);
+    expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+           "a pad script past the table fails the run instead of being cut short");
+
     sr_route_reset();
     rt_write("# comment only\n\n");
     expect(sr_route_load(RT_PATH) == 0, "an empty route file loads nothing");
