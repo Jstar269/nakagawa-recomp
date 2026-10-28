@@ -1885,7 +1885,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b13dd4f8f14b06f9556032071934018fb36a3b8171d0225973df2737d46cede9"
+      "sha256": "4e59a7ac9ecfa27d9cb7e8bad5a12e9edc4aaf5093ac7ec6cf15d67f4f1e2f6e"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -14085,7 +14085,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "42506dff049c2c3a9387c8b3b10268b6c4ce7d49073a4df235b6a32de2e50fc8"
+      "sha256": "b039dd1f686e1c60c09397e08d5a4bf4562c2a4b31a4554fcf7ef8b321473b5d"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
