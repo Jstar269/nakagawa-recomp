@@ -417,9 +417,9 @@
         "note": "libchdr's inflate for the CHD zlib codecs. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
         "license_texts": [
           {
-            "file": "third_party/libchdr/deps/miniz-3.1.2/LICENSE",
-            "copied_from": "miniz LICENSE at tag 3.1.2 (commit 77d0dce8627735138c51770d1799a1ef48f2117d), imported byte-identical",
-            "sha256": "0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3"
+            "file": "third_party/libchdr/deps/miniz-3.1.2/LICENSE.txt",
+            "copied_from": "miniz LICENSE (stored as LICENSE.txt) at tag 3.1.2 (commit 77d0dce8627735138c51770d1799a1ef48f2117d), CRLF line endings normalised to LF (third_party/libchdr/PROVENANCE.md)",
+            "sha256": "6f20fa7672b00e2e975c291df737cf227addf3ad32e36fef3fe0f416e4664d3d"
           }
         ]
       },
@@ -437,8 +437,8 @@
         "note": "libchdr's decoder for the CHD zstd codecs. Upstream offers BSD-3-Clause or GPL-2.0-only; the project uses BSD-3-Clause. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
         "license_texts": [
           {
-            "file": "third_party/libchdr/deps/zstd-1.5.7/LICENSE",
-            "copied_from": "Zstandard LICENSE at tag v1.5.7 (commit f8745da6ff1ad1e7bab384bd1f9d742439278e99), imported byte-identical",
+            "file": "third_party/libchdr/deps/zstd-1.5.7/LICENSE.txt",
+            "copied_from": "Zstandard LICENSE (stored as LICENSE.txt) at tag v1.5.7 (commit f8745da6ff1ad1e7bab384bd1f9d742439278e99), imported byte-identical",
             "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
           }
         ]
@@ -457,9 +457,9 @@
         "note": "libchdr's decoder for the CHD lzma codecs; placed in the public domain. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
         "license_texts": [
           {
-            "file": "third_party/libchdr/deps/lzma-26.02/LICENSE",
-            "copied_from": "libchdr deps/lzma-26.02/LICENSE at commit 47d794151b2b64f6aba60304e6480f4f5a2bc24b, imported byte-identical",
-            "sha256": "06721414a6decad6d6677feb470f01f47126e154d895d85bc1e17628697715e5"
+            "file": "third_party/libchdr/deps/lzma-26.02/LICENSE.txt",
+            "copied_from": "libchdr deps/lzma-26.02/LICENSE (stored as LICENSE.txt) at commit 47d794151b2b64f6aba60304e6480f4f5a2bc24b, final newline added (third_party/libchdr/PROVENANCE.md)",
+            "sha256": "80a299fe3660988ee37f93b21777b1352a7dd0375f6e0747950ad3b0386675e1"
           }
         ]
       },
