@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "855da84c7e867a380654a6abe9ea593791602751256852eb691c43c41253ccbd"
+      "sha256": "aaed9f25d6dcf01595ae13997bc9a96afa8b00aedf21c67b31ea0252b0335a3c"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1420,7 +1420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "803de758b0b857701b2828458fe7b2e271b8d288e8620471f1823b34dcfb834b"
+      "sha256": "4de172374d8b61be438d1340865ee19246df119c057a0fe8aa2e06d3a04f92c4"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -12496,7 +12496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4641b44cc9bf86d8e1ea4001297c91221728c579b358ca9c77ab89b5e92d104"
+      "sha256": "f56f3c06513678510e8ac96e5ae590da2a08aa736d4a9c76ad21cf860d9f4842"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -13303,7 +13303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c286c436bb0ec128a8811e639e36f9a382f6e37e1bc3b0649a07567798cb00d"
+      "sha256": "c06de3791755723a96ddb905d34110f2d40a71180785c22324f3bf3243bf9dd0"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -14997,7 +14997,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a94e0356c55a514b7b3f10767b93242329ae0602cb856f857b081e178ba8b6fc"
+      "sha256": "356d7a58554857ea953337ea03dddfe113caa80bf2586db994dcccd86b5c6328"
     },
     {
       "path": "tools/test_public_export.py",
