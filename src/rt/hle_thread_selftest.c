@@ -32605,6 +32605,131 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
     sysreg_scratch_clean();
 }
 
+/* ---- sceFont guest spans, allocator results and handle lifecycle (#1384) --------------------
+ * Driven through production dispatch (sr_syscall). The allocator and free callbacks are
+ * synthetic guest bodies; the served font is the synthetic PGF the flash0 driver wrote. Spans
+ * that end past guest memory are placed at the top of the guest arena. The rejections are host
+ * policy: what the PSP's libfont does with a truncated span or a reused block is UNMEASURED. */
+#define FLT_ALLOC_ENTRY 0x0800ae00u
+#define FLT_FREE_ENTRY  0x0800ae40u
+#define FLT_PARAMS      0x09050000u
+#define FLT_ERR         0x09050100u
+#define FLT_INFO        0x09050200u
+#define FLT_LIB_A       0x09060000u
+#define FLT_LIB_B       0x09068000u
+#define FLT_FONT        0x09070000u
+#define FLT_GUEST_TOP   0x0c000000u
+#define FLT_NID_NEWLIB  0x67f17ed7u
+#define FLT_NID_OPEN    0xa834319du
+#define FLT_NID_DONELIB 0x574b6fbcu
+#define FLT_NID_INFO    0x0da7535eu
+#define FLT_NID_CHAR    0xdcc80c2fu
+#define FLT_NID_CLOSE   0x3aea8cb6u
+#define FLT_NID_USERMEM 0xbb8e7fe6u
+#define FLT_ERR_OOM         0x80460001u
+#define FLT_ERR_INVALID_LIB 0x80460002u
+#define FLT_ERR_INVALID_ARG 0x80460003u
+#define FLT_ERR_INVALID_DATA 0x8046000au
+static uint32_t s_flt_alloc_ret, s_flt_alloc_calls, s_flt_free_calls, s_flt_last_free;
+static void flt_alloc_fn(CpuState *s) { s_flt_alloc_calls++; s->r[2] = s_flt_alloc_ret; }
+static void flt_free_fn(CpuState *s) { s_flt_free_calls++; s_flt_last_free = s->r[5]; s->r[2] = 0; }
+static uint32_t flt_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+static void flt_write_params(uint32_t at, uint32_t num_fonts) {
+    /* FontNewLibParams: userData, numFonts, cacheData, allocFunc, freeFunc, then six words. */
+    const uint32_t words[5] = { 0x1234u, num_fonts, 0u, FLT_ALLOC_ENTRY, FLT_FREE_ENTRY };
+    for (uint32_t i = 0; i < 5u; i++) MEM_W32(at + i * 4u, words[i]);
+}
+static uint32_t flt_new_lib(uint32_t params, uint32_t alloc_ret) {
+    s_flt_alloc_ret = alloc_ret;
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    return flt_call(FLT_NID_NEWLIB, params, FLT_ERR, 0u, 0u);
+}
+static void test_font_lib_lifecycle(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+
+    /* The first 0x20 bytes of the 0x2c-byte params block are guest memory, the rest are not. */
+    uint32_t truncated = FLT_GUEST_TOP - 0x20u;
+    flt_write_params(truncated, 4u);
+    expect(flt_new_lib(truncated, FLT_LIB_A) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG &&
+               s_flt_alloc_calls == 0u,
+           "sceFontNewLib refuses a params block that ends past guest memory before calling the allocator");
+
+    flt_write_params(FLT_PARAMS, 4u);
+    uint32_t past_end = FLT_GUEST_TOP - 0x10u;
+    expect(flt_new_lib(FLT_PARAMS, past_end) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               flt_call(FLT_NID_DONELIB, past_end, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "sceFontNewLib refuses an allocator block that ends past guest memory and publishes no library");
+    expect(s_flt_free_calls == 0u, "a refused allocator block is not handed to freeFunc");
+
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A) == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u &&
+               MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
+           "sceFontNewLib publishes a library at a valid allocator block");
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A + 0x10u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
+           "sceFontNewLib refuses an allocator block overlapping a live library and leaves it intact");
+
+    s_flt_alloc_ret = FLT_LIB_A + 0x20u;
+    expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
+           "sceFontOpen refuses a font block inside its library and leaves the open count at zero");
+    s_flt_alloc_ret = FLT_GUEST_TOP - 0x10u;
+    expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM,
+           "sceFontOpen refuses a font block that ends past guest memory");
+    s_flt_alloc_ret = FLT_FONT;
+    uint32_t font = flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR);
+    expect(font == FLT_FONT && MEM_R32(FLT_ERR) == 0u && MEM_R32(FLT_LIB_A + 0x14u) == 1u,
+           "sceFontOpen publishes a font at a valid allocator block");
+    expect(flt_new_lib(FLT_PARAMS, FLT_FONT) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM,
+           "sceFontNewLib refuses an allocator block that reuses a live font");
+
+    uint32_t info_tail = FLT_GUEST_TOP - 0x80u;
+    MEM_W32(info_tail, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_INFO, font, info_tail, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               MEM_R32(info_tail) == 0x5a5a5a5au,
+           "sceFontGetFontInfo refuses a 0x108-byte output that ends past guest memory and writes nothing");
+    uint32_t char_tail = FLT_GUEST_TOP - 0x20u;
+    MEM_W32(char_tail, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_CHAR, font, 'A', char_tail, 0u) == FLT_ERR_INVALID_ARG &&
+               MEM_R32(char_tail) == 0x5a5a5a5au,
+           "sceFontGetCharInfo refuses a 0x3c-byte output that ends past guest memory and writes nothing");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == 0u,
+           "sceFontGetFontInfo still serves a complete output span");
+
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == FLT_FONT && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
+           "sceFontClose retires the font and returns its block to freeFunc once");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 1u,
+           "a second sceFontClose of the same handle fails closed without freeing again");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "a closed font handle is refused");
+
+    /* A source PGF span that ends past guest memory is refused before any copy or allocation. */
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_B) == FLT_LIB_B, "a second library opens at its own block");
+    s_flt_alloc_calls = 0;
+    expect(flt_call(FLT_NID_USERMEM, FLT_LIB_B, FLT_GUEST_TOP - 0x100u, 0x200u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_DATA && s_flt_alloc_calls == 0u,
+           "sceFontOpenUserMemory refuses a source span that ends past guest memory");
+
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_A, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == FLT_LIB_A,
+           "sceFontDoneLib retires the library after its font was closed and frees only the library");
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_A, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 1u,
+           "a second sceFontDoneLib of the same library fails closed without freeing again");
+    expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -32921,6 +33046,7 @@ static void test_flash0_font_device(void) {
         memset(&expected_sources, 0, sizeof(expected_sources));
         snprintf(expected_sources.user_data_dir, sizeof(expected_sources.user_data_dir), "%s", data_dir);
         snprintf(expected_sources.project_dir, sizeof(expected_sources.project_dir), "%s/project", root);
+        uint32_t served_index = SR_FONT_REGISTRY_COUNT;
         for (uint32_t index = 0; index < SR_FONT_REGISTRY_COUNT; index++) {
             SrFontRegistryInfo expected;
             SrFontRegistryStatus status = sr_flash0_font_registry_info(&expected_sources, index, &expected);
@@ -32932,6 +33058,7 @@ static void test_flash0_font_device(void) {
             uint32_t result = sr_font_test_info_for_index(index, F0T_FONT_INFO_ADDR);
             expect(result == 0u, "the sceFont shim exposes every served measured index");
             if (result != 0u) continue;
+            if (served_index == SR_FONT_REGISTRY_COUNT) served_index = index;
             float metrics[4] = {
                 (float)expected.h_size / 64.0f, (float)expected.v_size / 64.0f,
                 (float)expected.h_resolution / 64.0f, (float)expected.v_resolution / 64.0f,
@@ -32956,6 +33083,8 @@ static void test_flash0_font_device(void) {
                        f0t_guest_string_field_is(F0T_FONT_INFO_ADDR + 0xbcu, 64u, expected.file_name),
                    "the sceFont shim reads font and file names from the served source");
         }
+        expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
     }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
