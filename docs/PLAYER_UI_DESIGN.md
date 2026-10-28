@@ -364,8 +364,8 @@ them. Esc or F12 closes it.
 Built now: the setup wizard's six steps (Welcome, Options, Game, Verify, Fonts, Ready) on the existing wizard state,
 in the dialog card the build and error screens use. Options ("Online and developer options",
 [`ONLINE_FEATURES.md`](ONLINE_FEATURES.md)) comes right after Welcome because it needs no game: two switch rows (a
-220 px button reading "Online mode: On" or "Off", accent while on, with its sentence beside it), the note that this
-version has no online features yet, then CONTINUE (the default focus, so Enter never flips a switch), SKIP and BACK. A strip of step chips sits at the top (current: accent fill; done:
+220 px button reading "Online mode: On" or "Off", accent while on, with its sentence beside it), the note that news
+and reports aren't built yet, then CONTINUE (the default focus, so Enter never flips a switch), SKIP and BACK. A strip of step chips sits at the top (current: accent fill; done:
 `ready` edge and a check); each step has one primary action first, then Back and Cancel. Every control returns
 `PLAYER_UI_ACTION_WIZARD` with an op that `main.c` runs through the handlers the existing wizard calls. The Welcome
 step says the privacy promise once. The left rail below is the target layout for a later pass:

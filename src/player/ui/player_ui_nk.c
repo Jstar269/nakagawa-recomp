@@ -103,6 +103,8 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    char update_folder[NK_MAX_PATH];
+    char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
     InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
     char pad_scope[96];
@@ -339,7 +341,7 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -579,6 +581,12 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     return player_ui_screen_disc(player->ui, &model);
 }
 
+/* PlayerUiUpdateStep follows PlayerUpdatePhase value for value. */
+typedef char player_ui_update_step_order[
+    (PLAYER_UI_UPDATE_CHECKING == (int)PLAYER_UPDATE_CHECKING &&
+     PLAYER_UI_UPDATE_DOWNLOADED == (int)PLAYER_UPDATE_DOWNLOADED &&
+     PLAYER_UI_UPDATE_FAILED == (int)PLAYER_UPDATE_FAILED) ? 1 : -1];
+
 /* The Settings pages' model, from the settings the existing renderer shows. */
 static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *app,
                                                 NkUiScale scale) {
@@ -589,6 +597,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
+        case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
         case VIEW_PSP_FONTS:
             model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
@@ -628,7 +637,6 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     }
     model.saves_folder = player->settings_saves;
     model.online_mode = app->settings.online_mode;
-    model.online_updates = app->settings.online_updates;
     model.online_news = app->settings.online_news;
     model.online_reports = app->settings.online_reports;
     model.developer_mode = app->settings.developer_mode;
@@ -648,6 +656,49 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
                  strcmp(item->license, "NOASSERTION") == 0 ? "licence review in the works"
                                                             : item->license);
         model.tools[model.tool_count++] = line;
+    }
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_UPDATES) {
+        const PlayerUpdateState *update = &app->update;
+        const NkUpdateRelease *newest = &update->check.newest;
+        bool checked = update->phase >= PLAYER_UPDATE_CURRENT &&
+                       (update->phase != PLAYER_UPDATE_FAILED ||
+                        update->failed_step != PLAYER_UPDATE_CHECKING);
+        model.update_step = (PlayerUiUpdateStep)update->phase;
+        model.update_failed_step = (PlayerUiUpdateStep)update->failed_step;
+        model.check_updates_at_start = app->settings.check_updates_at_start;
+        model.current_version = NK_PLAYER_VERSION;
+        if (checked) {
+            model.update_version = newest->version;
+            model.update_prerelease = newest->prerelease;
+            model.update_published = newest->published;
+            model.update_notes = newest->notes;
+            model.update_page_url = newest->page_url;
+            model.update_has_zip = newest->has_zip;
+#if defined(_WIN32) || defined(_WIN64)
+            model.update_can_download = newest->has_zip && update->check.newer;
+#endif
+            model.update_zip_name = newest->zip_name;
+            model.update_zip_bytes = newest->zip_size;
+        }
+        model.update_received_bytes = update->received_bytes;
+        /* The folder the last step left something in: the new version, or the
+           downloaded ZIP's folder. */
+        player->update_folder[0] = '\0';
+        if (update->phase == PLAYER_UPDATE_INSTALLED) {
+            snprintf(player->update_folder, sizeof(player->update_folder), "%s",
+                     update->install_dir);
+        } else if (update->zip_path[0] != '\0') {
+            size_t cut = strlen(update->zip_path);
+            while (cut > 0u && update->zip_path[cut - 1u] != '/' &&
+                   update->zip_path[cut - 1u] != '\\') {
+                --cut;
+            }
+            snprintf(player->update_folder, sizeof(player->update_folder), "%.*s",
+                     (int)(cut > 0u ? cut - 1u : 0u), update->zip_path);
+        }
+        model.update_folder = player->update_folder;
+        model.update_error_title = update->error.title;
+        model.update_error_message = update->error.message;
     }
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
@@ -1037,6 +1088,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
+                    : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -1059,6 +1111,28 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
             case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
+            case VIEW_UPDATES:
+                /* Each step's result is a screen of its own, focused on what comes
+                   next. CANCEL is the download's only control; a finished check
+                   with nothing newer, a failure or a release without a Windows ZIP
+                   focuses CHECK FOR UPDATES. */
+                screen += (unsigned)app->update.phase;
+                switch (app->update.phase) {
+                    case PLAYER_UPDATE_AVAILABLE:
+                        focus = app->update.check.newest.has_zip
+                            ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
+#if !defined(_WIN32) && !defined(_WIN64)
+                        focus = PLAYER_UI_ID_UPDATE_PAGE;
+#endif
+                        break;
+                    case PLAYER_UPDATE_DOWNLOADING: focus = PLAYER_UI_ID_UPDATE_CANCEL; break;
+                    case PLAYER_UPDATE_DOWNLOADED: focus = PLAYER_UI_ID_UPDATE_INSTALL; break;
+                    case PLAYER_UPDATE_INSTALLED: focus = PLAYER_UI_ID_UPDATE_FOLDER; break;
+                    case PLAYER_UPDATE_CHECKING:
+                    case PLAYER_UPDATE_INSTALLING: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+                    default: focus = PLAYER_UI_ID_UPDATE_CHECK; break;
+                }
+                break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
@@ -1666,6 +1740,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         } else {
             player->library_page_label[0] = '\0';
             model.page_label = player->library_page_label;
+        }
+        if (app->update.notice) {
+            snprintf(player->update_notice, sizeof(player->update_notice),
+                     "Version %.40s is out", app->update.check.newest.version);
+            model.update_notice = player->update_notice;
         }
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {

@@ -476,6 +476,14 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 }
             }
             nk_ui_spacer(ui, LIBRARY_ID_HEAD_SPACER, sizing_grow(), sizing_fixed(1.0f));
+            /* The check at start found a newer version: one quiet button, never a
+               screen of its own. */
+            if (model->update_notice != NULL &&
+                nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE, model->update_notice,
+                             NK_UI_BUTTON_SMALL)) {
+                result.kind = PLAYER_UI_ACTION_SETTINGS;
+                result.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_OPEN_UPDATES;
+            }
             if (page_count > 1u) {
                 NkUiLayout pager = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
                                                NK_UI_SPACE_3);

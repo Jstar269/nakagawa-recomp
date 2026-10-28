@@ -1024,9 +1024,9 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_BUILD_CACHE:
             return 4; /* share switch, clear cache, remove tools, back */
         case VIEW_ONLINE_SETTINGS:
-            /* online switch (+ updates, news, reports while it is on), developer
+            /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */
-            return 1 + (app->settings.online_mode ? 3 : 0) + 1 +
+            return 1 + (app->settings.online_mode ? 2 : 0) + 1 +
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
@@ -1117,10 +1117,10 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->controller_connected = false;
     settings->network_mode = NK_NETWORK_MODE_OFFLINE;
     settings->online_mode = false;
-    settings->online_updates = true;
     settings->online_news = true;
     settings->online_reports = true;
     settings->share_system_libraries = true;
+    settings->check_updates_at_start = false;
     settings->developer_mode = false;
     settings->experimental_60hz = false;
 }
@@ -1322,13 +1322,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[6] = {"online_mode", "online_updates", "online_news",
-                                            "online_reports", "developer_mode",
-                                            "experimental_60hz"};
-        bool *fields[6] = {&app->settings.online_mode, &app->settings.online_updates,
-                           &app->settings.online_news, &app->settings.online_reports,
-                           &app->settings.developer_mode, &app->settings.experimental_60hz};
-        for (int k = 0; k < 6; ++k) {
+        static const char *const keys[5] = {"online_mode", "online_news", "online_reports",
+                                            "developer_mode", "experimental_60hz"};
+        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_news,
+                           &app->settings.online_reports, &app->settings.developer_mode,
+                           &app->settings.experimental_60hz};
+        for (int k = 0; k < 5; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
@@ -1345,6 +1344,14 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     bool share_val = true;
     if (share_node && nk_json_get_bool(share_node, &share_val)) {
         app->settings.share_system_libraries = share_val;
+    }
+
+    /* Off unless the file says true: a missing or non-boolean value keeps the
+       check at start off. */
+    NkJsonNode *update_node = nk_json_obj_get(root, "check_updates_at_start");
+    bool update_val = false;
+    if (update_node && nk_json_get_bool(update_node, &update_val)) {
+        app->settings.check_updates_at_start = update_val;
     }
 
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
@@ -1431,7 +1438,6 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"network_mode\": \"offline\",\n");
     fprintf(f, "  \"online_mode\": %s,\n", app->settings.online_mode ? "true" : "false");
-    fprintf(f, "  \"online_updates\": %s,\n", app->settings.online_updates ? "true" : "false");
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
@@ -1441,6 +1447,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
             app->settings.share_system_libraries ? "true" : "false");
+    fprintf(f, "  \"check_updates_at_start\": %s,\n",
+            app->settings.check_updates_at_start ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1899,6 +1907,14 @@ bool player_app_experimental_60hz_active(const PlayerApp *app) {
     return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
 }
 
+void player_app_toggle_update_check_at_start(PlayerApp *app) {
+    if (!app) return;
+    app->settings.check_updates_at_start = !app->settings.check_updates_at_start;
+    player_dev_log_add(app, "settings", "check for updates at start %s",
+                       app->settings.check_updates_at_start ? "on" : "off");
+    maybe_persist_settings(app);
+}
+
 void player_app_toggle_share_system_libraries(PlayerApp *app) {
     if (!app) return;
     app->settings.share_system_libraries = !app->settings.share_system_libraries;
@@ -1916,9 +1932,8 @@ void player_app_set_online_mode(PlayerApp *app, bool on) {
 void player_app_toggle_online_feature(PlayerApp *app, int feature) {
     bool *field;
     if (!app) return;
-    field = feature == 0 ? &app->settings.online_updates
-          : feature == 1 ? &app->settings.online_news
-          : feature == 2 ? &app->settings.online_reports : NULL;
+    field = feature == 0 ? &app->settings.online_news
+          : feature == 1 ? &app->settings.online_reports : NULL;
     if (!field) return;
     *field = !*field;
     maybe_persist_settings(app);

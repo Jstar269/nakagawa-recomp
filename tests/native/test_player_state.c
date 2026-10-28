@@ -6395,8 +6395,7 @@ int main(int argc, char **argv) {
            default, and none of them moves network_mode off offline. */
         player_app_init(s_app2);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(s_app2->settings.online_news && s_app2->settings.online_reports);
         s_app2->settings.online_mode = true;
         s_app2->settings.online_news = false;
         s_app2->settings.developer_mode = true;
@@ -6404,8 +6403,7 @@ int main(int argc, char **argv) {
         player_app_init(s_app2);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(!s_app2->settings.online_news && s_app2->settings.online_reports);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
         write_text_file(test_settings_path,
                         "{\"schema_version\": 2, \"network_mode\": \"online\", "

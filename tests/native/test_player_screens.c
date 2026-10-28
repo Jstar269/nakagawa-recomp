@@ -1789,8 +1789,6 @@ static void test_settings_pages(void) {
          "Back returns to Settings from build tools and cache"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
          "the online switch toggles online mode"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
-         "the update check switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_NEWS, PLAYER_UI_SETTINGS_TOGGLE_NEWS,
          "the news switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_REPORTS, PLAYER_UI_SETTINGS_TOGGLE_REPORTS,

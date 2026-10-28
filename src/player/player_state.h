@@ -11,6 +11,7 @@
 #include "nk_font.h"
 #include "input_settings.h"
 #include "package_builder.h"
+#include "update_check.h"
 #include "setup_staging.h"
 #include "generated/nk_title_catalog.h"
 
@@ -46,7 +47,8 @@ typedef enum {
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
     VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
-    VIEW_PSP_FONTS          /* Settings > PSP fonts: import your PSP's own fonts; the last value */
+    VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
+    VIEW_UPDATES            /* Settings > Updates: check for and fetch a newer version; the last value */
 } PlayerView;
 
 typedef enum {
@@ -182,7 +184,6 @@ typedef struct {
        user's choices only: this build has no network feature, so online_mode
        changes nothing yet and network_mode stays offline whatever it says. */
     bool online_mode;      /* off by default; asked by the setup wizard */
-    bool online_updates;   /* the update check, when online mode ships */
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
@@ -191,10 +192,39 @@ typedef struct {
        reuse them for other games with the same library (#1306). On by default; the
        copies never leave this PC. */
     bool share_system_libraries;
+    /* Ask GitHub for a newer version once each time the player starts. Off until
+       the user turns it on (AGENTS.md section 5; the button needs no switch). */
+    bool check_updates_at_start;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
 } PlayerSettings;
+
+/* Check for updates (update_check.h). Each step runs on its own worker thread,
+   started by a click; nothing repeats on its own. */
+typedef enum {
+    PLAYER_UPDATE_IDLE = 0,
+    PLAYER_UPDATE_CHECKING,
+    PLAYER_UPDATE_CURRENT,       /* this is the newest version */
+    PLAYER_UPDATE_AVAILABLE,     /* a newer version is out */
+    PLAYER_UPDATE_DOWNLOADING,
+    PLAYER_UPDATE_DOWNLOADED,    /* the checked ZIP is in the downloads folder */
+    PLAYER_UPDATE_INSTALLING,
+    PLAYER_UPDATE_INSTALLED,     /* unpacked into its own folder */
+    PLAYER_UPDATE_FAILED
+} PlayerUpdatePhase;
+
+typedef struct {
+    PlayerUpdatePhase phase;
+    PlayerUpdatePhase failed_step;   /* CHECKING, DOWNLOADING or INSTALLING */
+    bool from_start;                 /* the check at start: a failure stays quiet */
+    bool notice;                     /* the library says a newer version is out */
+    NkUpdateCheckResult check;
+    uint64_t received_bytes;
+    char zip_path[NK_MAX_PATH];
+    char install_dir[NK_MAX_PATH];
+    NkUpdateError error;
+} PlayerUpdateState;
 
 typedef enum {
     PLAYER_PREREQ_IDLE = 0,
@@ -413,6 +443,7 @@ typedef struct PlayerApp {
     bool prerequisite_cancel_sent;
     bool request_open_folder;
     char requested_open_path[NK_MAX_PATH];
+    PlayerUpdateState update;
 
     /* Native core state */
     NkLibrary library;
@@ -1122,7 +1153,8 @@ void player_app_set_build_error(
 /* Online and developer options. None of these opens a connection: they record
    the user's choice for the online features docs/ONLINE_FEATURES.md plans. */
 void player_app_set_online_mode(PlayerApp *app, bool on);
-void player_app_toggle_online_feature(PlayerApp *app, int feature); /* 0 updates, 1 news, 2 reports */
+void player_app_toggle_online_feature(PlayerApp *app, int feature); /* 0 news, 1 reports */
+void player_app_toggle_update_check_at_start(PlayerApp *app);
 void player_app_set_developer_mode(PlayerApp *app, bool on);
 /* The wizard's options step: skipping keeps both switches off. */
 void player_app_wizard_skip_options(PlayerApp *app);
