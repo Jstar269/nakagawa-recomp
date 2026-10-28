@@ -479,9 +479,10 @@ int main(int argc, char **argv) {
 #endif
         }
     }
-    /* With the player attaching stdout to the per-session log, keep each
-       diagnostic line durable even if the player later stops the child. */
-    (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    /* With the player attaching stdout and stderr to the per-session log, keep each
+       diagnostic line durable even if the player later stops the child, without a
+       system call per byte on the thread that prints it (#1296). */
+    (void)sr_debug_streams_init();
 
     /* Initialize debug framework from SR_DEBUG env var (or legacy SR_* vars) */
     g_sr_debug = sr_debug_init();
