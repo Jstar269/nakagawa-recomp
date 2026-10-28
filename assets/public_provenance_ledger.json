@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "855da84c7e867a380654a6abe9ea593791602751256852eb691c43c41253ccbd"
+      "sha256": "c05254ab9578601aa36f1d637e5a5f0a8d31a94e0cc3dd9e7ccf229fd8bb4d4c"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -439,7 +439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "feb84c312e0eaf5f5199ea12212a2f098ddd37ac1305438aa21edd230d71f121"
+      "sha256": "edc06079e364f102a66d0b7d9eebe3bc38edb82fd89eaac185787a301cf73518"
     },
     {
       "path": "NOTICE.md",
@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7712f6995d3e025432eea5903c60736f890aca32920276640bb694f6bc729d6f"
+      "sha256": "2c6e923505c74c6ab705ab34590d0d65882c5d0dfcfe85e98cc4f1130cbcc48d"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1420,7 +1420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bba681fbcfe2e54c03e6f0db68692361575fccb1cd98c6b5f3b9ecebc2e8d376"
+      "sha256": "82466f66e92ac82bc0f4a69a92e78cf21b282ee0271e0bd0f120a31e052ca51e"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1522,7 +1522,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d4109ba11137afd9c01114b8154f492b74792d174909b8f59a9ddad07f5c2883"
+      "sha256": "08e081a96456b9de4e477094c450f8974edef455a3d8afaccae8f5215f944862"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -8855,7 +8855,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "bcf12b030d8796c464a63622930ecd31a1194dd0778b7ba97d618a85329ae6d9"
+      "sha256": "a9e089df427fb602f7c0bbec3953619e3394a449209732ae66bd98f69e54f3a2"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8893,7 +8893,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "992eb5a214126845bc9fce4ddafdb160106e60823b28ad698a6fe2e836b48afb"
+      "sha256": "2d7a14313129a84b1b29e2b9e7b29f3336d0ba5f7babd4aeb2f0474dee6003bc"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9672,7 +9672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1bae8a25e886ea1de3dda636ce3a17eb845c9440cf5c937f7ac1a763cda4e085"
+      "sha256": "ef80bbcc5c68b6f3a62eaa5ee8973e3ced0075363eee08c881160e2096feb373"
     },
     {
       "path": "src/rt/vfs_contained_selftest.c",
@@ -9684,7 +9684,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70444df0b178cdca1c233129953bf989e693b85ac816cfa2d53d349ca3fd3deb"
+      "sha256": "d5ed895be2430564742388c011e92f24f4fd25c35d4fd958fc6110326ff9c085"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -13784,7 +13784,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ddf239e90b6dfc96965b83fea5bad025ef0e97dca76c44e810758eeedd6016bd"
+      "sha256": "74c4898f510c12adc7fbb7370ea716572a2a3038cd36907c3b4506eb9b15706e"
     },
     {
       "path": "tools/test_flight_build_identity.py",
@@ -14961,7 +14961,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a94e0356c55a514b7b3f10767b93242329ae0602cb856f857b081e178ba8b6fc"
+      "sha256": "b641a94b571d05d3fc5cc10bc2ea6f0a343ed3f8a511fdabd05bf22d384c2ae0"
     },
     {
       "path": "tools/test_public_export.py",
@@ -15670,7 +15670,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3aa6cbee712267d5d600e77a123fda7164edb8ff8c8f880ee30ee1c0fa7ba19b"
+      "sha256": "2167c105672f72236c4694bf3c7a49b675b4db77477673c1f9f60579ccc3f830"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
