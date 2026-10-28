@@ -6812,6 +6812,7 @@ static void reset_fixture(void) {
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
     sched_alarm_reset();
+    sched_transfer_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -11944,11 +11945,12 @@ static void test_can_not_wait_semantics(void) {
                  "%s invalid mode returns ILLEGAL_MODE ahead of the context error", who);
         expect(sr_syscall(&cpu, nid) == 0x80020195u, msg);
 
-        /* Bad object still answers in the object error space. */
+        /* Bad object still answers in the object error space: UNKNOWN_EVFID
+         * (issue #1389; PSPAutotests tests/threads/events/wait.expected L35). */
         memset(&cpu, 0, sizeof cpu);
         cpu.r[4] = 0u; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
         snprintf(msg, sizeof msg, "%s bad flag still returns its object error", who);
-        expect(sr_syscall(&cpu, nid) == 0x80020000u, msg);
+        expect(sr_syscall(&cpu, nid) == 0x8002019au, msg);
         cnw_end(0, token);
 
         /* An already-satisfied pattern is not a wait: it succeeds and is consumed. */
@@ -13003,6 +13005,220 @@ static void test_cancel_release_wake_results(void) {
         memset(&cpu, 0, sizeof cpu);
         expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0x80020197u,
                "PSP-B3-01: ReleaseWaitThread(0) on the running caller returns 0x80020197");
+        s_cur = -1;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Issue #1389: semaphores, event flags and LwMutexes share one object table in
+ * src/rt/hle.c, so each lookup must accept only its own kind; unknown event-flag
+ * UIDs answer UNKNOWN_EVFID; DeleteEventFlag ends a blocked wait. Every call
+ * enters through the production NID.
+ *
+ * Codes: PSP-B1-01 (psp-hw-20260917) unknown-ID codes, 8002019A event flag,
+ * 80020199 semaphore, 800201CA and 800201C4 for a missing LwMutex. Cells:
+ * PSPAutotests tests/threads/events clear.expected L15-L19, refer.expected
+ * L23-L25, wait.expected L31-L35, delete.expected L5-L7. A UID of another kind
+ * answering the calling API's own unknown-ID code is the public reference model
+ * (PPSSPP's typed kernel-object lookup); no hardware cell passes one.
+ * ------------------------------------------------------------------------- */
+#define NID_EVT_CLEAR_EVF     0x812346e4u
+#define NID_EVT_POLL_SEMA     0x58b1f937u
+#define NID_EVT_REFER_SEMA    0xbc6febc5u
+#define NID_EVT_REFER_LW_ID   0x4c145944u
+#define EVT_NAME              0x00250800u
+#define EVT_OUT               0x00250840u
+#define EVT_TMO               0x00250844u
+#define EVT_INFO              0x00250880u
+#define EVT_LW_WA             0x00250900u
+#define EVT_UNKNOWN_EVFID     0x8002019au
+#define EVT_LW_NOT_FOUND      0x800201cau
+#define EVT_LW_FAILED_TO_OWN  0x800201c4u
+#define EVT_ILPAT             0x800201b1u
+#define EVT_WAIT_DELETE       0x800201b5u
+
+static uint32_t s_evt_nid;
+static uint32_t s_evt_arg[5];
+static uint32_t s_evt_ret;
+static int      s_evt_returned;
+
+static void evt_call_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    for (int i = 0; i < 5; i++) cpu.r[4 + i] = s_evt_arg[i];
+    s_evt_ret = sr_syscall(&cpu, s_evt_nid);
+    s_evt_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+/* One call on a thread of its own (a0-a3 in r4-r7, the fifth argument in t0):
+ * a call that wrongly blocks comes back to the test as a blocked thread instead
+ * of hanging it. Leaves s_cur on that thread; the caller restores it. */
+static TCB *evt_start(uint32_t thread_uid, uint32_t nid, uint32_t a0, uint32_t a1,
+                      uint32_t a2, uint32_t a3, uint32_t a4) {
+    s_evt_nid = nid;
+    s_evt_arg[0] = a0; s_evt_arg[1] = a1; s_evt_arg[2] = a2; s_evt_arg[3] = a3; s_evt_arg[4] = a4;
+    s_evt_ret = 0xFFFFFFFFu;
+    s_evt_returned = 0;
+    TCB *t = fixture_thread(thread_uid, TH_READY, 16);
+    t->started = 1;
+    t->coro = sr_coro_create(evt_call_body, NULL, (size_t)4 << 20);
+    expect(t->coro != NULL, "issue #1389 fixture: call coroutine created");
+    if (!t->coro) return NULL;
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+    return t;
+}
+
+static void evt_end(TCB *t) {
+    if (t && t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
+}
+
+/* A call that must return at once with `want`, run on its own thread. */
+static void evt_expect_now(int self_idx, uint32_t thread_uid, uint32_t nid, uint32_t a0,
+                           uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
+                           uint32_t want, const char *what) {
+    char msg[192];
+    TCB *t = evt_start(thread_uid, nid, a0, a1, a2, a3, a4);
+    snprintf(msg, sizeof msg, "issue #1389: %s returns 0x%08x without blocking (got 0x%08x, %s)",
+             what, want, s_evt_ret, s_evt_returned ? "returned" : "blocked");
+    expect(t && s_evt_returned && s_evt_ret == want, msg);
+    evt_end(t);
+    s_cur = self_idx;
+}
+
+static void test_evf_typed_uids_and_delete(void) {
+    char msg[192];
+    TCB *self = wsv_begin();
+    int self_idx = (int)(self - s_tcb);
+    uint32_t sema = wsv_create(1, 2);
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, 0x0fu, 0u);
+    expect((int32_t)sema > 0 && (int32_t)evf > 0, "issue #1389: a semaphore and an event flag created");
+
+    /* ---- LwMutex calls naming another kind's UID: the LwMutex codes -------- */
+    MEM_W32(EVT_INFO, 64u);
+    b1_expect(b1_call(NID_EVT_REFER_LW_ID, evf, EVT_INFO, 0u, 0u), EVT_LW_NOT_FOUND,
+              "ReferLwMutexStatusByID(event-flag UID) returns 800201CA");
+    b1_expect(b1_call(NID_EVT_REFER_LW_ID, sema, EVT_INFO, 0u, 0u), EVT_LW_NOT_FOUND,
+              "ReferLwMutexStatusByID(semaphore UID) returns 800201CA");
+    for (uint32_t i = 0; i < 0x20u; i += 4u) MEM_W32(EVT_LW_WA + i, 0u);
+    MEM_W32(EVT_LW_WA + 0x10u, evf);
+    b1_expect(b1_call(NID_B1_TRYLOCK_LWMUTEX, EVT_LW_WA, 1u, 0u, 0u), EVT_LW_FAILED_TO_OWN,
+              "TryLockLwMutex of a workarea naming an event flag returns 800201C4");
+    expect(MEM_R32(EVT_LW_WA) == 0u && MEM_R32(EVT_LW_WA + 4u) == 0u,
+           "issue #1389: that TryLock took no lock");
+    MEM_W32(EVT_LW_WA + 0x10u, sema);
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, EVT_LW_WA, 0u, 0u, 0u), EVT_LW_NOT_FOUND,
+              "DeleteLwMutex of a workarea naming a semaphore returns 800201CA");
+    expect(wsv_count(sema) == 1 && MEM_R32(EVT_LW_WA + 0x10u) == sema,
+           "issue #1389: that DeleteLwMutex left the semaphore and the workarea untouched");
+
+    /* ---- event-flag calls with a semaphore UID: 8002019A, semaphore intact -- */
+    b1_expect(b1_call(NID_B1_SET_EVF, sema, 0xf0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "SetEventFlag(semaphore UID) returns 8002019A");
+    b1_expect(b1_call(NID_EVT_CLEAR_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "ClearEventFlag(semaphore UID) returns 8002019A");
+    MEM_W32(EVT_OUT, 0xdeadbeefu);
+    b1_expect(b1_call(NID_B1_POLL_EVF, sema, 1u, 1u, EVT_OUT), EVT_UNKNOWN_EVFID,
+              "PollEventFlag(semaphore UID) returns 8002019A");
+    expect(MEM_R32(EVT_OUT) == 0xdeadbeefu, "issue #1389: PollEventFlag(semaphore UID) writes no outBits");
+    MEM_W32(EVT_INFO, 52u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, sema, EVT_INFO, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "ReferEventFlagStatus(semaphore UID) returns 8002019A");
+    b1_expect(b1_call(NID_WCR_CANCEL_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "CancelEventFlag(semaphore UID) returns 8002019A");
+    evt_expect_now(self_idx, 0x1f0u, NID_CNW_WAIT_EVF, sema, 1u, 1u, EVT_OUT, 0u,
+                   EVT_UNKNOWN_EVFID, "WaitEventFlag(semaphore UID)");
+    evt_expect_now(self_idx, 0x1f1u, NID_CNW_WAIT_EVF_CB, sema, 1u, 1u, EVT_OUT, 0u,
+                   EVT_UNKNOWN_EVFID, "WaitEventFlagCB(semaphore UID)");
+    b1_expect(b1_call(NID_B1_DELETE_EVF, sema, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+              "DeleteEventFlag(semaphore UID) returns 8002019A");
+    expect(wsv_count(sema) == 1, "issue #1389: the event-flag calls left the semaphore alive at count 1");
+
+    /* ---- semaphore calls with an event-flag UID: 80020199, flag intact ------ */
+    b1_expect(b1_call(NID_WSV_SIGNAL_SEMA, evf, 1u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "SignalSema(event-flag UID) returns 80020199");
+    b1_expect(b1_call(NID_EVT_POLL_SEMA, evf, 1u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "PollSema(event-flag UID) returns 80020199");
+    MEM_W32(EVT_INFO, 56u);
+    b1_expect(b1_call(NID_EVT_REFER_SEMA, evf, EVT_INFO, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "ReferSemaStatus(event-flag UID) returns 80020199");
+    b1_expect(b1_call(NID_WCR_CANCEL_SEMA, evf, 0u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "CancelSema(event-flag UID) returns 80020199");
+    evt_expect_now(self_idx, 0x1f2u, NID_CNW_WAIT_SEMA, evf, 1u, 0u, 0u, 0u,
+                   WSV_UNKNOWN_SEMID, "WaitSema(event-flag UID)");
+    evt_expect_now(self_idx, 0x1f3u, NID_CNW_WAIT_SEMA_CB, evf, 1u, 0u, 0u, 0u,
+                   WSV_UNKNOWN_SEMID, "WaitSemaCB(event-flag UID)");
+    b1_expect(b1_call(NID_WSV_DELETE_SEMA, evf, 0u, 0u, 0u), WSV_UNKNOWN_SEMID,
+              "DeleteSema(event-flag UID) returns 80020199");
+    MEM_W32(EVT_INFO, 52u);
+    b1_expect(b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u), 0u,
+              "ReferEventFlagStatus after the semaphore calls succeeds");
+    expect(MEM_R32(EVT_INFO + 44u) == 0x0fu,
+           "issue #1389: the semaphore calls left the flag alive with pattern 0x0F");
+
+    wsv_delete(sema);
+    b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, "DeleteEventFlag of the flag succeeds");
+
+    /* ---- unknown event-flag UIDs: NULL, invalid, deleted ------------------- */
+    uint32_t gone = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, 0u, 0u);
+    (void)b1_call(NID_B1_DELETE_EVF, gone, 0u, 0u, 0u);
+    const uint32_t bad[3] = {0u, 0xdeadbeefu, gone};
+    static const char *const bad_name[3] = {"NULL", "invalid", "deleted"};
+    for (int i = 0; i < 3; i++) {
+        snprintf(msg, sizeof msg, "ClearEventFlag(%s) returns 8002019A (clear.expected L15-L19)", bad_name[i]);
+        b1_expect(b1_call(NID_EVT_CLEAR_EVF, bad[i], 0u, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        MEM_W32(EVT_INFO, 52u);
+        snprintf(msg, sizeof msg, "ReferEventFlagStatus(%s) returns 8002019A (refer.expected L23-L25)", bad_name[i]);
+        b1_expect(b1_call(NID_B1_REFER_EVF, bad[i], EVT_INFO, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlag(%s, 0xFFFFFFFF, AND) returns 8002019A (wait.expected L35)", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF, bad[i], 0xffffffffu, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlagCB(%s, 0xFFFFFFFF, AND) returns 8002019A", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF_CB, bad[i], 0xffffffffu, 0u, 0u), EVT_UNKNOWN_EVFID, msg);
+        snprintf(msg, sizeof msg, "WaitEventFlag(%s, 0, AND) still returns 800201B1 first (wait.expected L32-L34)", bad_name[i]);
+        b1_expect(b1_call(NID_CNW_WAIT_EVF, bad[i], 0u, 0u, 0u), EVT_ILPAT, msg);
+    }
+    s_cur = -1;
+
+    /* ---- DeleteEventFlag ends a blocked wait with WAIT_DELETE --------------- *
+     * Plain form: wait.expected L31, a waiter on AND 0xFFFFFFFF of a flag at 0,
+     * no timeout, leaves with 800201B5 and outBits 00000000 over 0xDEADBEEF.
+     * CB form, timed: delete.expected L5-L7 (800201B5). Its flag holds 0x0C at
+     * deletion, so outBits shows the pattern written; a nonzero pattern at
+     * deletion is the PPSSPP model and the measured Cancel rule, not a cell. */
+    for (int cb = 0; cb < 2; cb++) {
+        const char *who = cb ? "WaitEventFlagCB" : "WaitEventFlag";
+        const uint32_t init = cb ? 0x0cu : 0u;
+        TCB *main_t = wsv_begin();
+        int main_idx = (int)(main_t - s_tcb);
+        evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0u, init, 0u);
+        MEM_W32(EVT_OUT, 0xdeadbeefu);
+        MEM_W32(EVT_TMO, 500000u);
+        TCB *w = evt_start(0x1f8u, cb ? NID_CNW_WAIT_EVF_CB : NID_CNW_WAIT_EVF, evf,
+                           cb ? 0x01u : 0xffffffffu, 0u, EVT_OUT, cb ? EVT_TMO : 0u);
+        snprintf(msg, sizeof msg, "issue #1389: the %s waiter blocked on the flag", who);
+        expect(w && !s_evt_returned && w->state == TH_WAIT_OBJ && w->wait_obj == evf, msg);
+        if (!w || s_evt_returned) { evt_end(w); s_cur = -1; continue; }
+        s_cur = main_idx;
+        snprintf(msg, sizeof msg, "DeleteEventFlag with a blocked %s waiter returns 0", who);
+        b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), 0u, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the delete readied the %s waiter", who);
+        expect(w->state == TH_READY, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the delete wrote the %s waiter's outBits = 0x%08x", who, init);
+        expect(MEM_R32(EVT_OUT) == init, msg);
+        s_cur = (int)(w - s_tcb);
+        w->state = TH_RUNNING;
+        sr_coro_switch(w->coro);
+        snprintf(msg, sizeof msg, "issue #1389: the deleted %s waiter returns 800201B5 (got 0x%08x)", who, s_evt_ret);
+        expect(s_evt_returned && s_evt_ret == EVT_WAIT_DELETE, msg);
+        snprintf(msg, sizeof msg, "issue #1389: the %s waiter's outBits stays 0x%08x after it resumes", who, init);
+        expect(MEM_R32(EVT_OUT) == init, msg);
+        s_cur = main_idx;
+        b1_expect(b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u), EVT_UNKNOWN_EVFID,
+                  "a second DeleteEventFlag returns 8002019A");
+        evt_end(w);
         s_cur = -1;
     }
 }
@@ -19958,12 +20174,156 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
 }
 
 /* Hardware measured sceDmacTryMemcpy matching the blocking form for every
- * single-caller size tested, while the multi-threaded campaign observed BUSY
- * during active DMA. The production runtime still has no active-transfer
- * state, so no BUSY result is fabricated here. */
+ * single-caller size tested. These calls have no current guest thread, so they
+ * take the synchronous copy; the cross-thread BUSY and wait cells are covered
+ * by test_dmac_active_transfer_across_threads below. */
 static void test_dmac_semantics(void) {
     test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY, "sceDmacMemcpy");
     test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY, "sceDmacTryMemcpy");
+}
+
+/* ---- sceDmac active transfer across two guest threads (#303) ----------------
+ *
+ * The PSP-3000 / 6.6.1 dma-concurrency probe (PSP-DMAC-001, 64/64 for each
+ * combination): a priority-0x10 thread starts a transfer and, outranking the
+ * priority-0x20 main thread, runs at once and blocks inside the call; the main
+ * thread then makes the second call. A Try made while the first transfer is
+ * pending returns BUSY (0x80000021); a blocking call made then waits for it and
+ * returns 0; the first call returns 0 in every combination.
+ *
+ * The production scheduler loop (sched_run) runs both guest threads, created
+ * and started through the production ThreadMan NIDs, so every wait here is a
+ * real scheduler block and wake. The transfer's guest-time duration is
+ * unmeasured, so only the measured ordering is asserted. */
+enum {
+    DMAC_CC_MAIN_ENTRY = 0x08a30000u,
+    DMAC_CC_FIRST_ENTRY = 0x08a30040u,
+    DMAC_CC_FIRST_NAME = 0x08a30100u,
+    DMAC_CC_SRC = 0x08600000u,
+    DMAC_CC_DST_FIRST = 0x08640000u,
+    DMAC_CC_DST_SECOND = 0x08680000u,
+    DMAC_CC_SIZE = 0x10000u,
+};
+#define SCE_DMAC_BUSY 0x80000021u
+
+static uint32_t s_dmac_cc_first_nid;
+static uint32_t s_dmac_cc_second_nid;
+static uint32_t s_dmac_cc_first_uid;
+static uint32_t s_dmac_cc_first_ret;
+static uint32_t s_dmac_cc_second_ret;
+static uint32_t s_dmac_cc_join_ret;
+static int s_dmac_cc_first_entered;
+static int s_dmac_cc_first_returned;
+static int s_dmac_cc_pending_at_second;     /* first entered, not returned, at the second call */
+static int s_dmac_cc_first_done_at_second;  /* first had returned when the second call returned */
+static int s_dmac_cc_main_finished;
+
+static uint32_t dmac_cc_call(uint32_t nid, uint32_t dst) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = dst;
+    c.r[5] = DMAC_CC_SRC;
+    c.r[6] = DMAC_CC_SIZE;
+    return sr_syscall(&c, nid);
+}
+
+static void dmac_cc_first_fn(CpuState *cpu) {
+    s_dmac_cc_first_entered = 1;
+    s_dmac_cc_first_ret = dmac_cc_call(s_dmac_cc_first_nid, DMAC_CC_DST_FIRST);
+    s_dmac_cc_first_returned = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_main_fn(CpuState *cpu) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    title_hle_write_cstr(DMAC_CC_FIRST_NAME, "dmac-first");
+    c.r[4] = DMAC_CC_FIRST_NAME;
+    c.r[5] = DMAC_CC_FIRST_ENTRY;
+    c.r[6] = 0x10u;
+    c.r[7] = 0x4000u;
+    s_dmac_cc_first_uid = sr_syscall(&c, NID_SCE_KERNEL_CREATE_THREAD);
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    (void)sr_syscall(&c, NID_SCE_KERNEL_START_THREAD);   /* the stronger thread runs at once */
+
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_entered && !s_dmac_cc_first_returned;
+    s_dmac_cc_second_ret = dmac_cc_call(s_dmac_cc_second_nid, DMAC_CC_DST_SECOND);
+    s_dmac_cc_first_done_at_second = s_dmac_cc_first_returned;
+
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dmac_cc_first_uid;
+    s_dmac_cc_join_ret = sr_syscall(&c, hle_selftest_nid("sceKernelWaitThreadEnd"));
+    s_dmac_cc_main_finished = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dmac_cc_run(uint32_t first_nid, uint32_t second_nid, int second_blocks,
+                        const char *label) {
+    char msg[256];
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(DMAC_CC_MAIN_ENTRY, dmac_cc_main_fn);
+    sr_test_register_guest_fn(DMAC_CC_FIRST_ENTRY, dmac_cc_first_fn);
+    s_dmac_cc_first_nid = first_nid;
+    s_dmac_cc_second_nid = second_nid;
+    s_dmac_cc_first_uid = 0u;
+    s_dmac_cc_first_ret = s_dmac_cc_second_ret = s_dmac_cc_join_ret = 0xffffffffu;
+    s_dmac_cc_first_entered = s_dmac_cc_first_returned = 0;
+    s_dmac_cc_pending_at_second = s_dmac_cc_first_done_at_second = 0;
+    s_dmac_cc_main_finished = 0;
+    dmac_fill(DMAC_CC_SRC, DMAC_CC_SIZE);
+    dmac_clear(DMAC_CC_DST_FIRST, DMAC_CC_SIZE + 1u, 0u);
+    dmac_clear(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(DMAC_CC_MAIN_ENTRY, 0u, 0u);
+
+    snprintf(msg, sizeof msg, "%s: both guest threads ran to completion under sched_run", label);
+    expect(s_dmac_cc_main_finished && s_dmac_cc_first_uid >= 0x110u &&
+               s_dmac_cc_first_uid < 0x80000000u && s_dmac_cc_join_ret == 0u, msg);
+    snprintf(msg, sizeof msg,
+             "PSP %s: the first caller had entered and not returned when the second call began",
+             label);
+    expect(s_dmac_cc_pending_at_second, msg);
+    if (second_blocks) {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a blocking call made while another thread's transfer is pending returns 0",
+                 label);
+        expect(s_dmac_cc_second_ret == 0u, msg);
+        snprintf(msg, sizeof msg,
+                 "PSP %s: the blocking call waits and returns only after the first transfer", label);
+        expect(s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "PSP %s: the waiting call then performs its own full copy", label);
+        expect(dmac_span_matches(DMAC_CC_DST_SECOND, DMAC_CC_SIZE, 0u) &&
+                   MEM_R8(DMAC_CC_DST_SECOND + DMAC_CC_SIZE) == 0u, msg);
+    } else {
+        snprintf(msg, sizeof msg,
+                 "PSP %s: a Try made while another thread's transfer is pending returns BUSY "
+                 "(0x80000021)", label);
+        expect(s_dmac_cc_second_ret == SCE_DMAC_BUSY, msg);
+        snprintf(msg, sizeof msg, "PSP %s: BUSY is returned while the first transfer is pending",
+                 label);
+        expect(!s_dmac_cc_first_done_at_second, msg);
+        snprintf(msg, sizeof msg, "runtime %s: a BUSY Try copies nothing (unmeasured on PSP)",
+                 label);
+        expect(dmac_span_is(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u), msg);
+    }
+    snprintf(msg, sizeof msg, "PSP %s: the first call returns 0 after its full copy", label);
+    expect(s_dmac_cc_first_returned && s_dmac_cc_first_ret == 0u &&
+               dmac_span_matches(DMAC_CC_DST_FIRST, DMAC_CC_SIZE, 0u) &&
+               MEM_R8(DMAC_CC_DST_FIRST + DMAC_CC_SIZE) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: no transfer window outlives its threads", label);
+    expect(s_xfer_obj == 0u, msg);
+    sr_test_guest_fn_reset();
+}
+
+static void test_dmac_active_transfer_across_threads(void) {
+    dmac_cc_run(NID_SCE_DMAC_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-memcpy-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-try-try");
+    dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_MEMCPY, 1, "concurrent-try-memcpy");
 }
 
 static void test_display_framebuf_latch(void) {
@@ -27003,7 +27363,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -27015,6 +27375,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ 1 callback-wakeup delay body "
+                 "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -34388,6 +34749,7 @@ static int hle_selftest_main(int argc, char **argv) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
         test_evf_hardware_codes();
+        test_evf_typed_uids_and_delete();
         fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
@@ -34509,6 +34871,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_handler_runs_under_interrupt_context_rules();
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
+    test_dmac_active_transfer_across_threads();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
@@ -34579,6 +34942,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_evf_typed_uids_and_delete();
     test_wake_result_is_per_thread();
     test_b23_second_round();
     test_allocate_fpl_context_precedence();
