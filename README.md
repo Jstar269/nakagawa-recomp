@@ -55,7 +55,8 @@ are just starting.
 **Yes, with your own copy of a supported game.** Download v0.0.1, the first release, from its
 [release page](https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1): one ZIP for Windows 11 that already holds the build tools, so it needs
 no other download. The [release notes](docs/RELEASE_NOTES_v0.0.1.md) say what works, what doesn't yet, and how to
-check the download. You can also [build it yourself](#build-it-yourself).
+check the download. You can also [build it yourself](#build-it-yourself). From v0.0.2, Settings > Updates checks
+GitHub for a newer version when you ask, and can download and check it for you ([what it sends](docs/SETUP.md#network-use)).
 
 To play, you need:
 

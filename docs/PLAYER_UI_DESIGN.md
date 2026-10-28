@@ -294,8 +294,9 @@ an indeterminate bar and CANCEL. The whole card fits the 960 x 540 minimum windo
 
 Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
 button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
-volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
-saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
+volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, CHECK FOR UPDATES, then
+the controller and the saves folder as captions; CHECK FOR UPDATES opens the Updates card and asks GitHub, see
+[`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from

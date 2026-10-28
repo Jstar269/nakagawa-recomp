@@ -766,21 +766,39 @@ then from `PATH`; without it the built-in readable debug font is used. Placing
 ### Network use
 
 Nakagawa works offline. The player and the runtime make no network connection unless you
-agree to one, and the game itself never reaches the network. Today there is exactly one
-connection, listed below; any future online feature will be opt-in and added here first.
+agree to one, and the game itself never reaches the network. Today there are two
+connections, listed below; any future online feature will be opt-in and added here first.
 
 | What | Host | When | Controlled by |
 | --- | --- | --- | --- |
 | Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
+| Check for updates | `api.github.com` (HTTPS) | When you select **CHECK FOR UPDATES** (Settings > Updates), or once at start if you turn on **Check at start** (off by default) | That button, and that switch |
+| Update download | `github.com`, which redirects to `release-assets.githubusercontent.com` (HTTPS) | Only after a check finds a newer version and you select **DOWNLOAD** | That button, per download |
 
 A release folder that carries a verified `prereqs/` tree never makes the build-tool
 download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
-There is no update check, telemetry or crash upload. The `network_mode` entry in
+The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
+`Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
+`NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
+Updates page then shows this version, the newest one (pre-releases count), the release page link and the
+first lines of its notes. **DOWNLOAD** keeps that release's Windows ZIP in the `downloads` folder of
+Nakagawa's data folder (`%LOCALAPPDATA%\Nakagawa\data\downloads`) only if its SHA-256 matches the
+release's published `.sha256` file, and GitHub's own checksum of the ZIP when GitHub lists one; on any
+mismatch the file is deleted. **INSTALL** is a separate click: it unpacks the checked ZIP into a new folder
+beside the running version (or in the downloads folder when Nakagawa doesn't run from a release folder) and
+tells you to start the new `bin\nakagawa_player.exe` yourself. It never replaces the running version.
+Your library, saves and settings stay in Nakagawa's data folders, outside the install folder, so the new
+version finds them. There are no retries and no background checks: a failure shows one "Couldn't Reach
+GitHub" card, and a failed check at start stays in the developer log. The release ZIP has no
+build-provenance attestation of its own yet, so the download is checked against the published checksum
+only.
+
+There is no telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
 offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
-prerequisite downloaders uses a network API, or if a pinned download names a host not listed
-in this section.
+prerequisite downloaders uses a network API, if a pinned download or the update check names a host not
+listed in this section, or if new code calls the native download transport.
 
 Release packaging is a maintainer step, not part of the player:
 `python -m tools.nk_core.prereq_fetcher` with `--bundle-dest` or `--source-archive` downloads
