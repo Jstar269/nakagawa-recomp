@@ -558,6 +558,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
 | `test_scratch_dir.py` | The scratch directory retries only Windows lock errors, within its bound; on Windows a real held file reproduces the WinError 32 cleanup failure. |
+| `test_site_mobile.py` | The project website, rendered headless at phone and desktop widths in every theme: no sideways overflow, one theme top to bottom, AA contrast, 44 px tap targets, the theme picker, and every reference resolving. SKIP without Playwright. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |
