@@ -20,6 +20,11 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   [`src/core/nk_psp_builtin_keys.c`](src/core/PROVENANCE.md) are taken from PPSSPP at
   `b4386554795949491a26e51b7d74082bb9b2470f` (`Core/ELF/PrxDecrypter.cpp`, GPL-2.0-or-later, and
   `ext/libkirk/kirk_engine.c`, KIRK-ENGINE by Draan, GPL-3.0-or-later), firmware entries left out.
+- **PPSSPP PSN image reader** — the PSN UMD image (NPUMDIMG) reader in [`src/core/`](src/core/PROVENANCE.md) is
+  adapted from PPSSPP at `b4386554795949491a26e51b7d74082bb9b2470f`: the DRM BB MAC and cipher from
+  `ext/libkirk/amctrl.c` (amctrl.prx reverse engineering by tpu), the LZRC decoder from
+  `Core/FileSystems/tlzrc.cpp` (based on benhur's code, rewritten by tpu; Copyright (c) 2012- PPSSPP Project,
+  GPL-2.0-or-later) and the block reader from `Core/FileSystems/BlockDevices.cpp` (GPL-2.0-or-later).
 - **minimp3 — lieff (Lion) and contributors** — CC0-1.0 public-domain dedication. The MPEG audio decoder header in [`src/rt/minimp3/`](src/rt/minimp3/), pinned to upstream commit `ea99364f61c14656440e8d77e9c233ccf3124633` and kept byte-identical; it backs the `sceMp3` library.
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **Portable Snippets — Evan Nemerson** — CC0-1.0 (public domain). The overflow-checked arithmetic header in [`third_party/portable-snippets/`](third_party/portable-snippets/).

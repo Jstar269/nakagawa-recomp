@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
+import io
 import os
 from pathlib import Path
 import re
@@ -1875,6 +1877,165 @@ int main(int argc, char **argv) {{
                 decrypted_dir,
             )
 
+    def _experimental_module_build(
+        self, disc_id: str, usrdir_modules: dict[str, bytes],
+        decrypted_modules: dict[str, bytes] | None = None,
+    ) -> tuple[int, Path, list[str], str]:
+        """Press BUILD PACKAGE for an uncatalogued disc whose USRDIR ships modules.
+
+        The library entry and profile are what an imported uncatalogued disc gets
+        (write_experimental_profile: no guest modules declared). The fake planner
+        stops the build at its first codegen step, after the module intake, and
+        records its command. Returns (exit code, user root, command, stderr).
+        """
+        iso_file = self.temp_dir / f"{disc_id}-experimental-modules.iso"
+        user_root = self.temp_dir / f"{disc_id}-user-data"
+        user_root.mkdir()
+        create_test_iso_with_modules(
+            iso_file, build_plain_mips_elf(e_type=2, memsz=0x40000),
+            sysdir_modules={}, usrdir_modules=usrdir_modules, disc_id=disc_id,
+            title="Synthetic Experimental Modules",
+        )
+        profile_path = write_experimental_profile(iso_file, user_root)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(profile["manifest"]["modules"], [])
+        (user_root / "library.json").write_text(json.dumps({
+            "schema_version": 1,
+            "games": [{
+                "disc_id": disc_id,
+                "title_id": profile["manifest"]["id"],
+                "iso_path": str(iso_file),
+                "selected_executable": "EBOOT.BIN",
+                "is_experimental": True,
+            }],
+        }), encoding="utf-8")
+        if decrypted_modules:
+            decrypted_dir = user_root / "titles" / disc_id / "decrypted"
+            decrypted_dir.mkdir(parents=True)
+            for name, contents in decrypted_modules.items():
+                (decrypted_dir / name).write_bytes(contents)
+        captured: list[str] = []
+
+        def stop_at_codegen(command, **kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **kwargs)
+            captured.extend(command)
+            raise nk_cli.PackageBuildError("TEST_STOP_AFTER_MODULE_INTAKE")
+
+        args = type("BuildArgs", (), {
+            "disc_id": disc_id,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+        })()
+        stderr = io.StringIO()
+        with patch.object(nk_cli.subprocess, "run", side_effect=stop_at_codegen), \
+             patch.object(nk_cli, "_stage_runtime_assets"), \
+             contextlib.redirect_stderr(stderr):
+            result = nk_cli.cmd_build_package(args)
+        return result, user_root, captured, stderr.getvalue()
+
+    def test_experimental_build_declares_usrdir_prx_as_runtime_placed_module(self) -> None:
+        # The player's build route (#308): a PRX the game ships in USRDIR is declared as a
+        # runtime-placed guest module, so it is translated and its module_start runs when
+        # the game loads it (#299). Before, the route kept the profile's empty module list
+        # and the build translated the main executable only.
+        disc_id = "TEST00071"
+        module_bytes = build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000)
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": module_bytes},
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        profile = json.loads(
+            (user_root / "experimental" / disc_id / "profile.json").read_text(encoding="utf-8")
+        )
+        declared = [{
+            "name": "libfont.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/libfont.prx",
+        }]
+        self.assertEqual(profile["manifest"]["modules"], declared)
+        manifest = json.loads(
+            (user_root / "cache" / "packages" / disc_id / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["modules"], declared)
+        module_dir = Path(command[command.index("--module-dir") + 1])
+        self.assertEqual((module_dir / "libfont.prx").read_bytes(), module_bytes)
+        # The planning copies are not left behind in the profile folder.
+        self.assertEqual(
+            list((user_root / "experimental" / disc_id).glob("module-stage-*")), []
+        )
+
+    def test_experimental_build_uses_the_disc_checks_decrypted_module(self) -> None:
+        # An encrypted disc module resolves to the plain copy the player's disc check
+        # decrypted into the per-title folder; without one the build stops by name.
+        disc_id = "TEST00072"
+        plain = build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000)
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": build_psp_container()},
+            decrypted_modules={"libfont.prx": plain},
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        module_dir = Path(command[command.index("--module-dir") + 1])
+        self.assertEqual((module_dir / "libfont.prx").read_bytes(), plain)
+
+        disc_id = "TEST00073"
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": build_psp_container()},
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual(command, [])
+        self.assertIn("still encrypted", stderr)
+        self.assertNotIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        profile = json.loads(
+            (user_root / "experimental" / disc_id / "profile.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["manifest"]["modules"], [])
+
+    def test_experimental_intake_never_turns_a_disc_module_name_into_a_host_path(self) -> None:
+        # An ISO 9660 name may be a UNC or absolute path. The intake checks it as a string
+        # before forming any path, so it probes, reads and rewrites nothing outside the
+        # per-title folder and stops by name instead (final security pass, E1).
+        work = self.temp_dir / "module-name-host-path"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        outside = work / "outside"
+        outside.mkdir()
+        victim = outside / "b.prx"
+        victim.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0))
+        victim_id = os.stat(victim).st_ino
+        modules = {
+            "PSP_GAME/SYSDIR/EBOOT.BIN": build_plain_mips_elf(),
+            "PSP_GAME/USRDIR/" + "\\\\nk-test.invalid\\share\\a.prx": b"\x7fELF-not-read",
+        }
+        if os.name == "nt":
+            # An absolute name only stays one ISO name where the separator is a backslash.
+            modules["PSP_GAME/USRDIR/" + str(victim)] = b"~SCE" + bytes(0x60)
+        iso_file = work / "game.iso"
+        create_test_iso_with_module_tree(iso_file, modules, disc_id="TEST00074")
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        probed: list[str] = []
+        real_is_file = Path.is_file
+
+        def recording_is_file(path: Path, *args, **kwargs) -> bool:
+            probed.append(str(path))
+            if str(path).startswith("\\\\"):
+                return False  # never reach the network
+            return real_is_file(path, *args, **kwargs)
+
+        with patch.object(Path, "is_file", recording_is_file):
+            with self.assertRaises(nk_cli.ExperimentalModuleIntakeError) as ctx:
+                nk_cli._declare_experimental_disc_modules(
+                    iso_file, user_root, "TEST00074", candidates, selected, {},
+                )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertEqual([p for p in probed if "nk-test.invalid" in p or str(outside) in p], [])
+        self.assertEqual(os.stat(victim).st_ino, victim_id)
+        self.assertEqual([p.name for p in outside.iterdir()], ["b.prx"])
+
     def test_package_build_public_backends_and_limits(self) -> None:
         disc_id = "TEST00004"
         user_root = self.temp_dir / "user-data-mode"
@@ -2007,8 +2168,22 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("MATCHED_ID"), py_meta.matched_profile.id)
 
     def test_uncataloged_retail_iso_parity(self) -> None:
-        """Verify retail disc IDs are uncataloged in public mode by both inspectors."""
+        """Verify an uncatalogued retail disc ID is uncatalogued in public mode by both inspectors."""
         iso_file = self.temp_dir / "retail_mock.iso"
+        create_test_iso(iso_file, disc_id="UCES01402", title="Retail Placeholder", volume_id="UCES01402")
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+
+        self.assertEqual(c_meta.get("RESULT"), "OK")
+        self.assertEqual(c_meta.get("DISC_ID"), "UCES01402")
+        self.assertEqual(c_meta.get("SUPPORTED"), "0")
+        self.assertEqual(c_meta.get("MATCHED_ID"), "NONE")
+        self.assertIsNone(py_meta.matched_profile)
+
+    def test_public_hst_manifest_is_catalogued_by_both_inspectors(self) -> None:
+        """UCUS98701 resolves to the built-in hst title in both inspectors (public manifest)."""
+        iso_file = self.temp_dir / "hst_mock.iso"
         create_test_iso(iso_file, disc_id="UCUS98701", title="Hot Shots Tennis", volume_id="UCUS98701")
 
         py_meta = inspect_iso(iso_file)
@@ -2016,9 +2191,11 @@ int main(int argc, char **argv) {{
 
         self.assertEqual(c_meta.get("RESULT"), "OK")
         self.assertEqual(c_meta.get("DISC_ID"), "UCUS98701")
-        self.assertEqual(c_meta.get("SUPPORTED"), "0")
-        self.assertEqual(c_meta.get("MATCHED_ID"), "NONE")
-        self.assertIsNone(py_meta.matched_profile)
+        self.assertEqual(c_meta.get("SUPPORTED"), "1")
+        self.assertEqual(c_meta.get("MATCHED_ID"), "hst-ucus98701-v1")
+        self.assertIsNotNone(py_meta.matched_profile)
+        self.assertEqual(py_meta.matched_profile.id, "hst-ucus98701-v1")
+        self.assertEqual(py_meta.matched_profile.codegen_profile, "hst")
 
     def test_uncatalogued_param_sfo_disc_is_experimental(self) -> None:
         """Unknown PSP discs get validated local identity profiles and stay launch-gated."""
@@ -2649,7 +2826,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(
             message,
             "This is a PlayStation Store package (PBP), not a disc image. "
-            "Nakagawa Recomp can't use these yet. Title: Store Package (ID: TEST00424)",
+            "The player converts PSN UMD games. Title: Store Package (ID: TEST00424)",
         )
         self.assertNotRegex(message, r"#\d+")
         self.assertNotIn("ISO9660", message)
@@ -2870,14 +3047,25 @@ int main(int argc, char **argv) {{
         # launching the guest at a hard-coded 0x0029a060 with a zero base: an
         # address belonging to no public title, so the runtime was started at a
         # constant rather than at anything the catalog knew. A public-safe tree
-        # has no addresses for a retail identity and must say so.
+        # has no addresses for an uncatalogued retail identity and must say so.
+        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
+               "UCES01402", "private-retail-lookalike-v1"]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
+        self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
+        self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
+        self.assertIn("No catalog entry", res.stdout)
+
+        # The public HST manifest is catalogued, so its identity resolves, but a
+        # tree without its runtime still refuses by name rather than starting at
+        # any address of its own.
         cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
                "UCUS98701", "hst-ucus98701-v1"]
         res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
         self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
-        self.assertIn("No catalog entry", res.stdout)
+        self.assertIn("Runtime binary not found for title hst-ucus98701-v1", res.stdout)
 
     def test_duplicate_sfo_keys_parity(self) -> None:
         """Verify identical duplicate SFO keys accepted and conflicting rejected by both Python and C."""

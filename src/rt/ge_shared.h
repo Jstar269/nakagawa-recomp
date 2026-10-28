@@ -304,6 +304,10 @@ GeState  *ge_state_ptr(void);
 /* Changes whenever GE state may have changed (each list command, init, replay restore), so a
  * consumer can keep values derived from GeState until it moves. */
 uint32_t  ge_state_serial(void);
+/* A write through ge_state_ptr() outside a list command does not move the serial by itself:
+ * the writer calls this before the next draw, or the consumers keep values derived from the
+ * old state (ge.c's lighting inputs, the Vulkan backend's per-draw state template). */
+void      ge_state_note_external_write(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);
 /* Decode the CURRENT texture (ge.tex_addr, tex_w x tex_h) to RGBA8 through the exact

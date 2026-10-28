@@ -552,12 +552,6 @@ static TCB *tcb_by_uid(uint32_t uid) {
     return NULL;
 }
 
-static TCB *tcb_by_entry(uint32_t entry) {
-    for (int i = 0; i < s_ntcb; i++)
-        if (!s_tcb[i].deleted && s_tcb[i].entry == entry) return &s_tcb[i];
-    return NULL;
-}
-
 static uint32_t resolve_thread_uid(uint32_t uid) {
     return uid ? uid : (s_cur >= 0 ? s_tcb[s_cur].uid : 0);
 }
@@ -697,6 +691,7 @@ static void stack_range_release(uint32_t base, uint32_t size) {
  *   - sr_sched_on (set here, never reset after init). */
 static uint32_t sr_rt_current_pc(void);
 static uint32_t sr_rt_current_uid(void);
+static void sched_transfer_reset(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
@@ -727,6 +722,7 @@ void sched_init(CpuState *cpu) {
     s_root_seen = 0;
     s_tick = 0;
     s_guest_reset_requested = 0;
+    sched_transfer_reset();
     s_pause_requested = 0;
     s_pause_active = 0;
     s_pause_source = SR_PAUSE_SRC_USER;
@@ -1652,6 +1648,25 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
     return 0;
 }
 
+static int sched_env_switch(int *cached, const char *name);
+
+/* Diagnostic switches read on every delivered VBLANK, once per process like the per-call
+ * ones below (sched_env_switch, #1296). */
+static int sched_vblog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_VBLOG");
+}
+
+static int sched_pcsample_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_PCSAMPLE");
+}
+
+static int sched_cbsnap_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_CBSNAP");
+}
+
 static void deliver_vblank(void) {
     sched_pause_assert_no_guest("deliver_vblank");
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
@@ -1673,7 +1688,7 @@ static void deliver_vblank(void) {
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
-    if (getenv("SR_VBLOG") && (++vb % 1) == 0) {
+    if (sched_vblog_on() && (++vb % 1) == 0) {
         fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
     }
     g_frame_prims = 0;
@@ -1692,7 +1707,7 @@ static void deliver_vblank(void) {
     }
     s_vblank_resume_anchor_pending = 0;
     sched_wake(VBLANK_WAIT_OBJ);
-    if (getenv("SR_PCSAMPLE")) {
+    if (sched_pcsample_on()) {
         static unsigned long n = 0;
         if ((n++ % 30) == 0) fprintf(stderr, "PCSAMPLE frame=%lu interrupted_pc=0x%08x ra=0x%08x\n",
                                      n, s_cpu->pc, s_cpu->r[31]);
@@ -1716,7 +1731,7 @@ static void deliver_vblank(void) {
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
          * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
         fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
@@ -1730,7 +1745,7 @@ static void deliver_vblank(void) {
         ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
                                          &interrupt_fatal_target)
         : 0;
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
         fflush(stderr);
@@ -1763,34 +1778,6 @@ static void deliver_vblank(void) {
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
     sched_pause_script_maybe_request();
-
-    /* Worker relaunch trampoline: if the worker thread went DORMANT (e.g. after
-     * the game loop returned), restart it on the next vblank so it re-enters
-     * f_000468c8 and submits the next frame. This is the runtime surrogate for
-     * the real PSP's GE list-complete callback that re-arms the game loop. */
-    {
-        static int relaunch_disabled = -1;
-        if (relaunch_disabled < 0) relaunch_disabled = getenv("SR_NO_RELAUNCH") ? 1 : 0;
-        if (!relaunch_disabled) {
-            uint32_t wuid = g_worker_uid;
-            /* No captured worker role means there is nothing to re-arm. Looking the
-             * sentinel up would find no TCB anyway; the explicit guard says why. */
-            TCB *w = sched_role_uid_captured(wuid) ? tcb_by_uid(wuid) : NULL;
-            if (w && w->state == TH_DORMANT) {
-                /* A dormant worker means main_RunGameLoop returned for this frame; on real
-                 * PSP the GE list-complete callback re-arms it. The previous gate required
-                 * the 0x331b80 frame-ready counter to be exactly 0, but that counter's
-                 * polarity is owned by the guest's finish callback (ge.c GE_FINISH_CB ->
-                 * func 0x599c) and is not reliably reset here -- so a dormant worker could
-                 * be held forever, presenting only frame 0. Re-arm whenever the worker is
-                 * dormant; the relaunch is the surrogate for the GE callback. */
-                fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
-                sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->worker_thread_entry,
-                                "worker relaunch trampoline");
-                sched_start_thread(wuid, 0, 0);
-            }
-        }
-    }
 }
 
 /* Service only sources whose delivery semantics are implemented. Unknown
@@ -2304,7 +2291,6 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 }
 
 static TCB *tcb_by_uid(uint32_t uid);
-static TCB *tcb_by_entry(uint32_t entry);
 static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority, uint32_t stack_size);
 
 static void unregister_libc_thread(uint32_t k0) {
@@ -2365,20 +2351,6 @@ static void sched_release_thread_stack(TCB *t) {
 
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name) {
-    if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
-        TCB *existing = tcb_by_entry(entry);
-        if (existing) {
-            static int n_reuse_log = 0;
-            if (n_reuse_log < 16 || getenv("SR_THLOG")) {
-                fprintf(stderr,
-                        "sched_create_thread: reusing uid=0x%x for entry=0x%08x state=%d started=%d\n",
-                        existing->uid, entry, existing->state, existing->started);
-                n_reuse_log++;
-            }
-            sr_compat_fired("SCHEDULER_HOOKS", entry, "worker thread reuse");
-            return existing->uid;
-        }
-    }
     if (s_ntcb >= MAXTHREADS) {
         /* TCB-slot reclaim: terminated (DORMANT) threads never released their slot,
          * so a long session that repeatedly starts/exits short-lived threads (callback
@@ -2673,6 +2645,64 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     return 0;
 }
 
+/* ---- device transfer window (#303) --------------------------------------------------
+ * sceDmacMemcpy and sceDmacTryMemcpy block their caller for the whole transfer, and while
+ * it is pending another thread's Try returns BUSY and its blocking call waits for it
+ * (PSP-3000 / 6.6.1, 64/64 for each combination; tools/psp_oracle/manifest.json
+ * PSP-DMAC-001). The runtime copies at once, and no guest-time duration was measured
+ * (the probe recorded caller wall time only), so this window carries NO time. It is an
+ * explicit, UNMEASURED ordering window:
+ *
+ *   - it opens when the current thread starts a transfer (sched_transfer_begin);
+ *   - it stays open through the next scheduling decision that hands the CPU to another
+ *     thread, so exactly one dispatch of another runnable thread sees it pending;
+ *   - it closes at the decision after that dispatch, or at once when no other thread is
+ *     runnable, so a lone caller waits for nothing but its own transfer (never for a
+ *     VBLANK or a timer).
+ *
+ * Closing it wakes every thread blocked on the transfer's object: the owner and any
+ * blocking caller queued behind it. The scheduler owns only who and until when; the
+ * device HLE owns the transfer itself. One window at a time: the two APIs share one
+ * modelled channel. */
+static uint32_t s_xfer_obj;        /* the pending transfer's wait object; 0 = none */
+static uint32_t s_xfer_owner_uid;  /* the thread that started it */
+static int      s_xfer_dispatched; /* another thread was selected while it was open */
+
+static void sched_transfer_reset(void) {
+    s_xfer_obj = 0u;
+    s_xfer_owner_uid = 0u;
+    s_xfer_dispatched = 0;
+}
+
+int sched_transfer_begin(uint32_t obj) {
+    if (obj == 0u || s_xfer_obj != 0u || s_cur < 0) return 0;
+    s_xfer_obj = obj;
+    s_xfer_owner_uid = s_tcb[s_cur].uid;
+    s_xfer_dispatched = 0;
+    return 1;
+}
+
+int sched_transfer_pending(uint32_t obj, uint32_t *owner_uid) {
+    if (obj == 0u || s_xfer_obj != obj) return 0;
+    if (owner_uid) *owner_uid = s_xfer_owner_uid;
+    return 1;
+}
+
+/* Part of every scheduling decision, like an expired deadline: closing a window that
+ * has run its course restores who is runnable and decides nothing about who runs. */
+static void sched_transfer_window_step(void) {
+    if (s_xfer_obj == 0u) return;
+    if (!s_xfer_dispatched) {
+        for (int i = 0; i < s_ntcb; i++)
+            if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
+                s_tcb[i].uid != s_xfer_owner_uid)
+                return;   /* another runnable thread gets the CPU first */
+    }
+    const uint32_t obj = s_xfer_obj;
+    sched_transfer_reset();
+    sched_wake(obj);
+}
+
 /* A timed wait whose deadline has passed -- an elapsed sceKernelDelayThread, or a timed
  * sema/event wait that timed out -- describes a thread the kernel owes the CPU to, not a
  * blocked one. Promoting it is therefore part of EVERY scheduling decision, not a private
@@ -2742,6 +2772,7 @@ static void sched_rotation_mark(int head) {
  * state yields an identical decision. Returns an index or -1 if nothing is runnable. */
 static int pick_next(void) {
     sched_promote_expired_waits();
+    sched_transfer_window_step();
     int best_pri = 0;
     int have_ready = 0;
     for (int i = 0; i < s_ntcb; i++) {
@@ -2762,6 +2793,7 @@ static int pick_next(void) {
         int i = (start + step) % s_ntcb;
         if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
+            if (s_xfer_obj != 0u && s_tcb[i].uid != s_xfer_owner_uid) s_xfer_dispatched = 1;
             /* A rotation at this priority is consumed by this selection. */
             for (int j = 0; j < s_ntcb; j++)
                 if (s_tcb[j].priority == best_pri) s_tcb[j].rot_head = 0;
@@ -3400,6 +3432,7 @@ int sched_reset_for_loadexec(void) {
     s_tick = 0;
     s_gp = 0u;
     s_guest_reset_requested = 0;
+    sched_transfer_reset();
     s_sched_coro = sr_coro_main();
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_dispatch_host_stack_top = sr_coro_stack_top;

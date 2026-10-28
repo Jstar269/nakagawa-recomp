@@ -302,6 +302,7 @@ static void reset_sched(void) {
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
     sched_alarm_reset();
+    sched_transfer_reset();
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
@@ -825,6 +826,40 @@ static void test_blocked_excluded_until_wake(void) {
     expect(pick_next() == waiter, "sched_wake readies the blocked thread and it wins on priority");
 }
 
+/* #303 device transfer window: the owner, parked on the transfer object, stays
+ * parked through exactly one decision that hands the CPU to another thread and is
+ * released at the next one; with no other runnable thread it is released at once. */
+static void test_transfer_window_closes_after_one_other_dispatch(void) {
+    reset_sched();
+    int owner = mk(0x200, TH_RUNNING, 16);
+    int other = mk(0x201, TH_READY, 32);
+    s_cur = owner;
+    expect(sched_transfer_begin(0xD0Au), "the running thread opens a transfer window");
+    expect(!sched_transfer_begin(0xD0Bu), "only one transfer window is open at a time");
+    s_tcb[owner].state = TH_WAIT_OBJ;   /* as sched_block_on leaves the owner */
+    s_tcb[owner].wait_obj = 0xD0Au;
+    s_cur = -1;
+    uint32_t who = 0;
+    expect(pick_next() == other, "a weaker ready thread gets the CPU while the transfer is pending");
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x200u,
+           "the window stays open through that dispatch and names its owner");
+    expect(s_tcb[owner].state == TH_WAIT_OBJ, "the owner stays blocked during that dispatch");
+    expect(pick_next() == owner, "the next decision closes the window; the woken owner wins on priority");
+    expect(!sched_transfer_pending(0xD0Au, NULL), "the closed window is no longer pending");
+
+    reset_sched();
+    int lone = mk(0x210, TH_RUNNING, 32);
+    int parked = mk(0x211, TH_WAIT_OBJ, 16);
+    s_tcb[parked].wait_obj = 0xABCu;
+    s_cur = lone;
+    expect(sched_transfer_begin(0xD0Au), "a lone thread opens a transfer window");
+    s_tcb[lone].state = TH_WAIT_OBJ;
+    s_tcb[lone].wait_obj = 0xD0Au;
+    s_cur = -1;
+    expect(pick_next() == lone, "with no other runnable thread the window closes at once");
+    expect(s_tcb[parked].state == TH_WAIT_OBJ, "closing wakes only the transfer object's waiters");
+}
+
 static void test_dormant_excluded(void) {
     reset_sched();
     int dead = mk(0x200, TH_DORMANT, 1);
@@ -1112,8 +1147,9 @@ static void test_title_config_configured_roles_act(void) {
         uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
         expect(worker != 0 && g_worker_uid == worker,
                "the configured worker entry claims the worker uid");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker,
-               "a repeat create at the configured worker entry reuses the worker thread");
+        uint32_t second = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        expect(second != 0 && second != worker,
+               "a repeat create at the configured worker entry creates a second thread");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         reset_sched();
@@ -1191,15 +1227,14 @@ static unsigned long long compat_hits(const char *id) {
 static void test_compat_fired_report_names_applied_patches(void) {
     char id[160];
     if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
-        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
-        unsigned long long before = compat_hits(id);
+        /* The worker reuse hook is retired (#363): a repeat create at the worker entry
+         * records no firing any more. */
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
-        uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
-        expect(compat_hits(id) == before, "the first worker create is not a reuse");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker &&
-               compat_hits(id) == before + 1u,
-               "a worker reuse appears in the fired-patch report under its census id");
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
+        expect(compat_hits(id) == 0u, "a repeat worker create records no reuse firing");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         /* The retired demotion (#363) must not come back under its old census id. */
@@ -1240,6 +1275,28 @@ static void test_delivered_vblank_writes_no_guest_memory(void) {
         expect(MEM_R32(k_candidate_counters[i]) == 0u,
                "a candidate counter word is untouched by a delivered VBLANK");
     }
+}
+
+/* #363: a dormant worker stays dormant. The runtime used to restart a DORMANT thread
+ * holding the worker role on the next VBLANK, as a surrogate for a callback that re-arms
+ * the guest's frame loop; nothing on the PSP restarts an exited thread, so a delivered
+ * VBLANK must leave it DORMANT and record no firing. */
+static void test_dormant_worker_is_not_relaunched_at_vblank(void) {
+    if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) return;
+    char id[160];
+    snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker relaunch trampoline",
+             (unsigned)cfg_worker_entry());
+    reset_sched();
+    expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+    uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+    TCB *w = tcb_by_uid(worker);
+    expect(w != NULL && g_worker_uid == worker, "the configured worker entry claims the worker uid");
+    if (!w) return;
+    w->state = TH_DORMANT;
+    deliver_vblank();
+    deliver_vblank();
+    expect(w->state == TH_DORMANT, "a delivered VBLANK leaves a dormant worker dormant");
+    expect(compat_hits(id) == 0u, "a dormant worker at VBLANK records no relaunch firing");
 }
 
 /* ---- role-UID capture tests -------------------------------------------------------- */
@@ -1360,8 +1417,7 @@ static void test_historical_worker_uid_is_ordinary_when_unconfigured(void) {
            "UID 0x114 is not the worker when no worker entry is configured");
     expect(g_worker_uid == SR_ROLE_UID_NONE,
            "the worker role stays uncaptured in a build with no worker binding");
-    /* Worker-only path: create-reuse. An ordinary thread at the same entry gets a
-     * second TCB. */
+    /* No entry reuses a thread: another create at the same entry gets a second TCB. */
     TCB *t = tcb_by_uid(uid);
     expect(t != NULL, "the 0x114 thread exists");
     if (!t) return;
@@ -4830,6 +4886,7 @@ int main(int argc, char **argv) {
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();
+    test_transfer_window_closes_after_one_other_dispatch();
     test_dormant_excluded();
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
@@ -4849,6 +4906,7 @@ int main(int argc, char **argv) {
     test_launcher_keeps_priority_and_worker_runs_after_it_blocks();
     test_compat_fired_report_names_applied_patches();
     test_delivered_vblank_writes_no_guest_memory();
+    test_dormant_worker_is_not_relaunched_at_vblank();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
     test_configured_entry_captures_whatever_uid_it_gets();

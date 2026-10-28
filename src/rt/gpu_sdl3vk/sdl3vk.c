@@ -47,7 +47,7 @@
 #define PSP_H 272
 #define PRESENT_FRAMES 3
 #define HUD_W 240
-#define HUD_H 76
+#define HUD_H 108
 
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
@@ -209,7 +209,32 @@ static void destroy_swapchain(void) {
     if (s_swap) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
 }
 
+/* Queue-idle fault seam for the selftest: a nonzero VkResult stands in for the next wait. */
+static VkResult s_idle_fault_result = VK_SUCCESS;
+
+/* A swapchain may be destroyed only once every use of the images acquired from it has completed
+ * (VUID-vkDestroySwapchainKHR-swapchain-01282). The frame fences cover the copies into those
+ * images; the queue idle also covers each present's wait on its semaphore, which no fence covers.
+ * A failed wait (device lost, out of memory) proves nothing idle: the swapchain is then neither
+ * replaced nor destroyed, and the renderer is terminal (#1377). */
+static int wait_swapchain_unused(void) {
+    if (!wait_all_present_frames()) {
+        fprintf(stderr, "sdl3vk: a present frame's fence wait failed; the swapchain is kept\n");
+    } else {
+        VkResult r = s_idle_fault_result != VK_SUCCESS ? s_idle_fault_result
+                                                       : vkQueueWaitIdle(s_queue);
+        s_idle_fault_result = VK_SUCCESS;
+        if (r == VK_SUCCESS) return 1;
+        fprintf(stderr, "sdl3vk: vkQueueWaitIdle failed: %d; the swapchain is kept\n", (int)r);
+    }
+    s_renderer_terminal = 1;
+    return 0;
+}
+
+/* Creates the swapchain, or replaces the current one: the old swapchain is retired into the new
+ * one and destroyed once its images are no longer in use. */
 static int create_swapchain(void) {
+    if (s_swap && !wait_swapchain_unused()) return 0;
     VkSurfaceCapabilitiesKHR caps;
     VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_pdev, s_surf, &caps));
 
@@ -1336,8 +1361,13 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     }
     if (!s_hud_surf || !s_hud_ren) return;
 
-    double fps = 0.0, frame_ms = 0.0, vblank_hz = 0.0;
-    sr_perf_get_hud_metrics(&fps, &frame_ms, &vblank_hz);
+    /* Game FPS counts new frames (a present of a buffer other than the previous one's), the
+     * figure a player feels; Presents counts every frame handed to the window, re-presents of
+     * the same finished frame included. Per frame is the mean VBLANKs between new frames:
+     * 2.0 is a 30-frame title on time, 1.0 a 60-frame one. */
+    double presents = 0.0, frame_ms = 0.0, vblank_hz = 0.0, game_fps = 0.0, per_frame = 0.0;
+    sr_perf_get_hud_metrics(&presents, &frame_ms, &vblank_hz);
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
     /* -1: no backend query registered, so the status is unknown. */
     int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
 
@@ -1349,20 +1379,29 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
 
     char line[64];
     SDL_SetRenderDrawColor(s_hud_ren, 240, 240, 240, 255);
-    snprintf(line, sizeof(line), "FPS:     %.1f (%.2f ms)", fps, frame_ms);
+    snprintf(line, sizeof(line), "Game FPS:  %.1f", game_fps);
     SDL_RenderDebugText(s_hud_ren, 12, 10, line);
 
-    snprintf(line, sizeof(line), "VBlank:  %.1f Hz", vblank_hz);
+    if (per_frame > 0.0)
+        snprintf(line, sizeof(line), "Per frame: %.1f VBlanks", per_frame);
+    else
+        snprintf(line, sizeof(line), "Per frame: -");
     SDL_RenderDebugText(s_hud_ren, 12, 30, line);
+
+    snprintf(line, sizeof(line), "Presents:  %.1f/s", presents);
+    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+
+    snprintf(line, sizeof(line), "VBlank:    %.1f Hz", vblank_hz);
+    SDL_RenderDebugText(s_hud_ren, 12, 70, line);
 
     if (audio_active > 0) {
         SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
     } else {
         SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
     }
-    snprintf(line, sizeof(line), "Audio:   %s",
+    snprintf(line, sizeof(line), "Audio:     %s",
              audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
-    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+    SDL_RenderDebugText(s_hud_ren, 12, 90, line);
 
     SDL_RenderPresent(s_hud_ren);
 
@@ -1413,8 +1452,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq,
                                             VK_NULL_HANDLE, &idx);
         if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_SUBOPTIMAL_KHR) {
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue); /* presentation-engine scope; resize path only */
             if (!create_swapchain()) { why = "swapchain recreation failed"; goto fail; }
             continue;
         }
@@ -1583,8 +1620,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_ENQUEUED_REBUILD:
             presented = 1;
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue);
             if (!create_swapchain()) {
                 s_renderer_terminal = 1;
                 why = "swapchain rebuild after presentation failed";
@@ -1594,8 +1629,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_OUT_OF_DATE:
             presented = 0;
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue);
             create_swapchain();
             why = disp_why;
             goto fail;
@@ -1875,8 +1908,6 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     uint32_t idx = 0;
     VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq, VK_NULL_HANDLE, &idx);
     if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
-        wait_all_present_frames();
-        vkQueueWaitIdle(s_queue); /* presentation-engine scope; resize path only */
         if (!create_swapchain() && !sdl3vk_window_minimized()) return -1;
         return 2;
     }
@@ -1936,8 +1967,6 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     case PRESENT_ENQUEUED_REBUILD:
     case PRESENT_OUT_OF_DATE:
         s_frame_cursor = (s_frame_cursor + 1) % PRESENT_FRAMES;
-        wait_all_present_frames();
-        vkQueueWaitIdle(s_queue);
         if (!create_swapchain() && !sdl3vk_window_minimized()) {
             s_renderer_terminal = 1;
             fprintf(stderr, "sdl3vk: pause overlay: swapchain rebuild failed\n");
@@ -1981,9 +2010,12 @@ static int cap_test_pattern(int x, int y, int ch) {
     }
 }
 
+/* Sets a variable that sdl3vk_init's getenv reads. On Windows that is the C runtime's copy:
+ * _putenv_s updates it and the process environment, while SetEnvironmentVariableA alone changes
+ * only the process environment, which getenv never sees again (#1377). */
 static int cap_test_setenv(const char *name, const char *value) {
 #ifdef _WIN32
-    return SetEnvironmentVariableA(name, value) ? 1 : 0;
+    return _putenv_s(name, value) == 0;
 #else
     return setenv(name, value, 1) == 0;
 #endif
@@ -2724,6 +2756,11 @@ static int sdl3vk_lifecycle_selftest(void) {
     const int steps = s_init_steps;
     const int errors = sdl3vk_validation_error_count();
     int ok = 1;
+    if (!s_validation_on) {
+        fprintf(stderr, "lifecycle: SR_VULKAN_VALIDATION=1 did not reach sdl3vk_init; "
+                        "the validation layer is off\n");
+        ok = 0;
+    }
     /* The test's own instance keeps the driver loaded between the cycles below: the NVIDIA
      * Windows driver was seen to fault in a worker thread of its own when it is unloaded and
      * loaded again many times in quick succession. It is not one of sdl3vk's objects. */
@@ -2824,7 +2861,10 @@ static int sdl3vk_capture_selftest_body(void) {
             return 77;
         }
     }
-    cap_test_setenv("SR_VULKAN_VALIDATION", "1");
+    if (!cap_test_setenv("SR_VULKAN_VALIDATION", "1")) {
+        fprintf(stderr, "gpu capture selftest: cannot set SR_VULKAN_VALIDATION\n");
+        return 1;
+    }
     const char *terminal_fault = getenv("SR_GPU_CAPTURE_TERMINAL_CASE");
     if (!terminal_fault || !terminal_fault[0]) {
         int lifecycle = sdl3vk_lifecycle_selftest();
@@ -2833,6 +2873,13 @@ static int sdl3vk_capture_selftest_body(void) {
     if (!sdl3vk_init("Nakagawa GPU capture selftest")) {
         fprintf(stderr, "gpu capture selftest: SKIP (Vulkan initialization unavailable)\n");
         return 77;
+    }
+    /* Every "no validation error" check below means something only if the layer is on. */
+    if (!s_validation_on) {
+        fprintf(stderr, "gpu capture selftest: SR_VULKAN_VALIDATION=1 did not reach sdl3vk_init; "
+                        "the validation layer is off\n");
+        sdl3vk_shutdown();
+        return 1;
     }
 
     /* ---- filter selection policy (issue #68) --------------------------------------- */
@@ -3238,6 +3285,37 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
         }
 
+    }
+
+    /* A swapchain replacement with a frame still in flight waits until the old swapchain's
+     * images are unused before destroying it; with validation on, destroying it earlier is
+     * VUID-vkDestroySwapchainKHR-swapchain-01282. A failed wait keeps the swapchain (#1377). */
+    {
+        int in_flight = 0, after = 0;
+        for (int i = 0; i < PRESENT_FRAMES; i++) in_flight += s_frame[i].submitted;
+        uint64_t sc0 = sdl3vk_swapchain_generation();
+        if (!create_swapchain() || sdl3vk_swapchain_generation() <= sc0) {
+            fprintf(stderr, "swapchain: replacement failed\n"); ok = 0;
+        }
+        for (int i = 0; i < PRESENT_FRAMES; i++) after += s_frame[i].submitted;
+        if (in_flight == 0 || after != 0) {
+            fprintf(stderr, "swapchain: replacement with %d frame(s) in flight left %d unwaited\n",
+                    in_flight, after);
+            ok = 0;
+        }
+
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "swapchain: present before the failed wait failed\n"); ok = 0;
+        }
+        VkSwapchainKHR kept = s_swap;
+        sc0 = sdl3vk_swapchain_generation();
+        s_idle_fault_result = VK_ERROR_DEVICE_LOST;
+        if (create_swapchain() || s_swap != kept || sdl3vk_swapchain_generation() != sc0 ||
+            !sdl3vk_renderer_terminal() || s_idle_fault_result != VK_SUCCESS) {
+            fprintf(stderr, "swapchain: a failed queue-idle wait must keep the swapchain and "
+                            "make the renderer terminal\n");
+            ok = 0;
+        }
     }
 
     /* Test 4: a quit consumed by a present is not lost. The present path drains the

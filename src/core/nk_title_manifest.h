@@ -181,6 +181,15 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     size_t reason_size
 );
 
+/* Validation hashes the package's files, which takes seconds for a large
+ * package. A host that is shutting down can stop it early: once `cancelled`
+ * returns true, the file being hashed is abandoned between 32 KiB reads and
+ * the validation fails with the reason "Package validation was cancelled.".
+ * The check must be safe to call from any thread. Install it before any
+ * validation starts; NULL (the default) never cancels. */
+typedef bool (*NkTitleManifestCancelFn)(void *user);
+void nk_title_manifest_set_cancel_check(NkTitleManifestCancelFn cancelled, void *user);
+
 /* Build a metadata identity for package status caches. It covers package.json,
  * build-report.json, the declared executable, every artifact in the completion
  * manifest, and the experimental profile identity when applicable. Missing

@@ -2,26 +2,23 @@
 
 ## Supported versions
 
-The unreleased `main` branch is currently the only supported development line. There are no supported
-release versions yet, and the project does not claim a release-grade security posture: treat arbitrary
+`main` and the latest release, v0.0.1, are supported. The project does not claim a release-grade security posture: treat arbitrary
 PSP and game inputs as untrusted until the parser and guest-span hardening work tracked in GitHub Issues
 is complete.
 
 | Version | Supported | Status / Support Policy |
 | :--- | :--- | :--- |
 | `main` | :white_check_mark: | Active development line. Fixes for all security reports land here. |
-| `< v0.0.1` | :x: | No earlier release has been published. |
-| `v0.0.1` | :hourglass: | Planned first experimental platform release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)); not yet published. |
+| `v0.0.1` | :white_check_mark: | First experimental release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)). Fixes land on `main` and ship in the next release; no backported point releases. |
 
-### Release policy transition (v0.0.1)
+### Release policy
 
-When the first formal experimental platform release (`v0.0.1`) ships:
+Since the first experimental release, `v0.0.1`:
 
 - The `main` branch remains the primary supported development line.
 - `v0.0.1` is an experimental prerelease milestone, not an LTS or patch-supported line: fixes for security issues identified in `v0.0.1` land on `main` and flow into subsequent releases rather than receiving backported security point releases.
 - A release stops receiving security updates as soon as the next release is published; move to the newest
   release or to `main` to keep receiving fixes.
-- Release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278) owns updating this policy and marking `v0.0.1` active atomically at release publication time. No release has been published.
 
 ## Report a vulnerability
 
@@ -126,9 +123,9 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/verify_vfpu_provenance.py` | SHA-1 | Git blob ID of a VFPU table against the pinned upstream tree | Keep: Git object identity |
 | `tools/validate_assets.py` | MD5 | Reads legacy, unversioned local asset references; new ones are versioned SHA-256 | Keep: legacy compatibility only, not a security check |
 | `tools/extract_xb.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/make_app_icon.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
-| `tools/stage_install.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `src/core/nk_psp_inflate.c` | CRC-32 | gzip member trailer of a decrypted PSP payload (RFC 1952) | Keep: the format requires it |
 | `tools/codegen.py` | FNV-64 | Staged module identity (`fnv1a64`), mirrored by `src/rt/guest_interp.c` | Candidate: SHA-256 only with a codegen and package identity bump |
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |

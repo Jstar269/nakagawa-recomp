@@ -489,7 +489,7 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-The private HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
+The HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
 and generic manifests remain conservative `-O0/-O0`. Explicit overrides remain fully supported.
 Generated `-O2` is not being adopted; `-O1`'s
 measured build cost is higher but acceptable for HST.
@@ -572,9 +572,12 @@ Behavioral side effects, waits, wakeups, callbacks, outputs, and error values ar
 The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
 allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
-one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. Cross-thread
-DMAC BUSY/blocking state remains outside the synchronous HLE helper until the scheduler owns an
-active-transfer operation.
+one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
+that starts a transfer stays blocked in the call while the scheduler's transfer window is open;
+another thread's `sceDmacTryMemcpy` then returns BUSY (`0x80000021`) and its blocking
+`sceDmacMemcpy` waits through the scheduler, as measured on a PSP-3000 (#303). The transfer's
+guest-time duration is unmeasured, so the window carries no time: it closes at the scheduling
+decision after one other thread has run, or at once when no other thread is runnable.
 
 ### Scheduler / coroutines
 
