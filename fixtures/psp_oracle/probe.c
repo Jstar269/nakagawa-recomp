@@ -10189,9 +10189,8 @@ static void at3_stream_queries(int emulated, int atrac_id) {
 /* #1296 / #1096 follow-up: how long one sceAtracDecodeData takes, and whether its caller gives up
    the CPU meanwhile. A lower-priority peer only counts while the caller is not runnable, so a
    count that advances across a decode means the caller blocked inside it. A 1 ms delay is the
-   positive control. Call 0's full PCM goes to a private host0 file. */
+   positive control. Call 0's full PCM is dumped to the private host0 log. */
 #define AT3_PEER_PRIO_STEP 8
-#define AT3_PCM0_PATH "host0:/at3_pcm0.bin"
 static volatile uint32_t s_at3_peer_count;
 static volatile int s_at3_peer_stop;
 
@@ -10257,22 +10256,23 @@ static void at3_peer_stop(SceUID peer) {
     else sceKernelDeleteThread(peer);
 }
 
-static void at3_pcm0_file(int emulated, int samples) {
-    int rc = -1;
-    const int bytes = samples > 0 && samples <= 1024 ? samples * 4 : 0;
-    if (bytes) {
-        SceUID fd = sceIoOpen(AT3_PCM0_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-        rc = fd;
-        if (fd >= 0) {
-            rc = sceIoWrite(fd, s_at3_pcm, (SceSize)bytes);
-            (void)sceIoClose(fd);
+/* Call 0's full PCM as hex lines in the durable host0 log (a file the probe creates is removed at
+   teardown): 16 interleaved s16 values per line, in order. */
+static void at3_pcm0_dump(int emulated, int samples) {
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int base = 0; base < count; base += 16) {
+        char line[200];
+        int n = snprintf(line, sizeof(line),
+                         "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm0-hex status=RC "
+                         "result=0x00000000 at=%d v=", base);
+        for (int k = 0; k < 16 && base + k < count && n > 0 && n < (int)sizeof(line) - 6; k++)
+            n += snprintf(line + n, sizeof(line) - (size_t)n, "%04x", (unsigned int)s_at3_pcm[base + k]);
+        if (n > 0 && n < (int)sizeof(line) - 1) {
+            line[n++] = '\n';
+            line[n] = '\0';
+            probe_emit_durable(emulated, line, (size_t)n);
         }
     }
-    char line[200];
-    (void)snprintf(line, sizeof(line),
-                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm0-file status=RC "
-                   "result=0x%08x bytes=%d\n", (unsigned int)rc, bytes);
-    probe_emit_durable(emulated, line, strlen(line));
 }
 
 static void run_at3_decode(int emulated) {
@@ -10354,7 +10354,7 @@ static void run_at3_decode(int emulated) {
                     /* #1096 follow-up: later frames, PCM fingerprints and the stream-position queries. The PCM
                        bytes stay in the private host0 log as a hash plus a few leading samples. */
                     at3_pcm_record(emulated, "decode0", decode_rc, samples, end_flag, remain_frames);
-                    at3_pcm0_file(emulated, samples);
+                    at3_pcm0_dump(emulated, samples);
                     at3_stream_queries(emulated, atrac_id);
                     for (int more = 1; more <= AT3_DECODE_EXTRA_CALLS && decode_rc == 0 && end_flag == 0;
                          more++) {
