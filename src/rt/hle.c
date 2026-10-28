@@ -11584,7 +11584,18 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
-UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
+/* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
+static uint32_t h_NetDialogInit(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x38u && size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
+    return utility_dialog_init(&s_net_dialog, A0);
+}
+static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
+static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_net_dialog); }
+static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
 UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
 UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
 

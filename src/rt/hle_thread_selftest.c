@@ -6521,7 +6521,32 @@ static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
  * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
 static void utility_param_block(uint32_t addr, uint32_t size) {
     for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr, size);
     MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_netconf_parameter_sizes(void) {
+    CpuState cpu;
+    static const uint32_t invalid[] = {0u, 0x37u, 0x39u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    static const uint32_t valid[] = {0x38u, 0x40u, 0x44u};
+    sr_hle_test_osk_slot_reset();
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x44u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, invalid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "netconf rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    for (unsigned i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, valid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0u,
+               "netconf accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, 0x0bffffc0u) == 0x80110004u,
+           "netconf rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
 }
 
 static void test_utility_dialog_single_slot(void) {
@@ -35692,6 +35717,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
     test_io_devctl_memory_stick();
