@@ -236,6 +236,24 @@ Users must supply any external inputs locally. Private inputs, keys, saves,
 captures, extracted assets and generated output must not be committed, attached
 to issues, or included in a release.
 
+## Presentation clip of Hot Shots Tennis
+
+The MP4 file docs/media/hst-rally.mp4 is a 28.5-second presentation clip of Hot Shots Tennis: Get a Grip running in
+Nakagawa Recomp on Windows (a build of main e3a407da, recorded 2026-10-27), with the game's own sound, and
+docs/media/hst-rally-poster.png is one of its frames. The game, its logo, artwork, music, sound and on-screen text belong to
+their owners and are not licensed under this repository's GPL-3.0-or-later declaration; the clip is shown
+only to identify the game. The repository contains no game data files, and users need their own copy of the
+game. Both files are listed with the SHA-256 of their exact bytes in assets/release_manifest.json.
+
+## Launcher screenshots
+
+The PNG files docs/media/launcher-library.png and docs/media/launcher-building.png are presentation
+screenshots of the Nakagawa player from the v0.0.1 release build. The library shows the disc art of Hot Shots
+Tennis: Get a Grip and LocoRoco, and the build screen names Hot Shots Tennis; those games, their art and
+names belong to their publishers and are shown only to identify them. The repository contains no game data
+files, and users need their own copy of a game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
 ## Presentation screenshots of Hot Shots Tennis
 
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
