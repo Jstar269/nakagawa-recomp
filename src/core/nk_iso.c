@@ -1,6 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Reads a user's PSP disc image (ISO 9660): opens it, finds files by path,
+ * reads PARAM.SFO for the disc ID and title (nk_iso_inspect), works out what
+ * kind of executable each candidate is (plain MIPS ELF, encrypted, PBP, or
+ * unusable), and extracts files. nk_iso_extract_game() copies EBOOT.BIN and
+ * the title's content folders under PSP_GAME/USRDIR into a staging folder,
+ * refusing names that would escape it or collide on the host's file system.
+ * The image is untrusted input: every size and offset read from it is checked
+ * before use.
+ */
+
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
