@@ -536,6 +536,71 @@ static int test_input_waits_for_a_new_screen_layout(void) {
     return 1;
 }
 
+/* A row: a control that owns left and right (a segmented control), then a plain
+   button to its right. */
+static void horizontal_row_frame(NkUi *ui, NkUiNavDir *taken, bool *took) {
+    NkUiLayout layout;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_ROW;
+    layout.gap = 12.0f;
+    nk_ui_begin(ui, 37.0);
+    *took = nk_ui_take_event(ui, NK_UI_EV_NAV, taken);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        (void)nk_ui_button(ui, 41u, "Segmented", NK_UI_BUTTON_OWNS_HORIZONTAL);
+        (void)nk_ui_button(ui, 43u, "Plain", 0u);
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+}
+
+static void push_nav(NkUi *ui, NkUiNavDir dir) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_NAV;
+    event.dir = dir;
+    event.down = true;
+    nk_ui_push_event(ui, &event);
+}
+
+static int test_control_owns_horizontal(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiViewport viewport = {1280, 800, 1.0f, 0, 100, 0.0f, 0.0f};
+    NkUiNavDir taken = NK_UI_DIR_UP;
+    bool took = false;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create horizontal-control context");
+    nk_ui_set_viewport(ui, &viewport);
+    nk_ui_focus(ui, 41u);
+    horizontal_row_frame(ui, &taken, &took);
+    horizontal_row_frame(ui, &taken, &took);
+    CHECK(nk_ui_focused(ui) == 41u, "the segmented control has focus");
+
+    push_nav(ui, NK_UI_DIR_RIGHT);
+    horizontal_row_frame(ui, &taken, &took);
+    CHECK(nk_ui_focused(ui) == 41u, "right on a control that owns it keeps the focus");
+    CHECK(took && taken == NK_UI_DIR_RIGHT, "the screen takes the right press for the control");
+    push_nav(ui, NK_UI_DIR_LEFT);
+    horizontal_row_frame(ui, &taken, &took);
+    CHECK(nk_ui_focused(ui) == 41u && took && taken == NK_UI_DIR_LEFT,
+          "left stays with the control too");
+
+    nk_ui_focus(ui, 43u);
+    horizontal_row_frame(ui, &taken, &took);
+    push_nav(ui, NK_UI_DIR_LEFT);
+    horizontal_row_frame(ui, &taken, &took);
+    CHECK(!took, "a plain button's left press is a focus move, not an event");
+    CHECK(nk_ui_focused(ui) == 41u, "left from a plain button still moves focus");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 static int test_golden(const char *actual, size_t actual_size) {
     FILE *file = fopen("fixtures/nk_ui/core_synthetic.golden", "rb");
     char expected[32768];
@@ -713,7 +778,8 @@ int main(int argc, char **argv) {
         !test_theme_access() || !test_overlay_rejects_waves() ||
         !test_container_return_contract() || !test_backend_declarations() ||
         !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() ||
-        !test_input_waits_for_a_new_screen_layout() || !test_wave_caps() ||
+        !test_input_waits_for_a_new_screen_layout() ||
+        !test_control_owns_horizontal() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command() || !test_app_icon()) {
         return 1;
     }
