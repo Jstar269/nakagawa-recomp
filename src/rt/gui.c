@@ -343,8 +343,20 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 #endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static void gui_release_presenter(void);
+static void gui_exit_cleanup(void) {
+    sr_perf_shutdown();
+    gui_release_presenter();
+}
+#endif
+
 void gui_init(const char *title) {
     (void)title;
+#if defined(SR_SDL3VK) || defined(_WIN32)
+    static int cleanup_registered;
+    if (!cleanup_registered && atexit(gui_exit_cleanup) == 0) cleanup_registered = 1;
+#endif
     gui_headless_acceptance_parse();
     if (s_headless_accept_requested && s_headless_accept_invalid) {
         sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=invalid_frame_target");

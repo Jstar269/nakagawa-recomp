@@ -30366,6 +30366,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
 #define EXITGAME_POISON 0xDEADBEEFu
 #define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
 #define EXITGAME_REENTERED 91  /* sceKernelExitGame ran the pending exit callback (#1392) */
+#define EXITGAME_ATEXIT 93
 #define EXITGAME_NO_REQUEST 92 /* the exit-callback quit request could not be set up */
 
 static void exit_game_reentered_guest_fn(CpuState *cpu) {
@@ -30373,7 +30374,10 @@ static void exit_game_reentered_guest_fn(CpuState *cpu) {
     _Exit(EXITGAME_REENTERED);
 }
 
+static void exit_game_atexit_probe(void) { _Exit(EXITGAME_ATEXIT); }
+
 static int run_exit_game_poisoned(void) {
+    if (getenv("SR_TEST_EXITGAME_ATEXIT")) atexit(exit_game_atexit_probe);
     CpuState cpu;
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) return 2;
@@ -30394,6 +30398,7 @@ static int run_exit_game_poisoned(void) {
     if (cb == 0u || exit_request_register(cb) != 0u || sr_exit_request_quit() != 1 ||
         !sr_thread_has_pending_callbacks(owner->uid))
         return EXITGAME_NO_REQUEST;
+    if (getenv("SR_TEST_EXITGAME_INTERRUPT")) s_cur = -1;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = EXITGAME_POISON;   /* $a0 */
     cpu.r[5] = EXITGAME_POISON;   /* $a1 */
@@ -30596,6 +30601,16 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
            "sceKernelExitGame does not adopt a poisoned $a0 as the process result");
     expect(rc == 0,
            "a no-argument sceKernelExitGame yields a zero host process result");
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", "1");
+    rc = exit_game_spawn_child(self);
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", NULL);
+    expect(rc == EXITGAME_ATEXIT, "guest exit runs host atexit handlers");
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", "1");
+    hle_test_setenv("SR_TEST_EXITGAME_INTERRUPT", "1");
+    rc = exit_game_spawn_child(self);
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", NULL);
+    hle_test_setenv("SR_TEST_EXITGAME_INTERRUPT", NULL);
+    expect(rc == EXITGAME_ATEXIT, "interrupt guest exit runs host atexit handlers");
 }
 
 #define SYNTH_MOD_START       0x089a0000u

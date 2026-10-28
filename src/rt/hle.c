@@ -6457,18 +6457,7 @@ static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSM
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode);
 
-/* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
- *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
- *  (2) the launcher thread (uid 0x110 / 0x111) after the worker dissolves
- *  (3) the VBLANK handler inside engine_Shutdown: it calls sceKernelExitGame(0), which on
- *      a real PSP terminates the process and never returns. We must NOT return from this
- *      syscall when invoked from interrupt context (cur_uid==0): sched_thread_sleep() is
- *      a no-op there, the call falls through back into the callback body, the body
- *      reaches ExitGame again, and the recomp arms an infinite countdown of redundant
- *      GAMELOG messages per vblank (smoke_*.err saw 9497 ExitGames in one run from a
- *      single chain ending at the same PC). Behavioural fix: interrupt-context ExitGame
- *      is a host-process _exit. Thread-context ExitGame stays a thread sleep so the
- *      worker / launcher can be observed across subsequent yields. */
+/* sceKernelExitGame terminates the guest process in thread and interrupt contexts. */
 static uint32_t h_ExitGame(CpuState *s) {
     /* sceKernelExitGame takes no argument (PSPSDK psploadexec.h declares
      * `void sceKernelExitGame(void)`; PPSSPP registers NID 0x05572a5f with the
@@ -6541,13 +6530,9 @@ static uint32_t h_ExitGame(CpuState *s) {
         fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
                 s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
         fflush(stderr);
-        /* Give the host a chance to drain. Without this, stdio buffers get truncated by
-         * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
-        sr_host_sleep_ms(50);
-        fflush(NULL);
-        _exit(code);
+        exit(code);
     }
-    sr_trace_close(); fflush(NULL); sr_host_sleep_ms(50); _exit(code);
+    exit(code);
     return code; /* unreachable, keeps the handler signature honest */
 }
 

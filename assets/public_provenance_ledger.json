@@ -6004,7 +6004,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "112f9a6ee9051a1d75073c9964c326f7cbc5e6b83a9d8e4e9e286fb802655d8e"
+      "sha256": "393589080f4d98e9a975c485aff6f9c4df48fb2dfab7933cdcb7e76c7495d68a"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -8900,7 +8900,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7f13b953dafd7167a5c98a48be7767733f901a7798ca1cf9fd8a9d2804e47fb3"
+      "sha256": "c1ffc2c6d95375e182fa3bdcd8ca48e02efcea0640a69d5839a7468619dc573b"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8938,7 +8938,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e81bac61d66879b308d64ec284fd688b6770299badd10fcab309c22800457d33"
+      "sha256": "6760a0effc72be9ad7b7a571aa70d02d1a9d7b8fd9ce8cebe0d1c7c59a92fbc2"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -14574,7 +14574,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "496ac411a8c29371065bad2c4e6758256c59ebdaaf7200bff5cbc0443f89fdb9"
+      "sha256": "aa780be12d13a4a6c66f1e2eae1efffaba492727ee62728c6ff6ddcb31412a39"
     },
     {
       "path": "tools/test_nid_name_proof.py",
