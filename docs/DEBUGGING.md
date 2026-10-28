@@ -1122,6 +1122,7 @@ committed.
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
 | `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
+| `SR_HOST_TIME_ZONE=MINUTES,0\|1` | Set by the launcher from the host's local time zone: the standard offset from UTC in minutes and whether daylight saving is on now. The runtime adopts it as the console's time zone and daylight saving only when the registry overlay does not exist yet, and saves it there; an empty or malformed value keeps the measured seed (-300, on) |
 | `SR_SYSTEM_REGISTRY=PATH` | Overlay file of the virtual PSP system registry: every `sceReg` change a game saves with `sceRegFlushCategory`/`sceRegFlushRegistry`, as schema-versioned JSON replaced atomically (default `registry/system.json` in the per-user data directory). A corrupt file is reported, ignored, and moved to `<file>.corrupt` on the next save |
 
 ### Scheduling & Behavior

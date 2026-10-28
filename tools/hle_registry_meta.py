@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Curated classification metadata for the HLE registration manifest.
 
@@ -894,7 +894,7 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
             "src/rt/hle.c:psp_profile_local_offset_minutes",
         ],
-        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; on the first run the setting starts from the host's local time zone (SR_HOST_TIME_ZONE) and is retained, else the seed is the oracle console's measured setting, not a factory default; the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",

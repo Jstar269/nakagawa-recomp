@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Regression: tools/test_* paths must classify through the canonical
 deterministic classifier, never through the forbidden wildcard-backed
