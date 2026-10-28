@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9bf7648d5e2d0f3179593d0c481dcd64a7db10fbcf9fa8df24652eebe7f68298"
+      "sha256": "12f10fabf365c2c9d636002c1c91aa2402c729b57907d4a0e0f1a2cc3b016d88"
     },
     {
       "path": "docs/SHOWCASE.md",
