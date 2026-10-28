@@ -1198,11 +1198,13 @@ jobs:
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
-          # Keep the toolchain dependency install explicit.  Do not cache
-          # compiled runtime objects: Make's content-addressed invalidation and
-          # shader freshness checks must remain authoritative.
+          # Keep the toolchain dependency install explicit.  Compiled objects
+          # are never restored from another job or run: Make's content-addressed
+          # invalidation and shader freshness checks remain authoritative. The
+          # only reuse is the job-local compiler cache set up below.
           update: false
           install: >-
+            mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-python
@@ -1252,6 +1254,42 @@ jobs:
           printf '%s\n' "$override_info"
           grep -Fx 'CC=clang' <<<"$override_info"
           grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
+
+      # Each part compiles the same runtime sources into several build trees: the
+      # platform ladder once per rung, the smoke part once per smoke. A compiler
+      # cache local to this job serves those repeats (#735 item 2, owner decision
+      # 2026-10-27). ccache keys an entry on every input -- the compiler, the
+      # command line and the full contents of every header -- so it returns an
+      # object only for an identical compile, and Make still decides what to
+      # build. The cache starts empty under RUNNER_TEMP and is never restored,
+      # uploaded or shared with another job or run.
+      #
+      # `gcc` becomes a native symlink to the UCRT64 toolchain's own ccache.exe
+      # (ccache's masquerade mode), which then runs /ucrt64/bin/gcc. A profile
+      # script puts it ahead of /ucrt64/bin for every later MSYS2 step, so CC stays
+      # `gcc`, and SDL3 discovery and the toolchain check in
+      # tools/nk_doctor_checks.py, which follow the link into /ucrt64/bin, still
+      # find this toolchain. The compiler resolution check above runs before this,
+      # against the plain toolchain.
+      - name: Route this job's compiles through a job-local compiler cache
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cache="$(cygpath -u "$RUNNER_TEMP")/ccache"
+          mkdir -p "$cache/bin" "$cache/objects"
+          # nativestrict fails instead of silently copying the executable.
+          MSYS=winsymlinks:nativestrict ln -s /ucrt64/bin/ccache.exe "$cache/bin/gcc.exe"
+          {
+            printf "export CCACHE_DIR='%s'\n" "$(cygpath -m "$cache/objects")"
+            printf "export PATH='%s':\"\$PATH\"\n" "$cache/bin"
+          } > /etc/profile.d/zz-job-compiler-cache.sh
+          # shellcheck disable=SC1091
+          . /etc/profile.d/zz-job-compiler-cache.sh
+          test "$(command -v gcc)" = "$cache/bin/gcc"
+          test "$(readlink -f "$cache/bin/gcc.exe")" = /ucrt64/bin/ccache.exe
+          gcc --version
+          ccache --version
+          ccache --zero-stats
 
       # -j2 uses both vCPUs of the hosted runner for these independent object
       # compiles (#694); the gate is the same target and the same objects.
@@ -1556,6 +1594,18 @@ jobs:
           set -euo pipefail
           py="$(cygpath -u "$PYTHON")"
           PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
+
+      # What the job-local compiler cache served in this part. Every part compiles
+      # the runtime objects through it, so a part that recorded no compile at all
+      # bypassed the cache, and that fails here rather than passing unnoticed.
+      - name: Report the job-local compiler cache statistics
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          ccache --show-stats --verbose
+          compiles="$(ccache --print-stats | awk '$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" || $1 == "cache_miss" { n += $2 } END { print n + 0 }')"
+          echo "compiles through the job-local cache: $compiles"
+          test "$compiles" -gt 0
 
   main_smoke:
     name: Main integration smoke

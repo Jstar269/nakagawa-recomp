@@ -2983,12 +2983,6 @@ void sr_yield(CpuState *s) {
         return;
     }
     s_suspended_yields = 0;
-    /* Phase B1.spin (audio dead-loop break) was removed: after stripping the
-     * VBLANK forward in recomp.c and the relaunch hacks in deliver_vblank,
-     * the recomp's f_0004ea98 stub and its downstream goto-spin are now a real
-     * bug to fix at the source. Forcing s->pc from inside sr_yield is unsafe
-     * (mutates guest control flow mid-recomp) — replace f_0004ea98 with a
-     * native handler in hle.c that writes MEM[0x33b230]=1 and returns r3=1. */
 
     static int s_yieldlog = -1;
     if (s_yieldlog < 0) s_yieldlog = getenv("SR_YIELDLOG") ? 1 : 0;
