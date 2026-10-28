@@ -4311,8 +4311,8 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                   : "The title settings for this disc are missing or out of date. Add the disc again.";
     } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
         return ok ? "Found the game's other program files."
-                  : "Some of the game's program files are encrypted, and Nakagawa doesn't "
-                    "decrypt games.";
+                  : "Some of the game's program files are encrypted, and Nakagawa couldn't "
+                    "decrypt them.";
     } else if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
         switch (check->status) {
             case PREFLIGHT_OK: return "Built and ready to play.";
