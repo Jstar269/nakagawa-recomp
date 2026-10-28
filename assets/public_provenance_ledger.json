@@ -2492,7 +2492,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "e28f0385e008e770206cd74e821f0a98e2b381c8c8620b27e3a700f24dbd4908"
+      "sha256": "f2ff4b143f03f036accedf8e70bee3ecaf5ec25150a9101507ec6b86a31ec574"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -2654,7 +2654,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09fc1cf7bb01ff4fe859f3aa422597d4549c262fd9013bc89011bf06699599b1"
+      "sha256": "3483ebbf1ee91b91df8f62dbec23d103c3d35cebf3e8e39370bc7b816a44dfcc"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -8909,7 +8909,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9d55985d950b1b89a344e5290993be1a56a54c2578d394c3358420773ed6c456"
+      "sha256": "72984de768376362bad8e6259f365a236d64b5a6e9935a3c8f83f54bd43d0e17"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8947,7 +8947,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "942ab2db7171758b027a4841def309e0e27df1485165d9249a4b7c167bfbd7af"
+      "sha256": "8c9ef02498a195d5cbbacd127489a14870ab4416edffb2d698b36b3479094f79"
     },
     {
       "path": "src/rt/intr_conformance.h",
