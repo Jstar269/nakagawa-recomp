@@ -10233,16 +10233,24 @@ static unsigned s_atrac_prime_decodes;   /* frame-0 priming decodes (#1096) */
  * MEASURED on a PSP-3000 (6.61, probe at3-decode, two boots, 48 calls): a plain AT3 track,
  * 2 channels, 304-byte frames, 1024 samples a call, takes 1,152-1,203 us (median 1,177) and a
  * lower-priority peer runs for about 1 ms of it, as during a 1 ms sceKernelDelayThread; the
- * buffer-empty call (0x80630023) returns in 7 us. Every other codec and frame size is
- * UNMEASURED and keeps returning at once, as before. */
+ * buffer-empty call (0x80630023) returns in 7 us. An ATRAC3+ track, 2 channels, 744-byte frames,
+ * 2048 samples a call, takes 2,964-3,113 us (median 3,055 over 8 calls, one boot) with the peer
+ * running for about 3 ms of it; its buffer-empty call returns in 8 us. Every other codec and
+ * frame size is UNMEASURED and keeps returning at once, as before. */
 static uint32_t s_atrac_last_block_us;
-static uint32_t atrac_measured_decode_block_us(const Atrac *a) {
-    if (a->codecType == ATRAC_CODEC_AT3 && a->channels == 2 && a->bytesPerFrame == 304u)
-        return 1177u;
+static uint32_t atrac_decode_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame) {
+    if (codec == ATRAC_CODEC_AT3 && channels == 2 && bytes_per_frame == 304u) return 1177u;
+    if (codec == ATRAC_CODEC_AT3PLUS && channels == 2 && bytes_per_frame == 744u) return 3055u;
     return 0u;
+}
+static uint32_t atrac_measured_decode_block_us(const Atrac *a) {
+    return atrac_decode_block_us_for(a->codecType, a->channels, a->bytesPerFrame);
 }
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_atrac_last_block_us(void) { return s_atrac_last_block_us; }
+uint32_t sr_hle_test_atrac_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame) {
+    return atrac_decode_block_us_for(codec, channels, bytes_per_frame);
+}
 unsigned sr_hle_test_atrac_prime_decodes(int reset) {
     unsigned n = s_atrac_prime_decodes;
     if (reset) s_atrac_prime_decodes = 0u;

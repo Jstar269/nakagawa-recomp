@@ -21352,6 +21352,7 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
 enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
 extern unsigned sr_hle_test_atrac_prime_decodes(int reset);
 extern uint32_t sr_hle_test_atrac_last_block_us(void);
+extern uint32_t sr_hle_test_atrac_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame);
 static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
                                     uint32_t frames, uint32_t factSamples,
                                     uint32_t factDelay) {
@@ -21561,6 +21562,13 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
                "streamed AT3 first decode primes the decoder with file frame 0 once");
         expect(sr_hle_test_atrac_last_block_us() == 1177u,
                "AT3 stereo 304-byte decode keeps its caller waiting the measured 1,177 us");
+        /* The measured table (PSP-3000, #1296): only the two measured configurations wait. */
+        expect(sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3PLUS, 2, 744u) == 3055u,
+               "ATRAC3+ stereo 744-byte decode waits the measured 3,055 us");
+        expect(sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3, 1, 304u) == 0u &&
+                   sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3PLUS, 2, 1536u) == 0u &&
+                   sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3, 2, 384u) == 0u,
+               "unmeasured ATRAC configurations keep returning at once");
         for (uint32_t left = 1u; left <= 2u; left++) {
             ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
             expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
