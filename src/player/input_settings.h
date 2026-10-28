@@ -244,6 +244,13 @@ void input_settings_reset_to_defaults(InputSettingsState *state);
 const char *input_settings_control_name(int control_idx);
 
 /**
+ * The most characters a default binding's words take, and any one input's: what the Controls
+ * page's binding button shows whole (PLAYER_UI_CONTROLLER_BINDING_CHARS in player_ui_nk.h).
+ * Two inputs the user binds to one control may be longer; the button then ends them with "...".
+ */
+#define INPUT_SETTINGS_BINDING_TEXT_MAX 24
+
+/**
  * @brief Format current host binding for a control index into a human-readable string.
  */
 void input_settings_format_binding(const InputSettingsState *state, int control_idx, char *buf, size_t buf_sz);
