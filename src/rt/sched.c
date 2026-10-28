@@ -3131,7 +3131,7 @@ static int SDLCALL sched_preempt_timer_main(void *unused) {
              * millisecond timeout is coarse, so stop short and finish below. */
             const uint64_t ms = (wait - 3000000u) / 1000000u;
             SDL_WaitConditionTimeout(s_preempt_timer_cond, s_preempt_timer_mutex,
-                                     ms > INT32_MAX ? INT32_MAX : (Sint32)ms);
+                                     ms > INT32_MAX ? INT32_MAX : (int32_t)ms);
         } else {
             /* A near deadline: a precise host sleep, in steps short enough that a still
              * earlier deadline published meanwhile is seen within one step. */
@@ -3151,8 +3151,8 @@ void sched_preempt_timer_start(void) {
     SDL_Thread *thread = s_preempt_timer_mutex && s_preempt_timer_cond
         ? SDL_CreateThread(sched_preempt_timer_main, "nk-preempt-timer", NULL) : NULL;
     if (!thread) {
-        fprintf(stderr, "sched: preemption timer unavailable (%s); a stronger due thread waits "
-                        "for the running thread's next scheduler boundary\n", SDL_GetError());
+        fprintf(stderr, "sched: preemption timer unavailable (no host thread); a stronger due thread "
+                        "waits for the running thread's next scheduler boundary\n");
         return;
     }
     SDL_DetachThread(thread);
