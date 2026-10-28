@@ -2427,8 +2427,9 @@ class NativePlayerUiTests(unittest.TestCase):
 
         Failing-before: the showcase demos read NEEDS SETUP for the first 4-9 s of
         every start, until their checks finished, and then flipped to READY."""
+        # 4.5 s spans two of the main loop's 2 s rescans, each re-checking the title for 1.5 s.
         run = self.run_player(
-            "ready", ("WAIT_MS=200",), wait_background=True, ui_mode="next",
+            "ready", ("WAIT_MS=4500",), wait_background=True, ui_mode="next",
             env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
         )
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
@@ -2443,6 +2444,10 @@ class NativePlayerUiTests(unittest.TestCase):
         # The check then decides: this synthetic title has no package to run.
         self.assertGreaterEqual(len(statuses), 2, statuses)
         self.assertNotEqual(statuses[-1], "Checking", statuses)
+        # A periodic re-check keeps the decided status: the card never blinks back to
+        # CHECKING (it did on every 2 s rescan, and made this test flaky on slow hosts).
+        decided = statuses.index(next(s for s in statuses if s != "Checking"))
+        self.assertNotIn("Checking", statuses[decided:], statuses)
 
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
