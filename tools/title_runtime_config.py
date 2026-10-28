@@ -152,9 +152,6 @@ def binding_summary(config: dict[str, Any]) -> str:
         entries = bindings.get(name, [])
         if entries:
             parts.append(f"{len(entries)} {name.replace('_', ' ')}")
-    for name in OBJECT_BITS:
-        if name in bindings:
-            parts.append(f"1 {name.replace('_', ' ')}")
     for name in COUNT_BITS:
         if name in bindings:
             parts.append(f"{name}={bindings[name]}")
