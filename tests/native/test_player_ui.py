@@ -751,12 +751,17 @@ def write_update_fixture(
 
 
 def update_report(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
-    """The update steps the player reported, and the URLs it asked for."""
+    """The update steps the player settled on, and the URLs it asked for. A step
+    in progress (checking, downloading, installing) and the quiet return to idle
+    after a failed check at start are seen only when a frame falls inside them,
+    so they are left out."""
     steps = []
     requests = []
     for line in stdout.splitlines():
         if line.startswith("[PLAYER_UI_TEST] update="):
-            steps.append(dict(re.findall(r"([a-z_]+)=(\S+)", line)))
+            step = dict(re.findall(r"([a-z_]+)=(\S+)", line))
+            if step["update"] not in ("checking", "downloading", "installing", "idle"):
+                steps.append(step)
         elif line.startswith("[PLAYER_UI_TEST] update_request="):
             requests.append(line.split("=", 1)[1])
     return steps, requests
@@ -1951,9 +1956,7 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertIn("open_url=https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3",
                           run["stdout"])
             return
-        # A fast step may finish within one frame, so its "...ing" step can go unseen.
-        self.assertEqual([name for name in names if not name.endswith("ing")],
-                         ["available", "downloaded", "installed"], steps)
+        self.assertEqual(names, ["available", "downloaded", "installed"], steps)
         self.assertEqual(
             requests[1:],
             [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
