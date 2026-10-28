@@ -1101,6 +1101,47 @@ int main(int argc, char **argv) {{
             )
         self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
 
+    def test_code_overlay_is_found_by_its_magic_and_declared_runtime_placed(self) -> None:
+        # A game's own code overlays (MWo3) are found by their magic whatever their file
+        # name, staged as they are, and declared runtime-placed so the build translates
+        # them; a file with the magic and a malformed header is a named candidate.
+        load = 0x08C00000
+        text = struct.pack("<4I", 0x27BDFFF0, 0x03E00008, 0x27BD0010, 0)
+        data = bytes(8)
+        data_lo = load + 0x40 + len(text)
+        overlay = (struct.pack("<4s7I", b"MWo3", 1, load, len(text), len(data), 0,
+                               data_lo, data_lo) + bytes(0x20) + text + data)
+        work = self.temp_dir / "code-overlay"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "overlay.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/Title.ovl": overlay,
+                       "PSP_GAME/USRDIR/data/notes.bin": b"not code"},
+            disc_id="TEST00083",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [("Title.ovl", "code-overlay")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00083", candidates, selected, {},
+        )
+        self.assertEqual(deferred, [])
+        self.assertEqual(declared, [{
+            "name": "Title.ovl", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/Title.ovl",
+        }])
+        self.assertEqual((staged / "Title.ovl").read_bytes(), overlay)
+
+        bad_iso = work / "bad-overlay.iso"
+        create_test_iso_with_module_tree(
+            bad_iso, {"PSP_GAME/USRDIR/Bad.ovl": overlay[:-4]}, disc_id="TEST00084")
+        candidates = nk_cli._discover_iso_module_candidates(bad_iso, "EBOOT.BIN")
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("code-overlay header is malformed", candidates[0]["reason"])
+
     def test_non_congruent_valid_module_is_accepted(self) -> None:
         # p_offset (84) and p_vaddr (0) differ modulo p_align 0x10. The loader copies segment
         # bytes from the file offset, so this valid PSP module is accepted: no congruence rule.

@@ -302,6 +302,59 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertIn(f"void l{codegen.fnv1a64(data):016x}_{FIXED_LINK:08x}(CpuState *s)", library)
 
 
+    def test_code_overlay_translates_at_its_load_address_and_carries_its_identity(self):
+        data, entry, ctor, memsz = basic_code_overlay()
+        path = self.root / "Title.ovl"
+        path.write_bytes(data)
+        out = self.root / "out" / "g_recomp.c"
+        out.parent.mkdir()
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
+        self.assertEqual(status, 0, err)
+        main_c = out.read_text(encoding="ascii")
+        # A fixed-address image at its own load address (bss included), identified in
+        # guest memory by its header and text.
+        self.assertIn(f"0x{OVERLAY_LINK:08x}u, 0x{OVERLAY_LINK + memsz:08x}u, 0x4u, 0u", main_c)
+        check = 0x40 + 0x20
+        self.assertIn(f"0x{check:08x}u, 0x{codegen.fnv1a64(data[:check]):016x}ull", main_c)
+        library = (out.parent / f"nk_lib_{codegen.fnv1a64(data):016x}.c").read_text(encoding="ascii")
+        prefix = f"l{codegen.fnv1a64(data):016x}"
+        self.assertIn(f"void {prefix}_{entry:08x}(CpuState *s)", library)
+        self.assertIn(f"void {prefix}_{ctor:08x}(CpuState *s)", library,
+                      "the init array seeds the constructor it lists")
+
+    def test_a_malformed_code_overlay_gets_a_named_descriptor(self):
+        data, _entry, _ctor, _memsz = basic_code_overlay()
+        path = self.root / "Bad.ovl"
+        path.write_bytes(data[:-4])  # the header's sizes no longer add up to the file
+        out = self.root / "out" / "g_recomp.c"
+        out.parent.mkdir()
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
+        self.assertEqual(status, 0, err)
+        self.assertRegex(out.read_text(encoding="ascii"),
+                         r'"code overlay cannot be translated: MWo3 header sizes do not add up')
+
+
+OVERLAY_LINK = 0x08C00000
+
+
+def basic_code_overlay():
+    """An MWo3 code overlay: a 0x40-byte header, 0x20 bytes of text holding two
+    functions, 8 bytes of data whose first word is the init array (the second
+    function), and 0x10 bytes of bss. Returns (bytes, entry, constructor, memsz)."""
+    entry, ctor = OVERLAY_LINK + 0x40, OVERLAY_LINK + 0x50
+    text_words = [0x27BDFFF0, 0x03E00008, 0x27BD0010, 0x00000000,   # addiu sp,-16; jr ra; addiu sp,16
+                  0x24020009, 0x03E00008, 0x00000000, 0x00000000]   # addiu v0,zero,9; jr ra
+    text = b"".join(struct.pack("<I", w) for w in text_words)
+    data_lo = OVERLAY_LINK + 0x40 + len(text)
+    data = struct.pack("<II", ctor, 0)
+    header = struct.pack("<4s7I", b"MWo3", 1, OVERLAY_LINK, len(text), len(data), 0x10,
+                         data_lo, data_lo + 4) + b"Title.ovl".ljust(0x20, b"\0")
+    image = header + text + data
+    return image, entry, ctor, len(image) + 0x10
+
+
 FIXED_LINK = 0x08B00000
 
 

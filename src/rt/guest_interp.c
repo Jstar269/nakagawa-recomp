@@ -401,6 +401,56 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image) {
     return lo < code->nfuncs && code->funcs[lo].offset == link_pc ? code->funcs[lo].fn : NULL;
 }
 
+/* Whether guest memory holds a code overlay's identifying bytes at its link address. The
+ * length is whole words (a header of 0x40 bytes plus word-aligned text). */
+static int overlay_resident(const SrModuleCode *code) {
+    uint64_t end = (uint64_t)code->link_low + code->overlay_check_len;
+    if ((code->overlay_check_len & 3u) != 0u || end > code->link_high ||
+        !sr_guest_span_readable_current(code->link_low, code->overlay_check_len))
+        return 0;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t off = 0; off < code->overlay_check_len; off += 4u) {
+        uint32_t word = sr_r32(code->link_low + off);
+        for (unsigned b = 0; b < 4u; b++) {
+            h ^= (word >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h == code->overlay_check_fnv1a64;
+}
+
+uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi) {
+    uint32_t changed = 0;
+    /* Unbind first, so the overlay now in memory can take the range the old one held. */
+    for (size_t i = 0; i < s_module_code_count; i++) {
+        const SrModuleCode *code = s_module_codes[i];
+        if (!code->overlay_check_len || code->link_high <= lo || code->link_low >= hi) continue;
+        if (module_binding_slot(code) >= 0 && !overlay_resident(code)) {
+            sr_module_code_unbind(code);
+            fprintf(stderr, "CODE_OVERLAY_UNBOUND: %s [0x%08x,0x%08x)\n",
+                    code->name, code->link_low, code->link_high);
+            changed++;
+        }
+    }
+    for (size_t i = 0; i < s_module_code_count; i++) {
+        const SrModuleCode *code = s_module_codes[i];
+        if (!code->overlay_check_len || code->link_high <= lo || code->link_low >= hi) continue;
+        if (module_binding_slot(code) >= 0 || !overlay_resident(code)) continue;
+        SrModuleBindDetail detail;
+        SrModuleBindResult result = sr_module_code_bind(code, 0u, &detail);
+        if (result == SR_MODULE_BIND_OK) {
+            fprintf(stderr, "CODE_OVERLAY_BOUND: %s [0x%08x,0x%08x)\n",
+                    code->name, code->link_low, code->link_high);
+            changed++;
+        } else {
+            /* Left unbound: a call into its range misses and stops by name. */
+            fprintf(stderr, "CODE_OVERLAY_BIND_FAILED: %s: %s at 0x%08x\n", code->name,
+                    sr_module_bind_result_name(result), detail.address);
+        }
+    }
+    return changed;
+}
+
 int sr_module_code_fetch_authority(uint32_t pc) {
     const SrModuleBinding *binding = module_binding_for(pc);
     if (!binding) return -1;

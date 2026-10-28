@@ -92,6 +92,7 @@ from nk_core.iso_inspect import (  # noqa: E402
 )
 import title_manifest  # noqa: E402
 from psp_import_table import MODULE_ATTR_KERNEL as PSP_MODULE_ATTR_KERNEL  # noqa: E402
+from analyze import code_overlay_layout, is_code_overlay  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -554,6 +555,11 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     selected_name = Path(selected).name.casefold()
     for directory, entry in walk_disc_module_entries(iso_path):
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+            # Any other file is a candidate only when it is a code overlay, found by
+            # its magic whatever its name (analyze.code_overlay_layout).
+            overlay = _iso_code_overlay_candidate(iso_path, file_size, directory, entry)
+            if overlay is not None:
+                candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
@@ -631,11 +637,41 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
         names[folded] = member_path
     staged_size = sum(
         candidate["entry"].size for candidate in candidates
-        if candidate["kind"] == "plain-elf"
+        if candidate["kind"] in _PLAIN_CANDIDATE_KINDS
     )
     if staged_size > MAX_GUEST_MODULE_SET_BYTES:
         raise PackageBuildError("Guest-module inputs exceed the supported aggregate size.")
     return candidates
+
+
+#: Candidate kinds whose disc bytes are used as they are: a plain module or a code overlay.
+_PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
+
+
+def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
+                                entry: IsoDirectoryEntry) -> dict | None:
+    """The candidate for a code overlay among a title's other disc files, else None.
+
+    A game reads a code overlay into memory itself and announces it with an
+    instruction-cache invalidate, where the runtime binds its translation; the build
+    translates it like a runtime-placed module. A file that carries the magic but whose
+    header is malformed is a named unsupported candidate."""
+    if entry.multi_extent or entry.size < 4 or entry.size > MAX_GUEST_MODULE_BYTES:
+        return None
+    with iso_path.open("rb") as stream:
+        if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
+            return None
+        data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    kind, reason = "code-overlay", None
+    if not _disc_module_name_ok(entry.name):
+        kind, reason = "unsupported", "its file name is not a supported module name"
+    else:
+        try:
+            code_overlay_layout(data)
+        except ValueError as exc:
+            kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
+    return {"name": entry.name, "directory": directory, "entry": entry,
+            "kind": kind, "reason": reason}
 
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
@@ -668,7 +704,7 @@ def _stage_iso_modules(
     file_size = iso_path.stat().st_size
     with iso_path.open("rb") as source:
         for candidate in candidates:
-            if candidate["kind"] != "plain-elf":
+            if candidate["kind"] not in _PLAIN_CANDIDATE_KINDS:
                 continue
             entry: IsoDirectoryEntry = candidate["entry"]
             destination = _require_child(
@@ -753,7 +789,7 @@ def _declare_experimental_disc_modules(
                 folder_copy = candidate_file
         if folder_copy is not None:
             module_sources.append((candidate, "folder", folder_copy))
-        elif candidate["kind"] == "plain-elf":
+        elif candidate["kind"] in _PLAIN_CANDIDATE_KINDS:
             module_sources.append((candidate, "iso", None))
         elif candidate["kind"] == "kernel-container":
             # The runtime never runs PSP kernel-mode code (plan_guest_module_layout
@@ -1108,6 +1144,13 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     """
     if _classify_decrypted_elf_file(path, module=True) == "PLAIN_MIPS_ELF32":
         return
+    data = path.read_bytes()
+    if is_code_overlay(data):
+        try:
+            code_overlay_layout(data)
+            return
+        except ValueError:
+            pass
     path.unlink(missing_ok=True)
     raise PackageBuildError(
         f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32; "
@@ -1185,9 +1228,9 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                     magic = module_stream.read(4)
             except OSError as exc:
                 raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
-            if magic != b"\x7fELF":
+            if magic != b"\x7fELF" and not is_code_overlay(magic):
                 suggested = module_dir_arg or default_module_dir
-                token = "ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
+                token ="ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
                 raise PackageBuildError(
                     f"{token}Required guest PRX {_module_label(name, disc_name)} at "
                     f"{source_path} is not a decrypted ELF. Place a decrypted "
@@ -1247,7 +1290,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             offset += count
                     with temporary.open("rb") as module_stream:
                         magic = module_stream.read(4)
-                    if magic != b"\x7fELF":
+                    if magic != b"\x7fELF" and not is_code_overlay(magic):
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
                         if magic in (b"~PSP", b"~SCE"):
