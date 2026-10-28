@@ -10644,7 +10644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68cb258f754eb921685b98fac81a9964e579c0d4c64523a5bc01d942afbd2cae"
+      "sha256": "283e2941bd280f2e7d02d3837804d0fb85cb61632b6b79c997acfd4f1f757585"
     },
     {
       "path": "third_party/clay/LICENSE.md",

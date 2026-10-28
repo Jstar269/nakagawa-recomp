@@ -1878,6 +1878,87 @@ static void test_title_staging_transaction(void) {
     printf("[XB_TEST] Title staging transaction: promote, reuse, resume, replace, busy, refuse PASSED\n");
 }
 
+typedef struct {
+    size_t call_count;
+    size_t stop_at;
+} UnpackProgressState;
+
+static bool unpack_progress_cb(const NkXbEntry *entry, size_t current,
+                              size_t total, void *userdata) {
+    (void)entry;
+    UnpackProgressState *state = (UnpackProgressState *)userdata;
+    if (state) {
+        state->call_count++;
+        assert(current <= total);
+        if (state->stop_at > 0 && state->call_count >= state->stop_at) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void test_nk_xb_unpack(void) {
+    static const uint8_t data1[] = "unpack member 1 content";
+    static const uint8_t data2[] = "unpack member 2 content in subfolder";
+    const FixtureEntry entries[] = {
+        { "file1.txt", data1, sizeof(data1) - 1, NK_XB_COMPRESSION_NONE },
+        { "sub/file2.txt", data2, sizeof(data2) - 1, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer bytes = make_archive(entries, 2, false);
+    const char *archive_path = SR_SELFTEST_BUILD_ROOT "/test_unpack.xb";
+    const char *dest_dir = SR_SELFTEST_BUILD_ROOT "/unpack_dest";
+    write_file_bytes(archive_path, bytes.data, bytes.size);
+    free(bytes.data);
+
+    char error[256] = {0};
+
+    /* Invalid arguments */
+    assert(nk_xb_unpack(NULL, dest_dir, NULL, NULL, error, sizeof(error)) != NK_OK);
+    assert(nk_xb_unpack(archive_path, NULL, NULL, NULL, error, sizeof(error)) != NK_OK);
+    assert(nk_xb_unpack(archive_path, "", NULL, NULL, error, sizeof(error)) != NK_OK);
+
+    /* Non-existent archive path */
+    assert(nk_xb_unpack(SR_SELFTEST_BUILD_ROOT "/nonexistent.xb", dest_dir, NULL, NULL, error, sizeof(error)) != NK_OK);
+
+    /* Happy path unpacking */
+    UnpackProgressState progress_state = { 0, 0 };
+    assert(nk_xb_unpack(archive_path, dest_dir, unpack_progress_cb, &progress_state, error, sizeof(error)) == NK_OK);
+    assert(progress_state.call_count == 2);
+
+    /* Verify extracted file contents */
+    char file1_path[512], file2_path[512];
+    snprintf(file1_path, sizeof(file1_path), "%s/file1.txt", dest_dir);
+    snprintf(file2_path, sizeof(file2_path), "%s/sub/file2.txt", dest_dir);
+
+    assert(nk_platform_file_exists(file1_path));
+    assert(nk_platform_file_exists(file2_path));
+
+    FILE *f1 = fopen(file1_path, "rb");
+    assert(f1 != NULL);
+    char buf1[128] = {0};
+    size_t read1 = fread(buf1, 1, sizeof(buf1), f1);
+    fclose(f1);
+    assert(read1 == sizeof(data1) - 1);
+    assert(memcmp(buf1, data1, read1) == 0);
+
+    FILE *f2 = fopen(file2_path, "rb");
+    assert(f2 != NULL);
+    char buf2[128] = {0};
+    size_t read2 = fread(buf2, 1, sizeof(buf2), f2);
+    fclose(f2);
+    assert(read2 == sizeof(data2) - 1);
+    assert(memcmp(buf2, data2, read2) == 0);
+
+    /* Cancellation on progress callback */
+    UnpackProgressState cancel_state = { 0, 1 };
+    const char *cancel_dest = SR_SELFTEST_BUILD_ROOT "/unpack_cancel_dest";
+    assert(nk_xb_unpack(archive_path, cancel_dest, unpack_progress_cb, &cancel_state, error, sizeof(error)) == NK_ERROR_CANCELLED);
+    assert(cancel_state.call_count == 1);
+
+    printf("[XB_TEST] nk_xb_unpack tests PASSED\n");
+}
+
+
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
@@ -1905,6 +1986,7 @@ int main(void) {
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
     test_title_staging_transaction();
+    test_nk_xb_unpack();
     printf("[XB_TEST] ALL NATIVE XB PARSER TESTS PASSED\n");
     return 0;
 }
