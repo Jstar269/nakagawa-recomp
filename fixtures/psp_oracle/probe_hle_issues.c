@@ -5,7 +5,9 @@
 //   CASE=hle-issues-batch (PSP-HLE-ISSUES-001): #356 model getters and #326 random-unit
 //     carry and vscmp NaN/infinity cells;
 //   CASE=hle-intr-cells (PSP-HLE-INTR-001): #325 VTimer/alarm handler return values and
-//     VBLANK sub-interrupt delivery while interrupts are suspended or a handler holds.
+//     VBLANK sub-interrupt delivery while interrupts are suspended or a handler holds;
+//   CASE=vfpu-forms (PSP-VFPU-FORMS-001): #326 raw result words of vh2f, vuc2i, vsocp,
+//     vwbn, vrndf1 and vrndf2, register-only.
 // These cases live apart from probe_hle_measure.c because they do what that file's
 // families never may: hle-intr-cells registers a VBLANK sub-interrupt handler, sets
 // VTimer and alarm handlers and suspends interrupts, and hle-issues-batch calls a kernel
@@ -30,9 +32,9 @@
 #include <string.h>
 
 PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
-#if PSP_ORACLE_CASE == 106
-/* hle-issues-batch runs VFPU words on the main thread; without the VFPU attribute the
-   first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
+#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108
+/* hle-issues-batch and vfpu-forms run VFPU words on the main thread; without the VFPU
+   attribute the first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
@@ -45,6 +47,7 @@ PSP_HEAP_SIZE_KB(64);
 
 #define HLE_CASE_ISSUES_BATCH 106
 #define HLE_CASE_INTR_CELLS 107
+#define HLE_CASE_VFPU_FORMS 108
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -54,6 +57,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-intr-cells"
 #define HLE_TEST_ID "PSP-HLE-INTR-001"
 #define HLE_LOG "host0:/hle_intr_cells_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS
+#define HLE_CAMPAIGN_ID "vfpu-forms"
+#define HLE_TEST_ID "PSP-VFPU-FORMS-001"
+#define HLE_LOG "host0:/vfpu_forms_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -540,6 +547,311 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_ISSUES_BATCH */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS
+
+/* #326 VFPU forms (PSP-VFPU-FORMS-001), one launch, register-only: the raw result words of
+   vh2f.s/.p (half pairs to float), vuc2i.s (bytes to words), vsocp.s/.p, vwbn.s at eight
+   exponents, and one vrndf1.s/vrndf2.s draw from written RCX states. Each form runs under no
+   S prefix and the two TN_PFX forms, except vwbn (no prefix at every exponent, P1 at 0x7f)
+   and the draws (no prefix). Two passes for repeatability. Every word is emitted as a
+   word; the encodings were checked against psp-as (pspdev binutils). Nothing outside the
+   VFPU registers of this thread is touched. */
+
+#include "hle_vfpu_cells.h"
+
+/* Source C000 (image 0-3, S000 for a single), destination C200 (image 32-35, S200). */
+TN_CELL_SET(vf_h2f_s, "0xd0330008")   /* vh2f.s C200.p, S000 */
+TN_CELL_SET(vf_h2f_p, "0xd0330088")   /* vh2f.p C200.q, C000.p */
+TN_CELL_FN(vf_h2f_alias, TN_PFX_NONE, "0xd0330080") /* vh2f.p C000.q, C000.p (in place) */
+TN_CELL_SET(vf_uc2i, "0xd0380008")    /* vuc2i.s C200.q, S000 */
+TN_CELL_SET(vf_socp_s, "0xd0450008")  /* vsocp.s C200.p, S000 */
+TN_CELL_SET(vf_socp_p, "0xd0450088")  /* vsocp.p C200.q, C000.p */
+TN_CELL_FN(vf_wbn_00, TN_PFX_NONE, "0xd3000008") /* vwbn.s S200, S000, 0x00 */
+TN_CELL_FN(vf_wbn_01, TN_PFX_NONE, "0xd3010008")
+TN_CELL_FN(vf_wbn_7e, TN_PFX_NONE, "0xd37e0008")
+TN_CELL_FN(vf_wbn_7f, TN_PFX_NONE, "0xd37f0008")
+TN_CELL_FN(vf_wbn_80, TN_PFX_NONE, "0xd3800008")
+TN_CELL_FN(vf_wbn_96, TN_PFX_NONE, "0xd3960008")
+TN_CELL_FN(vf_wbn_fe, TN_PFX_NONE, "0xd3fe0008")
+TN_CELL_FN(vf_wbn_ff, TN_PFX_NONE, "0xd3ff0008")
+TN_CELL_FN(vf_wbn_7f_p1, TN_PFX_P1, "0xd37f0008")
+
+typedef void (*vf_cell_fn)(const uint32_t *in, uint32_t *out, uint32_t *cc);
+
+/* Half pairs, low half first: signed zeros, denormals, the normal limits, 1 and -2,
+   infinities, signalling and quiet NaNs, two ordinary values each way. */
+static const uint32_t s_vf_halves[12] = {
+    0x80000000u, 0x80010001u, 0x020003ffu, 0x3c000400u, 0xc0007bffu, 0xfc007c00u,
+    0x7e007c01u, 0xfe007fffu, 0xb7ff3555u, 0x12345640u, 0xfbff8400u, 0xfdff83ffu,
+};
+/* Byte patterns (two of them float NaN or 1.0 as words). */
+static const uint32_t s_vf_bytes[10] = {
+    0x00000000u, 0xffffffffu, 0x7f80ff01u, 0x80402010u, 0x01020304u,
+    0xfedcba98u, 0x3f800000u, 0x7fc00000u, 0x00000001u, 0x00ff00ffu,
+};
+/* vsocp operands: signed zeros, the [0, 1] edges, beyond both edges, infinities, NaNs,
+   denormals, the neighbours of 1, +-2^-24 and 0.75. */
+static const uint32_t s_vf_socp[22] = {
+    0x00000000u, 0x80000000u, 0x3e800000u, 0x3f000000u, 0x3f800000u, 0x3fc00000u,
+    0x40000000u, 0xbf000000u, 0xbf800000u, 0xc0000000u, 0x7f800000u, 0xff800000u,
+    0x7fc00000u, 0xffc00000u, 0x7f800001u, 0x00000001u, 0x80000001u, 0x3f7fffffu,
+    0x3f800001u, 0x33800000u, 0xb3800000u, 0x3f400000u,
+};
+/* vwbn operands: zeros, small and large normals each way, powers of two around 2^23,
+   the normal limits, denormals, infinities, NaNs and two arbitrary words. */
+static const uint32_t s_vf_wbn[28] = {
+    0x00000000u, 0x80000000u, 0x3f800000u, 0x3fc00000u, 0x40000000u, 0x40400000u,
+    0x40b00000u, 0x3f000000u, 0x3f400000u, 0x3e800000u, 0x2edbe6ffu, 0x501502f9u,
+    0x4b000000u, 0x4b800001u, 0x4e800000u, 0xc0500000u, 0xbe99999au, 0x7f7fffffu,
+    0x00800000u, 0x00400000u, 0x00000001u, 0x7f800000u, 0xff800000u, 0x7fc00000u,
+    0x7f800001u, 0x40490fdbu, 0x12345678u, 0x8abcdef0u,
+};
+
+static const struct {
+    const char *name;
+    vf_cell_fn fn;
+    uint32_t word;
+} s_vf_wbn_forms[9] = {
+    {"00", vf_wbn_00, 0xd3000008u}, {"01", vf_wbn_01, 0xd3010008u},
+    {"7e", vf_wbn_7e, 0xd37e0008u}, {"7f", vf_wbn_7f, 0xd37f0008u},
+    {"80", vf_wbn_80, 0xd3800008u}, {"96", vf_wbn_96, 0xd3960008u},
+    {"fe", vf_wbn_fe, 0xd3fe0008u}, {"ff", vf_wbn_ff, 0xd3ff0008u},
+    {"7f-p1", vf_wbn_7f_p1, 0xd37f0008u},
+};
+
+static const char *const s_vf_pfx_names[3] = {"none", "p1", "p2"};
+static const uint32_t s_vf_pfx_words[3] = {TN_PFXW_NONE, TN_PFXW_P1, TN_PFXW_P2};
+
+static uint32_t s_vf_in[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+static uint32_t s_vf_out[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+
+/* One cell: background image word i = 0x3f800000 | i << 16, source lanes a/b at image 0/1
+   (lanes 2/3 keep the background), then the word. Row <name>: result = the instruction
+   word; out0-3 = image dest..dest+3 after (C200 = 32, or C000 = 0 for the in-place form);
+   out4/out5 = VFPU_CC after the preset / after the word; out6-9 = image 0-3 before;
+   out10 = number of image words outside dest..dest+3 that changed; out11 = the first such
+   index (0xffffffff when none); out12 = the vpfxs word issued before it (0 = none). */
+static void vf_cell(const char *name, vf_cell_fn fn, uint32_t word, uint32_t pfx, uint32_t a,
+                    uint32_t b, unsigned dest)
+{
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        s_vf_in[i] = 0x3f800000u | (i << 16);
+    }
+    s_vf_in[0] = a;
+    s_vf_in[1] = b;
+    uint32_t cc[2] = {0u, 0u};
+    fn(s_vf_in, s_vf_out, cc);
+    uint32_t changed = 0u, first = 0xffffffffu;
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        if ((i < dest || i > dest + 3u) && s_vf_out[i] != s_vf_in[i]) {
+            if (changed++ == 0u) {
+                first = i;
+            }
+        }
+    }
+    const uint32_t w[13] = {
+        s_vf_out[dest], s_vf_out[dest + 1u], s_vf_out[dest + 2u], s_vf_out[dest + 3u],
+        cc[0], cc[1], s_vf_in[0], s_vf_in[1], s_vf_in[2], s_vf_in[3], changed, first, pfx,
+    };
+    hle_record(name, "PASS", word, w, 13);
+}
+
+/* Rows h2f-p<pass>-s-<i>-<pfx> (vh2f.s of s_vf_halves[i]), h2f-p<pass>-p-<i>-<pfx> (vh2f.p
+   of halves 2i and 2i+1) and h2f-p<pass>-alias-<i> (the same pair, in place). */
+static void vf_h2f(unsigned pass)
+{
+    static const vf_cell_fn s_fns[3] = {vf_h2f_s_none, vf_h2f_s_p1, vf_h2f_s_p2};
+    static const vf_cell_fn p_fns[3] = {vf_h2f_p_none, vf_h2f_p_p1, vf_h2f_p_p2};
+    char name[64];
+    snprintf(name, sizeof(name), "h2f-p%u", pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 12u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "h2f-p%u-s-%u-%s", pass, i, s_vf_pfx_names[f]);
+            vf_cell(name, s_fns[f], 0xd0330008u, s_vf_pfx_words[f], s_vf_halves[i],
+                    TN_SENTINEL, 32u);
+        }
+    }
+    for (unsigned i = 0; i < 6u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "h2f-p%u-p-%u-%s", pass, i, s_vf_pfx_names[f]);
+            vf_cell(name, p_fns[f], 0xd0330088u, s_vf_pfx_words[f], s_vf_halves[2u * i],
+                    s_vf_halves[2u * i + 1u], 32u);
+        }
+        snprintf(name, sizeof(name), "h2f-p%u-alias-%u", pass, i);
+        vf_cell(name, vf_h2f_alias, 0xd0330080u, TN_PFXW_NONE, s_vf_halves[2u * i],
+                s_vf_halves[2u * i + 1u], 0u);
+    }
+}
+
+/* Rows uc2i-p<pass>-<i>-<pfx>: vuc2i.s of s_vf_bytes[i]. */
+static void vf_uc2i(unsigned pass)
+{
+    static const vf_cell_fn fns[3] = {vf_uc2i_none, vf_uc2i_p1, vf_uc2i_p2};
+    char name[64];
+    snprintf(name, sizeof(name), "uc2i-p%u", pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 10u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "uc2i-p%u-%u-%s", pass, i, s_vf_pfx_names[f]);
+            vf_cell(name, fns[f], 0xd0380008u, s_vf_pfx_words[f], s_vf_bytes[i], TN_SENTINEL,
+                    32u);
+        }
+    }
+}
+
+/* Rows socp-p<pass>-s-<i>-<pfx> (vsocp.s of s_vf_socp[i]) and socp-p<pass>-p-<i>-<pfx>
+   (vsocp.p of operands 2i and 2i+1). */
+static void vf_socp(unsigned pass)
+{
+    static const vf_cell_fn s_fns[3] = {vf_socp_s_none, vf_socp_s_p1, vf_socp_s_p2};
+    static const vf_cell_fn p_fns[3] = {vf_socp_p_none, vf_socp_p_p1, vf_socp_p_p2};
+    char name[64];
+    snprintf(name, sizeof(name), "socp-p%u", pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 22u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "socp-p%u-s-%u-%s", pass, i, s_vf_pfx_names[f]);
+            vf_cell(name, s_fns[f], 0xd0450008u, s_vf_pfx_words[f], s_vf_socp[i], TN_SENTINEL,
+                    32u);
+        }
+    }
+    for (unsigned i = 0; i < 11u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "socp-p%u-p-%u-%s", pass, i, s_vf_pfx_names[f]);
+            vf_cell(name, p_fns[f], 0xd0450088u, s_vf_pfx_words[f], s_vf_socp[2u * i],
+                    s_vf_socp[2u * i + 1u], 32u);
+        }
+    }
+}
+
+/* Rows wbn-p<pass>-<form>-<i>: vwbn.s of s_vf_wbn[i] at the form's exponent. */
+static void vf_wbn(unsigned pass)
+{
+    char name[64];
+    for (unsigned f = 0; f < 9u; f++) {
+        snprintf(name, sizeof(name), "wbn-p%u-%s", pass, s_vf_wbn_forms[f].name);
+        hle_step(name);
+        for (unsigned i = 0; i < 28u; i++) {
+            snprintf(name, sizeof(name), "wbn-p%u-%s-%u", pass, s_vf_wbn_forms[f].name, i);
+            vf_cell(name, s_vf_wbn_forms[f].fn, s_vf_wbn_forms[f].word,
+                    f == 8u ? TN_PFXW_P1 : TN_PFXW_NONE, s_vf_wbn[i], TN_SENTINEL, 32u);
+        }
+    }
+}
+
+/* ---- random-unit float draws ------------------------------------------------ */
+
+/* RCX image of four 32-bit components and a 32-bit carry, as ic_rcx_image in the
+   hle-issues-batch section: Ck = (RCX(k+4) & 0xffff) << 16 | (RCXk & 0xffff), carry nibble
+   k in bits 16-19 of RCXk. */
+static void vf_rcx_image(uint32_t *rcx, const uint32_t c[4], uint32_t carry)
+{
+    for (unsigned k = 0; k < 8u; k++) {
+        const uint32_t half = (c[k & 3u] >> (k < 4u ? 0u : 16u)) & 0xffffu;
+        rcx[k] = 0x3f800000u | (((carry >> (4u * k)) & 0xfu) << 16) | half;
+    }
+}
+
+/* out: C000 lanes 0-3 after (lane 0 = the draw), RCX0-7 after the write, RCX0-7 after the
+   draw (20 words). */
+static void vf_rndf1_step(const uint32_t *rcx_in, const uint32_t *sentinel, uint32_t *out)
+{
+    __asm__ volatile(
+        "lv.q C000, 0(%[sen])\n\t"
+        TN_RCX_WRITE("%[st]")
+        "addiu $t0, %[out], 16\n\t"
+        TN_RCX_READ("$t0")
+        ".word 0xd0220000\n\t" /* vrndf1.s S000 */
+        "sv.q C000, 0(%[out])\n\t"
+        "addiu $t0, %[out], 48\n\t"
+        TN_RCX_READ("$t0")
+        :
+        : [st] "r"(rcx_in), [sen] "r"(sentinel), [out] "r"(out)
+        : "t0", "t1", "memory");
+}
+
+static void vf_rndf2_step(const uint32_t *rcx_in, const uint32_t *sentinel, uint32_t *out)
+{
+    __asm__ volatile(
+        "lv.q C000, 0(%[sen])\n\t"
+        TN_RCX_WRITE("%[st]")
+        "addiu $t0, %[out], 16\n\t"
+        TN_RCX_READ("$t0")
+        ".word 0xd0230000\n\t" /* vrndf2.s S000 */
+        "sv.q C000, 0(%[out])\n\t"
+        "addiu $t0, %[out], 48\n\t"
+        TN_RCX_READ("$t0")
+        :
+        : [st] "r"(rcx_in), [sen] "r"(sentinel), [out] "r"(out)
+        : "t0", "t1", "memory");
+}
+
+static const uint32_t s_vf_c2[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xfffffffeu, 0xffffffffu, 0x907f6e50u, 0x5a5a5a5au};
+static const uint32_t s_vf_c3[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xc0000000u, 0xffffffffu, 0xc4d5e6d8u, 0x89abcdefu};
+static const uint32_t s_vf_carry[8] = {0x0u, 0x1u, 0x2u, 0x3u, 0xfu, 0x10u, 0xffffu,
+                                       0x12345678u};
+
+/* Rows rndf<n>-p<pass>-<k>: k < 16 draws from C0 = 0x2468ace0 + k * 0x11111111,
+   C1 = 0x13579bdf ^ (k << 20), C2 = s_vf_c2[k & 7], C3 = s_vf_c3[(3k) & 7],
+   carry = s_vf_carry[k & 7]; k = 16 from the thread-entry RCX (0x3f800001, 0x3f800002,
+   0x3f800004, 0x3f800008, then 0x3f800000 four times). result = the draw (C000 lane 0);
+   out0-7 = RCX0-7 after the write; out8-15 = RCX0-7 after the draw; out16 = 1 when C000
+   lanes 1-3 all kept the sentinel. */
+static void vf_rndf(unsigned pass, unsigned which)
+{
+    static const uint32_t sentinel[4] __attribute__((aligned(16))) = {
+        TN_SENTINEL, TN_SENTINEL, TN_SENTINEL, TN_SENTINEL};
+    uint32_t rcx[8] __attribute__((aligned(16)));
+    uint32_t out[20] __attribute__((aligned(16)));
+    char name[48];
+    snprintf(name, sizeof(name), "rndf%u-p%u", which, pass);
+    hle_step(name);
+    for (unsigned k = 0; k < 17u; k++) {
+        if (k < 16u) {
+            const uint32_t c[4] = {0x2468ace0u + k * 0x11111111u, 0x13579bdfu ^ (k << 20),
+                                   s_vf_c2[k & 7u], s_vf_c3[(3u * k) & 7u]};
+            vf_rcx_image(rcx, c, s_vf_carry[k & 7u]);
+        } else {
+            for (unsigned r = 0; r < 8u; r++) {
+                rcx[r] = r < 4u ? (0x3f800000u | (1u << r)) : 0x3f800000u;
+            }
+        }
+        if (which == 1u) {
+            vf_rndf1_step(rcx, sentinel, out);
+        } else {
+            vf_rndf2_step(rcx, sentinel, out);
+        }
+        uint32_t w[17];
+        for (unsigned n = 0; n < 16u; n++) {
+            w[n] = out[4u + n];
+        }
+        w[16] = (out[1] == TN_SENTINEL && out[2] == TN_SENTINEL && out[3] == TN_SENTINEL) ? 1u : 0u;
+        snprintf(name, sizeof(name), "rndf%u-p%u-%u", which, pass, k);
+        hle_record(name, "PASS", out[0], w, 17);
+    }
+}
+
+static int hle_run(void)
+{
+    /* Traps off before the first VFPU cell, as in the vfpu-compare case. */
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        vf_h2f(pass);
+        vf_uc2i(pass);
+        vf_socp(pass);
+        vf_wbn(pass);
+        vf_rndf(pass, 1u);
+        vf_rndf(pass, 2u);
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_VFPU_FORMS */
 
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_INTR_CELLS

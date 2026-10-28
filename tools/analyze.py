@@ -191,6 +191,129 @@ def _scan_module_info(segments, data, seg_data):
     return None
 
 
+# Metrowerks CodeWarrior code overlays ("MWo3"). The game reads one whole file to a fixed
+# address itself, then announces the new code with an instruction-cache invalidate; it is
+# not a module and the kernel never sees it. Layout, read from the 13 overlays of one title
+# and consistent across all of them: a 0x40-byte header (magic, overlay id, load address,
+# text size, data size, bss size, init-array start, init-array end, then the file name),
+# the text right after the header, the data after the text (the file ends there), and the
+# bss after the file. The init array lies in the data and lists the constructors the game's
+# loader runs after it clears the bss.
+CODE_OVERLAY_MAGIC = b"MWo3"
+CODE_OVERLAY_HEADER_BYTES = 0x40
+
+
+class CodeOverlayLayout:
+    __slots__ = ("load", "text_size", "data_size", "bss_size", "init_lo", "init_hi")
+
+    def __init__(self, load, text_size, data_size, bss_size, init_lo, init_hi):
+        self.load = load
+        self.text_size = text_size
+        self.data_size = data_size
+        self.bss_size = bss_size
+        self.init_lo = init_lo
+        self.init_hi = init_hi
+
+    @property
+    def text_lo(self):
+        return self.load + CODE_OVERLAY_HEADER_BYTES
+
+    @property
+    def data_lo(self):
+        return self.text_lo + self.text_size
+
+    @property
+    def file_end(self):
+        return self.data_lo + self.data_size
+
+    @property
+    def check_bytes(self):
+        """The bytes that identify the overlay in guest memory: its header and its text.
+
+        The data is left out, because the game writes it once the overlay runs."""
+        return CODE_OVERLAY_HEADER_BYTES + self.text_size
+
+
+def data_section_words(elf):
+    """Every aligned word in an image's file-backed data sections (not .text or stubs).
+
+    These are the pointers it holds; codegen hands them to a code overlay's analysis as
+    entry hints, because the executable keeps the table of its overlays' entry points."""
+    words = set()
+    for s in elf.sections:
+        if s["typ"] != 1 or not s["size"] or s.get("nm") in (".text", ".sceStub.text"):
+            continue
+        blob = elf.data[s["off"]:s["off"] + s["size"]]
+        words.update(int.from_bytes(blob[o:o + 4], "little") for o in range(0, len(blob) - 3, 4))
+    return words
+
+
+def is_code_overlay(data):
+    return bytes(data[:4]) == CODE_OVERLAY_MAGIC
+
+
+def code_overlay_layout(data):
+    """Validate an MWo3 code overlay and return its CodeOverlayLayout; ValueError if malformed."""
+    if not is_code_overlay(data):
+        raise ValueError("not an MWo3 code overlay")
+    if len(data) < CODE_OVERLAY_HEADER_BYTES:
+        raise ValueError("MWo3 overlay is shorter than its header")
+    load, text_size, data_size, bss_size, init_lo, init_hi = struct.unpack_from("<6I", data, 8)
+    layout = CodeOverlayLayout(load, text_size, data_size, bss_size, init_lo, init_hi)
+    if load & 3 or text_size & 3 or text_size == 0:
+        raise ValueError("MWo3 load address or text size is not word aligned, or the text is empty")
+    if CODE_OVERLAY_HEADER_BYTES + text_size + data_size != len(data):
+        raise ValueError("MWo3 header sizes do not add up to the file size")
+    if layout.file_end + bss_size > 0x100000000:
+        raise ValueError("MWo3 image exceeds the 32-bit address space")
+    if init_lo & 3 or init_hi & 3 or not layout.data_lo <= init_lo <= init_hi <= layout.file_end:
+        raise ValueError("MWo3 init array lies outside the data")
+    return layout
+
+
+def code_overlay_elf(data):
+    """A fixed-address ELF32 image of an MWo3 overlay, for the analyzer and code generator.
+
+    One PT_LOAD maps the whole file at its load address (bss included), and the sections
+    name the text, data, init array and bss, so the analysis treats the overlay exactly as
+    it treats a fixed-address module: the text is the only code, and the init array and
+    data pointer tables seed functions. Nothing is relocated."""
+    layout = code_overlay_layout(data)
+    names = b"\0.text\0.data\0.init_array\0.bss\0.shstrtab\0"
+    image_off = 0x60                                    # header (52) + one phdr (32), aligned
+    names_off = image_off + len(data)
+    shoff = (names_off + len(names) + 3) & ~3
+
+    def name_at(text):
+        return names.index(text + b"\0")
+
+    sections = [(0, 0, 0, 0, 0, 0)]
+    sections.append((name_at(b".text"), 1, 0x6, layout.text_lo,
+                     image_off + CODE_OVERLAY_HEADER_BYTES, layout.text_size))
+    if layout.data_size:
+        sections.append((name_at(b".data"), 1, 0x3, layout.data_lo,
+                         image_off + layout.data_lo - layout.load, layout.data_size))
+    if layout.init_hi > layout.init_lo:
+        sections.append((name_at(b".init_array"), 14, 0x3, layout.init_lo,
+                         image_off + layout.init_lo - layout.load, layout.init_hi - layout.init_lo))
+    if layout.bss_size:
+        sections.append((name_at(b".bss"), 8, 0x3, layout.file_end, names_off, layout.bss_size))
+    sections.append((name_at(b".shstrtab"), 3, 0, 0, names_off, len(names)))
+
+    out = bytearray(shoff + 40 * len(sections))
+    out[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
+    struct.pack_into("<HHIIIIIHHHHHH", out, 16, 2, 8, 1, 0, 52, shoff, 0,
+                     52, 32, 1, 40, len(sections), len(sections) - 1)
+    struct.pack_into("<8I", out, 52, 1, image_off, layout.load, 0, len(data),
+                     len(data) + layout.bss_size, 7, 4)
+    out[image_off:image_off + len(data)] = data
+    out[names_off:names_off + len(names)] = names
+    for index, (name, typ, flags, addr, off, size) in enumerate(sections):
+        struct.pack_into("<10I", out, shoff + 40 * index, name, typ, flags, addr, off, size,
+                         0, 0, 4 if typ else 0, 0)
+    return bytes(out)
+
+
 class Elf:
     def __init__(self, path, base=None):
         memory_input = isinstance(path, (bytes, bytearray, memoryview))
@@ -202,6 +325,11 @@ class Elf:
                 self.data = source.read(MAX_ELF_FILE_BYTES + 1)
         if len(self.data) > MAX_ELF_FILE_BYTES:
             raise ValueError(f"{input_label}: ELF file exceeds the 256 MiB input bound")
+        if is_code_overlay(self.data):
+            # A code overlay is read through its fixed-address image (code_overlay_elf).
+            if base is not None:
+                raise ValueError(f"{input_label}: a code overlay loads only at its own address")
+            self.data = code_overlay_elf(self.data)
         self.base = base
         d = self.data
         self.reloc = None
@@ -2801,9 +2929,11 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
+            entry_hints=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
+    # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
@@ -2972,6 +3102,14 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
     # Linker-specific data-section names can also contain function pointers.
     # Keep their file-backed executable targets as traced entry candidates.
     hc.update(code_pointer_evidence(elf, ranges)["data"])
+
+    # Code pointers another image holds into this one: the executable's table of a code
+    # overlay's entry points. Several overlays share one address range, so a pointer seeds
+    # this image only where its own word there is entry-shaped, as for an address
+    # materialized in code.
+    for val in entry_hints or ():
+        if in_text(val) and _is_address_taken_entry(elf, val):
+            hc.add(val)
 
     # A computed `jr` whose target set the code bounds (an `andi` mask applied to a
     # materialized base) lands only on those pads; each one needs a dispatch entry.

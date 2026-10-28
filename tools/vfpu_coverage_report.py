@@ -560,6 +560,12 @@ def _differential_tests(record: dict[str, object], synthetic_words: set[int]) ->
     if (record["opcode"] == 0x34 and ((word >> 16) & 0x3FF) == 0x21
             and record["vector_size"] == 1 and record["interpreter_supported"]):
         tests.append("vfpu-interp-selftest:check_vrndi_rule_cells")
+    # PSP-VFPU-FORMS-001 forms (issue #326): vh2f, vuc2i, vrndf1/vrndf2 (VFPU7), vsocp
+    # (VFPU9) and vwbn, at the widths both lanes accept: pinned to the measured words.
+    if record["opcode"] == 0x34 and record["interpreter_supported"]:
+        jump, sel = (word >> 21) & 0x1F, (word >> 16) & 0x1F
+        if jump >= 24 or (jump, sel) in {(1, 2), (1, 3), (1, 19), (1, 24), (2, 5)}:
+            tests.append("vfpu-interp-selftest:check_vfpu_forms_measured")
     return sorted(set(tests))
 
 
