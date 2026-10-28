@@ -382,6 +382,7 @@
     "fixtures/psp_oracle/probe_exception_a1.c",
     "fixtures/psp_oracle/probe_exception_a2.c",
     "fixtures/psp_oracle/probe_exception_a3.c",
+    "fixtures/psp_oracle/probe_ge_sample.c",
     "fixtures/psp_oracle/probe_hle_issues.c",
     "fixtures/psp_oracle/probe_hle_measure.c",
     "fixtures/psp_oracle/psp_b1.c",
