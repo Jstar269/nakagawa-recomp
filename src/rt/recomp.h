@@ -115,6 +115,39 @@ static inline void sr_vfpu_thread_ctrl_init(CpuState *s) {
     }
 }
 
+/* One step of the VFPU random unit, as one vrndi.s draw takes it (issue #326). The
+ * rule is the PSP-3000 measurement in docs/HARDWARE_ORACLE.md (PSP-HLE-ISSUES-001,
+ * 2026-10-24): state Ck = (RCX(k+4) & 0xffff) << 16 | (RCXk & 0xffff) for k = 0..3
+ * and a carry c whose nibble k sits in bits 16-19 of RCXk; then C0' = 69069 C0 + 1,
+ * C1' = xorshift32(C1; 13, 17, 5), C2' = C3, C3' = 2 C3 + C2 + c (mod 2^32),
+ * c' = ((C2 >> 2) + (C3 >> 3) + (c >> 2)) >> 30, and the drawn word is
+ * C0' + C1' + C3'. It reproduces all 1792 measured rows (the drawn word and RCX0-7
+ * after the step). The new state goes back in the same layout. Bits 20-31 are not part
+ * of the state and are left as found: the probe wrote 0x3f8 there in every cell; what
+ * the unit does with other upper bits (reachable only through mtvc) is unmeasured.
+ * The generated code and sr_vfpu_interp both call this. */
+static inline uint32_t sr_vfpu_rnd_step(uint32_t rcx[8]) {
+    uint32_t c[4], carry = 0u;
+    for (int k = 0; k < 4; k++)
+        c[k] = ((rcx[k + 4] & 0xffffu) << 16) | (rcx[k] & 0xffffu);
+    for (int k = 0; k < 8; k++)
+        carry |= ((rcx[k] >> 16) & 0xfu) << (4 * k);
+    uint32_t x = c[1];
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    /* Each addend is below 2^30, so the 32-bit sum cannot wrap. */
+    const uint32_t next_carry = ((c[2] >> 2) + (c[3] >> 3) + (carry >> 2)) >> 30;
+    const uint32_t n[4] = {69069u * c[0] + 1u, x, c[3], 2u * c[3] + c[2] + carry};
+    for (int k = 0; k < 4; k++) {
+        rcx[k] = (rcx[k] & 0xfff00000u) | (((next_carry >> (4 * k)) & 0xfu) << 16) |
+                 (n[k] & 0xffffu);
+        rcx[k + 4] = (rcx[k + 4] & 0xfff00000u) |
+                     (((next_carry >> (4 * (k + 4))) & 0xfu) << 16) | (n[k] >> 16);
+    }
+    return n[0] + n[1] + n[3];
+}
+
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
@@ -1472,6 +1505,7 @@ static inline bool sr_gui_request_launcher_foreground_once(
 }
 void     gui_init(const char *title);
 int      gui_on(void);
+int      gui_interactive(void);                  /* 1 when a person is at a real window: not offscreen, headless or acceptance */
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
 /* Gamepad buttons that went down since the last call, as PSP button bits: the on-screen

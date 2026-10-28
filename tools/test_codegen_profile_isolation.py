@@ -458,8 +458,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "bypass loop 0x10950",
-            "s->r[16] = s->r[3];",
             "== 0u ? 0u : MEM_R32",
             "custom stub: __register_frame_info bypass",
         )
@@ -892,7 +890,7 @@ class GateInventoryTests(unittest.TestCase):
 
 #: Independent inventory of retired HST override addresses that must NEVER be
 #: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
-RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00046D14, 0x00048320})
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320})
 
 
 def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
@@ -1027,6 +1025,39 @@ class RetiredAddressGuardTests(unittest.TestCase):
         self.assertEqual(
             none_lines, hst_lines,
             "Enclosing function containing 0x00046d14 diverged between profile=none and profile=hst",
+        )
+
+    def test_retired_10950_branch_runs_its_guest_condition_in_both_profiles(self):
+        """The branch at 0x00010950 is decided by its own operands under both profiles.
+
+        GUEST_PATCHES used to force that branch's condition to 0 and inject
+        `s->r[16] = s->r[3];` under profile=hst. Retired (#363), the enclosing
+        function emits the same C under both profiles."""
+        words = {
+            0x00010948: LUI_T0,
+            0x0001094C: NOP,
+            0x00010950: (5 << 26) | (3 << 21) | 3,  # bne $v1, $zero, 0x10960
+            0x00010954: NOP,
+            0x00010958: LUI_T0,
+            0x0001095C: ORI_T0,
+            0x00010960: JR_RA,
+            0x00010964: NOP,
+        }
+        elf = _FakeElf(words)
+        ranges = [(0, 0x00200000)]
+        known = {0x00010948}
+
+        none_lines = codegen.emit_function(elf, 0x00010948, ranges, known, profile="none")
+        hst_lines = codegen.emit_function(elf, 0x00010948, ranges, known, profile="hst")
+        hst_text = "\n".join(hst_lines)
+
+        self.assertIn("L_00010960:", hst_text, "the branch target label is missing")
+        self.assertNotIn("bypass loop 0x10950", hst_text, "profile=hst still forces the 0x10950 branch")
+        self.assertNotIn("s->r[16] = s->r[3];", hst_text, "profile=hst still injects the 0x10950 statement")
+        self.assertNotIn("sr_compat_fired", hst_text, "profile=hst still records a 0x10950 compat firing")
+        self.assertEqual(
+            none_lines, hst_lines,
+            "the function containing the 0x00010950 branch diverged between profile=none and profile=hst",
         )
 
     def test_retired_48320_branch_runs_its_guest_condition_in_both_profiles(self):

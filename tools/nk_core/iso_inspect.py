@@ -55,9 +55,11 @@ PBP_BOUNDARY_CODES: tuple[str, ...] = (
     PBP_OFFSETS_INVALID,
     PBP_SFO_INVALID,
 )
+# The command line keeps refusing packages; the player converts a PSN release
+# of a UMD game into its disc image (#295 phase 2) and imports that instead.
 PBP_UNSUPPORTED_SENTENCE = (
     "This is a PlayStation Store package (PBP), not a disc image. "
-    "Nakagawa Recomp can't use these yet."
+    "The player converts PSN UMD games."
 )
 PBP_HEADER_TRUNCATED_SENTENCE = (
     "This file starts like a PlayStation Store package (PBP) but ends "

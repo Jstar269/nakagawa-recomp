@@ -165,7 +165,9 @@ A public source candidate should include only material that has passed all appli
 
 The repository ships source code, documentation and the notices listed in
 [`NOTICE.md`](../NOTICE.md). It does not ship game executables, game assets,
-firmware files, decryption keys or private traces. The user supplies the game
+firmware files, keys bound to a console or a user, or private traces; its only
+key material is the public game-decryption tables PPSSPP also ships
+(`src/core/nk_psp_builtin_keys.c`). The user supplies the game
 files. Nakagawa decrypts the user's own disc locally with built-in tables and never decrypts firmware. This section is not
 legal advice. Check the rules where you live.
 

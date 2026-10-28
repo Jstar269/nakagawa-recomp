@@ -119,8 +119,9 @@ make CC=gcc GAME_NAME=ci BUILD_DIR=build/slt-check \
   psmf-media-selftest atrac3p-selftest atrac3p-bridge-selftest cosim-selftest
 ```
 
-`psmf-media-selftest` passes on Linux, but it is a local gate: no hosted CI job runs it, so a
-green hosted run does not cover it. Run it locally with the command above.
+`psmf-media-selftest` builds the vendored FFmpeg H.264 subset by default on Linux
+(`H264_FFMPEG=1`). When a change routes the native jobs, hosted `native_tools` runs it with that
+backend and the Windows job runs it on Media Foundation ([CI](CI.md)).
 
 ### Python test suites
 
