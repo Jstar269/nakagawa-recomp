@@ -4748,7 +4748,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                              (app->wizard.extraction_complete ||
                               app->inspecting_game.status == NK_STATUS_VERIFIED);
             draw_text(ren, card_x + 32.0f, content_y,
-                      app->wizard.is_extracting ? "Extracting Game Assets" : "Compatibility Preflight & Asset Staging",
+                      app->psn_conversion_active ? "Converting PSN Package"
+                          : (app->wizard.is_extracting ? "Extracting Game Assets"
+                                                       : "Compatibility Preflight & Asset Staging"),
                       2.0f, COLOR_TEXT_WHITE);
 
             float panel_y = content_y + 40.0f;
@@ -4762,7 +4764,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             SDL_Color verification_color = experimental ? COLOR_AMBER
                 : (supported ? COLOR_EMERALD : COLOR_RED);
             if (app->wizard.is_extracting) {
-                verification_badge = "EXTRACTING ASSETS";
+                verification_badge = app->psn_conversion_active ? "CONVERTING PACKAGE"
+                                                                : "EXTRACTING ASSETS";
                 verification_color = COLOR_AMBER;
             } else if (app->wizard.extraction_complete) {
                 verification_badge = "ASSETS STAGED";
@@ -4779,7 +4782,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
 
             if (app->wizard.is_extracting) {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
-                          "The ISO is being copied into an isolated local staging tree.",
+                          app->psn_conversion_active
+                              ? "The PSN package is being turned back into its disc image."
+                              : "The ISO is being copied into an isolated local staging tree.",
                           1.0f, COLOR_TEXT_MUTED);
             } else if (app->wizard.extraction_failed && app->wizard.extraction_error[0]) {
                 /* Why the copy failed and what to do next (#1278). */
@@ -4824,9 +4829,14 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
 
             if (app->wizard.is_extracting) {
                 char progress_text[96];
-                snprintf(progress_text, sizeof(progress_text), "Extracted %d of %d files · %d%%",
-                         app->wizard.files_extracted, app->wizard.total_files,
-                         app->wizard.extraction_percent);
+                if (app->psn_conversion_active) {
+                    snprintf(progress_text, sizeof(progress_text), "Converted %d%%",
+                             app->wizard.extraction_percent);
+                } else {
+                    snprintf(progress_text, sizeof(progress_text), "Extracted %d of %d files · %d%%",
+                             app->wizard.files_extracted, app->wizard.total_files,
+                             app->wizard.extraction_percent);
+                }
                 draw_text(ren, card_x + 48.0f, panel_y + 100.0f, progress_text,
                           1.0f, COLOR_TEXT_WHITE);
                 draw_progress_bar(ren, card_x + 48.0f, panel_y + 124.0f,
@@ -4840,7 +4850,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
 
                 bool cancel_foc = (app->focus_index == focus++);
                 if (draw_button_focused(ren, card_x + 32.0f, btn_y, 140.0f, 44.0f,
-                                        "CANCEL EXTRACTION", false, in, cancel_foc)) {
+                                        app->psn_conversion_active ? "CANCEL CONVERSION"
+                                                                   : "CANCEL EXTRACTION",
+                                        false, in, cancel_foc)) {
                     player_app_wizard_cancel(app);
                 }
             } else if (experimental &&
@@ -4988,7 +5000,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             }
             bool import_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 244.0f, fonts_btn_y, 200.0f, 40.0f,
-                                    "CHOOSE FONTS FOLDER", false, in, import_foc)) {
+                                    "IMPORT FONTS FOLDER", false, in, import_foc)) {
                 app->request_font_folder_picker = true;
             }
             bool remove_foc = (app->focus_index == focus++);
@@ -5202,6 +5214,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_DEVELOPER_LOG:
             render_developer_log(renderer, app, input);
+            break;
+        case VIEW_PSP_FONTS:
+            /* Drawn only by the nk_ui launcher. */
             break;
         default:
             render_empty_library(renderer, app, input);

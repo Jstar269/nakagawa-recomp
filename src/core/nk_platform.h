@@ -32,8 +32,9 @@ int64_t nk_ftell64(FILE *f);
  * file opens, removals and renames the player and the shared core make on
  * user-data and install paths go through these, or through an equivalent
  * wide-character open local to a translation unit that is built without this
- * platform layer (the decrypt tool, and the file-local copies in nk_iso.c,
- * nk_xb.c, nk_title_manifest.c, nk_library.c and nk_input_profile.c). Code that
+ * platform layer (the decrypt tool and the NPUMDIMG reader nk_psp_npumdimg.c it
+ * links, and the file-local copies in nk_iso.c, nk_xb.c, nk_title_manifest.c,
+ * nk_library.c and nk_input_profile.c). Code that
  * opens such a path must not use the narrow fopen/remove/rename on Win32.
  * Win32 converts strictly (invalid UTF-8 fails rather than opening a path
  * where the bad bytes became U+FFFD); POSIX file names are already UTF-8 bytes,
@@ -63,7 +64,7 @@ bool nk_platform_path_missing(const char *path);
 typedef bool (*NkDirFileFn)(const char *name, void *ctx);
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
 /* Call fn(root, ctx) for the root of each drive the computer has mounted that a user could
- * plug in or carry: on Win32 every fixed or removable drive letter ("E:\"); on macOS each
+ * plug in or carry: on Win32 the root of every fixed or removable drive letter; on macOS each
  * folder in /Volumes; elsewhere each folder in /media, /media/<name>, /run/media/<name> and
  * /mnt. Network and optical drives are left out. Stops early when fn returns false. Nothing is
  * opened or read here; on Win32, a drive with no medium does not raise a system dialog while fn

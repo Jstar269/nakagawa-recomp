@@ -3,7 +3,8 @@
 Status: CURRENT. This page documents the public, source-owned route that qualifies
 a title candidate: validate its manifest and input profile, then launch it through
 the native player and record the result. It covers public synthetic and homebrew
-titles only. Retail titles are local-only and are not qualified here.
+titles only. Retail titles, including the checked-in HST manifest, are not qualified
+here: `validate` names a checked-in retail manifest as `SKIP`.
 
 Tracking: [#699](https://github.com/Jstar269/nakagawa-recomp/issues/699). Umbrella
 for title intake: [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).

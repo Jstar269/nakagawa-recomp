@@ -142,6 +142,14 @@ const char *nk_font_latin_index_filename(int index) {
     return (unsigned)index < NK_FONT_LATIN_INDEX_COUNT ? kLatinIndexFile[index] : NULL;
 }
 
+const char *nk_font_slot_psp_filename(NkFontSlot slot) {
+    switch (slot) {
+    case NK_FONT_SLOT_JAPANESE: return "jpn0.pgf";
+    case NK_FONT_SLOT_KOREAN:   return "kr0.pgf";
+    default:                    return NULL;
+    }
+}
+
 int nk_font_latin_index_from_filename(const char *name) {
     if (!name) return -1;
     for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
@@ -712,7 +720,7 @@ void nk_font_slot_states(const char *user_data_root, const char *project_root,
         if (manifest_status == NK_FONT_STATUS_OK && manifest.present[slot]) {
             if (font_check_slot_file(cache_dir, slot, &manifest, reason, sizeof(reason))) {
                 state->source = NK_FONT_SOURCE_USER;
-                snprintf(state->detail, sizeof(state->detail), "%s: imported from your PSP.", kSlotRole[slot]);
+                snprintf(state->detail, sizeof(state->detail), "%s: your imported font.", kSlotRole[slot]);
                 continue;
             }
         } else if (manifest_status == NK_FONT_STATUS_INVALID) {
@@ -830,6 +838,7 @@ void nk_font_latin_index_states(const char *user_data_root, const char *project_
         const char *requested = nk_font_latin_index_filename(index);
         bool resolved = nk_font_resolve_latin_index(user_data_root, project_font_dir, index, &resolution);
         states[index].source = resolved ? resolution.source : NK_FONT_SOURCE_NONE;
+        states[index].served_index = resolved ? resolution.served_index : -3;
         if (!resolved) {
             snprintf(states[index].detail, sizeof(states[index].detail),
                      "L%d missing %s", index + 1, requested);
@@ -975,27 +984,49 @@ static bool font_any_pgf(const char *name, void *context) {
     return false;
 }
 
-static bool font_psp_root(const char *root, void *context) {
-    FontPspSearch *search = (FontPspSearch *)context;
-    char folder[NK_MAX_PATH];
+/* <root>/<first>[/<second>] in out; false when it does not fit. */
+static bool font_drive_path(char *out, size_t out_len, const char *root, const char *first,
+                            const char *second) {
     const char separator = nk_platform_path_separator();
     const size_t length = strlen(root);
     const bool ends_with_separator = length > 0u &&
                                      (root[length - 1u] == '/' || root[length - 1u] == '\\');
-    int written;
+    int written = snprintf(out, out_len, "%s%s%s%s%s", root,
+                           ends_with_separator ? "" : (separator == '\\' ? "\\" : "/"),
+                           first, second ? (separator == '\\' ? "\\" : "/") : "",
+                           second ? second : "");
+    return written > 0 && (size_t)written < out_len;
+}
+
+static bool font_folder_has_pgf(const char *folder) {
     bool any = false;
-    if (length == 0u) return true;
-    written = snprintf(folder, sizeof(folder), "%s%s%s%c%s", root,
-                       ends_with_separator ? "" : (separator == '\\' ? "\\" : "/"),
-                       NK_FONT_PSP_COPY_PARENT, separator, NK_FONT_PSP_COPY_FOLDER);
-    if (written < 0 || (size_t)written >= sizeof(folder)) return true;
-    if (!nk_platform_dir_exists(folder) || !nk_platform_list_files(folder, font_any_pgf, &any) ||
-        !any) {
+    return nk_platform_dir_exists(folder) && nk_platform_list_files(folder, font_any_pgf, &any) &&
+           any;
+}
+
+static bool font_psp_root(const char *root, void *context) {
+    FontPspSearch *search = (FontPspSearch *)context;
+    char folder[NK_MAX_PATH];
+    char mark_a[NK_MAX_PATH];
+    char mark_b[NK_MAX_PATH];
+    size_t length;
+    if (root[0] == '\0') return true;
+    /* The system storage's font folder counts only beside its kd and vsh folders, so another
+       drive that happens to have a "font" folder is not taken for a PSP. */
+    if (!(font_drive_path(folder, sizeof(folder), root, NK_FONT_PSP_SYSTEM_FOLDER, NULL) &&
+          font_drive_path(mark_a, sizeof(mark_a), root, NK_FONT_PSP_SYSTEM_MARK_A, NULL) &&
+          font_drive_path(mark_b, sizeof(mark_b), root, NK_FONT_PSP_SYSTEM_MARK_B, NULL) &&
+          nk_platform_dir_exists(mark_a) && nk_platform_dir_exists(mark_b) &&
+          font_folder_has_pgf(folder)) &&
+        !(font_drive_path(folder, sizeof(folder), root, NK_FONT_PSP_COPY_PARENT,
+                          NK_FONT_PSP_COPY_FOLDER) &&
+          font_folder_has_pgf(folder))) {
         return true;
     }
     if (search->found == 0) {
-        if ((size_t)written >= search->out_len) return true;
-        memcpy(search->out, folder, (size_t)written + 1u);
+        length = strlen(folder);
+        if (length >= search->out_len) return true;
+        memcpy(search->out, folder, length + 1u);
     }
     search->found++;
     return true;

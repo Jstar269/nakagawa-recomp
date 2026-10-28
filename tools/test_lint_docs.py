@@ -207,6 +207,40 @@ class TestDocTruthInvariants(unittest.TestCase):
             errors = lint_doc_truth(doc, root, hst_manifest_tracked=True)
         self.assertEqual(errors, [])
 
+    def test_private_hst_manifest_claim_is_rejected_while_tracked(self) -> None:
+        stale = (
+            "`hst-ucus98701.json` is intentionally not checked in.\n",
+            "The HST title manifest is publication-excluded.\n",
+            "assets/titles/hst-ucus98701.json is the local HST title manifest.\n",
+            "hst-ucus98701.json is the local, Git-ignored HST title manifest.\n",
+        )
+        for line in stale:
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as temp_dir:
+                root = pathlib.Path(temp_dir)
+                doc = self._write_doc(root, "docs/SETUP.md", line)
+                errors = lint_doc_truth(doc, root, hst_manifest_tracked=True)
+                self.assertTrue(any("tracked and public" in error for error in errors), errors)
+
+    def test_public_hst_manifest_wording_passes_while_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = self._write_doc(
+                root, "docs/SETUP.md",
+                "`assets/titles/hst-ucus98701.json` is the HST title manifest, part of the repository.\n"
+                "Private title manifests for other games stay outside the repository.\n",
+            )
+            self.assertEqual(lint_doc_truth(doc, root, hst_manifest_tracked=True), [])
+
+    def test_manifest_checks_skip_without_git_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = self._write_doc(
+                root, "docs/SETUP.md",
+                "`hst-ucus98701.json` is intentionally not checked in.\n"
+                "The manager accepts only the checked-in HST manifest.\n",
+            )
+            self.assertEqual(lint_doc_truth(doc, root, hst_manifest_tracked=None), [])
+
     def test_frozen_hle_census_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

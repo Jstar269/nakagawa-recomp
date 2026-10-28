@@ -52,6 +52,7 @@ typedef struct {
 
 typedef struct {
     NkFontSource source;
+    int served_index; /* as in NkFontLatinResolution */
     char detail[160];
 } NkFontLatinIndexState;
 
@@ -116,6 +117,10 @@ NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFont
  * those sixteen files. */
 const char *nk_font_latin_index_filename(int index);
 int nk_font_latin_index_from_filename(const char *name);
+/* The file name a PSP keeps the Japanese or Korean system font under in flash0:/font
+ * (jpn0.pgf, kr0.pgf), which the slot's served name stands for. NULL for the Latin slot, whose
+ * sixteen files nk_font_latin_index_filename names, and for any other value. */
+const char *nk_font_slot_psp_filename(NkFontSlot slot);
 NkFontSlotCheck nk_font_check_cache_latin_index_file(const char *user_data_root, int index,
                                                       FILE *cache_file, char *reason,
                                                       size_t reason_len);
@@ -138,15 +143,21 @@ void nk_font_slot_states(const char *user_data_root, const char *project_root,
  * slot, or -1 with the reason in reason. */
 int nk_font_classify_verdict(const PgfVerdict *verdict, char *reason, size_t reason_len);
 
-/* The folder Nakagawa Font Copy (src/psp_companion) fills on a PSP's storage, relative to the
- * storage's root: NAKAGAWA/fonts. With the PSP in USB mode, the storage is a drive on the PC. */
+/* Two ways a PSP connected by USB shows its fonts as a drive on the PC:
+ *  - custom firmware shows the PSP's system storage itself, read-only: the fonts are in
+ *    <root>/font, next to the system folders <root>/kd and <root>/vsh (docs/SETUP.md, "Copying
+ *    the fonts from your PSP");
+ *  - Nakagawa Font Copy (src/psp_companion) copies them to the Memory Stick: <root>/NAKAGAWA/fonts. */
+#define NK_FONT_PSP_SYSTEM_FOLDER "font"
+#define NK_FONT_PSP_SYSTEM_MARK_A "kd"
+#define NK_FONT_PSP_SYSTEM_MARK_B "vsh"
 #define NK_FONT_PSP_COPY_PARENT "NAKAGAWA"
 #define NK_FONT_PSP_COPY_FOLDER "fonts"
 
-/* Look under each of roots, in order, for <root>/NAKAGAWA/fonts holding at least one .pgf file
- * directly inside it. The first such folder is written to out (empty when none); returns how
- * many roots have one. A folder whose path does not fit out is skipped. Nothing is read but
- * folder listings. */
+/* Look under each of roots, in order, for a PSP's font folder (the system storage's font folder
+ * first, then the Font Copy folder) holding at least one .pgf file directly inside it. The first
+ * such folder is written to out (empty when none); returns how many roots have one. A folder
+ * whose path does not fit out is skipped. Nothing is read but folder listings. */
 int nk_font_find_psp_folder_in(const char *const *roots, int root_count, char *out,
                                size_t out_len);
 

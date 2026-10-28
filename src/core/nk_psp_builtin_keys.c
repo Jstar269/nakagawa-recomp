@@ -11,7 +11,10 @@
  *     the g_tagInfo/g_tagInfo2 recipes, values and array names unchanged;
  *   - ext/libkirk/kirk_engine.c (KIRK-ENGINE by Draan, GPL-3.0-or-later):
  *     kirk1_key, the curve-1 ECDSA parameters and public point, and the
- *     keyvault rows the recipes below use.
+ *     keyvault rows the recipes below and the amctrl subset use;
+ *   - ext/libkirk/amctrl.c (amctrl.prx reverse engineering by tpu, shipped
+ *     in PPSSPP without its own notice): the loc_1CD4, loc_1CE4 and loc_1CF4
+ *     constants the DRM BB MAC and cipher use for PSN UMD images (NPUMDIMG).
  * Modified for this project: written as C data in one table, recipes that
  * share a tag merged into one entry, and these entries left out (each named
  * in src/core/PROVENANCE.md):
@@ -20,8 +23,10 @@
  *     boundary refuses them by name before any key lookup;
  *   - the type-3 DRM BB patch tag, the SPRX decrypt-mode pad and the KIRK
  *     command-2 results, which need the installing console's context;
- *   - every KIRK value no game recipe uses (curve 2, the signing key, the
- *     remaining keyvault rows).
+ *   - every KIRK value no game recipe or the amctrl subset uses (curve 2,
+ *     the signing key, the remaining keyvault rows), and amctrl's fixed-key
+ *     tables (key_357C, key_363C, dnas_key1A90, dnas_key1AA0), which only
+ *     PGD data needs (a later phase).
  */
 
 #include "nk_psp_builtin_keys.h"
@@ -309,6 +314,12 @@ static const u8 Py1[] = {
     0x04, 0x9D, 0xF1, 0xA0, 0x75, 0xC0, 0xE0, 0x4F, 0xB3, 0x44, 0x85, 0x8B, 0x61, 0xB7, 0x9B, 0x69,
     0xA6, 0x3D, 0x2C, 0x39,
 };
+static const u8 keyvault_38[] = {
+    0x12, 0x46, 0x8D, 0x7E, 0x1C, 0x42, 0x20, 0x9B, 0xBA, 0x54, 0x26, 0x83, 0x5E, 0xB0, 0x33, 0x03,
+};
+static const u8 keyvault_39[] = {
+    0xC4, 0x3B, 0xB6, 0xD6, 0x53, 0xEE, 0x67, 0x49, 0x3E, 0xA9, 0x5F, 0xBC, 0x0C, 0xED, 0x6F, 0x8A,
+};
 static const u8 keyvault_40[] = {
     0x28, 0x24, 0xF9, 0x10, 0x1B, 0x8D, 0x0F, 0x7B, 0x6E, 0xB2, 0x63, 0xB5, 0xB5, 0x5B, 0x2E, 0xBB,
 };
@@ -366,11 +377,25 @@ static const u8 keyvault_61[] = {
 static const u8 keyvault_62[] = {
     0x02, 0x32, 0x6A, 0xE7, 0xD3, 0x96, 0xCE, 0x7F, 0x1C, 0x41, 0x9D, 0xD6, 0x52, 0x07, 0xED, 0x09,
 };
+static const u8 keyvault_63[] = {
+    0x9C, 0x9B, 0x13, 0x72, 0xF8, 0xC6, 0x40, 0xCF, 0x1C, 0x62, 0xF5, 0xD5, 0x92, 0xDD, 0xB5, 0x82,
+};
 static const u8 keyvault_67[] = {
     0xEE, 0x29, 0x70, 0x93, 0xF9, 0x4E, 0x44, 0x59, 0x44, 0x17, 0x1F, 0x8E, 0x86, 0xE1, 0x70, 0xFC,
 };
 static const u8 keyvault_6A[] = {
     0x56, 0x0F, 0xFF, 0x8F, 0x3C, 0x96, 0x49, 0x14, 0x45, 0x16, 0xF1, 0xBC, 0xBF, 0xCE, 0xA3, 0x0C,
+};
+
+/* DRM BB MAC and cipher constants (amctrl.c). */
+static const u8 loc_1CD4[] = {
+    0xE3, 0x50, 0xED, 0x1D, 0x91, 0x0A, 0x1F, 0xD0, 0x29, 0xBB, 0x1C, 0x3E, 0xF3, 0x40, 0x77, 0xFB,
+};
+static const u8 loc_1CE4[] = {
+    0x13, 0x5F, 0xA4, 0x7C, 0xAB, 0x39, 0x5B, 0xA4, 0x76, 0xB8, 0xCC, 0xA9, 0x8F, 0x3A, 0x04, 0x45,
+};
+static const u8 loc_1CF4[] = {
+    0x67, 0x8D, 0x7F, 0xA3, 0x2A, 0x9C, 0xA0, 0xD1, 0x50, 0x8A, 0xD8, 0x38, 0x5E, 0x4B, 0x01, 0x7E,
 };
 
 const NkPspBuiltinTag nk_psp_builtin_tags[] = {
@@ -533,6 +558,8 @@ const NkPspBuiltinValue nk_psp_builtin_values[] = {
     {"kirk.ecdsa.gy1", Gy1, sizeof(Gy1)},
     {"kirk.ecdsa.px1", Px1, sizeof(Px1)},
     {"kirk.ecdsa.py1", Py1, sizeof(Py1)},
+    {"kirk.keyvault.56", keyvault_38, sizeof(keyvault_38)},
+    {"kirk.keyvault.57", keyvault_39, sizeof(keyvault_39)},
     {"kirk.keyvault.64", keyvault_40, sizeof(keyvault_40)},
     {"kirk.keyvault.66", keyvault_42, sizeof(keyvault_42)},
     {"kirk.keyvault.67", keyvault_43, sizeof(keyvault_43)},
@@ -552,8 +579,12 @@ const NkPspBuiltinValue nk_psp_builtin_values[] = {
     {"kirk.keyvault.96", keyvault_60, sizeof(keyvault_60)},
     {"kirk.keyvault.97", keyvault_61, sizeof(keyvault_61)},
     {"kirk.keyvault.98", keyvault_62, sizeof(keyvault_62)},
+    {"kirk.keyvault.99", keyvault_63, sizeof(keyvault_63)},
     {"kirk.keyvault.103", keyvault_67, sizeof(keyvault_67)},
     {"kirk.keyvault.106", keyvault_6A, sizeof(keyvault_6A)},
+    {"amctrl.loc_1CD4", loc_1CD4, sizeof(loc_1CD4)},
+    {"amctrl.loc_1CE4", loc_1CE4, sizeof(loc_1CE4)},
+    {"amctrl.loc_1CF4", loc_1CF4, sizeof(loc_1CF4)},
 };
 const size_t nk_psp_builtin_value_count =
     sizeof(nk_psp_builtin_values) / sizeof(nk_psp_builtin_values[0]);

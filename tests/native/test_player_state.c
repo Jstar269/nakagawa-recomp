@@ -31,6 +31,7 @@
 #include "nk_platform.h"
 #include "native_test_isolation.h"
 #include "nk_psp_builtin_keys.h"
+#include "nk_psp_keystore.h"
 #include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
@@ -114,6 +115,11 @@ static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name
     snprintf(entry->title_name, sizeof(entry->title_name), "%s", name);
     snprintf(entry->disc_version, sizeof(entry->disc_version), "1.00");
     entry->status = NK_STATUS_IDENTIFIED;
+}
+
+static bool test_cancel_always(void *user) {
+    (void)user;
+    return true;
 }
 
 static void write_file(const char *path) {
@@ -2914,6 +2920,82 @@ static void test_tree_helpers_walk_a_deep_tree(void) {
     printf("PASS: tree size and removal walk a 48-level tree and keep the named child\n");
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+/* Walkthrough blocker #4: Remove from library on a package cache deeper than
+   MAX_PATH. The player has no long-path manifest and a default Windows install
+   has long paths off, so the plain path API could neither list nor delete the
+   tree: removal failed after deleting the cache's ownership marker, leaving a
+   game that could neither rebuild nor be removed. The tree is made here with
+   extended-length paths, as the package build makes it. */
+static bool long_tree_mkdir(const WCHAR *path) {
+    return CreateDirectoryW(path, NULL) != 0 || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static void long_tree_file(const WCHAR *dir, const WCHAR *name) {
+    WCHAR file[2048];
+    HANDLE handle;
+    DWORD written = 0;
+    _snwprintf(file, sizeof(file) / sizeof(file[0]), L"%ls\\%ls", dir, name);
+    file[sizeof(file) / sizeof(file[0]) - 1u] = L'\0';
+    handle = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(handle != INVALID_HANDLE_VALUE);
+    assert(WriteFile(handle, "x", 1, &written, NULL) && written == 1);
+    assert(CloseHandle(handle));
+}
+
+static void test_remove_tree_deeper_than_max_path(void) {
+    char root[NK_MAX_PATH];
+    char marker[NK_MAX_PATH * 2];
+    WCHAR wroot[1024];
+    WCHAR deep[2048];
+    WCHAR held[2048];
+    HANDLE open_file;
+    removal_test_path(root, sizeof(root), native_test_get_root(), "cache-long-paths", NULL, NULL);
+    assert(MultiByteToWideChar(CP_UTF8, 0, root, -1, wroot, 1024) > 0);
+    for (WCHAR *c = wroot; *c; ++c) if (*c == L'/') *c = L'\\';
+    _snwprintf(deep, sizeof(deep) / sizeof(deep[0]), L"\\\\?\\%ls", wroot);
+    deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+    assert(long_tree_mkdir(deep));
+    long_tree_file(deep, L".nk-aot-package-cache-v1");
+    removal_test_path(marker, sizeof(marker), root, ".nk-aot-package-cache-v1", NULL, NULL);
+    /* entries\<64 hex>\<64 hex>\package\.build-package-xxxxxxxx: the old
+       layout, well past 260 characters. */
+    {
+        static const WCHAR *const parts[] = {
+            L"entries",
+            L"859fc2090e790b33178fbc2fac7cad1f4373b8329d93853391bbaec122ff47c4",
+            L"b1d2d67321a0b2f2256602e755b7ba5ab15922486ecfb74cced10098475e51ac",
+            L"package", L".build-package-9vu6x8d0"
+        };
+        for (size_t i = 0u; i < sizeof(parts) / sizeof(parts[0]); ++i) {
+            size_t length = wcslen(deep);
+            _snwprintf(deep + length, sizeof(deep) / sizeof(deep[0]) - length, L"\\%ls", parts[i]);
+            deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+            assert(long_tree_mkdir(deep));
+        }
+    }
+    long_tree_file(deep, L".title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081");
+
+    /* A file still open stops the removal; the folder's own files, the
+       ownership marker among them, are left for the next try. */
+    _snwprintf(held, sizeof(held) / sizeof(held[0]),
+               L"%ls\\.title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081",
+               deep);
+    held[sizeof(held) / sizeof(held[0]) - 1u] = L'\0';
+    assert(wcslen(held) - 4u > 280u); /* well past MAX_PATH without the prefix */
+    open_file = CreateFileW(held, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(open_file != INVALID_HANDLE_VALUE);
+    assert(!nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_file_exists(marker));
+    assert(CloseHandle(open_file));
+
+    assert(nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_path_missing(root));
+    printf("PASS: removal deletes a cache tree deeper than MAX_PATH, marker last\n");
+}
+#endif
+
 /* #1304: Remove from library deletes the package, the build cache and the disc
    files Nakagawa copied, keeps the saves unless asked, and never touches the
    disc image, the user's decrypted files or another title's data. */
@@ -3172,6 +3254,212 @@ static void test_bundled_prerequisite_build(const char *self_executable) {
     printf("[PLAYER_STATE_TEST] bundled prerequisites PASS\n");
 }
 
+/* ---- PSN releases of UMD games (#295 phase 2) ---------------------------- */
+
+typedef struct {
+    int calls;
+    uint64_t done;
+    uint64_t total;
+} PsnTestProgress;
+
+static void psn_test_progress(uint64_t done, uint64_t total, void *userdata) {
+    PsnTestProgress *progress = (PsnTestProgress *)userdata;
+    progress->calls++;
+    progress->done = done;
+    progress->total = total;
+}
+
+static bool psn_test_never(void *userdata) {
+    (void)userdata;
+    return false;
+}
+
+static bool psn_test_cancel_now(void *userdata) {
+    (void)userdata;
+    return true;
+}
+
+static uint8_t *psn_test_read_file(const char *path, size_t *size) {
+    FILE *file = fopen(path, "rb");
+    long length;
+    uint8_t *bytes;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length > 0);
+    assert(fseek(file, 0, SEEK_SET) == 0);
+    bytes = (uint8_t *)malloc((size_t)length);
+    assert(bytes != NULL);
+    assert(fread(bytes, 1, (size_t)length, file) == (size_t)length);
+    fclose(file);
+    *size = (size_t)length;
+    return bytes;
+}
+
+/* A refused package: the named code, a plain sentence, nothing written. */
+static void psn_test_refused(const char *path, const char *want_code, const char *want_text) {
+    PlayerPsnPackage package;
+    char code[64];
+    char message[512];
+    assert(!player_psn_package_inspect(path, &package, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, want_code) == 0);
+    assert(strstr(message, want_text) != NULL);
+    assert(package.iso_path[0] == '\0');
+}
+
+/* A synthetic PSN package imports as its ISO: converted once into
+   <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
+   nothing, reuse of a checked conversion, and the wizard panel returning to
+   the view the package was picked from. PSOne Classics, updaters and other
+   packages are refused by name before any key lookup. */
+static void test_psn_package_imports_as_its_iso(void) {
+    const char sep = nk_platform_path_separator();
+    char cache_root[NK_MAX_PATH];
+    char base[NATIVE_TEST_PATH_MAX + 64];
+    char data_root[NATIVE_TEST_PATH_MAX + 96];
+    char source_iso[NATIVE_TEST_PATH_MAX + 96];
+    char pbp_path[NATIVE_TEST_PATH_MAX + 96];
+    char other_path[NATIVE_TEST_PATH_MAX + 96];
+    char expected_iso[NATIVE_TEST_PATH_MAX + 160];
+    char partial[NATIVE_TEST_PATH_MAX + 192];
+    char key_error[160];
+    char code[64];
+    char message[512];
+    uint8_t *iso;
+    uint8_t *pbp;
+    uint8_t *converted;
+    size_t iso_len = 0, pbp_len = 0, converted_len = 0;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    PlayerPsnPackage package;
+    PlayerPsnPackage again;
+    PsnTestProgress progress;
+    PlayerPsnConvertCallbacks cancel_hooks = { NULL, psn_test_cancel_now, NULL };
+    PlayerPsnConvertCallbacks hooks = { psn_test_progress, psn_test_never, NULL };
+    IsoInspectResult inspected;
+    PlayerApp *app;
+
+    printf("[PLAYER_STATE_TEST] Subtest: a PSN package (NPUMDIMG) imports as its ISO\n");
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(base, sizeof(base), "%s%cpsn-package-state", cache_root, sep);
+    assert(test_remove_tree(base));
+    snprintf(data_root, sizeof(data_root), "%s%cdata", base, sep);
+    assert(nk_platform_mkdir_p(data_root));
+    snprintf(source_iso, sizeof(source_iso), "%s%csource.iso", base, sep);
+    snprintf(pbp_path, sizeof(pbp_path), "%s%cEBOOT.PBP", base, sep);
+    snprintf(expected_iso, sizeof(expected_iso), "%s%cdiscs%cTEST80901%cTEST80901.iso",
+             data_root, sep, sep, sep);
+    snprintf(partial, sizeof(partial), "%s.converting", expected_iso);
+
+    write_player_package_preflight_iso(source_iso, "TEST80901", "Synthetic PSN Game", false);
+    iso = psn_test_read_file(source_iso, &iso_len);
+    keys = nk_keystore_create();
+    assert(keys != NULL);
+    assert(nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) == NK_PSP_OK);
+    nk_psp_ctx_init(&ctx, keys);
+    pbp = psp_seal_npumdimg_pbp(&ctx, "TEST80901", iso, iso_len, 4u, &pbp_len);
+    nk_keystore_free(keys);
+    write_binary_file(pbp_path, pbp, pbp_len);
+    free(pbp);
+    assert(nk_platform_set_app_data_dir_override(data_root));
+
+    assert(player_path_is_pbp_package(pbp_path));
+    assert(!player_path_is_pbp_package(source_iso));
+    assert(player_psn_package_inspect(pbp_path, &package, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(strcmp(package.iso_path, expected_iso) == 0);
+    assert(strcmp(package.disc_id, "TEST80901") == 0);
+    assert(strcmp(package.title, "Synthetic PSN package") == 0);
+    assert(!package.iso_ready);
+
+    /* A cancel removes the partial image and keeps nothing. */
+    assert(!player_psn_package_convert(&package, &cancel_hooks, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, "CANCELLED") == 0);
+    assert(strstr(message, "partial disc image was removed") != NULL);
+    assert(nk_platform_path_missing(expected_iso));
+    assert(nk_platform_path_missing(partial));
+
+    /* The conversion restores the ISO byte for byte, reporting progress. */
+    memset(&progress, 0, sizeof(progress));
+    hooks.userdata = &progress;
+    assert(player_psn_package_convert(&package, &hooks, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(progress.calls == (int)((iso_len / 2048u + 3u) / 4u));
+    assert(progress.done == progress.total && progress.total == iso_len);
+    assert(nk_platform_path_missing(partial));
+    converted = psn_test_read_file(expected_iso, &converted_len);
+    assert(converted_len == iso_len && memcmp(converted, iso, iso_len) == 0);
+    free(converted);
+
+    /* The ISO is then imported exactly as a picked disc image. */
+    assert(iso_inspect_file(package.iso_path, &inspected));
+    assert(strcmp(inspected.disc_id, "TEST80901") == 0);
+    assert(strcmp(inspected.title_name, "Synthetic PSN Game") == 0);
+
+    /* Picking the package again reuses the checked conversion. */
+    assert(player_psn_package_inspect(pbp_path, &again, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(again.iso_ready);
+
+    /* The wizard's panel shows the conversion and hands back the view the
+       package was picked from. */
+    app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_LIBRARY;
+    player_app_psn_conversion_begin(app, &package);
+    assert(app->active_view == VIEW_SETUP_WIZARD);
+    assert(app->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+    assert(app->wizard.is_extracting && app->psn_conversion_active);
+    assert(strcmp(app->inspecting_game.disc_id, "TEST80901") == 0);
+    assert(strstr(app->wizard.status_message, "PSN package") != NULL);
+    assert(player_app_psn_conversion_take_request(app));
+    assert(!player_app_psn_conversion_take_request(app));
+    player_app_psn_conversion_progress(app, iso_len / 2u, iso_len);
+    assert(app->wizard.extraction_percent == 50);
+    player_app_wizard_cancel(app);
+    assert(player_app_wizard_cancel_requested(app));
+    assert(strcmp(app->wizard.status_message, "Cancelling the conversion...") == 0);
+    player_app_psn_conversion_finish(app);
+    assert(app->active_view == VIEW_LIBRARY);
+    assert(!app->wizard.is_extracting && !app->psn_conversion_active);
+    assert(!player_app_wizard_cancel_requested(app));
+    free(app);
+
+    /* PSOne Classics, updaters and other packages keep a named refusal. */
+    snprintf(other_path, sizeof(other_path), "%s%cOTHER.PBP", base, sep);
+    {
+        static const char *const magics[3] = { "PSISOIMG0000", "PSTITLEIMG000000", "NOTANIMAGE" };
+        static const char *const categories[3] = { "ME", "ME", "EG" };
+        static const char *const codes[3] = { "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PBP_PACKAGE_UNSUPPORTED" };
+        static const char *const texts[3] = { "is a PSOne Classic", "is a PSOne Classic",
+                                              "Only PSN releases of UMD games" };
+        uint8_t psar[0x400];
+        for (unsigned i = 0; i < 3u; i++) {
+            memset(psar, 0, sizeof(psar));
+            memcpy(psar, magics[i], strlen(magics[i]));
+            pbp = psp_seal_pbp(categories[i], "SLUS99999", psar, sizeof(psar), &pbp_len);
+            write_binary_file(other_path, pbp, pbp_len);
+            free(pbp);
+            psn_test_refused(other_path, codes[i], texts[i]);
+        }
+        memset(psar, 0, sizeof(psar));
+        memcpy(psar, "PSAR", 4);
+        pbp = psp_seal_pbp("MG", "MSTKUPDAT", psar, sizeof(psar), &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "FIRMWARE_OUT_OF_SCOPE", "never decrypts firmware");
+    }
+    psn_test_refused(source_iso, "PBP_PACKAGE_UNSUPPORTED", "not a PSP package");
+
+    assert(nk_platform_set_app_data_dir_override(NULL));
+    free(iso);
+    assert(test_remove_tree(base));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -3248,8 +3536,12 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
+#if defined(_WIN32) || defined(_WIN64)
+    test_remove_tree_deeper_than_max_path();
+#endif
     test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
@@ -4607,6 +4899,75 @@ int main(int argc, char **argv) {
             assert(false);
         }
         assert(strcmp(written_profile_id, "experimental-ulus99997") == 0);
+        /* Launcher review B1: that profile, written for a disc whose EBOOT.BIN
+           is encrypted, names no executable yet. It reads back unbound, and
+           never as bound to EBOOT.BIN. Before the fix the reader refused its
+           empty selected_executable, so the title page said "Add the disc
+           again" forever and BUILD PACKAGE stayed off. */
+        {
+            NkTitleEntrySnapshot unbound = {0};
+            char unbound_error[512] = "";
+            char unbound_hash[65] = "";
+            if (!nk_title_manifest_read_unbound_experimental_profile(
+                    preflight_root, "ULUS99997", "experimental-ulus99997", &unbound,
+                    unbound_error, sizeof(unbound_error))) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] unbound profile read: %s\n",
+                        unbound_error);
+                assert(false);
+            }
+            assert(strcmp(unbound.entry.id, "experimental-ulus99997") == 0);
+            assert(strcmp(unbound.entry.primary_disc_id, "ULUS99997") == 0);
+            nk_title_catalog_snapshot_release(&unbound);
+            assert(!nk_title_manifest_read_experimental_profile(
+                preflight_root, "ULUS99997", "experimental-ulus99997", "EBOOT.BIN",
+                &unbound, unbound_hash, unbound_error, sizeof(unbound_error)));
+            nk_title_catalog_snapshot_release(&unbound);
+
+            /* The title page's check: an experimental disc with an encrypted
+               EBOOT.BIN, its decrypted EBOOT.elf in the title's folder and
+               that unbound profile has valid title settings. */
+            GameRecord saved_game = wiz->inspecting_game;
+            NkIsoExecutableReport encrypted;
+            char elf_dir[1024], elf_path[1280];
+            unsigned char elf[88];
+            FILE *elf_file;
+            const PlayerPreflightCheck *profile_check;
+            int elf_written = snprintf(elf_dir, sizeof(elf_dir), "%s%ctitles%cULUS99997%cdecrypted",
+                                       preflight_root, nk_platform_path_separator(),
+                                       nk_platform_path_separator(),
+                                       nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_dir));
+            assert(nk_platform_mkdir_p(elf_dir));
+            elf_written = snprintf(elf_path, sizeof(elf_path), "%s%cEBOOT.elf", elf_dir,
+                                   nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_path));
+            build_synthetic_mips_elf(elf);
+            elf_file = fopen(elf_path, "wb");
+            assert(elf_file != NULL);
+            assert(fwrite(elf, 1, sizeof(elf), elf_file) == sizeof(elf));
+            assert(fclose(elf_file) == 0);
+            memset(&wiz->inspecting_game, 0, sizeof(wiz->inspecting_game));
+            snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                     "ULUS99997");
+            snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
+                     "experimental-ulus99997");
+            wiz->inspecting_game.is_experimental = true;
+            wiz->inspecting_game.status = NK_STATUS_IDENTIFIED;
+            memset(&encrypted, 0, sizeof(encrypted));
+            encrypted.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+            encrypted.selected = NK_ISO_EXEC_SELECTION_NONE;
+            player_app_build_compatibility_preflight(wiz, true, true, &encrypted);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(profile_check && profile_check->status == PREFLIGHT_OK);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "TITLE_PROFILE");
+            if (!profile_check || profile_check->status != PREFLIGHT_OK) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] title profile: %s\n",
+                        profile_check ? profile_check->message : "(missing)");
+                assert(false);
+            }
+            assert(remove(elf_path) == 0);
+            wiz->inspecting_game = saved_game;
+        }
         assert(nk_title_catalog_epoch() == epoch_before_profile_read);
         for (int slot = 0; slot < 8; slot++) {
             char slot_id[32];
@@ -4838,7 +5199,7 @@ int main(int argc, char **argv) {
         for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
             assert(states[slot].source == NK_FONT_SOURCE_USER);
         }
-        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "imported from your PSP") != NULL);
+        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "your imported font") != NULL);
 
         /* 14c: removal drops only the cache's slot files and the manifest; originals stay. */
         assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 3);
@@ -4925,7 +5286,7 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
         assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
-        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "your imported font") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
         assert(nk_font_remove_imports(font_root, remove_korean, err, sizeof(err)) == 1);
@@ -4949,7 +5310,7 @@ int main(int argc, char **argv) {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
-            assert(strstr(fcheck->message, "Japanese: imported from your PSP") != NULL);
+            assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
@@ -5134,7 +5495,7 @@ int main(int argc, char **argv) {
 
         player_app_refresh_font_status(runtime_app);
         assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                      "imported from your PSP") != NULL);
+                      "your imported font") != NULL);
         assert(player_app_fonts_remove_imports(runtime_app));
         free(runtime_app);
 
@@ -5255,8 +5616,8 @@ int main(int argc, char **argv) {
                       "None of the 18 PSP fonts is your PSP's original yet") != NULL);
 
         assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 2) == false);
-        assert(strstr(psp_app->wizard.font_message, "No PSP fonts were found. Run Nakagawa Font "
-                                                    "Copy on your PSP") != NULL);
+        assert(strstr(psp_app->wizard.font_message, "No PSP fonts were found on this PC's drives. "
+                                                    "Connect your PSP by USB") != NULL);
 
         assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 4));
         assert(strncmp(psp_app->wizard.font_message, "From your PSP (", 15) == 0);
@@ -5271,6 +5632,30 @@ int main(int argc, char **argv) {
                       "3 of the 18 PSP fonts are your PSP's originals") != NULL);
         assert(strcmp(psp_app->wizard.font_latin_index_detail[0], "L1 exact ltn0.pgf") == 0);
         assert(strncmp(psp_app->wizard.font_latin_index_detail[1], "L2 missing; fallback ", 21) == 0);
+
+        /* The PSP's system storage shown as a USB drive: its font folder counts beside kd and
+           vsh, and a lone "font" folder on another drive does not. */
+        {
+            char system_drive[2][800];
+            char system_folder[2][1024];
+            const char *system_roots[2];
+            for (int d = 0; d < 2; d++) {
+                snprintf(system_drive[d], sizeof(system_drive[d]), "%s%csystem%d", psp_test, sep, d);
+                snprintf(system_folder[d], sizeof(system_folder[d]), "%s%c%s", system_drive[d], sep,
+                         NK_FONT_PSP_SYSTEM_FOLDER);
+                assert(nk_platform_mkdir_p(system_folder[d]));
+                snprintf(path, sizeof(path), "%s%cltn0.pgf", system_folder[d], sep);
+                write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+                system_roots[d] = system_drive[d];
+            }
+            snprintf(path, sizeof(path), "%s%c%s", system_drive[1], sep, NK_FONT_PSP_SYSTEM_MARK_A);
+            assert(nk_platform_mkdir_p(path));
+            snprintf(path, sizeof(path), "%s%c%s", system_drive[1], sep, NK_FONT_PSP_SYSTEM_MARK_B);
+            assert(nk_platform_mkdir_p(path));
+            assert(nk_font_find_psp_folder_in(system_roots, 1, found, sizeof(found)) == 0);
+            assert(nk_font_find_psp_folder_in(system_roots, 2, found, sizeof(found)) == 1);
+            assert(strcmp(found, system_folder[1]) == 0);
+        }
 
         /* The full set: every one of the eighteen is the user's own. */
         for (int index = 1; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
@@ -5362,13 +5747,13 @@ int main(int argc, char **argv) {
         assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(nk_platform_file_exists(manifest_path));
         assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
-                      "Korean: imported from your PSP.") != NULL);
+                      "Korean: your imported font.") != NULL);
         player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
-            assert(strstr(fcheck->message, "Korean: imported from your PSP.") != NULL);
+            assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
         /* 3. Removing the imports leaves the project font, and both surfaces name it again. */
@@ -5389,6 +5774,123 @@ int main(int argc, char **argv) {
         assert(test_remove_tree(fonts_dir));
         assert(test_remove_tree(project_dir));
         assert(test_remove_tree(source_dir));
+    }
+
+    /* 14s (#1300): the Fonts check names, by PSP file name, every system font that is not the
+       user's own import, and says what a game asking for one gets: a stand-in that looks
+       different, or no font. Only ltn0-2 and ltn4-6 and the Japanese font are imported first. */
+    printf("[PLAYER_STATE_TEST] Subtest 14s: the Fonts check names the PSP fonts not imported\n");
+    fflush(stdout);
+    {
+        static const int first_latin[] = { 0, 1, 2, 4, 5, 6 };
+        static const int rest_latin[] = { 3, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+        char base[512];
+        char per_user[768];
+        char runtime[768];
+        char first[800];
+        char rest[800];
+        char korean[800];
+        char path[1024];
+        const char sep = nk_platform_path_separator();
+        NkIsoExecutableReport exec_rep;
+        const PlayerPreflightCheck *fcheck;
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, base, sizeof(base)));
+        snprintf(per_user, sizeof(per_user), "%s%cfont_missing_user", base, sep);
+        snprintf(runtime, sizeof(runtime), "%s%cfont_missing_runtime", base, sep);
+        snprintf(first, sizeof(first), "%s%cfont_missing_first", base, sep);
+        snprintf(rest, sizeof(rest), "%s%cfont_missing_rest", base, sep);
+        snprintf(korean, sizeof(korean), "%s%cfont_missing_korean", base, sep);
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
+        assert(nk_platform_mkdir_p(per_user));
+        assert(nk_platform_mkdir_p(runtime));
+        assert(nk_platform_mkdir_p(first));
+        assert(nk_platform_mkdir_p(rest));
+        assert(nk_platform_mkdir_p(korean));
+        snprintf(path, sizeof(path), "%s%cdump_japanese.pgf", first, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        for (size_t i = 0; i < sizeof(first_latin) / sizeof(first_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", first, sep, first_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        for (size_t i = 0; i < sizeof(rest_latin) / sizeof(rest_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", rest, sep, rest_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        snprintf(path, sizeof(path), "%s%cdump_korean.pgf", korean, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *missing_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(missing_app != NULL);
+        nk_library_init(&missing_app->library);
+        player_app_set_runtime_root(missing_app, runtime);
+        snprintf(missing_app->inspecting_game.disc_id,
+                 sizeof(missing_app->inspecting_game.disc_id), "TEST80001");
+        snprintf(missing_app->inspecting_game.title_id,
+                 sizeof(missing_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* 1. ltn3 and ltn7 are served by a same-size import; ltn8-15 and Korean have no font. */
+        assert(player_app_fonts_import_folder(missing_app, first));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different; for 8 of the 16 Latin fonts and the Korean font they get no "
+                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
+           it still names the fonts a game gets a stand-in for. */
+        snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cfont%cnkkr.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 3. Every Latin file imported: only the Korean font is named. */
+        assert(player_app_fonts_import_folder(missing_app, rest));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "This PSP system font was not found: the Korean font. Games that ask for it "
+                      "get a stand-in font that looks different. Import it from your own PSP in "
+                      "the setup wizard.") == 0);
+
+        /* 4. Every font is the user's own: nothing is named. */
+        assert(player_app_fonts_import_folder(missing_app, korean));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
+
+        free(missing_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
     }
 
     /* 15. Player settings persistence.
@@ -5481,6 +5983,64 @@ int main(int argc, char **argv) {
         player_app_note_close_confirmation_failure(s_app2);
         assert(player_app_take_close_confirmation_fallback(s_app2));
         assert(!player_app_take_close_confirmation_fallback(s_app2));
+
+        /* The quit confirmation's buttons fit SDL3's Windows message box,
+           which showed "Close game and quit" as "ose game and qu". */
+        assert(PLAYER_DIALOG_BUTTON_LABEL_MAX <= 12);
+        assert(strcmp(PLAYER_QUIT_DIALOG_TITLE, "Quit Nakagawa?") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_QUIT_LABEL, "Quit") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_CANCEL_LABEL, "Cancel") == 0);
+        assert(strlen(PLAYER_QUIT_DIALOG_QUIT_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        assert(strlen(PLAYER_QUIT_DIALOG_CANCEL_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        /* Its message names the running game when the launch knows it. */
+        {
+            static const char unnamed[] =
+                "A game is still running.\nQuitting closes it, and anything since "
+                "the game's last save is lost.";
+            static const char named[] =
+                "Hot Shots Tennis is still running.\nQuitting closes it, and anything "
+                "since the game's last save is lost.";
+            char quit_message[NK_MAX_TITLE_LEN + 128];
+            s_app2->launch_session.game_title[0] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), "Hot Shots Tennis");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title's line breaks and tabs fold to one space, so the only
+               line break is the message's own. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title),
+                     "  Hot Shots\r\n\tTennis \n");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title that is only blanks is no name. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), " \r\n\t ");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            /* The longest title still fits the caller's buffer whole. */
+            memset(s_app2->launch_session.game_title, 'T',
+                   sizeof(s_app2->launch_session.game_title) - 1);
+            s_app2->launch_session.game_title[
+                sizeof(s_app2->launch_session.game_title) - 1] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strlen(quit_message) ==
+                   (sizeof(s_app2->launch_session.game_title) - 1) +
+                       (sizeof(unnamed) - 1) - strlen("A game"));
+            assert(player_app_quit_confirmation_message(NULL, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            assert(!player_app_quit_confirmation_message(s_app2, NULL, 16));
+            assert(!player_app_quit_confirmation_message(s_app2, quit_message, 0));
+            s_app2->launch_session.game_title[0] = '\0';
+        }
 
         /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
            Canceling the first confirmation leaves the child running, but a
@@ -6271,6 +6831,17 @@ int main(int argc, char **argv) {
         char identity_before[65];
         char identity_after[65];
         char reason[1024];
+        /* Launcher review B5: a player that is closing cancels a validation
+           that is still hashing the package, so the window does not wait for
+           it. The cancelled result says so and is never cached: the next
+           validation hashes the package again and passes. */
+        nk_title_manifest_set_cancel_check(test_cancel_always, NULL);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &first_info, reason, sizeof(reason)) !=
+               NK_RUNTIME_PACKAGE_OK);
+        assert(strcmp(reason, "Package validation was cancelled.") == 0);
+        assert(!first_info.validation_cache_hit && first_info.package_root[0] == '\0');
+        nk_title_manifest_set_cancel_check(NULL, NULL);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &first_info, reason, sizeof(reason)) ==
                NK_RUNTIME_PACKAGE_OK);

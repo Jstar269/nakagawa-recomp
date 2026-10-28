@@ -2045,10 +2045,10 @@ int main(int argc, char **argv) {
     snprintf(legacy_manifest, sizeof(legacy_manifest), "%s%clegacy-retail.json",
              root17, sep);
     const char *legacy_manifest_json =
-        "{\"schema_version\":1,\"id\":\"hst-ucus98701-v1\","
+        "{\"schema_version\":1,\"id\":\"legacy-retail-fixture-v1\","
         "\"game_name\":\"hst\","
         "\"display_name\":\"Legacy Retail Fixture\",\"kind\":\"retail\","
-        "\"disc\":{\"id\":\"UCUS98701\",\"region\":\"NA\","
+        "\"disc\":{\"id\":\"UCES01402\",\"region\":\"EU\","
         "\"revision_policy\":\"exact-disc-id\"},"
         "\"executable\":{\"base\":\"0x00000000\",\"entry\":\"0x00000000\","
         "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
@@ -2065,8 +2065,8 @@ int main(int argc, char **argv) {
     write_file(legacy_img, "image");
 
     make_game(&game, iso_path);
-    snprintf(game.disc_id, sizeof(game.disc_id), "UCUS98701");
-    snprintf(game.title_id, sizeof(game.title_id), "hst-ucus98701-v1");
+    snprintf(game.disc_id, sizeof(game.disc_id), "UCES01402");
+    snprintf(game.title_id, sizeof(game.title_id), "legacy-retail-fixture-v1");
 
     /* Without the validated overlay: fail closed, never by default. */
     assert(nk_launch_prepare_session(&session, &game, root17) != NK_OK);
@@ -2087,7 +2087,7 @@ int main(int argc, char **argv) {
     assert(session.entry_point == 0u);
     assert(ends_with(session.executable_path, "hst.exe"));
     assert(ends_with(session.image_path, "hst_image.bin"));
-    assert(nk_launch_runtime_available(root17, "hst-ucus98701-v1") == true);
+    assert(nk_launch_runtime_available(root17, "legacy-retail-fixture-v1") == true);
     nk_title_catalog_clear_overlay();
     remove(legacy_exe);
     remove(legacy_img);

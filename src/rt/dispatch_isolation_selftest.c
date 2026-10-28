@@ -546,9 +546,8 @@ static void test_historical_call_target_fails_at_named_boundary(void) {
 }
 
 /* Real hardware does not restore $s0-$s7/$fp for a callee: honoring the ABI is the
- * callee's own job. A generic or fixture title therefore sees every register write
- * its callee makes; only a title configuration declaring the #363 debt restores them
- * (sr_title_config_preserve_callee_saved_at_calls). None of this matrix does. */
+ * callee's own job, so every title sees every register write its callee makes. The
+ * title-configured restore that one profile used to arm is retired (#363). */
 static void test_call_boundary_keeps_callee_register_writes(void) {
     sr_mem_init();
     sr_exec_span_reset();
@@ -565,9 +564,6 @@ static void test_call_boundary_keeps_callee_register_writes(void) {
     int result = dispatch_call_try(&s, ABI_CALL_TARGET, ABI_CALL_RESUME);
     CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF,
           "registered synthetic CALL did not complete through AOT (result=%d)", result);
-    CHECK(sr_title_config_preserve_callee_saved_at_calls() == 0,
-          "configuration \"%s\" unexpectedly restores callee-saved registers",
-          sr_title_config()->source_id);
     for (unsigned reg = 16u; reg <= 23u; reg++)
         CHECK(s.r[reg] == 0xcccc0000u + reg,
               "CALL boundary hid the callee's write to r[%u] (got 0x%08x)",
