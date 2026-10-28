@@ -189,9 +189,12 @@ instead of pretending it worked or crashing without a word.
   Support for more games, and for games in general, is in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). A disc image
   with no `PSP_GAME` folder isn't a PSP game disc and is refused as `DISC_NOT_PSP`.
-- **Compressed disc image:** a `.cso` (or `.zso`) file is refused as
-  `DISC_IMAGE_COMPRESSED`. Nakagawa reads plain `.iso` images only, so turn it
-  back into an `.iso` with the tool that compressed it, or copy your disc again.
+- **Compressed disc image:** a `.cso`, `.zso` or `.chd` file is expanded once,
+  when you add it, into a plain `.iso` in Nakagawa's data folder, so it needs
+  free space for the whole `.iso`. A damaged file stops with a named
+  `DISC_IMAGE_*` result, and a CHD made as a CD image stops as
+  `DISC_IMAGE_CHD_CD_UNSUPPORTED`: make it again from the `.iso` with
+  `chdman createdvd` ([details](SETUP.md#compressed-disc-images)).
 - **PlayStation Store package:** a file that starts with the `PBP` package
   signature is a package, not a disc image, whatever it is called. The player
   turns a PSN release of a UMD game into its disc image (see

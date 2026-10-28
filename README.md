@@ -48,6 +48,9 @@ You need:
   ([system requirements](docs/SETUP.md#system-requirements)).
 - Your own copy of the game as an uncompressed `.iso` disc image. Nothing here downloads games, firmware or fonts.
   [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) covers what to do if a file can't be decrypted.
+- Builds after v0.0.1 also take a compressed `.cso`, `.zso` or `.chd` image. The player expands it once, when you add
+  it, into a plain `.iso` in its data folder, so you need free space for the full `.iso` as well
+  ([details](docs/SETUP.md#compressed-disc-images)).
 
 ## Compatibility
 

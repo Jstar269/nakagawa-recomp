@@ -21,7 +21,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, the player decrypts it
+7. **Your own copy of the game** as an `.iso`, or as a compressed `.cso`, `.zso` or `.chd`
+   ([Compressed disc images](#compressed-disc-images)). If its executable is encrypted, the player decrypts it
    locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
@@ -384,6 +385,28 @@ ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KE
 The results are `KEY_REQUIRED` (a tag the built-in tables don't carry), `MALFORMED_INPUT`, `INTEGRITY_FAILURE`, `DECOMPRESS_FAILURE`, `VALIDATION_FAILURE`, `FIRMWARE_OUT_OF_SCOPE`, `IO_FAILURE`, `RESOURCE_LIMIT` and `INTERNAL_ERROR`. An encrypted guest module stops the same way with `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
 
 A PSN release of a UMD game (an `EBOOT.PBP` whose `DATA.PSAR` is an NPUMDIMG disc image) is picked like a disc. The player converts it once, on a background worker with progress and cancel, into `<user data>/discs/<DISC_ID>/<DISC_ID>.iso`: the image is written beside that name, checked (an ISO9660 volume descriptor and a `PARAM.SFO` `DISC_ID` equal to the package's), then renamed into place, and it is then added exactly as a picked ISO. A cancelled or failed conversion removes the partial file. `--iso=<EBOOT.PBP>` converts the same way before inspection, and `nk_decrypt npumdimg --in EBOOT.PBP --out game.iso` runs the conversion from the command line. A PSOne Classic stops as `PSONE_CLASSIC_UNSUPPORTED` and an updater as `FIRMWARE_OUT_OF_SCOPE` before any key is read; DRM bound to the console that bought the game stops as `CONTEXT_REQUIRED` and is never run with a default. Other PSN (NPDRM) packages and PGD-protected data are not decrypted yet.
+
+### Compressed disc images
+
+The player also takes a compressed disc image: a `.cso` (CISO, versions 1 and 2), a `.zso` (ZISO) or a `.chd`
+made with `chdman createdvd`. It expands the image once, when you add it, into a plain `.iso` at
+`<user data>/discs/<DISC_ID>/<DISC_ID>.<cso|zso|chd>.iso`, and every later step reads that `.iso` exactly as it
+reads one you added yourself. This needs free space for the whole `.iso` (up to 1.8 GB for a UMD) beside the
+compressed file, which you can keep or move. The expansion runs on a background worker with progress and cancel;
+it is written beside its final name, its size is checked, and then it is renamed into place, so a cancelled or
+failed expansion leaves nothing behind. Adding the same unchanged file again reuses the expansion. The library
+keeps the expanded `.iso` for the build and shows the file you picked.
+
+A file it can't use stops with a named result: `DISC_IMAGE_TRUNCATED`, `DISC_IMAGE_HEADER_INVALID`,
+`DISC_IMAGE_VERSION_UNSUPPORTED`, `DISC_IMAGE_SIZE_INVALID`, `DISC_IMAGE_INDEX_INVALID` or
+`DISC_IMAGE_BLOCK_CORRUPT` for a damaged or unknown header or block, `DISC_IMAGE_WRITE_FAILED` when the `.iso`
+can't be written (often a full drive), and `DISC_NOT_PSP` when the image holds no PSP game. A CHD made as a CD
+image (`chdman createcd`) stops as `DISC_IMAGE_CHD_CD_UNSUPPORTED`: make it again from the `.iso` with
+`chdman createdvd`. A hard-disk, laserdisc or parent-linked CHD stops as `DISC_IMAGE_CHD_UNSUPPORTED`. CHD is
+read with the vendored libchdr ([`third_party/libchdr/`](../third_party/libchdr/PROVENANCE.md)); CSO and ZSO
+are read by the project's own code in `src/core/nk_disc_expand.c`. `python tools/nk_cli.py bringup` and
+`tools/nk_core/iso_inspect.py` take the same files and expand them through the same C code, with the
+`nk_disc_expand` tool that `tools/nk_core/disc_expand_tool.py` builds.
 
 ### User title manifests (`<user data>/manifests`)
 
