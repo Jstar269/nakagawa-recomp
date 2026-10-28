@@ -69,6 +69,7 @@
 #include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
 #include "../core/nk_font.h" /* shared Latin index filenames and cache validation */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2893,6 +2894,44 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
+static void hle_record_unsupported_import_stop(uint32_t nid, const char *name);
+
+/* A handler that meets an argument shape this runtime does not model stops the run by name,
+ * exactly as an import with no handler does: one UNSUPPORTED_IMPORT line, the player's
+ * "unsupported-import-<name>" stop card, and exit 7. Returning an invented error code would
+ * hand the game a result no PSP gives, and the game would carry on from it (#308). The
+ * selftest harness counts the stop and returns SCE_KERNEL_ERROR_NOTIMP, so a test can
+ * assert it. */
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_unmodelled_stops;
+uint32_t sr_hle_test_unmodelled_stops(void) { return s_hle_unmodelled_stops; }
+#endif
+__attribute__((format(printf, 2, 3)))
+static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
+    char detail[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(detail, sizeof(detail), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "UNSUPPORTED_IMPORT: %s %s; the run stops here (#308)\n", import_name, detail);
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_unmodelled_stops++;
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+#else
+    hle_record_unsupported_import_stop(sr_last_nid, import_name);
+    sr_flight_unsupported_fatal(sr_last_nid, sched_current_uid(), 0u);
+    sr_hit_hle = 1;
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_compat_report();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(7);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
 /* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
  * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
  * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
@@ -3013,17 +3052,17 @@ static uint32_t h_AllocMemoryBlock(CpuState *s) {
         if (options_size > 4u) {
             if (!sr_guest_span_readable(A3, options_size))
                 return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-            fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock option extensions are not supported yet.\n");
-            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                       "option extensions (%u bytes) are not supported yet",
+                                       options_size);
         }
     }
     if (kind > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
     if (size == 0u || size > UINT32_MAX - 0xffu)
         return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
     if (kind != 0u) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock placement kind %u is not supported yet.\n",
-                kind);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                   "placement kind %u is not supported yet", kind);
     }
 
     int slot = -1;
@@ -12759,11 +12798,13 @@ static uint64_t vtimer_base_us(const VTimer *t) {
 }
 
 static uint32_t h_CreateVTimer(CpuState *s) {
-    /* a0=name, a1=option struct (only NULL is measured). */
-    if (A1) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateVTimer option struct is not supported yet.\n");
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
-    }
+    /* a0=name, a1=SceKernelVTimerOptParam * or NULL. The kernel ignores the option struct: a
+     * PSP creates the same timer for a NULL struct and for declared sizes -1, 0, 1, 4, 7, 8, 12,
+     * 4096 and 0x7FFFFFFF (pspautotests tests/threads/vtimers/create.expected, recorded on a
+     * PSP, at 2ed7c9c5). Only a readable struct is measured, so an unreadable one stops. */
+    if (A1 && !sr_guest_span_readable(A1, 4u))
+        return hle_unmodelled_stop("sceKernelCreateVTimer",
+                                   "option struct at 0x%08x is unreadable, which is not measured", A1);
     VTimer *t = NULL;
     for (int i = 0; i < VTIMER_MAX; i++) {
         if (!s_vtimers[i].used) { t = &s_vtimers[i]; break; }
@@ -21918,14 +21959,12 @@ static void ge_sync_wake(void) { sched_wake(GE_SYNC_WAIT_OBJ); }
  * list table; 0 with *result set when the wait ended without one (a released or
  * deleted wait) or cannot happen. A blocking sync that has no waitable guest thread,
  * or runs with interrupts or dispatch disabled, can never be completed by a producer
- * thread; the PSP result there is UNMEASURED, so it is refused visibly rather than
- * reported as complete. */
+ * thread; the PSP result there is UNMEASURED, so the run stops by name rather than
+ * report it complete. */
 static int ge_sync_block(const char *api, uint32_t *result) {
     if (!sched_guest_thread_running() || !sched_wait_permitted()) {
-        fprintf(stderr,
-                "UNSUPPORTED_IMPORT: %s blocking wait outside a waitable guest thread has no measured result; refused.\n",
-                api);
-        *result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        *result = hle_unmodelled_stop(
+            api, "blocking wait outside a waitable guest thread has no measured result");
         return 0;
     }
     sched_block_on(GE_SYNC_WAIT_OBJ);
@@ -22207,8 +22246,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
-            fprintf(stderr, "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.\n");
-            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+            return hle_unmodelled_stop("sceGeListEnQueueHead",
+                                       "queue ordering is not supported yet");
         }
     }
     return h_GeListEnQueue(s);
@@ -22568,10 +22607,8 @@ static uint32_t h_GeListDeQueue(CpuState *s) {
             return GE_ERROR_LIST_BUSY;
         }
     }
-    fprintf(stderr,
-            "UNSUPPORTED_IMPORT: sceGeListDeQueue(0x%08x) has no measured result for this list state; refused.\n",
-            qid);
-    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    return hle_unmodelled_stop("sceGeListDeQueue",
+                               "(0x%08x) has no measured result for this list state", qid);
 }
 
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
@@ -26058,10 +26095,9 @@ static uint32_t h_GetThreadmanIdList(CpuState *s) {
     const uint32_t idcount = A3;
     if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
     if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
-                        "(ThreadEventHandler): thread event handlers are not modelled, so "
-                        "no list is given\n", tmid);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelGetThreadmanIdList",
+                                   "type %d (ThreadEventHandler): thread event handlers are "
+                                   "not modelled", tmid);
     }
     if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
     if (readbufsize > 0) {
@@ -26075,9 +26111,8 @@ static uint32_t h_GetThreadmanIdList(CpuState *s) {
     if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
         !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
         /* A listed PSPSDK class with no owner here: fail closed by name. */
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
-                        "object table in this runtime\n", tmid);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelGetThreadmanIdList",
+                                   "type %d has no object table in this runtime", tmid);
     }
     if (idcount) MEM_W32(idcount, sink.total);
     return sink.total < sink.cap ? sink.total : sink.cap;

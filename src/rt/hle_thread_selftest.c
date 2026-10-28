@@ -1289,6 +1289,7 @@ static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
                                           char *output, size_t output_size);
 static int count_occurrences(const char *haystack, const char *needle);
 uint32_t sr_hle_test_libfont_startup_stops(void);
+uint32_t sr_hle_test_unmodelled_stops(void);
 
 /* sceKernelStartModule for the synthetic libfont handle, with the argument and status
  * pointers the production ABI documents. */
@@ -19303,8 +19304,10 @@ static void test_kernel_import_sweep_ge_head(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = second_list;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u,
-           "sceGeListEnQueueHead refuses when head ordering would affect a stalled queue");
+    uint32_t head_stops = sr_hle_test_unmodelled_stops();
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == head_stops + 1u,
+           "sceGeListEnQueueHead stops the run by name when head ordering would affect a stalled queue");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = stalled_id;
@@ -19460,16 +19463,19 @@ static void test_ge_break_continue(void) {
            "DrawSync reports idle (0) after continue");
 
     /* No measured dequeue result exists for a completed list or an unknown id:
-     * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
+     * both stop the run by name rather than hand the game an invented result. */
+    uint32_t dequeue_stops = sr_hle_test_unmodelled_stops();
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
-           "sceGeListDeQueue on a completed list fails closed (NOT_IMPLEMENTED)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == dequeue_stops + 1u,
+           "sceGeListDeQueue on a completed list stops the run by name");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x7fffffffu;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
-           "sceGeListDeQueue on an unknown id fails closed (NOT_IMPLEMENTED)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == dequeue_stops + 2u,
+           "sceGeListDeQueue on an unknown id stops the run by name");
 
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
@@ -25365,8 +25371,10 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     cpu.r[5] = 0u;
     cpu.r[6] = 0x100u;
     cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
-           "sceKernelAllocMemoryBlock refuses unmodeled options extensions");
+    uint32_t alloc_stops = sr_hle_test_unmodelled_stops();
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == alloc_stops + 1u,
+           "sceKernelAllocMemoryBlock stops the run by name on unmodeled options extensions");
 
     MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
     memset(&cpu, 0, sizeof(cpu));
@@ -34502,8 +34510,22 @@ static void test_vtimer_lifecycle(void) {
            "the stale UID stays unknown while a new timer exists");
     expect(vt_call(NID_VT_DELETE, vt2, 0u) == 0u, "the new timer deletes cleanly");
 
-    expect(vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION) == VT_REFUSED_ERR,
-           "CreateVTimer with a non-NULL option struct is refused by name");
+    /* The kernel ignores the option struct (pspautotests vtimers/create.expected, recorded
+     * on a PSP): every declared size creates the same timer. */
+    static const uint32_t option_sizes[] = { 0xffffffffu, 0u, 1u, 4u, 8u, 4096u, 0x7fffffffu };
+    for (size_t i = 0; i < sizeof(option_sizes) / sizeof(option_sizes[0]); i++) {
+        MEM_W32(VT_OPTION, option_sizes[i]);
+        uint32_t vt_opt = vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION);
+        expect((int32_t)vt_opt > 0, "CreateVTimer with an option struct of any size returns a UID");
+        expect(vt_refer(vt_opt, VT_INFO_SIZE) == 0u,
+               "a timer created with an option struct refers like a NULL-option timer");
+        expect(vt_call(NID_VT_DELETE, vt_opt, 0u) == 0u,
+               "a timer created with an option struct deletes cleanly");
+    }
+    uint32_t vt_stops = sr_hle_test_unmodelled_stops();
+    expect(vt_call(NID_VT_CREATE, VT_NAME, 0xfffffff0u) == VT_REFUSED_ERR &&
+               sr_hle_test_unmodelled_stops() == vt_stops + 1u,
+           "CreateVTimer with an unreadable option struct stops the run by name");
 
     s_pace_on = saved_pace;
     s_vtime_us = saved_vtime;
@@ -35438,10 +35460,12 @@ static void test_threadman_id_list(void) {
     /* Thread event handlers are a PSPSDK class this runtime does not track: a named
      * refusal, never an empty success. */
     tmid_fill();
+    uint32_t tmid_stops = sr_hle_test_unmodelled_stops();
     rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
     expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
-               MEM_R32(TMID_BUF) == TMID_SENTINEL,
-           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+               MEM_R32(TMID_BUF) == TMID_SENTINEL &&
+               sr_hle_test_unmodelled_stops() == tmid_stops + 1u,
+           "ThreadmanIdList ThreadEventHandler: the run stops by name, nothing written");
 
     /* Bad guest pointers and sizes are refused before any write. */
     tmid_fill();
