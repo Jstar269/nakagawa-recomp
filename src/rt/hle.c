@@ -11450,6 +11450,7 @@ typedef struct UtilityDialog {
     unsigned kind;
     unsigned work_started : 1;
     unsigned work_done : 1;
+    unsigned aborted : 1;
 } UtilityDialog;
 enum {  /* a dialog's kind is the slot type it claims */
     UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
@@ -11478,7 +11479,7 @@ static void utility_dialogs_reset_locked(void) {
         d->generation++;
         d->status = 0;
         d->ticks = 0u;
-        d->work_started = d->work_done = 0u;
+        d->work_started = d->work_done = d->aborted = 0u;
     }
     s_utility_slot = UTILITY_SLOT_NONE;
 }
@@ -11496,7 +11497,7 @@ static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     d->generation++;
     d->status = 1;
     d->ticks = 0;
-    d->work_started = d->work_done = 0;
+    d->work_started = d->work_done = d->aborted = 0;
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -11513,7 +11514,9 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
-    if (d->status == 2 && !d->work_started) {
+    if (d->status == 2 && d->aborted) {
+        d->status = 3;
+    } else if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
         param = d->param;
         generation = d->generation;
@@ -11578,6 +11581,19 @@ UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
 UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
 UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
 UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
+
+/* PSPAutotests msgdialog/abort.expected: repeated aborts succeed while running;
+ * completion is observed after the next update. */
+static uint32_t h_MsgDialogAbort(CpuState *s) {
+    (void)s;
+    dialog_lock();
+    uint32_t result = 0;
+    if (s_utility_slot != UTILITY_SLOT_MSG) result = SCE_ERROR_UTILITY_WRONG_TYPE;
+    else if (s_msg_dialog.status != 2) result = SCE_ERROR_UTILITY_INVALID_STATUS;
+    else s_msg_dialog.aborted = 1;
+    dialog_unlock();
+    return result;
+}
 
 /* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
  * box (osk_win.c) or, for automation, from a scripted answer.
@@ -11865,6 +11881,7 @@ static void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
     sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
     sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);
+    sr_hle_register(0x4928bd96, "sceUtilityMsgDialogAbort", h_MsgDialogAbort);
     sr_hle_register(0x2ad8e239, "sceUtilityMsgDialogInitStart", h_MsgDialogInit);
     sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
     sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);

@@ -6811,6 +6811,31 @@ static void test_utility_dialog_status_sequence(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* PSPAutotests msgdialog/abort.expected: abort is accepted only while RUNNING,
+ * can be repeated, and the next update finishes the dialog. */
+static void test_msg_dialog_abort(void) {
+    CpuState cpu;
+    const uint32_t abort_nid = 0x4928bd96u;
+    sr_hle_test_osk_slot_reset();
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, abort_nid, 0) == 0x80110005u, "abort before init: wrong type");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "abort test init");
+    expect(utility_call(&cpu, abort_nid, 0) == 0x80110001u, "abort during init refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 1u, "abort test enters running");
+    expect(utility_call(&cpu, abort_nid, 0) == 0u && utility_call(&cpu, abort_nid, 0) == 0u,
+           "repeated abort accepted while running");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 2u &&
+           utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 3u, "update completes aborted dialog");
+    expect(utility_call(&cpu, abort_nid, 0) == 0x80110001u, "abort after finish refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0) == 0u &&
+           utility_call(&cpu, abort_nid, 0) == 0x80110001u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 4u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 0u &&
+           utility_call(&cpu, abort_nid, 0) == 0x80110001u, "abort during and after shutdown refused");
+    sr_hle_test_osk_slot_reset();
+}
+
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
                                uint32_t indata, uint32_t inlen,
                                uint32_t outdata, uint32_t outlen) {
@@ -35667,6 +35692,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_keyboard_keeps_guest_time_running();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
+    test_msg_dialog_abort();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
