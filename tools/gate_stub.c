@@ -93,6 +93,7 @@ int      sched_uid_is_launcher(uint32_t uid) { (void)uid; return 0; }
 int      sched_current_is_worker(void)   { return 0; }
 int      sched_current_is_launcher(void) { return 0; }
 void    sched_init(CpuState *cpu) { (void)cpu; }
+void    sched_preempt_timer_start(void) {}
 uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
 void    sched_exit_current(int32_t status) { (void)status; }
 void    sched_exit_current_delete(int32_t status) { (void)status; }
@@ -271,6 +272,7 @@ uint32_t g_sr_store_context_mem_offset = 0;
 unsigned g_sr_store_context_mem_words = 0;
 int      g_sr_last_writer_enabled = 0;
 void     sr_debug_init_watches(void) {}
+int      sr_debug_streams_init(void) { return 0; }   /* the gate keeps the C runtime's streams */
 int      sr_check_mem_watch(uint32_t addr, uint32_t val, int write, uint32_t pc) {
     (void)addr; (void)val; (void)write; (void)pc;
     return 0;

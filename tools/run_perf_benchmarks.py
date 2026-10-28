@@ -35,10 +35,21 @@ def _make_name(value: str) -> str:
 
 def _clear_outputs(output_dir: Path) -> None:
     for name in ("perf.json", "perf.csv"):
-        try:
-            (output_dir / name).unlink()
-        except FileNotFoundError:
-            pass
+        (output_dir / name).unlink(missing_ok=True)
+
+
+def _perf_environment(output_dir: Path, enabled: bool) -> dict[str, str]:
+    """The process environment that points the runtime's perf output at ``output_dir``."""
+    env = os.environ.copy()
+    env["SR_PERF"] = "1" if enabled else "0"
+    env["SR_PERF_JSON"] = str((output_dir / "perf.json").resolve())
+    env["SR_PERF_CSV"] = str((output_dir / "perf.csv").resolve())
+    return env
+
+
+def _status_from_returncode(returncode: int) -> str:
+    """PASS on 0, SKIP on 77 (the make target declined to run), FAIL otherwise."""
+    return "PASS" if returncode == 0 else "SKIP" if returncode == 77 else "FAIL"
 
 
 def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
@@ -47,11 +58,8 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
     output_dir = output_root / name
     output_dir.mkdir(parents=True, exist_ok=True)
     _clear_outputs(output_dir)
-    env = os.environ.copy()
+    env = _perf_environment(output_dir, enabled)
     env["PYTHON"] = python
-    env["SR_PERF"] = "1" if enabled else "0"
-    env["SR_PERF_JSON"] = str((output_dir / "perf.json").resolve())
-    env["SR_PERF_CSV"] = str((output_dir / "perf.csv").resolve())
     command = [make, f"BUILD_DIR={build_prefix}/{name}"]
     if build_root is not None:
         # Targets such as production-smoke-gap place their output under BUILD_ROOT,
@@ -66,7 +74,7 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
     duration = time.perf_counter() - started
     summary_path = output_dir / "perf.json"
     output = completed.stdout[-4000:]
-    status = "PASS" if completed.returncode == 0 else "SKIP" if completed.returncode == 77 else "FAIL"
+    status = _status_from_returncode(completed.returncode)
     if enabled and completed.returncode == 0 and not summary_path.exists():
         status = "FAIL"
         output += "\nSR_PERF summary was not produced"
@@ -88,17 +96,14 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
 def _run_direct(command: list[str], output_dir: Path, enabled: bool) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     _clear_outputs(output_dir)
-    env = os.environ.copy()
-    env["SR_PERF"] = "1" if enabled else "0"
-    env["SR_PERF_JSON"] = str((output_dir / "perf.json").resolve())
-    env["SR_PERF_CSV"] = str((output_dir / "perf.csv").resolve())
+    env = _perf_environment(output_dir, enabled)
     started = time.perf_counter()
     completed = subprocess.run(command, cwd=ROOT, env=env, check=False,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True)
     duration = time.perf_counter() - started
     summary_path = output_dir / "perf.json"
-    status = "PASS" if completed.returncode == 0 else "SKIP" if completed.returncode == 77 else "FAIL"
+    status = _status_from_returncode(completed.returncode)
     if enabled and completed.returncode == 0 and not summary_path.exists():
         status = "FAIL"
     return {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
  * White-box unit tests for the cooperative scheduler's decision logic and guest-thread
@@ -906,6 +907,79 @@ static void test_determinism(void) {
     int same = 1;
     for (int i = 0; i < 8; i++) same &= (seq1[i] == seq2[i]);
     expect(same, "identical scheduler state produces identical decision sequences");
+}
+
+/* ---- preemption timer (#1296) -------------------------------------------------------
+ * A weak thread busy in compiled code reaches sr_yield only once per TIMESLICE yield
+ * points. When a stronger thread's delay runs out in between, the preemption timer ends
+ * the slice, so the stronger thread runs at the next yield point, as the PSP's timer
+ * interrupt would let it. The test drives the timer by hand: the clock is moved past the
+ * deadline and the timer's check runs at that moment, which is what its host thread does.
+ *
+ * MUTANT: drop the sched_preempt_timer_arm() call at the switch-in in sched_run -- nothing
+ *   is published, the slice runs to its count, and the stronger thread runs TIMESLICE
+ *   yields late. MUTANT: compare priorities with <= in sched_preempt_timer_target_us() --
+ *   the equal-priority waiter takes the CPU early and the second cell fails. */
+enum {
+    PT_WEAK_ENTRY = 0x09300000u,
+    PT_WAITER_ENTRY = 0x09300100u,
+    PT_YIELD_PC = 0x09300040u,
+    PT_START_US = 1000u,
+    PT_DELAY_US = 5000u,
+    PT_DUE_AT_YIELD = 10u,
+    PT_YIELDS = 3u * TIMESLICE
+};
+static int g_pt_waiter_priority;
+static unsigned g_pt_yield, g_pt_waiter_ran_at, g_pt_done;
+
+static void preempt_timer_body(CpuState *s) {
+    if (s_tcb[s_cur].entry == PT_WAITER_ENTRY) {
+        sched_delay_current(PT_DELAY_US);
+        g_pt_waiter_ran_at = g_pt_yield;
+        return;
+    }
+    uint32_t waiter = sched_create_thread(PT_WAITER_ENTRY, g_pt_waiter_priority, 0);
+    sched_start_thread(waiter, 0, 0);
+    sched_yield_current_behind_peers();    /* the waiter runs first and parks in its delay */
+    for (g_pt_yield = 0; g_pt_yield < PT_YIELDS; g_pt_yield++) {
+        if (g_pt_yield == PT_DUE_AT_YIELD) {
+            set_host_us(PT_START_US + PT_DELAY_US + 1u);   /* the delay has run out */
+            sched_preempt_timer_check(host_now_ns());
+        }
+        SR_YIELD(s, PT_YIELD_PC);
+    }
+    g_pt_done = 1;
+}
+
+static int preempt_timer_stop(void) { return (int)g_pt_done; }
+
+static unsigned preempt_timer_run(int waiter_priority) {
+    reset_sched();
+    begin_clock_fixture(1, PT_START_US);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_MANUAL;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    g_pt_waiter_priority = waiter_priority;
+    g_pt_yield = 0;
+    g_pt_waiter_ran_at = UINT32_MAX;
+    g_pt_done = 0;
+    g_test_body = preempt_timer_body;
+    sr_sched_stop_requested = preempt_timer_stop;
+    sched_run(PT_WEAK_ENTRY, 0u, 0u);   /* the weak thread runs at priority 32 */
+    sr_sched_stop_requested = NULL;
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_OFF;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    s_host_ns_fn = NULL;
+    return g_pt_waiter_ran_at;
+}
+
+static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
+    expect(preempt_timer_run(16) == PT_DUE_AT_YIELD,
+           "a stronger thread whose delay ran out runs at the weak thread's next yield point");
+    const unsigned equal = preempt_timer_run(32);
+    expect(equal != UINT32_MAX && equal > PT_DUE_AT_YIELD,
+           "an equal-priority waiter whose delay ran out does not take the CPU early");
 }
 
 /* ---- lifecycle tests (real coroutines) --------------------------------------------- */
@@ -2209,6 +2283,51 @@ static void test_interrupt_frame_is_restored(void) {
  * waiter exists, and the scheduler is driven repeatedly. The asserted invariant is
  * ownership, not a rate: virtual time never exceeds the sampled host time merely
  * because a waiter would like it to. */
+/* #1296: a timed wait that comes due between the idle pick and the idle wait's clock sample
+ * runs at once. It used to fall into the vblank branch and wait up to a whole period on the
+ * host. MUTANT: without the due-thread return, the first check reads 16683 us (the next
+ * vblank) instead of 1200 us. */
+static void test_idle_wait_runs_a_wait_that_came_due(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;                /* the next vblank, 16.7 ms out */
+    int waiter = mk(0x234u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_cur = -1;
+    set_host_us(1200u);                       /* its deadline passed after the idle pick */
+    sched_idle_wait();
+    expect(g_test_host_ns == 1200000u,
+           "idle wait: a timed wait already due costs no host wait");
+    expect(pick_next() == waiter && s_tcb[waiter].state == TH_READY,
+           "idle wait: the next pick runs the thread whose wait came due");
+
+    /* A suspended thread's due deadline cannot be run, so the idle wait still waits. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int held = mk(0x235u, TH_WAIT_DELAY, 16);
+    s_tcb[held].wake = 1000u;
+    s_tcb[held].suspended = 1;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns >= 16683333u,
+           "idle wait: a suspended thread's due deadline still waits for the vblank");
+
+    /* A deadline ahead of the vblank keeps its precise sleep. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int sleeper = mk(0x236u, TH_WAIT_DELAY, 16);
+    s_tcb[sleeper].wake = 5000u;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns == 5000000u,
+           "idle wait: a future deadline before the vblank is slept to exactly");
+    s_host_ns_fn = NULL;
+}
+
 static void test_paced_vtime_is_host_anchored(void) {
     reset_sched();
     begin_clock_fixture(1, 0u);
@@ -4823,6 +4942,7 @@ int main(int argc, char **argv) {
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
     test_determinism();
+    test_preempt_timer_hands_cpu_to_stronger_due_thread();
     test_entry_return_is_thread_exit();
     test_negative_entry_return_normalizes_to_illegal_argument();
     test_wait_timeout_entry_return_normalizes_to_illegal_argument();
@@ -4865,6 +4985,7 @@ int main(int argc, char **argv) {
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
+    test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();
     test_busy_guest_observes_every_display_period();
     test_masked_window_keeps_the_enabled_backlog();

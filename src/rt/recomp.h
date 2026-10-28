@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -370,6 +371,20 @@ static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
         return 0;
     }
     return 1;
+}
+
+/* Range-checked destination test for writers that copy through sr_guest_copy_out()
+ * or sr_guest_fill() instead of forming one host pointer over the span (#1049).
+ * Unlike sr_guest_span_writable() it accepts a span through the swizzled VRAM
+ * mirrors: those helpers walk the span in sr_guest_host_run() pieces, each inside
+ * one block that stays contiguous in physical VRAM, and translate every piece
+ * through SR_HOST(). A span that starts in one VRAM view and ends in another is
+ * therefore exact as well: the bytes are guest-contiguous, and each lands where a
+ * scalar store to that guest address would. Only a span that leaves the arena is
+ * refused. Callers that still form a host pointer keep using
+ * sr_guest_span_writable() and its VRAM_MIRROR_BULK_UNSUPPORTED report. */
+static inline int sr_guest_span_writable_any_view(uint32_t addr, uint32_t size) {
+    return size == 0u || sr_inrange_n(addr, size);
 }
 
 /* Bulk readers call this immediately before forming their host pointer. */
@@ -1778,6 +1793,7 @@ int sr_host_data_prepare(void);
 size_t sr_host_data_entry_count(void);      /* valid after READY */
 
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
+void     sched_preempt_timer_start(void);          /* paced runs: a stronger due thread preempts at once (#1296) */
 int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
 void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
@@ -1795,6 +1811,13 @@ void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
 typedef uint64_t (*SrSchedGeNextDeadline)(void);
 typedef void (*SrSchedGeServiceDue)(void);
 void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
+/* VTimer handlers (hle.c): the earliest guest-time deadline of a running VTimer with a
+ * handler (UINT64_MAX when none), and the interrupt-service step that runs the most overdue
+ * handler once.  With no hooks registered the scheduler behaves as before. */
+typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
+typedef void (*SrSchedVtimerServiceOne)(void);
+void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                                SrSchedVtimerServiceOne service_one);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */

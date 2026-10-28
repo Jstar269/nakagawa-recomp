@@ -2149,12 +2149,17 @@ def inspect_compatibility_preflight(
             + [state["detail"] for state in latin_states]
             + [states["korean"]["detail"]]
         )
+        exact = (states["japanese"]["source"] == "user" and
+                 states["korean"]["source"] == "user" and
+                 all(state["source"] == "user" and state["served_index"] == index
+                     for index, state in enumerate(latin_states)))
         if (states["japanese"]["source"] != "none" and
                 states["korean"]["source"] != "none" and
                 all(state["source"] != "none" for state in latin_states)):
+            # Every font served; SYNTHETIC when one is a stand-in, not the user's own (#1300).
             fonts_check = {
-                "code": "SYSTEM_FONTS", "status": "OK",
-                "message": slot_message, "issues": [],
+                "code": "SYSTEM_FONTS", "status": "OK" if exact else "SYNTHETIC",
+                "message": slot_message, "issues": [] if exact else [313],
             }
         else:
             fonts_check = {
