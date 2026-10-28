@@ -330,7 +330,12 @@ awaited, or which controller is connected. Two cards side by side:
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
   then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
   name; a conflicted control's name is `error`; the control waiting for a press shows `Press a button...` as the
-  primary button. Choosing it again, or Esc, cancels the wait.
+  primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
+  (`nk_ui_prompt_glyph_in`, #1299) shows the binding as the device shown prints it, whatever device drives the page:
+  the controller in the set of the pad last used or connected (the neutral position dots with none), its face
+  buttons by position, the shoulders, Start and the D-pad as the prompt bar draws them, and any other input as a pill
+  named the way that pad names it (VIEW, ZL, L3); the keyboard as a keycap with the key's printed legend (SHIFT, ENTER,
+  X) or the arrow keys. A control with nothing bound has no glyph.
 - STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
   raw stick, the PSP value it maps to, the triggers and the buttons held.
 

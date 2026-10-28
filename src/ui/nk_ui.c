@@ -678,11 +678,11 @@ void nk_ui_set_prompt_images(NkUi *ui, const NkUiPromptImages *images) {
     }
 }
 
-/* The glyph image for the current style, or NULL to draw the geometry. */
-static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction action) {
+/* The glyph image for a style, or NULL to draw the geometry. */
+static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptStyle style,
+                                               NkUiPromptAction action) {
     const NkUiImage *image;
-    unsigned style = (unsigned)ui->prefs.prompt_style;
-    if (ui->prompt_images == NULL || style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
+    if (ui->prompt_images == NULL || (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
         (unsigned)action >= (unsigned)NK_UI_PROMPT_ACT_COUNT) {
         return NULL;
     }
@@ -691,24 +691,37 @@ static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction 
 }
 
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height) {
+    return ui != NULL &&
+           nk_ui_prompt_glyph_in(ui, id, ui->prefs.prompt_style, action, NULL, height);
+}
+
+bool nk_ui_prompt_glyph_in(NkUi *ui, NkUiId id, NkUiPromptStyle style, NkUiPromptAction action,
+                           const char *label, float height) {
     NkUiCustomSlot *slot;
     NkUiLayout layout;
-    const NkUiImage *image;
+    const NkUiImage *image = NULL;
     float width;
-    if (ui == NULL || !isfinite(height) || height <= 0.0f) {
+    if (ui == NULL || !isfinite(height) || height <= 0.0f ||
+        (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT) {
         return false;
     }
-    image = nk_ui_prompt_image_for(ui, action);
+    if (label != NULL) {
+        /* The legend lives in frame storage until the glyph is painted. */
+        label = nk_ui_frame_text(ui, label);
+    } else {
+        image = nk_ui_prompt_image_for(ui, style, action);
+    }
     width = image != NULL
         ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
-        : nk_ui_prompt_width(ui->prefs.prompt_style, action, height);
+        : nk_ui_prompt_label_width(style, action, label, height);
     slot = nk_ui_custom_slot(ui);
     if (slot == NULL) {
         return false;
     }
     slot->kind = NK_UI_CUSTOM_SLOT_PROMPT;
-    slot->prompt.style = ui->prefs.prompt_style;
+    slot->prompt.style = style;
     slot->prompt.action = action;
+    slot->prompt.label = label;
     slot->prompt.fg_rgba = ui->theme.paper;
     slot->prompt.dim_rgba = ui->theme.placeholder;
     slot->prompt.face_rgba = ui->theme.surface_high;

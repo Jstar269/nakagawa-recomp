@@ -341,6 +341,55 @@ void input_settings_format_key(int key, char *buf, size_t buf_sz);
 void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
                                        char *buf, size_t buf_sz);
 
+/* The prompt glyph beside a binding on the Controls page (#1299): the host input it
+ * shows, as the kinds of glyph the UI draws, and the legend printed on a keycap or a
+ * pill. Face buttons go by position, the way the prompt bar draws them. */
+typedef enum {
+    INPUT_GLYPH_NONE = 0,       /* unbound: no glyph */
+    INPUT_GLYPH_FACE_SOUTH,
+    INPUT_GLYPH_FACE_EAST,
+    INPUT_GLYPH_FACE_WEST,
+    INPUT_GLYPH_FACE_NORTH,
+    INPUT_GLYPH_SHOULDER_LEFT,
+    INPUT_GLYPH_SHOULDER_RIGHT,
+    INPUT_GLYPH_PAD_START,      /* the pad's menu button */
+    INPUT_GLYPH_DPAD,           /* one of the D-pad's directions */
+    INPUT_GLYPH_PAD_LEGEND,     /* any other pad input: a pill with .legend */
+    INPUT_GLYPH_ARROW_KEY,      /* one of the arrow keys */
+    INPUT_GLYPH_KEY             /* any other key: a keycap with .legend */
+} InputGlyphKind;
+
+/* Whose names a pad input with no glyph of its own is given on its pill: the
+ * pad's family, as its south button's label tells them apart. */
+typedef enum {
+    INPUT_PAD_NAMES_NEUTRAL = 0,
+    INPUT_PAD_NAMES_A_SOUTH,    /* A on the south button */
+    INPUT_PAD_NAMES_A_EAST,     /* A on the east button */
+    INPUT_PAD_NAMES_SHAPES,     /* a cross on the south button */
+    INPUT_PAD_NAMES_COUNT
+} InputPadNames;
+
+typedef struct {
+    InputGlyphKind kind;
+    char legend[8];             /* PAD_LEGEND and KEY: "LT", "SHIFT"; otherwise empty */
+} InputBindingGlyph;
+
+/**
+ * @brief The glyph of a digital control's (0..13) keyboard key: its first key, or its
+ * second when it has only that. A keycap carries the key's printed legend in caps
+ * ("X", "SHIFT", "ENTER"), the same for a key's left and right or keypad copy.
+ */
+void input_settings_key_glyph(const InputSettingsState *state, int control_idx,
+                              InputBindingGlyph *out);
+
+/**
+ * @brief The glyph of a digital control's (0..13) controller binding: its first
+ * source, or its second when it has only that. A pad input with no glyph of its own
+ * (a trigger, a stick, Back, Guide) gets a pill named the way `names` names it.
+ */
+void input_settings_pad_glyph(const InputSettingsState *state, int control_idx,
+                              InputPadNames names, InputBindingGlyph *out);
+
 /**
  * @brief Make `key` a digital control's (0..13) keyboard key, keeping its second key.
  *
