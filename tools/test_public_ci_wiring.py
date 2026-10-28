@@ -206,6 +206,37 @@ class PublicCiWiringTests(unittest.TestCase):
             _ci_step_index(native_tools, step_name),
         )
 
+    def test_hle_thread_selftest_runs_on_linux_and_windows(self) -> None:
+        """The production-HLE suite links src/rt/hle.c, so it is hle.c's behavioural gate.
+
+        Linux runs the POSIX arms of hle.c's host seams and Windows the Win32 arms; built on
+        Windows alone, the Linux arms had no behavioural coverage beyond compiling (#306).
+        """
+        jobs = _ci_job_blocks()
+        native_tools = jobs["native_tools"]
+        step_name = "Build and run HLE thread selftest (links SDL3)"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must build and run hle-thread-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-thread-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
+        windows = _ci_step(jobs["windows_runtime"], "Build and run HLE thread selftest")
+        self.assertIsNotNone(windows, "the Windows selftests part must keep hle-thread-selftest")
+        assert windows is not None
+        self.assertIn("hle-thread-selftest", "\n".join(windows))
+        # GNU ld has no --no-insert-timestamp: the link names the per-host reproducible flag.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        start = makefile.index("\nhle-thread-selftest-build:")
+        recipe = makefile[start:makefile.index("\nhle-thread-selftest:", start)]
+        self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
+        self.assertNotIn("--no-insert-timestamp", recipe)
+
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
         native_tools = _ci_job_blocks()["native_tools"]
@@ -490,14 +521,17 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
-# Steps every part repeats: the toolchain setup and the runtime-object compile gate.
+# Steps every part repeats: the toolchain setup, the job-local compiler cache and the
+# runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
     "Set up Windows CPython 3.15.1",
     "Set up MSYS2 UCRT64",
     "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
+    "Route this job's compiles through a job-local compiler cache",
     "Compile Windows runtime objects through the default compiler path",
+    "Report the job-local compiler cache statistics",
 )
 
 
@@ -606,6 +640,75 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class WindowsCompilerCacheTests(unittest.TestCase):
+    """#735 item 2: repeated Windows compiles are served only by a job-local cache.
+
+    ccache keys an entry on the compiler, the command line and the contents of every
+    header, so a hit is an identical compile. The cache must start empty in each job
+    and never cross a job or a run (#373), CC must stay `gcc`, and the masquerading
+    `gcc` must resolve into the UCRT64 toolchain, whose location the build's SDL3
+    toolchain check reads.
+    """
+
+    SETUP = "Route this job's compiles through a job-local compiler cache"
+    REPORT = "Report the job-local compiler cache statistics"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.setup = "\n".join(_ci_step(cls.block, cls.SETUP) or [])
+        cls.report = "\n".join(_ci_step(cls.block, cls.REPORT) or [])
+
+    def test_cache_comes_from_the_toolchain_and_wraps_every_compile_after_the_resolution_check(self) -> None:
+        install = "\n".join(_ci_step(self.block, "Set up MSYS2 UCRT64") or [])
+        self.assertIn("mingw-w64-ucrt-x86_64-ccache", install)
+        self.assertLess(_ci_step_index(self.block, "Verify default and override compiler resolution"),
+                        _ci_step_index(self.block, self.SETUP))
+        self.assertLess(_ci_step_index(self.block, self.SETUP),
+                        _ci_step_index(self.block, "Compile Windows runtime objects through the default compiler path"))
+
+    def test_gcc_is_a_native_symlink_to_the_toolchain_ccache(self) -> None:
+        # A copy elsewhere would leave `gcc` outside /ucrt64/bin and fail the SDL3
+        # toolchain check; nativestrict refuses to fall back to copying.
+        self.assertIn('MSYS=winsymlinks:nativestrict ln -s /ucrt64/bin/ccache.exe "$cache/bin/gcc.exe"', self.setup)
+        self.assertIn('test "$(readlink -f "$cache/bin/gcc.exe")" = /ucrt64/bin/ccache.exe', self.setup)
+        self.assertIn('test "$(command -v gcc)" = "$cache/bin/gcc"', self.setup)
+        self.assertIn("> /etc/profile.d/zz-job-compiler-cache.sh", self.setup)
+        self.assertNotRegex(self.setup, r"(?m)^\s*cp\s")
+
+    def test_cache_lives_in_this_job_and_is_never_restored_or_shared(self) -> None:
+        self.assertIn('cache="$(cygpath -u "$RUNNER_TEMP")/ccache"', self.setup)
+        self.assertIn("export CCACHE_DIR='%s'", self.setup)
+        self.assertIn('"$(cygpath -m "$cache/objects")"', self.setup)
+        # The cache is named in no other step, so no cache, artifact or other job's
+        # step can restore, upload or reuse it.
+        allowed = {"Set up MSYS2 UCRT64", self.SETUP, self.REPORT}
+        for job, lines in _ci_job_blocks().items():
+            step = None
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- name: "):
+                    step = stripped[len("- name: "):]
+                if "ccache" not in stripped.lower() or stripped.startswith("#"):
+                    continue
+                with self.subTest(job=job, line=stripped):
+                    self.assertEqual(job, "windows_runtime", "the compiler cache must not leave its job")
+                    self.assertIn(step, allowed, "the compiler cache is used only by its own steps")
+
+    def test_cc_stays_gcc_in_every_windows_step(self) -> None:
+        for line in self.block:
+            with self.subTest(line=line.strip()):
+                self.assertNotRegex(line, r"\bCC=\S*ccache", "the cache masquerades as gcc; CC is not changed")
+
+    def test_report_runs_last_and_fails_when_the_cache_was_bypassed(self) -> None:
+        names = [line.strip()[len("- name: "):] for line in self.block if line.strip().startswith("- name: ")]
+        self.assertEqual(names[-1], self.REPORT)
+        self.assertIn("ccache --print-stats", self.report)
+        for counter in ("direct_cache_hit", "preprocessed_cache_hit", "cache_miss"):
+            self.assertIn(f'"{counter}"', self.report)
+        self.assertIn('test "$compiles" -gt 0', self.report)
 
 
 class WindowsPlayerStageSmokeTests(unittest.TestCase):

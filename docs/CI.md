@@ -76,14 +76,22 @@ retail inputs, or hardware.
 
 `.github/workflows/pages.yml` publishes the project website,
 <https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
-repository's Pages source is "GitHub Actions". The page is one static file with no scripts,
-web fonts or third-party requests. Its images are files the repository already publishes:
-the brand marks, the showcase demo captures, the presentation screenshot
-`docs/media/hst-title-screen.png` and its 960 px copy with their notice, and the share card
-`docs/images/brand/og-card.png` that link previews show. The build job copies an explicit list of
+repository's Pages source is "GitHub Actions". The page is one static file with inline CSS and
+two small inline scripts (the theme picker, remembered in the visitor's own browser, and the phone
+menu), and no web fonts, external scripts or third-party requests. It shows two launcher screenshots,
+`docs/media/launcher-library.png` and `docs/media/launcher-building.png`, with their notice, and link
+previews show the share card `docs/images/brand/og-card.png`. The artifact also carries the presentation
+clip `docs/media/hst-rally.mp4` for the README's link. The build job copies an explicit list of
 files into the artifact, so nothing else in the tree is published, and fails when the page
-names a local file the list does not copy. A pull request that touches those paths runs the
-build job only; a push to `main`, or a manual run on `main`, also deploys through
+names a local file the list does not copy. Before it uploads the artifact, it runs
+`tools/test_site_mobile.py` on the assembled site: headless Chromium (Playwright, hash-pinned)
+renders the page at 360x780, 390x844, 430x932 and 1280x800 in Auto with a light system, Auto with
+a dark system, picked Light and picked Dark, and fails on sideways overflow, a section whose
+background does not match the active theme, text below WCAG AA contrast, a phone tap target
+under 44 px, a theme picker that does not switch the whole page, or a missing image or link
+target. Locally the browser half reports SKIP when Playwright or its Chromium is missing; the
+workflow sets `NK_SITE_TEST_REQUIRED=1` so it cannot skip there. A pull request that touches
+those paths, or the test, runs the build job only; a push to `main`, or a manual run on `main`, also deploys through
 `actions/deploy-pages`. Only the deploy job holds `pages: write` and `id-token: write`, and
 the `github-pages` environment accepts deployments from `main` alone. To preview the site,
 open `docs/index.html` from a checkout: its relative image paths resolve the same way. Keep
@@ -153,6 +161,14 @@ defect class to fail the gate; a mutant that only breaks the build is rejected a
 counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
+
+Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
+`src/rt/hle.c` (#306): the Windows job in its `selftests` part, and the Linux `native_tools` job
+after the pinned SDL3 install, because the suite links SDL3 for the scheduler's host clock. Each
+host runs its own arms of `hle.c`'s file, directory and host-data seams. A few checks exist on
+Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
+`CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
+plants a symbolic link in its place).
 
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
@@ -613,9 +629,21 @@ GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
 workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
 native gates, cancels superseded PR runs, and avoids repeating the full matrix on
 ordinary main pushes. The workflow uses dependency/tool caches only (pip);
-compiled runtime objects and generated shader/code output are not cached, so the
-repository's content-addressed invalidation and freshness checks remain the
-source of truth. No volatile dollar figure is part of the repository contract.
+compiled runtime objects and generated shader/code output are not cached across
+jobs or runs, so the repository's content-addressed invalidation and freshness
+checks remain the source of truth. No volatile dollar figure is part of the
+repository contract.
+
+Inside one `windows_runtime` part, repeated compiles of the same sources (the
+platform ladder builds the runtime once per rung, the smoke part once per smoke)
+go through a job-local `ccache` (#735 item 2). It starts empty under
+`RUNNER_TEMP`, keys each entry on the compiler, the command line and the contents
+of every header, and is never restored, uploaded or shared with another job or
+run. Make still decides what to build; the cache only returns an object for an
+identical compile. `gcc` is a native symlink to the UCRT64 toolchain's
+`ccache.exe`, so `CC` stays `gcc`, and SDL3 discovery and the toolchain check
+(`tools/nk_doctor_checks.py`) follow the link into `/ucrt64/bin`. Each part's last
+step prints the cache statistics and fails if no compile went through the cache.
 
 Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
 `OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
