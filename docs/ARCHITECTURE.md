@@ -239,7 +239,7 @@ The runtime executes generated guest functions and implements the host side of P
 | File | Purpose |
 | --- | --- |
 | `hle.c` | PSP syscall/NID dispatch and a large portion of kernel/user HLE behavior |
-| `hle_thread_selftest.c` | Game-input-free Windows harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
+| `hle_thread_selftest.c` | Game-input-free Windows and Linux harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
 | `audio_unavailable.c` | Public-safe SDL3 host audio backend linked under `PUBLIC_SAFE=1`; fails closed with a diagnostic when no device is available. Despite the historical file name it is a working backend, not a refusing stub; the lineage-sensitive `audio.c` backend was retired on 2026-10-25 and no build compiles it |
 | `iso_public.c` / `iso.h` | Public-tree UMD/ISO backend linked under `PUBLIC_SAFE=1` using `nk_iso`; `iso_unavailable.c` is kept as a stub alternative; the private `iso.c` backend was retired on 2026-10-25 |
 | `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; the private installed-data backend `pgd.c` was retired on 2026-10-25 |
@@ -572,9 +572,12 @@ Behavioral side effects, waits, wakeups, callbacks, outputs, and error values ar
 The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
 allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
-one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. Cross-thread
-DMAC BUSY/blocking state remains outside the synchronous HLE helper until the scheduler owns an
-active-transfer operation.
+one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
+that starts a transfer stays blocked in the call while the scheduler's transfer window is open;
+another thread's `sceDmacTryMemcpy` then returns BUSY (`0x80000021`) and its blocking
+`sceDmacMemcpy` waits through the scheduler, as measured on a PSP-3000 (#303). The transfer's
+guest-time duration is unmeasured, so the window carries no time: it closes at the scheduling
+decision after one other thread has run, or at once when no other thread is runnable.
 
 ### Scheduler / coroutines
 
