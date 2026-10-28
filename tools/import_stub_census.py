@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 # Project-authored; the layout model is tools/imports.py (psp_import_table layout).
 
 """Import-stub census: every import-table stub of an image must reach the HLE.

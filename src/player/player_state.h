@@ -271,7 +271,10 @@ typedef enum {
     PREFLIGHT_STALE,
     PREFLIGHT_UNSUPPORTED,
     PREFLIGHT_IN_PROGRESS,
-    PREFLIGHT_INVALID
+    PREFLIGHT_INVALID,
+    /* Usable, but not the real thing: every PSP font is served, and at least one by a
+       stand-in (a project font or another imported size), not the user's own (#1300). */
+    PREFLIGHT_SYNTHETIC
 } PlayerPreflightStatus;
 
 typedef struct {
@@ -339,6 +342,16 @@ typedef struct {
     PlayerView return_view; /* where closing the panel goes */
 } PlayerDevLog;
 
+/* What a one-line outcome says, which picks its colour on screen (the UI's
+   PlayerUiNoteKind, in the same order): nothing went wrong, it worked, there
+   is something to do, or it failed. */
+typedef enum {
+    PLAYER_NOTE_NEUTRAL = 0,
+    PLAYER_NOTE_DONE,
+    PLAYER_NOTE_WARNING,
+    PLAYER_NOTE_ERROR
+} PlayerNoteKind;
+
 typedef struct {
     WizardStep step;
     bool iso_selected;
@@ -363,6 +376,7 @@ typedef struct {
     /* One explicit line per Latin registry index, including the exact file or fallback. */
     char font_latin_index_detail[NK_FONT_LATIN_INDEX_COUNT][160];
     char font_message[NK_FONT_TEXT_MAX];
+    PlayerNoteKind font_message_kind; /* what font_message says: done, a warning, ... */
 } SetupWizardState;
 
 /* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
@@ -441,6 +455,9 @@ typedef struct PlayerApp {
     bool stalled_game_notice_raise_requested;
     bool stalled_game_restore_game_front_requested;
     uint32_t stalled_game_no_frame_vblanks;
+    /* The notice is for a game that keeps flipping dark frames (the runtime's
+       dark_picture observation), not one that stopped flipping (no_new_flip). */
+    bool stalled_game_dark_picture;
     uint32_t stalled_game_seconds;
     uint32_t stalled_game_ready;
     uint32_t stalled_game_delay;

@@ -1878,7 +1878,11 @@ static uint32_t form_probe_word(CosimFormKind kind, uint32_t a, uint32_t b) {
          * correctly REFUSE shape 0, so probing only that shape would report the
          * fixture's own jr/jalr as undecoded. The question this census asks is
          * "is this form decoded at all", so a form counts as decoded if any
-         * well-formed shape of it is accepted. */
+         * well-formed shape of it is accepted.
+         * Shape 2: the shift shape, rs zero and a shift amount. A shift's rs field
+         * is not an operand: in srl, rs=1 selects the Allegrex rotate and any
+         * other nonzero rs is reserved, so shapes 0 and 1 are malformed for it. */
+        if (b == 2u) return enc_r(0u, 9u, 10u, 3u, a);
         return b == 0u ? enc_r(8u, 9u, 10u, 0u, a) : enc_r(8u, 0u, 0u, 0u, a);
     case FORM_COP1:
         /* fmt in rs, funct in the low bits, ft/fs/fd all f0. */
@@ -1922,12 +1926,13 @@ static int interpreter_decodes(CosimFormKind kind, uint32_t a, uint32_t b) {
              fault.pc == (uint32_t)COSIM_NEGPAD);
 }
 
-/* A SPECIAL form counts as decoded if either encoding shape is accepted. */
+/* A SPECIAL form counts as decoded if any of its encoding shapes is accepted. */
 static int form_is_decoded(CosimFormKind kind, uint32_t a, uint32_t b) {
     if (interpreter_decodes(kind, a, b)) {
         return 1;
     }
-    return kind == FORM_SPECIAL && interpreter_decodes(kind, a, 1u);
+    return kind == FORM_SPECIAL &&
+           (interpreter_decodes(kind, a, 1u) || interpreter_decodes(kind, a, 2u));
 }
 
 typedef struct {

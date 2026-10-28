@@ -113,8 +113,8 @@ struct NkUiTheme {
 #define NK_UI_MOTION_WAVE_FRAME (1.0 / 30.0) /* waves redraw at most at 30 Hz */
 
 /* ---- Fonts ----------------------------------------------------------------- */
-/* Font slots the host registers (assets/fonts/ui, all SIL OFL 1.1). 0-3 are the
-   original C2/C3 slots; 4-7 add the weights the type scale needs. */
+/* Font slots the host registers (assets/fonts/ui, all SIL OFL 1.1). Slots 4-7
+   are the extra weights the type scale needs. */
 enum {
     NK_UI_FONT_BODY = 0,           /* Geist Regular */
     NK_UI_FONT_DISPLAY = 1,        /* Chakra Petch SemiBold */

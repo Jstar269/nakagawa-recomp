@@ -386,17 +386,19 @@ def makefile_coupled_modules(modules: Iterable[str], tools_dir: Path = TOOLS_DIR
         if module not in units:
             selected.append(module)  # cannot be inspected, so it cannot be excluded
             continue
-        seen = {module}
+        # Walk the module's import closure; any coupled unit in it selects the module.
+        # A unit missing from the map cannot be inspected, so it counts as coupled.
+        visited = {module}
         stack = [module]
-        hit = False
-        while stack and not hit:
+        reaches_coupled = False
+        while stack and not reaches_coupled:
             current = stack.pop()
-            hit = coupled_unit.get(current, True)
+            reaches_coupled = coupled_unit.get(current, True)
             for dep in edges.get(current, ()):
-                if dep not in seen:
-                    seen.add(dep)
+                if dep not in visited:
+                    visited.add(dep)
                     stack.append(dep)
-        if hit:
+        if reaches_coupled:
             selected.append(module)
     return sorted(selected)
 

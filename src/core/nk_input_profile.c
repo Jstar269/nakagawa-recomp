@@ -483,7 +483,7 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
     profile->axes[NK_PSP_AXIS_ANALOG_Y].min_val = -32768;
     profile->axes[NK_PSP_AXIS_ANALOG_Y].max_val = 32767;
 
-    /* PSP Buttons matching gpu_sdl3vk/sdl3vk.c */
+    /* PSP buttons: the pad map of src/rt/gpu_sdl3vk/sdl3vk.c. */
     profile->psp_buttons[NK_PSP_BTN_SELECT].primary.type = NK_BINDING_HOST_BUTTON;
     profile->psp_buttons[NK_PSP_BTN_SELECT].primary.index = NK_HOST_BUTTON_BACK;
 
@@ -1285,10 +1285,10 @@ static bool parse_keyboard_bindings(
 
 /**
  * Parse one mapping (device identity, calibration, PSP bindings, navigation
- * bindings, keyboard bindings) out of a JSON object and validate it. Shared by the document's
- * global mapping and by every per-title entry, so a per-title mapping is held
- * to exactly the same rules as the global one. Any failure leaves `out` at the
- * safe default mapping.
+ * bindings, keyboard bindings) out of a JSON object and validate it. Shared by
+ * the document's global mapping and by every per-title entry, so a per-title
+ * mapping is held to exactly the same rules as the global one. Any failure
+ * leaves `out` at the safe default mapping.
  */
 static bool parse_mapping_node(
     const JsonNode *node,

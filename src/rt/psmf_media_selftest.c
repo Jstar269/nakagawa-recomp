@@ -121,6 +121,50 @@ static int guest_rgba_matches(uint32_t addr, uint32_t width, uint32_t height,
     return 1;
 }
 
+/* ---- swizzled VRAM mirror oracle (#1049) ---------------------------------------------------
+ * The physical eDRAM byte a CPU address reaches is sr_vram_cpu_address(); the helpers below read
+ * and compare physical bytes directly, never through the writer under test. */
+#define VRAM_PHYS_BYTES  0x00200000u
+#define VRAM_SENTINEL    0xA5u
+
+static uint8_t *vram_phys_byte(uint32_t guest_addr) {
+    return g_mem + (int32_t)(sr_vram_cpu_address(guest_addr) - SR_RAM_BASE);
+}
+
+static void vram_fill_sentinel(void) {
+    memset(vram_phys_byte(SR_VRAM_CPU_BASE), (int)VRAM_SENTINEL, VRAM_PHYS_BYTES);
+}
+
+static uint32_t vram_changed_bytes(void) {
+    const uint8_t *vram = vram_phys_byte(SR_VRAM_CPU_BASE);
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < VRAM_PHYS_BYTES; i++) if (vram[i] != VRAM_SENTINEL) changed++;
+    return changed;
+}
+
+/* A width x height RGBA8888 picture of one colour starting at guest address `base`, every byte
+ * read from the physical address its guest address translates to. */
+static int vram_rgba_matches(uint32_t base, uint32_t width, uint32_t height,
+                             const uint8_t expected[4]) {
+    for (uint32_t i = 0; i < width * height * 4u; i++)
+        if (*vram_phys_byte(base + i) != expected[i & 3u]) return 0;
+    return 1;
+}
+
+/* Destinations the movie frame writers must accept: the swizzled views, an uncached alias of
+ * one, an unaligned start that makes the first piece short, plus two linear controls. */
+typedef struct { uint32_t base; const char *name; int swizzled; } VramDest;
+static const VramDest k_vram_dests[] = {
+    { SR_VRAM_CPU_BASE + 0x00040000u,       "linear base view",         0 },
+    { SR_VRAM_CPU_BASE + 0x00440000u,       "linear 0x044 view",        0 },
+    { SR_VRAM_CPU_BASE + 0x00240000u,       "0x042 mirror",             1 },
+    { SR_VRAM_CPU_BASE + 0x00240014u,       "0x042 mirror, unaligned",  1 },
+    { SR_VRAM_CPU_BASE + 0x00640000u,       "0x046 mirror",             1 },
+    { SR_VRAM_CPU_BASE + 0x00640014u,       "0x046 mirror, unaligned",  1 },
+    { 0x40000000u + SR_VRAM_CPU_BASE + 0x00641F10u, "0x046 mirror, uncached alias", 1 },
+};
+#define VRAM_DEST_COUNT (sizeof(k_vram_dests) / sizeof(k_vram_dests[0]))
+
 #define FIX_PICTURES 3
 #define ARENA_BYTES (8u * 1024u * 1024u)
 #define GUEST_BUF   (0x08000000u + 0x00400000u)   /* 4 MiB into guest RAM */
@@ -133,7 +177,8 @@ typedef struct {
     uint32_t bytes;
 } MediaVramEvent;
 
-static MediaVramEvent media_vram_events[FIX_PICTURES * 2u];
+#define MEDIA_VRAM_EVENT_CAP 16384u
+static MediaVramEvent media_vram_events[MEDIA_VRAM_EVENT_CAP];
 static unsigned media_vram_event_count;
 
 static void media_vram_record(int kind, uint32_t addr, uint32_t bytes) {
@@ -357,6 +402,12 @@ static void put(Buf *b, const uint8_t *p, uint32_t n) {
 static void be32_at(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
 }
+/* A PSMF header timestamp: six big-endian bytes, the layout of the first (0x54) and last
+ * (0x5a) presentation times. */
+static void be48_at(uint8_t *p, int64_t v) {
+    for (int i = 0; i < 6; i++) p[i] = (uint8_t)((uint64_t)v >> (40 - 8 * i));
+}
+
 static void put_pts(uint8_t *p, int64_t v) {
     uint64_t x = (uint64_t)v;
     p[0] = (uint8_t)(0x21u | (((x >> 30) & 7u) << 1) | 1u);
@@ -1149,18 +1200,20 @@ static const SrH264ConformanceBackend conformance_backend = {
     sr_h264_drain
 };
 
-static void test_guest_vram_write_coherence(void) {
+/* One decoder run into `dest` (a 64x64 RGBA8888 picture, three authored pictures): every
+ * picture's bytes must land at the physical addresses the destination translates to, nothing else
+ * may change, and the GE coherence hooks must see a prepare before each commit whose spans, taken
+ * together, are exactly the physical bytes the picture occupies (#1054, #1049). */
+static void guest_vram_write_coherence_case(const VramDest *dest, const uint8_t *es,
+                                            const uint32_t *au_off, const uint32_t *au_len) {
     static const uint8_t expected_rgb[FIX_PICTURES][3] = {
         { 255u, 203u, 138u },
         { 130u, 130u, 130u },
         {  79u, 144u, 195u },
     };
-    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
-    uint8_t es[65536];
-    uint32_t es_len = 0;
-    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
-          "VRAM coherence fixture stream builds");
-    if (!es_len) return;
+    static uint8_t span_map[VRAM_PHYS_BYTES];
+    const uint32_t picture_bytes = 64u * 64u * 4u;
+    const uint32_t row_bytes = 64u * 4u;
 
     GeGpuHooks hooks;
     memset(&hooks, 0, sizeof(hooks));
@@ -1172,6 +1225,7 @@ static void test_guest_vram_write_coherence(void) {
     g_sr_vram_read_pending = 0;
     ge_set_gpu_hooks(&hooks);
     sr_vram_mark_renderer_pending();
+    vram_fill_sentinel();
 
     int decoder = conformance_backend.create();
     if (decoder < 0) {
@@ -1193,7 +1247,7 @@ static void test_guest_vram_write_coherence(void) {
     SrH264FrameInfo info;
     memset(&target, 0, sizeof(target));
     target.kind = SR_H264_TARGET_GUEST;
-    target.guest_buffer = GUEST_VRAM_BUF;
+    target.guest_buffer = dest->base;
     target.frame_width = 64;
     target.pixel_mode = 3;
 
@@ -1201,6 +1255,7 @@ static void test_guest_vram_write_coherence(void) {
     for (int guard = 0; guard < FIX_PICTURES + 4; guard++) {
         int result = conformance_backend.frame_ex(decoder, 1, &target, &info);
         if (result < 0) {
+            fprintf(stderr, "  destination: %s\n", dest->name);
             CHECK(0, "a decoded picture targeting guest VRAM is accepted");
             break;
         }
@@ -1211,26 +1266,81 @@ static void test_guest_vram_write_coherence(void) {
             uint8_t expected[4] = {
                 expected_rgb[frames][0], expected_rgb[frames][1], expected_rgb[frames][2], 0xFFu,
             };
-            CHECK(guest_rgba_matches(GUEST_VRAM_BUF, 64, 64, expected),
-                  "the VRAM-targeted picture writes its exact guest pixels");
+            int match = vram_rgba_matches(dest->base, 64, 64, expected);
+            if (!match) fprintf(stderr, "  destination: %s, picture %d\n", dest->name, frames);
+            CHECK(match, "the VRAM-targeted picture writes its exact guest pixels");
         }
         frames++;
     }
     CHECK(frames == FIX_PICTURES, "the VRAM-targeted stream releases every authored picture");
-    CHECK(media_vram_event_count == (unsigned)frames * 2u,
-          "each VRAM picture has one prepare and one post-write commit event");
-    for (int i = 0; i < frames && (unsigned)(i * 2 + 1) < media_vram_event_count; i++) {
-        const MediaVramEvent *prepare = &media_vram_events[i * 2];
-        const MediaVramEvent *commit = &media_vram_events[i * 2 + 1];
-        CHECK(prepare->kind == 1 && commit->kind == 2 && prepare->addr == GUEST_VRAM_BUF &&
-                  commit->addr == GUEST_VRAM_BUF && prepare->bytes == 64u * 64u * 4u &&
-                  commit->bytes == 64u * 64u * 4u,
-              "each CPU VRAM write prepares the exact span before its post-write commit");
+    {
+        const uint32_t changed = vram_changed_bytes();
+        if (changed != picture_bytes)
+            fprintf(stderr, "  destination: %s, %u physical bytes changed\n", dest->name,
+                    (unsigned)changed);
+        CHECK(changed == picture_bytes,
+              "the VRAM-targeted pictures change exactly the physical bytes of the destination");
+    }
+
+    /* Event shape: one prepare then one commit per piece the writer stored. Their canonical
+     * spans must cover each picture's physical bytes exactly once. */
+    CHECK(media_vram_event_count != 0u && (media_vram_event_count & 1u) == 0u &&
+              media_vram_event_count < MEDIA_VRAM_EVENT_CAP,
+          "each CPU VRAM write publishes prepare and commit events in pairs");
+    uint32_t paired = media_vram_event_count / 2u;
+    int shape_ok = 1, linear_rows_ok = 1;
+    for (unsigned i = 0; i < paired; i++) {
+        const MediaVramEvent *prepare = &media_vram_events[i * 2u];
+        const MediaVramEvent *commit = &media_vram_events[i * 2u + 1u];
+        const uint32_t commit_canonical = sr_vram_cpu_aperture(commit->addr)
+                                              ? sr_vram_cpu_address(commit->addr)
+                                              : SR_PHYS(commit->addr);
+        if (prepare->kind != 1 || commit->kind != 2 || prepare->bytes != commit->bytes ||
+            prepare->addr != commit_canonical || prepare->bytes == 0u)
+            shape_ok = 0;
+        if (!dest->swizzled && !(prepare->bytes == row_bytes &&
+                                 (prepare->addr - SR_PHYS(dest->base)) % row_bytes == 0u))
+            linear_rows_ok = 0;
+    }
+    CHECK(shape_ok, "each prepare precedes a commit of the same physical span");
+    CHECK(linear_rows_ok, "a linear destination is prepared and committed one row at a time");
+    for (int f = 0; f < frames && f < FIX_PICTURES; f++) {
+        /* Events are published picture by picture in order, and every picture writes the same
+         * number of pieces, so picture f owns an equal slice of the list. */
+        const unsigned per = paired / (unsigned)frames;
+        memset(span_map, 0, sizeof(span_map));
+        int covered_once = per != 0u && paired % (unsigned)frames == 0u;
+        for (unsigned i = f * per; covered_once && i < (unsigned)(f + 1) * per; i++) {
+            const MediaVramEvent *prepare = &media_vram_events[i * 2u];
+            for (uint32_t b = 0; b < prepare->bytes; b++) {
+                uint32_t off = prepare->addr + b - SR_VRAM_CPU_BASE;
+                if (off >= VRAM_PHYS_BYTES || span_map[off]++) { covered_once = 0; break; }
+            }
+        }
+        for (uint32_t i = 0; covered_once && i < picture_bytes; i++) {
+            uint32_t off = sr_vram_cpu_address(dest->base + i) - SR_VRAM_CPU_BASE;
+            if (span_map[off] != 1u) covered_once = 0;
+        }
+        if (!covered_once)
+            fprintf(stderr, "  destination: %s, picture %d\n", dest->name, f);
+        CHECK(covered_once,
+              "each picture's prepare/commit spans cover exactly its physical bytes, once");
     }
 
     conformance_backend.destroy(decoder);
     ge_set_gpu_hooks(NULL);
     g_sr_vram_read_pending = 0;
+}
+
+static void test_guest_vram_write_coherence(void) {
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint8_t es[65536];
+    uint32_t es_len = 0;
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "VRAM coherence fixture stream builds");
+    if (!es_len) return;
+    for (size_t d = 0; d < VRAM_DEST_COUNT; d++)
+        guest_vram_write_coherence_case(&k_vram_dests[d], es, au_off, au_len);
 }
 
 static void test_backend_registry_fail_closed(void) {
@@ -1970,6 +2080,176 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
+/* ---- movie frame writers behind the swizzled VRAM mirrors (#1049) ------------------------
+ * Hot Shots Tennis hands its movie buffers to sceMpegAvcCsc / sceMpegAvcDecode through the
+ * 0x042 and 0x046 mirror views of VRAM. The bulk writers used to refuse such a span (and log
+ * VRAM_MIRROR_BULK_UNSUPPORTED), so the picture never reached VRAM. Every case below compares
+ * the whole 2 MiB of physical VRAM against an image built from sr_vram_cpu_address(). */
+
+/* PSP pixel bytes of one RGBA source pixel, written from the public format definitions. */
+static uint32_t ref_pixel_bytes(int mode, const uint8_t *px, uint8_t out[4]) {
+    unsigned r = px[0], g = px[1], b = px[2];
+    uint16_t v;
+    switch (mode) {
+        case 0: v = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11)); break;
+        case 1: v = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | 0x8000u); break;
+        case 2: v = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8) | 0xF000u); break;
+        default: memcpy(out, px, 4u); return 4u;
+    }
+    out[0] = (uint8_t)v;
+    out[1] = (uint8_t)(v >> 8);
+    return 2u;
+}
+
+/* The whole physical VRAM equals the expected image. */
+static int vram_matches_image(const uint8_t *image) {
+    return memcmp(vram_phys_byte(SR_VRAM_CPU_BASE), image, VRAM_PHYS_BYTES) == 0;
+}
+
+/* Record `n` bytes written at guest address `guest_addr` in the expected image. */
+static void image_store(uint8_t *image, uint32_t guest_addr, const uint8_t *bytes, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t phys = sr_vram_cpu_address(guest_addr + i);
+        if (phys >= SR_VRAM_CPU_BASE && phys < SR_VRAM_CPU_BASE + VRAM_PHYS_BYTES)
+            image[phys - SR_VRAM_CPU_BASE] = bytes[i];
+    }
+}
+
+#define CSC_W 64u
+#define CSC_H 32u
+
+static void test_mpeg_csc_swizzled_vram_mirrors(void) {
+    enum {
+        MC_DESC = 0x08300000u,
+        MC_DATA = 0x08310000u,
+        MC_YCBCR = 0x08320000u,
+        MC_RANGE = 0x08330000u,
+        MC_MODE = 0x08340000u,
+        MC_RAM_DEST = 0x08350000u,
+    };
+    static uint8_t image[VRAM_PHYS_BYTES];
+    const struct { uint32_t x, y, w, h, frame_width; const char *name; } cases[] = {
+        { 0u, 0u, CSC_W, CSC_H, CSC_W, "whole picture" },
+        { 8u, 2u, 40u, 5u, 80u, "partial rectangle in a wider buffer" },
+    };
+
+    MEM_W32(MC_DESC, 0u);
+    CHECK(mpeg_create(MC_DESC, MC_DATA, 0x10000u, 0, CSC_W, 0, 0) == 0,
+          "mirror CSC fixture creates a context");
+    CHECK(mpeg_avc_init_ycbcr(MC_DESC, UINT32_MAX, CSC_W, CSC_H, MC_YCBCR) == 0,
+          "mirror CSC fixture initializes a YCbCr allocation");
+    YcbcrBuf *state = ycbcr_find(MC_DESC, MC_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "mirror CSC fixture retains a host picture");
+    if (!state || !state->rgba) return;
+    /* Distinct bytes per pixel, so a displaced or repeated piece cannot match. */
+    for (uint32_t yy = 0; yy < CSC_H; yy++)
+        for (uint32_t xx = 0; xx < CSC_W; xx++) {
+            uint8_t *px = state->rgba + ((size_t)yy * CSC_W + xx) * 4u;
+            px[0] = (uint8_t)(xx * 4u + yy);
+            px[1] = (uint8_t)(yy * 8u + xx * 3u + 1u);
+            px[2] = (uint8_t)(xx * yy + 17u * xx);
+            px[3] = (uint8_t)(0x80u + ((xx + yy) & 0x3fu));
+        }
+    state->valid = 1;
+
+    for (int mode = 0; mode <= 3; mode++) {
+        MEM_W32(MC_MODE, 0u);
+        MEM_W32(MC_MODE + 4u, (uint32_t)mode);
+        CHECK(guest_mpeg_import(0xa11c7026u, MC_DESC, MC_MODE, 0u, 0u, 0u) == 0,
+              "mirror CSC fixture selects the pixel mode through the guest import");
+        const uint32_t bpp = mode == 3 ? 4u : 2u;
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            MEM_W32(MC_RANGE, cases[c].x);
+            MEM_W32(MC_RANGE + 4u, cases[c].y);
+            MEM_W32(MC_RANGE + 8u, cases[c].w);
+            MEM_W32(MC_RANGE + 12u, cases[c].h);
+            /* Every VRAM destination, then linear RAM as the control. */
+            for (size_t d = 0; d <= VRAM_DEST_COUNT; d++) {
+                const int in_ram = d == VRAM_DEST_COUNT;
+                const uint32_t dest = in_ram ? MC_RAM_DEST : k_vram_dests[d].base;
+                const char *name = in_ram ? "RAM" : k_vram_dests[d].name;
+                vram_fill_sentinel();
+                memset(vram_phys_byte(MC_RAM_DEST), (int)VRAM_SENTINEL, 0x4000u);
+                memset(image, (int)VRAM_SENTINEL, sizeof(image));
+                uint32_t result = guest_mpeg_import(0x31bd0272u, MC_DESC, MC_YCBCR, MC_RANGE,
+                                                    cases[c].frame_width, dest);
+                int ok = result == 0u;
+                for (uint32_t r = cases[c].y; r < cases[c].y + cases[c].h; r++)
+                    for (uint32_t col = cases[c].x; col < cases[c].x + cases[c].w; col++) {
+                        uint8_t bytes[4];
+                        const uint8_t *px = state->rgba + ((size_t)r * CSC_W + col) * 4u;
+                        const uint32_t n = ref_pixel_bytes(mode, px, bytes);
+                        const uint32_t addr = dest + (r * cases[c].frame_width + col) * bpp;
+                        if (in_ram) {
+                            for (uint32_t i = 0; i < n; i++)
+                                if (*vram_phys_byte(addr + i) != bytes[i]) ok = 0;
+                        } else {
+                            image_store(image, addr, bytes, n);
+                        }
+                    }
+                /* A VRAM destination must match its image; a RAM one must leave VRAM untouched. */
+                if (!vram_matches_image(image)) ok = 0;
+                if (!ok)
+                    fprintf(stderr, "  CSC mode %d, %s, destination %s: result 0x%08x\n", mode,
+                            cases[c].name, name, (unsigned)result);
+                CHECK(ok, "sceMpegAvcCsc writes each pixel at the physical address its "
+                          "destination address translates to, and nothing else");
+            }
+        }
+    }
+    mpeg_finish();
+}
+
+/* sceMpegAvcDecode's blank-frame path (no picture decoded yet) clears the whole buffer. */
+static void test_mpeg_avc_decode_clear_in_vram_mirrors(void) {
+    enum {
+        MD_DESC = 0x08360000u,
+        MD_DATA = 0x08370000u,
+        MD_AU = 0x08380000u,
+        MD_PTR = 0x08390000u,
+        MD_INIT = 0x083a0000u,
+    };
+    static uint8_t image[VRAM_PHYS_BYTES];
+    static const uint8_t zero = 0u;
+    MEM_W32(MD_DESC, 0u);
+    CHECK(mpeg_create(MD_DESC, MD_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "mirror AvcDecode fixture creates a context");
+    Mpeg *ctx = mpeg_find(MD_DESC);
+    CHECK(ctx != NULL, "mirror AvcDecode fixture finds its context");
+    if (!ctx) return;
+    ctx->streamWidth = 64u;
+    ctx->streamHeight = 64u;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: sceMpegAvcDecode blank-frame clear needs a decoder instance\n");
+        mpeg_finish();
+        return;
+    }
+    for (int mode = 3; mode >= 0; mode -= 3) {
+        ctx->pixelMode = mode;
+        const uint32_t bytes = 64u * 64u * (mode == 3 ? 4u : 2u);
+        for (size_t d = 0; d < VRAM_DEST_COUNT; d++) {
+            vram_fill_sentinel();
+            memset(image, (int)VRAM_SENTINEL, sizeof(image));
+            for (uint32_t i = 0; i < bytes; i++)
+                image_store(image, k_vram_dests[d].base + i, &zero, 1u);
+            memset(SR_HOST(MD_AU), 0, 24u);
+            MEM_W32(MD_PTR, k_vram_dests[d].base);
+            MEM_W32(MD_INIT, 0xdeadbeefu);
+            uint32_t result = guest_mpeg_import(0x0e3c2e9du, MD_DESC, MD_AU, 64u, MD_PTR, MD_INIT);
+            int ok = result == SCE_MPEG_ERROR_NO_DATA && MEM_R32(MD_INIT) == 0u &&
+                     vram_matches_image(image);
+            if (!ok)
+                fprintf(stderr, "  AvcDecode mode %d, destination %s: result 0x%08x\n", mode,
+                        k_vram_dests[d].name, (unsigned)result);
+            CHECK(ok, "sceMpegAvcDecode clears its blank frame through any VRAM view, "
+                      "touching only the destination's physical bytes");
+        }
+    }
+    mpeg_finish();
+}
+
 /* The host picture behind a YCbCr allocation holds exactly the rows sceMpegAvcInitYCbCr
  * asked for. The fixture's 64x64 pictures decoded into a 64x16 allocation deliver 16 rows;
  * the host conversion must not write the other 48 past the end of that buffer (the
@@ -2113,9 +2393,13 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_NID_GET_AUDIO   0xb9848a74u
 #define AV_NID_GET_STATUS  0xf8ef08a6u
 #define AV_NID_DELETE      0x9b71a274u
+#define AV_NID_GET_INFO    0xdf089680u
+#define AV_NID_RELEASE     0xe792cd94u
 #define AV_STATUS_PLAYING  0x00000004u
 #define AV_STATUS_FINISHED 0x00000200u
 #define AV_ERR_NO_DATA     0x8061600cu
+#define AV_ERR_STATUS      0x80616001u
+#define AV_ERR_ILLEGAL_ADDR 0x800200d3u
 
 /* Guest addresses for this test; well above the FC_/TD_ blocks and GUEST_BUF. */
 #define AV_PLAYER 0x08600000u   /* player uid, also the uid's out-pointer */
@@ -2124,6 +2408,7 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_CONFIG 0x08603000u   /* ScePsmfPlayerConfigData */
 #define AV_VIDEO  0x08604000u   /* ScePsmfPlayerVideoData: frameWidth, displaybuf, displaypts */
 #define AV_AUDIO  0x08605000u   /* one 8192-byte PCM sink */
+#define AV_INFO   0x08606000u   /* PsmfInfo (20 bytes), then the width and height words */
 
 /* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP: 90000 * 1001 / 30000 = 3003
  * ticks exactly at 29.97 fps (30000/1001), so video PTS drift is identically 0.
@@ -2195,7 +2480,8 @@ static uint8_t *build_psmf_av(uint32_t *size_out, int layout) {
     b.d[0x57] = (uint8_t)(FIX_BASE >> 16);
     b.d[0x58] = (uint8_t)(FIX_BASE >> 8);
     b.d[0x59] = (uint8_t)FIX_BASE;
-    be32_at(b.d + 0x5a, (uint32_t)av_audio_pts(AV_AUDIO_BLOCKS - 1));
+    /* The last timestamp closes the final picture: base + AV_PICTURES picture steps. */
+    be48_at(b.d + 0x5a, FIX_BASE + av_video_pts(AV_PICTURES));
     /* Stream table: one video entry (non-zero version fields keep playerVersion 0) and one
      * audio entry whose byte 14 declares the ATRAC3+ channel count. */
     b.d[0x80] = 0; b.d[0x81] = 2;
@@ -2363,6 +2649,138 @@ static void test_player_lifecycle_releases_what_it_acquired(void) {
         int dec = sr_h264_create();
         CHECK(dec >= 0, "psmf-lifecycle: deleted players leave the decoder instances free");
         if (dec >= 0) sr_h264_destroy(dec);
+    }
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
+/* ---- scePsmfPlayerGetPsmfInfo (issue #308) ------------------------------------------- */
+
+static int av_info_is(uint32_t last, uint32_t video, uint32_t audio, uint32_t pcm, uint32_t ver) {
+    return MEM_R32(AV_INFO + 0) == last && MEM_R32(AV_INFO + 4) == video &&
+           MEM_R32(AV_INFO + 8) == audio && MEM_R32(AV_INFO + 12) == pcm &&
+           MEM_R32(AV_INFO + 16) == ver;
+}
+
+/* The info is the opened PSMF's header as the player parsed it: the last picture's time
+ * (the header duration less one picture), the video and audio stream counts, no PCM streams,
+ * and the player version (0 when every video stream carries an EP map, 1 otherwise).  The
+ * refusals are ILLEGAL_ADDR for an unusable player or info address and INVALID_STATUS for an
+ * unknown player or one whose PSMF is not set; a refused call writes nothing.  The width and
+ * height words are never written (two-argument contract). */
+static void test_player_get_psmf_info(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "psmf-info stream builds"); return; }
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    memset(SR_HOST(AV_INFO), 0xcc, 28u);
+
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) ==
+              AV_ERR_STATUS,
+          "psmf-info: a player that was never created is refused with INVALID_STATUS");
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+          "psmf-info: the player is created");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) ==
+              AV_ERR_STATUS,
+          "psmf-info: a call before the PSMF is set is refused with INVALID_STATUS");
+    CHECK(guest_bytes_are(AV_INFO, 28u, 0xcc), "psmf-info: a call before SetPsmf writes nothing");
+
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+          "psmf-info: the PSMF is set");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, 0, AV_INFO, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: a null player address is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, 0x0c000000u, AV_INFO, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: an unmapped player address is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, 0, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: a null info pointer is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, 0x0bfffff0u, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: an info span that leaves guest memory is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER + 4u, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: an address that holds no player is refused with INVALID_STATUS");
+    CHECK(guest_bytes_are(AV_INFO, 28u, 0xcc), "psmf-info: refused calls write nothing");
+
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0,
+          "psmf-info: an opened player reports its PSMF info");
+    CHECK(av_info_is((uint32_t)av_video_pts(AV_PICTURES - 1), 1u, 1u, 0u, 0u),
+          "psmf-info: last picture time, one video and one audio stream, no PCM, version 0");
+    CHECK(guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: the width and height words are left untouched");
+    CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
+          "psmf-info: the player starts");
+    memset(SR_HOST(AV_INFO), 0xcc, 20u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == 0 &&
+              av_info_is((uint32_t)av_video_pts(AV_PICTURES - 1), 1u, 1u, 0u, 0u),
+          "psmf-info: a playing player reports the same info");
+    CHECK(guest_mpeg_import(AV_NID_RELEASE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-info: the PSMF is released");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: a released PSMF is refused with INVALID_STATUS");
+
+    /* Two video and two audio streams; the second video stream has no EP map, which makes the
+     * player a BASIC (version 1) player.  The header times are this test's own. */
+    uint32_t a0o[FIX_PICTURES], a0l[FIX_PICTURES], a1o[FIX_PICTURES], a1l[FIX_PICTURES];
+    uint32_t multi_size = 0;
+    uint8_t *multi = build_multistream_psmf(&multi_size, a0o, a0l, a1o, a1l);
+    if (!multi) {
+        CHECK(0, "psmf-info multistream stream builds");
+    } else {
+        be48_at(multi + 0x54, FIX_BASE);
+        be48_at(multi + 0x5a, FIX_BASE + 10 * PSMF_VIDEO_PTS_STEP);
+        be32_at(multi + 0x96, 0u);           /* video entry 1: no EP map offset */
+        s_player_image = multi;
+        s_player_image_size = multi_size;
+        CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+              "psmf-info: the multistream PSMF is set");
+        memset(SR_HOST(AV_INFO), 0xcc, 20u);
+        CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == 0 &&
+                  av_info_is(9u * PSMF_VIDEO_PTS_STEP, 2u, 2u, 0u, 1u),
+              "psmf-info: two video and two audio streams, no PCM, BASIC version 1");
+        free(multi);
+    }
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-info: the player is deleted");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: a deleted player is refused with INVALID_STATUS");
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
+/* scePsmfPlayerGetVideoData with the display buffer behind each VRAM view: the first authored
+ * picture must reach VRAM at the translated addresses (the Hot Shots Tennis Cinema path). */
+static void test_psmf_player_display_in_vram_mirrors(void) {
+    if (!sr_h264_backend_available()) {
+        fprintf(stderr, "SKIP: PSMF player VRAM display needs an H.264 backend\n");
+        return;
+    }
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "VRAM display stream builds"); return; }
+    av_latch_mpeglog();
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    static const uint8_t picture0[4] = { 255u, 203u, 138u, 255u };
+    for (size_t d = 0; d < VRAM_DEST_COUNT; d++) {
+        vram_fill_sentinel();
+        MEM_W32(AV_VIDEO + 4, k_vram_dests[d].base);
+        CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+              "psmf-vram: the player is created");
+        int first = lc_play_first_picture(AV_PLAYER);
+        int pixels = vram_rgba_matches(k_vram_dests[d].base, 64, 64, picture0);
+        int exact = vram_changed_bytes() == 64u * 64u * 4u;
+        if (!first || !pixels || !exact)
+            fprintf(stderr, "  PSMF display %s: picture=%d pixels=%d exact=%d\n",
+                    k_vram_dests[d].name, first, pixels, exact);
+        CHECK(first, "psmf-vram: the first picture is delivered into a VRAM display buffer");
+        CHECK(pixels, "psmf-vram: scePsmfPlayerGetVideoData writes the picture at the "
+                      "physical addresses of the display buffer");
+        CHECK(exact, "psmf-vram: the picture changes exactly the display buffer's physical bytes");
+        CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-vram: the player is deleted");
     }
     s_player_image = NULL;
     s_player_image_size = 0;
@@ -2715,6 +3133,457 @@ cleanup:
                 failures - failures_before, layout == AV_LAYOUT_PACKED ? "packed" : "split");
 }
 
+/* ---- A/V offset at the host presentation boundaries (issue #279) -------------------------
+ *
+ * The tests above stop at the guest getters.  These drive the same synthetic PSMF fixture
+ * through the production getters, then present every delivered picture with the production
+ * sceDisplaySetFrameBuf handler (immediate and VBLANK-latched flips) and play every
+ * delivered block with the production sceAudioOutput handlers, and assert what the
+ * SR_MPEGAV measurement reports.  The fixture has no running scheduler and no host mixer, so
+ * the guest clock and the host queue lead are injected through the test seam; every step
+ * between a guest call and the recorded offset is production code.
+ *
+ * The clock is authored from the fixture's own presentation times: a picture with time P
+ * is presented at VBASE + P, a block with time P is submitted at ABASE + P with a queue lead
+ * of 2048 frames ahead of it, so the expected offsets are known constants and a stream that
+ * ran slow shows up as a changing A/V offset. */
+void sr_hle_test_psmf_av_reset(void);
+void sr_hle_test_psmf_av_enable(int on);
+void sr_hle_test_psmf_av_set_window_us(int64_t us);
+void sr_hle_test_psmf_av_set_clock_us(int64_t us);
+void sr_hle_test_psmf_av_set_queue_frames(int frames);
+const char *sr_hle_test_psmf_av_last_window(void);
+const char *sr_hle_test_psmf_av_last_final(void);
+unsigned sr_hle_test_psmf_av_window_lines(void);
+unsigned sr_hle_test_psmf_av_final_lines(void);
+int64_t sr_hle_test_psmf_av_counter(int audio, const char *key);
+void sr_hle_test_psmf_av_report(void);
+void sr_vblank_tick(void);
+
+#define PB_NID_SET_FRAMEBUF   0x289d82feu
+#define PB_NID_CH_RESERVE     0x5ec81c55u
+#define PB_NID_CH_RELEASE     0x6fc46853u
+#define PB_NID_OUTPUT_BLOCK   0x136caf51u
+#define PB_NID_OUT2_RESERVE   0x01562ba3u
+#define PB_NID_OUT2_BLOCK     0x2d53f36eu
+#define PB_NID_OUT2_RELEASE   0x43196845u
+#define PB_STRIDE 512
+#define PB_FMT 3                          /* 8888 */
+#define PB_FB_A     0x08440000u           /* two framebuffers and one never delivered */
+#define PB_FB_B     0x084d0000u
+#define PB_FB_NEVER 0x08560000u
+#define PB_AU_A     0x08620000u           /* two 8192-byte audio sinks and one never delivered */
+#define PB_AU_B     0x08622000u
+#define PB_AU_NEVER 0x08624000u
+#define PB_FRAMES   2048
+#define PB_LEAD_US  46439                 /* 2048 frames at 44.1 kHz, truncated */
+#define PB_VBASE_US 100000
+#define PB_ABASE_US 20000
+#define PB_VLAG_US  5000                  /* delivery precedes presentation by this much */
+#define PB_ALAG_US  7000
+#define PB_SKIP_VIDEO 40                  /* never presented: overwritten by picture 42 */
+#define PB_SKIP_AUDIO 30                  /* never played: overwritten by block 32 */
+#define PB_VOFF_US  PB_VBASE_US
+#define PB_AOFF_US  (PB_ABASE_US + PB_LEAD_US)
+#define PB_AV_US    (PB_VOFF_US - PB_AOFF_US)
+#define PB_AUDIO_TOL_US 36                /* 3 ticks of anchor extrapolation, plus rounding */
+
+typedef struct {
+    int enable;
+    int lead_frames;        /* injected host queue lead; -1 = no host queue */
+    int stretch_ppm;        /* audio plays this much slower than its presentation times */
+    int layout;
+    int output2;            /* sceAudioOutput2OutputBlocking instead of a regular channel */
+} PbScenario;
+
+static struct {
+    unsigned seen_lines;
+    int nav;
+    long long av[64];
+    int video_out, audio_out, channel;
+} pb;
+
+static int64_t pb_us(int64_t ticks) { return ticks * 100 / 9; }
+static uint32_t pb_video_buf(int idx) { return (idx & 1) ? PB_FB_B : PB_FB_A; }
+static uint32_t pb_audio_buf(int idx) { return (idx & 1) ? PB_AU_B : PB_AU_A; }
+static int pb_is_na(const char *line, const char *key) {
+    const char *p = line ? strstr(line, key) : NULL;
+    return p && p[strlen(key)] == 'n' && p[strlen(key) + 1] == 'a';
+}
+
+/* Every closed window is checked as it is published, so no window escapes the bounds. */
+static void pb_check_new_windows(const PbScenario *sc) {
+    unsigned lines = sr_hle_test_psmf_av_window_lines();
+    if (lines == pb.seen_lines) return;
+    pb.seen_lines = lines;
+    const char *w = sr_hle_test_psmf_av_last_window();
+    long long vn = 0, an = 0, vo = 0, ao = 0, av = 0;
+    int have = av_log_field(w, " vn=", &vn) && av_log_field(w, " an=", &an);
+    CHECK(have, "psmf-present: a window line carries its sample counts");
+    if (!have) return;
+    if (vn > 0 && !pb_is_na(w, " voff_us="))
+        if (av_log_field(w, " voff_us=", &vo) && sc->stretch_ppm == 0)
+            CHECK(llabs(vo - PB_VOFF_US) <= 1,
+                  "psmf-present: a window's video offset equals the clock authored from its pts");
+    if (an > 0 && sc->lead_frames >= 0 && !pb_is_na(w, " aoff_us=")) {
+        CHECK(av_log_field(w, " aoff_us=", &ao), "psmf-present: a window carries its audio offset");
+        if (sc->stretch_ppm == 0)
+            CHECK(llabs(ao - PB_AOFF_US) <= PB_AUDIO_TOL_US,
+                  "psmf-present: a window's audio offset equals submit time plus queue lead minus pts");
+    }
+    if (sc->lead_frames < 0) {
+        CHECK(an == 0 && pb_is_na(w, " aoff_us=") && pb_is_na(w, " av_us="),
+              "psmf-present: without a host queue the audio offset and the A/V offset are not measured");
+    } else if (vn > 0 && an > 0) {
+        CHECK(av_log_field(w, " av_us=", &av), "psmf-present: a paired window carries an A/V offset");
+        if (sc->stretch_ppm == 0)
+            CHECK(llabs(av - PB_AV_US) <= PB_AUDIO_TOL_US + 1,
+                  "psmf-present: a window's A/V offset equals the authored video minus audio offset");
+        if (pb.nav < (int)(sizeof(pb.av) / sizeof(pb.av[0]))) pb.av[pb.nav++] = av;
+    }
+}
+
+static void pb_video_step(const PbScenario *sc) {
+    int idx = pb.video_out;
+    if (idx >= AV_PICTURES) idx = AV_PICTURES - 1;
+    int64_t t = PB_VBASE_US + pb_us(av_video_pts(idx));
+    sr_hle_test_psmf_av_set_clock_us(t - PB_VLAG_US);
+    MEM_W32(AV_VIDEO + 0, PB_STRIDE);
+    MEM_W32(AV_VIDEO + 4, pb_video_buf(pb.video_out));
+    uint32_t v = guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0);
+    if (v != 0) {
+        CHECK(v == AV_ERR_NO_DATA, "psmf-present: the video getter reports NO_DATA or success");
+        return;
+    }
+    CHECK(pb.video_out < AV_PICTURES, "psmf-present: no more pictures than were authored");
+    if (pb.video_out >= AV_PICTURES) return;
+    CHECK((int64_t)MEM_R32(AV_VIDEO + 8) == av_video_pts(pb.video_out),
+          "psmf-present: guest displaypts equals the authored picture time");
+    int shown = pb.video_out;
+    pb.video_out++;
+    if (shown == PB_SKIP_VIDEO || shown == AV_PICTURES - 1) return;   /* delivered, never presented */
+    sr_hle_test_psmf_av_set_clock_us(t);
+    int latched = shown & 1;       /* odd pictures take the VBLANK-latched flip */
+    CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, pb_video_buf(shown), PB_STRIDE, PB_FMT,
+                            latched ? 1u : 0u, 0) == 0,
+          "psmf-present: the production display handler accepts the flip");
+    if (latched) sr_vblank_tick();
+    pb_check_new_windows(sc);
+}
+
+static void pb_audio_step(const PbScenario *sc) {
+    int idx = pb.audio_out;
+    if (idx >= AV_AUDIO_BLOCKS) idx = AV_AUDIO_BLOCKS - 1;
+    int64_t pts_us = pb_us(av_audio_pts(idx));
+    int64_t t = PB_ABASE_US + pts_us + pts_us * sc->stretch_ppm / 1000000;
+    sr_hle_test_psmf_av_set_clock_us(t - PB_ALAG_US);
+    uint32_t a = guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, pb_audio_buf(pb.audio_out), 0, 0, 0);
+    if (a != 0) {
+        CHECK(a == AV_ERR_NO_DATA, "psmf-present: the audio getter reports NO_DATA or success");
+        return;
+    }
+    int played = pb.audio_out;
+    pb.audio_out++;
+    if (played == PB_SKIP_AUDIO || played == AV_AUDIO_BLOCKS - 1) return;   /* delivered, never played */
+    sr_hle_test_psmf_av_set_clock_us(t);
+    uint32_t r = sc->output2
+        ? guest_mpeg_import(PB_NID_OUT2_BLOCK, 0x8000u, pb_audio_buf(played), 0, 0, 0)
+        : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)pb.channel, 0x8000u,
+                            pb_audio_buf(played), 0, 0);
+    CHECK(sc->output2 ? r == 0u : r == (uint32_t)PB_FRAMES,
+          "psmf-present: the production audio output handler accepts the block");
+    pb_check_new_windows(sc);
+}
+
+static int pb_counter_is(int audio, const char *key, long long want) {
+    return sr_hle_test_psmf_av_counter(audio, key) == want;
+}
+
+static void pb_run(const PbScenario *sc, const char *name) {
+    uint32_t size = 0;
+    int failures_before = failures;
+    uint8_t *image = build_psmf_av(&size, sc->layout);
+    if (!image) { CHECK(0, "A/V presentation container builds"); return; }
+    const int video = sr_h264_backend_available();
+    s_player_image = image;
+    s_player_image_size = size;
+    memset(&pb, 0, sizeof(pb));
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(sc->enable);
+    sr_hle_test_psmf_av_set_window_us(1000000);
+    sr_hle_test_psmf_av_set_clock_us(0);
+    sr_hle_test_psmf_av_set_queue_frames(sc->lead_frames);
+
+    lc_prepare_guest();
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+          "psmf-present: the player is created");
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+          "psmf-present: the source-owned A/V stream is opened");
+    CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
+          "psmf-present: playback starts");
+    if (sc->output2) {
+        CHECK(guest_mpeg_import(PB_NID_OUT2_RESERVE, PB_FRAMES, 0, 0, 0, 0) == 0,
+              "psmf-present: the Output2 channel is reserved");
+    } else {
+        pb.channel = (int)guest_mpeg_import(PB_NID_CH_RESERVE, 0xffffffffu, PB_FRAMES, 0u, 0, 0);
+        CHECK(pb.channel >= 0 && pb.channel < 8, "psmf-present: a regular audio channel is reserved");
+    }
+    CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, 0u, PB_STRIDE, PB_FMT, 1u, 0) == 0,
+          "psmf-present: the display mode is latched");
+
+    /* The three warm-up pictures the getter test also consumes (audio is held until the third
+     * completes), then media in its own proportion. */
+    for (int i = 0; i < 3; i++)
+        CHECK(guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0) == AV_ERR_NO_DATA,
+              "psmf-present: warm-up pictures report NO_DATA");
+    int guard;
+    for (guard = 0; guard < 4096; guard++) {
+        int target = (guard + 1) * AV_PICTURES / AV_AUDIO_BLOCKS - guard * AV_PICTURES / AV_AUDIO_BLOCKS;
+        for (int k = 0; k < target; k++) pb_video_step(sc);
+        pb_audio_step(sc);
+        CHECK(guest_mpeg_import(AV_NID_UPDATE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-present: updating a playing stream keeps succeeding");
+        if (pb.audio_out >= AV_AUDIO_BLOCKS && (!video || pb.video_out >= AV_PICTURES - 4)) break;
+    }
+    for (int i = 0; i < 64 && video && pb.video_out < AV_PICTURES; i++) {
+        pb_video_step(sc);
+        (void)guest_mpeg_import(AV_NID_UPDATE, AV_PLAYER, 0, 0, 0, 0);
+    }
+    CHECK(pb.audio_out == AV_AUDIO_BLOCKS, "psmf-present: the guest received every authored audio block");
+    CHECK(!video || pb.video_out == AV_PICTURES, "psmf-present: the guest received every authored picture");
+
+    /* A buffer presented or played that was never delivered stays unmatched, and a buffer
+     * that was already matched is not matched twice. */
+    if (sc->enable) {
+        int64_t v_match = sr_hle_test_psmf_av_counter(0, "matched");
+        int64_t v_pend = sr_hle_test_psmf_av_counter(0, "pending");
+        int64_t v_hits = sr_hle_test_psmf_av_counter(0, "hits");
+        int64_t v_bnd = sr_hle_test_psmf_av_counter(0, "boundary");
+        int64_t a_match = sr_hle_test_psmf_av_counter(1, "matched");
+        int64_t a_unmeas = sr_hle_test_psmf_av_counter(1, "unmeasured");
+        int64_t a_pend = sr_hle_test_psmf_av_counter(1, "pending");
+        int64_t a_hits = sr_hle_test_psmf_av_counter(1, "hits");
+        int64_t a_bnd = sr_hle_test_psmf_av_counter(1, "boundary");
+        sr_hle_test_psmf_av_set_clock_us(9000000);
+        CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, PB_FB_NEVER, PB_STRIDE, PB_FMT, 0u, 0) == 0,
+              "psmf-present: a never-delivered buffer can be presented");
+        CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, PB_FB_A, PB_STRIDE, PB_FMT, 0u, 0) == 0,
+              "psmf-present: an already-presented buffer can be presented again");
+        CHECK(pb_counter_is(0, "matched", v_match) && pb_counter_is(0, "pending", v_pend) &&
+                  pb_counter_is(0, "hits", v_hits) && pb_counter_is(0, "boundary", v_bnd + 2),
+              "psmf-present: presenting an undelivered or an already-matched buffer matches nothing");
+        uint32_t r = sc->output2
+            ? guest_mpeg_import(PB_NID_OUT2_BLOCK, 0x8000u, PB_AU_NEVER, 0, 0, 0)
+            : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)pb.channel, 0x8000u, PB_AU_NEVER, 0, 0);
+        (void)r;
+        r = sc->output2
+            ? guest_mpeg_import(PB_NID_OUT2_BLOCK, 0x8000u, PB_AU_B, 0, 0, 0)
+            : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)pb.channel, 0x8000u, PB_AU_B, 0, 0);
+        (void)r;
+        CHECK(pb_counter_is(1, "matched", a_match) && pb_counter_is(1, "unmeasured", a_unmeas) &&
+                  pb_counter_is(1, "pending", a_pend) && pb_counter_is(1, "hits", a_hits) &&
+                  pb_counter_is(1, "boundary", a_bnd + 2),
+              "psmf-present: playing an undelivered or an already-matched buffer matches nothing");
+        /* The deliveries that were never presented or played are counted, not hidden. */
+        CHECK(pb_counter_is(0, "superseded", video ? 1 : 0) && pb_counter_is(0, "pending", video ? 1 : 0),
+              "psmf-present: a picture overwritten, and one never presented, are counted unmatched");
+        CHECK(pb_counter_is(1, "superseded", 1) && pb_counter_is(1, "pending", 1),
+              "psmf-present: a block overwritten, and one never played, are counted unmatched");
+    } else {
+        CHECK(pb_counter_is(0, "delivered", 0) && pb_counter_is(1, "delivered", 0) &&
+                  pb_counter_is(0, "boundary", 0) && pb_counter_is(1, "boundary", 0),
+              "psmf-present: a disabled measurement records nothing");
+    }
+
+    unsigned finals_before = sr_hle_test_psmf_av_final_lines();
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-present: the player is deleted");
+    pb_check_new_windows(sc);
+    if (sc->output2) (void)guest_mpeg_import(PB_NID_OUT2_RELEASE, 0, 0, 0, 0, 0);
+    else (void)guest_mpeg_import(PB_NID_CH_RELEASE, (uint32_t)pb.channel, 0, 0, 0, 0);
+
+    if (!sc->enable) {
+        CHECK(sr_hle_test_psmf_av_final_lines() == finals_before && sr_hle_test_psmf_av_window_lines() == 0,
+              "psmf-present: a disabled measurement prints no window and no summary");
+        goto done;
+    }
+    CHECK(sr_hle_test_psmf_av_final_lines() == finals_before + 1u,
+          "psmf-present: deleting the player publishes the final summary once");
+    const char *f = sr_hle_test_psmf_av_last_final();
+    long long vdel = 0, vmatch = 0, vunmeas = 0, vsuper = 0, vevict = 0, vnospan = 0, vpend = 0, vbnd = 0, vhit = 0;
+    long long adel = 0, amatch = 0, aunmeas = 0, asuper = 0, aevict = 0, anospan = 0, apend = 0, abnd = 0, ahit = 0;
+    long long windows = 0, paired = 0, drift = 0, avmin = 0, avmax = 0, avmean = 0, vlat = 0, alat = 0, vlatmax = 0;
+    int have =
+        av_log_field(f, " vdel=", &vdel) && av_log_field(f, " vmatch=", &vmatch) &&
+        av_log_field(f, " vunmeas=", &vunmeas) && av_log_field(f, " vsuper=", &vsuper) &&
+        av_log_field(f, " vevict=", &vevict) && av_log_field(f, " vnospan=", &vnospan) &&
+        av_log_field(f, " vpend=", &vpend) && av_log_field(f, " vbnd=", &vbnd) &&
+        av_log_field(f, " vhit=", &vhit) && av_log_field(f, " adel=", &adel) &&
+        av_log_field(f, " amatch=", &amatch) && av_log_field(f, " aunmeas=", &aunmeas) &&
+        av_log_field(f, " asuper=", &asuper) && av_log_field(f, " aevict=", &aevict) &&
+        av_log_field(f, " anospan=", &anospan) && av_log_field(f, " apend=", &apend) &&
+        av_log_field(f, " abnd=", &abnd) && av_log_field(f, " ahit=", &ahit) &&
+        av_log_field(f, " windows=", &windows) && av_log_field(f, " paired=", &paired);
+    CHECK(have && strstr(f, "reason=player_delete"), "psmf-present: the final summary carries every count");
+    if (!have) goto done;
+
+    CHECK(vdel == vmatch + vunmeas + vsuper + vevict + vnospan + vpend,
+          "psmf-present: every delivered picture is matched, unmeasured or counted unmatched");
+    CHECK(adel == amatch + aunmeas + asuper + aevict + anospan + apend,
+          "psmf-present: every delivered block is matched, unmeasured or counted unmatched");
+    CHECK(adel == AV_AUDIO_BLOCKS && asuper == 1 && apend == 1 && aevict == 0 && anospan == 0,
+          "psmf-present: all 65 blocks delivered; one overwritten and one never played");
+    CHECK(abnd - ahit == 2 && ahit == amatch + aunmeas,
+          "psmf-present: the undelivered and the repeated submit are the only non-matching submits");
+    if (sc->lead_frames >= 0) {
+        CHECK(amatch == AV_AUDIO_BLOCKS - 2 && aunmeas == 0, "psmf-present: every played block was matched");
+        CHECK(av_log_field(f, " alat_mean_us=", &alat) && alat == PB_ALAG_US + PB_LEAD_US &&
+                  av_log_field(f, " alat_max_us=", &vlatmax) && vlatmax == PB_ALAG_US + PB_LEAD_US,
+              "psmf-present: block delivery-to-play latency is the clock lag plus the queue lead");
+    } else {
+        CHECK(amatch == 0 && aunmeas == AV_AUDIO_BLOCKS - 2,
+              "psmf-present: with no host queue every played block is unmeasured, none reads as zero lead");
+        CHECK(pb_is_na(f, " alat_mean_us=") && pb_is_na(f, " av_mean_us=") && pb_is_na(f, " drift_us="),
+              "psmf-present: unmeasured audio leaves the offsets and the drift unmeasured");
+    }
+    if (video) {
+        CHECK(vdel == AV_PICTURES && vsuper == 1 && vpend == 1 && vevict == 0 && vnospan == 0,
+              "psmf-present: all 90 pictures delivered; one overwritten and one never presented");
+        CHECK(vmatch == AV_PICTURES - 2 && vunmeas == 0, "psmf-present: every presented picture was matched");
+        CHECK(vbnd - vhit == 2 && vhit == vmatch,
+              "psmf-present: the undelivered and the repeated present are the only non-matching presents");
+        CHECK(av_log_field(f, " vlat_mean_us=", &vlat) && vlat == PB_VLAG_US &&
+                  av_log_field(f, " vlat_max_us=", &vlatmax) && vlatmax == PB_VLAG_US,
+              "psmf-present: picture delivery-to-present latency is the clock lag");
+        CHECK(windows >= 3, "psmf-present: a three second run spans several windows");
+        if (sc->lead_frames >= 0) {
+            CHECK(paired >= 3 && av_log_field(f, " drift_us=", &drift) &&
+                      av_log_field(f, " av_min_us=", &avmin) && av_log_field(f, " av_max_us=", &avmax) &&
+                      av_log_field(f, " av_mean_us=", &avmean),
+                  "psmf-present: the summary carries min, max, mean and drift of the A/V offset");
+            if (sc->stretch_ppm == 0) {
+                CHECK(llabs(avmin - PB_AV_US) <= PB_AUDIO_TOL_US + 1 && llabs(avmax - PB_AV_US) <= PB_AUDIO_TOL_US + 1 &&
+                          llabs(avmean - PB_AV_US) <= PB_AUDIO_TOL_US + 1,
+                      "psmf-present: the A/V offset equals the authored interleave at the host boundaries");
+                CHECK(llabs(drift) <= 2 * PB_AUDIO_TOL_US,
+                      "psmf-present: the A/V offset does not drift across the run");
+            } else {
+                /* Positive control: audio playing 1% slow must be seen as a falling A/V offset. */
+                CHECK(drift < -10000, "psmf-present: a slow audio clock is reported as negative drift");
+                int monotone = pb.nav >= 3;
+                for (int i = 1; i < pb.nav; i++) if (pb.av[i] >= pb.av[i - 1]) monotone = 0;
+                CHECK(monotone, "psmf-present: the A/V offset falls window after window under a slow audio clock");
+            }
+        }
+    } else {
+        fprintf(stderr, "SKIP: picture presentation assertions need an H.264 backend\n");
+        CHECK(vdel == 0 && vmatch == 0, "psmf-present: without a backend no picture is delivered or matched");
+    }
+done:
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+    if (failures != failures_before)
+        fprintf(stderr, "FAIL: psmf-present: %d failed checks in scenario %s\n", failures - failures_before, name);
+}
+
+/* The fixture plays no sound: the null audio backend keeps the production output handlers
+ * (and their pacing) off a real device, and reports "no host queue" for the pacing path. */
+static char s_pb_audio_env[] = "SR_AUDIO_BACKEND=null";
+static void test_player_av_presentation_boundary(void) {
+    if (!getenv("SR_AUDIO_BACKEND")) {
+#ifdef _WIN32
+        _putenv(s_pb_audio_env);
+#else
+        putenv(s_pb_audio_env);
+#endif
+    }
+    PbScenario in_step = { 1, PB_FRAMES, 0, AV_LAYOUT_SPLIT, 0 };
+    pb_run(&in_step, "in-step regular channel");
+    PbScenario packed = { 1, PB_FRAMES, 0, AV_LAYOUT_PACKED, 1 };
+    pb_run(&packed, "in-step packed layout, Output2");
+    PbScenario slow = { 1, PB_FRAMES, 10000, AV_LAYOUT_SPLIT, 0 };
+    pb_run(&slow, "audio 1% slow");
+    PbScenario no_queue = { 1, -1, 0, AV_LAYOUT_SPLIT, 0 };
+    pb_run(&no_queue, "no host queue");
+    PbScenario disabled = { 0, PB_FRAMES, 0, AV_LAYOUT_SPLIT, 0 };
+    pb_run(&disabled, "disabled");
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(0);   /* later tests record nothing */
+}
+
+/* The sceMpeg path: a picture decoded by sceMpegAvcDecodeYCbCr carries its access unit's
+ * time, and sceMpegAvcCsc is where it lands in guest memory. */
+static void test_mpeg_csc_presentation_boundary(void) {
+    enum {
+        PC_DESC = 0x08100000u, PC_DATA = 0x08110000u, PC_YCBCR = 0x08130000u,
+        PC_RANGE = 0x08140000u, PC_DEST = 0x08150000u, PC_PTR = 0x08160000u,
+        PC_INIT = 0x08170000u, PC_AU = 0x08180000u, PC_MODE = 0x08190000u,
+    };
+    if (!sr_h264_backend_available()) {
+        fprintf(stderr, "SKIP: sceMpegAvcCsc presentation assertions need an H.264 backend\n");
+        return;
+    }
+    const uint32_t width = 64u, height = 64u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    uint8_t es[65536];
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len), "sceMpeg presentation fixture builds");
+    if (!es_len) return;
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(1);
+    sr_hle_test_psmf_av_set_window_us(1000000);
+    sr_hle_test_psmf_av_set_clock_us(1500000);
+    MEM_W32(PC_DESC, 0u);
+    CHECK(mpeg_create(PC_DESC, PC_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "sceMpeg presentation context is created");
+    Mpeg *ctx = mpeg_find(PC_DESC);
+    CHECK(ctx != NULL, "sceMpeg presentation context is found");
+    if (!ctx) return;
+    ctx->streamWidth = width;
+    ctx->streamHeight = height;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    ctx->totalPackets = 1u;
+    ctx->fedPackets = 1u;
+    CHECK(ctx->h264 >= 0 && sr_h264_submit_au(ctx->h264, es + au_off[0], au_len[0]) == 0,
+          "sceMpeg presentation picture reaches the decoder");
+    memset(SR_HOST(PC_AU), 0, 24u);
+    MEM_W32(PC_AU + 0u, 0u);                  /* pts 90000 ticks = 1 s, stored high word first */
+    MEM_W32(PC_AU + 4u, 90000u);
+    CHECK(guest_mpeg_import(0x67179b1bu, PC_DESC, UINT32_MAX, width, height, PC_YCBCR) == 0,
+          "sceMpeg presentation YCbCr storage initializes");
+    MEM_W32(PC_MODE, 0u);
+    MEM_W32(PC_MODE + 4u, 3u);
+    CHECK(guest_mpeg_import(0xa11c7026u, PC_DESC, PC_MODE, 0u, 0u, 0u) == 0,
+          "sceMpeg presentation selects RGBA output");
+    MEM_W32(PC_PTR, PC_YCBCR);
+    MEM_W32(PC_RANGE, 0u); MEM_W32(PC_RANGE + 4u, 0u);
+    MEM_W32(PC_RANGE + 8u, width); MEM_W32(PC_RANGE + 12u, height);
+    MEM_W32(PC_INIT, 0u);
+    CHECK(guest_mpeg_import(0xf0eb1125u, PC_DESC, PC_AU, PC_PTR, PC_INIT, 0u) == 0 && MEM_R32(PC_INIT) == 1u,
+          "sceMpeg presentation picture decodes");
+    CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 0,
+          "sceMpeg: a decoded YCbCr picture is not delivered to the guest until sceMpegAvcCsc");
+    CHECK(guest_mpeg_import(0x31bd0272u, PC_DESC, PC_YCBCR, PC_RANGE, width, PC_DEST) == 0,
+          "sceMpeg presentation Csc writes the picture");
+    CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 1 && sr_hle_test_psmf_av_counter(0, "pending") == 1,
+          "sceMpeg: sceMpegAvcCsc delivers the picture with the access unit's time");
+    sr_hle_test_psmf_av_set_clock_us(2000000);
+    CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, PC_DEST, 64u, PB_FMT, 1u, 0) == 0,
+          "sceMpeg presentation latches the destination for display");
+    CHECK(sr_hle_test_psmf_av_counter(0, "matched") == 0,
+          "sceMpeg: a latched flip is not a presentation before the VBLANK that applies it");
+    sr_vblank_tick();
+    CHECK(sr_hle_test_psmf_av_counter(0, "matched") == 1 && sr_hle_test_psmf_av_counter(0, "pending") == 0,
+          "sceMpeg: the VBLANK-applied flip presents the Csc destination");
+    sr_hle_test_psmf_av_report();
+    const char *w = sr_hle_test_psmf_av_last_window();
+    long long vo = 0;
+    CHECK(av_log_field(w, " voff_us=", &vo) && vo == 1000000,
+          "sceMpeg: the picture's presentation offset is present time minus its access unit time");
+    mpeg_finish();
+    sr_hle_test_psmf_av_reset();
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     sr_flight_init();
@@ -2758,12 +3627,18 @@ int main(int argc, char **argv) {
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_mpeg_csc_swizzled_vram_mirrors();
+    test_mpeg_avc_decode_clear_in_vram_mirrors();
     test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
+    test_player_get_psmf_info();
+    test_psmf_player_display_in_vram_mirrors();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);
     test_player_av_presentation_timing(AV_LAYOUT_PACKED);
+    test_player_av_presentation_boundary();
+    test_mpeg_csc_presentation_boundary();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
