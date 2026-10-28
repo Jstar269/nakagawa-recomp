@@ -46,22 +46,22 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **637** (dedicated **530**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **507** handlers across **25** API families, covering **536** handler-associated NID registrations.
+Registered NIDs: **638** (dedicated **531**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **510** handlers across **25** API families, covering **537** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 13 | 22 |
-| `partial` | 171 | 173 |
+| `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 320 | 334 |
+| `unreviewed` | 322 | 334 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
-| `sceAtrac` | 0 | 0 | 0 | 0 | 30 | 30 | 33 |
+| `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
@@ -77,14 +77,14 @@ Semantic handler census: **507** handlers across **25** API families, covering *
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
-| `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
+| `scePsmf` | 0 | 3 | 0 | 0 | 12 | 15 | 15 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **171** | **1** | **2** | **320** | **507** | **536** |
+| **Total** | **13** | **172** | **1** | **2** | **322** | **510** | **537** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -618,6 +618,9 @@ Semantic handler census: **507** handlers across **25** API families, covering *
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
+- **`h_PsmfGetPsmfInfo`** (`scePsmf`): `scePsmfPlayerGetPsmfInfo` (0xdf089680)
+  - Limitation: host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs of the 0x03090510 libpsmfplayer build are never written because the loaded build is not recorded; lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)
+  - Evidence: src/rt/psmf_media_selftest.c:test_player_get_psmf_info
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
 - **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)
