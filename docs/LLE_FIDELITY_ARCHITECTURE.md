@@ -64,9 +64,9 @@ PSP UMD disc images contain executables in two primary container formats:
 
 #### Encrypted containers
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in
-decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI
-refuse an encrypted `~PSP`/`~SCE` executable or PRX without a plain copy as `ENCRYPTED_EXECUTABLE`
+The player decrypts a UMD disc's encrypted executable and modules locally with built-in tables
+([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI refuse an encrypted
+`~PSP`/`~SCE` executable or PRX that has no plain copy after that as `ENCRYPTED_EXECUTABLE`
 or `ENCRYPTED_MODULE`, and the analyzer requires plain ELF/PRX inputs. PGD-protected game data
 remains unsupported.
 
@@ -228,7 +228,7 @@ The guest MIPS program must observe:
 
 #### Transparent Archive VFS
 
-Directly reading assets from the `data.xb` container without extracting 56,672 files to disk is fully compatible with LLE **if and only if** it is implemented as a transparent block driver inside `src/rt/iso.c`. The guest continues calling `sceIoOpen("disc0:/PSP_GAME/USRDIR/data.xb", ...)` or standard file APIs, completely unaware that the host is streaming sectors directly from the container.
+Directly reading assets from the `data.xb` container without extracting 56,672 files to disk is fully compatible with LLE **if and only if** it is implemented as a transparent block driver in the runtime's disc I/O layer. The shipped archive-backed VFS is `src/rt/archive_vfs.c` ([`ARCHIVE_VFS.md`](ARCHIVE_VFS.md)). The guest continues calling `sceIoOpen("disc0:/PSP_GAME/USRDIR/data.xb", ...)` or standard file APIs, completely unaware that the host is streaming sectors directly from the container.
 
 ---
 

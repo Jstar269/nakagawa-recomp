@@ -116,17 +116,19 @@ class VfpuCoverageCensusTests(unittest.TestCase):
 
     def test_named_vfpu4_identity_rows_are_unimplemented_and_fail_closed(self):
         cases = (
-            (0x01, 0x00, "vrnds"),
-            (0x01, 0x02, "vrndf1"),
+            (0x01, 0x00, 0x0000, "vrnds"),
+            (0x01, 0x02, 0x0000, "vrndf1"),
+            (0x01, 0x03, 0x0000, "vrndf2"),
+            (0x01, 0x01, 0x8080, "vrndi"),
         )
-        words = tuple((0x34 << 26) | (rs << 21) | (rt << 16)
-                      for rs, rt, _ in cases)
+        words = tuple((0x34 << 26) | (rs << 21) | (rt << 16) | size_bits
+                      for rs, rt, size_bits, _ in cases)
         records = census.classify_words(words)
         self.assertEqual(census.validate_agreement(records)["agree-unsupported"], len(cases))
         by_word = {record["word"]: record for record in records}
         rows = census._make_rows(records)
         self.assertEqual(len(rows), len(cases))
-        for (_rs, _rt, name), word in zip(cases, words, strict=True):
+        for (_rs, _rt, _size, name), word in zip(cases, words, strict=True):
             with self.subTest(name=name):
                 record = by_word[word]
                 self.assertFalse(record["interpreter_supported"])
@@ -140,6 +142,21 @@ class VfpuCoverageCensusTests(unittest.TestCase):
                 self.assertEqual(row["boundary_issue"], 326)
                 self.assertEqual(row["compatibility_disposition"], "supported-opcode-form-unmodeled")
                 self.assertEqual(row["agreement"], "agree-unsupported")
+
+    def test_vrndi_single_is_direct_in_both_lanes(self):
+        # vrndi.s follows the issue #326 step rule in the generated code and the
+        # interpreter; its row names the selftest that runs both lanes against it.
+        records = census.classify_words((0xD0210000, 0xD021006E))
+        for record in records:
+            with self.subTest(word=f"0x{record['word']:08x}"):
+                self.assertTrue(record["interpreter_supported"])
+                self.assertEqual(census.agreement_status(record), "agree-supported-direct")
+        rows = census._make_rows(records)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["compatibility_disposition"], "aot-direct")
+        self.assertIsNone(rows[0]["boundary_issue"])
+        self.assertEqual(rows[0]["differential_tests"],
+                         ["vfpu-interp-selftest:check_vrndi_rule_cells"])
 
     def test_measured_vfpu9_forms_agree_as_interpreter_routes(self):
         # PSP-3000 measured forms (2026-10-24, issue #326): both lanes support the

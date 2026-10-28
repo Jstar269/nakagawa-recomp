@@ -26,17 +26,25 @@ Two rules make the campaign meaningful rather than decorative:
 The source tree is never modified. Mutants are selected through Makefile
 overrides; the scheduler mutant copies sched.c beside the copied HLE-thread
 harness so its quoted include resolves only to the mutated file.
+
+Each gate is a serial build, so the campaign runs its mutants in parallel lanes
+(--jobs, one per CPU by default). Every lane builds beneath its own BUILD_ROOT
+under <build-dir>/lanes/ and must pass the unmutated gate there before it judges
+a mutant; scheduler mutants form one lane of their own. The developer's own
+build trees are neither mutated nor rebuilt.
 """
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -486,25 +494,44 @@ def resolve_make() -> str:
     raise RuntimeError("no make program found (set MAKE or put make on PATH)")
 
 
+def lane_overrides(build_root: Path) -> list[str]:
+    """Make overrides that put every output of one gate beneath `build_root`.
+
+    BUILD_ROOT alone is not enough. Each make invocation records its build
+    profile in its own BUILD_DIR, and recording one profile deletes the stamps
+    of every other, so two gates sharing that directory with different overrides
+    restart each other's make indefinitely. BUILD_DIR and COSIM_DIR are named
+    too, because a caller may have overridden them (tools/compiler_compare.py
+    passes COSIM_DIR) and MAKEFLAGS hands that override to every gate; a gate's
+    own arguments win over the inherited ones.
+    """
+    return [
+        f"BUILD_ROOT={build_root.as_posix()}",
+        f"BUILD_DIR={(build_root / 'gate').as_posix()}",
+        f"COSIM_DIR={(build_root / 'cosim').as_posix()}",
+    ]
+
+
 def make_command(source: Path, target: str,
-                 harness_source: Path | None = None) -> list[str]:
+                 harness_source: Path | None = None,
+                 build_root: Path | None = None) -> list[str]:
     if target == "interpreter":
-        override = f"COSIM_INTERP_SRC={source.as_posix()}"
+        command = ["cosim-selftest", f"COSIM_INTERP_SRC={source.as_posix()}"]
     elif target == "fp-convert":
-        override = f"COSIM_FP_CONVERT_PRELUDE={source.as_posix()}"
+        command = ["cosim-selftest", f"COSIM_FP_CONVERT_PRELUDE={source.as_posix()}"]
     elif target == "fpu-reference":
-        override = f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"
+        command = ["cosim-selftest", f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"]
     elif target == "generator":
-        override = f"CODEGEN_TOOL={source.as_posix()}"
+        command = ["cosim-selftest", f"CODEGEN_TOOL={source.as_posix()}"]
     elif target == "scheduler":
-        command = [resolve_make(), "--no-print-directory",
-                   "aot-return-boundary-thread-selftest"]
+        command = ["aot-return-boundary-thread-selftest"]
         if harness_source is not None:
             command.append(f"HLE_THREAD_SELFTEST_SOURCE={harness_source.as_posix()}")
-        return command
     else:
         raise ValueError(f"unknown mutation target: {target}")
-    return [resolve_make(), "--no-print-directory", "cosim-selftest", override]
+    if build_root is not None:
+        command.extend(lane_overrides(build_root))
+    return [resolve_make(), "--no-print-directory", *command]
 
 
 # A generated-code control-flow regression can hang the driver, so the gate gets a
@@ -549,7 +576,8 @@ def run_gate(source: Path, target: str = "interpreter",
              timeout_s: int | None = None,
              skip_ra_return_cases: bool = False,
              accepted_boundary: str | None = None,
-             harness_source: Path | None = None) -> tuple[str, str]:
+             harness_source: Path | None = None,
+             build_root: Path | None = None) -> tuple[str, str]:
     """Run the cosim gate against one mutated source.
 
     Returns (verdict, detail). verdict is one of:
@@ -576,8 +604,12 @@ def run_gate(source: Path, target: str = "interpreter",
         # build tree puts the wrong directory first on sys.path.
         env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
     budget = GATE_TIMEOUT_S if timeout_s is None else timeout_s
-    command = (make_command(source, target) if harness_source is None else
-               make_command(source, target, harness_source))
+    trees: dict[str, Path] = {}
+    if harness_source is not None:
+        trees["harness_source"] = harness_source
+    if build_root is not None:
+        trees["build_root"] = build_root
+    command = make_command(source, target, **trees)
     try:
         process = subprocess.Popen(
             command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -649,10 +681,80 @@ def run_gate(source: Path, target: str = "interpreter",
     return "no-run", tail
 
 
+def gate_options(mutant: Mutant) -> dict[str, bool | str | None]:
+    """The verdict rules one mutant's gate runs under."""
+    skip_ra_return_cases = mutant.name in {
+        "wrong-call-resume", "wrong-jump-target", "alter-link-value"
+    }
+    accepted_boundary = "AOT_RETURN_TARGET_MISMATCH" if mutant.name in {
+        "wrong-call-resume", "alter-link-value"
+    } else None
+    if mutant.target == "scheduler":
+        accepted_boundary = "AOT_RETURN_TARGET_MISMATCH"
+    return {"skip_ra_return_cases": skip_ra_return_cases,
+            "accepted_boundary": accepted_boundary}
+
+
+BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER}
+
+
+def plan_lanes(mutants: tuple[Mutant, ...] | list[Mutant],
+               jobs: int) -> list[tuple[str, list[int]]]:
+    """Deal the campaign into lanes, each judged in a build root of its own.
+
+    A gate is a serial build, so lanes run side by side. Cosimulation mutants are
+    dealt round-robin over at most `jobs` lanes, so a lane's order, and the build
+    history its tree sees, is fixed for a given `jobs`. Scheduler mutants build
+    the HLE-thread harness, a different gate with its own baseline, so they form
+    one lane of their own. Returns (baseline target, indices into `mutants`) for
+    each lane: the cosimulation lanes, then the scheduler lane.
+    """
+    cosim = [index for index, mutant in enumerate(mutants) if mutant.target != "scheduler"]
+    scheduler = [index for index, mutant in enumerate(mutants) if mutant.target == "scheduler"]
+    lanes = [("interpreter", cosim[lane::jobs]) for lane in range(jobs)]
+    lanes = [lane for lane in lanes if lane[1]]
+    if scheduler:
+        lanes.append(("scheduler", scheduler))
+    return lanes
+
+
+def run_lane(baseline_target: str, work: list[tuple[Mutant, Path, Path | None]],
+             build_root: Path, baseline: Future, stop: threading.Event) -> list[tuple[str, str]]:
+    """Run one lane: its baseline, then its mutants in order, all beneath `build_root`.
+
+    The lane's tree starts empty and must pass the unmutated gate before it
+    judges a mutant, so every tree that judges a mutant has passed the baseline.
+    The baseline verdict is published through `baseline` as soon as it is
+    known. A lane whose baseline fails, or that sees `stop`, runs no further
+    mutant.
+    """
+    try:
+        outcome = run_gate(BASELINES[baseline_target], baseline_target, build_root=build_root)
+    except BaseException as error:
+        baseline.set_exception(error)
+        raise
+    baseline.set_result(outcome)
+    results: list[tuple[str, str]] = []
+    if outcome[0] != "ok":
+        return results
+    for mutant, source, harness_source in work:
+        if stop.is_set():
+            break
+        results.append(run_gate(
+            source, mutant.target, harness_source=harness_source,
+            build_root=build_root, **gate_options(mutant),
+        ))
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build" / "cosim")
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
+                        help="parallel mutant lanes (default: one per CPU)")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
 
     sources = {
         "interpreter": INTERPRETER.read_text(encoding="utf-8"),
@@ -669,28 +771,15 @@ def main(argv: list[str] | None = None) -> int:
         "scheduler": "sched.c",
     }
     mutant_root = args.build_dir / "mutants"
-    if mutant_root.exists():
-        shutil.rmtree(mutant_root)
+    lane_root = args.build_dir / "lanes"
+    for root in (mutant_root, lane_root):
+        if root.exists():
+            shutil.rmtree(root)
     mutant_root.mkdir(parents=True, exist_ok=True)
 
-    print("COSIM_MUTATION baseline: the unmutated sources must pass")
-    verdict, detail = run_gate(INTERPRETER)
-    if verdict != "ok":
-        print(f"COSIM_MUTATION FAIL: baseline verdict={verdict}\n{detail}", file=sys.stderr)
-        return 1
-    print("COSIM_MUTATION baseline=OK")
-
-    verdict, detail = run_gate(SCHEDULER, "scheduler")
-    if verdict != "ok":
-        print(f"COSIM_MUTATION AOT boundary baseline verdict={verdict}\n{detail}",
-              file=sys.stderr)
-        return 1
-    print("COSIM_MUTATION AOT boundary baseline=OK")
-
-    killed = 0
-    survived: list[str] = []
-    invalid: list[str] = []
-    invalid_reasons: dict[str, list[str]] = {}
+    # Every mutated source is written before any gate runs, so a mutant whose
+    # pattern stopped matching fails the campaign before it spends a build.
+    work: list[tuple[Mutant, Path, Path | None]] = []
     for mutant in MUTANTS:
         directory = mutant_root / mutant.name
         directory.mkdir(parents=True, exist_ok=True)
@@ -708,56 +797,74 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
                 newline="\n",
             )
+        work.append((mutant, target, harness_source))
 
-        skip_ra_return_cases = mutant.name in {
-            "wrong-call-resume", "wrong-jump-target", "alter-link-value"
-        }
-        accepted_boundary = "AOT_RETURN_TARGET_MISMATCH" if mutant.name in {
-            "wrong-call-resume", "alter-link-value"
-        } else None
-        if mutant.target == "scheduler":
-            accepted_boundary = "AOT_RETURN_TARGET_MISMATCH"
-        verdict, detail = run_gate(
-            target, mutant.target,
-            skip_ra_return_cases=skip_ra_return_cases,
-            accepted_boundary=accepted_boundary,
-            harness_source=harness_source,
-        )
-        if verdict == "fail":
-            killed += 1
-            print(
-                f"COSIM_MUTATION KILLED  {mutant.name:<34} "
-                f"[{mutant.target}] {mutant.defect_class}"
-            )
-            if detail:
-                print(f"                       {detail}")
-        elif verdict == "ok":
-            survived.append(mutant.name)
-            print(
-                f"COSIM_MUTATION SURVIVED {mutant.name:<34} "
-                f"[{mutant.target}] {mutant.defect_class}"
-            )
-        else:
-            invalid.append(mutant.name)
-            invalid_reasons.setdefault(verdict, []).append(mutant.name)
-            print(f"COSIM_MUTATION INVALID  {mutant.name:<34} "
-                  f"(verdict={verdict}; not a kill)")
-            print(detail)
+    # The campaign builds nothing outside lanes/: the developer's own trees are
+    # neither mutated nor rebuilt, so nothing needs restoring afterwards.
+    lanes = plan_lanes(MUTANTS, args.jobs)
+    roots = [lane_root / f"{number}-{target}" for number, (target, _) in enumerate(lanes)]
+    place: dict[int, tuple[int, int]] = {
+        index: (number, position)
+        for number, (_, indices) in enumerate(lanes)
+        for position, index in enumerate(indices)
+    }
+    cosim_lanes = sum(1 for target, _ in lanes if target == "interpreter")
+    print(f"COSIM_MUTATION lanes={len(lanes)} ({cosim_lanes} cosim, "
+          f"{len(lanes) - cosim_lanes} scheduler)")
+    print("COSIM_MUTATION baseline: the unmutated sources must pass in every lane")
 
-    # Leave the tree in the state a reader expects: the real sources, passing.
-    print("COSIM_MUTATION restoring the unmutated build")
-    verdict, detail = run_gate(INTERPRETER)
-    if verdict != "ok":
-        print(f"COSIM_MUTATION FAIL: restored baseline verdict={verdict}\n{detail}",
-              file=sys.stderr)
-        return 1
+    killed = 0
+    survived: list[str] = []
+    invalid: list[str] = []
+    invalid_reasons: dict[str, list[str]] = {}
+    stop = threading.Event()
+    baselines: list[Future] = [Future() for _ in lanes]
+    with ThreadPoolExecutor(max_workers=len(lanes)) as pool:
+        futures = [
+            pool.submit(run_lane, target, [work[index] for index in indices],
+                        root, baseline, stop)
+            for (target, indices), root, baseline in zip(lanes, roots, baselines, strict=True)
+        ]
+        failed = False
+        for (target, _), root, baseline in zip(lanes, roots, baselines, strict=True):
+            verdict, detail = baseline.result()
+            if verdict != "ok":
+                failed = True
+                label = "baseline" if target == "interpreter" else "AOT boundary baseline"
+                print(f"COSIM_MUTATION FAIL: {label} verdict={verdict} "
+                      f"in {root.as_posix()}\n{detail}", file=sys.stderr)
+        if failed:
+            stop.set()
+            return 1
+        if cosim_lanes:
+            print("COSIM_MUTATION baseline=OK")
+        if cosim_lanes < len(lanes):
+            print("COSIM_MUTATION AOT boundary baseline=OK")
 
-    verdict, detail = run_gate(SCHEDULER, "scheduler")
-    if verdict != "ok":
-        print(f"COSIM_MUTATION restored AOT boundary baseline verdict={verdict}\n{detail}",
-              file=sys.stderr)
-        return 1
-    print("COSIM_MUTATION restored AOT boundary baseline=OK")
+        # Report in campaign order whatever order the lanes finish in.
+        for index, mutant in enumerate(MUTANTS):
+            number, position = place[index]
+            verdict, detail = futures[number].result()[position]
+            if verdict == "fail":
+                killed += 1
+                print(
+                    f"COSIM_MUTATION KILLED  {mutant.name:<34} "
+                    f"[{mutant.target}] {mutant.defect_class}"
+                )
+                if detail:
+                    print(f"                       {detail}")
+            elif verdict == "ok":
+                survived.append(mutant.name)
+                print(
+                    f"COSIM_MUTATION SURVIVED {mutant.name:<34} "
+                    f"[{mutant.target}] {mutant.defect_class}"
+                )
+            else:
+                invalid.append(mutant.name)
+                invalid_reasons.setdefault(verdict, []).append(mutant.name)
+                print(f"COSIM_MUTATION INVALID  {mutant.name:<34} "
+                      f"(verdict={verdict}; not a kill)")
+                print(detail)
 
     by_target: dict[str, int] = {}
     for mutant in MUTANTS:

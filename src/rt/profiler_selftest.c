@@ -123,9 +123,84 @@ static void test_audio_queue_line(void) {
           s_report_count);
 }
 
+/* Guest symbol labels (codegen --symbol-map). The registered table is what the crash report and
+ * the dispatch trace name addresses with; without a table every label is empty, so a build with
+ * no map prints exactly what it printed before. Address 0 is a real function start on a zero-based
+ * image, like the profiler's PC zero above. */
+static void expect_label(uint32_t pc, const char *want) {
+    char buf[64];
+    const char *got = sr_guest_symbol_label(pc, buf, sizeof buf);
+    CHECK(strcmp(got, want) == 0, "label for 0x%08" PRIx32 " is \"%s\" (expected \"%s\")",
+          pc, got, want);
+}
+
+static void test_guest_symbol_labels(void) {
+    static const SrGuestSymbol table[] = {
+        {0x00000000u, 0x00000010u, "entry_stub"},
+        {0x00000100u, 0x00000040u, "ball_update"},
+        {0x00000200u, 0x00000000u, "game_loop"},     /* no size: only the start is named */
+    };
+    expect_label(0x00000100u, "");                    /* nothing registered yet */
+    sr_guest_symbols_register(table, 3u);
+    expect_label(0x00000000u, "entry_stub");
+    expect_label(0x0000000cu, "entry_stub+0xc");
+    expect_label(0x00000010u, "");                    /* one past the size */
+    expect_label(0x00000100u, "ball_update");
+    expect_label(0x0000013cu, "ball_update+0x3c");
+    expect_label(0x00000140u, "");
+    expect_label(0x00000200u, "game_loop");
+    expect_label(0x00000204u, "");
+    expect_label(0xfffffffcu, "");
+    CHECK(sr_guest_symbol_at(0x00000120u) == &table[1], "0x120 resolves to the wrong entry");
+    char tiny[8];
+    CHECK(strcmp(sr_guest_symbol_label(0x0000013cu, tiny, sizeof tiny), "ball_up") == 0,
+          "a short buffer is not truncated to its size");
+    CHECK(sr_guest_symbol_label(0x00000100u, tiny, 0u)[0] == '\0', "a zero-size buffer is written");
+    sr_guest_symbols_register(NULL, 0u);
+    expect_label(0x00000100u, "");
+}
+
+/* New game frames versus presents (#1296). Hot Shots Tennis hands each finished frame to the
+ * window twice (the same buffer immediately and for the next frame), so presents ran about twice
+ * its real frame rate and the HUD's FPS read 35-39 where the game drew 18. Here two buffers
+ * alternate, each presented twice, a new frame every 3 VBLANKs: 7 presents, 4 new frames over
+ * 3 intervals of 3 VBLANKs. The forced report closes a 2 s interval. The next interval re-presents
+ * the last buffer (no new frame), then flips 5 VBLANKs after the previous new frame. */
+static void test_new_frames_are_distinct_buffers(void) {
+    sr_perf_init();
+    static const uint32_t buffers[] = { 0x04000000u, 0x04000000u, 0x04044000u, 0x04044000u,
+                                        0x04000000u, 0x04000000u, 0x04044000u };
+    static const uint32_t vcounts[] = { 10u, 10u, 13u, 13u, 16u, 16u, 19u };
+    for (unsigned i = 0; i < sizeof buffers / sizeof buffers[0]; i++) {
+        sr_perf_present_done(0, 1);
+        sr_perf_present_frame(buffers[i], vcounts[i]);
+    }
+    sr_perf_test_force_report();
+    double presents = 0.0, frame_ms = 0.0, vblank_hz = 0.0, game_fps = 0.0, per_frame = 0.0;
+    sr_perf_get_hud_metrics(&presents, &frame_ms, &vblank_hz);
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
+    CHECK(presents == 3.5, "presents per second %.3f (expected 3.5: 7 presents in 2 s)", presents);
+    CHECK(game_fps == 2.0, "game frames per second %.3f (expected 2.0: 4 new frames in 2 s)",
+          game_fps);
+    CHECK(per_frame == 3.0, "VBLANKs per new frame %.3f (expected 3.0)", per_frame);
+
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04044000u, 22u);
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04000000u, 24u);
+    sr_perf_test_force_report();
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
+    CHECK(game_fps == 0.5, "game frames per second %.3f in the second interval (expected 0.5)",
+          game_fps);
+    CHECK(per_frame == 5.0, "VBLANKs per new frame %.3f in the second interval (expected 5.0)",
+          per_frame);
+}
+
 int main(void) {
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
+    test_guest_symbol_labels();
+    test_new_frames_are_distinct_buffers();
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a

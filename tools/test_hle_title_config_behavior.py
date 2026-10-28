@@ -454,6 +454,8 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "GUEST_MODULE_BOUNDARY: guest-module-second-instance module=rt-alpha.prx",
                 "GUEST_MODULE_BOUNDARY: guest-module-untranslated module=rt-gamma.prx",
                 "GUEST_MODULE_LOAD_NO_MEMORY: rt-alpha.prx",
+                # A started module takes over a host-served NID (#286).
+                "PRX link: scePsmfPlayerGetAudioOutSize (0x3ea82a4b) -> guest 0x",
             ):
                 self.assertIn(marker, output)
 

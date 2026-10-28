@@ -8,7 +8,8 @@ Verifies:
 1. Public title catalog only includes titles authorized by assets/public_source_profile.json.
 2. Dropping an excluded or unclassified manifest into assets/titles/ does NOT leak into public C codegen.
 3. tools/title_catalog_codegen.py --verify fails closed if generated C contains unauthorized titles or is out of sync.
-4. No retail or unclassified title manifests exist in the git tracked assets/titles/ directory.
+4. The only tracked retail title manifest is the public HST manifest (owner decision,
+   2026-10-27), and it is policy-included; no unclassified manifest is tracked.
 5. The in-memory private overlay mechanism allows local acceptance without modifying public artifacts.
 """
 
@@ -59,6 +60,13 @@ def is_tracked(rel_posix: str) -> bool:
 
 PRIVATE_TITLE_TESTS_ENV = "NK_PRIVATE_TITLE_TESTS"
 
+#: The one retail manifest the public tree carries (owner decision, 2026-10-27).
+PUBLIC_RETAIL_MANIFEST = "hst-ucus98701.json"
+PUBLIC_RETAIL_ID = "hst-ucus98701-v1"
+PUBLIC_RETAIL_DISC_ID = "UCUS98701"
+#: Another region's id for the same title: never catalogued.
+UNCATALOGUED_RETAIL_DISC_ID = "UCES01402"
+
 
 def private_title_tests_enabled(rel_posix: str) -> bool:
     """Whether a private-input acceptance test may run against ``rel_posix``.
@@ -83,10 +91,8 @@ class PublicTitleIsolationTests(unittest.TestCase):
         """Every tracked title in assets/titles/ must be explicitly INCLUDED by policy.
 
         The contract is about what the repository tracks, so enumerate the index
-        rather than the directory: assets/titles/ also holds the operator's
-        publication-excluded retail manifest on any working tree that can
-        actually run the title, and that exclusion is exactly what keeps it out
-        of the public tree.
+        rather than the directory: assets/titles/ can also hold a developer's
+        untracked private manifest, and only tracked, included files are public.
         """
         json_files = tracked_titles()
         self.assertGreater(len(json_files), 0, "Expected at least one public title manifest")
@@ -103,10 +109,11 @@ class PublicTitleIsolationTests(unittest.TestCase):
                 res.is_excluded,
                 f"Manifest {rel} is marked as excluded in publication policy!"
             )
-            # Assert no retail patterns in filename
-            self.assertNotIn("hst", mf.name.lower())
-            self.assertNotIn("ucus98701", mf.name.lower())
+            # Retail-looking names are allowed only for the approved public manifest.
+            if "hst" in mf.name.lower() or "ucus98701" in mf.name.lower():
+                self.assertEqual(mf.name, PUBLIC_RETAIL_MANIFEST)
             self.assertNotIn("uces01402", mf.name.lower())
+        self.assertIn(PUBLIC_RETAIL_MANIFEST, [mf.name for mf in json_files])
 
     def test_catalog_generator_excludes_unauthorized_and_private_manifests(self) -> None:
         """Dropping a private manifest into assets/titles must be ignored by public collector."""
@@ -116,21 +123,21 @@ class PublicTitleIsolationTests(unittest.TestCase):
             for mf in self.titles_dir.glob("*.json"):
                 shutil.copy2(mf, tmp_titles / mf.name)
 
-            # Inject fake retail manifest (simulating hst-ucus98701.json)
+            # Inject a fake retail manifest under a name the policy never classified
             fake_retail = {
                 "schema_version": 1,
-                "id": "hst-ucus98701-v1",
-                "display_name": "Hot Shots Tennis (Private Injection Test)",
+                "id": "private-retail-lookalike-v1",
+                "display_name": "Private Injection Test",
                 "kind": "retail",
                 "game_base": "0x00000000",
                 "game_entry": "0x00000000",
                 "executables": [{"path": "PSP_GAME/SYSDIR/EBOOT.BIN", "role": "main"}],
                 "disc": {
-                    "primary_disc_id": "UCUS98701",
+                    "primary_disc_id": UNCATALOGUED_RETAIL_DISC_ID,
                     "compatible_disc_ids": []
                 }
             }
-            retail_file = tmp_titles / "hst-ucus98701.json"
+            retail_file = tmp_titles / PRIVATE_LOOKALIKE_NAME
             retail_file.write_text(json.dumps(fake_retail), encoding="utf-8")
 
             # Inject unclassified arbitrary manifest
@@ -163,18 +170,20 @@ class PublicTitleIsolationTests(unittest.TestCase):
             collected_names = [p.name for p in manifest_files]
             collected_ids = [t["id"] for t in validated_titles]
 
-            # Neither the retail nor the unclassified manifest may be included
-            self.assertNotIn("hst-ucus98701.json", collected_names)
+            # Neither the private lookalike nor the unclassified manifest may be included
+            self.assertNotIn(PRIVATE_LOOKALIKE_NAME, collected_names)
             self.assertNotIn("unclassified.json", collected_names)
-            self.assertNotIn("hst-ucus98701-v1", collected_ids)
+            self.assertNotIn("private-retail-lookalike-v1", collected_ids)
             self.assertNotIn("unclassified-title-v1", collected_ids)
 
-            # Public synthetic titles MUST be present
+            # Public synthetic titles and the public HST manifest MUST be present
             self.assertIn("pspdev-phase5-v1", collected_ids)
             self.assertIn("synthetic-allegrex-v1", collected_ids)
+            self.assertIn(PUBLIC_RETAIL_MANIFEST, collected_names)
+            self.assertIn(PUBLIC_RETAIL_ID, collected_ids)
 
-    def test_generated_c_contains_zero_retail_references(self) -> None:
-        """The checked-in generated C code must contain no retail IDs, keys, or titles."""
+    def test_generated_c_contains_only_the_public_retail_title(self) -> None:
+        """The generated C catalog names exactly the policy-included retail titles, nothing else."""
         gen_dir = ROOT / "src" / "core" / "generated"
         cat_h = gen_dir / "nk_title_catalog.h"
         cat_c = gen_dir / "nk_title_catalog.c"
@@ -186,9 +195,24 @@ class PublicTitleIsolationTests(unittest.TestCase):
         text_c = cat_c.read_text(encoding="utf-8")
         combined = text_h + "\n" + text_c
 
-        forbidden_tokens = ["UCUS98701", "UCES01402", "Hot Shots", "Tennis", "hst-ucus98701"]
+        forbidden_tokens = [UNCATALOGUED_RETAIL_DISC_ID, "private-retail-lookalike", "sha256"]
         for token in forbidden_tokens:
             self.assertNotIn(token, combined, f"Forbidden retail token '{token}' leaked into generated C catalog!")
+
+        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
+        self.assertEqual(unregistered_retail_disc_ids(combined), [])
+
+        # Every retail entry comes from a tracked, policy-included manifest.
+        included_retail = set()
+        for mf in tracked_titles():
+            manifest = title_manifest.load_manifest(mf)
+            rel = mf.relative_to(ROOT).as_posix()
+            if manifest["kind"] == "retail" and self.policy.resolve(rel).disposition == publication_policy.INCLUDED:
+                included_retail.add(manifest["id"])
+        self.assertEqual(included_retail, {PUBLIC_RETAIL_ID})
+        self.assertEqual(text_c.count("NK_TITLE_KIND_RETAIL,"), len(included_retail))
+        self.assertEqual(text_c.count(f'"{PUBLIC_RETAIL_DISC_ID}"'), 1)
+        self.assertEqual(text_c.count(f'"{PUBLIC_RETAIL_ID}"'), 1)
 
     def test_verify_flag_detects_out_of_date_or_corrupted_catalog(self) -> None:
         """--verify flag must return non-zero exit code if generated files differ."""
@@ -206,8 +230,13 @@ class PublicTitleIsolationTests(unittest.TestCase):
         self.assertIsNotNone(reg.find_by_disc_id("TEST00001"))
         self.assertIsNotNone(reg.find_by_disc_id("TEST00005"))
 
-        # Retail title is not present initially
-        self.assertIsNone(reg.find_by_disc_id("UCUS98701"))
+        # The public HST manifest is the built-in hst title; another region's id is not catalogued
+        hst = reg.find_by_disc_id(PUBLIC_RETAIL_DISC_ID)
+        self.assertIsNotNone(hst)
+        self.assertEqual(hst.id, PUBLIC_RETAIL_ID)
+        self.assertEqual(hst.codegen_profile, "hst")
+        self.assertEqual(hst.runtime_profile, "hst-current")
+        self.assertIsNone(reg.find_by_disc_id(UNCATALOGUED_RETAIL_DISC_ID))
 
         # Load private overlay from simulated manifest
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -331,10 +360,10 @@ class PublicTitleIsolationTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             fake_overlay = {
                 "schema_version": 1,
-                "id": "hst-ucus98701-v1",
-                "display_name": "Hot Shots Tennis Overlay",
+                "id": "private-retail-lookalike-v1",
+                "display_name": "Private Retail Overlay",
                 "kind": "retail",
-                "disc": {"id": "UCUS98701", "region": "NA", "revision_policy": "exact-disc-id"}
+                "disc": {"id": UNCATALOGUED_RETAIL_DISC_ID, "region": "EU", "revision_policy": "exact-disc-id"}
             }
             json.dump(fake_overlay, f)
             overlay_path = Path(f.name)
@@ -395,12 +424,14 @@ class PublicTitleIsolationTests(unittest.TestCase):
                 f_path.unlink()
 
 
-PRIVATE_LOOKALIKE_NAME = "hst-ucus98701.json"
+# A retail-looking manifest the policy never classified. It is the stand-in for
+# any developer's private title manifest now that the HST manifest is public.
+PRIVATE_LOOKALIKE_NAME = "private-retail-lookalike.json"
 PRIVATE_LOOKALIKE_REL = f"assets/titles/{PRIVATE_LOOKALIKE_NAME}"
 
 SYNTHETIC_LOOKALIKE = {
     "schema_version": 1,
-    "id": "hst-ucus98701",
+    "id": "private-retail-lookalike",
     "display_name": "Synthetic ignored lookalike (hermetic-suite regression)",
     "kind": "retail",
     "disc": {"id": "TEST00000", "region": "TEST", "revision_policy": "exact-disc-id"},
@@ -460,11 +491,13 @@ class TrackedSetHelperTests(unittest.TestCase):
             sorted(p.split("/")[-1] for p in tracked_paths("assets/titles/*.json")),
         )
         self.assertNotIn(PRIVATE_LOOKALIKE_NAME, names)
+        self.assertIn(PUBLIC_RETAIL_MANIFEST, names)
         self.assertGreater(len(names), 0, "public tree must keep at least one manifest")
 
     def test_is_tracked_gates_private_fixture_explicitly(self):
         self.assertFalse(is_tracked(PRIVATE_LOOKALIKE_REL))
         self.assertTrue(is_tracked("assets/titles/synthetic.json"))
+        self.assertTrue(is_tracked(f"assets/titles/{PUBLIC_RETAIL_MANIFEST}"))
         self.assertFalse(is_tracked("assets/titles/does-not-exist.json"))
 
     def test_private_title_tests_open_only_on_tracking_or_explicit_opt_in(self):
@@ -491,6 +524,7 @@ class CollectorHermeticityTests(unittest.TestCase):
         tracked = sorted(p.name for p in tracked_titles())
         self.assertEqual(collected, tracked)
         self.assertNotIn(PRIVATE_LOOKALIKE_NAME, collected)
+        self.assertIn(PUBLIC_RETAIL_MANIFEST, collected)
         ids = [t["id"] for t in titles]
         self.assertEqual(ids, sorted(set(ids)), "collector output must be deterministic")
 
@@ -498,7 +532,8 @@ class CollectorHermeticityTests(unittest.TestCase):
         registry = TitleRegistry(include_defaults=False)
         registry.load_from_directory(ROOT / "assets" / "titles")
         ids = {p.id for p in registry.all_profiles()}
-        self.assertNotIn("hst-ucus98701", ids)
+        self.assertNotIn("private-retail-lookalike", ids)
+        self.assertIn(PUBLIC_RETAIL_ID, ids)
         manifest_count = len(list((ROOT / "assets" / "titles").glob("*.json")))
         self.assertLessEqual(len(ids), manifest_count)
 
@@ -514,22 +549,26 @@ class CollectorHermeticityTests(unittest.TestCase):
         self.assertEqual(after, sorted(["public.json", PRIVATE_LOOKALIKE_NAME]))
 
 
-class OptInGateTests(unittest.TestCase):
-    """Private-input acceptance tests open only on tracked bytes, never disk presence."""
+class PublicHstManifestGateTests(unittest.TestCase):
+    """The public HST manifest tests fail, never skip, when the manifest is not tracked."""
 
-    def test_hst_optin_gates_do_not_open_for_untracked_lookalike(self):
+    def test_hst_manifest_tests_fail_rather_than_skip_when_untracked(self):
         import test_hst_manager_manifest
         import test_hst_title_manifest
         import test_public_title_isolation
 
         with mock.patch.object(test_public_title_isolation, "is_tracked", return_value=False):
-            with self.assertRaises(unittest.SkipTest) as title_ctx:
-                test_hst_title_manifest.HstTitleManifestTests.setUpClass()
+            title_case = test_hst_title_manifest.HstTitleManifestTests(
+                "test_manifest_is_tracked_and_public_included")
+            result = unittest.TestResult()
+            title_case.run(result)
+            self.assertEqual(len(result.failures), 1, result.failures + result.errors)
+            self.assertEqual(result.skipped, [])
+            self.assertIn("must be tracked", result.failures[0][1])
             case = test_hst_manager_manifest.HstManagerManifestTests("require_hst_manifest")
-            with self.assertRaises(unittest.SkipTest) as manager_ctx:
+            with self.assertRaises(AssertionError) as manager_ctx:
                 case.require_hst_manifest()
-        self.assertIn("unavailable", str(title_ctx.exception))
-        self.assertIn("unavailable", str(manager_ctx.exception))
+        self.assertIn("must be tracked", str(manager_ctx.exception))
 
 
 class PrivateEbootSuiteOptInTests(unittest.TestCase):
@@ -618,7 +657,7 @@ class PublicationEnforcementTests(unittest.TestCase):
         )
         self.assertNotEqual(proc.returncode, 0, "staged private lookalike must be rejected")
         combined = proc.stdout + proc.stderr
-        self.assertIn("hst-ucus98701", combined, f"rejection must name the path: {combined[:800]}")
+        self.assertIn("private-retail-lookalike", combined, f"rejection must name the path: {combined[:800]}")
 
     def test_staged_retail_token_in_generated_source_is_rejected(self):
         proc = staged_index_audit(
@@ -684,7 +723,7 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
 
             gitignore = repo_root / ".gitignore"
             gitignore.write_text(
-                "/place_game_here/\n/build/\n/assets/titles/hst-ucus98701.json\n",
+                f"/place_game_here/\n/build/\n/{PRIVATE_LOOKALIKE_REL}\n",
                 encoding="utf-8",
             )
 
@@ -692,12 +731,12 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
             run_git(["commit", "-m", "init", "--no-gpg-sign"], cwd=repo_root, capture_output=True, check=True)
 
             # Add synthetic ignored private inputs
-            fake_private_manifest = titles_dir / "hst-ucus98701.json"
+            fake_private_manifest = titles_dir / PRIVATE_LOOKALIKE_NAME
             fake_private_manifest.write_text(
                 json.dumps(
                     {
                         "schema_version": 1,
-                        "id": "hst-ucus98701",
+                        "id": "private-retail-lookalike",
                         "display_name": "Synthetic Lookalike",
                         "kind": "retail",
                         "disc": {"id": "TEST99999", "region": "TEST", "revision_policy": "exact-disc-id"},
@@ -726,7 +765,7 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
 
             # 1. Ambient glob sees both (vulnerable pattern)
             ambient_manifests = sorted(p.name for p in titles_dir.glob("*.json"))
-            self.assertEqual(ambient_manifests, ["hst-ucus98701.json", "synthetic.json"])
+            self.assertEqual(ambient_manifests, sorted([PRIVATE_LOOKALIKE_NAME, "synthetic.json"]))
 
             # 2. Tracked paths helper ignores the untracked / ignored lookalike
             tracked_out = run_git(
@@ -738,7 +777,7 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
             )
             tracked_set = [p.replace("\\", "/").split("/")[-1] for p in tracked_out.stdout.splitlines() if p.strip()]
             self.assertEqual(tracked_set, ["synthetic.json"])
-            self.assertNotIn("hst-ucus98701.json", tracked_set)
+            self.assertNotIn(PRIVATE_LOOKALIKE_NAME, tracked_set)
 
             # 3. Ignored private inputs are completely untracked
             all_tracked = run_git(
@@ -750,7 +789,7 @@ class SyntheticIgnoredInputsRegressionTests(unittest.TestCase):
             ).stdout
             self.assertNotIn("place_game_here", all_tracked)
             self.assertNotIn("build/", all_tracked)
-            self.assertNotIn("hst-ucus98701.json", all_tracked)
+            self.assertNotIn(PRIVATE_LOOKALIKE_NAME, all_tracked)
 
 
 if __name__ == "__main__":
