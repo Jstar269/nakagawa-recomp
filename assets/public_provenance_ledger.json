@@ -267,7 +267,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "59bb7b75dd3f34a230f6fdbe31c55bc945e611c0533ca4d5139e233a4b4ead62"
+      "sha256": "9691bb748b51afb342e206593b25231d90dd3665b259b25e5dcb31283df7725e"
     },
     {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
@@ -448,7 +448,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3c564e31c2462b01623a804960d136057f420c890c61f5e35470746970076d6b"
+      "sha256": "dba177fff318aec1d8216a7d3621aaf0a6afe0b76625760fafb06bd2c9210e52"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d7fdbe51d38fbb60dce28e4a37f0a4a85b11a4e7163e5b4d8879d5d45e647aad"
+      "sha256": "28e1761907be9c7fc17c0b7b7cf51ce3011711b81f1f8861a49084a9d112d658"
     },
     {
       "path": "REVIEW.md",
@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "abfb6b157c4af59201147fa2c128a04ae65c4296d17a7fd0cc6e7f771d260d63"
+      "sha256": "8272482e172c946da04cb17f5900792c25a90048b9a67a049e405eba637ec19e"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1033,7 +1033,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "981e998bc5200343ddf2b4d0b8821bb38d54f53acd885a80067bcf85a29f11fd"
+      "sha256": "10511f389364f27503d13a7cf1a03facd94594962974ef018510e34f1a2b6d09"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1420,7 +1420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bba681fbcfe2e54c03e6f0db68692361575fccb1cd98c6b5f3b9ecebc2e8d376"
+      "sha256": "803de758b0b857701b2828458fe7b2e271b8d288e8620471f1823b34dcfb834b"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1966,7 +1966,25 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1f1aedc7ce30bc6582d02c62b19a7d5809054157a5f438cfdf8e70f252120ea1"
+      "sha256": "4e803565e77786a8b018d276dfebbdd84cd53302156e90ab4637deb2b798598a"
+    },
+    {
+      "path": "docs/media/hst-rally-poster.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "55523ab5a86ea6dfdd2c128eb032b212c7744f4fe6b034d966bd86d55a62e31e"
+    },
+    {
+      "path": "docs/media/hst-rally.mp4",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "a6ffaeb082a09078c7895e355bb38fb51690f0dfbf86600d33a8d6d7d5ff6dac"
     },
     {
       "path": "docs/media/hst-title-screen-960.png",
@@ -1985,6 +2003,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
+    },
+    {
+      "path": "docs/media/launcher-building.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "1f1706c9a8aa1c11e7a3b44f3c9eb9cc8edbad059233f51fc7e6e6eea91c40db"
+    },
+    {
+      "path": "docs/media/launcher-library.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "0e40d1d521ca853bb711cf8fc369f6aba0f7666576d4665ef4f2a3b7898596ac"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
@@ -11407,7 +11443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "509d2c6ea334c083c9b9cb1c09ac1bba18920f162ed71ca03143be1c9615de52"
+      "sha256": "cf56bc40a75b73e4377bdd36447b412a811f2f074933343df27989ac5ef7c947"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -15227,6 +15263,18 @@
         "upstream_attribution": null
       },
       "sha256": "64eb1c336be7ada1f2fe5b269530a8a996f2a1473e549c018a4e92d6e5cfdf98"
+    },
+    {
+      "path": "tools/test_site_mobile.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "site_mobile_test_20261027",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "15354cc09f5ac952af9eb6be03bfb0ed7cd7a56b45e6116be57bb74b19e519a5"
     },
     {
       "path": "tools/test_soak_audit.py",
