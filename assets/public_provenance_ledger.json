@@ -120,7 +120,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ad0db549576ce08c7633b49885d03c3e597d4d98faa669156ce728450149360f"
+      "sha256": "5f7ea2cef1b2847212c9f07fb6d5e8b6edd494db682112b17a889e1e3cff9a85"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "885c9ec9a3e97a6630d7381c2bbf827918952a6c3a06f13742afca68ab3cee38"
+      "sha256": "d450a9e683d1298887dec4ac73178cf99fd5fedd3a82ffdbbb7a8f6f8dbef55c"
     },
     {
       "path": "REVIEW.md",
@@ -1690,7 +1690,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8b4d78c3a04d6cc49fbe40977735cad28e663e6e12f7ecc9290eef0361c1f48c"
+      "sha256": "9efeb0638fda728e474d40d8fa69305007984896ba4961d76f734b0c301674d2"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -4022,7 +4022,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57dc65ae50a85b870c8e47f798a227c40e9327fb2331893f6137e042ad0a8f20"
+      "sha256": "e6b207d08d182919bc3c3fb29874032dc0704836d48133d26f7f3bdec9eda353"
     },
     {
       "path": "src/player/player_state.c",
@@ -4070,7 +4070,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c65aafce912f49185f76e678a5cd59fb5bc7ab8f7c0ad9c7961a42120dadf15"
+      "sha256": "69c21d2ad9869fc24acc9b1784bb7853894f776f9bf6bd8f6c23fc15b37aab18"
     },
     {
       "path": "src/player/ui/player_ui_art.c",
@@ -4154,7 +4154,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7fc55b3e1eefb270a8dfad6ffda6b1bf8c6936f677a29c031110633716f5864"
+      "sha256": "11718d7b18deea9b5840d9cff3df7f597cf3d113d8ea7d8cc2ae8b94c956445f"
     },
     {
       "path": "src/player/ui/scr_title.c",
@@ -4190,7 +4190,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5765f57541cf56ef5bca84e7aac04e76928e25f8e1080c06accd604a7fcd54d8"
+      "sha256": "ad9e720b9547d53c9451e2b597975d4937a241b36eb2fc99a1f9931aeadafa6c"
     },
     {
       "path": "src/player/ui_renderer.c",
@@ -4214,7 +4214,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3012bceace7184e466dc345fa9cc7ca8f70034ba5bdf90530d4718249949a57"
+      "sha256": "e415b5b703a99cfadfad8516d2030b57a827392343b1cddc66a51640738bddff"
     },
     {
       "path": "src/ref/cpu.h",
@@ -5596,7 +5596,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "86c088e012fd38199c317324468276974a5f39cbee875044f2ac4b98232f82e9"
+      "sha256": "24686fe567a989a266ce254edb46cbd1b13bc6a82e6d0183cbefa9dd01674a5b"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5644,7 +5644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a74c5d93da4e9c7108e3421f808cc3a5171170b0910fb42f82bef37086e3403"
+      "sha256": "d4f9034faaa80440f576579c92a447692d1cac0751b0af8f94c58799d0b9d88d"
     },
     {
       "path": "src/rt/ge_float24.c",
@@ -5741,7 +5741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "40f8fff68a10daae3a5027bcfd0c5fe396024abda14e96a2abed91f2a19db7cb"
+      "sha256": "43111973b2ff7ae812fa3175b64e44ad9ff9aa5bf9845dc28bfee93a55209dd8"
     },
     {
       "path": "src/rt/ge_texture_ref.c",
