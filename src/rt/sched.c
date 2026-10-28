@@ -552,12 +552,6 @@ static TCB *tcb_by_uid(uint32_t uid) {
     return NULL;
 }
 
-static TCB *tcb_by_entry(uint32_t entry) {
-    for (int i = 0; i < s_ntcb; i++)
-        if (!s_tcb[i].deleted && s_tcb[i].entry == entry) return &s_tcb[i];
-    return NULL;
-}
-
 static uint32_t resolve_thread_uid(uint32_t uid) {
     return uid ? uid : (s_cur >= 0 ? s_tcb[s_cur].uid : 0);
 }
@@ -1652,6 +1646,25 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
     return 0;
 }
 
+static int sched_env_switch(int *cached, const char *name);
+
+/* Diagnostic switches read on every delivered VBLANK, once per process like the per-call
+ * ones below (sched_env_switch, #1296). */
+static int sched_vblog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_VBLOG");
+}
+
+static int sched_pcsample_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_PCSAMPLE");
+}
+
+static int sched_cbsnap_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_CBSNAP");
+}
+
 static void deliver_vblank(void) {
     sched_pause_assert_no_guest("deliver_vblank");
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
@@ -1673,7 +1686,7 @@ static void deliver_vblank(void) {
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
-    if (getenv("SR_VBLOG") && (++vb % 1) == 0) {
+    if (sched_vblog_on() && (++vb % 1) == 0) {
         fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
     }
     g_frame_prims = 0;
@@ -1692,7 +1705,7 @@ static void deliver_vblank(void) {
     }
     s_vblank_resume_anchor_pending = 0;
     sched_wake(VBLANK_WAIT_OBJ);
-    if (getenv("SR_PCSAMPLE")) {
+    if (sched_pcsample_on()) {
         static unsigned long n = 0;
         if ((n++ % 30) == 0) fprintf(stderr, "PCSAMPLE frame=%lu interrupted_pc=0x%08x ra=0x%08x\n",
                                      n, s_cpu->pc, s_cpu->r[31]);
@@ -1716,7 +1729,7 @@ static void deliver_vblank(void) {
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
          * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
         fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
@@ -1730,7 +1743,7 @@ static void deliver_vblank(void) {
         ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
                                          &interrupt_fatal_target)
         : 0;
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
         fflush(stderr);
@@ -1763,34 +1776,6 @@ static void deliver_vblank(void) {
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
     sched_pause_script_maybe_request();
-
-    /* Worker relaunch trampoline: if the worker thread went DORMANT (e.g. after
-     * the game loop returned), restart it on the next vblank so it re-enters
-     * f_000468c8 and submits the next frame. This is the runtime surrogate for
-     * the real PSP's GE list-complete callback that re-arms the game loop. */
-    {
-        static int relaunch_disabled = -1;
-        if (relaunch_disabled < 0) relaunch_disabled = getenv("SR_NO_RELAUNCH") ? 1 : 0;
-        if (!relaunch_disabled) {
-            uint32_t wuid = g_worker_uid;
-            /* No captured worker role means there is nothing to re-arm. Looking the
-             * sentinel up would find no TCB anyway; the explicit guard says why. */
-            TCB *w = sched_role_uid_captured(wuid) ? tcb_by_uid(wuid) : NULL;
-            if (w && w->state == TH_DORMANT) {
-                /* A dormant worker means main_RunGameLoop returned for this frame; on real
-                 * PSP the GE list-complete callback re-arms it. The previous gate required
-                 * the 0x331b80 frame-ready counter to be exactly 0, but that counter's
-                 * polarity is owned by the guest's finish callback (ge.c GE_FINISH_CB ->
-                 * func 0x599c) and is not reliably reset here -- so a dormant worker could
-                 * be held forever, presenting only frame 0. Re-arm whenever the worker is
-                 * dormant; the relaunch is the surrogate for the GE callback. */
-                fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
-                sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->worker_thread_entry,
-                                "worker relaunch trampoline");
-                sched_start_thread(wuid, 0, 0);
-            }
-        }
-    }
 }
 
 /* Service only sources whose delivery semantics are implemented. Unknown
@@ -1984,6 +1969,44 @@ static int scheduler_alarm_service_one(void) {
     return 1;
 }
 
+/* ---- opt-in GE completion timing (hle.c, SR_GE_TIMING) ---------------------------------
+ *
+ * With the model on, a GE list that reached its END is not complete until the guest clock
+ * passes its modelled completion time; hle.c owns the model and the list table.  Completion
+ * is an interrupt source like an alarm: it is delivered only from
+ * scheduler_service_pending(), after any owed VBLANK episode and ahead of alarms, in
+ * interrupt context (s_cur == -1), and while somebody waits its deadline is an idle wake
+ * source.  hle.c registers the hooks; a build without it keeps them NULL. */
+static SrSchedGeNextDeadline s_ge_timing_next;
+static SrSchedGeServiceDue s_ge_timing_service;
+
+void sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due) {
+    s_ge_timing_next = next_deadline;
+    s_ge_timing_service = service_due;
+}
+
+static uint64_t sched_ge_next_deadline(void) {
+    return s_ge_timing_next ? s_ge_timing_next() : SCHED_WAIT_FOREVER;
+}
+
+/* Like an alarm, a GE completion is only a wake source while it can be delivered. */
+static uint64_t sched_ge_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_ge_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_ge_due(void) {
+    return s_ge_timing_service && sched_ge_next_deadline() <= s_vtime_us;
+}
+
+/* One interrupt episode: complete every due list.  The completion path saves and restores
+ * the interrupted register file around each guest finish callback itself. */
+static void scheduler_ge_service(void) {
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    s_ge_timing_service();
+    s_cur = save_cur;
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -2015,6 +2038,8 @@ static SchedIdleState sched_classify_idle(void) {
     if (any_waiting) {
         uint64_t alarm = sched_alarm_wake_deadline();
         if (alarm < st.soonest) st.soonest = alarm;
+        uint64_t ge = sched_ge_wake_deadline();
+        if (ge < st.soonest) st.soonest = ge;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2042,10 +2067,12 @@ static void scheduler_service_pending(void) {
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
            ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
-            scheduler_alarm_due_slot() >= 0)) {
-        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed. */
+            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0)) {
+        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed.
+         * A due GE completion (opt-in model) sits between the two. */
         if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
-            scheduler_alarm_service_one();
+            if (scheduler_ge_due()) scheduler_ge_service();
+            else scheduler_alarm_service_one();
             continue;
         }
         s_pending_interrupts &= ~SCHED_INTR_VBLANK;
@@ -2163,95 +2190,10 @@ uint32_t g_master_reent;
 
 /* Host-side registry of live guest threads, keyed by k0, holding (k0, state_ptr) pairs in
  * host memory instead of guest RAM. */
-extern uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra);
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
 extern void sr_hle_release_thread_resources(uint32_t thread_uid);
 
-/* guest_reent_register: insert (uid, state_ptr) into the title-configured guest
- * per-thread reent/state hash for threads that do not call the guest registration
- * routine themselves. The translated routine returns -1 on duplicate UID; this host
- * helper silently overwrites (idempotent refresh on restart). */
-static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
-    SrTitleReentBindings bindings;
-    if (!sr_title_config_reent_bindings(&bindings)) return;
-    uint32_t bucket = uid % 32;
-    /* Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }.
-     * Bucket = uid % 32 (signed-safe for positive PSP thread UIDs). */
-    uint32_t node_addr = bindings.guest_thread_table_addr;
-    sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.guest_thread_table_addr,
-                    "guest thread reent table root");
-
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE guest_register: uid=0x%x state_ptr=0x%x bucket=%u\n",
-                uid, state_ptr, bucket);
-    }
-
-    for (;;) {
-        uint32_t key = MEM_R32(node_addr + 0x84u + bucket * 4u);
-
-        if (key == 0u || key == uid) {
-            /* Free slot or same-UID refresh: write key and state_ptr. */
-            MEM_W32(node_addr + 0x84u + bucket * 4u, uid);
-            MEM_W32(node_addr + 0x04u + bucket * 4u, state_ptr);
-            return;
-        }
-
-        /* Slot occupied by a different UID (hash collision): follow the chain. */
-        uint32_t next = MEM_R32(node_addr);
-        if (next == 0u) {
-            /* End of chain; allocate a new node (0x104 bytes to match f_00011710's
-             * f_00010738 allocation). */
-            next = sr_newlib_malloc(260, 0);
-            if (next == 0u) {
-                fprintf(stderr, "FATAL: guest_reent_register: sr_newlib_malloc failed to allocate hash node\n");
-                abort();
-            }
-            for (uint32_t offset = 0; offset < 260; offset += 4) {
-                MEM_W32(next + offset, 0u);
-            }
-            MEM_W32(node_addr, next);
-        }
-        node_addr = next;
-    }
-}
-
-/* guest_reent_unregister: remove the entry for (uid derived from state_ptr+0x37c) from
- * the configured per-thread reent/state hash. Zeroes both the uid key and state_ptr
- * slots so f_00011600 no longer finds this thread. */
-static void guest_reent_unregister(uint32_t state_ptr) {
-    SrTitleReentBindings bindings;
-    if (!sr_title_config_reent_bindings(&bindings)) return;
-    if (!sr_inrange(state_ptr)) return;
-    uint32_t uid = MEM_R32(state_ptr + 0x37cu);
-    if (uid == 0) return;
-
-    uint32_t bucket = uid % 32;
-    uint32_t node_addr = bindings.guest_thread_table_addr;
-
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE guest_unregister: uid=0x%x state_ptr=0x%x bucket=%u\n",
-                uid, state_ptr, bucket);
-    }
-
-    while (node_addr != 0u) {
-        uint32_t key = MEM_R32(node_addr + 0x84u + bucket * 4u);
-        if (key == uid) {
-            MEM_W32(node_addr + 0x84u + bucket * 4u, 0u);
-            MEM_W32(node_addr + 0x04u + bucket * 4u, 0u);
-            return;
-        }
-        node_addr = MEM_R32(node_addr);
-    }
-}
-
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
-    SrTitleReentBindings bindings;
-    int has_bindings = sr_title_config_reent_bindings(&bindings);
-    if (has_bindings && g_master_reent == 0u) {
-        g_master_reent = bindings.master_reent_addr;
-        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.master_reent_addr,
-                        "master reent fallback address");
-    }
     /* Copy master thread's reent structure to initialize the new thread's reent.
      * This inherits the initialized allocator context. A thread holding the ROOT or
      * LAUNCHER role keeps its own independently-initialized reent: root has the
@@ -2287,9 +2229,9 @@ static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
 }
 
 /* register_libc_thread: record (k0, state_ptr, uid) in the host-owned s_libc_threads table
- * and initialize the thread's reent structure (init_guest_reent), then pre-register the thread
- * in the configured guest reent/state hash for all threads except the launcher. The launcher's
- * guest entry calls its own registration routine and must see an empty slot.
+ * and initialize the thread's reent structure (init_guest_reent). The runtime writes nothing into
+ * the guest's own per-thread reent table: a guest thread that registers itself does so through
+ * its own code.
  *
  * Returns 0 on success, -1 if the host table is full (structurally impossible in production
  * because s_libc_threads has MAXTHREADS slots and there can never be more live records than
@@ -2334,13 +2276,6 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 
     init_guest_reent(state_ptr, uid);
 
-    /* Pre-register in the configured guest hash for every thread except a launcher,
-     * which calls the guest's own registration function from its entry and must find
-     * an empty slot. The accessor makes this compatibility behavior inert otherwise. */
-    if (!sched_uid_is_launcher(uid)) {
-        guest_reent_register(uid, state_ptr);
-    }
-
     if (getenv("SR_THLOG")) {
         fprintf(stderr, "DEBUG: Registered thread uid=0x%x in host libc table slot %d: k0=0x%x state_ptr=0x%x\n",
                 uid, slot, k0, state_ptr);
@@ -2354,7 +2289,6 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 }
 
 static TCB *tcb_by_uid(uint32_t uid);
-static TCB *tcb_by_entry(uint32_t entry);
 static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority, uint32_t stack_size);
 
 static void unregister_libc_thread(uint32_t k0) {
@@ -2367,7 +2301,6 @@ static void unregister_libc_thread(uint32_t k0) {
                 fprintf(stderr, "REENT_TRACE host_unregister: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
                         uid, k0, state_ptr, bucket, i);
             }
-            guest_reent_unregister(state_ptr);
             s_libc_threads[i].uid = 0;
             s_libc_threads[i].k0 = 0;
             s_libc_threads[i].state_ptr = 0;
@@ -2416,20 +2349,6 @@ static void sched_release_thread_stack(TCB *t) {
 
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name) {
-    if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
-        TCB *existing = tcb_by_entry(entry);
-        if (existing) {
-            static int n_reuse_log = 0;
-            if (n_reuse_log < 16 || getenv("SR_THLOG")) {
-                fprintf(stderr,
-                        "sched_create_thread: reusing uid=0x%x for entry=0x%08x state=%d started=%d\n",
-                        existing->uid, entry, existing->state, existing->started);
-                n_reuse_log++;
-            }
-            sr_compat_fired("SCHEDULER_HOOKS", entry, "worker thread reuse");
-            return existing->uid;
-        }
-    }
     if (s_ntcb >= MAXTHREADS) {
         /* TCB-slot reclaim: terminated (DORMANT) threads never released their slot,
          * so a long session that repeatedly starts/exits short-lived threads (callback
@@ -4723,16 +4642,6 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
      * -- rather than the synthetic thread stack. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
-    /* The HST guest reent hash is initialized only when the validated profile
-     * supplies its typed binding. Other titles receive no guest-memory seed. */
-    SrTitleReentBindings reent_bindings;
-    if (sr_title_config_reent_bindings(&reent_bindings) &&
-        sr_inrange(reent_bindings.guest_thread_table_addr) &&
-        sr_inrange(reent_bindings.guest_thread_table_addr + 4u)) {
-        MEM_W32(reent_bindings.guest_thread_table_addr, 0u);
-        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", reent_bindings.guest_thread_table_addr,
-                        "guest thread reent table root");
-    }
     sched_start_thread(uid, arglen, argp);
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
@@ -4772,6 +4681,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
             if (any_waiting && sched_alarm_wake_deadline() < soonest)
                 soonest = sched_alarm_wake_deadline();
+            if (any_waiting && sched_ge_wake_deadline() < soonest)
+                soonest = sched_ge_wake_deadline();
             scheduler_progress_time();
             if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
                 soonest - s_vtime_us < vblank_due_us())
@@ -4833,7 +4744,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 }
                 /* The jump may have reached an alarm deadline: its handler is what readies
                  * the waiter, and it only runs from an interrupt-service step. */
-                if (s_alarm_live) scheduler_service_pending();
+                if (s_alarm_live || sched_ge_next_deadline() != SCHED_WAIT_FOREVER)
+                    scheduler_service_pending();
                 idx = pick_next();
                 if (idx < 0) {
                     fprintf(stderr, "SCHED: no runnable threads left after time jump. Dumping thread states:\n");

@@ -718,7 +718,7 @@ One console is one data point; see §11. Nothing here closes issue #70
     the band-limited converter in `src/rt/audio_resample.c` and keep their source-rate pacing. The
     values listed as not cited are unmeasured; the handler metadata names the choices made for them.
   - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
-  - *VFPU9 forms and RCX at thread entry (2026-10-24 PSP-3000 PSPLink session, issue #326).* 159 cells over `vsgn.s`, `vbfy1.p`, `vbfy1.q`, `vbfy2.q` and `vt4444.q`, each under no S prefix, negate-all and a `wzyx` swizzle, plus `mfvc` of controls 8-15 on a fresh thread. The runtime rejected all five forms before this entry and zero-filled RCX0-7. The cells fix these rules: an arithmetic NaN result is the canonical `0x7F800001`; a denormal operand counts as a zero of its own sign; `vsgn` takes +1 or -1 from the raw sign bit of any non-zero word, NaN and Inf included, and +0 for either zero; `vbfy1`/`vbfy2` add the user-prefixed S operand, with a forced negate on lanes (0,1,0,1)/(0,0,1,1), to the raw `vs` swizzled (y,x,w,z)/(z,w,x,y), and a user swizzle lane outside the width writes +0; `vt4444.q` packs the high nibble of each byte into a pair. None of them writes VFPU_CC. RCX0-7 read `0x3F800001`, `0x3F800002`, `0x3F800004`, `0x3F800008` and then `0x3F800000` four times. `sr_vfpu_interp` implements the five forms (the generated code routes them there) and `sr_vfpu_thread_ctrl_init` in `src/rt/recomp.h` seeds RCX at every thread entry; `check_psp_measured_vfpu9` in `src/rt/vfpu_interp_selftest.c` pins the cells quoted here. An off-tree replay of the production interpreter against the private log matched all 159 cells and the RCX row. Unmeasured: the T and D prefixes, constant S lanes, other widths (rejected), the sign of a NaN from a negative NaN, denormal results, and the `vrnd*` draws, which stay fail-closed.
+  - *VFPU9 forms and RCX at thread entry (2026-10-24 PSP-3000 PSPLink session, issue #326).* 159 cells over `vsgn.s`, `vbfy1.p`, `vbfy1.q`, `vbfy2.q` and `vt4444.q`, each under no S prefix, negate-all and a `wzyx` swizzle, plus `mfvc` of controls 8-15 on a fresh thread. The runtime rejected all five forms before this entry and zero-filled RCX0-7. The cells fix these rules: an arithmetic NaN result is the canonical `0x7F800001`; a denormal operand counts as a zero of its own sign; `vsgn` takes +1 or -1 from the raw sign bit of any non-zero word, NaN and Inf included, and +0 for either zero; `vbfy1`/`vbfy2` add the user-prefixed S operand, with a forced negate on lanes (0,1,0,1)/(0,0,1,1), to the raw `vs` swizzled (y,x,w,z)/(z,w,x,y), and a user swizzle lane outside the width writes +0; `vt4444.q` packs the high nibble of each byte into a pair. None of them writes VFPU_CC. RCX0-7 read `0x3F800001`, `0x3F800002`, `0x3F800004`, `0x3F800008` and then `0x3F800000` four times. `sr_vfpu_interp` implements the five forms (the generated code routes them there) and `sr_vfpu_thread_ctrl_init` in `src/rt/recomp.h` seeds RCX at every thread entry; `check_psp_measured_vfpu9` in `src/rt/vfpu_interp_selftest.c` pins the cells quoted here. An off-tree replay of the production interpreter against the private log matched all 159 cells and the RCX row. Unmeasured: the T and D prefixes, constant S lanes, other widths (rejected), the sign of a NaN from a negative NaN, denormal results, and the `vrnd*` draws (the `vrndi.s` step came later; see the random-unit step under `PSP-HLE-ISSUES-001` below).
 
 - **Observed, not acceptance-eligible: `hle-issues-batch` and `hle-intr-cells` from `da97b2c0` (2026-10-24)**:
   PSP-3000, firmware 6.6.1, PSPLink v3.2.1, operator-declared model PSP-3000, Nakagawa Link resident
@@ -747,6 +747,11 @@ One console is one data point; see §11. Nothing here closes issue #70
     computes C0' = 69069 C0 + 1, C1' = xorshift32(C1; 13, 17, 5), C2' = C3,
     C3' = (2 C3 + C2 + c) mod 2^32, c' = ((C2 >> 2) + (C3 >> 3) + (c >> 2)) >> 30, and returns
     C0' + C1' + C3'. This reproduces all 1792 `rcar` and `rcbig` rows, and both passes are identical.
+    The generated code and `sr_vfpu_interp` apply this step to `vrndi.s` under identity S, T and D
+    prefixes (`sr_vfpu_rnd_step` in `src/rt/recomp.h`); `check_vrndi_rule_cells` in
+    `src/rt/vfpu_interp_selftest.c` runs both against the rule from the probe's own states. A
+    pending prefix, `vrndi.p`/`.t`/`.q`, `vrnds`, `vrndf1` and `vrndf2` have no recorded rule and
+    stay fail-closed.
   - *`vscmp` (#326).* Per lane, at every width, the result is -1, 0 or +1 in sign-magnitude
     integer order of the bit patterns. Denormals are flushed to zero, +0 equals -0, and NaNs order
     above infinity by bit pattern. `VFPU_CC` was not written.
@@ -802,6 +807,18 @@ One console is one data point; see §11. Nothing here closes issue #70
   Six cases ran to completion but were not acceptance-eligible, so they stay `CAPTURED` only and establish nothing:
   - `teardown-test` (`PSP-TEARDOWN-001`): `exitdelete-main` is a SKIP record, as on 2026-10-10.
   - `dma-invalid-tail-s0`, `dma-invalid-tail-memcpy-src`, `dma-invalid-tail-memcpy-dst`, `dma-invalid-tail-try-src` and `dma-invalid-tail-try-dst` (`PSP-DMAC-001`): every record is a SKIP, identical to the 2026-10-10 run.
+
+  Runtime boundary (`PSP-CACHE-001`), issue #311: each `cache-alias` record's pass rule checks
+  only the word read after the maintenance call: the uncached alias after
+  `sceKernelDcacheWritebackRange` (`cache-writeback-contrast`) or `sceKernelDcacheWritebackAll`
+  (`cache-wball`), and the cached alias after `sceKernelDcacheInvalidateRange` (`cache-alias-init`,
+  `cache-inval-contrast`). The runtime keeps guest RAM as one coherent byte array, and its Dcache
+  handlers in `src/rt/hle.c` keep no cache state (beyond a renderer notice they return 0), so every
+  alias read returns the newest word. It meets those post-maintenance results, but it does not reproduce the contrast words read
+  before the maintenance call: the uncached read before the writeback and the stale cached read
+  before the invalidate. Those words stay in the private envelope, are not cited here, and no
+  runtime selftest asserts them. A title that depends on reading stale data through the cached
+  alias is outside this model.
 
   What the `ge-nan` cells establish (`PSP-GE-001`, issue #69), for these exact words only. All 21 records were identical in both runs. Each input word was loaded into `S000`, with `S001` set to `0.0` for `vadd.s` and `1.0` for `vmul.s`:
 
@@ -2510,6 +2527,144 @@ not expected PSP values.
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
 | `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
+
+### PSP-CPU-TIMING-001 measured run 2026-10-27
+
+One acceptance-eligible `cpu-timing` launch, preceded by `transport-write`, ran on the project PSP-3000 / 6.61 /
+ARK-5.1.0 / PSPLink v3.2.1 on 2026-10-27 from commit `3a14a88e`, on boot 49 in standalone PSPLink (game context,
+after a PSPLink soft reset), under the hardware-lock protocol and Nakagawa Link's watchdog. The stream was
+complete under the runner's strict contract (65 semantic records and `cpu-timing-complete`), every record
+`PASS`, with a clean teardown check, in 10.1 s. The raw host0 log and envelope stay private; this entry
+publishes derived values only.
+
+Two earlier launches that day were not acceptance-eligible, although every other record passed: on boot 47
+(`299c0519`) standalone PSPLink displayed no framebuffer, so the display cell was `SKIP`; on boot 48
+(`49ae70f4`) the probe's own framebuffer, set with `PSP_DISPLAY_SETBUF_IMMEDIATE`, was refused with
+`0x80000107` because the set changed the stride. The probe now sets its buffer, and later the null one, on
+the next frame. On boot 49 `cpu-timing-framebuffer` reports that the probe displayed its own 8888 buffer
+(stride 512) at the start of eDRAM and that setting back the null framebuffer returned 0.
+
+Method. The measurements run at 333/166 MHz and the boot clocks are restored afterwards. A `result` is
+hundredths of a CPU cycle per counted instruction or per API call, after subtracting a matched control loop,
+over the median of seven trials on the 1 us system timer ([`fixtures/psp_oracle/README.md`](../fixtures/psp_oracle/README.md)
+describes the bodies). The tables give `result / 100`.
+
+CPU cycles per counted instruction, unrolled bodies of eight:
+
+| Cell | 2048 blocks | 8192 blocks | 32768 blocks |
+| --- | --- | --- | --- |
+| `alu-addu` | 1.01 | 1.01 | 1.01 |
+| `alu-shift` | 1.01 | 1.01 | 1.01 |
+| `alu-logic` | 1.00 | 1.00 | 1.01 |
+| `multu-mflo-pair` | 3.02 | 3.03 | 3.02 |
+| `divu-mflo-pair` | 10.63 | 10.59 | 10.59 |
+| `load-cache-hit` | 1.01 | 1.00 | 1.01 |
+| `store-cache-hit` | 2.76 | 2.76 | 2.77 |
+| `branch-taken-delay` | 2.01 | 2.02 | 2.01 |
+| `branch-not-taken-delay` | 1.01 | 1.01 | 1.01 |
+| `branch-useful-delay` | 2.01 | 2.03 | 2.02 |
+| `fpu-add-s` | 4.52 | 4.56 | 4.54 |
+| `fpu-mul-s` | 4.52 | 4.54 | 4.54 |
+| `fpu-div-s` | 30.68 | 30.64 | 30.63 |
+| `vfpu-add-s` | 4.40 | 4.40 | 4.42 |
+| `vfpu-mul-s` | 4.40 | 4.42 | 4.42 |
+
+Streamed accesses, one cache line apart over a 128 KiB buffer, CPU cycles per access:
+
+| Cell | 32 blocks | 128 blocks | 256 blocks |
+| --- | --- | --- | --- |
+| `load-cache-miss` | 8.78 | 59.14 | 59.12 |
+| `store-cache-miss` | 10.89 | 110.61 | 111.32 |
+
+API calls (the semaphore signal-and-wait and LwMutex lock-and-unlock pairs count as two calls each):
+
+| Cell | CPU cycles per API call | Counted calls per trial | Median measured / control us |
+| --- | --- | --- | --- |
+| `syscall-display-setframebuf` | 419 | 2048 | 2578 / 1 |
+| `syscall-display-accumulated-hcount` | 247 | 2048 | 1522 / 1 |
+| `syscall-ge-drawsync-done` | 0 | 4 | 0 / 0 |
+| `syscall-ge-list-enqueue` | 2331 | 1 | 8 / 1 |
+| `syscall-ge-list-update-stall` | 2997 | 1 | 10 / 1 |
+| `syscall-sema-signal-wait` | 483 | 4096 | 5945 / 1 |
+| `syscall-lwmutex-lock-unlock` | 67 | 4096 | 829 / 1 |
+
+The GE cells use one call per trial, so their 1 us timer resolution is about 333 cycles; four completed
+`sceGeDrawSync(0)` calls stayed below that resolution. `sceDisplayWaitVblankStart` is wall latency, not CPU
+service time: median 16682 us over 7 trials (range 15590 to 16694 us).
+
+Not measured: other instruction classes, dependent versus independent issue, other clocks than 333/166 MHz,
+the VSH context, and any PSP model other than this PSP-3000.
+
+Exact strict result IDs (66 ordered records including the terminal record):
+
+```text
+cpu-timing-clock
+alu-addu-2048
+alu-shift-2048
+alu-logic-2048
+multu-mflo-pair-2048
+divu-mflo-pair-2048
+load-cache-hit-2048
+store-cache-hit-2048
+branch-taken-delay-2048
+branch-not-taken-delay-2048
+branch-useful-delay-2048
+fpu-add-s-2048
+fpu-mul-s-2048
+fpu-div-s-2048
+vfpu-add-s-2048
+vfpu-mul-s-2048
+alu-addu-8192
+alu-shift-8192
+alu-logic-8192
+multu-mflo-pair-8192
+divu-mflo-pair-8192
+load-cache-hit-8192
+store-cache-hit-8192
+branch-taken-delay-8192
+branch-not-taken-delay-8192
+branch-useful-delay-8192
+fpu-add-s-8192
+fpu-mul-s-8192
+fpu-div-s-8192
+vfpu-add-s-8192
+vfpu-mul-s-8192
+alu-addu-32768
+alu-shift-32768
+alu-logic-32768
+multu-mflo-pair-32768
+divu-mflo-pair-32768
+load-cache-hit-32768
+store-cache-hit-32768
+branch-taken-delay-32768
+branch-not-taken-delay-32768
+branch-useful-delay-32768
+fpu-add-s-32768
+fpu-mul-s-32768
+fpu-div-s-32768
+vfpu-add-s-32768
+vfpu-mul-s-32768
+load-cache-miss-32
+store-cache-miss-32
+load-cache-miss-128
+store-cache-miss-128
+load-cache-miss-256
+store-cache-miss-256
+syscall-display-setframebuf
+cpu-timing-framebuffer
+syscall-display-accumulated-hcount
+cpu-timing-ge-idle
+syscall-ge-drawsync-done
+syscall-ge-list-enqueue
+syscall-ge-list-update-stall
+cpu-timing-gu-teardown
+syscall-vblank-start-latency
+cpu-timing-sync-setup
+syscall-sema-signal-wait
+syscall-lwmutex-lock-unlock
+cpu-timing-done
+cpu-timing-complete
+```
 
 ### PSP-UMDIO-001 measured run 2026-10-17
 
