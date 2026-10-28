@@ -551,6 +551,8 @@ typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
     bool stalled_game_notice_visible;
+    /* The notice is for frames that show nothing, not for frames that stopped. */
+    bool stalled_game_dark_picture;
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
 } PlayerUiTitleModel;

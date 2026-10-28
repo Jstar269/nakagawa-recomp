@@ -46,22 +46,22 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **637** (dedicated **527**, fake_success **4**, controlled_unsupported **106**).
-Semantic handler census: **504** handlers across **25** API families, covering **533** handler-associated NID registrations.
+Registered NIDs: **638** (dedicated **531**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **510** handlers across **25** API families, covering **537** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 13 | 22 |
-| `partial` | 171 | 173 |
+| `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 317 | 331 |
+| `unreviewed` | 322 | 334 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
-| `sceAtrac` | 0 | 0 | 0 | 0 | 30 | 30 | 33 |
+| `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
@@ -71,20 +71,20 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 79 | 0 | 0 | 99 | 181 | 199 |
+| `sceKernel` | 3 | 79 | 0 | 0 | 102 | 184 | 202 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
-| `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
+| `scePsmf` | 0 | 3 | 0 | 0 | 12 | 15 | 15 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **171** | **1** | **2** | **317** | **504** | **533** |
+| **Total** | **13** | **172** | **1** | **2** | **322** | **510** | **537** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -299,8 +299,9 @@ Semantic handler census: **504** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoOpenAsync`** (`sceIo`): `sceIoOpenAsync` (0x89aa9906)
-  - Limitation: open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured
+  - Limitation: open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it
   - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_open_async_notifies_later_callback
 - **`h_IoPollAsync`** (`sceIo`): `sceIoPollAsync` (0x3251ea56)
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -380,7 +381,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
-  - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
+  - Limitation: the option struct is ignored, as on a PSP (pspautotests vtimers/create.expected at 2ed7c9c5, recorded on a PSP: every declared size creates the same timer), and an unreadable one stops the run by name; 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64, while the same PSP-recorded output shows 1024 creates succeed; a NULL name is accepted here, where that output shows 0x80020001; the no-slot code 0x80020190 is unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
 - **`h_CreateVpl`** (`sceKernel`): `sceKernelCreateVpl` (0x56c039b5)
   - Limitation: valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)
@@ -617,6 +618,9 @@ Semantic handler census: **504** handlers across **25** API families, covering *
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
+- **`h_PsmfGetPsmfInfo`** (`scePsmf`): `scePsmfPlayerGetPsmfInfo` (0xdf089680)
+  - Limitation: host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs of the 0x03090510 libpsmfplayer build are never written because the loaded build is not recorded; lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)
+  - Evidence: src/rt/psmf_media_selftest.c:test_player_get_psmf_info
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
 - **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)

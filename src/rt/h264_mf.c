@@ -277,24 +277,26 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
     uint64_t totalBytes64 = (uint64_t)(uint32_t)(h - 1) * pitchBytes64 + rowBytes64;
     if (rowBytes64 == 0 || rowBytes64 > UINT32_MAX || pitchBytes64 == 0 ||
         pitchBytes64 > UINT32_MAX || totalBytes64 > UINT32_MAX ||
-        !sr_guest_span_writable(buffer, (uint32_t)totalBytes64))
+        !sr_guest_span_writable_any_view(buffer, (uint32_t)totalBytes64))
         return 0;
     /* Preflight every destination row before taking a host pointer.  A single malformed row
      * must not leave an earlier row partially converted in guest VRAM. */
     for (int y = 0; y < h; y++) {
         uint64_t rowAddr = (uint64_t)buffer + (uint64_t)(uint32_t)y * pitchBytes64;
         if (rowAddr > UINT32_MAX || rowAddr + rowBytes64 > UINT64_C(0x100000000) ||
-            !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;
+            !sr_guest_span_writable_any_view((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;
     }
-    uint8_t *dst = (uint8_t *)SR_HOST(buffer);
-    sr_guest_vram_write_prepare_bytes(buffer, (uint32_t)totalBytes64);
-    const uint8_t *yp = src, *uvp = src + (size_t)yBytes;
+    /* The buffer may sit behind a swizzled VRAM mirror view (#1049), so each row is
+     * converted in a host scratch row and written with sr_guest_copy_out(), which
+     * translates it piece by piece and prepares and commits every piece's VRAM span. */
     uint32_t rowBytes = (uint32_t)rowBytes64;
     uint32_t pitchBytes = (uint32_t)pitchBytes64;
+    uint8_t *row = (uint8_t *)malloc(rowBytes);
+    if (!row) return 0;
+    const uint8_t *yp = src, *uvp = src + (size_t)yBytes;
     for (int y = 0; y < h; y++) {
         const uint8_t *yr = yp + (size_t)(uint32_t)y * (size_t)(uint32_t)stride;
         const uint8_t *uv = uvp + (size_t)(uint32_t)(y / 2) * (size_t)(uint32_t)stride;
-        uint8_t *row = dst + (size_t)(uint32_t)y * pitchBytes;
         for (int x = 0; x < w; x++) {
             int c = yr[x] - 16, dd = uv[x & ~1] - 128, e = uv[(x & ~1) + 1] - 128;
             int r = clamp8((298 * c + 409 * e + 128) >> 8);
@@ -321,15 +323,9 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
                     break;
             }
         }
+        sr_guest_copy_out(buffer + (uint32_t)y * pitchBytes, row, rowBytes);
     }
-    uint64_t fullBytes = (uint64_t)(uint32_t)h * pitchBytes64;
-    if (w == frameWidth && fullBytes <= UINT32_MAX) {
-        sr_guest_vram_write_commit_bytes(buffer, (uint32_t)fullBytes);
-    } else {
-        for (int y = 0; y < h; y++) {
-            sr_guest_vram_write_commit_bytes(buffer + (uint32_t)y * pitchBytes, rowBytes);
-        }
-    }
+    free(row);
     return 1;
 }
 

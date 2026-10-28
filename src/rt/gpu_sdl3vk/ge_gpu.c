@@ -2109,6 +2109,11 @@ static uint32_t tex_level_source_size(uint32_t level) {
 }
 
 static const uint8_t *tex_source_ptr(uint32_t addr, uint32_t bytes) {
+    /* A source through a swizzled VRAM mirror has no single host pointer (#1049). It is
+     * decoded through ge_decode_tex_rgba's piecewise copy, and its cache entry is kept
+     * current by hook_vram_dirty, like any source this function cannot read. That is an
+     * answered shape, not a boundary, so it is not reported as one. */
+    if (sr_guest_span_hits_swizzled_vram_mirror(addr, bytes)) return NULL;
     if (!bytes || !sr_guest_span_readable_current(addr, bytes)) return NULL;
     /* SR_HOST maps VRAM mirrors, but a direct memcmp/copy may not cross the physical
      * 2 MiB wrap. Fall back to the exact decoder on that rare shape. */

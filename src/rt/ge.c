@@ -2126,6 +2126,35 @@ void ge_decode_tex_rgba(uint32_t *out) {
         uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
         uint32_t bpp = ge.tex_fmt == 3 ? 4u : 2u;
         SrGuestRectSpan source;
+        /* A texture given through the 0x042 or 0x046 VRAM mirror (#1049: a movie drawn as a
+         * texture) is not host-contiguous, so no host pointer can cover it. Each row is read
+         * with sr_guest_copy_in(), which translates it piece by piece the way texel loads
+         * through that view do. Only a rectangle that leaves the arena decodes to zero. */
+        if (ge.tex_w > 0 && ge.tex_h > 0 && ge.tex_w <= 512 &&
+            sr_guest_rect_geometry(ge.tex_addr, 0u, 0u, stride, (uint32_t)ge.tex_w,
+                                   (uint32_t)ge.tex_h, bpp, &source) &&
+            sr_inrange_n(source.first, source.total_bytes) &&
+            sr_guest_span_hits_swizzled_vram_mirror(source.first, source.total_bytes)) {
+            uint8_t row[512u * 4u];
+            for (int v = 0; v < ge.tex_h; v++) {
+                uint32_t *dst = out + (uint32_t)v * (uint32_t)ge.tex_w;
+                (void)sr_guest_copy_in(row, source.first + (uint32_t)v * source.row_pitch,
+                                       source.row_bytes);
+                if (ge.tex_fmt == 3) {
+                    memcpy(dst, row, (size_t)ge.tex_w * 4);
+                } else {
+                    for (int u = 0; u < ge.tex_w; u++) {
+                        uint16_t texel;
+                        int r, g, b, a;
+                        memcpy(&texel, row + (size_t)u * 2u, 2u);
+                        unpack_color(texel, (int)ge.tex_fmt, &r, &g, &b, &a);
+                        dst[u] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) |
+                                 ((uint32_t)a << 24);
+                    }
+                }
+            }
+            return;
+        }
         if (ge.tex_w <= 0 || ge.tex_h <= 0 ||
             !sr_guest_rect_readable(ge.tex_addr, 0u, 0u, stride,
                                     (uint32_t)ge.tex_w, (uint32_t)ge.tex_h,

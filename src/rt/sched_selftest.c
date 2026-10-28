@@ -2278,6 +2278,51 @@ static void test_interrupt_frame_is_restored(void) {
  * waiter exists, and the scheduler is driven repeatedly. The asserted invariant is
  * ownership, not a rate: virtual time never exceeds the sampled host time merely
  * because a waiter would like it to. */
+/* #1296: a timed wait that comes due between the idle pick and the idle wait's clock sample
+ * runs at once. It used to fall into the vblank branch and wait up to a whole period on the
+ * host. MUTANT: without the due-thread return, the first check reads 16683 us (the next
+ * vblank) instead of 1200 us. */
+static void test_idle_wait_runs_a_wait_that_came_due(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;                /* the next vblank, 16.7 ms out */
+    int waiter = mk(0x234u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_cur = -1;
+    set_host_us(1200u);                       /* its deadline passed after the idle pick */
+    sched_idle_wait();
+    expect(g_test_host_ns == 1200000u,
+           "idle wait: a timed wait already due costs no host wait");
+    expect(pick_next() == waiter && s_tcb[waiter].state == TH_READY,
+           "idle wait: the next pick runs the thread whose wait came due");
+
+    /* A suspended thread's due deadline cannot be run, so the idle wait still waits. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int held = mk(0x235u, TH_WAIT_DELAY, 16);
+    s_tcb[held].wake = 1000u;
+    s_tcb[held].suspended = 1;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns >= 16683333u,
+           "idle wait: a suspended thread's due deadline still waits for the vblank");
+
+    /* A deadline ahead of the vblank keeps its precise sleep. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int sleeper = mk(0x236u, TH_WAIT_DELAY, 16);
+    s_tcb[sleeper].wake = 5000u;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns == 5000000u,
+           "idle wait: a future deadline before the vblank is slept to exactly");
+    s_host_ns_fn = NULL;
+}
+
 static void test_paced_vtime_is_host_anchored(void) {
     reset_sched();
     begin_clock_fixture(1, 0u);
@@ -4934,6 +4979,7 @@ int main(int argc, char **argv) {
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
+    test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();
     test_busy_guest_observes_every_display_period();
     test_masked_window_keeps_the_enabled_backlog();

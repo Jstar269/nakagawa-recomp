@@ -77,6 +77,7 @@ void sr_oor(uint32_t address, uint32_t value, int store) {{
 uint32_t sr_get_ge_status(void) {{ return 0; }}
 uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
+int sr_debug_streams_init(void) {{ return 0; }}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
 /* The #855 TAIL protocol lives in guest_interp.c, which this harness does not link.

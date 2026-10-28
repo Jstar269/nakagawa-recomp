@@ -13,6 +13,8 @@
  *   - sr_size_add_ok / sr_size_mul_ok (overflow-safe size arithmetic)
  *   - sr_guest_rect_readable/writable (pitched whole-rectangle validation)
  *   - sr_native_memmove/memset through the swizzled VRAM mirrors (#1049)
+ *   - sr_guest_span_writable_any_view + sr_guest_copy_out/fill, the movie-frame
+ *     write primitives, piece by piece through the swizzled mirrors (#1049)
  *
  * The core guarantee is overflow safety: a (base, size) pair whose naive sum wraps
  * uint32_t must be REJECTED, never accepted. A deterministic differential fuzz
@@ -199,6 +201,13 @@ volatile int g_sr_vram_read_pending;
 static int g_oor_calls;
 static uint8_t *g_committed;   /* one flag per physical VRAM byte */
 
+/* Every prepare and commit the write primitives publish, in order (#1049). */
+#define PIECE_LOG_MAX 4096u
+static uint32_t g_prepare_addr[PIECE_LOG_MAX], g_prepare_width[PIECE_LOG_MAX];
+static uint32_t g_commit_addr[PIECE_LOG_MAX], g_commit_width[PIECE_LOG_MAX];
+static unsigned g_prepare_n, g_commit_n;
+static void reset_piece_log(void) { g_prepare_n = 0; g_commit_n = 0; }
+
 void sr_oor(uint32_t a, uint32_t v, int store) {
     (void)a; (void)v; (void)store;
     g_oor_calls++;
@@ -210,7 +219,11 @@ void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width) {
     (void)physical_addr; (void)width;
 }
 void sr_ge_vram_write_prepare(uint32_t physical_addr, uint32_t width) {
-    (void)physical_addr; (void)width;
+    if (g_prepare_n < PIECE_LOG_MAX) {
+        g_prepare_addr[g_prepare_n] = physical_addr;
+        g_prepare_width[g_prepare_n] = width;
+    }
+    g_prepare_n++;
 }
 
 #define VRAM_BYTES 0x00200000u
@@ -230,6 +243,11 @@ static uint32_t measured_vram_offset(uint32_t view, uint32_t o) {
  * record the physical bytes it names so the test can require a commit for
  * every byte the copy stored. */
 void sr_ge_vram_write_commit(uint32_t physical_addr, uint32_t width) {
+    if (g_commit_n < PIECE_LOG_MAX) {
+        g_commit_addr[g_commit_n] = physical_addr;
+        g_commit_width[g_commit_n] = width;
+    }
+    g_commit_n++;
     uint32_t phys = physical_addr & PHYS_MASK;
     if (!g_committed || phys < 0x04000000u || phys >= 0x04800000u) return;
     uint32_t view = (phys >> 21) & 3u;
@@ -338,6 +356,191 @@ static void test_vram_mirror_bulk_copy(void) {
     CHECK(ram[0x03fff800u] == 0u, "a refused copy must not store its first byte");
 }
 
+/* ---- Movie-frame write primitives through the swizzled mirrors (#1049) ------------
+ * sr_guest_span_writable_any_view() + sr_guest_copy_out() / sr_guest_fill() are what the
+ * movie frame writers (sceMpegAvcCsc, sceMpegAvcDecode, the H.264 guest targets and the
+ * PSMF player) use. The measured offsets again come from measured_vram_offset(), not from
+ * sr_vram_cpu_address(). */
+
+/* Physical arena address a CPU address reaches, from the measured transforms. */
+static uint32_t measured_phys(uint32_t guest) {
+    uint32_t phys = guest & PHYS_MASK;
+    if (phys < 0x04000000u || phys >= 0x04800000u) return phys;
+    return 0x04000000u + measured_vram_offset((phys >> 21) & 3u, phys & 0x001FFFFFu);
+}
+
+static int span_in_one_block(uint32_t guest, uint32_t width) {
+    const uint32_t first = measured_phys(guest);
+    for (uint32_t i = 1; i < width; i++)
+        if (measured_phys(guest + i) != first + i) return 0;
+    return 1;
+}
+
+/* Check one write of `size` bytes at `guest` already performed (VRAM zero-initialised, the
+ * stored byte for offset i being want(i)): placement, exact touched count, and the
+ * prepare/commit pieces the write published. `blocks` is the independently derived number of
+ * physically contiguous blocks the span covers. */
+static void check_vram_write(const char *what, uint32_t guest, uint32_t size,
+                             const uint8_t *want, uint32_t blocks) {
+    const uint8_t *vram = vram_phys();
+    uint32_t misplaced = 0, uncommitted = 0, stray = 0;
+    for (uint32_t i = 0; i < size; i++) {
+        const uint32_t off = measured_phys(guest + i) - 0x04000000u;
+        if (vram[off] != want[i]) misplaced++;
+        if (!g_committed[off]) uncommitted++;
+    }
+    for (uint32_t p = 0; p < VRAM_BYTES; p++)
+        if (vram[p] != 0u) stray++;
+    CHECK(misplaced == 0, "%s @%08x+%x: %u bytes not at the measured offset", what,
+          (unsigned)guest, (unsigned)size, (unsigned)misplaced);
+    CHECK(uncommitted == 0, "%s @%08x+%x: %u bytes never committed", what, (unsigned)guest,
+          (unsigned)size, (unsigned)uncommitted);
+    CHECK(stray == size, "%s @%08x+%x: %u nonzero VRAM bytes, expected %u", what,
+          (unsigned)guest, (unsigned)size, (unsigned)stray, (unsigned)size);
+
+    CHECK(g_commit_n == g_prepare_n && g_commit_n == blocks,
+          "%s @%08x+%x: %u prepares and %u commits, expected %u pieces", what,
+          (unsigned)guest, (unsigned)size, (unsigned)g_prepare_n, (unsigned)g_commit_n,
+          (unsigned)blocks);
+    uint32_t next = guest, covered = 0;
+    for (unsigned i = 0; i < g_commit_n && i < PIECE_LOG_MAX; i++) {
+        const uint32_t addr = g_commit_addr[i], width = g_commit_width[i];
+        CHECK(addr == next, "%s @%08x+%x: piece %u starts at %08x, expected %08x", what,
+              (unsigned)guest, (unsigned)size, i, (unsigned)addr, (unsigned)next);
+        CHECK(width != 0u && span_in_one_block(addr, width),
+              "%s @%08x+%x: piece %u (%08x, %u bytes) is not one physical block", what,
+              (unsigned)guest, (unsigned)size, i, (unsigned)addr, (unsigned)width);
+        CHECK(i < g_prepare_n && g_prepare_addr[i] == addr && g_prepare_width[i] == width,
+              "%s @%08x+%x: piece %u was not prepared with the span it committed", what,
+              (unsigned)guest, (unsigned)size, i);
+        next += width;
+        covered += width;
+    }
+    CHECK(covered == size, "%s @%08x+%x: pieces cover %u bytes", what, (unsigned)guest,
+          (unsigned)size, (unsigned)covered);
+}
+
+/* Number of aligned `block`-byte blocks [guest, guest+size) touches. */
+static uint32_t blocks_touched(uint32_t guest, uint32_t size, uint32_t block) {
+    return ((guest + size - 1u) / block) - (guest / block) + 1u;
+}
+
+static void test_any_view_span_predicate(void) {
+    /* Spans the refusing predicate rejects, which the any-view predicate accepts. */
+    static const struct { uint32_t addr, size; const char *what; } accept[] = {
+        { 0x04200000u, 0x20u,  "one 32-byte block, mirror 1" },
+        { 0x04600010u, 0x40u,  "crosses a 32-byte block, mirror 3" },
+        { 0x04201FF0u, 0x40u,  "crosses the 8 KiB XOR boundary, mirror 1" },
+        { 0x04201FF0u, 0x3000u,"several 8 KiB XOR boundaries, mirror 1" },
+        { 0x44600001u, 0x1001u,"unaligned start and end, uncached mirror 3" },
+        { 0x041FFFF0u, 0x40u,  "base view into mirror 1" },
+        { 0x045FFFF0u, 0x40u,  "mirror 2 into mirror 3" },
+        { 0x047FFFF0u, 0x40u,  "mirror 3 into the arena above VRAM" },
+        { 0x08000000u, 0x100u, "ordinary RAM" },
+        { 0x0bfffffcu, 4u,     "the last arena word" },
+        { 0x0c000000u, 0u,     "an empty span past the arena" },
+    };
+    for (size_t i = 0; i < sizeof accept / sizeof accept[0]; i++)
+        CHECK(sr_guest_span_writable_any_view(accept[i].addr, accept[i].size),
+              "any-view predicate refused %s (%08x+%x)", accept[i].what,
+              (unsigned)accept[i].addr, (unsigned)accept[i].size);
+
+    static const struct { uint32_t addr, size; const char *what; } refuse[] = {
+        { 0x0bfffff0u, 0x20u,        "runs off the arena end" },
+        { 0x0c000000u, 1u,           "starts past the arena" },
+        { 0x04600000u, 0xFFFFFFFFu,  "size wraps the address space" },
+        { 0xFFFFFFF0u, 0x20u,        "wraps through the physical mask" },
+        { 0x04200000u, 0x08000000u,  "larger than the arena" },
+    };
+    for (size_t i = 0; i < sizeof refuse / sizeof refuse[0]; i++)
+        CHECK(!sr_guest_span_writable_any_view(refuse[i].addr, refuse[i].size),
+              "any-view predicate accepted %s (%08x+%x)", refuse[i].what,
+              (unsigned)refuse[i].addr, (unsigned)refuse[i].size);
+
+    /* The refusing predicate keeps refusing those mirror spans for every other caller. */
+    CHECK(!sr_guest_span_writable(0x04600010u, 0x40u),
+          "the pointer-forming predicate must still refuse a 0x046 span over a block boundary");
+    CHECK(!sr_guest_span_writable(0x04201FF0u, 0x40u),
+          "the pointer-forming predicate must still refuse a 0x042 span over the 8 KiB boundary");
+    CHECK(sr_guest_span_writable(0x04200000u, 0x40u),
+          "the pointer-forming predicate still accepts one 0x042 block");
+}
+
+static void test_vram_mirror_write_primitives(void) {
+    static const uint32_t views[] = { 0x04200000u, 0x04600000u, 0x44200000u, 0x44600000u };
+    static const struct { uint32_t offset, size; const char *what; } spans[] = {
+        { 0x00000000u, 0x20u,   "one aligned block" },
+        { 0x0000001Du, 0x05u,   "unaligned inside one 32-byte block" },
+        { 0x0000001Du, 0x06u,   "unaligned across one 32-byte boundary" },
+        { 0x0000003Fu, 0x02u,   "two bytes across a 64-byte boundary" },
+        { 0x00001FF0u, 0x30u,   "across the 8 KiB XOR boundary" },
+        { 0x00011F90u, 0x1000u, "4 KiB mid-block across the 8 KiB boundary" },
+        { 0x00002005u, 0x3003u, "unaligned start and end across two XOR boundaries" },
+        { 0x001FFFE3u, 0x1Du,   "ends at the end of a mirror window" },
+    };
+    uint8_t *vram = vram_phys();
+    static uint8_t pattern[0x3003u];
+    for (uint32_t i = 0; i < sizeof pattern; i++)
+        pattern[i] = (uint8_t)(1u + (i * 11u + (i >> 7)) % 251u);
+    g_sr_vram_read_pending = 1;
+
+    for (size_t v = 0; v < sizeof views / sizeof views[0]; v++) {
+        const uint32_t view = ((views[v] & PHYS_MASK) >> 21) & 3u;
+        const uint32_t block = view == 3u ? 0x20u : 0x40u;
+        for (size_t s = 0; s < sizeof spans / sizeof spans[0]; s++) {
+            const uint32_t guest = views[v] + spans[s].offset, size = spans[s].size;
+
+            /* copy_out */
+            memset(vram, 0, VRAM_BYTES);
+            memset(g_committed, 0, VRAM_BYTES);
+            reset_piece_log();
+            CHECK(sr_guest_copy_out(guest, pattern, size) == 1, "copy_out refused %s @%08x",
+                  spans[s].what, (unsigned)guest);
+            check_vram_write("copy_out", guest, size, pattern,
+                             blocks_touched(guest & PHYS_MASK, size, block));
+
+            /* fill */
+            static uint8_t fill_want[0x3003u];
+            memset(fill_want, 0xC3, sizeof fill_want);
+            memset(vram, 0, VRAM_BYTES);
+            memset(g_committed, 0, VRAM_BYTES);
+            reset_piece_log();
+            CHECK(sr_guest_fill(guest, 0xC3u, size) == 1, "fill refused %s @%08x",
+                  spans[s].what, (unsigned)guest);
+            check_vram_write("fill", guest, size, fill_want,
+                             blocks_touched(guest & PHYS_MASK, size, block));
+        }
+    }
+
+    /* A span that starts in the base view and runs into the 0x042 mirror: the first bytes are
+     * linear, the rest follow the mirror transform. */
+    {
+        const uint32_t guest = 0x041FFFF0u, size = 0x50u;
+        memset(vram, 0, VRAM_BYTES);
+        memset(g_committed, 0, VRAM_BYTES);
+        reset_piece_log();
+        CHECK(sr_guest_copy_out(guest, pattern, size) == 1, "cross-view copy_out refused");
+        check_vram_write("cross-view copy_out", guest, size, pattern,
+                         1u + blocks_touched(0x04200000u, size - 0x10u, 0x40u));
+    }
+
+    /* Fail closed: out-of-range touches nothing and reports it. */
+    memset(vram, 0, VRAM_BYTES);
+    reset_piece_log();
+    CHECK(sr_guest_copy_out(0x0bfffff0u, pattern, 0x20u) == 0, "copy_out past the arena end");
+    CHECK(sr_guest_fill(0x0bfffff0u, 0x11u, 0x20u) == 0, "fill past the arena end");
+    CHECK(sr_guest_copy_out(0x04600000u, pattern, 0xFFFFFFFFu) == 0, "copy_out with a wrapping size");
+    CHECK(g_commit_n == 0u && g_prepare_n == 0u, "a refused write must not publish VRAM events");
+    {
+        uint32_t stray = 0;
+        for (uint32_t p = 0; p < VRAM_BYTES; p++) if (vram[p]) stray++;
+        CHECK(stray == 0u, "a refused write must not store a byte");
+    }
+    CHECK(sr_guest_copy_out(0x04600000u, pattern, 0u) == 1 && sr_guest_fill(0x04600000u, 1u, 0u) == 1,
+          "an empty write succeeds without touching memory");
+    g_sr_vram_read_pending = 0;
+}
+
 static void fuzz_differential(void) {
     /* Deterministic LCG; no host RNG, so the run is reproducible. Covers the full
      * 32-bit range for both base and size, hitting near-boundary and huge values. */
@@ -393,6 +596,8 @@ int main(void) {
     }
     g_mem = arena + 0x08000000u;
     test_vram_mirror_bulk_copy();
+    test_any_view_span_predicate();
+    test_vram_mirror_write_primitives();
     free(g_committed);
     free(arena);
     if (g_fail == 0) {

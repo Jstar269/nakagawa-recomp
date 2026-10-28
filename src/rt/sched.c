@@ -2011,6 +2011,42 @@ static void scheduler_ge_service(void) {
     sr_cpu_link_clear(s_cpu);
 }
 
+/* ---- VTimer handlers (hle.c, sceKernelSetVTimerHandler) ---------------------------------
+ *
+ * A VTimer handler is a timer interrupt like an alarm: hle.c owns the timers and reports the
+ * earliest guest-time deadline of a running timer with a handler; the scheduler delivers it
+ * from scheduler_service_pending(), in interrupt context, at the alarms' priority, and while
+ * somebody waits its deadline is an idle wake source. */
+static SrSchedVtimerNextDeadline s_vtimer_next;
+static SrSchedVtimerServiceOne s_vtimer_service;
+
+void sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                            SrSchedVtimerServiceOne service_one) {
+    s_vtimer_next = next_deadline;
+    s_vtimer_service = service_one;
+}
+
+static uint64_t sched_vtimer_next_deadline(void) {
+    return s_vtimer_next ? s_vtimer_next() : SCHED_WAIT_FOREVER;
+}
+
+static uint64_t sched_vtimer_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_vtimer_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_vtimer_due(void) {
+    return s_vtimer_service && sched_vtimer_next_deadline() <= s_vtime_us;
+}
+
+/* One interrupt episode: the most overdue VTimer handler.  hle.c saves and restores the
+ * interrupted register file around the guest handler itself. */
+static void scheduler_vtimer_service(void) {
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    s_vtimer_service();
+    s_cur = save_cur;
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -2044,6 +2080,8 @@ static SchedIdleState sched_classify_idle(void) {
         if (alarm < st.soonest) st.soonest = alarm;
         uint64_t ge = sched_ge_wake_deadline();
         if (ge < st.soonest) st.soonest = ge;
+        uint64_t vtimer = sched_vtimer_wake_deadline();
+        if (vtimer < st.soonest) st.soonest = vtimer;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2071,11 +2109,16 @@ static void scheduler_service_pending(void) {
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
            ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
-            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0)) {
-        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed.
-         * A due GE completion (opt-in model) sits between the two. */
+            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0 || scheduler_vtimer_due())) {
+        /* Timers are the lowest-priority source here: only once no VBLANK episode is owed.
+         * A due GE completion (opt-in model) sits between the two. Between a due alarm and
+         * a due VTimer handler the earlier deadline runs first (an unmeasured order). */
         if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
+            int alarm = scheduler_alarm_due_slot();
             if (scheduler_ge_due()) scheduler_ge_service();
+            else if (scheduler_vtimer_due() &&
+                     (alarm < 0 || sched_vtimer_next_deadline() < s_alarms[alarm].deadline))
+                scheduler_vtimer_service();
             else scheduler_alarm_service_one();
             continue;
         }
@@ -2786,6 +2829,47 @@ static void sched_promote_expired_waits(void) {
     }
 }
 
+/* No thread is ready: wait on the host for the next thing that can make one ready. If a timed
+ * wait expires before the next vblank is due, sleep precisely to it (sub-frame delays keep
+ * their real duration); otherwise advance the display source timeline and service its eligible
+ * pending interrupt. Vblank delivery can't starve: the source is latched whenever due.
+ *
+ * A thread's deadline can pass between the pick that found nobody ready and the clock sample
+ * here. That thread is owed the CPU now, so there is no host wait at all: the caller's next
+ * pick promotes it. Sending it to the vblank branch instead held it until the next vblank,
+ * up to a whole period late (#1296: the audio thread's release from a blocking output, its
+ * host queue running dry meanwhile). Only a non-suspended thread counts, since the pick
+ * then always runs it; a due alarm or GE deadline keeps the waits below. */
+static void sched_idle_wait(void) {
+    uint64_t soonest = (uint64_t)-1;
+    uint64_t soonest_runnable = (uint64_t)-1;
+    int any_waiting = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) {
+            any_waiting = 1;
+            if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+            if (!s_tcb[i].suspended && s_tcb[i].wake < soonest_runnable)
+                soonest_runnable = s_tcb[i].wake;
+        }
+    /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
+    if (any_waiting && sched_alarm_wake_deadline() < soonest)
+        soonest = sched_alarm_wake_deadline();
+    if (any_waiting && sched_ge_wake_deadline() < soonest)
+        soonest = sched_ge_wake_deadline();
+    if (any_waiting && sched_vtimer_wake_deadline() < soonest)
+        soonest = sched_vtimer_wake_deadline();
+    scheduler_progress_time();
+    if (s_pace_on && soonest_runnable != SCHED_WAIT_FOREVER && soonest_runnable <= s_vtime_us)
+        return;
+    if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
+        soonest - s_vtime_us < vblank_due_us())
+        { sleep_until_us(soonest); scheduler_progress_time(); }
+    else {
+        vblank_pace();
+        scheduler_latch_due_events();
+    }
+}
+
 /* Where the equal-priority scan at `priority` begins.  Normally one slot after the previous
  * winner; a thread that sceKernelRotateThreadReadyQueue moved to the back of this priority's
  * queue (rot_head) takes precedence, so the scan starts after it and it is reached last. */
@@ -3119,6 +3203,11 @@ void sr_yield(CpuState *s) {
             uint64_t alarm_at = sched_alarm_wake_deadline();
             if (alarm_at != SCHED_WAIT_FOREVER && alarm_at > s_vtime_us) {
                 uint64_t delta = alarm_at - s_vtime_us;
+                if (adv == 0 || delta < adv) adv = delta;
+            }
+            uint64_t vtimer_at = sched_vtimer_wake_deadline();
+            if (vtimer_at != SCHED_WAIT_FOREVER && vtimer_at > s_vtime_us) {
+                uint64_t delta = vtimer_at - s_vtime_us;
                 if (adv == 0 || delta < adv) adv = delta;
             }
             scheduler_add_time(adv);
@@ -4771,30 +4860,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         if (idx < 0) {
             if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
             sr_rt_phase = SR_RT_PHASE_SCHED;
-            /* No thread is ready. If a timed wait expires before the next vblank is due,
-             * sleep precisely to it (sub-frame delays keep their real duration); otherwise
-             * advance the display source timeline and service its eligible pending interrupt.
-             * Vblank delivery can't starve: the source is latched whenever due. */
-            uint64_t soonest = (uint64_t)-1;
-            int any_waiting = 0;
-            for (int i = 0; i < s_ntcb; i++)
-                if (s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) {
-                    any_waiting = 1;
-                    if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
-                }
-            /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
-            if (any_waiting && sched_alarm_wake_deadline() < soonest)
-                soonest = sched_alarm_wake_deadline();
-            if (any_waiting && sched_ge_wake_deadline() < soonest)
-                soonest = sched_ge_wake_deadline();
-            scheduler_progress_time();
-            if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
-                soonest - s_vtime_us < vblank_due_us())
-                { sleep_until_us(soonest); scheduler_progress_time(); }
-            else {
-                vblank_pace();
-                scheduler_latch_due_events();
-            }
+            sched_idle_wait();
             scheduler_service_pending();
             idx = pick_next();
         }
