@@ -287,16 +287,22 @@ def record_gaps(
 _KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "#355",
-        "decryption primitives and tables (AES, Kirk, KLE, PRX, SHA-1, built-in keys) have no independence campaign group yet",
+        "decryption primitives and tables (AES, amctrl, Kirk, KLE, LZRC, NPUMDIMG, PRX, SHA-1, built-in keys) have no independence campaign group yet",
         (
             "src/core/nk_psp_aes.c",
             "src/core/nk_psp_aes.h",
+            "src/core/nk_psp_amctrl.c",
+            "src/core/nk_psp_amctrl.h",
             "src/core/nk_psp_builtin_keys.c",
             "src/core/nk_psp_builtin_keys.h",
             "src/core/nk_psp_kirk.c",
             "src/core/nk_psp_kirk.h",
             "src/core/nk_psp_kle.c",
             "src/core/nk_psp_kle.h",
+            "src/core/nk_psp_lzrc.c",
+            "src/core/nk_psp_lzrc.h",
+            "src/core/nk_psp_npumdimg.c",
+            "src/core/nk_psp_npumdimg.h",
             "src/core/nk_psp_prx.c",
             "src/core/nk_psp_prx.h",
             "src/core/nk_psp_sha1.c",

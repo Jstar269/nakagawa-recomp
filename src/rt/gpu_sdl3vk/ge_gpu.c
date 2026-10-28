@@ -4958,7 +4958,10 @@ static int coherence_run_texture_ram_unnotified_change(void) {
 
 /* One CLUT8 texture drawn twice through the same palette bytes with a different CLUT format
  * word: the palette identity in the texture cache key covers the format, so the second draw
- * decodes again (index >> 1 picks another entry) instead of reusing the first decode. */
+ * decodes again (index >> 1 picks another entry) instead of reusing the first decode. The
+ * case writes GeState directly, outside a list, so it notes each write as such a writer must:
+ * otherwise state_get keeps the first draw's template, texture included, and never reaches
+ * the key. clut-format-list sends the same change as a CLUTFORMAT command. */
 static int coherence_run_clut_format_same_palette(void) {
     const uint32_t fba = 0x00140000u;
     const uint32_t base = 0x04000000u | fba;
@@ -4992,6 +4995,7 @@ static int coherence_run_clut_format_same_palette(void) {
     s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
     s_ge->tex_filter = 0;    /* NEAREST */
     s_ge->clut_fmt = 3u | (0xFFu << 8);                 /* 8888, shift 0, mask 0xFF */
+    ge_state_note_external_write();
     ge_set_gpu_hooks(&k_hooks);
 
     GeVtx p0, p1;
@@ -5000,6 +5004,7 @@ static int coherence_run_clut_format_same_palette(void) {
     wrap_vtx(&p1, 26.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
     int ok = hook_sprite(&p0, &p1, 0);
     s_ge->clut_fmt = 3u | (1u << 2) | (0xFFu << 8);     /* same bytes, shift 1 */
+    ge_state_note_external_write();
     wrap_vtx(&p0, 40.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
     wrap_vtx(&p1, 56.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
     ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
@@ -5023,6 +5028,90 @@ static int coherence_run_clut_format_same_palette(void) {
     printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
            "clut-format-same-palette", first, second);
     coherence_reset_targets();
+    return 1;
+}
+
+/* The same palette change sent the way a title sends it: one list loads the palette, draws a
+ * CLUT8 sprite, changes only CLUTFORMAT (shift 1), and draws again. Every command moves the
+ * GE state serial, so the second sprite must rebuild its state and decode through index >> 1. */
+static int coherence_run_clut_format_list(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u, clut_base = 0x04041000u;
+    const uint32_t stride = 512u, rgb = 0x00FFFFFFu, index = 6u;
+    const uint32_t vaddr = 0x00101800u, list_addr = 0x00100800u;
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    memset(SR_HOST(tex_base), (int)index, 16u * 16u);
+    sr_gpu_vram_dirty(tex_base, 16u * 16u);
+    uint32_t *clut = (uint32_t *)SR_HOST(clut_base);
+    for (uint32_t j = 0; j < 256u; j++) clut[j] = 0xFF000000u | wrap_hash(0x51u + j);
+    sr_gpu_vram_dirty(clut_base, 256u * 4u);
+    const uint32_t want_first = clut[index] & rgb, want_second = clut[index >> 1] & rgb;
+
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(vaddr);
+    vtx[0] = (RawSpriteVtx){ 0.0f, 0.0f, 10.0f, 10.0f, 0.0f };
+    vtx[1] = (RawSpriteVtx){ 16.0f, 16.0f, 26.0f, 26.0f, 0.0f };
+    vtx[2] = (RawSpriteVtx){ 0.0f, 0.0f, 40.0f, 10.0f, 0.0f };
+    vtx[3] = (RawSpriteVtx){ 16.0f, 16.0f, 56.0f, 26.0f, 0.0f };
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, base & 0x00FFFFFFu);
+    DL_EMIT(0x9D, stride | ((base & 0xFF000000u) >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, tex_base & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((tex_base & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC3, 5);                                   /* CLUT8 */
+    DL_EMIT(0xC6, 0);                                   /* NEAREST */
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0xC9, 3u | (1u << 8));                      /* REPLACE, RGBA */
+    DL_EMIT(0xB0, clut_base & 0x00FFFFFFu);
+    DL_EMIT(0xB1, (clut_base & 0xFF000000u) >> 8);
+    DL_EMIT(0xC5, 3u | (0xFFu << 8));                   /* 8888, shift 0, mask 0xFF */
+    DL_EMIT(0xC4, 32u);                                 /* 256 entries x 4 bytes */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));
+    DL_EMIT(0x01, vaddr & 0x00FFFFFFu);
+    DL_EMIT(0x04, (6u << 16) | 2u);
+    DL_EMIT(0xC5, 3u | (1u << 2) | (0xFFu << 8));       /* same palette bytes, shift 1 */
+    DL_EMIT(0x01, (vaddr + 2u * (uint32_t)sizeof(RawSpriteVtx)) & 0x00FFFFFFu);
+    DL_EMIT(0x04, (6u << 16) | 2u);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(list_addr, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    if (!gegpu_sync_guest_fb(&desc)) {
+        fprintf(stderr, "gpu coherence selftest [clut-format-list]: GPU readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t first = guest[18u * stride + 18u] & rgb;
+    uint32_t second = guest[18u * stride + 48u] & rgb;
+    coherence_reset_targets();
+    if (first != want_first || second != want_second) {
+        fprintf(stderr,
+                "gpu coherence selftest [clut-format-list]: first=%06x (want %06x) "
+                "second=%06x (want %06x)%s\n",
+                first, want_first, second, want_second,
+                second == want_first ? " -- the second draw reused the first format's decode" : "");
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
+           "clut-format-list", first, second);
     return 1;
 }
 
@@ -5726,6 +5815,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
     if (!coherence_run_texture_ram_unnotified_change()) ok = 0;
     if (!coherence_run_clut_format_same_palette()) ok = 0;
+    if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs

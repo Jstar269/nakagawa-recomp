@@ -40,6 +40,9 @@ set(CORE_SOURCES
     src/core/nk_psp_kle.c
     src/core/nk_psp_inflate.c
     src/core/nk_psp_container.c
+    src/core/nk_psp_amctrl.c
+    src/core/nk_psp_lzrc.c
+    src/core/nk_psp_npumdimg.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -455,6 +458,10 @@ if(BUILD_PLAYER)
     if(WIN32)
         # GUI subsystem, so a double-click opens no console window (see the Makefile PLAYER_GUI_LDFLAGS note)
         set_target_properties(nakagawa_player PROPERTIES WIN32_EXECUTABLE TRUE)
+        # The app icon; SDL gives every window the executable's first icon group (see the
+        # Makefile PLAYER_ICON_OBJ note). Other systems set it at run time instead.
+        enable_language(RC)
+        target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
         if(DEFINED ENV{VULKAN_SDK})
             target_include_directories(nakagawa_player PRIVATE
                 "$ENV{VULKAN_SDK}/Include"
