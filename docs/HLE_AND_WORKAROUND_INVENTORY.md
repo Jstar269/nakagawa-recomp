@@ -227,9 +227,9 @@ Semantic handler census: **503** handlers across **25** API families, covering *
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
   - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
-  - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+  - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
-  - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+  - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
   - Limitation: models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
@@ -361,7 +361,7 @@ Semantic handler census: **503** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
-  - Limitation: the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered
+  - Limitation: the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
 - **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
   - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
@@ -558,7 +558,7 @@ Semantic handler census: **503** handlers across **25** API families, covering *
   - Limitation: the cited cases cover owner release in the priority-inheritance control and interrupt-context refusal; invalid UIDs, bad counts, and multi-waiter priority ordering are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-priority-inheritance owner release and accepted interrupt-context cell)
 - **`h_WaitEventFlag`** (`sceKernel`): `sceKernelWaitEventFlag` (0x402fcf22)
-  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established
+  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)
 - **`h_WaitSema`** (`sceKernel`): `sceKernelWaitSema` (0x4e3a1105)

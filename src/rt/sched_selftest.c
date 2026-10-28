@@ -302,6 +302,7 @@ static void reset_sched(void) {
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
     sched_alarm_reset();
+    sched_transfer_reset();
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
@@ -823,6 +824,40 @@ static void test_blocked_excluded_until_wake(void) {
         expect(pick_next() == other, "object-blocked thread is excluded despite best priority");
     sched_wake(0xABCu);
     expect(pick_next() == waiter, "sched_wake readies the blocked thread and it wins on priority");
+}
+
+/* #303 device transfer window: the owner, parked on the transfer object, stays
+ * parked through exactly one decision that hands the CPU to another thread and is
+ * released at the next one; with no other runnable thread it is released at once. */
+static void test_transfer_window_closes_after_one_other_dispatch(void) {
+    reset_sched();
+    int owner = mk(0x200, TH_RUNNING, 16);
+    int other = mk(0x201, TH_READY, 32);
+    s_cur = owner;
+    expect(sched_transfer_begin(0xD0Au), "the running thread opens a transfer window");
+    expect(!sched_transfer_begin(0xD0Bu), "only one transfer window is open at a time");
+    s_tcb[owner].state = TH_WAIT_OBJ;   /* as sched_block_on leaves the owner */
+    s_tcb[owner].wait_obj = 0xD0Au;
+    s_cur = -1;
+    uint32_t who = 0;
+    expect(pick_next() == other, "a weaker ready thread gets the CPU while the transfer is pending");
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x200u,
+           "the window stays open through that dispatch and names its owner");
+    expect(s_tcb[owner].state == TH_WAIT_OBJ, "the owner stays blocked during that dispatch");
+    expect(pick_next() == owner, "the next decision closes the window; the woken owner wins on priority");
+    expect(!sched_transfer_pending(0xD0Au, NULL), "the closed window is no longer pending");
+
+    reset_sched();
+    int lone = mk(0x210, TH_RUNNING, 32);
+    int parked = mk(0x211, TH_WAIT_OBJ, 16);
+    s_tcb[parked].wait_obj = 0xABCu;
+    s_cur = lone;
+    expect(sched_transfer_begin(0xD0Au), "a lone thread opens a transfer window");
+    s_tcb[lone].state = TH_WAIT_OBJ;
+    s_tcb[lone].wait_obj = 0xD0Au;
+    s_cur = -1;
+    expect(pick_next() == lone, "with no other runnable thread the window closes at once");
+    expect(s_tcb[parked].state == TH_WAIT_OBJ, "closing wakes only the transfer object's waiters");
 }
 
 static void test_dormant_excluded(void) {
@@ -4851,6 +4886,7 @@ int main(int argc, char **argv) {
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();
+    test_transfer_window_closes_after_one_other_dispatch();
     test_dormant_excluded();
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
