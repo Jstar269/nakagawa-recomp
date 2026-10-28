@@ -23253,12 +23253,15 @@ static uint32_t h_SasUnsupportedVoice(CpuState *s) {
 typedef struct {
     SrWaitHandle invocation;
     int is_send;
-    uint32_t size, wait_mode;
+    uint32_t size, wait_mode, buffer, resultp, progress, toptr;
+    uint64_t deadline;
 } MsgPipeWaiter;
 typedef struct {
     int used;
     uint32_t uid, attr, capacity, read_pos, write_pos, count;
     uint32_t send_calls, receive_calls;
+    SrWaitHandle reservation;
+    uint32_t reserved;
     uint8_t *data;
     MsgPipeWaiter *waiters;
     int nwaiters, wait_cap;
@@ -23274,7 +23277,9 @@ static MsgPipe *msg_pipe_find(uint32_t uid) {
 }
 
 static int msg_pipe_add_waiter(MsgPipe *p, SrWaitHandle invocation, int is_send,
-                               uint32_t size, uint32_t wait_mode) {
+                               uint32_t size, uint32_t wait_mode, uint32_t buffer,
+                               uint32_t resultp, uint32_t progress, uint32_t toptr,
+                               uint64_t deadline) {
     if (p->nwaiters == p->wait_cap) {
         int next;
         if (p->wait_cap) {
@@ -23290,7 +23295,7 @@ static int msg_pipe_add_waiter(MsgPipe *p, SrWaitHandle invocation, int is_send,
         p->waiters = grown;
         p->wait_cap = next;
     }
-    p->waiters[p->nwaiters++] = (MsgPipeWaiter){invocation, is_send, size, wait_mode};
+    p->waiters[p->nwaiters++] = (MsgPipeWaiter){invocation, is_send, size, wait_mode, buffer, resultp, progress, toptr, deadline};
     return 1;
 }
 
@@ -23304,8 +23309,8 @@ static void msg_pipe_remove_waiter(MsgPipe *p, SrWaitHandle invocation) {
     }
 }
 
-static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_only,
-                                  SrWaitHandle *invocation_out) {
+static int msg_pipe_select_waiter_available(const MsgPipe *p, int is_send, int eligible_only,
+                                            uint32_t available, SrWaitHandle *invocation_out) {
     int priority = (p->attr & (is_send ? PSP_MPP_ATTR_SEND_PRIORITY :
                                          PSP_MPP_ATTR_RECEIVE_PRIORITY)) != 0u;
     int best = -1;
@@ -23317,7 +23322,6 @@ static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_on
         if (waiter->is_send != is_send ||
             !sched_wait_state(waiter->invocation, &state, &owner) ||
             state != SR_WAIT_BLOCKED) continue;
-        uint32_t available = is_send ? p->capacity - p->count : p->count;
         if (eligible_only && (waiter->wait_mode == 0u ? available < waiter->size :
                                                        available == 0u)) continue;
         SrThreadRunStatus status;
@@ -23335,6 +23339,12 @@ static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_on
     if (best < 0) return 0;
     *invocation_out = p->waiters[best].invocation;
     return 1;
+}
+
+static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_only,
+                                  SrWaitHandle *invocation_out) {
+    uint32_t available = is_send ? p->capacity - p->count - p->reserved : p->count;
+    return msg_pipe_select_waiter_available(p, is_send, eligible_only, available, invocation_out);
 }
 
 static int msg_pipe_wake_one_waiter(MsgPipe *p, int is_send) {
@@ -23363,6 +23373,11 @@ static void msg_pipe_wake_after_transfer(MsgPipe *p, int is_send) {
 static int msg_pipe_detach_invocation(SrWaitHandle invocation, uint32_t object) {
     MsgPipe *p = msg_pipe_find(object);
     if (!p) return 0;
+    if (p->reservation == invocation) {
+        p->count += p->reserved;
+        p->reserved = 0u;
+        p->reservation = 0;
+    }
     msg_pipe_remove_waiter(p, invocation);
     SrWaitHandle successor;
     int notified = 0;
@@ -23381,8 +23396,8 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=bufferSize, t0=option. */
     (void)A1;
     /* Issue #178: validate against the documented PSP-resource model BEFORE any
-     * host allocation.  Zero is illegal; sizes above MSG_PIPE_MAX_CAPACITY are
-     * outside the modeled range.  Both fail before malloc, before a UID is
+     * host allocation. Sizes above MSG_PIPE_MAX_CAPACITY are
+     * outside the modeled range. They fail before malloc, before a UID is
      * handed out, and before a slot is reserved, so a rejected create leaves
      * no observable state behind. */
     /* A NULL name is rejected first with NO_MEMORY, matching PPSSPP's
@@ -23390,7 +23405,7 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
      * name that is unmapped or unterminated fails closed with ILLEGAL_ADDR
      * (project choice) instead of silently becoming "". */
     if (!A0) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
-    if (A3 == 0 || A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
     char name[32];
     if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* A3 <= MSG_PIPE_MAX_CAPACITY (1 MiB), so the allocation is bounded and
@@ -23399,8 +23414,8 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
     for (int i = 0; i < MSG_PIPE_MAX; i++) {
         MsgPipe *p = &s_msg_pipes[i];
         if (p->used) continue;
-        uint8_t *data = (uint8_t *)malloc(capacity);
-        if (!data) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+        uint8_t *data = capacity ? (uint8_t *)malloc(capacity) : NULL;
+        if (capacity && !data) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
         memset(p, 0, sizeof(*p));
         p->used = 1;
         p->uid = sr_alloc_uid();
@@ -23430,6 +23445,150 @@ static uint32_t h_DeleteMsgPipe(CpuState *s) {
     return 0;
 }
 
+/* Zero-buffer pipes transfer bytes directly between opposite wait queues.
+ * Each blocked invocation keeps its own progress, including partial FULL waits. */
+static MsgPipeWaiter *msg_pipe_waiter_by_handle(MsgPipe *p, SrWaitHandle handle) {
+    for (int i = 0; i < p->nwaiters; i++)
+        if (p->waiters[i].invocation == handle) return &p->waiters[i];
+    return NULL;
+}
+static int msg_pipe_direct(MsgPipe *p, int is_send, uint32_t buffer, uint32_t size,
+                           uint32_t *progress, int *woke) {
+    while (*progress < size) {
+        SrWaitHandle other_handle;
+        if (!msg_pipe_select_waiter_available(p, !is_send, p->capacity != 0u,
+                                              size - *progress, &other_handle)) break;
+        MsgPipeWaiter *other = msg_pipe_waiter_by_handle(p, other_handle);
+        if (!other || other->progress >= other->size) return 0;
+        uint32_t amount = size - *progress;
+        if (amount > other->size - other->progress) amount = other->size - other->progress;
+        uint32_t source = is_send ? buffer + *progress : other->buffer + other->progress;
+        uint32_t dest = is_send ? other->buffer + other->progress : buffer + *progress;
+        if (!sr_guest_span_readable(source, amount) || !sr_guest_span_writable(dest, amount)) {
+            /* The caller's span was checked before rendezvous; an invalid
+             * opposite waiter must fail on its own, not fail this caller. */
+            *woke |= sched_wait_complete(other_handle, SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+            continue;
+        }
+        for (uint32_t i = 0; i < amount; i++) MEM_W8(dest + i, MEM_R8(source + i));
+        *progress += amount;
+        other->progress += amount;
+        if (other->resultp) MEM_W32(other->resultp, other->progress);
+        if (other->progress == other->size || other->wait_mode == 1u) {
+            if (other->toptr) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                MEM_W32(other->toptr, now < other->deadline ? (uint32_t)(other->deadline - now) : 0u);
+            }
+            *woke |= sched_wait_complete(other_handle, 0u);
+        }
+    }
+    return 1;
+}
+static uint32_t msg_pipe_rendezvous(CpuState *s, MsgPipe *p, int is_send, int is_cb, int poll) {
+    uint32_t uid = A0, buffer = A1, size = A2, mode = A3;
+    uint32_t resultp = stack_arg(s, 0), toptr = poll ? 0u : stack_arg(s, 1);
+    if ((is_send && !sr_guest_span_readable(buffer, size)) ||
+        (!is_send && !sr_guest_span_writable(buffer, size))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (toptr && !sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!poll && !sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint32_t progress = 0u;
+    int woke = 0;
+    if (!msg_pipe_direct(p, is_send, buffer, size, &progress, &woke)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (progress == size || (mode == 1u && progress)) {
+        if (resultp) MEM_W32(resultp, progress);
+        if (woke) sched_preempt();
+        return 0u;
+    }
+    if (poll) {
+        if (resultp && mode == 1u) MEM_W32(resultp, progress);
+        if (woke) sched_preempt();
+        return is_send ? SCE_KERNEL_ERROR_MPP_FULL : SCE_KERNEL_ERROR_MPP_EMPTY;
+    }
+    uint64_t deadline = 0u;
+    if (toptr) {
+        uint32_t timeout = MEM_R32(toptr);
+        if (!timeout) { if (woke) sched_preempt(); return SCE_KERNEL_ERROR_WAIT_TIMEOUT; }
+        sched_vtime_refresh();
+        deadline = sched_vtime_deadline_after(timeout);
+    }
+    SrWaitHandle handle = sched_wait_begin(uid, deadline, is_cb, msg_pipe_detach_invocation);
+    if (!handle) { if (woke) sched_preempt(); return 0x80020190u; }
+    if (!msg_pipe_add_waiter(p, handle, is_send, size, mode, buffer, resultp, progress, toptr, deadline)) {
+        (void)sched_wait_finish(handle);
+        if (woke) sched_preempt();
+        return 0x80020190u;
+    }
+    if (resultp) MEM_W32(resultp, progress);
+    uint32_t result = 0u;
+    for (;;) {
+        if (sched_wait_take_result(handle, &result)) break;
+        if (is_cb && sr_thread_has_pending_callbacks(sched_current_uid())) {
+            sched_wait_callback(handle, 1);
+            sr_thread_dispatch_callbacks();
+            sched_wait_callback(handle, 0);
+            if (sched_wait_take_result(handle, &result)) break;
+            p = msg_pipe_find(uid);
+            if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        }
+        MsgPipeWaiter *self = msg_pipe_waiter_by_handle(p, handle);
+        if (!self) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        progress = self->progress;
+        if (!msg_pipe_direct(p, is_send, buffer, size, &progress, &woke)) {
+            result = SCE_KERNEL_ERROR_ILLEGAL_ADDR; break;
+        }
+        self = msg_pipe_waiter_by_handle(p, handle);
+        if (!self) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        self->progress = progress;
+        if (resultp) MEM_W32(resultp, progress);
+        if (progress == size || (mode == 1u && progress)) { result = 0u; break; }
+        uint32_t remaining = 0u;
+        if (toptr) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= deadline) { MEM_W32(toptr, 0u); result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+            remaining = (uint32_t)(deadline - now);
+        }
+        int timed_out = sched_wait_block(handle, remaining, toptr != 0u);
+        if (sched_wait_take_result(handle, &result)) break;
+        p = msg_pipe_find(uid);
+        if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        if (timed_out) { if (toptr) MEM_W32(toptr, 0u); result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+    }
+    if (toptr && result != SCE_KERNEL_ERROR_WAIT_TIMEOUT) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
+    }
+    if (sched_wait_finish(handle)) woke = 1;
+    if (woke) sched_preempt();
+    return result;
+}
+
+static uint32_t msg_pipe_reserve_receiver(MsgPipe *p, uint32_t buffer, uint32_t amount) {
+    /* Reserve a direct handoff until the receiver actually resumes.  The
+     * bytes occupy pipe capacity and can be restored if its wait departs. */
+    SrWaitHandle receiver;
+    uint32_t direct = 0u;
+    if (!p->count && !p->reserved &&
+        msg_pipe_select_waiter_available(p, 0, 1, amount, &receiver)) {
+        MsgPipeWaiter *waiter = msg_pipe_waiter_by_handle(p, receiver);
+        uint32_t n = waiter->size < amount ? waiter->size : amount;
+        if (sr_guest_span_writable(waiter->buffer, n)) {
+            for (uint32_t i = 0; i < n; i++) {
+                uint8_t byte = MEM_R8(buffer + i);
+                MEM_W8(waiter->buffer + i, byte);
+                p->data[p->write_pos] = byte;
+                p->write_pos = (p->write_pos + 1u) % p->capacity;
+            }
+            p->reservation = receiver;
+            p->reserved = direct = n;
+            (void)sched_wait_notify(receiver);
+        }
+    }
+    return direct;
+}
+
 static uint32_t h_TrySendMsgPipe(CpuState *s) {
     /* a0=uid, a1=source, a2=size, a3=waitMode, t0=resultSize. */
     uint32_t resultp = stack_arg(s, 0);
@@ -23447,9 +23606,15 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
     if (A3 > 1u) return 0x80020195u;
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0 || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) {
+        uint32_t rc = msg_pipe_rendezvous(s, p, 1, 0, 1);
+        if (rc == SCE_KERNEL_ERROR_MPP_FULL && A3 == 0u && resultp)
+            MEM_W32(resultp, saved_result);
+        return rc;
+    }
     p->send_calls++;
-    uint32_t free_bytes = p->capacity - p->count;
+    uint32_t free_bytes = p->capacity - p->count - p->reserved;
     uint32_t amount = A2;
     if (amount > free_bytes) {
         if (A3 == 0 || free_bytes == 0) {
@@ -23474,16 +23639,18 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
                     p->uid, sched_current_uid(), p->send_calls, A2, A1, amount);
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     }
-    for (uint32_t i = 0; i < amount; i++) {
+    uint32_t direct = msg_pipe_reserve_receiver(p, A1, amount);
+    for (uint32_t i = direct; i < amount; i++) {
         p->data[p->write_pos] = MEM_R8(A1 + i);
-        p->write_pos = (p->write_pos + 1) % p->capacity;
+        p->write_pos = (p->write_pos + 1u) % p->capacity;
     }
-    p->count += amount;
+    p->count += amount - direct;
     if (resultp) MEM_W32(resultp, amount);
     if (msg_pipe_trace_call(p->send_calls))
         fprintf(stderr, "MSGPIPE: send uid=0x%x thread=0x%x call=%u requested=%u transferred=%u queued=%u\n",
                 p->uid, sched_current_uid(), p->send_calls, A2, amount, p->count);
     msg_pipe_wake_after_transfer(p, 1);
+    if (direct) sched_preempt();
     return 0;
 }
 
@@ -23502,17 +23669,19 @@ static uint32_t h_TryReceiveMsgPipe(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
     if (A3 > 1u) return 0x80020195u;
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0 || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) return msg_pipe_rendezvous(s, p, 0, 0, 1);
     p->receive_calls++;
     uint32_t amount = A2;
-    if (amount > p->count) {
-        if (A3 == 0 || p->count == 0) {
+    uint32_t available = p->reserved ? 0u : p->count;
+    if (amount > available) {
+        if (A3 == 0 || available == 0) {
             if (msg_pipe_trace_call(p->receive_calls))
                 fprintf(stderr, "MSGPIPE: receive uid=0x%x thread=0x%x call=%u requested=%u queued=%u -> EMPTY\n",
                         p->uid, sched_current_uid(), p->receive_calls, A2, p->count);
             return SCE_KERNEL_ERROR_MPP_EMPTY;
         }
-        amount = p->count;
+        amount = available;
     }
     /* Issue #178: preflight the complete destination span for the ACTUAL
      * transfer amount before mutating FIFO indices/count, so an invalid
@@ -23538,7 +23707,8 @@ static uint32_t h_TryReceiveMsgPipe(CpuState *s) {
 
 static int msg_pipe_transfer_ready(const MsgPipe *p, int is_send, uint32_t size,
                                   uint32_t wait_mode, uint32_t *amount_out) {
-    uint32_t available = is_send ? p->capacity - p->count : p->count;
+    uint32_t available = is_send ? p->capacity - p->count - p->reserved :
+                         (p->reserved ? 0u : p->count);
     if (wait_mode == 0u) {
         if (available < size) return 0;
         *amount_out = size;
@@ -23550,14 +23720,18 @@ static int msg_pipe_transfer_ready(const MsgPipe *p, int is_send, uint32_t size,
 }
 
 static uint32_t msg_pipe_transfer(MsgPipe *p, uint32_t buffer, uint32_t amount,
-                                 uint32_t resultp, int is_send) {
+                                 uint32_t resultp, int is_send, int *direct_wake) {
     if (is_send) {
         if (!sr_guest_span_readable(buffer, amount)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-        for (uint32_t i = 0; i < amount; i++) {
+        uint32_t direct = msg_pipe_reserve_receiver(p, buffer, amount);
+        for (uint32_t i = direct; i < amount; i++) {
             p->data[p->write_pos] = MEM_R8(buffer + i);
             p->write_pos = (p->write_pos + 1u) % p->capacity;
         }
-        p->count += amount;
+        p->count += amount - direct;
+        if (resultp) MEM_W32(resultp, amount);
+        if (direct) *direct_wake = 1;
+        return 0u;
     } else {
         if (!sr_guest_span_writable(buffer, amount)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
         for (uint32_t i = 0; i < amount; i++) {
@@ -23585,7 +23759,8 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A3 > 1u) return 0x80020195u; /* PSP-B3-01: ILLEGAL_MODE. */
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0u || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0u || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) return msg_pipe_rendezvous(s, p, is_send, is_cb, 0);
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
 
     uint32_t uid = A0;
@@ -23593,13 +23768,15 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     uint32_t size = A2;
     uint32_t wait_mode = A3;
     uint32_t amount = 0u;
+    int direct_wake = 0;
     if (is_send) p->send_calls++;
     else p->receive_calls++;
 
     if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-        uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+        uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
         if (transfer_rc != 0u) return transfer_rc;
         msg_pipe_wake_after_transfer(p, is_send);
+        if (direct_wake) sched_preempt();
         return 0u;
     }
 
@@ -23618,7 +23795,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     SrWaitHandle waiter_scope = sched_wait_begin(uid, end_time, is_cb,
                                                  msg_pipe_detach_invocation);
     if (!waiter_scope) return 0x80020190u;
-    if (!msg_pipe_add_waiter(p, waiter_scope, is_send, size, wait_mode)) {
+    if (!msg_pipe_add_waiter(p, waiter_scope, is_send, size, wait_mode, buffer, resultp, 0u, toptr, end_time)) {
         if (sched_wait_finish(waiter_scope)) sched_preempt();
         return 0x80020190u;
     }
@@ -23657,7 +23834,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
          * before marking this scope parked so that this call cannot miss that
          * state change and sleep forever without another transfer edge. */
         if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
             if (transfer_rc != 0u) {
                 result = transfer_rc;
                 break;
@@ -23677,8 +23854,28 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
         p = msg_pipe_find(uid);
         if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
 
+        if (!is_send && p->reservation == waiter_scope) {
+            amount = p->reserved;
+            if (!sr_guest_span_writable(buffer, amount)) {
+                result = SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+                break;
+            }
+            for (uint32_t i = 0; i < amount; i++)
+                MEM_W8(buffer + i, p->data[(p->read_pos + i) % p->capacity]);
+            p->read_pos = (p->read_pos + amount) % p->capacity;
+            p->reserved = 0u;
+            p->reservation = 0;
+            if (resultp) MEM_W32(resultp, amount);
+            if (toptr) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+            }
+            result = 0u;
+            break;
+        }
         if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
             if (transfer_rc != 0u) {
                 result = transfer_rc;
                 break;
@@ -23710,7 +23907,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     }
     /* All departures detach/reconsider through the same object hook. Only the
      * normal syscall boundary may preempt; owner abandonment never does here. */
-    if (sched_wait_finish(waiter_scope)) sched_preempt();
+    if (sched_wait_finish(waiter_scope) || direct_wake) sched_preempt();
     return result;
 }
 
@@ -23782,6 +23979,8 @@ static uint32_t h_CancelMsgPipe(CpuState *s) {
     p->read_pos = 0u;
     p->write_pos = 0u;
     p->count = 0u;
+    p->reserved = 0u;
+    p->reservation = 0;
     if (getenv("SR_MSGLOG"))
         fprintf(stderr, "HLE: CancelMsgPipe uid=0x%x name='%s' send=%u receive=%u\n",
                 p->uid, p->name, senders, receivers);
@@ -23836,7 +24035,7 @@ static uint32_t h_ReferMsgPipeStatus(CpuState *s) {
         info.name[i] = p->name[i];
     info.attr = p->attr;
     info.bufSize = (int32_t)p->capacity;
-    info.freeSize = (int32_t)(p->capacity - p->count);
+    info.freeSize = (int32_t)(p->capacity - p->count - p->reserved);
     info.numSendWaitThreads = (int32_t)senders;
     info.numReceiveWaitThreads = (int32_t)receivers;
     for (uint32_t i = 0; i < write_len; i++)
