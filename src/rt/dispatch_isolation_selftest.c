@@ -350,7 +350,10 @@ static void overlay_a_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0au; s->pc 
 static void overlay_b_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0bu; s->pc = s->r[31]; }
 static const SrModuleFunc k_overlay_a_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_a_body } };
 static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b_body } };
-static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + OVERLAY_CHECK_BYTES } };
+/* The span runs past the identifying bytes, so it also covers OVERLAY_UNTRANSLATED: code
+ * the analysis did not find, which the interpreter runs inside the bound overlay. */
+#define OVERLAY_UNTRANSLATED (OVERLAY_LINK + 0x60u)
+static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
 static SrModuleCode k_overlay_a = {
     "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
     &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
@@ -402,7 +405,19 @@ static void test_code_overlays_follow_guest_memory(void) {
     CHECK(a.body_ran && a.v0 == 0x0au, "the bound overlay's translation runs");
     CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u,
           "a second invalidate with the same code changes nothing");
-    MEM_W32(OVERLAY_LINK + 0x60u, 0xdeadbeefu);
+    MEM_W32(OVERLAY_UNTRANSLATED, 0x24020077u);       /* addiu v0, zero, 0x77 */
+    MEM_W32(OVERLAY_UNTRANSLATED + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(OVERLAY_UNTRANSLATED + 8u, 0x00000000u);  /* nop */
+    /* The interpreted code returns to a translated body, as test_valid_aot_miss does. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    Probe interp = probe(OVERLAY_UNTRANSLATED, PROBE_PC, PROBE_RA);
+    CHECK(interp.dispatch_result >= 0 && g_interp_handoff_hits == 1 &&
+              g_interp_handoff_v0 == 0x77u,
+          "code the analysis missed inside a bound overlay's span is interpreted");
+    MEM_W32(OVERLAY_LINK + 0x74u, 0xdeadbeefu);
     CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
               sr_module_code_is_bound(&k_overlay_a, NULL),
           "a write past the identifying bytes (the overlay's data) keeps it bound");

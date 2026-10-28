@@ -522,6 +522,25 @@ static SrGuestInterpResult fetch_instruction(
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
 
+    /* A bound runtime-placed module is the only authority for its own image range, for
+     * the interpreter as for sr_lookup (sr_exec_span_owns_fetch): its translated spans are
+     * analyzer-owned code, so an entry the analysis missed there is interpreted. */
+    if (atomic_load_explicit(&s_module_bound_count, memory_order_acquire) != 0u) {
+        int module_authority = sr_module_code_fetch_authority(pc);
+        if (module_authority == 1) {
+            if (!sr_inrange_n(pc, 4u)) {
+                set_fault(fault, pc, 0u, pc, 0);
+                return SR_GUEST_INTERP_MEMORY_FAULT;
+            }
+            *opcode = MEM_R32(pc);
+            return SR_GUEST_INTERP_AOT_HANDOFF;
+        }
+        if (module_authority == 0) {
+            set_fault(fault, pc, 0u, pc, 0);
+            return SR_GUEST_INTERP_NOT_EXECUTABLE;
+        }
+    }
+
     int touches_span_boundary = 0;
     for (size_t i = 0; i < s_exec_span_count; i++) {
         const SrExecSpan *span = &s_exec_spans[i];
