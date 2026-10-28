@@ -6004,7 +6004,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "bd97305d38c4b3a1a22a309fc5a2b3ccd9c689f0f27ae5769733d013a378fac2"
+      "sha256": "112f9a6ee9051a1d75073c9964c326f7cbc5e6b83a9d8e4e9e286fb802655d8e"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -14574,7 +14574,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "24256eec80024be3d81915437bdd279cde658913bec4ef9d7572d0a62725d656"
+      "sha256": "496ac411a8c29371065bad2c4e6758256c59ebdaaf7200bff5cbc0443f89fdb9"
     },
     {
       "path": "tools/test_nid_name_proof.py",

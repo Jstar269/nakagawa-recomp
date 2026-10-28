@@ -919,7 +919,8 @@ static void gui_pause_act(NkOverlayAction action) {
          * way a window close ends it, and the player is back in the library. */
         fprintf(stderr, "SR_PAUSE: quit to library\n");
         fflush(stderr);
-        _Exit(0);
+        gui_window_closed_exit();
+        break;
     case NK_OVERLAY_ACT_SET_SCALING:
         if (sdl3vk_set_present_scaling(gui_pause_scaling_from_overlay(action.value)))
             s_pause_base_dirty = 1;
