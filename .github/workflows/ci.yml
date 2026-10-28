@@ -846,6 +846,9 @@ jobs:
       - name: Run Linux AOT/interpreter cosimulation
         run: make CC=gcc -j4 cosim-selftest
 
+      - name: Run Linux cosimulation mutation corpus
+        run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
+
       - name: Run Linux GPU snapshot sync selftest
         run: make CC=gcc -j4 gpu-snapsync-selftest
 
