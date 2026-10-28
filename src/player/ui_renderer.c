@@ -4609,7 +4609,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
-                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
+                strcmp(app->last_error.error_code, "DISC_IMAGE_COMPRESSED") == 0 ||
+                strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }
         }

@@ -248,6 +248,25 @@ bool nk_launch_keep_run_log_in(const char *events_path, const char *log_dir,
 bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
                             char *out_path, size_t out_size);
 
+/* The card for a program the OS refused to start because a security product or
+ * policy blocked it, built from the OS error the spawn reported
+ * (NkProcessHandle.spawn_error). `program` names it in a sentence ("the game")
+ * and `program_title` in a title ("Game"). The details hold the OS's own text for
+ * the error and the program's path. Returns false, with `out` cleared, when the
+ * error is not such a block (nk_platform_spawn_block says NK_SPAWN_BLOCK_NONE). */
+typedef struct {
+    NkSpawnBlock block;
+    char code[32];
+    char title[128];
+    char message[512];
+    char details[512];
+} NkSpawnBlockReport;
+
+bool nk_launch_describe_spawn_block(int os_error, const char *program,
+                                    const char *program_title,
+                                    const char *program_path,
+                                    NkSpawnBlockReport *out);
+
 #ifdef __cplusplus
 }
 #endif
