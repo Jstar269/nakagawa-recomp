@@ -9906,7 +9906,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de342123cb848b943561cf39a858806f16b891545611235450456c9107ef04b6"
+      "sha256": "daf978d8873ac90a6aef7e5c3151e2be549e888dd164f3f8784667a650325bee"
     },
     {
       "path": "src/ui/backend/nk_ui_sdlr.h",
@@ -9954,7 +9954,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25626724229261d48d97d3c213d00fe95903fd24dfc5db2937fe40ebc42619d1"
+      "sha256": "5723f0cd64f6ba416ae5d79088e8f31c5cd6aa33633661646837dee06d517103"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -10002,7 +10002,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08b4bf6a278d85aa7ba65ad101b6fe561c738c994008eaaa923ee517e4c83033"
+      "sha256": "8bd12a8c5859bf53fc3cbd3c7e61d72e80a0cc4147d908ea5f4833af30427058"
     },
     {
       "path": "src/ui/nk_ui_draw.c",
@@ -10014,7 +10014,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "127b299598ee2d20cc6e46876399e9ca724dff20bbdbee8928849f7436284dd6"
+      "sha256": "5d952de13aa93fbaa4460f08139c2778d11bb66adc5a5346f10f88c2cd617c55"
     },
     {
       "path": "src/ui/nk_ui_draw.h",
@@ -10050,7 +10050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "14ef6b46ef1970f7f10f48508be7b9aeee5c392fdcf1600cd1f415c8f46a73a5"
+      "sha256": "751c3441eef9ba223c3bc966b922dc8ee5b44d08f5d168a3655118aaeb7bc20e"
     },
     {
       "path": "src/ui/nk_ui_focus.h",
@@ -10182,7 +10182,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be69897c1345e5cd86ab2ecaf33c5f3d3db4f18ede1886eb42f9a4e22a2876b3"
+      "sha256": "5a52b140c7facc981f21172a5b5da514c0348592a8e6e1d42735f3f996dada0a"
     },
     {
       "path": "src/ui/nk_ui_ttf.c",
