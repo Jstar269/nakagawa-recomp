@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "855da84c7e867a380654a6abe9ea593791602751256852eb691c43c41253ccbd"
+      "sha256": "aaed9f25d6dcf01595ae13997bc9a96afa8b00aedf21c67b31ea0252b0335a3c"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1420,7 +1420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "803de758b0b857701b2828458fe7b2e271b8d288e8620471f1823b34dcfb834b"
+      "sha256": "4de172374d8b61be438d1340865ee19246df119c057a0fe8aa2e06d3a04f92c4"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5587,7 +5587,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0d58f2974e13b0eb89b768c0068ea9e898ad0ab103854055643c44904809fe90"
+      "sha256": "3124a7392a92f79268bd79c46017a24f59d38443687358bf179bcca1dd70448d"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5732,7 +5732,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "22866ffa17df367c29fdd2ee3a18804e0788c2a796b0af0fee2c6519f9646283"
+      "sha256": "742ae406b465e1a52186ac1ad4123044e3ddcdc0f5881f861434d710f234fe24"
     },
     {
       "path": "src/rt/ge_texture_ref.c",
@@ -5818,7 +5818,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e1c5ec42d8e4fbf57f6f59f8dba2b0b62a1c1b0ad721c4c3eb2f8738d25b53ab"
+      "sha256": "86545ce82cf25224c00cfe633400171b0a03adc30cc2560230b2cb3dd5dcecc0"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8b1f65b4800e8da2324d35770e13e857daf04e17e0ef31b3ad57e9520510ac1b"
+      "sha256": "e6c413803c6661fdcb126629b76aa3b965bc8e75e6dd01cc39f728b0fc5b5ed4"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -9418,7 +9418,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c7ebeea34ad32fd352c7c2a61fb88461e6f11226b91a4bb288a7a08b4f54cfc4"
+      "sha256": "3855451d17b0062f2675fa2199afd784def6cc29f989b00cb128b82c99582182"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -10488,7 +10488,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8411ee2315127dd589ff846c458c6ce883b41b231038185a96b45d30f6387f05"
+      "sha256": "a5b02f0ac7966b8ef80007a1adda715ac6668a7e7987c615a0e82b1a2689ee97"
     },
     {
       "path": "tests/native/test_pcm_wav_dump.c",
@@ -12496,7 +12496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4641b44cc9bf86d8e1ea4001297c91221728c579b358ca9c77ab89b5e92d104"
+      "sha256": "f56f3c06513678510e8ac96e5ae590da2a08aa736d4a9c76ad21cf860d9f4842"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -13303,7 +13303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c286c436bb0ec128a8811e639e36f9a382f6e37e1bc3b0649a07567798cb00d"
+      "sha256": "c06de3791755723a96ddb905d34110f2d40a71180785c22324f3bf3243bf9dd0"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -14997,7 +14997,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a94e0356c55a514b7b3f10767b93242329ae0602cb856f857b081e178ba8b6fc"
+      "sha256": "356d7a58554857ea953337ea03dddfe113caa80bf2586db994dcccd86b5c6328"
     },
     {
       "path": "tools/test_public_export.py",
@@ -15190,7 +15190,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "135147db4d3eb4f06256023d74b55415ce1b42497c4c0e1e346408b083a60b52"
+      "sha256": "55f31a05ea052937e9f5a1f4adc914d72424006cbcb5c87933eb9aacb15ea04a"
     },
     {
       "path": "tools/test_scratch_dir.py",
