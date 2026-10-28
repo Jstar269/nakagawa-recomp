@@ -22203,7 +22203,6 @@ static uint32_t h_DisplayGetFramePerSec(CpuState *s) {
 /* Called once per delivered VBLANK... */
 void sr_ctrl_sample(void);
 void ge_set_frame(uint32_t frame);
-void ge_finish_latch_assist(void);   /* defined below (ge_finish_callback area) */
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
  * source-latch boundaries, decoupled from VBLANK service -- it is not the count
@@ -22264,30 +22263,6 @@ void sr_vblank_tick(void) {
      * rather than one frame late. */
     route_tick(s_vcount_fwd);
     sr_ctrl_sample();   /* latch one controller sample per frame (PPSSPP ring semantics) */
-    /* Last-resort un-wedge for the frame-ready latch: title-qualified.
-     * Generic PSP has no such latch; HST's render loop gates presentation on
-     * MEM[frame_latch]. If it has been stuck above 0 for a sustained stretch
-     * with no list completing to clear it, force it down. This mirrors the
-     * assist in ge_finish_callback but covers lists that never reach a finish
-     * callback. Only when the title configures the latch (issue #98 #5).
-     * Retirement: replace the timer hack with the real guest/runtime event it
-     * approximates (list completion with no registered callback) once that event
-     * is modeled generically. */
-    {
-        static uint32_t latch_stuck = 0;
-        uint32_t latch;
-        if (!sr_title_config_frame_latch_addr(&latch) ||
-            !sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) {
-            latch_stuck = 0;
-        } else {
-            uint32_t lc = MEM_R32(latch);
-            if (lc > 0) {
-                if (++latch_stuck > 30u) { ge_finish_latch_assist(); latch_stuck = 0; }
-            } else {
-                latch_stuck = 0;
-            }
-        }
-    }
     /* No-frame watchdog: vblanks keep being delivered even when every game thread is
      * blocked, so a stretch with no new sceDisplaySetFrameBuf is a NO-NEW-FLIP
      * observation. It is not by itself a hang, scheduler-stall, or scene-transition
@@ -22581,114 +22556,14 @@ void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
 }
 #endif /* SR_HLE_THREAD_SELFTEST */
 
-/* sceDisplaySetMode: on the real PSP this triggers the display driver to
- * initialise the vblank device (written to MEM[0x34B328]) and the render
- * context (global MEM[0x2CFC8C] -> struct at 0x31FC40, whose +0x80 must equal
- * 0x308). The recompiled game never reaches its own display-init path because
- * this syscall was a no-op, so the main render loop (f_00046dec / L_00046f70)
- * spins forever on two unmet conditions:
- *   1. f_000487f4's chk7 requires MEM[MEM[0x2CFC8C]+0x80] == 0x308 (it returns
- *      0 while 0x2CFC8C is still 0, because the render-context init f_0001dc00
- *      was never dispatched).
- *   2. The second poll waits on MEM[0x331B80] (frame-ready counter) which is
- *      never set.
- * We replay the game-owned init by dispatching the real constructors instead of
- * faking the structs by hand. Verified by build/run: expect the first frame to
- * be presented and the intro/menu to become reachable. */
-/* The engine's allocator/render queues enter and leave a short critical section
- * through two callbacks in the global configuration block at 0x333138.  The
- * normal game initializer (f_00081a04) selects the exact pair below from the
- * threading mode at +0x30.  DisplaySetMode is currently the earliest safe
- * point in the native runtime's game-owned initialization replay; seed only a
- * missing pair here, reproducing that initializer's branch table verbatim.
- *
- * Keeping this mapping next to the replay is important: dispatching a null
- * callback happens to be tolerated by the recompiler, but silently skips the
- * critical section and leaves the worker spinning with no display list. */
-static void ensure_runtime_sync_callbacks(CpuState *s);
-
+/* sceDisplaySetMode: the requested mode and size are logged and the call succeeds. The
+ * runtime replays no title display-driver bring-up: a title initializes its own display
+ * state through its own code (#363). */
 static uint32_t h_DisplaySetMode(CpuState *s) {
     uint32_t mode = s->r[4], width = s->r[5], height = s->r[6];
-    (void)mode; (void)width; (void)height;
     fprintf(stderr, "DISPLAY_SET_MODE: mode=%u %ux%u (title %s)\n", mode, width, height,
             sr_title_config()->source_id);
     fflush(stderr);
-
-    ensure_runtime_sync_callbacks(s);
-
-    SrTitleDisplayBringup bringup;
-    if (!sr_title_config_display_bringup(&bringup)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: display bringup not configured (generic PSP semantics, title %s)\n",
-                sr_title_config()->source_id);
-        return 0; /* Generic PSP: mode/width/height already recorded via generic path if needed */
-    }
-
-    if (!sr_guest_span_writable(bringup.render_context_magic_addr, 4) ||
-        !sr_guest_span_writable(bringup.render_table_ready_flag_addr, 1) ||
-        !sr_guest_span_writable(bringup.render_context_word_addr, 4)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: bringup data addrs not writable (title %s), skipping bringup\n",
-                sr_title_config()->source_id);
-        return 0;
-    }
-
-    fprintf(stderr, "DISPLAY_SET_MODE: replaying title display-driver init (title %s)\n",
-            sr_title_config()->source_id);
-    sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", bringup.malloc_entry, "display_setmode_guest_init");
-
-    /* Vblank device: allocate the device struct and let the real creator
-     * (guest's vblank device init, normally reached via guest's init dispatcher)
-     * populate it. Title-qualified addresses. */
-    uint32_t dev = ge_call_guest_rv(s, bringup.malloc_entry, 0x40u, 0, 0);
-    if (dev) {
-        ge_call_guest(s, bringup.vblank_device_init_entry, dev, 0, 0);
-    } else {
-        fprintf(stderr, "DISPLAY_SET_MODE: guest malloc returned 0; skipping vblank device init (title %s)\n",
-                sr_title_config()->source_id);
-    }
-
-    /* Render context: guest render-context init fully initialises the context
-     * struct (including the +0x80 magic the poller checks). This is the gate
-     * that unblocks the file load path. */
-    ge_call_guest(s, bringup.render_context_init_entry, 0, 0, 0);
-
-    /* Guarantee magic even if loader state differs. */
-    if (MEM_R32(bringup.render_context_magic_addr) != 0x308u) {
-        fprintf(stderr, "DISPLAY_SET_MODE: forcing render-context magic 0x%08x -> 0x308 (title %s)\n",
-                bringup.render_context_magic_addr, sr_title_config()->source_id);
-        MEM_W32(bringup.render_context_magic_addr, 0x308u);
-    }
-
-    /* Seed the frame-ready counter so the second render-loop wait clears and
-     * the loop proceeds to present frame 0. Title-qualified: only when the
-     * frame latch is configured. */
-    uint32_t latch;
-    if (sr_title_config_frame_latch_addr(&latch)) {
-        if (sr_guest_span_writable(latch, 4)) {
-            MEM_W32(latch, 1u);
-            fprintf(stderr, "DISPLAY_SET_MODE: seeded frame latch 0x%08x <- 1 (title %s)\n",
-                    latch, sr_title_config()->source_id);
-        } else {
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: frame latch 0x%08x not writable, not seeding (title %s)\n",
-                    latch, sr_title_config()->source_id);
-        }
-    } else {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: frame latch not configured, not seeding (title %s)\n",
-                sr_title_config()->source_id);
-    }
-
-    /* Render-command table ready flag and context word. On real PSP a
-     * background thread fills the table; our HLE has no background thread. */
-    MEM_W8(bringup.render_table_ready_flag_addr, 1u);
-    MEM_W32(bringup.render_context_word_addr, 1u);
-    fprintf(stderr,
-            "DISPLAY_SET_MODE: seeded table ready 0x%08x <-1 and ctx 0x%08x <-1 (title %s)\n",
-            bringup.render_table_ready_flag_addr, bringup.render_context_word_addr,
-            sr_title_config()->source_id);
-
     return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */
 }
 
@@ -22697,10 +22572,6 @@ static uint32_t h_DisplaySetMode(CpuState *s) {
 uint32_t sr_hle_test_display_set_mode(CpuState *s) { return h_DisplaySetMode(s); }
 #endif
 
-/* The engine's render loop gates "is a frame ready to present?" on a title-
- * specific counter (HST: MEM[0x331b80], decremented once per completed display
- * list). Title-qualified: the latch address is configuration. Generic titles
- * use the generic GE completion path without latch assist. */
 /* A list with no usable finish callback is reported once per callback ID, not once per list:
  * a title that enqueues lists against an unregistered ID does so every frame, and one line per
  * list grew a log by about 85 MB an hour. Bit i is ID i; bit 16 is any ID past the table. */
@@ -22723,71 +22594,33 @@ unsigned sr_hle_test_ge_finish_reports(int reset) {
 }
 #endif
 
+/* Run the guest's registered finish callback for a completed display list, or log why
+ * none ran. The runtime advances no title counter of its own here. */
 static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
-    uint32_t latch;
-    int has_latch = sr_title_config_frame_latch_addr(&latch) &&
-                    sr_guest_span_readable(latch, 4) && sr_guest_span_writable(latch, 4);
     /* sceGeListEnQueue's callback ID is a signed int, and a negative one (the SDK's -1) is a
      * list enqueued with no callback, so there is nothing to run and nothing to report. */
-    if ((int32_t)cbid < 0) {
-        if (has_latch) ge_finish_latch_assist();
-        return;
-    }
+    if ((int32_t)cbid < 0) return;
     if (cbid >= (uint32_t)cb_max) {
         if (ge_finish_report_once(16u))
-            fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb%s "
-                    "(reported once)\n",
-                    cbid, cb_max, has_latch ? ", advancing latch" : " (generic: no latch)");
-        if (has_latch) ge_finish_latch_assist();
+            fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb "
+                    "(reported once)\n", cbid, cb_max);
         return;
     }
     GeCallback *cb = &s_ge_cb[cbid];
     if (!cb->used || !cb->finish_func) {
         if (ge_finish_report_once((unsigned)cbid))
-            fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)%s "
+            fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s) "
                     "(reported once per cbid)\n",
-                    cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function",
-                    has_latch ? " -- advancing latch" : " (generic: no latch)");
-        if (has_latch) ge_finish_latch_assist();
+                    cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function");
         return;
     }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: cbid=%u list=0x%08x fn=0x%08x arg=0x%08x\n",
                 cbid, list_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
-    uint32_t pre_ctr = has_latch ? MEM_R32(latch) : 0u;
     ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
-    if (has_latch) {
-        uint32_t post_ctr = MEM_R32(latch);
-        if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_CB: counter 0x%08x before=%u after=%u\n", latch, pre_ctr, post_ctr);
-        if (post_ctr == pre_ctr && pre_ctr > 0) {
-            MEM_W32(latch, pre_ctr - 1u);
-            sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", latch, "frame_ready_latch_assist");
-            if (ge_log_on())
-                fprintf(stderr, "GE_FINISH_CB: counter 0x%08x forcibly decremented to %u\n", latch, pre_ctr - 1u);
-        }
-    }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: callback fn=0x%08x returned\n", cb->finish_func);
-}
-
-/* Guarantee the frame-ready latch makes progress on every completed list,
- * even when no guest finish callback ran. Title-qualified: only when the
- * frame latch address is configured and writable; generic titles have no
- * latch to assist. Called from ge_finish_callback and sr_vblank_tick. */
-void ge_finish_latch_assist(void) {
-    uint32_t latch;
-    if (!sr_title_config_frame_latch_addr(&latch)) return;
-    if (!sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) return;
-    uint32_t pre = MEM_R32(latch);
-    if (pre > 0) {
-        MEM_W32(latch, pre - 1u);
-        sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", latch, "frame_ready_latch_assist");
-        if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_LATCH_ASSIST: 0x%08x %u -> %u (title %s)\n",
-                    latch, pre, pre - 1u, sr_title_config()->source_id);
-    }
 }
 
 #define GE_LIST_MAX 64
@@ -24235,12 +24068,15 @@ static uint32_t h_SasUnsupportedVoice(CpuState *s) {
 typedef struct {
     SrWaitHandle invocation;
     int is_send;
-    uint32_t size, wait_mode;
+    uint32_t size, wait_mode, buffer, resultp, progress, toptr;
+    uint64_t deadline;
 } MsgPipeWaiter;
 typedef struct {
     int used;
     uint32_t uid, attr, capacity, read_pos, write_pos, count;
     uint32_t send_calls, receive_calls;
+    SrWaitHandle reservation;
+    uint32_t reserved;
     uint8_t *data;
     MsgPipeWaiter *waiters;
     int nwaiters, wait_cap;
@@ -24256,7 +24092,9 @@ static MsgPipe *msg_pipe_find(uint32_t uid) {
 }
 
 static int msg_pipe_add_waiter(MsgPipe *p, SrWaitHandle invocation, int is_send,
-                               uint32_t size, uint32_t wait_mode) {
+                               uint32_t size, uint32_t wait_mode, uint32_t buffer,
+                               uint32_t resultp, uint32_t progress, uint32_t toptr,
+                               uint64_t deadline) {
     if (p->nwaiters == p->wait_cap) {
         int next;
         if (p->wait_cap) {
@@ -24272,7 +24110,7 @@ static int msg_pipe_add_waiter(MsgPipe *p, SrWaitHandle invocation, int is_send,
         p->waiters = grown;
         p->wait_cap = next;
     }
-    p->waiters[p->nwaiters++] = (MsgPipeWaiter){invocation, is_send, size, wait_mode};
+    p->waiters[p->nwaiters++] = (MsgPipeWaiter){invocation, is_send, size, wait_mode, buffer, resultp, progress, toptr, deadline};
     return 1;
 }
 
@@ -24286,8 +24124,8 @@ static void msg_pipe_remove_waiter(MsgPipe *p, SrWaitHandle invocation) {
     }
 }
 
-static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_only,
-                                  SrWaitHandle *invocation_out) {
+static int msg_pipe_select_waiter_available(const MsgPipe *p, int is_send, int eligible_only,
+                                            uint32_t available, SrWaitHandle *invocation_out) {
     int priority = (p->attr & (is_send ? PSP_MPP_ATTR_SEND_PRIORITY :
                                          PSP_MPP_ATTR_RECEIVE_PRIORITY)) != 0u;
     int best = -1;
@@ -24299,7 +24137,6 @@ static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_on
         if (waiter->is_send != is_send ||
             !sched_wait_state(waiter->invocation, &state, &owner) ||
             state != SR_WAIT_BLOCKED) continue;
-        uint32_t available = is_send ? p->capacity - p->count : p->count;
         if (eligible_only && (waiter->wait_mode == 0u ? available < waiter->size :
                                                        available == 0u)) continue;
         SrThreadRunStatus status;
@@ -24317,6 +24154,12 @@ static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_on
     if (best < 0) return 0;
     *invocation_out = p->waiters[best].invocation;
     return 1;
+}
+
+static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_only,
+                                  SrWaitHandle *invocation_out) {
+    uint32_t available = is_send ? p->capacity - p->count - p->reserved : p->count;
+    return msg_pipe_select_waiter_available(p, is_send, eligible_only, available, invocation_out);
 }
 
 static int msg_pipe_wake_one_waiter(MsgPipe *p, int is_send) {
@@ -24345,6 +24188,11 @@ static void msg_pipe_wake_after_transfer(MsgPipe *p, int is_send) {
 static int msg_pipe_detach_invocation(SrWaitHandle invocation, uint32_t object) {
     MsgPipe *p = msg_pipe_find(object);
     if (!p) return 0;
+    if (p->reservation == invocation) {
+        p->count += p->reserved;
+        p->reserved = 0u;
+        p->reservation = 0;
+    }
     msg_pipe_remove_waiter(p, invocation);
     SrWaitHandle successor;
     int notified = 0;
@@ -24363,8 +24211,8 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=bufferSize, t0=option. */
     (void)A1;
     /* Issue #178: validate against the documented PSP-resource model BEFORE any
-     * host allocation.  Zero is illegal; sizes above MSG_PIPE_MAX_CAPACITY are
-     * outside the modeled range.  Both fail before malloc, before a UID is
+     * host allocation. Sizes above MSG_PIPE_MAX_CAPACITY are
+     * outside the modeled range. They fail before malloc, before a UID is
      * handed out, and before a slot is reserved, so a rejected create leaves
      * no observable state behind. */
     /* A NULL name is rejected first with NO_MEMORY, matching PPSSPP's
@@ -24372,7 +24220,7 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
      * name that is unmapped or unterminated fails closed with ILLEGAL_ADDR
      * (project choice) instead of silently becoming "". */
     if (!A0) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
-    if (A3 == 0 || A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
     char name[32];
     if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* A3 <= MSG_PIPE_MAX_CAPACITY (1 MiB), so the allocation is bounded and
@@ -24381,8 +24229,8 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
     for (int i = 0; i < MSG_PIPE_MAX; i++) {
         MsgPipe *p = &s_msg_pipes[i];
         if (p->used) continue;
-        uint8_t *data = (uint8_t *)malloc(capacity);
-        if (!data) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+        uint8_t *data = capacity ? (uint8_t *)malloc(capacity) : NULL;
+        if (capacity && !data) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
         memset(p, 0, sizeof(*p));
         p->used = 1;
         p->uid = sr_alloc_uid();
@@ -24412,6 +24260,150 @@ static uint32_t h_DeleteMsgPipe(CpuState *s) {
     return 0;
 }
 
+/* Zero-buffer pipes transfer bytes directly between opposite wait queues.
+ * Each blocked invocation keeps its own progress, including partial FULL waits. */
+static MsgPipeWaiter *msg_pipe_waiter_by_handle(MsgPipe *p, SrWaitHandle handle) {
+    for (int i = 0; i < p->nwaiters; i++)
+        if (p->waiters[i].invocation == handle) return &p->waiters[i];
+    return NULL;
+}
+static int msg_pipe_direct(MsgPipe *p, int is_send, uint32_t buffer, uint32_t size,
+                           uint32_t *progress, int *woke) {
+    while (*progress < size) {
+        SrWaitHandle other_handle;
+        if (!msg_pipe_select_waiter_available(p, !is_send, p->capacity != 0u,
+                                              size - *progress, &other_handle)) break;
+        MsgPipeWaiter *other = msg_pipe_waiter_by_handle(p, other_handle);
+        if (!other || other->progress >= other->size) return 0;
+        uint32_t amount = size - *progress;
+        if (amount > other->size - other->progress) amount = other->size - other->progress;
+        uint32_t source = is_send ? buffer + *progress : other->buffer + other->progress;
+        uint32_t dest = is_send ? other->buffer + other->progress : buffer + *progress;
+        if (!sr_guest_span_readable(source, amount) || !sr_guest_span_writable(dest, amount)) {
+            /* The caller's span was checked before rendezvous; an invalid
+             * opposite waiter must fail on its own, not fail this caller. */
+            *woke |= sched_wait_complete(other_handle, SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+            continue;
+        }
+        for (uint32_t i = 0; i < amount; i++) MEM_W8(dest + i, MEM_R8(source + i));
+        *progress += amount;
+        other->progress += amount;
+        if (other->resultp) MEM_W32(other->resultp, other->progress);
+        if (other->progress == other->size || other->wait_mode == 1u) {
+            if (other->toptr) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                MEM_W32(other->toptr, now < other->deadline ? (uint32_t)(other->deadline - now) : 0u);
+            }
+            *woke |= sched_wait_complete(other_handle, 0u);
+        }
+    }
+    return 1;
+}
+static uint32_t msg_pipe_rendezvous(CpuState *s, MsgPipe *p, int is_send, int is_cb, int poll) {
+    uint32_t uid = A0, buffer = A1, size = A2, mode = A3;
+    uint32_t resultp = stack_arg(s, 0), toptr = poll ? 0u : stack_arg(s, 1);
+    if ((is_send && !sr_guest_span_readable(buffer, size)) ||
+        (!is_send && !sr_guest_span_writable(buffer, size))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (toptr && !sr_guest_span_writable(toptr, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!poll && !sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint32_t progress = 0u;
+    int woke = 0;
+    if (!msg_pipe_direct(p, is_send, buffer, size, &progress, &woke)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (progress == size || (mode == 1u && progress)) {
+        if (resultp) MEM_W32(resultp, progress);
+        if (woke) sched_preempt();
+        return 0u;
+    }
+    if (poll) {
+        if (resultp && mode == 1u) MEM_W32(resultp, progress);
+        if (woke) sched_preempt();
+        return is_send ? SCE_KERNEL_ERROR_MPP_FULL : SCE_KERNEL_ERROR_MPP_EMPTY;
+    }
+    uint64_t deadline = 0u;
+    if (toptr) {
+        uint32_t timeout = MEM_R32(toptr);
+        if (!timeout) { if (woke) sched_preempt(); return SCE_KERNEL_ERROR_WAIT_TIMEOUT; }
+        sched_vtime_refresh();
+        deadline = sched_vtime_deadline_after(timeout);
+    }
+    SrWaitHandle handle = sched_wait_begin(uid, deadline, is_cb, msg_pipe_detach_invocation);
+    if (!handle) { if (woke) sched_preempt(); return 0x80020190u; }
+    if (!msg_pipe_add_waiter(p, handle, is_send, size, mode, buffer, resultp, progress, toptr, deadline)) {
+        (void)sched_wait_finish(handle);
+        if (woke) sched_preempt();
+        return 0x80020190u;
+    }
+    if (resultp) MEM_W32(resultp, progress);
+    uint32_t result = 0u;
+    for (;;) {
+        if (sched_wait_take_result(handle, &result)) break;
+        if (is_cb && sr_thread_has_pending_callbacks(sched_current_uid())) {
+            sched_wait_callback(handle, 1);
+            sr_thread_dispatch_callbacks();
+            sched_wait_callback(handle, 0);
+            if (sched_wait_take_result(handle, &result)) break;
+            p = msg_pipe_find(uid);
+            if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        }
+        MsgPipeWaiter *self = msg_pipe_waiter_by_handle(p, handle);
+        if (!self) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        progress = self->progress;
+        if (!msg_pipe_direct(p, is_send, buffer, size, &progress, &woke)) {
+            result = SCE_KERNEL_ERROR_ILLEGAL_ADDR; break;
+        }
+        self = msg_pipe_waiter_by_handle(p, handle);
+        if (!self) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        self->progress = progress;
+        if (resultp) MEM_W32(resultp, progress);
+        if (progress == size || (mode == 1u && progress)) { result = 0u; break; }
+        uint32_t remaining = 0u;
+        if (toptr) {
+            sched_vtime_refresh();
+            uint64_t now = sched_vtime_us();
+            if (now >= deadline) { MEM_W32(toptr, 0u); result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+            remaining = (uint32_t)(deadline - now);
+        }
+        int timed_out = sched_wait_block(handle, remaining, toptr != 0u);
+        if (sched_wait_take_result(handle, &result)) break;
+        p = msg_pipe_find(uid);
+        if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        if (timed_out) { if (toptr) MEM_W32(toptr, 0u); result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+    }
+    if (toptr && result != SCE_KERNEL_ERROR_WAIT_TIMEOUT) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
+    }
+    if (sched_wait_finish(handle)) woke = 1;
+    if (woke) sched_preempt();
+    return result;
+}
+
+static uint32_t msg_pipe_reserve_receiver(MsgPipe *p, uint32_t buffer, uint32_t amount) {
+    /* Reserve a direct handoff until the receiver actually resumes.  The
+     * bytes occupy pipe capacity and can be restored if its wait departs. */
+    SrWaitHandle receiver;
+    uint32_t direct = 0u;
+    if (!p->count && !p->reserved &&
+        msg_pipe_select_waiter_available(p, 0, 1, amount, &receiver)) {
+        MsgPipeWaiter *waiter = msg_pipe_waiter_by_handle(p, receiver);
+        uint32_t n = waiter->size < amount ? waiter->size : amount;
+        if (sr_guest_span_writable(waiter->buffer, n)) {
+            for (uint32_t i = 0; i < n; i++) {
+                uint8_t byte = MEM_R8(buffer + i);
+                MEM_W8(waiter->buffer + i, byte);
+                p->data[p->write_pos] = byte;
+                p->write_pos = (p->write_pos + 1u) % p->capacity;
+            }
+            p->reservation = receiver;
+            p->reserved = direct = n;
+            (void)sched_wait_notify(receiver);
+        }
+    }
+    return direct;
+}
+
 static uint32_t h_TrySendMsgPipe(CpuState *s) {
     /* a0=uid, a1=source, a2=size, a3=waitMode, t0=resultSize. */
     uint32_t resultp = stack_arg(s, 0);
@@ -24429,9 +24421,15 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
     if (A3 > 1u) return 0x80020195u;
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0 || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) {
+        uint32_t rc = msg_pipe_rendezvous(s, p, 1, 0, 1);
+        if (rc == SCE_KERNEL_ERROR_MPP_FULL && A3 == 0u && resultp)
+            MEM_W32(resultp, saved_result);
+        return rc;
+    }
     p->send_calls++;
-    uint32_t free_bytes = p->capacity - p->count;
+    uint32_t free_bytes = p->capacity - p->count - p->reserved;
     uint32_t amount = A2;
     if (amount > free_bytes) {
         if (A3 == 0 || free_bytes == 0) {
@@ -24456,16 +24454,18 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
                     p->uid, sched_current_uid(), p->send_calls, A2, A1, amount);
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     }
-    for (uint32_t i = 0; i < amount; i++) {
+    uint32_t direct = msg_pipe_reserve_receiver(p, A1, amount);
+    for (uint32_t i = direct; i < amount; i++) {
         p->data[p->write_pos] = MEM_R8(A1 + i);
-        p->write_pos = (p->write_pos + 1) % p->capacity;
+        p->write_pos = (p->write_pos + 1u) % p->capacity;
     }
-    p->count += amount;
+    p->count += amount - direct;
     if (resultp) MEM_W32(resultp, amount);
     if (msg_pipe_trace_call(p->send_calls))
         fprintf(stderr, "MSGPIPE: send uid=0x%x thread=0x%x call=%u requested=%u transferred=%u queued=%u\n",
                 p->uid, sched_current_uid(), p->send_calls, A2, amount, p->count);
     msg_pipe_wake_after_transfer(p, 1);
+    if (direct) sched_preempt();
     return 0;
 }
 
@@ -24484,17 +24484,19 @@ static uint32_t h_TryReceiveMsgPipe(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): wait mode 2 is ILLEGAL_MODE (0x80020195). */
     if (A3 > 1u) return 0x80020195u;
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0 || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0 || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) return msg_pipe_rendezvous(s, p, 0, 0, 1);
     p->receive_calls++;
     uint32_t amount = A2;
-    if (amount > p->count) {
-        if (A3 == 0 || p->count == 0) {
+    uint32_t available = p->reserved ? 0u : p->count;
+    if (amount > available) {
+        if (A3 == 0 || available == 0) {
             if (msg_pipe_trace_call(p->receive_calls))
                 fprintf(stderr, "MSGPIPE: receive uid=0x%x thread=0x%x call=%u requested=%u queued=%u -> EMPTY\n",
                         p->uid, sched_current_uid(), p->receive_calls, A2, p->count);
             return SCE_KERNEL_ERROR_MPP_EMPTY;
         }
-        amount = p->count;
+        amount = available;
     }
     /* Issue #178: preflight the complete destination span for the ACTUAL
      * transfer amount before mutating FIFO indices/count, so an invalid
@@ -24520,7 +24522,8 @@ static uint32_t h_TryReceiveMsgPipe(CpuState *s) {
 
 static int msg_pipe_transfer_ready(const MsgPipe *p, int is_send, uint32_t size,
                                   uint32_t wait_mode, uint32_t *amount_out) {
-    uint32_t available = is_send ? p->capacity - p->count : p->count;
+    uint32_t available = is_send ? p->capacity - p->count - p->reserved :
+                         (p->reserved ? 0u : p->count);
     if (wait_mode == 0u) {
         if (available < size) return 0;
         *amount_out = size;
@@ -24532,14 +24535,18 @@ static int msg_pipe_transfer_ready(const MsgPipe *p, int is_send, uint32_t size,
 }
 
 static uint32_t msg_pipe_transfer(MsgPipe *p, uint32_t buffer, uint32_t amount,
-                                 uint32_t resultp, int is_send) {
+                                 uint32_t resultp, int is_send, int *direct_wake) {
     if (is_send) {
         if (!sr_guest_span_readable(buffer, amount)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-        for (uint32_t i = 0; i < amount; i++) {
+        uint32_t direct = msg_pipe_reserve_receiver(p, buffer, amount);
+        for (uint32_t i = direct; i < amount; i++) {
             p->data[p->write_pos] = MEM_R8(buffer + i);
             p->write_pos = (p->write_pos + 1u) % p->capacity;
         }
-        p->count += amount;
+        p->count += amount - direct;
+        if (resultp) MEM_W32(resultp, amount);
+        if (direct) *direct_wake = 1;
+        return 0u;
     } else {
         if (!sr_guest_span_writable(buffer, amount)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
         for (uint32_t i = 0; i < amount; i++) {
@@ -24567,7 +24574,8 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A3 > 1u) return 0x80020195u; /* PSP-B3-01: ILLEGAL_MODE. */
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A2 == 0u || A2 > p->capacity) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (A2 == 0u || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (!p->capacity) return msg_pipe_rendezvous(s, p, is_send, is_cb, 0);
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
 
     uint32_t uid = A0;
@@ -24575,13 +24583,15 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     uint32_t size = A2;
     uint32_t wait_mode = A3;
     uint32_t amount = 0u;
+    int direct_wake = 0;
     if (is_send) p->send_calls++;
     else p->receive_calls++;
 
     if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-        uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+        uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
         if (transfer_rc != 0u) return transfer_rc;
         msg_pipe_wake_after_transfer(p, is_send);
+        if (direct_wake) sched_preempt();
         return 0u;
     }
 
@@ -24600,7 +24610,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     SrWaitHandle waiter_scope = sched_wait_begin(uid, end_time, is_cb,
                                                  msg_pipe_detach_invocation);
     if (!waiter_scope) return 0x80020190u;
-    if (!msg_pipe_add_waiter(p, waiter_scope, is_send, size, wait_mode)) {
+    if (!msg_pipe_add_waiter(p, waiter_scope, is_send, size, wait_mode, buffer, resultp, 0u, toptr, end_time)) {
         if (sched_wait_finish(waiter_scope)) sched_preempt();
         return 0x80020190u;
     }
@@ -24639,7 +24649,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
          * before marking this scope parked so that this call cannot miss that
          * state change and sleep forever without another transfer edge. */
         if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
             if (transfer_rc != 0u) {
                 result = transfer_rc;
                 break;
@@ -24659,8 +24669,28 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
         p = msg_pipe_find(uid);
         if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
 
+        if (!is_send && p->reservation == waiter_scope) {
+            amount = p->reserved;
+            if (!sr_guest_span_writable(buffer, amount)) {
+                result = SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+                break;
+            }
+            for (uint32_t i = 0; i < amount; i++)
+                MEM_W8(buffer + i, p->data[(p->read_pos + i) % p->capacity]);
+            p->read_pos = (p->read_pos + amount) % p->capacity;
+            p->reserved = 0u;
+            p->reservation = 0;
+            if (resultp) MEM_W32(resultp, amount);
+            if (toptr) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+            }
+            result = 0u;
+            break;
+        }
         if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
-            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send, &direct_wake);
             if (transfer_rc != 0u) {
                 result = transfer_rc;
                 break;
@@ -24692,7 +24722,7 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
     }
     /* All departures detach/reconsider through the same object hook. Only the
      * normal syscall boundary may preempt; owner abandonment never does here. */
-    if (sched_wait_finish(waiter_scope)) sched_preempt();
+    if (sched_wait_finish(waiter_scope) || direct_wake) sched_preempt();
     return result;
 }
 
@@ -24764,6 +24794,8 @@ static uint32_t h_CancelMsgPipe(CpuState *s) {
     p->read_pos = 0u;
     p->write_pos = 0u;
     p->count = 0u;
+    p->reserved = 0u;
+    p->reservation = 0;
     if (getenv("SR_MSGLOG"))
         fprintf(stderr, "HLE: CancelMsgPipe uid=0x%x name='%s' send=%u receive=%u\n",
                 p->uid, p->name, senders, receivers);
@@ -24818,7 +24850,7 @@ static uint32_t h_ReferMsgPipeStatus(CpuState *s) {
         info.name[i] = p->name[i];
     info.attr = p->attr;
     info.bufSize = (int32_t)p->capacity;
-    info.freeSize = (int32_t)(p->capacity - p->count);
+    info.freeSize = (int32_t)(p->capacity - p->count - p->reserved);
     info.numSendWaitThreads = (int32_t)senders;
     info.numReceiveWaitThreads = (int32_t)receivers;
     for (uint32_t i = 0; i < write_len; i++)
@@ -25240,105 +25272,6 @@ static uint32_t h_CreateSema(CpuState *s) {
     return m->uid;
 }
 
-/* Complete the small piece of f_00081a04 that the display-init replay reaches
- * before the normal SGX configuration path.  +0x4c0 is written to 1 near the
- * start of that initializer.  When it is still zero, +0x30 is merely BSS and
- * must not be interpreted as an explicit mode 0 selection: the game's
- * "sgx-psp-di-sema" option is read with default 1 at 0x00081c24..0x00081c3c.
- * Mode 1 also owns a count-1 semaphore at +0x0c, created at
- * 0x00081c94..0x00081cb8.  Recreate both pieces together so the callbacks
- * block and wake with the same semantics as the original initializer.
- *
- * Title-qualified (issue #98): the config base, sema name pointer and
- * mode-keyed wrapper pairs are validated title configuration. An unconfigured
- * build performs no sync install at all (generic sceDisplaySetMode has no
- * sync side effects). The pairing and the mode that selects it are part of
- * the meaning and are not flattened. */
-static void ensure_runtime_sync_callbacks(CpuState *s) {
-    uint32_t config_base, sema_name_ptr;
-    const SrTitleRuntimeSyncWrapper *wrappers;
-    unsigned wrapper_count;
-    if (!sr_title_config_runtime_sync(&config_base, &sema_name_ptr, &wrappers, &wrapper_count)) {
-        if (hle_log_on())
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: runtime sync not configured (generic, title %s)\n",
-                    sr_title_config()->source_id);
-        return;
-    }
-    if (!sr_guest_span_writable(config_base, 0x4c4)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: runtime sync config 0x%08x not writable (title %s), skipping\n",
-                config_base, sr_title_config()->source_id);
-        return;
-    }
-    uint32_t mode = MEM_R32(config_base + 0x30u);
-    uint32_t enter = MEM_R32(config_base + 0x34u);
-    uint32_t leave = MEM_R32(config_base + 0x38u);
-    const int initializer_ran = MEM_R32(config_base + 0x4c0u) != 0;
-
-    if (enter && leave) return;
-    sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", config_base, "runtime_sync_callback_config");
-
-    if (!initializer_ran) {
-        mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    } else if (mode > 2) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: invalid runtime sync mode %u; using game default mode 1 (title %s)\n",
-                mode, sr_title_config()->source_id);
-        mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    }
-
-    uint32_t cfg_enter = 0, cfg_leave = 0;
-    int found = sr_title_config_runtime_sync_wrapper_for_mode(mode, &cfg_enter, &cfg_leave);
-    if (!found) {
-        /* Fallback to mode 1 if the requested mode is not in the configured set
-         * (e.g. a synthetic title that only configures mode 0). Mirrors the
-         * historical "invalid mode -> mode 1" fallback. */
-        found = sr_title_config_runtime_sync_wrapper_for_mode(1, &cfg_enter, &cfg_leave);
-        if (!found) {
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: no runtime sync wrapper for mode %u and no mode 1 fallback (title %s)\n",
-                    mode, sr_title_config()->source_id);
-            return;
-        }
-        fprintf(stderr, "DISPLAY_SET_MODE: mode %u not in config, fallback to mode 1 wrappers (title %s)\n", mode, sr_title_config()->source_id); mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    }
-
-    if (mode == 1) {
-        uint32_t sema = MEM_R32(config_base + 0x0cu);
-        if (!sync_find(sema, SYNC_KIND_SEMA)) {
-            CpuState call = *s;
-            call.r[4] = sema_name_ptr;
-            call.r[5] = 0;
-            call.r[6] = 1;
-            call.r[7] = 1;
-            if (!sr_guest_span_readable(sema_name_ptr, 16)) {
-                fprintf(stderr,
-                        "DISPLAY_SET_MODE: sema name 0x%08x not readable, still creating sema (title %s)\n",
-                        sema_name_ptr, sr_title_config()->source_id);
-            }
-            sema = h_CreateSema(&call);
-            MEM_W32(config_base + 0x0cu, sema);
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: created runtime sync sema 0x%x for mode 1 (title %s)\n",
-                    sema, sr_title_config()->source_id);
-        }
-        enter = cfg_enter;
-        leave = cfg_leave;
-    } else {
-        enter = cfg_enter;
-        leave = cfg_leave;
-    }
-
-    MEM_W32(config_base + 0x34u, enter);
-    MEM_W32(config_base + 0x38u, leave);
-    fprintf(stderr,
-            "DISPLAY_SET_MODE: runtime sync callbacks mode=%u enter=0x%08x leave=0x%08x (title %s)\n",
-            mode, enter, leave, sr_title_config()->source_id);
-}
 static uint32_t h_DeleteSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID. */

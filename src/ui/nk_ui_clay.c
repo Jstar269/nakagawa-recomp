@@ -152,9 +152,9 @@ static Clay_Dimensions nk_ui_clay_measure(Clay_StringSlice text,
                renderer snaps it. Clay measures a run in word slices, and
                the per-character rule keeps their sum equal to the whole. */
             if (spacing > 0.0f) {
-                size_t n = nk_ui_clay_codepoints(text.chars, (size_t)text.length);
+                size_t codepoints = nk_ui_clay_codepoints(text.chars, (size_t)text.length);
                 float device_spacing = floorf(spacing * clay->density + 0.5f);
-                result.width += device_spacing * (float)n / clay->density;
+                result.width += device_spacing * (float)codepoints / clay->density;
             }
         }
         if (isfinite(measured.height) && measured.height > 0.0f) {
