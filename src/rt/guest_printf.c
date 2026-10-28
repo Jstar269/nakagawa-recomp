@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 /* Focused PSP-EABI bridge for the retail sprintf entry.  The translated
  * formatter previously corrupted string arguments, so generated code routes

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2025-2026 the psp-recomp authors
+ * Copyright (C) 2026 the Nakagawa Recomp authors
  *
  * Decompile a list of addresses to <outdir>/<addr>.c, one file each.
  * Args: <outdir> <addr> [<addr> ...]  (addresses in Ghidra's address space,

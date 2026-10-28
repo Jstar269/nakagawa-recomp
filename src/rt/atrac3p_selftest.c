@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // atrac3p_selftest.c — regression suite for the standalone ATRAC3+ decoder
 // (src/rt/atrac3p/, PR-A).
