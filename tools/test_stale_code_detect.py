@@ -18,7 +18,7 @@ and off the hot path when disabled (cached flag, early return before any
 guest-memory touch), that a firing check names the block address, the first
 differing word and expected vs actual before aborting (the SR_BREAK_FATAL /
 sr_unimplemented fail-loud convention), that the HLE cache hooks preserve
-default dispatch behavior (Icache NIDs stay unregistered unless opted in),
+stale check behind its gate (the Icache NIDs also bind code overlays),
 that codegen emits nothing stale-related by default, and that the Makefile
 wires the new objects and selftest like the existing native selftests. The
 dispatch redirect itself is wired (see src/rt/stale_code.h) and proven by
@@ -280,28 +280,28 @@ class TestStaleCodeWiring(unittest.TestCase):
             with self.subTest(handler=handler):
                 self.assertIn(f"return {helper}(s);", body)
 
-    def test_icache_nids_register_only_when_opted_in(self):
+    def test_icache_nids_register_through_the_shared_helper(self):
+        # Instruction-cache maintenance binds and unbinds code overlays, so the Icache NIDs
+        # register unconditionally, once, through a helper that the production registry and
+        # the executable harness both call; the stale check inside stays behind its gate.
         low = HLE_C.lower()
-        first_reg = low.find('sr_hle_register(0x920f104a')
-        self.assertNotEqual(first_reg, -1, "Icache registration missing")
-        gate = low.rfind("if (sr_stale_enabled()) {", 0, first_reg)
-        self.assertNotEqual(gate, -1, "no opt-in gate precedes the Icache registrations")
-        between = HLE_C[gate:first_reg]
-        self.assertNotIn("\n    }", between, "the opt-in gate must still be open")
-        self.assertIn("void sr_hle_init(void)", HLE_C[:gate])
-        self.assertIn("hle_register_dcache_handlers();", HLE_C[gate - 2000:gate])
+        helper = HLE_C.split("static void hle_register_icache_handlers(void) {", 1)[1]
+        helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0x920F104A, "sceKernelIcacheInvalidateAll"),
                           (0xD8779AC6, "sceKernelIcacheClearAll"),
                           (0xC2DF770E, "sceKernelIcacheInvalidateRange")):
-            self.assertIn(f"0x{nid:08x}", low[gate:gate + 2000],
-                          f"{name} must register under the opt-in gate")
             self.assertEqual(low.count(f"0x{nid:08x}"), 1,
                              f"{name} NID must appear exactly once (no duplicate registration)")
-            self.assertNotIn(f"0x{nid:08x}", low[:gate],
-                             f"{name} NID must not appear before the opt-in gate")
+            self.assertIn(f"0x{nid:08x}", helper, f"{name} must register in the Icache helper")
+        self.assertEqual(HLE_C.count("    hle_register_icache_handlers();"), 2,
+                         "the production registry and the harness both call the Icache helper")
+        for handler in ("h_CacheInvalidateAllOther", "h_CacheInvalidateRangeOther"):
+            body = HLE_C.split(f"static uint32_t {handler}(CpuState *s) {{", 1)[1].split("\n}\n", 1)[0]
+            with self.subTest(handler=handler):
+                self.assertIn("sr_module_code_sync_overlays(", body)
         # Data-cache range maintenance is routine around DMA (guest middleware calls it),
         # so it registers unconditionally, once, through the shared helper that both the
-        # production registry (ahead of the Icache gate) and the executable harness call.
+        # production registry and the executable harness call.
         helper = HLE_C.split("static void hle_register_dcache_handlers(void) {", 1)[1]
         helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0xBFA98062, "sceKernelDcacheInvalidateRange"),
