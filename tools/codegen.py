@@ -580,6 +580,23 @@ def load_symbol_map(path):
     return symbols
 
 
+def site_names_from_symbol_map(symbols):
+    """Turn a load_symbol_map result into {name: address} for enhancement-package sites.
+
+    A name the map gives to more than one address is left out, so a site that uses it
+    stays unresolved instead of silently taking one of them.
+    """
+    names = {}
+    ambiguous = set()
+    for addr, (name, _size) in symbols.items():
+        if name in names and names[name] != addr:
+            ambiguous.add(name)
+        names[name] = addr
+    for name in ambiguous:
+        del names[name]
+    return names
+
+
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -3434,7 +3451,6 @@ def main(argv):
     stack_census = False
     omit_aot = _OmitAot()
     enhancement_pkg_path = None
-    enhancement_symbol_map_path = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
@@ -3446,13 +3462,6 @@ def main(argv):
             enhancement_pkg_path = o.split("=", 1)[1]
             if not enhancement_pkg_path:
                 sys.stderr.write("--enhancement-package requires a path\n")
-                return 2
-        elif o.startswith("--enhancement-symbol-map="):
-            # JSON {name: vaddr} for the package's symbolic sites, instead of the
-            # <package>.symbols.json sidecar (enhancement_package.load_symbol_map).
-            enhancement_symbol_map_path = o.split("=", 1)[1]
-            if not enhancement_symbol_map_path:
-                sys.stderr.write("--enhancement-symbol-map requires a path\n")
                 return 2
         elif o == "--name-imports":
             # Name each import stub after the function its NID imports (import_stub_names).
@@ -3645,9 +3654,10 @@ def main(argv):
             pkg_validated = enhancement_package.validate_package(pkg_raw)
             elf_sha256 = hashlib.sha256(elf.data).hexdigest()
             sym_map = enhancement_package.extract_elf_func_symbols(elf)
-            if enhancement_symbol_map_path is not None:
-                sym_map.update(enhancement_package.load_symbol_map(
-                    enhancement_symbol_map_path))
+            if symbol_map_path is not None:
+                # The guest symbol map names the package's sites too, in place of the
+                # <package>.symbols.json sidecar.
+                sym_map.update(site_names_from_symbol_map(symbols))
             else:
                 pkg_p = Path(enhancement_pkg_path)
                 sidecar = pkg_p.with_suffix(".symbols.json")

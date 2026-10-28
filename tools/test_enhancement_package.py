@@ -877,8 +877,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertIn("not emitted", output)
             self.assertEqual(files, {})
 
-    def test_site_names_and_guest_symbol_map_are_separate_options(self) -> None:
-        """--enhancement-symbol-map (JSON) resolves sites; --symbol-map (ld form) only names functions."""
+    def test_guest_symbol_map_names_functions_and_package_sites(self) -> None:
+        """--symbol-map names guest functions and resolves the package's sites, over the ELF symbols."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
             elf_path = tmp / "synth.elf"
@@ -888,20 +888,20 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
             package = f"--enhancement-package={pkg_path}"
 
-            # The JSON override wins over the ELF symbol table: pointing a site's function at
-            # another function's entry refuses the package on its stock digest.
-            wrong_names = tmp / "wrong-names.json"
-            wrong_names.write_text(json.dumps({"synth_vblank_wait": "0x00001200"}),
-                                   encoding="utf-8")
+            # The map wins over the ELF symbol table: pointing a site's function at another
+            # function's entry refuses the package on its stock digest.
+            wrong_map = tmp / "wrong-symbols.txt"
+            wrong_map.write_text("synth_vblank_wait = 0x00001200; // type:func\n",
+                                 encoding="utf-8")
             wrong_dir = tmp / "wrong"
             wrong_dir.mkdir()
             rc, output, files = self._run_codegen(
-                elf_path, wrong_dir / "out.c", [package, f"--enhancement-symbol-map={wrong_names}"])
+                elf_path, wrong_dir / "out.c", [package, f"--symbol-map={wrong_map}"])
             self.assertEqual(rc, 1, output)
             self.assertIn("Stock instruction digest mismatch", output)
             self.assertEqual(files, {})
 
-            # A guest symbol map in the ld form names functions and leaves site resolution alone.
+            # A map that agrees with the ELF resolves the same sites and names the function.
             guest_map = tmp / "guest-symbols.txt"
             guest_map.write_text("synth_vblank_wait = 0x00001100; // type:func size:0xC\n",
                                  encoding="utf-8")
@@ -916,6 +916,15 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     self.assertIn("sites=6", combined)
                     self.assertIn("s->r[2] = (0u + 0x00000001u);", combined)
                     self.assertEqual("f_00001100_synth_vblank_wait" in combined, bool(extra))
+
+    def test_site_names_leave_out_a_name_given_to_two_addresses(self) -> None:
+        """A name the guest map gives to two functions resolves no site at all."""
+        names = codegen.site_names_from_symbol_map({
+            0x1100: ("synth_vblank_wait", 0xC),
+            0x1200: ("helper", 0),
+            0x1300: ("helper", 0),
+        })
+        self.assertEqual(names, {"synth_vblank_wait": 0x1100})
 
     def test_lle_scaled_store_never_writes_the_fpr(self) -> None:
         """Under --lle-cpu a faulting swc1 returns early, so the rewrite must not touch s->f."""
