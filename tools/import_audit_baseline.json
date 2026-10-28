@@ -1219,6 +1219,12 @@
     "name": "sceKernelIsCpuIntrSuspended",
     "status": "unreviewed"
   },
+  "0x4928bd96": {
+    "classification": "dedicated",
+    "handler": "h_MsgDialogAbort",
+    "name": "sceUtilityMsgDialogAbort",
+    "status": "unreviewed"
+  },
   "0x4a719fb2": {
     "classification": "dedicated",
     "handler": "h_FreeTlspl",
