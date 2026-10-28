@@ -90,6 +90,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
+from psp_import_table import MODULE_ATTR_KERNEL as PSP_MODULE_ATTR_KERNEL  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -590,10 +591,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                 elif header.startswith(b"~SCE"):
                     kind = "encrypted-prx"
                 elif header.startswith(b"~PSP"):
-                    kind = "encrypted-prx" if _encrypted_prx_header_supported(
-                        header
-                    ) else "unsupported"
-                    if kind == "unsupported":
+                    if _encrypted_prx_header_supported(header):
+                        kind = "encrypted-prx"
+                    elif _psp_container_kernel_mode(header):
+                        kind = "kernel-container"
+                        reason = ("a kernel-mode module in an encrypted container the "
+                                  "boundary does not open")
+                    else:
+                        kind = "unsupported"
                         reason = "its encrypted-container header is not one the boundary supports"
                 else:
                     kind = "unsupported"
@@ -638,6 +643,17 @@ def _encrypted_prx_header_supported(header: bytes) -> bool:
     sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
     return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
         sum(sizes) <= MAX_EXECUTABLE_BYTES
+
+
+def _psp_container_kernel_mode(header: bytes) -> bool:
+    """Whether a ~PSP container's plaintext header declares a kernel-mode module.
+
+    The container header repeats SceModuleInfo's attribute (offset 4) in the clear,
+    so the kernel-mode bit is known without opening the container.
+    """
+    return len(header) >= 6 and bool(
+        struct.unpack_from("<H", header, 4)[0] & PSP_MODULE_ATTR_KERNEL
+    )
 
 
 def _stage_iso_modules(
@@ -713,8 +729,9 @@ def _declare_experimental_disc_modules(
 
     Every candidate must resolve to a plain module: a valid plain copy in the
     per-title decrypted folder wins (the player's disc check decrypts the disc's
-    own there, #295); otherwise an already plain disc copy is used. Anything else
-    stops by name. The plain copies are staged in a private folder under
+    own there, #295); otherwise an already plain disc copy is used. A kernel-mode
+    module in a container the boundary cannot open is left out by name (deferred),
+    because the runtime never runs kernel-mode code. Anything else stops by name. The plain copies are staged in a private folder under
     ``experimental/<DISC_ID>`` and planned by plan_guest_module_layout, which
     declares each module that runs as translated guest code as runtime-placed and
     leaves out the ones the runtime serves completely.
@@ -725,6 +742,7 @@ def _declare_experimental_disc_modules(
     title_folder = decrypted_module_dir(user_root, disc_id)
     module_sources: list[tuple[dict, str, Path | None]] = []
     unready: list[dict] = []
+    kernel_left_out: list[dict] = []
     for candidate in candidates:
         folder_copy = None
         if title_folder is not None and _disc_module_name_ok(candidate["name"]):
@@ -736,6 +754,17 @@ def _declare_experimental_disc_modules(
             module_sources.append((candidate, "folder", folder_copy))
         elif candidate["kind"] == "plain-elf":
             module_sources.append((candidate, "iso", None))
+        elif candidate["kind"] == "kernel-container":
+            # The runtime never runs PSP kernel-mode code (plan_guest_module_layout
+            # leaves a decrypted kernel-mode module out too), so a container that
+            # cannot be opened is left out by name rather than stopping the build.
+            # The game's load of it gets the record the host serves, and a call into
+            # one of its functions fails closed at the call as a named NID.
+            kernel_left_out.append({
+                "name": candidate["name"],
+                "reason": "kernel-mode module in an encrypted container the boundary "
+                          "does not open; the runtime does not run kernel-mode code",
+            })
         else:
             unready.append(candidate)
     # CFW patch modules stay excluded, whichever copy supplies them.
@@ -767,7 +796,7 @@ def _declare_experimental_disc_modules(
             lines=lines, log_lines=lines,
         )
     if not module_sources:
-        return [], [], None
+        return [], kernel_left_out, None
     try:
         module_dir = _stage_iso_modules(
             iso_path, user_root, disc_id,
@@ -788,6 +817,7 @@ def _declare_experimental_disc_modules(
             for candidate, _source, _folder_copy in module_sources
         ]
         bindings, deferred = plan_guest_module_layout(selected_elf, module_inputs)
+        deferred = kernel_left_out + deferred
     except (IsoInspectionError, OSError) as exc:
         boundary_code = (
             getattr(exc, "boundary_code", None)
