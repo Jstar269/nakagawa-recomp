@@ -341,12 +341,6 @@
     "refusal_error": "0x80110001",
     "status": "controlled_unsupported"
   },
-  "0x1579a30a": {
-    "classification": "dedicated",
-    "handler": "h_UtilityUnloadModule",
-    "name": "sceUtilityUnloadModule",
-    "status": "unreviewed"
-  },
   "0x157e6225": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -673,12 +667,6 @@
     "classification": "dedicated",
     "handler": "h_GetCallbackCount",
     "name": "sceKernelGetCallbackCount",
-    "status": "unreviewed"
-  },
-  "0x2a6117a5": {
-    "classification": "dedicated",
-    "handler": "h_UtilityLoadModule",
-    "name": "sceUtilityLoadModule",
     "status": "unreviewed"
   },
   "0x2ad8e239": {
