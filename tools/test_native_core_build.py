@@ -35,6 +35,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
     "build/test_player_screens",
+    "build/test_overlay_screens",
     "build/test_nk_ui_focus",
     "build/test_nk_ui_focus_sdl --sdl-input",
     "build/mygame/heap_selftest",

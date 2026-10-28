@@ -479,14 +479,15 @@ class NativeHostBackendTests(unittest.TestCase):
         exits = [line for line in gui.splitlines()
                  if "_Exit(" in line.split("//", 1)[0] and not line.lstrip().startswith("*")]
         self.assertEqual(exits, [], "a gui.c exit skips stdio flushing and the atexit handlers")
-        # gui_pump (SDL3, Win32), gui_present (GPU and software presenters), and the pause
-        # overlay's frame (poll, present) and leave (poll).
+        # gui_pump (SDL3, Win32), gui_present (GPU and software presenters), the pause
+        # overlay's frame (poll, present) and leave (poll), and its Quit to library (#1159).
         sites = {"if (!alive) { gui_window_closed_exit(); }": 1,
                  "if (msg.message == WM_QUIT) { gui_window_closed_exit(); }": 1,
                  "if (res == 0) { gui_window_closed_exit(); }": 1,
                  "if (present_result == 0) { gui_window_closed_exit(); }": 1,
                  "if (!sdl3vk_poll()) { gui_window_closed_exit(); }": 2,
-                 "if (presented == 0) { gui_window_closed_exit(); }": 1}
+                 "if (presented == 0) { gui_window_closed_exit(); }": 1,
+                 "fflush(stderr);\n        gui_window_closed_exit();\n        break;": 1}
         for site, count in sites.items():
             self.assertEqual(gui.count(site), count, f"window-close site missing: {site}")
         self.assertEqual(gui.count("gui_window_closed_exit();"), sum(sites.values()),
