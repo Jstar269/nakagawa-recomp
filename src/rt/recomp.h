@@ -1911,6 +1911,7 @@ typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
  * one of those classes, 0 otherwise (nothing visited). */
 int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
+uint32_t sched_thread_stack_free_size(uint32_t uid);  /* sceKernelGetThreadStackFreeSize */
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);

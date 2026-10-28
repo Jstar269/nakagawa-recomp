@@ -14880,6 +14880,181 @@ static void test_refer_thread_status(void) {
            "ReferThreadStatus validates the complete output structure span");
 }
 
+/* -------------------------------------------------------------------------
+ * sceKernelGetThreadStackFreeSize (#1388)
+ * -------------------------------------------------------------------------
+ * The cells of the public PSPAutotests tests/threads/threads/stackfree.c and
+ * stackfree.expected (hrydgard/pspautotests e821a1ba), entered through sr_syscall from
+ * guest bodies that the real scheduler runs: the caller by UID 0 and by its own UID,
+ * another thread's own stack (created, ready, suspended, finished), a 0xFF creation fill
+ * that 0xFF writes leave intact and 0x00 writes consume, a NO_FILLSTACK thread answering
+ * 0, and UNKNOWN_THID for -1, an invalid UID and a deleted thread.  Counting starts 0x10
+ * bytes above a stack's low end (see sched_thread_stack_free_size).
+ * ------------------------------------------------------------------------- */
+#define SFS_NID_GET_STACK_FREE 0x52089ca1u
+#define SFS_MAIN_ENTRY         0x08a30000u
+#define SFS_WORKER_ENTRY       0x08a30080u
+#define SFS_IDLE_ENTRY         0x08a30100u
+#define SFS_ARG_ADDR           0x08303000u
+#define SFS_SKIP               0x10u
+#define SFS_UNKNOWN_THID       0x80020198u
+#define SFS_ATTR_NO_FILLSTACK  0x00100000u   /* PSPSDK PSP_THREAD_ATTR_NO_FILLSTACK */
+
+static struct {
+    int main_done;
+    int worker_ran;
+    uint32_t worker_sp;
+    uint32_t worker_free_untouched;
+    uint32_t worker_free_used;
+} s_sfs;
+
+static uint32_t sfs_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2,
+                         uint32_t t0) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = 0x1000u;   /* stack size, read only by CreateThread */
+    cpu->r[8] = t0;        /* attribute, the fifth argument: read only by CreateThread */
+    return sr_syscall(cpu, nid);
+}
+
+static uint32_t sfs_free(CpuState *cpu, uint32_t uid) {
+    return sfs_call(cpu, SFS_NID_GET_STACK_FREE, uid, 0u, 0u, 0u);
+}
+
+static void sfs_fill(uint32_t lo, uint32_t hi, uint8_t value) {
+    for (uint32_t a = lo; a < hi; a++) MEM_W8(a, value);
+}
+
+static void sfs_idle_fn(CpuState *cpu) { cpu->r[2] = 0u; }
+
+/* A stronger thread started by the main body: it measures itself by UID 0 before and after
+ * using 0x100 bytes below its SP, then returns. */
+static void sfs_worker_fn(CpuState *cpu) {
+    s_sfs.worker_ran = 1;
+    s_sfs.worker_sp = cpu->r[29];
+    s_sfs.worker_free_untouched = sfs_free(cpu, 0u);
+    sfs_fill(s_sfs.worker_sp - 0x100u, s_sfs.worker_sp, 0x00u);
+    s_sfs.worker_free_used = sfs_free(cpu, 0u);
+    cpu->r[2] = 0u;
+}
+
+static void sfs_main_fn(CpuState *cpu) {
+    const uint32_t self_uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(self_uid);
+    const uint32_t sp = cpu->r[29];
+    expect(self && self->stack_size >= 0x1000u && sp > self->stack_base + 0x800u &&
+           sp <= self->stack_base + self->stack_size,
+           "stack free: the main thread runs on its own scheduler stack");
+    if (!self) return;
+    const uint32_t self_first = self->stack_base + SFS_SKIP;
+
+    /* The caller, by UID 0 and by its own UID ("Current thread" and "Current"). */
+    const uint32_t untouched = sfs_free(cpu, 0u);
+    expect(untouched == self->stack_base + self->stack_size - self_first,
+           "stack free: UID 0 counts the caller's untouched stack above its low 0x10 bytes");
+    expect(sfs_free(cpu, self_uid) == untouched,
+           "stack free: the caller's own UID answers what UID 0 answers");
+    sfs_fill(sp - 0x400u, sp, 0xffu);
+    expect(sfs_free(cpu, 0u) == untouched,
+           "stack free: 1 KiB of 0xFF written into the frame leaves the free size unchanged");
+    sfs_fill(sp - 0x400u, sp, 0x00u);
+    const uint32_t used = sfs_free(cpu, 0u);
+    expect(used == (sp - 0x400u) - self_first && used < untouched,
+           "stack free: 1 KiB of 0x00 below SP ends the free run where it starts");
+    expect(sfs_free(cpu, self_uid) == used,
+           "stack free: the caller's own UID sees the same used stack as UID 0");
+
+    /* Created, never started: its own stack, filled at creation ("Created"). */
+    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                      0x30u, 0u);
+    TCB *ct = tcb_by_uid(created);
+    expect(ct && ct->stack_size == 0x1000u && MEM_R8(ct->stack_base) == 0xffu &&
+           MEM_R8(ct->stack_base + ct->stack_size - 1u) == 0xffu,
+           "stack free: CreateThread fills the whole requested stack with 0xFF");
+    expect(ct && MEM_R32(ct->k0_init + 4u) == ct->k0_init + 0x10u,
+           "stack free: the fill leaves the runtime's k0/TLS block above the stack seeded");
+    expect(ct && sfs_free(cpu, created) == ct->stack_size - SFS_SKIP,
+           "stack free: a created thread answers its own untouched stack, not the caller's");
+
+    /* NO_FILLSTACK: nothing is filled and the free size is 0. */
+    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                     0x30u, SFS_ATTR_NO_FILLSTACK);
+    TCB *nt = tcb_by_uid(nofill);
+    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u &&
+           MEM_R8(nt->stack_base + nt->stack_size - 1u) == 0u,
+           "stack free: NO_FILLSTACK leaves the new stack as it was");
+    expect(nt && sfs_free(cpu, nofill) == 0u,
+           "stack free: a NO_FILLSTACK thread answers 0");
+
+    /* Ready, started with a 4-byte argument block, then suspended ("Ready", "Suspended"). */
+    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+                                    0x30u, 0u);
+    MEM_W32(SFS_ARG_ADDR, 0x01020304u);   /* no 0xFF byte in the copied argument */
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, ready, 4u, SFS_ARG_ADDR, 0u) == 0u,
+           "stack free: the weaker thread starts");
+    TCB *rt = tcb_by_uid(ready);
+    const uint32_t ready_free = sfs_free(cpu, ready);
+    expect(rt && rt->state == TH_READY && rt->argp != 0u && ready_free > 0x200u &&
+           ready_free == rt->argp - (rt->stack_base + SFS_SKIP),
+           "stack free: a ready thread's copied argument block ends its free run");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_SUSPEND_THREAD, ready, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, ready) == ready_free,
+           "stack free: a suspended thread answers its free size");
+
+    /* A stronger thread runs at StartThread, measures itself and finishes ("Finished"). */
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_WORKER_ENTRY,
+                                     0x10u, 0u);
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
+           "stack free: the stronger thread starts");
+    TCB *wt = tcb_by_uid(worker);
+    expect(s_sfs.worker_ran && wt && wt->state == TH_DORMANT,
+           "stack free: the stronger thread ran to its end at StartThread");
+    if (wt) {
+        const uint32_t worker_first = wt->stack_base + SFS_SKIP;
+        expect(s_sfs.worker_free_untouched == wt->stack_base + wt->stack_size - worker_first &&
+               s_sfs.worker_free_used == (s_sfs.worker_sp - 0x100u) - worker_first,
+               "stack free: UID 0 measures the calling worker's own stack");
+    }
+    expect(sfs_free(cpu, worker) == s_sfs.worker_free_used,
+           "stack free: a finished thread keeps the free size it measured itself");
+    expect(sfs_free(cpu, 0u) == used,
+           "stack free: another thread's stack use leaves the caller's free size unchanged");
+
+    /* -1, an invalid UID and a deleted thread ("-1", "Invalid", "Deleted"). */
+    expect(sfs_free(cpu, 0xffffffffu) == SFS_UNKNOWN_THID,
+           "stack free: UID -1 answers UNKNOWN_THID");
+    expect(sfs_free(cpu, 0xdeadbeefu) == SFS_UNKNOWN_THID,
+           "stack free: an invalid UID answers UNKNOWN_THID");
+    expect(sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, created, 0u, 0u, 0u) == 0u &&
+           sfs_free(cpu, created) == SFS_UNKNOWN_THID,
+           "stack free: a deleted thread answers UNKNOWN_THID");
+
+    (void)sfs_call(cpu, NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, ready, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, nofill, 0u, 0u, 0u);
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, worker, 0u, 0u, 0u);
+    s_sfs.main_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void test_thread_stack_free_size_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    memset(&s_sfs, 0, sizeof s_sfs);
+    const int registered = sr_hle_test_is_registered(SFS_NID_GET_STACK_FREE);
+    expect(registered, "stack free: GetThreadStackFreeSize has its production registration");
+    if (!registered) return;
+    sr_test_register_guest_fn(SFS_MAIN_ENTRY, sfs_main_fn);
+    sr_test_register_guest_fn(SFS_WORKER_ENTRY, sfs_worker_fn);
+    sr_test_register_guest_fn(SFS_IDLE_ENTRY, sfs_idle_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(SFS_MAIN_ENTRY, 0u, 0u);
+    expect(s_sfs.main_done, "stack free: the main body ran to its end");
+    sr_test_guest_fn_reset();
+}
+
 static void test_change_current_thread_attr(void) {
     enum {
         NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
@@ -34925,6 +35100,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
+    test_thread_stack_free_size_contract();
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
