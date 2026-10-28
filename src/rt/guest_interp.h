@@ -54,7 +54,8 @@ typedef struct SrGuestInterpCallBoundary {
  * -- fails closed as SR_GUEST_INTERP_UNSUPPORTED rather than being decoded as
  * some unrelated arithmetic form.
  *
- *   ALU        sll srl sra addu subu and or xor slt sltu / addiu ori lui
+ *   ALU        sll srl rotr sra addu subu and or xor slt sltu / addiu ori lui
+ *              (rotr is the Allegrex srl with rs=1; any other nonzero rs is reserved)
  *   HI/LO      mult multu mfhi mflo
  *   memory     lb lbu lh lhu lw / sb sh sw / lwl lwr swl swr / lwc1 swc1
  *   atomic     ll sc (CpuState.llbit: ll sets it; sc stores and writes 1 only

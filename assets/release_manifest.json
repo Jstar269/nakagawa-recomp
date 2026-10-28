@@ -750,23 +750,6 @@
       "comment": "Project-authored link preview: the N1 mark, the site's tennis court and text in Geist (OFL-1.1). No game imagery."
     },
     {
-      "id": "readme-showcase-ge-scene-v120",
-      "name": "README screenshot: GE scene demo at vblank 120",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/images/showcase-ge-scene-v120.png",
-      "license": "GPL-3.0-or-later",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
-      },
-      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
-    },
-    {
       "id": "readme-showcase-ge-scene-v240",
       "name": "README screenshot: GE scene demo at vblank 240",
       "type": "asset",

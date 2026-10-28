@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Behavioral checks for runtime debug watchpoints."""
 
@@ -62,6 +62,28 @@ class TestDebugC(unittest.TestCase):
             "w0=0x00000001 w1=0x00000005 w2=0x00000002",
             result.stderr,
         )
+
+    def test_redirected_diagnostics_arrive_whole_without_a_flush(self):
+        """#1296: the Windows C runtime wrote a redirected unbuffered stderr one byte per
+        system call, on the thread that printed. The selftest points stderr at a pipe and
+        requires three printed lines to arrive complete without an explicit flush; on
+        Windows the pipe keeps write boundaries and at most one write per call passes."""
+        result = subprocess.run(
+            [os.fspath(self.exe), "streams"], cwd=self.tmp, capture_output=True, text=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("debug streams selftest: OK", result.stdout)
+
+    def test_abort_keeps_buffered_diagnostics(self):
+        """A buffered diagnostic stream still delivers what it holds when abort() ends the
+        process (assert() ends it the same way)."""
+        result = subprocess.run(
+            [os.fspath(self.exe), "streams-abort"], cwd=self.tmp, capture_output=True,
+            text=True, timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0, "abort() must still end the process")
+        self.assertIn("DEBUG_STREAMS_ABORT_MARKER", result.stderr)
 
 
 if __name__ == "__main__":
