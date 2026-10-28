@@ -32,14 +32,16 @@ game; this repository contains no game data and never will.
 Before you change anything:
 
 1. Read [`README.md`](README.md), then [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
-   design. [`docs/README.md`](docs/README.md) says which guide covers which area.
+   design. [`docs/CODE_TOUR.md`](docs/CODE_TOUR.md) follows one game through the code, file by file.
+   [`docs/README.md`](docs/README.md) says which guide covers which area.
 2. Work from an issue. GitHub Issues are where work is agreed; [`ISSUES.md`](ISSUES.md) is a short
    summary of them. For anything bigger than a small fix, comment on the issue first. Good
    starting points are labelled `good first issue` and `help wanted`. An issue you file carries at least
    one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
 3. Run `git fetch origin` and start a branch from current `origin/main`. Check that the problem is
    not already fixed there and that no open pull request already covers it.
-4. Make one focused change, with a test that fails before it and passes after it.
+4. Make the change, with a test that fails before it and passes after it. Related fixes in the same
+   area, or a feature with its tests and docs, can share one pull request; unrelated changes cannot.
 5. Run the checks for the files you changed (below, and Section 9).
 6. Open a **Draft** pull request and fill in the template.
 
@@ -109,8 +111,9 @@ the full rules.
 ### What a good pull request looks like
 
 - A **Draft** pull request from a branch on your fork, with **Allow edits by maintainers** left on.
-  One focused change; no stacked pull requests.
-- It says what was wrong and links the issue (`Tracks #123`).
+  Related changes may share it; unrelated ones go in separate pull requests, and none is stacked on
+  another.
+- It says what was wrong, links the issue (`Tracks #123`), and lists what each change does.
 - It adds a test that fails before the change and passes after it. A documentation change runs the
   documentation gates instead.
 - It lists the exact commands you ran and their results. Say which checks you could not run.
@@ -395,8 +398,9 @@ handler, run one native self-test, capture frames unattended):
 
 ## 10. PR and integration authorization
 
-- When the task includes a pull request, open one focused Draft PR after the first valid commit.
-  Include exact base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
+- When the task includes a pull request, push early: open a Draft PR after the first valid commit.
+  Group related work: one PR may carry several related fixes in the same area or a whole feature
+  slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
   uncertainty, private/hardware status, and blockers.
 - Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
   unless Section 2's autonomous-integration conditions hold; local success never means a
@@ -485,7 +489,9 @@ covers the maintainer's workspace, how new paths are admitted, and how pull requ
 - From hand-off to integration until merge or explicit hand-back, a PR's branch and worktree
   belong to the integrator, which merges `main`, refreshes provenance and pushes from that same
   worktree. Do not edit, stage, commit, merge or push there.
-- The integrator lands one PR at a time from one landing run. A path-adding PR needs a re-key after
+- The integrator lands from one landing run, one PR at a time. When the queue is long, the desk lands
+  pull requests in batches instead: a linear batch branch with one commit per folded PR, one CI and
+  CodeQL run for the batch, then a rebase-merge. A path-adding PR needs a re-key after
   another path-adding PR lands unless both were batch-admitted
   ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
   Never hold a ready pull request for an unrelated one.
