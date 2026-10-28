@@ -112,11 +112,13 @@ settle into a small stable set, extending this gate to cover them is the
 natural next step -- do not read their absence here as "safe to ignore."
 """
 
+import ast
 import contextlib
 import inspect
 import io
 from pathlib import Path
 import re
+import subprocess
 import sys
 import unittest
 
@@ -126,6 +128,38 @@ sys.path.insert(0, str(ROOT / "tools"))
 import codegen
 import compat_overrides
 from host_stubs import HST_SIMPLE_STUBS
+
+
+LIVE_CENSUS_DOC = ROOT / "docs" / "COMPATIBILITY.md"
+_CENSUS_SENTENCE = re.compile(r"runs with (\d+) title-specific compatibility patches")
+
+
+def _released_notes() -> list[tuple[Path, str]] | None:
+    """Each docs/RELEASE_NOTES_v<version>.md whose tag v<version> exists, or None without tags."""
+    try:
+        tags = subprocess.run(["git", "-C", str(ROOT), "tag", "-l", "v*"], capture_output=True,
+                              check=True, text=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not tags:
+        return None
+    notes = sorted((ROOT / "docs").glob("RELEASE_NOTES_v*.md"))
+    return [(path, path.stem.removeprefix("RELEASE_NOTES_")) for path in notes
+            if path.stem.removeprefix("RELEASE_NOTES_") in tags]
+
+
+def _functions_comparing_release_notes_with_census(source: str) -> list[str]:
+    """Names of functions that name a release-notes file and use the live census."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            inner = list(ast.walk(node))
+            names_notes = any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                              and "RELEASE_NOTES_v" in n.value for n in inner)
+            uses_census = any(isinstance(n, ast.Name) and n.id == "_active_census" for n in inner)
+            if names_notes and uses_census:
+                found.append(node.name)
+    return found
 
 
 def _strip_c_comments_and_literals(source: str) -> str:
@@ -1724,9 +1758,37 @@ class FiredPatchReportCensusTests(unittest.TestCase):
         self.assertIsNone(re.search(r"master_reent_addr|guest_thread_table_addr", source))
         self.assertEqual(compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT, [])
 
-    def test_release_notes_state_the_active_census_count(self) -> None:
-        notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
-        self.assertIn(f"{len(_active_census())} title-specific compatibility patches", notes)
+    def test_live_census_doc_states_the_active_census_count(self) -> None:
+        text = LIVE_CENSUS_DOC.read_text(encoding="utf-8")
+        self.assertEqual([int(n) for n in _CENSUS_SENTENCE.findall(text)], [len(_active_census())])
+
+    def test_released_notes_keep_the_count_they_shipped_with(self) -> None:
+        # A release's notes describe that release, so a retirement never rewrites them.
+        released = _released_notes()
+        if released is None:
+            self.skipTest("no release tags in this checkout")
+        for notes, tag in released:
+            with self.subTest(tag=tag):
+                self.assertNotEqual(notes.resolve(), LIVE_CENSUS_DOC.resolve())
+                shipped = subprocess.run(["git", "-C", str(ROOT), "show", f"{tag}:docs/{notes.name}"],
+                                         capture_output=True, check=True).stdout.decode("utf-8")
+                self.assertEqual(_CENSUS_SENTENCE.findall(notes.read_text(encoding="utf-8")),
+                                 _CENSUS_SENTENCE.findall(shipped))
+
+    def test_no_test_compares_release_notes_with_the_live_census(self) -> None:
+        self.assertIsNone(re.match(r"RELEASE_NOTES_v", LIVE_CENSUS_DOC.name))
+        offenders = []
+        for path in sorted((ROOT / "tools").glob("test_*.py")):
+            offenders += [f"{path.name}:{name}"
+                          for name in _functions_comparing_release_notes_with_census(
+                              path.read_text(encoding="utf-8"))]
+        self.assertEqual(offenders, [])
+
+        # Mutation proof: the check this file used to make is seen by the same scanner.
+        contaminated = ('def test_x(self):\n'
+                        '    notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text()\n'
+                        '    self.assertIn(str(len(_active_census())), notes)\n')
+        self.assertEqual(_functions_comparing_release_notes_with_census(contaminated), ["test_x"])
 
 
 if __name__ == "__main__":

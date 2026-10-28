@@ -1,6 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Builds a title's runtime package when the user presses BUILD PACKAGE. It
+ * finds Python and the build tools (bundled with the player, already
+ * installed, or downloaded once the user agrees on the consent card, the only
+ * network use the player has), runs `tools/nk_cli.py build-package <disc id>`,
+ * and turns the JSON progress lines that command prints into the stages and
+ * progress bar the launcher shows.
+ */
+
 /* The downloader and bootstrapper are Windows-only, but the Linux strict-C gate still compiles this
  * file with -std=c99; this exposes POSIX declarations to it and to the headers it includes. */
 #if !defined(_WIN32) && !defined(_WIN64) && !defined(_POSIX_C_SOURCE)
@@ -9,6 +18,7 @@
 
 #include "package_builder.h"
 #include "nk_json.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 
 #include <ctype.h>
@@ -1421,6 +1431,16 @@ NkResult package_builder_start_prerequisite_fetch(
     const char *argv[] = { python_path, "-c", code, NULL };
     if (!nk_platform_spawn_process(python_path, argv, envp, source_root,
                                    session->log_file_path, &session->process)) {
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(session->process.spawn_error,
+                                           "the build tools' Python", "Build Tools",
+                                           python_path, &block)) {
+            safe_str_copy(session->failure_code, sizeof(session->failure_code), block.code);
+            safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
+                          block.message);
+            fprintf(stderr, "[BUILD] %s: %s\n", block.code, block.details);
+            return NK_ERROR_PROCESS_SPAWN;
+        }
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
                       "Could not start the verified Python prerequisite fetcher.");

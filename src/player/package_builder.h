@@ -55,8 +55,8 @@ typedef struct {
     PackageProgressStatus status_enum;
 } PackageProgressEvent;
 
-/* 35 pinned artifacts ship today (CPython + 34 MSYS2 UCRT64 packages, including
- * the SDL3_ttf readable-font closure from #421); the cap keeps headroom. */
+/* Upper bound on the pinned artifacts in assets/prereq_manifest.json (CPython and
+ * the MSYS2 UCRT64 packages), with headroom for the list to grow. */
 #define PACKAGE_BUILDER_MAX_PREREQUISITES 64
 typedef struct {
     char id[64];
