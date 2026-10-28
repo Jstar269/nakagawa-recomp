@@ -1033,7 +1033,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b003a8e149d7819b21bf349647b4f840d44420cc087d6ed78e34149fdf25bea8"
+      "sha256": "981e998bc5200343ddf2b4d0b8821bb38d54f53acd885a80067bcf85a29f11fd"
     },
     {
       "path": "assets/third_party_components.json",
@@ -2327,7 +2327,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ded794d34a96365a4f9655e7afe7947fede7c710dc4a0e6e2e1a49e465f23316"
+      "sha256": "792797c918a172457bc79052c0dce553fbcf496ac47be9550c5d2049e13d34da"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
@@ -4073,7 +4073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0a9ab18151185a9793cb5bb238240519c340045b4994f6628d816e8aac8bfa1"
+      "sha256": "c60365ad1ecda7e388830155f13dee976f8b44c7fda337fce9cdb583a0a2b3c6"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -10500,7 +10500,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f832e154242a0185c36f1d171a19ff3e3062c7343ad6c147962528a63be7d666"
+      "sha256": "e9d4d84cca7423a47f5091f5e4af955433158b27d4f83752d85418defbe179ed"
     },
     {
       "path": "tests/native/test_player_state.c",
