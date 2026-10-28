@@ -4468,6 +4468,7 @@ SrPauseVerdict sched_pause_request(SrPauseSource source) {
 }
 
 int sched_pause_active(void) { return s_pause_active; }
+SrPauseSource sched_pause_source(void) { return s_pause_source; }
 int sched_pause_pending(void) { return s_pause_requested || s_pause_active; }
 uint64_t sched_pause_total_ns(void) { return s_pause_total_ns; }
 

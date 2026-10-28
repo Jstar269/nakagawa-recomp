@@ -2739,6 +2739,8 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
+    /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
+    snprintf(work->ui_root, sizeof(work->ui_root), "%s", app->install_root);
     /* The boot-event marker and the input mapping are written here, on the
        thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
@@ -2807,6 +2809,7 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     work->result = nk_launch_prepare_session(session, game, root);
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     session->config.gui_mode = !work->launch_headless;
+    snprintf(session->ui_root, sizeof(session->ui_root), "%s", work->ui_root);
     if (work->result != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", session->last_error);
         work->failed_step = PLAYER_LAUNCH_STEP_PREPARE;

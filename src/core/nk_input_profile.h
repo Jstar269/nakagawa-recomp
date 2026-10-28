@@ -337,6 +337,9 @@ NkNavAction nk_nav_action_from_name(const char *name);
 
 /* Name of a bindable host key, or NULL when `key` is not one. */
 const char *nk_host_key_name(int key);
+/* A bindable host key in plain words, as people see it on the keyboard ("Enter",
+   "Left Shift", "Up Arrow", "A"); "None" when `key` is not one. Truncates to buf_sz. */
+void nk_host_key_words(int key, char *buf, size_t buf_sz);
 /* Key code for a bindable host key name, or NK_HOST_KEY_NONE when unknown. */
 int nk_host_key_from_name(const char *name);
 
