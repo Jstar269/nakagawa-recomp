@@ -8500,6 +8500,69 @@ int main(int argc, char **argv) {
         printf("[PLAYER_STATE_TEST] ADD TO LIBRARY staging decision PASSED\n");
     }
 
+    /* 25. The file pickers (owner, 2026-10-29): a first run opens them at the
+       Desktop, not at the folder Windows last remembered for this program (on
+       the owner's PC, the whole ISO collection on camera); after a pick they
+       open where the user picked from, across restarts. */
+    printf("[PLAYER_STATE_TEST] Subtest 25: file pickers open at the Desktop, then the last folder\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        char parent[NK_MAX_PATH];
+        assert(player_path_parent_folder("C:\\Games\\PSP\\disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "C:\\Games\\PSP") == 0);
+        assert(player_path_parent_folder("D:/PSP/disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "D:/PSP") == 0);
+        assert(player_path_parent_folder("C:\\disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "C:\\") == 0);
+        assert(player_path_parent_folder("/disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "/") == 0);
+        assert(!player_path_parent_folder("disc.iso", parent, sizeof(parent)));
+
+        PlayerApp *picker = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(picker != NULL);
+        player_app_settings_init_default(&picker->settings);
+        char desktop[NK_MAX_PATH];
+        char start[NK_MAX_PATH];
+        bool have_desktop = nk_platform_get_desktop_dir(desktop, sizeof(desktop));
+        /* No folder kept: the Desktop. */
+        assert(picker->settings.picker_folder[0] == '\0');
+        assert(player_app_picker_start_folder(picker, start, sizeof(start)) == have_desktop);
+        if (have_desktop) assert(strcmp(start, desktop) == 0);
+
+        /* A pick keeps its folder, and the settings file brings it back. */
+        char cache_dir[NK_MAX_PATH];
+        char games[NK_MAX_PATH + 32];
+        char picked[NK_MAX_PATH + 64];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(games, sizeof(games), "%s%cpicker games (1)", cache_dir, sep);
+        assert(nk_platform_mkdir_p(games));
+        snprintf(picked, sizeof(picked), "%s%cdisc.iso", games, sep);
+        player_app_remember_picker_folder(picker, picked, false);
+        assert(strcmp(picker->settings.picker_folder, games) == 0);
+        assert(player_app_picker_start_folder(picker, start, sizeof(start)));
+        assert(strcmp(start, games) == 0);
+        PlayerApp *reloaded = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(reloaded != NULL);
+        player_app_settings_init_default(&reloaded->settings);
+        assert(player_app_load_settings(reloaded, NULL) == NK_OK);
+        assert(strcmp(reloaded->settings.picker_folder, games) == 0);
+
+        /* A folder that is gone sends the picker back to the Desktop. */
+        assert(test_rmdir(games) == 0);
+        assert(player_app_picker_start_folder(reloaded, start, sizeof(start)) == have_desktop);
+        if (have_desktop) assert(strcmp(start, desktop) == 0);
+
+        /* A picked folder (the fonts picker's file's folder) is kept as it is. */
+        player_app_remember_picker_folder(reloaded, cache_dir, true);
+        assert(strcmp(reloaded->settings.picker_folder, cache_dir) == 0);
+        reloaded->settings.picker_folder[0] = '\0';
+        assert(player_app_save_settings(reloaded, NULL) == NK_OK);
+        free(reloaded);
+        free(picker);
+        printf("[PLAYER_STATE_TEST] file pickers PASSED\n");
+    }
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     native_test_assert_real_config_untouched();
