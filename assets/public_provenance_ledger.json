@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ed3c76a8ce14e092e55d567d63ba3c8d947d378925c0dfd9397eedaf3dfb6eb6"
+      "sha256": "1e92dedaa40d11ebee2dc2bebd027e5c730df78c44d6c1c8a34b71362aefb54c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3137a92341c78613baebbce0f610df70423c9c957d3516a972829b52913dea6e"
+      "sha256": "fed67fe7f63eed8bad5e72e1d99129d61b4e8adc76c401d494427dfdcec65b46"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a9acd4f4d621887d1266aa6dfcee4bca684ff402739e53bd43472543e5bc405c"
+      "sha256": "a97c9e3f8b5331928776fce8c5c01be9cc70364212a26f0034c3b81282e33d0e"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b3701c4b9448548cfe4626ea9b9cf096f53d34eab5e964b3ad7440d68254382"
+      "sha256": "cfe7392ea68fdeb0eef29c5d23f8de69cfa8729711b19d4946056b1ad2e0f231"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1531,7 +1531,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d5bb1803c29ed6ea2956e44015789aa671a5b1a2f50a59c08a38286aebf11c22"
+      "sha256": "e2c09568a2a07afbe3b3f2a5cf5793e831727149a66a49989537577812dacdd0"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1813,7 +1813,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b91eb0b73d5fe8aa64b6b7de256138678db505a81d0268daf76c897a218bd2d2"
+      "sha256": "4d2d2ff53b964b32dc2ab2c9c02841bf5fff6367e84afe9460d7bbc17a1446bb"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -8945,7 +8945,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e3ed380454e8ad120b758a2bff45398d8e1182453c9ed50eb4275bf1c6ef9c70"
+      "sha256": "ffb83f956fdd79edd32e326522647aa9467008408a12af045d346b565999d3c0"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8983,7 +8983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eaf91df5835242453efd74d1ee9b23dd049ea0284160ed599b1a891d02bc1e53"
+      "sha256": "992bf767037789d09239ab1298ce8b7f95d8b5ade12dfda24e5282e53d9fc71b"
     },
     {
       "path": "src/rt/intr_conformance.h",
