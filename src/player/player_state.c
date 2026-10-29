@@ -210,10 +210,14 @@ static bool player_runtime_worker_failure_matches(
         strcmp(failure->selected_executable, game->selected_executable) == 0;
 }
 
+/* The table keeps its valid records first, so a lookup stops at the first
+   free slot instead of reading all MAX_LIBRARY_GAMES slots for every title on
+   every frame. */
 static int player_runtime_worker_failure_index(
     const PlayerApp *app, const GameRecord *game) {
     if (!app || !game) return -1;
-    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+    for (int i = 0; i < MAX_LIBRARY_GAMES &&
+                    app->runtime_package_worker_failures[i].valid; i++) {
         if (player_runtime_worker_failure_matches(
                 &app->runtime_package_worker_failures[i], game)) {
             return i;
@@ -222,12 +226,28 @@ static int player_runtime_worker_failure_index(
     return -1;
 }
 
+/* Frees one record, moving the last valid record into its slot so the valid
+   records stay first. */
+static void player_runtime_worker_failure_remove(PlayerApp *app, int index) {
+    int last = index;
+    while (last + 1 < MAX_LIBRARY_GAMES &&
+           app->runtime_package_worker_failures[last + 1].valid) {
+        last++;
+    }
+    if (last != index) {
+        app->runtime_package_worker_failures[index] =
+            app->runtime_package_worker_failures[last];
+    }
+    memset(&app->runtime_package_worker_failures[last], 0,
+           sizeof(app->runtime_package_worker_failures[last]));
+}
+
 static void player_app_prune_runtime_worker_failures(PlayerApp *app) {
     if (!app) return;
-    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+    int i = 0;
+    while (i < MAX_LIBRARY_GAMES && app->runtime_package_worker_failures[i].valid) {
         PlayerRuntimePackageWorkerFailure *failure =
             &app->runtime_package_worker_failures[i];
-        if (!failure->valid) continue;
         bool still_present = false;
         for (int j = 0; j < app->game_count; j++) {
             if (player_runtime_worker_failure_matches(failure,
@@ -236,7 +256,12 @@ static void player_app_prune_runtime_worker_failures(PlayerApp *app) {
                 break;
             }
         }
-        if (!still_present) memset(failure, 0, sizeof(*failure));
+        if (still_present) {
+            i++;
+        } else {
+            /* Another record moves into this slot: look at it next. */
+            player_runtime_worker_failure_remove(app, i);
+        }
     }
 }
 
@@ -292,10 +317,7 @@ void player_app_runtime_package_worker_start_failed_clear(
     PlayerApp *app, const GameRecord *game) {
     if (!app || !game) return;
     int index = player_runtime_worker_failure_index(app, game);
-    if (index >= 0) {
-        memset(&app->runtime_package_worker_failures[index], 0,
-               sizeof(app->runtime_package_worker_failures[index]));
-    }
+    if (index >= 0) player_runtime_worker_failure_remove(app, index);
 }
 
 static void player_runtime_cache_set_game_key(
@@ -500,18 +522,33 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
                                               reason_size);
 }
 
+static bool player_runtime_cache_entry_matches(const PlayerApp *app, int index,
+                                               const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry = &app->runtime_package_cache[index];
+    return strcmp(app->games[index].disc_id, game->disc_id) == 0 &&
+           strcmp(app->games[index].title_id, game->title_id) == 0 &&
+           strcmp(entry->disc_id, game->disc_id) == 0 &&
+           strcmp(entry->title_id, game->title_id) == 0 &&
+           strcmp(entry->selected_executable, game->selected_executable) == 0;
+}
+
 static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
     const PlayerApp *app, const GameRecord *game) {
     if (!app || !game) return NULL;
+    /* The launcher asks about every title on every frame, nearly always with
+       the title's own record in app->games. Its cache entry has the same
+       index (the package check fills runtime_package_cache[i] for games[i]),
+       so that entry answers at once and a large library's frame stays linear
+       in its size; the scan below serves copies of a record. */
+    if (game >= app->games && game < app->games + app->game_count) {
+        int own = (int)(game - app->games);
+        if (player_runtime_cache_entry_matches(app, own, game)) {
+            return &app->runtime_package_cache[own];
+        }
+    }
     for (int i = 0; i < app->game_count; i++) {
-        const PlayerRuntimePackageCacheEntry *entry =
-            &app->runtime_package_cache[i];
-        if (strcmp(app->games[i].disc_id, game->disc_id) == 0 &&
-            strcmp(app->games[i].title_id, game->title_id) == 0 &&
-            strcmp(entry->disc_id, game->disc_id) == 0 &&
-            strcmp(entry->title_id, game->title_id) == 0 &&
-            strcmp(entry->selected_executable, game->selected_executable) == 0) {
-            return entry;
+        if (player_runtime_cache_entry_matches(app, i, game)) {
+            return &app->runtime_package_cache[i];
         }
     }
     return NULL;
@@ -4395,7 +4432,10 @@ bool player_app_adopt_profile_executable(PlayerApp *app, int game_index) {
     const char *package_root = player_package_root(app, game);
     if (package_root) {
         snprintf(root, sizeof(root), "%s", package_root);
-    } else if (!nk_platform_get_app_data_dir(root, sizeof(root))) {
+    } else if (!nk_platform_resolve_app_data_dir(root, sizeof(root))) {
+        /* Resolve only: this runs for every such title at start, and making
+           the folder each time cost about 2 ms a title. Reading a profile
+           needs no folder made. */
         return false;
     }
     char leaf[sizeof(game->selected_executable)];

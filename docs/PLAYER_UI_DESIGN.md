@@ -212,7 +212,10 @@ Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view,
 Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count of the user's games in `CAPTION` beside it ("7 titles"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
 grid of the user's games, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
-SETTINGS and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
+SETTINGS and no corner text. The first card, never the pager, has the first focus. Page Down and Page Up, the pad's
+right and left triggers and the mouse wheel turn the page too; a focused card hands focus to the card in the same place
+on the new page (the last one when that page is shorter). A library holds up to 4096 games; only the page shown reads
+its disc icons and checks its packages, so a page of a large library costs what a small library does. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.
 
