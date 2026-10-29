@@ -821,7 +821,7 @@ bool player_app_picker_start_folder(const PlayerApp *app, char *out, size_t out_
  * and saves the settings. */
 void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool is_folder);
 /* The folder holding `path` (either separator), with a root kept whole:
- * "C:\x.iso" gives "C:\", "/x.iso" gives "/". False for a bare name. */
+ * "<drive>:\x.iso" gives "<drive>:\", "/x.iso" gives "/". False for a bare name. */
 bool player_path_parent_folder(const char *path, char *out, size_t out_size);
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
