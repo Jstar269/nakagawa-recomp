@@ -53,7 +53,9 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   it through the player for discs whose data ships in archives. A repeat run
   reuses a complete staged tree, and an interrupted run is cleaned up and redone.
 - `--user-data-root=<folder>` makes the player keep its library, title manifests,
-  packages, and staged games in that folder, matching `nk_cli --user-data-root`.
+  packages, and staged games in that folder, matching `nk_cli --user-data-root`, and its
+  settings, cache, logs and saves in that folder's `config`, `cache`, `logs` and `saves`
+  folders, so a second profile never reads or writes the default one.
   With `--headless-launch`, `--launch-now` waits for the game the same bounded way
   `--launch-index` does.
 - `nk_launch.c` resolves staged `EBOOT.BIN`, prefers the promoted `xbdata`

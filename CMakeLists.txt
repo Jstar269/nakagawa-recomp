@@ -211,15 +211,17 @@ set(NK_UI_OVERLAY_SOURCES
     src/rt/overlay/overlay_toast.c
     src/rt/overlay/overlay_dialogs.c
     src/rt/overlay/overlay_controls.c
+    src/rt/overlay/overlay_dev.c
     src/rt/overlay/overlay_host.c
 )
-# The overlay pages built so far (C9c), SDL-free; overlay_host.c builds only into the runtime.
+# The overlay pages built so far (C9c, and the developer pages of #314), SDL-free; overlay_host.c builds only into the runtime.
 set(NK_UI_OVERLAY_C9C_SOURCES
     src/rt/overlay/nk_overlay.c
     src/rt/overlay/overlay_pause.c
     src/rt/overlay/overlay_quick.c
     src/rt/overlay/overlay_dialogs.c
     src/rt/overlay/overlay_controls.c
+    src/rt/overlay/overlay_dev.c
 )
 set(NK_UI_TEST_SOURCES
     tests/native/test_nk_ui_core.c

@@ -52,6 +52,10 @@ static uint64_t nk_ui_image_next_serial(void) {
 #endif
 }
 
+uint64_t nk_ui_image_new_serial(void) {
+    return nk_ui_image_next_serial();
+}
+
 static const uint8_t g_png_signature[8] = {0x89u, 'P', 'N', 'G', '\r', '\n', 0x1Au, '\n'};
 
 const char *nk_ui_image_status_name(NkUiImageStatus status) {
