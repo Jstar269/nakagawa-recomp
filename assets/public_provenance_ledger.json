@@ -13051,7 +13051,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17185a5e404f01d3909ff9ad3c4c392af8e6228bbb56e319476d25fe67805158"
+      "sha256": "1f7d92267f2c8661ab1a98a3d14234acc7ca6219e014bab2ae8d136ff2ce4d0d"
     },
     {
       "path": "tools/host_stubs.py",
@@ -15147,7 +15147,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "52b7bda4a1e8e7a30583ed45ac6833ab1d322bd36158d9f69d4eb064430b8a84"
+      "sha256": "b5bd3ff726d9bfa41a89a0af8dfca2df6d77d2eafbfa927903774b6324bef0eb"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
