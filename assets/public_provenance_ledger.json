@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6469a3b376d62959e38f8db4907311e6c3120059dbf882cbb4a71e6987e40da1"
+      "sha256": "4843066f2633b8479a9ab0951bc90d4ee3a0183dfcb6750514ab9ac6fb05351a"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1498,6 +1498,18 @@
       "sha256": "d4fa68e5102a0966713ac9e23ac52b2ddbb99c0c3c1c5b7df8f85b5f2da0c901"
     },
     {
+      "path": "docs/HLE_COVERAGE.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "generality-proof-p6-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "84e9c37a2e7e3473b4c3fc3f66a10e91933714dd1956b9f87f94f9128de19385"
+    },
+    {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1690,7 +1702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9efeb0638fda728e474d40d8fa69305007984896ba4961d76f734b0c301674d2"
+      "sha256": "9a295c780014a351f1d459325103e879c1a2d9308f4c899a025ba414ac75bc53"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -8933,7 +8945,19 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e21c66791d9b692d284144b218205abb29f79d30527166443e28fa0355670984"
+      "sha256": "f160c316275ab0eca0dec13a28d06c973cc344c3820cfa4ad7ecc4cc186c7923"
+    },
+    {
+      "path": "src/rt/hle_evidence.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "generality-proof-p6-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "24da733dc546d18d9cab2530073766e3b501a29a5c660622682a5f01b474b547"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -11617,7 +11641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cf56bc40a75b73e4377bdd36447b412a811f2f074933343df27989ac5ef7c947"
+      "sha256": "f32f5e2afc49210d2f2cdfb940bb9f5614d63a03703e8cf3db73e3b2d844b83f"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -13237,7 +13261,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1469f8fc5c3f6f7999444af5df3cf5996317eabb70f43f1f36af27fd362196a"
+      "sha256": "b7535c592157a6641bdb455ce902a1e8dd1fa566cb80291611cdf48e47f5aef3"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -15267,7 +15291,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1254efad101b1c6cf3f63c2b266f673b948ced423447a212d3b888fdf2079af"
+      "sha256": "d6dd58694dad0fbdd494e386348d1c73e4d466cc7ff2d43799c5d68d4c62b489"
     },
     {
       "path": "tools/test_release_manifest.py",
@@ -15751,6 +15775,18 @@
       "sha256": "c448ca62ac1db370ca426361af945c30baf69f3c63b42d64b350beaa4e34cde7"
     },
     {
+      "path": "tools/test_verification_ledger.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "generality-proof-p6-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3944b5110851155aca5a8e4183fae5d74b5df951b3cdf3506f6eb0d5cd8528c7"
+    },
+    {
       "path": "tools/test_vfpu_addressing.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -16110,6 +16146,18 @@
         "upstream_attribution": null
       },
       "sha256": "be50d5918e769a5e7f277c1d1ce8f9af2d7dde5916e88164c40fedaf539b564f"
+    },
+    {
+      "path": "tools/verification_ledger.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "generality-proof-p6-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a61124be66fa2f1408f4f1239894f67bfbe0f0760efbfa9286e35fe4ffe7d7d3"
     },
     {
       "path": "tools/verify_gates.py",
