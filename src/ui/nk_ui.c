@@ -62,6 +62,10 @@ struct NkUi {
     NkUiId focused;
     NkUiId focus_request;
     bool focus_pending;
+    /* The primary pointer button, and the control it went down on: a click
+       activates a control only when its press and its release both land on it. */
+    bool pointer_down;
+    NkUiId pointer_press_id;
     double now_s;
     unsigned container_depth;
     uint32_t text_color_stack[64];
@@ -131,20 +135,33 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             }
             nk_ui_consume_event(ui, i);
         } else if (event->type == NK_UI_EV_POINTER) {
-            if (event->down) {
-                focused = nk_ui_focus_hit_test(ui->focus_graph,
-                                               event->x, event->y);
-                if (focused != 0u &&
-                    nk_ui_focus_set(ui->focus_graph, focused)) {
+            /* A press focuses the control under it; the release activates it
+               only when it lands on the same control. A pointer that moves
+               while held sends more down events: they are a drag, never a
+               press, so a click whose first frame swapped the screen cannot
+               press the control that took the old one's place. */
+            bool press = event->down && !ui->pointer_down;
+            bool release = !event->down && ui->pointer_down;
+            ui->pointer_down = event->down;
+            focused = press || release
+                ? nk_ui_focus_hit_test(ui->focus_graph, event->x, event->y) : 0u;
+            if (press) {
+                ui->pointer_press_id = focused;
+                if (focused != 0u && nk_ui_focus_set(ui->focus_graph, focused)) {
                     ui->focused = focused;
-                    event->type = NK_UI_EV_ACTIVATE;
-                    event->repeat = false;
-                    ++i;
-                } else {
-                    nk_ui_consume_event(ui, i);
                 }
+                nk_ui_consume_event(ui, i);
+            } else if (release && focused != 0u && focused == ui->pointer_press_id &&
+                       nk_ui_focus_set(ui->focus_graph, focused)) {
+                ui->pointer_press_id = 0u;
+                ui->focused = focused;
+                event->type = NK_UI_EV_ACTIVATE;
+                event->down = true;
+                event->repeat = false;
+                ++i;
             } else {
-                /* Hover remains separate from focus and activation. */
+                /* Hover and drags stay separate from focus and activation. */
+                if (release) ui->pointer_press_id = 0u;
                 nk_ui_consume_event(ui, i);
             }
         } else if (event->type == NK_UI_EV_WHEEL) {
@@ -324,6 +341,10 @@ void nk_ui_set_prefs(NkUi *ui, const NkUiPrefs *prefs) {
     if (ui != NULL && prefs != NULL) {
         ui->prefs = *prefs;
     }
+}
+
+void nk_ui_cancel_press(NkUi *ui) {
+    if (ui != NULL) ui->pointer_press_id = 0u;
 }
 
 void nk_ui_push_event(NkUi *ui, const NkUiEvent *event) {
