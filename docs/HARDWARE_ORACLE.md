@@ -28,9 +28,8 @@ the PSP GE command word layout; address operands are explicit relocations to its
 vertex words. A result records `framebuffer_sha256` and one `pixel_<x>_<y>` value for each selected
 coordinate, packed according to the case framebuffer format.
 
-The measured raster corpus is the `ge-raster` probe (`PSP-GE-RASTER-001`, see
-[Measured to date](#measured-to-date-index-exact-cells-only-do-not-generalize)): 189 cells whose window
-digests `src/rt/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
+The measured raster corpus is the `ge-raster` probe (`PSP-GE-RASTER-001`, in the measured index
+below): 189 cells whose window digests `src/rt/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
 those runs yet.
 
 Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
