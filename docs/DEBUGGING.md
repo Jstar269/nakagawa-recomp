@@ -251,6 +251,56 @@ disabled and enabled runs (A B A B), where it used to run all disabled runs befo
 The JSON `ratio` is a bare median ratio with no spread. Judge it with the per-run durations and the
 rule above.
 
+## Execution share and static coverage
+
+Two numbers are default outputs, with no switch: how much of a title the build translated, and
+how much of a run's guest work ran natively rather than in the interpreter floor (#118).
+
+**Static coverage (build time).** `tools/codegen.py` writes `<game>_recomp_coverage.json` next to
+`<game>_recomp_stubs.txt` and prints one `CODEGEN_COVERAGE` line. The counts come from
+`analyze.static_coverage`, which walks the canonical CFG over the same entries and executable spans
+that code emission used. Per image and in total, it gives:
+
+- executable, owned and unowned words and bytes, padding, and owner-conflict and interior-entry words;
+- translated words: owned words where at least one owning function was emitted as C;
+- interpreter words: owned words where every owner was left to the floor (unsupported or `--omit-aot`);
+- other owned words (import stubs, say), so the three add up to the owned words;
+- functions: total, translated and interpreter;
+- jump-table candidates and unresolved indirect edges.
+
+`translated_share` is translated words over owned words. The package planner copies the `total` into
+`build-report.json` as `coverage.static`. Unowned words are code the analyzer could not attribute to a
+function: the dispatcher reaches them only as a miss, which stops the run.
+
+**Execution share (run time).** At every exit, the runtime prints one `EXEC_SHARE` line on stderr. When
+`SR_EXEC_SHARE_JSON` names a file, it also writes the same numbers there (schema
+`nakagawa-exec-share-v1`). The fields:
+
+- `interp_time_share`: interpreter time over AOT plus interpreter time;
+- `aot_ms`, `interp_ms`, and `idle_ms` (host waits excluded from both);
+- interpreter entries by reason (`dispatch_miss`, `stale_block`) and exits (`aot_handoff`,
+  `call_return`, `other`);
+- interpreter instructions, distinct interpreter entry points, distinct miss targets, and entries
+  whose PC did not fit the 2048-entry set (`entry_points_overflow`).
+
+The share is a time share. It overstates the interpreter's share of instructions, because the
+interpreter is slower per instruction. The exact instruction share still needs a
+`PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A
+dispatch reads the clock only when the tier changes, and a guest thread's tier is saved across
+scheduler switches. HLE work called from AOT code counts as AOT time.
+
+The counters only count: no guest state, return value or control flow depends on them. Cost,
+measured with a micro-benchmark linked against `perf.c` at the default `-O0` (Ryzen 9 5900X, 5 runs):
+
+| Operation | Added cost |
+| --- | --- |
+| AOT dispatch, tier unchanged | 1.5 to 2.0 ns |
+| interpreter entry plus exit (two tier switches, entry-point set) | 74 to 80 ns |
+| scheduler slice begin plus end | 66 to 70 ns |
+
+A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). The
+cost on a full title run with the #282 method is not measured yet.
+
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
 A game runs fast if the runtime hands the guest more VBLANK episodes than the
