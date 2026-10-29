@@ -622,7 +622,7 @@ class IsoParityTests(unittest.TestCase):
 #include <string.h>
 #include <assert.h>
 #include "nk_iso.h"
-#include "nk_psp_start_entry.h"
+#include "../rt/prx_loader.h"
 #include "nk_library.h"
 #include "nk_title_manifest.h"
 #if {1 if has_launch else 0}
@@ -675,7 +675,7 @@ int main(int argc, char **argv) {{
     }}
 
     if (strcmp(mode, "start_entry") == 0) {{
-        /* start_entry <file>: where the PSP starts this executable (nk_psp_start_entry.h). */
+        /* start_entry <file>: where the PSP starts this executable (sr_prx_start_entry in src/rt/prx_loader.h). */
         if (argc < 3) return 1;
         FILE *image = fopen(argv[2], "rb");
         if (!image) return 2;
@@ -683,7 +683,7 @@ int main(int argc, char **argv) {{
         long image_size = ftell(image);
         if (image_size < 0) {{ fclose(image); return 2; }}
         uint32_t entry = 0;
-        const char *rule = nk_psp_start_entry(harness_file_read, image, (uint64_t)image_size,
+        const char *rule = sr_prx_start_entry(harness_file_read, image, (uint64_t)image_size,
                                               &entry);
         fclose(image);
         printf("START_ENTRY:%s:%08x\\n", rule ? rule : "OK", entry);

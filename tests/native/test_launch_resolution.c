@@ -634,7 +634,7 @@ static void write_bytes(const char *path, const void *data, size_t size) {
 
 /* write_valid_elf, plus a SceModuleInfo the first PT_LOAD's p_paddr names and a syslib
  * export table whose module_start is base + 4: the PSP starts the image there, not at
- * `entry` (src/core/nk_psp_start_entry.h). */
+ * `entry` (sr_prx_start_entry in src/rt/prx_loader.h). */
 static void write_module_start_elf(const char *path, uint32_t base, uint32_t entry) {
     uint8_t image[0x100] = { 0 };
     memcpy(image, "\x7f" "ELF", 4);

@@ -26,7 +26,7 @@
 #include "debug.h"
 #include "title_config.h"
 #include "flight_recorder.h"
-#include "nk_psp_start_entry.h"
+#include "prx_loader.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -215,7 +215,7 @@ typedef struct DriverElfImage {
     size_t len;
 } DriverElfImage;
 
-/* NkPspImageRead over the ELF file held in memory. */
+/* SrPrxImageRead over the ELF file held in memory. */
 static bool driver_elf_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {
     const DriverElfImage *image = (const DriverElfImage *)context;
     if (offset > image->len || bytes > image->len - offset) return false;
@@ -287,10 +287,10 @@ static uint32_t load_elf(const uint8_t *elf, size_t len) {
             sr_load_segment(p_vaddr, elf + p_off, p_filesz);
     }
     /* The PSP starts the executable at its module_start export, not at e_entry
-     * (src/core/nk_psp_start_entry.h). */
+     * (sr_prx_start_entry in prx_loader.h). */
     DriverElfImage image = { elf, len };
     uint32_t start = e_entry;
-    const char *violation = nk_psp_start_entry(driver_elf_read, &image, len, &start);
+    const char *violation = sr_prx_start_entry(driver_elf_read, &image, len, &start);
     if (violation) {
         fprintf(stderr, "ELF start entry cannot be read: %s\n", violation);
         exit(2);

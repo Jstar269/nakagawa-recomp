@@ -20,7 +20,7 @@
 #endif
 
 #include "nk_iso.h"
-#include "nk_psp_start_entry.h"
+#include "../rt/prx_loader.h"
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
 #include "nk_platform.h"
 #endif
@@ -1303,7 +1303,7 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
     uint16_t type = read_le16(header + 16);
     uint16_t machine = read_le16(header + 18);
     uint32_t version = read_le32(header + 20);
-    uint32_t entry = 0;  /* the start entry, resolved below (nk_psp_start_entry) */
+    uint32_t entry = 0;  /* the start entry, resolved below (sr_prx_start_entry) */
     uint32_t phoff = read_le32(header + 28);
     uint32_t shoff = read_le32(header + 32);
     uint16_t ehsize = read_le16(header + 40);
@@ -1393,8 +1393,8 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
 
     if (module && type == 0xFFA0u) return code_segment ? NULL : "no-code-segment";
     /* The PSP starts an executable at its module_start export, not at e_entry
-       (nk_psp_start_entry.h); that is the address that must be executable. */
-    const char *start_violation = nk_psp_start_entry(read, context, image_size, &entry);
+       (sr_prx_start_entry in src/rt/prx_loader.h); that is the address that must be executable. */
+    const char *start_violation = sr_prx_start_entry(read, context, image_size, &entry);
     if (start_violation) return start_violation;
     bool entry_executable = false;
     for (uint16_t i = 0; i < phnum; i++) {

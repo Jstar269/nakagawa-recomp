@@ -1284,8 +1284,8 @@ _START_ENTRY_MAX_EXPORTS = 4096
 def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
     """Where the PSP starts an executable, in its own (link) address space.
 
-    Python mirror of nk_psp_start_entry in src/core/nk_psp_start_entry.h (that header
-    documents the rule and its uofw reference); tools/test_iso_parity.py keeps the two in
+    Python mirror of sr_prx_start_entry in src/rt/prx_loader.h (which documents the
+    rule and its uofw reference); tools/test_iso_parity.py keeps the two in
     agreement. The module manager enters the syslib module_start export, else
     module_bootstart, else e_entry. Returns ``(entry, None)``, or ``(e_entry, rule)``
     naming the first rule the image breaks.
