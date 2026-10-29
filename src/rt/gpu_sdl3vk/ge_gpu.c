@@ -3601,6 +3601,7 @@ static void gpu_replay_snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {
     out[SR_PERF_GPU_UPLOAD_RING_BYTES] = s.upload_ring_bytes;
     out[SR_PERF_GPU_UPLOAD_RING_WRAPS] = s.upload_ring_wraps;
     out[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = s.upload_ring_fallbacks;
+    out[SR_PERF_GPU_SNAPSHOT_COPY_PX] = s.snapshot_copy_px;
 }
 
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out) {

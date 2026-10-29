@@ -187,6 +187,7 @@ static const char *const s_ge_frontend_stage_names[SR_PERF_GE_FRONTEND_STAGE_COU
 static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
     "queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
     "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps", "upload_ring_fallbacks",
+    "snapshot_copy_px",
 };
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. */
