@@ -6851,6 +6851,39 @@ static int msg_dialog_run_to_finished(CpuState *cpu, uint32_t param) {
     return 0;
 }
 
+/* sceUtilityMsgDialogAbort against pspautotests tests/utility/msgdialog/abort.expected (2ed7c9c5,
+ * recorded on a PSP). Before this handler the NID was unknown and the title stopped on it. */
+#define NID_MSG_DIALOG_ABORT 0x4928bd96u
+static void test_msg_dialog_abort_sequence(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    expect(sr_hle_test_is_registered(NID_MSG_DIALOG_ABORT), "sceUtilityMsgDialogAbort is registered");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110005u, "Before init: 80110005");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "InitStart: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During init: 80110001");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the dialog becomes visible (status 2)");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "an Update while visible");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Abort: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Twice: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "GetStatus after Abort: 2");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "Update after Abort: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u, "GetStatus after that Update: 3");
+    expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 2u,
+           "the aborted dialog finishes with result 2 (the PPSSPP reference value)");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "Third abort: 80110001");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u, "ShutdownStart: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During shutdown: 80110001");
+    int none = 0;
+    for (int frame = 0; frame < 4 && !none; frame++)
+        none = utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u;
+    expect(none, "the dialog returns to NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "After reset: 80110001");
+}
+
 static void test_msg_dialog_answer_field(void) {
     enum { OPTIONS = 0x23cu, BUTTON_PRESSED = 0x240u, OPT_YESNO = 0x10u };
     CpuState cpu;
@@ -35771,6 +35804,49 @@ static void test_font_list_contract(const Flash0Sources *sources) {
     expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u, "the font-list library is retired");
 }
 
+/* sceFontSetAltCharacterCode against PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the
+ * console's libfont on a PSP): 0 for a live library whatever the code, 0x80460002 for a NULL one,
+ * and the fallback a missing glyph takes in sceFontGetCharInfo: height 0 with 0x0000 or 0xFFFF,
+ * the '_' glyph's with 0x005F (the default). Before this handler the NID was unknown. */
+#define FLT_NID_ALT_CHAR 0xee232411u
+#define FLT_CHAR_INFO    0x09052000u
+
+static uint32_t flt_char_height(uint32_t font, uint32_t cc) {
+    for (uint32_t i = 0; i < 0x3cu; i += 4u) MEM_W32(FLT_CHAR_INFO + i, 0xa5a5a5a5u);
+    if (flt_call(FLT_NID_CHAR, font, cc, FLT_CHAR_INFO, 0u) != 0u) return 0xffffffffu;
+    return MEM_R32(FLT_CHAR_INFO + 4u);   /* bitmapHeight */
+}
+
+static void test_font_alt_char_contract(uint32_t served_index) {
+    expect(sr_hle_test_is_registered(FLT_NID_ALT_CHAR), "sceFontSetAltCharacterCode is registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    s_flt_alloc_ret = FLT_FONT;
+    const uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(lib == FLT_LIB_A && font == FLT_FONT, "a library and a font open for the fallback check");
+
+    const uint32_t underscore = flt_char_height(font, 0x5fu);
+    expect(flt_char_height(font, 0xffffu) == underscore,
+           "a new library falls back to 0x005F: a missing glyph reports the '_' glyph's height");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0u, 0u, 0u) == 0u && flt_char_height(font, 0xffffu) == 0u,
+           "with fallback 0x0000 the missing glyph reports height 0");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0xffffffffu, 0u, 0u) == 0u && flt_char_height(font, 0xffffu) == 0u,
+           "-1 is stored as 0xFFFF, itself missing: height 0");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0x1005fu, 0u, 0u) == 0u &&
+               flt_char_height(font, 0xffffu) == underscore,
+           "0x1005F is stored as 16 bits, 0x005F");
+    expect(flt_call(FLT_NID_ALT_CHAR, 0u, 0x5fu, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "a NULL library returns 0x80460002");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_ALT_CHAR, FLT_LIB_B, 0x5fu, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "a library that is not live stops by name");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u &&
+               flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u,
+           "the fallback-check font and library are retired");
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -36125,6 +36201,7 @@ static void test_flash0_font_device(void) {
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
         test_font_list_contract(&expected_sources);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
@@ -37782,6 +37859,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();
+    test_msg_dialog_abort_sequence();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
     test_exit_thread_does_not_wake_launcher(0);

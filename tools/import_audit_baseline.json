@@ -1243,6 +1243,12 @@
     "name": "sceKernelIsCpuIntrSuspended",
     "status": "unreviewed"
   },
+  "0x4928bd96": {
+    "classification": "dedicated",
+    "handler": "h_MsgDialogAbort",
+    "name": "sceUtilityMsgDialogAbort",
+    "status": "partial"
+  },
   "0x4a719fb2": {
     "classification": "dedicated",
     "handler": "h_FreeTlspl",
@@ -3718,6 +3724,12 @@
     "handler": "h_DeleteCallback",
     "name": "sceKernelDeleteCallback",
     "status": "unreviewed"
+  },
+  "0xee232411": {
+    "classification": "dedicated",
+    "handler": "h_FontSetAltCharacterCode",
+    "name": "sceFontSetAltCharacterCode",
+    "status": "partial"
   },
   "0xeeda2e54": {
     "classification": "dedicated",

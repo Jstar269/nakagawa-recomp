@@ -9377,6 +9377,9 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
 #define SR_FONT_ERROR_INVALID_ARG  0x80460003u
 #define SR_FONT_ERROR_TOO_MANY     0x80460009u
 #define SR_FONT_ERROR_INVALID_DATA 0x8046000au
+/* A new library's fallback character: 0x005F ('_'), pspautotests tests/font/altcharcode.expected
+ * "Initial value: 005f" (rev 2ed7c9c5, recorded on a PSP). */
+#define SR_FONT_DEFAULT_ALT_CHAR   0x005fu
 
 /* sceFont uses the same measured index map and served-header values as /DATA/FONT. */
 
@@ -9389,6 +9392,7 @@ typedef struct {
     int pending;
     uint32_t params[11];  /* complete FontNewLibParams (0x2c), retained for callbacks */
     uint32_t allocSize;
+    uint16_t altCharCode; /* the fallback character for a missing glyph (sceFontSetAltCharacterCode) */
 } SrFontLib;
 typedef struct {
     int used;
@@ -9614,6 +9618,7 @@ static uint32_t h_FontNewLib(CpuState *s) {
         s_fontlibs[slot].allocFn = allocFn; s_fontlibs[slot].freeFn = freeFn;
         s_fontlibs[slot].userData = userData; s_fontlibs[slot].numFonts = numFonts;
         s_fontlibs[slot].openCount = 0;
+        s_fontlibs[slot].altCharCode = SR_FONT_DEFAULT_ALT_CHAR;
         memcpy(s_fontlibs[slot].params, paramsCopy, sizeof(paramsCopy));
         hle_unlock();
     }
@@ -9806,12 +9811,42 @@ uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr) {
     return 0u;
 }
 #endif
+/* The fallback character of the library that owns font record `f` (the default with none). */
+static int font_alt_char_for(const SrFont *f) {
+    SrFontLib L;
+    if (f && fontlib_snapshot(f->lib, &L)) return (int)L.altCharCode;
+    return (int)SR_FONT_DEFAULT_ALT_CHAR;
+}
+/* sceFontSetAltCharacterCode(lib, charCode): set the character a missing glyph falls back to.
+ * Measured on a PSP by pspautotests tests/font/altcharcode.expected (rev 2ed7c9c5): a live library
+ * returns 0 and stores the code as 16 bits (0 -> 0000, -1 -> ffff, 0xFFFF -> ffff, 0x10000 ->
+ * 0000), a NULL library returns 0x80460002; sceFontGetCharInfo for the missing character 0xFFFF
+ * then reports a bitmap height of 0 with fallback 0x0000 or 0xFFFF and 2 (the '_' glyph's) with
+ * 0x005F. The capture's DoneLib cell writes freed memory and answers 0, which is not modelled:
+ * a library handle that is not live stops the run by name. The fallback is kept host-side; the
+ * field the PSP's own library struct holds it in is not part of this runtime's library layout. */
+static uint32_t h_FontSetAltCharacterCode(CpuState *s) {
+    if (!A0) return SR_FONT_ERROR_INVALID_LIB;
+    int found = 0;
+    hle_lock();
+    for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++)
+        if (s_fontlibs[i].used == 1 && s_fontlibs[i].handle == A0) {
+            s_fontlibs[i].altCharCode = (uint16_t)A1;
+            found = 1;
+            break;
+        }
+    hle_unlock();
+    if (!found)
+        return hle_unmodelled_stop("sceFontSetAltCharacterCode",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    return 0;
+}
 uint32_t h_FontGetCharInfo(CpuState *s) {
     /* CharInfo is 0x3c bytes; the whole output span must be guest memory before any write. */
     uint32_t ci = A2; if (!ci || !sr_guest_span_writable(ci, 0x3cu)) return SR_FONT_ERROR_INVALID_ARG;
     uint32_t cc = A1 & 0xffff;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
-    if (p) { pgf_get_char_info(p, (int)cc, 0x5f, ci); font_release(f); return 0; }
+    if (p) { pgf_get_char_info(p, (int)cc, font_alt_char_for(f), ci); font_release(f); return 0; }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
 }
@@ -9822,7 +9857,7 @@ uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     if (!gi) return SR_FONT_ERROR_INVALID_ARG;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
     if (p) {
-        (void)pgf_draw_glyph(p, (int)cc, 0x5f, gi);
+        (void)pgf_draw_glyph(p, (int)cc, font_alt_char_for(f), gi);
         font_release(f); return 0;
     }
     font_release(f);
@@ -12295,7 +12330,10 @@ typedef struct UtilityDialog {
     unsigned kind;
     unsigned work_started : 1;
     unsigned work_done : 1;
+    unsigned aborted : 1;     /* sceUtilityMsgDialogAbort was accepted while visible */
 } UtilityDialog;
+/* The common-block result an aborted dialog finishes with (see utility_dialog_abort). */
+#define UTILITY_DIALOG_RESULT_ABORT 2u
 enum {  /* a dialog's kind is the slot type it claims */
     UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
     UTILITY_GAMEDATA = UTILITY_SLOT_GAMEDATA, UTILITY_GAMESHARING = UTILITY_SLOT_GAMESHARING
@@ -12323,7 +12361,7 @@ static void utility_dialogs_reset_locked(void) {
         d->generation++;
         d->status = 0;
         d->ticks = 0u;
-        d->work_started = d->work_done = 0u;
+        d->work_started = d->work_done = d->aborted = 0u;
     }
     s_utility_slot = UTILITY_SLOT_NONE;
 }
@@ -12341,7 +12379,7 @@ static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     d->generation++;
     d->status = 1;
     d->ticks = 0;
-    d->work_started = d->work_done = 0;
+    d->work_started = d->work_done = d->aborted = 0;
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -12358,7 +12396,11 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
-    if (d->status == 2 && !d->work_started) {
+    if (d->status == 2 && d->aborted) {
+        /* An aborted dialog finishes on the next Update (sceUtilityMsgDialogAbort). */
+        d->status = 3;
+        if (d->param) MEM_W32(d->param + 0x1c, UTILITY_DIALOG_RESULT_ABORT);
+    } else if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
         param = d->param;
         generation = d->generation;
@@ -12420,12 +12462,39 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     dialog_unlock();
     return 0;
 }
+/* sceUtilityMsgDialogAbort(void). Measured on a PSP by pspautotests
+ * tests/utility/msgdialog/abort.expected (rev 2ed7c9c5): before any InitStart it returns
+ * 0x80110005; during INIT 0x80110001; while the dialog is visible 0, and again 0 a second time,
+ * with GetStatus still 2; the next Update returns 0 and GetStatus then reads 3 (FINISHED); a third
+ * Abort, one during or after ShutdownStart, and one after the dialog is back to NONE all return
+ * 0x80110001. Here the slot keeps its last type after a shutdown, so "never started" is the slot
+ * held by no message dialog (WRONG_TYPE) and every other state but RUNNING is INVALID_STATUS.
+ * The result an aborted dialog writes to the common block is not in the capture: it is
+ * SCE_UTILITY_DIALOG_RESULT_ABORT (2) as PPSSPP Core/Dialog writes it (a behaviour reference, not
+ * a PSP measurement). An answer this model already wrote at the dialog's first Update (the default
+ * button, utility_dialog_update) stays; what buttonPressed holds after an abort is not measured. */
+static uint32_t utility_dialog_abort(UtilityDialog *d) {
+    dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (d->status != 2) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
+    d->aborted = 1;
+    dialog_unlock();
+    return 0;
+}
+static uint32_t h_MsgDialogAbort(CpuState *s);
 #define UTILITY_DIALOG_HANDLERS(prefix, slot) \
     static uint32_t prefix##Init(CpuState *s) { return utility_dialog_init(&(slot), A0); } \
     static uint32_t prefix##Update(CpuState *s) { (void)s; return utility_dialog_update(&(slot)); } \
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
+static uint32_t h_MsgDialogAbort(CpuState *s) { (void)s; return utility_dialog_abort(&s_msg_dialog); }
 /* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
 static uint32_t h_NetDialogInit(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
@@ -12753,6 +12822,7 @@ static void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
     sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
     sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
+    sr_hle_register(0x4928bd96, "sceUtilityMsgDialogAbort", h_MsgDialogAbort);
     sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
     sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
     sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
@@ -28052,6 +28122,7 @@ static void hle_register_launch_sweep_blocker_handlers(void) {
     sr_hle_register(0xd13bde95, "sceKernelCheckThreadStack", h_CheckThreadStack);
     sr_hle_register(0x27f6e642, "sceFontGetNumFontList", h_FontGetNumFontList);
     sr_hle_register(0xbc75d85b, "sceFontGetFontList", h_FontGetFontList);
+    sr_hle_register(0xee232411, "sceFontSetAltCharacterCode", h_FontSetAltCharacterCode);
 }
 
 /* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the

@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 14 |
-| `ppsspp-derived` | 104 | 90 |
+| `ppsspp-derived` | 105 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 289 | 200 |
+| `synthetic` | 290 | 200 |
 | `unverified` | 192 | 51 |
-| total | 649 | 355 |
+| total | 651 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -260,6 +260,7 @@ belongs to without the census's own grouping.
 | `0x472e3825` | `sceAtracSetMOutDataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x478fe6f5` | `scePowerGetBusClockFrequency` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
 | `0x47a0b729` | `sceKernelIsCpuIntrSuspended` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
+| `0x4928bd96` | `sceUtilityMsgDialogAbort` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x4a719fb2` | `sceKernelFreeTlspl` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x4a9e5e29` | `sceUmdWaitDriveStatCB` | umd | `synthetic` | conformance cells |
 | `0x4aa9ead6` | `__sceSasSetVoiceATRAC3` | audio | `unverified` | no recorded evidence |
@@ -663,6 +664,7 @@ belongs to without the census's own grouping.
 | `0xeca32a99` | `sceAtracIsSecondBufferNeeded` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xed1410e0` | `sceKernelDeleteFpl` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
 | `0xedba5844` | `sceKernelDeleteCallback` | kernel_thread | `synthetic` | HLE selftest dispatch |
+| `0xee232411` | `sceFontSetAltCharacterCode` | font | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_font_alt_char_contract` |
 | `0xeeda2e54` | `sceDisplayGetFrameBuf` | display | `hardware-measured` | PSP oracle PSP-VRAM-MIRROR-001 |
 | `0xef9e4c70` | `sceKernelDeleteEventFlag` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
 | `0xefc6f80f` | `sceUtilityGameSharingShutdownStart` | utility | `synthetic` | HLE selftest dispatch |

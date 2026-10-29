@@ -284,6 +284,22 @@ HANDLER_METADATA = {
         ],
         "limitation": "returns the measured 18 for a live library whether or not every index has a served font; a library handle that is not live and a NULL error pointer are not measured and stop the run by name",
     },
+    "h_FontSetAltCharacterCode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_alt_char_contract",
+            "PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the console's libfont on a PSP): initial 0x005F, codes stored as 16 bits, 0x80460002 for a NULL library, and the GetCharInfo fallback heights",
+        ],
+        "limitation": "the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name",
+    },
+    "h_MsgDialogAbort": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence",
+            "PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown",
+        ],
+        "limitation": "return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference, not a PSP measurement, and a button answer the model wrote at the first Update stays",
+    },
     "h_FontGetFontList": {
         "status": "partial",
         "evidence": [

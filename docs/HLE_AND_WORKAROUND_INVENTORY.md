@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **649** (dedicated **543**, fake_success **4**, controlled_unsupported **102**).
-Semantic handler census: **522** handlers across **25** API families, covering **549** handler-associated NID registrations.
+Registered NIDs: **651** (dedicated **545**, fake_success **4**, controlled_unsupported **102**).
+Semantic handler census: **524** handlers across **25** API families, covering **551** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 181 | 183 |
+| `partial` | 183 | 185 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 324 | 336 |
@@ -66,7 +66,7 @@ Semantic handler census: **522** handlers across **25** API families, covering *
 | `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 2 | 0 | 0 | 9 | 11 | 11 |
+| `sceFont` | 0 | 3 | 0 | 0 | 9 | 12 | 12 |
 | `sceGe` | 2 | 6 | 0 | 0 | 6 | 14 | 14 |
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
@@ -82,9 +82,9 @@ Semantic handler census: **522** handlers across **25** API families, covering *
 | `sceRtc` | 5 | 7 | 0 | 0 | 0 | 12 | 12 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
+| `sceUtility` | 0 | 1 | 0 | 0 | 29 | 30 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **181** | **1** | **2** | **324** | **522** | **549** |
+| **Total** | **14** | **183** | **1** | **2** | **324** | **524** | **551** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -243,6 +243,10 @@ Semantic handler census: **522** handlers across **25** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_font_list_contract
   - Evidence: PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library
   - Evidence: hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)
+- **`h_FontSetAltCharacterCode`** (`sceFont`): `sceFontSetAltCharacterCode` (0xee232411)
+  - Limitation: the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name
+  - Evidence: src/rt/hle_thread_selftest.c:test_font_alt_char_contract
+  - Evidence: PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the console's libfont on a PSP): initial 0x005F, codes stored as 16 bits, 0x80460002 for a NULL library, and the GetCharInfo fallback heights
 - **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
   - Limitation: models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
@@ -717,6 +721,10 @@ Semantic handler census: **522** handlers across **25** API families, covering *
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
   - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
+- **`h_MsgDialogAbort`** (`sceUtility`): `sceUtilityMsgDialogAbort` (0x4928bd96)
+  - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference, not a PSP measurement, and a button answer the model wrote at the first Update stays
+  - Evidence: src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence
+  - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
 
 #### Compatibility Handlers (Named Limitations)
 
