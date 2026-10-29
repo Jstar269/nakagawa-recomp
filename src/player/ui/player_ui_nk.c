@@ -117,6 +117,7 @@ struct PlayerUiNk {
     char pad_trigger[48];
     char pad_live[PLAYER_UI_CONTROLLER_LIVE_LINES][96];
     PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
+    unsigned press_screen;  /* the screen a pointer press can still finish on */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
     int pre_flow_game_count; /* titles in the library when the flow opened */
@@ -1102,14 +1103,37 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
    the frame that asked for it, so without this the first frame of a new screen
    would still focus the control that opened it, and a press on that frame would
    be lost. Leaving the flow gives the library back the focus it had. */
+/* The flow screen the app is on: its view, plus the sub-screen some views
+   step through (the wizard's step and copy, a finished build, a calibration
+   step, an update step). 0 off the flow views. */
+static unsigned player_ui_flow_screen(const PlayerApp *app) {
+    unsigned screen;
+    if (!player_ui_nk_flow_view(app->active_view)) return 0u;
+    screen = (unsigned)app->active_view * 64u + 1u;
+    switch (app->active_view) {
+        case VIEW_SETUP_WIZARD:
+            screen += (unsigned)app->wizard.step * 2u + (app->wizard.is_extracting ? 1u : 0u);
+            break;
+        case VIEW_BUILDING_PACKAGE:
+            if (app->build_session.is_complete && !app->build_session.is_failed) screen += 1u;
+            break;
+        case VIEW_CONTROLLER_SETTINGS:
+            screen += (unsigned)(input_settings_is_calibrating(&app->input_settings)
+                                     ? input_settings_get_calibration_stage(&app->input_settings)
+                                     : CALIBRATION_STAGE_INACTIVE);
+            break;
+        case VIEW_UPDATES: screen += (unsigned)app->update.phase; break;
+        default: break;
+    }
+    return screen;
+}
+
 static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
-    unsigned screen = 0u;
+    unsigned screen = player_ui_flow_screen(app);
     NkUiId focus = 0u;
     if (player_ui_nk_flow_view(app->active_view)) {
-        screen = (unsigned)app->active_view * 64u + 1u;
         switch (app->active_view) {
             case VIEW_SETUP_WIZARD:
-                screen += (unsigned)app->wizard.step * 2u + (app->wizard.is_extracting ? 1u : 0u);
                 focus = app->wizard.step == WIZARD_STEP_INSPECT_VERIFY &&
                         app->wizard.is_extracting
                     ? PLAYER_UI_ID_WIZARD_CANCEL : PLAYER_UI_ID_WIZARD_PRIMARY;
@@ -1119,7 +1143,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    South cannot stop a build; a move reaches it. A finished
                    build focuses BACK TO LIBRARY. */
                 if (app->build_session.is_complete && !app->build_session.is_failed) {
-                    screen += 1u;
                     focus = PLAYER_UI_ID_BUILD_ACTION;
                 }
                 break;
@@ -1153,7 +1176,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     input_settings_is_calibrating(&app->input_settings)
                         ? input_settings_get_calibration_stage(&app->input_settings)
                         : CALIBRATION_STAGE_INACTIVE;
-                screen += (unsigned)stage;
                 focus = stage == CALIBRATION_STAGE_REST ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL
                     : stage != CALIBRATION_STAGE_INACTIVE
                         ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY
@@ -1169,7 +1191,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    next. CANCEL is the download's only control; a finished check
                    with nothing newer, a failure or a release without a Windows ZIP
                    focuses CHECK FOR UPDATES. */
-                screen += (unsigned)app->update.phase;
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
                         focus = app->update.check.newest.has_zip
@@ -1691,6 +1712,18 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
        audio is left alone. */
     player_ui_sounds_set_enabled(player->sounds,
                                  app->settings.ui_sounds && !app->is_game_running);
+    {
+        /* The owner's first run: one click on COPY FILES AND CONTINUE swapped
+           in the copy screen, whose CANCEL sits where the button was, and the
+           rest of the click cancelled the copy. A click that began on another
+           screen activates nothing on this one. */
+        unsigned screen = player_ui_flow_screen(app) * 16u +
+                          (unsigned)nk_ui_router_current(player->router);
+        if (screen != player->press_screen) {
+            nk_ui_cancel_press(player->ui);
+            player->press_screen = screen;
+        }
+    }
     nk_ui_begin(player->ui, now_s);
     {
         NkUiId restore = nk_ui_router_take_focus_restore(player->router);

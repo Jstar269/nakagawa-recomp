@@ -196,6 +196,10 @@ typedef struct {
     /* Ask GitHub for a newer version once each time the player starts. Off until
        the user turns it on (AGENTS.md section 5; the button needs no switch). */
     bool check_updates_at_start;
+    /* The folder the last file picker picked from (Add disc, PSP fonts), where
+       the next one opens. Empty on a first run: the pickers then open at the
+       Desktop (player_app_picker_start_folder). */
+    char picker_folder[MAX_PATH_LEN];
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -500,6 +504,10 @@ typedef struct PlayerApp {
     bool launch_headless;
     uint32_t headless_accept_presented_frames;
     uint32_t headless_launch_timeout_ms;
+    /* Desktop bounds (x, y, w, h) of the display that holds the launcher window,
+       refreshed by main.c before each launch so the game window opens there.
+       A width of 0 means unknown (no window yet): the game uses the primary display. */
+    int launcher_display_bounds[4];
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -814,6 +822,19 @@ void player_app_settings_init_default(PlayerSettings *settings);
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path);
 NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
 
+/* The file pickers (Add disc, PSP fonts) open in the folder the user last
+ * picked from (settings.picker_folder). With none kept, or when it is gone,
+ * they open at the user's Desktop, so a first run, or one after a Factory
+ * reset, does not show the folder Windows last remembered for this program.
+ * False when there is neither; the picker then opens where the system picks. */
+bool player_app_picker_start_folder(const PlayerApp *app, char *out, size_t out_size);
+/* Keeps the folder of a picked file (or a picked folder) for the next picker
+ * and saves the settings. */
+void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool is_folder);
+/* The folder holding `path` (either separator), with a root kept whole:
+ * "<drive>:\x.iso" gives "<drive>:\", "/x.iso" gives "/". False for a bare name. */
+bool player_path_parent_folder(const char *path, char *out, size_t out_size);
+
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
 void player_app_set_present_scaling(PlayerApp *app, int scaling);
@@ -969,6 +990,7 @@ typedef struct {
     char boot_event_file_path[MAX_PATH_LEN];
     char input_profile_path[NK_MAX_PATH];
     char ui_root[MAX_PATH_LEN];
+    int launcher_display_bounds[4];
     /* Results, written by player_launch_work_run. */
     PlayerLaunchStep failed_step;
     NkResult result;

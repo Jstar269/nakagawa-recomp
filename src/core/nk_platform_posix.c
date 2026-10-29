@@ -436,6 +436,19 @@ bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len) {
     return false;
 }
 
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    const char *home = getenv("HOME");
+    if (!home || !*home) return false;
+    int written = snprintf(out_path, max_len, "%s/Desktop", home);
+    if (written > 0 && (size_t)written < max_len && nk_platform_dir_exists(out_path)) return true;
+    written = snprintf(out_path, max_len, "%s", home);
+    if (written > 0 && (size_t)written < max_len && nk_platform_dir_exists(out_path)) return true;
+    out_path[0] = '\0';
+    return false;
+}
+
 bool nk_platform_spawn_process(
     const char *executable_path,
     const char * const *argv,
