@@ -212,6 +212,10 @@ void package_builder_describe_cli_not_found(
 /* Locate a host build tool ("gcc", "mingw32-make") on PATH only: the spawned
  * build child sees exactly this PATH, so no hidden fallback location counts. */
 bool package_builder_find_tool(const char *name, char *out_path, size_t out_size);
+/* The per-user download root counts only on Windows, the one platform with a
+ * pinned prerequisite download (<root>/prerequisites/msys64/ucrt64/bin, which the
+ * build child gets on PATH). Elsewhere the build uses the system's tools, so the
+ * lookup is PATH only. */
 bool package_builder_find_tool_in_root(const char *name, const char *data_root,
                                        char *out_path, size_t out_size);
 
@@ -359,10 +363,17 @@ bool package_builder_clear_shared_library_cache(const char *data_root,
                                                 char *error_code, size_t error_code_size,
                                                 char *error_message, size_t error_message_size);
 
-/* Pure: report the first missing build tool (python, gcc, mingw32-make).
- * Returns false and clears the outputs when all three are present. On success
- * out_tool holds the tool name and out_message a BUILD_TOOLCHAIN_MISSING card
- * body that names it and how to install it. */
+/* The make the package build runs: MSYS2's mingw32-make on Windows, the system
+ * make elsewhere. tools/title_codegen_plan.py defaults to the same name, so the
+ * player's preflight looks for the tool the build will actually call. */
+const char *package_builder_make_tool_name(void);
+
+/* Pure: report the first missing build tool (python, gcc, then the make
+ * package_builder_make_tool_name names). Returns false and clears the outputs
+ * when all three are present. On success out_tool holds the tool name and
+ * out_message a BUILD_TOOLCHAIN_MISSING card body that names it and how to
+ * install it: on Windows through the pinned prerequisite consent card, elsewhere
+ * from the system's own packages, since no other platform has a download. */
 bool package_builder_toolchain_missing(
     bool have_python, bool have_gcc, bool have_make,
     char *out_tool, size_t out_tool_size,

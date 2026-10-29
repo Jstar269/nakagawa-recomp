@@ -1341,7 +1341,13 @@ class NativePlayerUiTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 4, completed.stderr)
         self.assertIn("LAUNCHER_UNAVAILABLE", completed.stderr)
-        self.assertIn("Extract the ZIP again", completed.stderr)
+        if sys.platform == "win32":
+            self.assertIn("Extract the ZIP again", completed.stderr)
+        else:
+            # No release ZIP or nakagawa_player.exe off Windows (#306).
+            self.assertNotIn("ZIP", completed.stderr)
+            self.assertIn("tools/stage_install.py", completed.stderr)
+        self.assertNotIn("compiled without", completed.stderr)
         self.assertIn("assets\\fonts\\ui", completed.stderr)
         self.assertNotIn(marker, completed.stdout)
         self.assertNotIn("frame=", completed.stdout, "nothing is drawn after the message")
