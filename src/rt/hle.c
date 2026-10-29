@@ -28221,6 +28221,10 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     const int rt_phase_saved = sr_rt_phase;
     sr_rt_phase = SR_RT_PHASE_SYSCALL;
     sr_rt_nid = nid;
+    const int import_active_saved = sr_import_active;
+    const uint32_t import_nid_saved = sr_import_nid;
+    sr_import_active = 1;
+    sr_import_nid = nid;
     /* One store per import, and only while a route is waiting on one: this is what lets a
      * route gate on a guest-visible event instead of on a screen signature. */
     if (s_route_watch_nid) route_note_nid(nid);
@@ -28240,6 +28244,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
         sr_rt_phase = rt_phase_saved;
+        sr_import_active = import_active_saved;
+        sr_import_nid = import_nid_saved;
         return ret;
     }
     HleEntry *e = hle_find(nid);
@@ -28310,6 +28316,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
     sr_rt_phase = rt_phase_saved;
+    sr_import_active = import_active_saved;
+    sr_import_nid = import_nid_saved;
     return ret;
 }
 

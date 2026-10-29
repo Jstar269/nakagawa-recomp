@@ -806,8 +806,8 @@ can actually vouch for each other. The CLI verdicts map to exit codes
   on either side (the ring slides, so a divergence inside the dropped window
   is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
-  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5,
-  the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
+  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5
+  and 6, the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
   retained events with a different terminal outcome or refusal block is a
   divergence, not a MATCH. A terminal difference is never an incomparability: a
   `running` terminal is a mid-run cut rather than a ring overflow, so over a
@@ -820,13 +820,17 @@ can actually vouch for each other. The CLI verdicts map to exit codes
 MATCH is a statement about the capture, never about the whole program. It
 certifies exactly these things: that the two runs agree on every event retained
 for the enabled classes over a complete window that dropped nothing, that both
-reached the same terminal outcome, and, for schema 5, that both recorded the
-same refusal block. It does not certify behaviour outside
+reached the same terminal outcome, and, for schema 5 and 6, that both recorded
+the same refusal block. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
 recorder was not looking, so the CLI prints the enabled class list that bounds
 the verdict next to the two identity lines.
+
+A schema 6 `threads` block is the thread state at the cut. It is validated and
+never compared. The CLI prints each side's waiting threads after every verdict,
+INCOMPARABLE included, so a stall comparison shows what each side waits on.
 
 A bundle that records any dropped event can never produce a MATCH against any
 other bundle; re-capture with a larger limit when a comparison is the goal.

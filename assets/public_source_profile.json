@@ -68,7 +68,6 @@
     "tools/test_pgd_malformed.py"
   ],
   "exclude_rationale": {
-    "assets/titles/hst-ucus98701.json": "Title-specific manifest naming the retail product, disc identity, guest module addresses and private-route filesystem locations. Retain synthetic and generic title schemas; do not publish the HST configuration in the public candidate.",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md": "Acceptance evidence produced by running the retail title with private inputs and private save baselines. Game-run derived evidence is excluded from public scope.",
     "docs/DOCUMENTATION_AUDIT.md": "Internal documentation and publication audit record containing private-tree status, historical findings and legal-review work-product references. Recreate a public-facing documentation guide from the generic docs instead.",
     "docs/DUAL_REPO_SYNC.md": "Describes private repository topology and maintainer synchronisation procedures. Private repository relationships are excluded from public scope.",
@@ -97,7 +96,6 @@
     "docs/TEST_SHAPE_CLASSIFICATION.md": "Internal source-shape triage report tied to the historical generated test matrix; excluded from the public documentation surface.",
     "docs/TEST_SKIPS.md": "Private-input/key skip inventory naming title-specific save and key material; public security tests use synthetic fixtures and report unavailable private routes separately.",
     "docs/ROADMAP.md": "Historical strategic roadmap containing HST-specific product/topology decisions and stale references to excluded work products; not required for the public build.",
-    "docs/provenance/INDEPENDENCE_BACKLOG.md": "Compact public index of provenance questions; detailed private measurements remain outside the candidate.",
     "docs/VFPU_ORACLE_BASELINE_2026-08-05.md": "Dated VFPU oracle investigation and hardware-result narrative; retain the independently checked VFPU data provenance, not this historical run record.",
     "docs/issue-139-face-resource-semantics.md": "Title-specific retail-image investigation with private route and address evidence; excluded pending a title-neutral rewrite.",
     "docs/issue-51-entry-semantics.md": "Title-specific continuation investigation containing retail-image address/role evidence and private regeneration claims; excluded from the generic public source.",
