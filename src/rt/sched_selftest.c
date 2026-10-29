@@ -868,38 +868,100 @@ static void test_blocked_excluded_until_wake(void) {
     expect(pick_next() == waiter, "sched_wake readies the blocked thread and it wins on priority");
 }
 
-/* #303 device transfer window: the owner, parked on the transfer object, stays
- * parked through exactly one decision that hands the CPU to another thread and is
- * released at the next one; with no other runnable thread it is released at once. */
-static void test_transfer_window_closes_after_one_other_dispatch(void) {
+/* #303 device transfer channel (PSP-DMAC-002): the window lasts its guest-time
+ * duration, not a scheduling decision. The owner, parked on the channel object, stays
+ * parked while other threads run and the clock is short of the deadline, and is woken
+ * at the first decision at or after it; with nobody else runnable the deadline is a wake
+ * source of the idle scheduler. */
+static void test_transfer_window_lasts_its_duration(void) {
     reset_sched();
+    s_vtime_us = 1000u;
     int owner = mk(0x200, TH_RUNNING, 16);
     int other = mk(0x201, TH_READY, 32);
     s_cur = owner;
-    expect(sched_transfer_begin(0xD0Au), "the running thread opens a transfer window");
-    expect(!sched_transfer_begin(0xD0Bu), "only one transfer window is open at a time");
+    expect(sched_transfer_begin(0xD0Au, 500u), "the running thread opens a 500 us transfer window");
+    expect(!sched_transfer_begin(0xD0Bu, 1u), "only one transfer window is open at a time");
     s_tcb[owner].state = TH_WAIT_OBJ;   /* as sched_block_on leaves the owner */
     s_tcb[owner].wait_obj = 0xD0Au;
     s_cur = -1;
     uint32_t who = 0;
     expect(pick_next() == other, "a weaker ready thread gets the CPU while the transfer is pending");
+    s_vtime_us = 1499u;
+    expect(pick_next() == other && s_tcb[owner].state == TH_WAIT_OBJ,
+           "one microsecond short of the deadline the owner is still blocked, however many decisions ran");
     expect(sched_transfer_pending(0xD0Au, &who) && who == 0x200u,
-           "the window stays open through that dispatch and names its owner");
-    expect(s_tcb[owner].state == TH_WAIT_OBJ, "the owner stays blocked during that dispatch");
-    expect(pick_next() == owner, "the next decision closes the window; the woken owner wins on priority");
-    expect(!sched_transfer_pending(0xD0Au, NULL), "the closed window is no longer pending");
+           "the window stays open and names its owner");
+    s_vtime_us = 1500u;
+    expect(pick_next() == owner, "at the deadline the window ends; the woken owner wins on priority");
+    expect(!sched_transfer_pending(0xD0Au, NULL), "the ended window is no longer pending");
 
     reset_sched();
+    s_vtime_us = 0u;
     int lone = mk(0x210, TH_RUNNING, 32);
     int parked = mk(0x211, TH_WAIT_OBJ, 16);
     s_tcb[parked].wait_obj = 0xABCu;
     s_cur = lone;
-    expect(sched_transfer_begin(0xD0Au), "a lone thread opens a transfer window");
+    expect(sched_transfer_begin(0xD0Au, 700u), "a lone thread opens a transfer window");
     s_tcb[lone].state = TH_WAIT_OBJ;
     s_tcb[lone].wait_obj = 0xD0Au;
     s_cur = -1;
-    expect(pick_next() == lone, "with no other runnable thread the window closes at once");
-    expect(s_tcb[parked].state == TH_WAIT_OBJ, "closing wakes only the transfer object's waiters");
+    expect(pick_next() == -1, "with nobody else runnable the window does not end before its deadline");
+    SchedIdleState idle = sched_classify_idle();
+    expect(idle.soonest == 700u && !idle.unwakeable,
+           "the open window's deadline is the idle scheduler's next wake");
+    s_vtime_us = 700u;
+    expect(pick_next() == lone, "at the deadline the lone owner is woken");
+    expect(s_tcb[parked].state == TH_WAIT_OBJ, "ending the window wakes only its owner");
+}
+
+/* #303 (PSP-DMAC-002 b3): callers queued behind a pending transfer get the channel in
+ * arrival order, whatever their priorities. At the deadline the oldest live waiter is
+ * woken holding the channel reserved; the others stay blocked, and a reservation keeps
+ * the channel pending until its holder begins. */
+static void test_transfer_queue_is_arrival_order(void) {
+    reset_sched();
+    s_vtime_us = 0u;
+    int owner = mk(0x200, TH_RUNNING, 16);
+    int first = mk(0x201, TH_RUNNING, 28);   /* queued first, weaker */
+    int second = mk(0x202, TH_RUNNING, 24);  /* queued second, stronger */
+    int gone = mk(0x203, TH_RUNNING, 20);    /* queued before both, then terminated */
+    s_cur = owner;
+    expect(sched_transfer_begin(0xD0Au, 100u), "the owner opens the window");
+    s_tcb[owner].state = TH_WAIT_OBJ;
+    s_tcb[owner].wait_obj = 0xD0Au;
+    const int order[3] = {gone, first, second};
+    for (int k = 0; k < 3; k++) {
+        s_cur = order[k];
+        expect(sched_transfer_enqueue(0xD0Au), "a blocking caller joins the channel queue");
+        expect(!sched_transfer_granted(0xD0Au), "a queued caller does not hold the channel");
+        s_tcb[order[k]].state = TH_WAIT_OBJ;
+        s_tcb[order[k]].wait_obj = 0xD0Au;
+    }
+    s_tcb[gone].state = TH_DORMANT;          /* terminated while it waited */
+    s_cur = -1;
+    s_vtime_us = 100u;
+    expect(pick_next() == owner, "at the deadline the owner is woken");
+    uint32_t who = 0;
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x201u,
+           "the channel passes to the oldest live waiter, not the strongest");
+    expect(s_tcb[first].state == TH_READY && s_tcb[second].state == TH_WAIT_OBJ,
+           "only the waiter that now holds the channel is woken");
+    s_tcb[owner].state = TH_DORMANT;
+    expect(pick_next() == first, "the woken holder runs");
+    s_cur = first;
+    expect(sched_transfer_granted(0xD0Au), "the holder sees the channel reserved for it");
+    s_cur = second;
+    expect(!sched_transfer_begin(0xD0Au, 1u), "nobody else can begin while it is reserved");
+    s_cur = first;
+    expect(sched_transfer_begin(0xD0Au, 50u), "the holder begins its own transfer");
+    s_tcb[first].state = TH_WAIT_OBJ;
+    s_tcb[first].wait_obj = 0xD0Au;
+    s_cur = -1;
+    s_vtime_us = 150u;
+    expect(pick_next() == second && s_tcb[first].state == TH_READY,
+           "its window ends after its own duration and the next waiter is woken too");
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x202u,
+           "the next queued waiter now holds the channel");
 }
 
 static void test_dormant_excluded(void) {
@@ -5181,7 +5243,8 @@ int main(int argc, char **argv) {
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();
-    test_transfer_window_closes_after_one_other_dispatch();
+    test_transfer_window_lasts_its_duration();
+    test_transfer_queue_is_arrival_order();
     test_dormant_excluded();
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();

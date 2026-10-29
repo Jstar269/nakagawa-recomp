@@ -864,6 +864,46 @@ One console is one data point; see §11. Nothing here closes issue #70
     happens in u in both triangles and in v only in the first triangle (TL TR BL); the second triangle's rows are
     exact. This rule reproduces every pixel of all 48 draws.
 
+- **PSP-3000 single-case runs of the `dma-timing` probe (2026-10-29)**: firmware 6.6.1, PSPLink 3.2.1,
+  operator-declared model PSP-3000, case 118 in `fixtures/psp_oracle/probe_dmac_timing.c`. Three launches, each
+  on its own boot after a PSPLink soft reset and each after the `transport-write` preflight (PSP-TRANSPORT-001 is
+  not re-cited): `0e40e7d3` (boot 61, 151 records), `281a21a4` (boot 62, 186 records) and `1310e632` (boot 63,
+  202 records). Every envelope is acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source
+  commit binding `MATCH` on a clean committed tree, a strict golden sequence and the done record, all PASS. An
+  earlier launch of `e65ae3b1` (boot 60) recorded the same cells but was not acceptance-eligible (worktree HEAD
+  past the declared commit) and is not cited. The raw envelopes and host0 logs stay in the private campaign
+  directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29) |
+  | --- | --- | --- | --- |
+  | `PSP-DMAC-002` | `t-*`, `t2-*`, `a-*`, `b1-try-dest`, `b2-*`, `b3-*`, `b5-*`, `c1-*`, `c2-*`, `c3-*`, `c4-*` | `b4-*` (its 16-byte poll is below the bypass size, so it never saw the channel busy); single-call timings (they include the probe's cache maintenance) | MEASURED (`dma-timing`) |
+
+  What the cells establish, for these exact spans only (issue #303). Spans are three probe-owned partition-2
+  blocks in main RAM and the two 1 MiB halves of VRAM; every byte of every destination, and 64 bytes after it,
+  was checked through the uncached mirror.
+  - *Duration.* A transfer's mean time per call over 16 back-to-back calls, in microseconds, with source and
+    destination aligned alike: main RAM to main RAM 54.9 (0x200 bytes), 89.7 (0x1000), 583.0 (0x10000) and
+    8705.9 (0x100000); main RAM to VRAM 53.7, 76.0, 348.1, 4934.0; VRAM to main RAM 54.4, 67.9, 266.8, 3614.6;
+    VRAM to VRAM 52.6, 67.0, 268.4, 4477.3 (twelve sizes from 0x200 to 0x100000 per pair; spread between runs
+    under 2 % except single outliers). Try and the blocking call take the same time when the channel is free.
+  - *Relative alignment.* Main RAM to main RAM, 0x10000 bytes: a source and destination that differ modulo 16 by
+    8 cost nothing extra, by 4 or 12 add 0.003895 us per byte, by 2 add 0.015319 us and by an odd amount add
+    0.038116 us; the same phase at a destination that is not 16-byte aligned measured 3 to 6 % slower.
+  - *Bypass.* With another transfer pending, a Try of 0x10 to 0x10f bytes whose source and destination share
+    their phase modulo 16 returned 0 with a full copy and a blocking call returned without waiting (0x10..0x100
+    in steps, 0x101, 0x104, 0x108, 0x109, 0x10c, 0x10f); 0x110 bytes and larger were refused. A 0x108-byte Try
+    across a phase difference was refused.
+  - *A refused Try.* With source and destination in the same phase, a refused Try still copied the bytes up to
+    the first 16-byte destination boundary and those after the last whole 16-byte block, and nothing else (for
+    example 12 tail bytes of a 0x1fc-byte request, 12 head and 4 tail bytes of a 0x200-byte request at offset 4);
+    across a phase difference it changed nothing.
+  - *Argument checks.* While another transfer was pending, a NULL destination returned `0x80000103` and a zero
+    size `0x80000104` for both APIs, at once (2 to 5 us), the blocking call without waiting.
+  - *Queue.* Two blocking callers queued behind a pending 1 MiB transfer were served in arrival order in 16 of
+    16 trials, both when the first to arrive was the weaker (priorities 0x1c then 0x18) and the stronger.
+  - *Busy window.* A weaker thread polling a 0x10000-byte Try saw the channel busy until the first call returned
+    (within -142 to +31 us of its return; 0x10000 to 0x100000 bytes).
+
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
 
@@ -2624,6 +2664,7 @@ not expected PSP values.
 | `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
+| `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 

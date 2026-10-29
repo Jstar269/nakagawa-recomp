@@ -21480,8 +21480,8 @@ static void test_dmac_semantics(void) {
  *
  * The production scheduler loop (sched_run) runs both guest threads, created
  * and started through the production ThreadMan NIDs, so every wait here is a
- * real scheduler block and wake. The transfer's guest-time duration is
- * unmeasured, so only the measured ordering is asserted. */
+ * real scheduler block and wake. The transfer's measured duration is asserted by
+ * the PSP-DMAC-002 channel tests below. */
 enum {
     DMAC_CC_MAIN_ENTRY = 0x08a30000u,
     DMAC_CC_FIRST_ENTRY = 0x08a30040u,
@@ -21594,7 +21594,7 @@ static void dmac_cc_run(uint32_t first_nid, uint32_t second_nid, int second_bloc
         snprintf(msg, sizeof msg, "PSP %s: BUSY is returned while the first transfer is pending",
                  label);
         expect(!s_dmac_cc_first_done_at_second, msg);
-        snprintf(msg, sizeof msg, "runtime %s: a BUSY Try copies nothing (unmeasured on PSP)",
+        snprintf(msg, sizeof msg, "PSP-DMAC-002 b1 %s: a BUSY Try of whole 16-byte blocks copies nothing",
                  label);
         expect(dmac_span_is(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u), msg);
     }
@@ -21611,6 +21611,226 @@ static void test_dmac_active_transfer_across_threads(void) {
     dmac_cc_run(NID_SCE_DMAC_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-memcpy-try");
     dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-try-try");
     dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_MEMCPY, 1, "concurrent-try-memcpy");
+}
+
+/* ---- sceDmac channel model from the PSP-3000 dma-timing probe (#303) ---------
+ *
+ * PSP-DMAC-002 (three acceptance-eligible runs, boots 61-63): with a priority-0x10
+ * thread blocked in a channel transfer, the priority-0x20 main thread finds that
+ *   - a body of at most 0x100 bytes whose source and destination share their address
+ *     modulo 16 bypasses the channel: Try returns 0 with a full copy and a blocking call
+ *     returns 0 without waiting (aligned 0x10..0x10f; 0x110 refused);
+ *   - a refused Try leaves its head and tail bytes copied and nothing else, and nothing
+ *     at all when source and destination differ modulo 16;
+ *   - two blocking callers queued behind the transfer are served in arrival order, the
+ *     weaker one first when it arrived first;
+ *   - a transfer keeps its caller blocked for its measured duration.
+ * Every thread is created and started through the production ThreadMan NIDs and runs
+ * under sched_run, so every wait is a real scheduler block and wake. */
+enum {
+    DCH_MAIN_ENTRY = 0x08a31000u,
+    DCH_T0_ENTRY = 0x08a31040u,
+    DCH_T1_ENTRY = 0x08a31080u,
+    DCH_T2_ENTRY = 0x08a310c0u,
+    DCH_NAME = 0x08a31100u,
+    DCH_SRC = 0x08700000u,
+    DCH_DST0 = 0x08740000u,
+    DCH_DST1 = 0x08780000u,
+    DCH_DST2 = 0x087c0000u,
+    DCH_REGION = 0x00030000u,
+};
+
+typedef struct DchJob {
+    uint32_t nid, dst, src, n, uid, ret;
+    int entered, returned, order;
+    uint64_t enter_us, exit_us, deadline_us;
+} DchJob;
+
+static DchJob s_dch[3];
+static int s_dch_order;
+static int s_dch_done;
+static void (*s_dch_scenario)(void);
+
+static uint32_t dch_call(uint32_t nid, uint32_t dst, uint32_t src, uint32_t n) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = dst;
+    c.r[5] = src;
+    c.r[6] = n;
+    return sr_syscall(&c, nid);
+}
+
+static void dch_run(int k) {
+    DchJob *j = &s_dch[k];
+    j->entered = 1;
+    j->enter_us = s_vtime_us;
+    j->ret = dch_call(j->nid, j->dst, j->src, j->n);
+    j->exit_us = s_vtime_us;
+    j->returned = 1;
+    j->order = ++s_dch_order;
+}
+
+static void dch_t0_fn(CpuState *cpu) { dch_run(0); cpu->r[2] = 0u; }
+static void dch_t1_fn(CpuState *cpu) { dch_run(1); cpu->r[2] = 0u; }
+static void dch_t2_fn(CpuState *cpu) { dch_run(2); cpu->r[2] = 0u; }
+
+static int dch_pending(int k) { return s_dch[k].entered && !s_dch[k].returned; }
+
+static void dch_start(int k, uint32_t priority) {
+    static const uint32_t entries[3] = {DCH_T0_ENTRY, DCH_T1_ENTRY, DCH_T2_ENTRY};
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = DCH_NAME;
+    c.r[5] = entries[k];
+    c.r[6] = priority;
+    c.r[7] = 0x4000u;
+    s_dch[k].uid = sr_syscall(&c, NID_SCE_KERNEL_CREATE_THREAD);
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dch[k].uid;
+    (void)sr_syscall(&c, NID_SCE_KERNEL_START_THREAD);
+    /* A stronger thread runs at once; one blocked in a transfer records the window. */
+    s_dch[k].deadline_us = s_xfer_deadline;
+}
+
+static void dch_join(int k) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dch[k].uid;
+    (void)sr_syscall(&c, hle_selftest_nid("sceKernelWaitThreadEnd"));
+}
+
+static void dch_main_fn(CpuState *cpu) {
+    title_hle_write_cstr(DCH_NAME, "dmac-chan");
+    s_dch_scenario();
+    for (int k = 0; k < 3; k++)
+        if (s_dch[k].uid) dch_join(k);
+    s_dch_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dch_setup(void (*scenario)(void)) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(DCH_MAIN_ENTRY, dch_main_fn);
+    sr_test_register_guest_fn(DCH_T0_ENTRY, dch_t0_fn);
+    sr_test_register_guest_fn(DCH_T1_ENTRY, dch_t1_fn);
+    sr_test_register_guest_fn(DCH_T2_ENTRY, dch_t2_fn);
+    memset(s_dch, 0, sizeof s_dch);
+    s_dch_order = 0;
+    s_dch_done = 0;
+    s_dch_scenario = scenario;
+    dmac_fill(DCH_SRC, DCH_REGION);
+    dmac_clear(DCH_DST0, DCH_REGION, 0u);
+    dmac_clear(DCH_DST1, DCH_REGION, 0u);
+    dmac_clear(DCH_DST2, DCH_REGION, 0u);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(DCH_MAIN_ENTRY, 0u, 0u);
+    expect(s_dch_done && s_xfer_obj == 0u,
+           "dmac channel: every guest thread ran to completion and the channel is idle");
+    sr_test_guest_fn_reset();
+}
+
+static void dch_job(int k, uint32_t nid, uint32_t dst, uint32_t src, uint32_t n) {
+    s_dch[k].nid = nid;
+    s_dch[k].dst = dst;
+    s_dch[k].src = src;
+    s_dch[k].n = n;
+}
+
+/* Main-thread results the scenarios record for the checks after sched_run. */
+static uint32_t s_dch_ret[4];
+static int s_dch_pending_after[4];
+
+static void dch_scenario_bypass(void) {
+    dch_job(0, NID_SCE_DMAC_MEMCPY, DCH_DST0, DCH_SRC, 0x10000u);
+    dch_start(0, 0x10u);
+    s_dch_pending_after[0] = dch_pending(0);
+    s_dch_ret[0] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1, DCH_SRC, 0x100u);
+    s_dch_pending_after[1] = dch_pending(0);
+    s_dch_ret[1] = dch_call(NID_SCE_DMAC_MEMCPY, DCH_DST2, DCH_SRC, 0x10fu);
+    s_dch_pending_after[2] = dch_pending(0);
+    s_dch_ret[2] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1 + 0x1000u, DCH_SRC, 0x110u);
+    s_dch_pending_after[3] = dch_pending(0);
+}
+
+static void test_dmac_small_body_bypasses_the_channel(void) {
+    memset(s_dch_ret, 0xff, sizeof s_dch_ret);
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_bypass);
+    expect(s_dch_pending_after[0], "PSP-DMAC-002: the first transfer is pending when main calls");
+    expect(s_dch_ret[0] == 0u && dmac_span_matches(DCH_DST1, 0x100u, 0u) &&
+               MEM_R8(DCH_DST1 + 0x100u) == 0u && s_dch_pending_after[1],
+           "PSP-DMAC-002 c1: a 0x100-byte aligned Try during a pending transfer returns 0 with a full copy");
+    expect(s_dch_ret[1] == 0u && dmac_span_matches(DCH_DST2, 0x10fu, 0u) &&
+               MEM_R8(DCH_DST2 + 0x10fu) == 0u && s_dch_pending_after[2],
+           "PSP-DMAC-002 c2/c4: a 0x10f-byte aligned blocking call returns 0 without waiting");
+    expect(s_dch_ret[2] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST1 + 0x1000u, 0x120u, 0u),
+           "PSP-DMAC-002 c3: a 0x110-byte aligned Try is refused with BUSY and copies nothing");
+    expect(s_dch[0].ret == 0u && dmac_span_matches(DCH_DST0, 0x10000u, 0u),
+           "the first transfer returns 0 after its full copy");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 583u,
+           "PSP-DMAC-002: a 0x10000-byte main-RAM transfer keeps the channel for 583 us (583.04 measured)");
+    expect(s_dch[0].exit_us >= s_dch[0].deadline_us,
+           "the transfer's caller returns no earlier than its window's end");
+}
+
+static void dch_scenario_busy_bytes(void) {
+    dch_job(0, NID_SCE_DMAC_MEMCPY, 0x04000000u, 0x04100000u, 0x100000u);
+    dch_start(0, 0x10u);
+    s_dch_pending_after[0] = dch_pending(0);
+    s_dch_ret[0] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1 + 4u, DCH_SRC + 4u, 0x1fcu);
+    s_dch_ret[1] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST2, DCH_SRC, 0x1fcu);
+    s_dch_ret[2] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST2 + 0x1000u, DCH_SRC + 1u, 0x200u);
+    s_dch_pending_after[1] = dch_pending(0);
+}
+
+static void test_dmac_refused_try_copies_head_and_tail(void) {
+    memset(s_dch_ret, 0xff, sizeof s_dch_ret);
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_busy_bytes);
+    expect(s_dch_pending_after[0] && s_dch_pending_after[1],
+           "the 1 MiB VRAM transfer is pending throughout main's calls");
+    expect(s_dch_ret[0] == SCE_DMAC_BUSY && dmac_span_matches(DCH_DST1 + 4u, 12u, 4u) &&
+               dmac_span_is(DCH_DST1 + 16u, 0x200u, 0u) && dmac_span_is(DCH_DST1, 4u, 0u),
+           "PSP-DMAC-002 c4-0001fc-04-04: a refused Try copies its 12 head bytes and nothing else");
+    expect(s_dch_ret[1] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST2, 0x1f0u, 0u) &&
+               dmac_span_matches(DCH_DST2 + 0x1f0u, 12u, 0x1f0u) &&
+               MEM_R8(DCH_DST2 + 0x1fcu) == 0u,
+           "PSP-DMAC-002 c4-0001fc-00-00: a refused Try copies its 12 tail bytes and nothing else");
+    expect(s_dch_ret[2] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST2 + 0x1000u, 0x210u, 0u),
+           "PSP-DMAC-002 c4-000200-01-00: a refused Try across a phase difference changes nothing");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 4477u,
+           "PSP-DMAC-002: a 1 MiB VRAM-to-VRAM transfer keeps the channel for 4477 us (4477.33 measured)");
+}
+
+static void dch_scenario_fifo(void) {
+    /* The first transfer: main RAM, source and destination 4 bytes apart modulo 16. */
+    dch_job(0, NID_SCE_DMAC_MEMCPY, DCH_DST0, DCH_SRC + 4u, 0x10000u);
+    dch_job(1, NID_SCE_DMAC_MEMCPY, DCH_DST1, DCH_SRC, 0x400u);
+    dch_job(2, NID_SCE_DMAC_MEMCPY, DCH_DST2, DCH_SRC, 0x400u);
+    dch_start(0, 0x10u);
+    dch_start(1, 0x1cu);   /* queues first, the weaker of the two */
+    s_dch_pending_after[0] = dch_pending(0) && dch_pending(1);
+    dch_start(2, 0x18u);   /* queues second, the stronger */
+    s_dch_pending_after[1] = dch_pending(0) && dch_pending(2);
+}
+
+static void test_dmac_queued_callers_are_served_in_arrival_order(void) {
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_fifo);
+    expect(s_dch_pending_after[0] && s_dch_pending_after[1],
+           "both blocking callers queued while the first transfer was pending");
+    expect(s_dch[0].order == 1 && s_dch[1].order == 2 && s_dch[2].order == 3,
+           "PSP-DMAC-002 b3: queued callers are served in arrival order, the weaker first");
+    expect(s_dch[1].ret == 0u && s_dch[2].ret == 0u &&
+               dmac_span_matches(DCH_DST1, 0x400u, 0u) && dmac_span_matches(DCH_DST2, 0x400u, 0u),
+           "each queued caller then performs its own full copy and returns 0");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 838u,
+           "PSP-DMAC-002 a-04-00: a 4-byte phase difference adds 0.003895 us per byte (838 us)");
+    expect(s_dch[1].exit_us >= s_dch[0].deadline_us + 58u && s_dch[2].exit_us >= s_dch[1].exit_us + 58u,
+           "each queued caller returns after the transfer ahead of it plus its own (58 us)");
 }
 
 static void test_display_framebuf_latch(void) {
@@ -37283,6 +37503,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
     test_dmac_active_transfer_across_threads();
+    test_dmac_small_body_bypasses_the_channel();
+    test_dmac_refused_try_copies_head_and_tail();
+    test_dmac_queued_callers_are_served_in_arrival_order();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();

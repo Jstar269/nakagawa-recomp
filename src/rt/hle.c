@@ -7747,7 +7747,10 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *
  *   HARDWARE_MEASURED:
  *   - a zero request returns 0x80000104 (illegal size);
- *   - a NULL pointer returns 0x80000103 before guest/GPU side effects;
+ *   - a NULL pointer returns 0x80000103 before guest/GPU side effects, and
+ *     both checks come before BUSY and the wait: a pending transfer does not
+ *     change either result, and a blocking call returns them at once
+ *     (PSP-DMAC-002 b2, 8/8 per cell);
  *   - fully valid RAM/VRAM spans copy their complete requested sizes through
  *     0x100000 bytes in the sequential size matrix;
  *   - a one-byte tail past an allocator-proven valid prefix returns success
@@ -7755,8 +7758,26 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
  *   - both APIs block their caller for the whole transfer; a Try made while
  *     another thread's transfer is pending returns BUSY (0x80000021) and a
- *     blocking call made then waits for it and returns 0 (PSP-3000 / 6.6.1,
- *     64/64 for each of the three dma-concurrency combinations, #303).
+ *     blocking call made then waits for it and returns 0 (PSP-DMAC-001);
+ *   - PSP-DMAC-002 (three acceptance-eligible runs, boots 61-63, 2026-10-29):
+ *     - when source and destination share their address modulo 16, the bytes
+ *       before the first 16-byte destination boundary (head) and the bytes after
+ *       the last whole 16-byte block (tail) move apart from the body; a body of
+ *       at most 0x100 bytes does not use the channel at all: Try returns 0 and a
+ *       blocking call does not wait, even while another transfer is pending
+ *       (aligned 0x10..0x10f all pass, 0x110 and larger refused);
+ *     - every other transfer uses the channel; a Try refused with BUSY still
+ *       leaves its head and tail bytes copied (and nothing else), and one whose
+ *       source and destination differ modulo 16 changes nothing (c4 cells);
+ *     - a channel transfer keeps its caller blocked for its duration, measured
+ *       per source/destination memory (main RAM or VRAM) and size from 0x200 to
+ *       0x100000 bytes (k_dmac_us_x100 below, the mean per call of 16
+ *       back-to-back calls over the runs on boots 61-63), and longer when source
+ *       and destination differ modulo 16: per byte +0.003895 us at 4-byte,
+ *       +0.015319 us at 2-byte and +0.038116 us at 1-byte relative alignment,
+ *       none at 8-byte (main RAM to main RAM, 0x10000 bytes);
+ *     - callers queued behind a pending transfer are served in arrival order,
+ *       whatever their priorities (b3, 16/16 in both orders).
  *
  * RUNTIME_IMPLEMENTED:
  *   - fully valid spans are copied at their requested size (there is no
@@ -7764,23 +7785,29 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - the measured one-byte arena-end tail is copied only through its valid
  *     prefix, while larger or ambiguous overruns remain fail-closed;
  *   - both registered NIDs share one copy path;
- *   - the active transfer: a guest thread that starts one stays blocked in
- *     the call while the scheduler's transfer window is open; another
- *     thread's Try returns BUSY without copying, and its blocking call waits
- *     through the scheduler, then performs its own transfer and returns 0.
+ *   - the head/body/tail split and the 0x100-byte channel bypass above;
+ *   - a channel transfer opens the scheduler's channel window for the
+ *     measured duration (dmac_duration_us) and its caller stays blocked until
+ *     the window ends; another thread's Try then returns BUSY after copying
+ *     the head and tail, and its blocking call queues (arrival order), then
+ *     performs its own transfer.
  *
  * UNMEASURED (explicit runtime choices, not PSP facts):
- *   - the transfer's guest-time duration: the probes recorded caller wall time
- *     only (~376-382 us for an earlier large call, 4.43-4.55 ms for 1 MiB
- *     VRAM-to-VRAM) and no rate law is inferred from either, so the window
- *     carries no time; it closes at the scheduling decision after one other
- *     thread has been dispatched, or at once when none is runnable
- *     (sched_transfer_begin in sched.c);
+ *   - sizes from 0x110 to 0x1ff take the 0x200-0x400 segment of the timing
+ *     table extended downwards, and sizes above 0x100000 the 0x80000-0x100000
+ *     segment extended upwards;
+ *   - the relative-alignment surcharges were measured main RAM to main RAM
+ *     and are applied to every memory pair; a destination that is not 16-byte
+ *     aligned while the source shares its phase measured 3-6 % slower, which
+ *     is not modelled;
+ *   - the bypass path, a transfer slowed by a concurrent caller (a polling
+ *     Try stretched a 1 MiB VRAM copy from about 4.5 to 5.3 ms) and the
+ *     syscall overhead carry no guest time;
+ *   - a body of at most 0x100 bytes whose source and destination differ
+ *     modulo 16 uses the channel (only 0x108 bytes was measured, refused);
  *   - callers that cannot block (interrupt context, suspended interrupts or
  *     dispatch, no guest thread) keep the synchronous copy and open no window;
- *   - a BUSY Try copies nothing; more than two callers queue by priority;
- *   - BUSY and the wait are decided after the size/NULL checks and before
- *     span validation, which runs when the copy happens.
+ *   - span validation runs before BUSY and the wait.
  *
  * The size-before-address ordering below is a runtime ordering; the combined
  * size-zero-plus-invalid-pointer case was not part of the probe.
@@ -7793,9 +7820,54 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
 #define SCE_DMAC_ERROR_BUSY 0x80000021u
-/* The active transfer's owner and every blocking caller queued behind it park
- * on this object until the scheduler closes the transfer window. */
+/* The channel's owner and every blocking caller queued behind it park on this
+ * object until the scheduler ends the window or hands them the channel. */
 #define DMAC_TRANSFER_WAIT_OBJ 0x444d4143u /* "DMAC" */
+/* The largest same-phase body the measured bypass covers (PSP-DMAC-002). */
+#define DMAC_BYPASS_BODY_MAX 0x100u
+
+/* PSP-DMAC-002 timing table: hundredths of a microsecond per call for a channel
+ * transfer with source and destination aligned alike, by pair (main RAM to main RAM,
+ * main RAM to VRAM, VRAM to main RAM, VRAM to VRAM) and size. */
+#define DMAC_TIMING_POINTS 12
+static const uint32_t k_dmac_sizes[DMAC_TIMING_POINTS] = {
+    0x200u, 0x400u, 0x800u, 0x1000u, 0x2000u, 0x4000u,
+    0x8000u, 0x10000u, 0x20000u, 0x40000u, 0x80000u, 0x100000u};
+static const uint32_t k_dmac_us_x100[4][DMAC_TIMING_POINTS] = {
+    {5491u, 5781u, 7053u, 8971u, 11878u, 18556u, 31691u, 58304u, 112766u, 222508u, 437641u, 870594u},
+    {5372u, 5746u, 6506u, 7596u, 9772u, 13027u, 19875u, 34806u, 65497u, 126729u, 247419u, 493398u},
+    {5444u, 5510u, 5953u, 6785u, 8756u, 10702u, 17841u, 26683u, 48875u, 93408u, 180838u, 361456u},
+    {5259u, 5271u, 5638u, 6698u, 7934u, 10819u, 15897u, 26842u, 56997u, 118627u, 226912u, 447733u},
+};
+/* Per-byte surcharge, in millionths of a microsecond, by relative alignment class:
+ * index 0 = 8- or 16-byte, 1 = 4-byte, 2 = 2-byte, 3 = 1-byte. */
+static const uint32_t k_dmac_misalign_ppm[4] = {0u, 3895u, 15319u, 38116u};
+
+static int dmac_is_vram(uint32_t addr) {
+    return sr_vram_cpu_aperture(addr);
+}
+
+/* Interpolated duration, in hundredths of a microsecond, of one table row at size n. */
+static uint64_t dmac_row_x100(const uint32_t *row, uint32_t n) {
+    int hi = 1;
+    while (hi < DMAC_TIMING_POINTS - 1 && k_dmac_sizes[hi] < n) hi++;
+    const int lo = hi - 1;
+    const int64_t x0 = k_dmac_sizes[lo], x1 = k_dmac_sizes[hi];
+    const int64_t y0 = row[lo], y1 = row[hi];
+    int64_t y = y0 + ((int64_t)n - x0) * (y1 - y0) / (x1 - x0);
+    return y > 0 ? (uint64_t)y : 0u;
+}
+
+/* Guest microseconds a channel transfer of n bytes keeps its caller blocked. */
+static uint32_t dmac_duration_us(uint32_t dst, uint32_t src, uint32_t n) {
+    const int pair = (dmac_is_vram(src) ? 2 : 0) + (dmac_is_vram(dst) ? 1 : 0);
+    uint64_t x100 = dmac_row_x100(k_dmac_us_x100[pair], n);
+    const uint32_t rel = (src - dst) & 15u;
+    const int cls = (rel & 7u) == 0u ? 0 : (rel & 3u) == 0u ? 1 : (rel & 1u) == 0u ? 2 : 3;
+    x100 += (uint64_t)n * k_dmac_misalign_ppm[cls] / 10000u;
+    const uint64_t us = (x100 + 50u) / 100u;
+    return us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+}
 
 static uint32_t dmac_transfer(CpuState *s, int try_only);
 
@@ -7814,21 +7886,22 @@ static int dmac_caller_can_wait(void) {
     return sched_guest_thread_running() && sched_wait_permitted();
 }
 
+static void dmac_copy(uint32_t dst, uint32_t src, uint32_t n) {
+    if (n == 0u) return;
+    sr_guest_vram_write_prepare_bytes(dst, n);
+    memmove(SR_HOST(dst), SR_HOST(src), n);
+    sr_guest_vram_write_commit_bytes(dst, n);
+    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
+}
+
 static uint32_t dmac_transfer(CpuState *s, int try_only) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
-    /* Validate size and null pointers before touching guest memory. */
+    /* Validate size and null pointers before touching guest memory; both come
+     * before BUSY and the wait (measured). */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
-
-    /* Another thread's transfer is pending: Try reports BUSY without copying,
-     * and the blocking form waits for it through the scheduler. */
-    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {
-        if (try_only) return SCE_DMAC_ERROR_BUSY;
-        while (dmac_caller_can_wait() && sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL))
-            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
-    }
 
     /* The physical PSP completed the one-byte invalid-tail case through the
      * valid prefix.  Compute both prefixes with overflow-safe arena arithmetic
@@ -7852,19 +7925,53 @@ static uint32_t dmac_transfer(CpuState *s, int try_only) {
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
 
-    /* memmove, not memcpy: hardware showed both overlap directions landing
+    /* Same phase modulo 16: a head up to the first 16-byte destination boundary, a
+     * body of whole 16-byte blocks and a tail move apart; otherwise the whole span is
+     * the body. */
+    const int same_phase = ((src ^ dst) & 15u) == 0u;
+    uint32_t head = 0u, tail = 0u;
+    if (same_phase) {
+        head = (0u - dst) & 15u;
+        if (head > effective) head = effective;
+        tail = (effective - head) & 15u;
+    }
+    const uint32_t body = effective - head - tail;
+
+    /* A short same-phase body bypasses the channel: no BUSY, no wait, no window.
+     * memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
-    sr_guest_vram_write_prepare_bytes(dst, effective);
-    memmove(SR_HOST(dst), SR_HOST(src), effective);
-    sr_guest_vram_write_commit_bytes(dst, effective);
-    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
+    if (same_phase && body <= DMAC_BYPASS_BODY_MAX) {
+        dmac_copy(dst, src, effective);
+        return 0;
+    }
+
+    /* Another thread holds the channel: Try copies the head and tail and reports BUSY;
+     * the blocking form queues behind it through the scheduler (arrival order). */
+    const int can_wait = dmac_caller_can_wait();
+    uint32_t holder = 0u;
+    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &holder) &&
+        !sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ)) {
+        if (try_only) {
+            dmac_copy(dst, src, head);
+            dmac_copy(dst + effective - tail, src + effective - tail, tail);
+            return SCE_DMAC_ERROR_BUSY;
+        }
+        if (can_wait && sched_transfer_enqueue(DMAC_TRANSFER_WAIT_OBJ)) {
+            while (!sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ))
+                sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+        }
+    }
+
+    dmac_copy(dst, src, effective);
 
     /* This call's own transfer: the caller stays blocked in the call until the
-     * scheduler closes its window. */
-    if (dmac_caller_can_wait() && sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)) {
+     * scheduler ends its window, after the measured duration. */
+    if (can_wait &&
+        sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ, dmac_duration_us(dst, src, body))) {
         const uint32_t self = sched_current_uid();
         uint32_t owner = 0u;
-        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self)
+        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self &&
+               !sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ))
             sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
     }
     return 0;
