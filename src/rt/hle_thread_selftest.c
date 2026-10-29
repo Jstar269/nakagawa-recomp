@@ -7074,6 +7074,240 @@ static void test_io_devctl_memory_stick(void) {
     free(old_root);
 }
 
+/* ---- savedata GETSIZE / SIZES free space (#308) ---------------------------------------------
+ * GETSIZE reports a shortfall, never the size of the data. On a PSP (pspautotests
+ * tests/utility/savedata/getsize.expected, revision 2ed7c9c5) a zero-filled sizeInfo with no
+ * entries for a save that does not exist changes only sectorSize (0x8000), freeSectors,
+ * freeKB and freeString, and the result is 0. Free space is the host-backed Memory Stick the
+ * capacity devctl measures, in 32 KiB sectors; the shortfall arithmetic for listed entries
+ * follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
+extern void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes);
+
+enum {
+    GETSIZE_PARAM_ADDR   = 0x08800000u,
+    GETSIZE_INFO_ADDR    = 0x08800800u, /* SceUtilitySavedataSizeInfo, 60 bytes */
+    GETSIZE_SECURE_ADDR  = 0x08800900u, /* size entries: u64 size, char name[16] */
+    GETSIZE_NORMAL_ADDR  = 0x08800980u,
+    GETSIZE_MSFREE_ADDR  = 0x08800a00u, /* SIZES msFree: sectorSize, sectors, KB, char[8] */
+    GETSIZE_DEVICE_ADDR  = 0x09020000u,
+    GETSIZE_INDATA_ADDR  = 0x09020100u,
+    GETSIZE_DEVINF_ADDR  = 0x09020200u
+};
+
+/* Free bytes as the capacity devctl reports them: free clusters * sector size * sectors. */
+static int getsize_devctl_free_bytes(uint64_t *bytes) {
+    CpuState cpu;
+    fd_guest_copy(GETSIZE_DEVICE_ADDR, "ms0:", sizeof("ms0:"));
+    MEM_W32(GETSIZE_INDATA_ADDR, GETSIZE_DEVINF_ADDR);
+    if (io_devctl_call(&cpu, GETSIZE_DEVICE_ADDR, 0x02425818u, GETSIZE_INDATA_ADDR, 4u, 0u, 0u) != 0u)
+        return 0;
+    *bytes = (uint64_t)MEM_R32(GETSIZE_DEVINF_ADDR + 4u) * MEM_R32(GETSIZE_DEVINF_ADDR + 12u) *
+             MEM_R32(GETSIZE_DEVINF_ADDR + 16u);
+    return 1;
+}
+
+/* The utility's size text, written out independently of savedata.c. */
+static void getsize_expected_text(uint64_t bytes, int round_up, char out[8]) {
+    static const char *const units[] = { "B", "KB", "MB", "GB" };
+    char text[24];
+    size_t i = 0;
+    while (i < 4u && bytes >= 1024u) {
+        bytes = round_up ? (bytes + 1023u) / 1024u : bytes / 1024u;
+        i++;
+    }
+    snprintf(text, sizeof(text), "%" PRIu64 " %s", bytes, i < 4u ? units[i] : "TB");
+    memset(out, 0, 8);
+    memcpy(out, text, strlen(text) < 8u ? strlen(text) : 8u);
+}
+
+static int getsize_guest_bytes_are(uint32_t addr, const char expected[8]) {
+    for (uint32_t i = 0; i < 8u; i++)
+        if (MEM_R8(addr + i) != (uint8_t)expected[i]) return 0;
+    return 1;
+}
+
+static void getsize_param(uint32_t mode, const char *save) {
+    memset(g_mem_base + GETSIZE_PARAM_ADDR, 0, 0x600u);
+    memset(g_mem_base + GETSIZE_INFO_ADDR, 0, 0x300u);
+    fd_guest_copy(GETSIZE_PARAM_ADDR + 0x3cu, "NKGETSIZE", sizeof("NKGETSIZE"));
+    fd_guest_copy(GETSIZE_PARAM_ADDR + 0x4cu, save, strlen(save) + 1u);
+    MEM_W32(GETSIZE_PARAM_ADDR + 0x30u, mode);
+    if (mode == 22u) MEM_W32(GETSIZE_PARAM_ADDR + 0x5fcu, GETSIZE_INFO_ADDR);
+    if (mode == 8u) MEM_W32(GETSIZE_PARAM_ADDR + 0x5d0u, GETSIZE_MSFREE_ADDR);
+}
+
+static void getsize_entry(uint32_t addr, uint64_t size, const char *name) {
+    MEM_W32(addr, (uint32_t)size);
+    MEM_W32(addr + 4u, (uint32_t)(size >> 32));
+    fd_guest_copy(addr + 8u, name, strlen(name) + 1u);
+}
+
+static int getsize_write_host_file(const char *path, size_t bytes) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    for (size_t i = 0; i < bytes; i++) fputc(0x5a, f);
+    return fclose(f) == 0;
+}
+
+static void test_savedata_getsize_free_space(void) {
+    static const char ms_root[] = HLE_BUILD_ROOT "/hle_savedata_getsize";
+    static const char zero8[8] = { 0 };
+    const char *old_root_value = getenv("SR_MEMSTICK");
+    char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
+    char text[8], save_host[512], file_host[600];
+    if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
+    if (old_root_value && !old_root) {
+        expect(0, "savedata GETSIZE test can preserve the configured SR_MEMSTICK");
+        return;
+    }
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(ms_root);
+    expect(hle_test_setenv("SR_MEMSTICK", ms_root),
+           "savedata GETSIZE test selects a synthetic Memory Stick root");
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+
+    /* 1. The hardware case: zero-filled sizeInfo, no entries, save missing. */
+    {
+        uint64_t before = 0, after = 0;
+        getsize_param(22u, "_GameData0");
+        int measured = getsize_devctl_free_bytes(&before);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        measured = measured && getsize_devctl_free_bytes(&after);
+        uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
+        uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
+        expect(measured, "the capacity devctl measures the synthetic Memory Stick's host volume");
+        expect(rc == 0u, "GETSIZE for a save that does not exist returns 0, as on a PSP");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 0u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 4u) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 8u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 12u) == 0u,
+               "GETSIZE leaves the entry counts and pointers alone");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 16u) == 0x8000u,
+               "GETSIZE reports the PSP's 32 KiB savedata sector size");
+        expect(sectors >= lo / 0x8000u && sectors <= hi / 0x8000u,
+               "GETSIZE freeSectors * 0x8000 is the host-backed free space the devctl reports");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 24u) == sectors * 32u,
+               "GETSIZE freeKB agrees with freeSectors");
+        getsize_expected_text((uint64_t)sectors * 0x8000u, 0, text);
+        expect(getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 28u, text),
+               "GETSIZE freeString is the free space in the utility's rounded-down text");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u,
+               "GETSIZE with no entries needs nothing: neededKB and overwriteKB stay 0");
+        expect(getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
+               "GETSIZE with no entries leaves neededString and overwriteString untouched");
+    }
+
+    /* 2. One secure entry of a few KB on a missing save fits: nothing needed. */
+    {
+        getsize_param(22u, "_GameData0");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x2000u, "DATA.BIN");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
+               "GETSIZE for one small secure file on a missing save reports neededKB 0, overwriteKB 0");
+    }
+
+    /* 3. A shortfall: 64 KiB free (plus a partial sector), more data than that. */
+    snprintf(save_host, sizeof(save_host), "%s/PSP/SAVEDATA/NKGETSIZE_GameData1", ms_root);
+    nk_platform_mkdir_p(save_host);
+    snprintf(file_host, sizeof(file_host), "%s/ICON0.PNG", save_host);
+    expect(getsize_write_host_file(file_host, 0x1800u), "an existing save file can be planted");
+    sr_hle_test_set_memstick_free_bytes(1, 0x10000u + 0x1234u);
+    {
+        getsize_param(22u, "_GameData1");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x20000u, "DATA.BIN");
+        getsize_entry(GETSIZE_NORMAL_ADDR, 0x3000u, "ICON0.PNG");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 4u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        MEM_W32(GETSIZE_INFO_ADDR + 12u, GETSIZE_NORMAL_ADDR);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        /* write = 0x20000 + 0x10 + 0x3000 = 0x23010; free = 0x10000; existing = 0x1800.
+         * needed = 0x13010 bytes (77 KB rounded up); overwrite = 0x11810 bytes (71 KB). */
+        expect(rc == 0u && MEM_R32(GETSIZE_INFO_ADDR + 20u) == 2u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 24u) == 64u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 28u, "64 KB\0\0"),
+               "GETSIZE free figures count whole 32 KiB sectors of the reported free bytes");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 36u) == 77u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, "77 KB\0\0"),
+               "GETSIZE neededKB and neededString are the rounded-up bytes beyond free space");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 48u) == 71u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, "71 KB\0\0"),
+               "GETSIZE overwriteKB and overwriteString discount the files the save already holds");
+    }
+    /* Existing data the write replaces can make it fit again. */
+    snprintf(file_host, sizeof(file_host), "%s/DATA.BIN", save_host);
+    expect(getsize_write_host_file(file_host, 0x20000u), "an existing secure file can be planted");
+    {
+        getsize_param(22u, "_GameData1");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x20000u, "DATA.BIN");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8),
+               "GETSIZE needs nothing when the files it replaces free enough space");
+    }
+
+    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record. */
+    sr_hle_test_set_memstick_free_bytes(1, 0x40000000u + 0x7fffu);
+    {
+        getsize_param(22u, "_GameData0");
+        uint32_t getsize_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        uint32_t sector_size = MEM_R32(GETSIZE_INFO_ADDR + 16u);
+        uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
+        uint32_t kb = MEM_R32(GETSIZE_INFO_ADDR + 24u);
+        char free_text[8];
+        for (uint32_t i = 0; i < 8u; i++) free_text[i] = (char)MEM_R8(GETSIZE_INFO_ADDR + 28u + i);
+        expect(getsize_rc == 0u && sector_size == 0x8000u && sectors == 0x8000u &&
+                   kb == 0x100000u && memcmp(free_text, "1 GB\0\0\0\0", 8u) == 0,
+               "GETSIZE on 1 GiB free reports 0x8000 sectors, 0x100000 KB and \"1 GB\" as the PSP did");
+        getsize_param(8u, "_GameData0");
+        memset(g_mem_base + GETSIZE_MSFREE_ADDR, 0, 20u);
+        uint32_t sizes_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        expect(sizes_rc == 0u && MEM_R32(GETSIZE_MSFREE_ADDR + 0u) == sector_size &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 4u) == sectors &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 8u) == kb &&
+                   getsize_guest_bytes_are(GETSIZE_MSFREE_ADDR + 12u, free_text),
+               "SIZES msFree reports the same free figures as GETSIZE");
+    }
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+    {
+        uint64_t before = 0, after = 0;
+        getsize_param(8u, "_GameData0");
+        int measured = getsize_devctl_free_bytes(&before);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        measured = measured && getsize_devctl_free_bytes(&after);
+        uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
+        uint32_t sectors = MEM_R32(GETSIZE_MSFREE_ADDR + 4u);
+        expect(measured && rc == 0u && sectors >= lo / 0x8000u && sectors <= hi / 0x8000u &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 8u) == sectors * 32u,
+               "SIZES msFree is the host-backed free space, not a fixed figure");
+    }
+
+    /* 5. A host volume that cannot be measured is an error, not an invented figure. */
+    sr_hle_test_set_memstick_free_bytes(2, 0u);
+    {
+        getsize_param(22u, "_GameData0");
+        for (uint32_t i = 16u; i < 60u; i++) MEM_W8(GETSIZE_INFO_ADDR + i, 0xeeu);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        expect(rc == 0x80110321u && MEM_R32(GETSIZE_INFO_ADDR + 20u) == 0xeeeeeeeeu,
+               "GETSIZE without a host free-space answer fails and writes no free figures");
+        getsize_param(8u, "_GameData0");
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0x801103C5u,
+               "SIZES without a host free-space answer fails");
+    }
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+
+    nk_platform_remove_tree(ms_root, NULL);
+    hle_test_setenv("SR_MEMSTICK", old_root);
+    free(old_root);
+}
+
 /* ---- coroutine park ------------------------------------------------------------------
  *
  * sched.c's coro_body never returns, so a test body must not either: it hands control back
@@ -36906,6 +37140,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();
     test_io_devctl_memory_stick();
+    test_savedata_getsize_free_space();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);

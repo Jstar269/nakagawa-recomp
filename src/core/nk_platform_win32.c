@@ -465,6 +465,18 @@ static bool known_local_app_data_utf8(char *out_path, size_t max_len) {
     return resolved;
 }
 
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    PWSTR wide_path = NULL;
+    HRESULT result = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, NULL, &wide_path);
+    bool resolved = SUCCEEDED(result) && wide_path &&
+        wide_to_utf8(wide_path, out_path, max_len) && nk_platform_dir_exists(out_path);
+    if (wide_path) CoTaskMemFree(wide_path);
+    if (!resolved) out_path[0] = '\0';
+    return resolved;
+}
+
 static bool get_windows_data_base(char *out_base, size_t max_len) {
     char known_local_app_data[32768] = "";
     char local_app_data[32768] = "";

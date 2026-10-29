@@ -223,6 +223,7 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
     }
     const char *selected_path = filelist[0];
     printf("[PLAYER] ISO Selected: %s\n", selected_path);
+    player_app_remember_picker_folder(app, selected_path, false);
     if (player_path_is_pbp_package(selected_path)) {
         player_take_picked_package(app, selected_path);
         return;
@@ -230,26 +231,46 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
     player_take_picked_disc(app, selected_path);
 }
 
+/* Where a picker opens (player_app_picker_start_folder). SDL keeps reading
+   the filters, and may read this, until the dialog's callback runs, so
+   neither lives on the stack. */
+static char s_picker_start[NK_MAX_PATH];
+
+static const char *player_picker_start(const PlayerApp *app) {
+    return player_app_picker_start_folder(app, s_picker_start, sizeof(s_picker_start))
+        ? s_picker_start : NULL;
+}
+
 static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
-    SDL_DialogFileFilter filters[] = {
+    static const SDL_DialogFileFilter filters[] = {
         { "PSP Disc Images and PSN Packages (*.iso, EBOOT.PBP)", "iso;pbp" },
         { "All Files (*.*)", "*" }
     };
-    SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
+    SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2,
+                           player_picker_start(app), false);
 }
 
-/* The Fonts & System step's folder choice. A cancelled dialog arrives with no entry and
-   changes nothing; a chosen folder is read once by the font import. */
-static void on_font_folder_dialog_callback(void *userdata, const char *const *filelist, int filter) {
+/* The PSP fonts import. The picker shows the .pgf files themselves, which a
+   folder picker hides, so the user can see they are in the right folder; any
+   one of them names the folder the import reads. A cancelled dialog arrives
+   with no entry and changes nothing. */
+static void on_font_files_dialog_callback(void *userdata, const char *const *filelist, int filter) {
     PlayerApp *app = (PlayerApp *)userdata;
+    char folder[NK_MAX_PATH];
     (void)filter;
     if (!app) return;
     if (!filelist || !filelist[0]) return;
-    (void)player_app_fonts_import_folder(app, filelist[0]);
+    if (!player_path_parent_folder(filelist[0], folder, sizeof(folder))) return;
+    player_app_remember_picker_folder(app, folder, true);
+    (void)player_app_fonts_import_folder(app, folder);
 }
 
 static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
-    SDL_ShowOpenFolderDialog(on_font_folder_dialog_callback, app, window, NULL, false);
+    static const SDL_DialogFileFilter filters[] = {
+        { "PSP fonts (*.pgf)", "pgf" }
+    };
+    SDL_ShowOpenFileDialog(on_font_files_dialog_callback, app, window, filters, 1,
+                           player_picker_start(app), true);
 }
 
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
@@ -280,6 +301,27 @@ static float player_display_content_scale(SDL_DisplayID display) {
     float scale = SDL_GetDisplayContentScale(display);
     if (scale < 1.0f || scale > 3.0f) scale = 1.0f;
     return scale;
+}
+
+/* Records the desktop bounds of the display that holds the launcher window, read
+ * just before a launch so the game window opens on that display (the runtime gets
+ * them as SR_LAUNCHER_DISPLAY_BOUNDS). The child cannot use our SDL_DisplayID: IDs
+ * are per process. Unknown bounds are left zero and the game uses the primary. */
+static void player_note_launcher_display(PlayerApp *app, SDL_Window *window) {
+    if (!app) return;
+    memset(app->launcher_display_bounds, 0, sizeof(app->launcher_display_bounds));
+    SDL_DisplayID display = window ? SDL_GetDisplayForWindow(window) : 0;
+    SDL_Rect bounds;
+    if (!display || !SDL_GetDisplayBounds(display, &bounds) || bounds.w <= 0 ||
+        bounds.h <= 0) {
+        fprintf(stderr, "[PLAYER] Launcher display unknown (%s); the game opens on the "
+                        "primary display.\n", SDL_GetError());
+        return;
+    }
+    app->launcher_display_bounds[0] = bounds.x;
+    app->launcher_display_bounds[1] = bounds.y;
+    app->launcher_display_bounds[2] = bounds.w;
+    app->launcher_display_bounds[3] = bounds.h;
 }
 
 static PlayerWindowFrame player_estimated_window_frame(float content_scale) {
@@ -5995,6 +6037,7 @@ int main(int argc, char *argv[]) {
         if (app.request_launch) {
             app.request_launch = false;
             if (!launch_job) {
+                player_note_launcher_display(&app, window);
                 launch_job = player_launch_job_start(&app, app.request_launch_index);
             }
         }
