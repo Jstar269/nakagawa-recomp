@@ -530,9 +530,18 @@ class VfpuRouteCensusTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["failures"], [])
         self.assertGreater(report["route_emitted_words"], 0)
-        # The committed fixture executes VFPU memory operations; the route census
-        # must see them (and only boundary-free ones), not an empty scan.
-        self.assertGreaterEqual(report["route_words"], 1)
+        # The route census sees exactly the VFPU words of the fixture's code sections.
+        # Words decoded from data (NID tables, .data) are not route code; a census that
+        # counted them once satisfied this test with no VFPU instruction in .text.
+        import analyze
+        image = analyze.Elf(str(elf), base=base)
+        code_words = {
+            int.from_bytes(image.read_at_vaddr(address, 4), "little")
+            for lo, hi in analyze.exec_ranges(image)
+            for address in range(lo, hi, 4)
+        }
+        expected = sum(1 for word in code_words if (word >> 26) in census.route_opcodes())
+        self.assertEqual(report["route_words"], expected)
 
 
 if __name__ == "__main__":
