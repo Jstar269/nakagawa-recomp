@@ -1459,7 +1459,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "41979d652141b2255f341fecb7d8745277530cd3174340b73ce2fc119fb2e6d1"
+      "sha256": "5a615de7f739a5bf238c1645896262825e86eec386ab2d880093fb8aa487ff29"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1480,7 +1480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca4b8c71b86c5243dabde6eb416b38783b9263bc5d366af5363fc04de65f8675"
+      "sha256": "645e3452ca8b8e3182c045e585cd4bcbed3217f13b115e2e28775f4051e2158a"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -1726,7 +1726,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "cf575886a7c9305a39730c1281da0963bbe228a40f45236867281cfd98850b00"
+      "sha256": "1ddc18f0bb77c712c17e1a2eaeeee2f4a6ac6becdf21991c3756cb046bede0d8"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -6044,7 +6044,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "65cb5816480332a4121c45f40953ac6b09f69593f559617538d46ab250616c92"
+      "sha256": "e33f2ef2054bb13622dbca4e2b75b86acb95ca10cc4ec73642e2a5cad33dffb3"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -6057,7 +6057,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b243be926330184eceaeddb92d78b506b659f946f6846cb4c0240fa743b479f5"
+      "sha256": "ab0f7fb4e7f223118d2cb6a45f44c93e39a50804cb0f6b2852b74cb01610ae07"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -6169,7 +6169,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "91b98592afdfe50aca8e000ef682e5df243d65b8fea7ac0c5703d969c514bf3d"
+      "sha256": "bbd66769197662c4f89f47702a113fde6aedbd8195668491e2ac1ad5738a7888"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -9065,7 +9065,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5e53e9e6dd175d3d0b29709a3d6d8c2167adfaf468f758e50cb5344e09ce6518"
+      "sha256": "a12169a108f743134ff54d23a86da5e4974f61302e2078d6ca8d9bc51aadb0bc"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9115,7 +9115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b55b9d199f6fac02ca6cdf5eaf4c30f237ac8324665f2e9f9563dfdf629c328f"
+      "sha256": "053a10c142892e0443b6cd3e1bad43a0359a17da63c99f7c3efa61e82d0b5803"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9686,7 +9686,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "665f99b0c4977e8d0ac0011b88238ee69d592f223780ce27341547ddea6379eb"
+      "sha256": "1350b5917027d347f8fb510e270afacf5d96e993b7c4ecda8d9f0998349cde43"
     },
     {
       "path": "src/rt/savedata.c",
@@ -12616,7 +12616,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "327146808f2d430c498c144bdf74506970aa6229782b272151dd246bad2facea"
+      "sha256": "9f67d2a0c5f2250ee7f9f4530a5943908aca7e68bec92bf20fb3efae057bf7a6"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12737,7 +12737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6bae52d66bed6df0b1d9a19acc4c1f13c79bf2bafdf2f03346207d45a5ca7e11"
+      "sha256": "e84204ade71ed285f718d1fe0ab765d232048d2e0a830f35ca7eebafd465181a"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -14798,7 +14798,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "950abe67994ddd22d695a3ed9a177adb88ab9da541685615aa511caa2b3f8145"
+      "sha256": "50ecfa63d1e5d5e0ded059f806705ae54f896fc27025567a50a7dfdef1d9e4ec"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
