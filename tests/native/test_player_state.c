@@ -1620,6 +1620,21 @@ static int repeat_launch_child_mode(void) {
     fflush(stderr);
     const char *stop_reason = getenv("NK_REPEAT_LAUNCH_STOP_REASON");
     const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
+    /* A run's own boot event, after as many lines of output as a real runtime
+       writes before it. */
+    const char *output_lines = getenv("NK_REPEAT_LAUNCH_OUTPUT_LINES");
+    for (int i = output_lines ? atoi(output_lines) : 0; i > 0; i--) {
+        printf("synthetic runtime output line %d\n", i);
+    }
+    fflush(stdout);
+    const char *boot_entry = getenv("NK_REPEAT_LAUNCH_BOOT_ENTRY");
+    if (boot_entry && *boot_entry && boot_event_path && *boot_event_path) {
+        FILE *events = fopen(boot_event_path, "ab");
+        if (!events) return 6;
+        ok = fprintf(events, "BOOT_EVENT phase=boot reason=entry entry=%s\n", boot_entry) >= 0;
+        if (fclose(events) != 0) ok = 0;
+        if (!ok) return 6;
+    }
     if (stop_reason && strcmp(stop_reason, "hold-without-boot-event") == 0) {
         /* A child that runs but never reaches the runtime's first boot event
            (#1290): it writes none and stays alive until the player stops it.
@@ -2183,15 +2198,19 @@ static void test_error_cards_are_plain(void) {
     assert(player_error_retry_label(&app->last_error) == NULL);
     assert(!player_app_retry_from_error(app));
 
-    /* The stop card and Copy details. */
+    /* The stop card and Copy details. The developer log holds an earlier
+       run's boot events; the report lists only the ones in this run's log. */
     player_dev_log_add(app, "runtime",
-                       "BOOT_EVENT phase=boot reason=entry");
-    player_dev_log_add(app, "runtime",
-                       "BOOT_EVENT phase=stop reason=semantic-boundary "
-                       "boundary=unsupported-import-scenetadhocinit issue=308");
+                       "BOOT_EVENT phase=boot reason=entry entry=0x08a9c92c");
+    const char *report_run_log = "build/player_state_report_TEST00042-last.txt";
+    write_text_file(report_run_log,
+                    "synthetic runtime output\n"
+                    "BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
+                    "BOOT_EVENT phase=stop reason=semantic-boundary "
+                    "boundary=unsupported-import-scenetadhocinit issue=308\n");
     player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
                                    "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
-                                   "TEST00042", "C:/logs/boot_TEST00042.log");
+                                   "TEST00042", report_run_log);
     assert(strcmp(app->last_error.title, "Game Stopped Early") == 0);
     assert(strcmp(player_error_badge(&app->last_error), "Game stopped") == 0);
     assert(strstr(app->last_error.message, "ad hoc wireless play") != NULL);
@@ -2207,15 +2226,19 @@ static void test_error_cards_are_plain(void) {
     assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
     assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
     assert(strstr(report, "Reason: Stopped at unsupported-import-scenetadhocinit") != NULL);
-    assert(strstr(report, "Log file: C:/logs/boot_TEST00042.log\n") != NULL);
-    assert(strstr(report, "Last boot events:\n  BOOT_EVENT phase=boot reason=entry\n"
+    assert(strstr(report, "Log file: build/player_state_report_TEST00042-last.txt\n") != NULL);
+    assert(strstr(report, "Last boot events:\n"
+                          "  BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
                           "  BOOT_EVENT phase=stop") != NULL);
+    assert(strstr(report, "0x08a9c92c") == NULL);
+    assert(strstr(report, "synthetic runtime output") == NULL);
     /* Only the user's own log location: no other path, no profile folder. */
     assert(strchr(report, '\\') == NULL);
-    assert(strstr(report, "C:/") == strstr(report, "Log file: C:/") + 10);
+    assert(strstr(report, ":/") == NULL);
     const char *profile = getenv("USERPROFILE");
     if (!profile || !profile[0]) profile = getenv("HOME");
     if (profile && strlen(profile) > 3) assert(strstr(report, profile) == NULL);
+    remove(report_run_log);
 
     /* Restart game asks the main loop to relaunch the same game off the UI
        thread (#1298); here its package is missing, so the launch says so. */
@@ -7774,9 +7797,80 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
 
+        /* Two titles in a row. The owner's ModNation Racers report listed
+           LocoRoco 2's boot events: the report read them from the developer
+           log, which spans every launch and keeps only each run's first 48
+           lines. The first title's run ends cleanly with its boot event in the
+           developer log; the second title's event follows 60 lines of output,
+           then it stops. Its report lists its own run's events only. */
+        char disc2[MAX_DISC_ID_LEN];
+        char memstick2[NK_MAX_PATH];
+        char run_log2[NK_MAX_PATH + 64];
+        snprintf(disc2, sizeof(disc2), "%s", "TEST00002");
+        snprintf(run_log2, sizeof(run_log2), "%s%cgame-%s-last.txt", logs_dir, sep, disc2);
+        remove(run_log2);
+        write_runtime_package_fixture_with_source_media(
+            user_root, disc2, "synthetic-title2-v1", SR_CPUSTATE_ABI_VERSION,
+            "synthetic-title2-v1.exe", FIXTURE_SHA256, self_path,
+            source_media_json);
+        {
+            NkGameEntry second;
+            memset(&second, 0, sizeof(second));
+            snprintf(second.disc_id, sizeof(second.disc_id), "%s", disc2);
+            snprintf(second.title_id, sizeof(second.title_id), "synthetic-title2-v1");
+            snprintf(second.title_name, sizeof(second.title_name), "Second Title Fixture");
+            snprintf(second.selected_executable, sizeof(second.selected_executable),
+                     "EBOOT.BIN");
+            snprintf(second.iso_path, sizeof(second.iso_path), "%s", iso_path);
+            second.status = NK_STATUS_IDENTIFIED;
+            assert(nk_library_add_or_update(&rep->library, &second) == NK_OK);
+            player_app_sync_library(rep);
+            assert(rep->game_count == 2);
+        }
+        int first_index = player_app_find_game_by_disc_id(rep, disc_id);
+        int second_index = player_app_find_game_by_disc_id(rep, disc2);
+        assert(first_index >= 0 && second_index >= 0 && first_index != second_index);
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "0x08a9c92c");
+        repeat_launch_and_settle(rep, first_index, 41000, 42000, memstick1);
+        assert(dev_log_contains(rep, "entry=0x08a9c92c"));
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "0x08804000");
+        set_environment_value("NK_REPEAT_LAUNCH_OUTPUT_LINES", "60");
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "semantic-boundary");
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "9");
+        if (!player_app_launch_game(rep, second_index)) {
+            fprintf(stderr, "second title launch refused: %s: %s | %s\n",
+                    rep->last_error.error_code, rep->last_error.message,
+                    rep->last_error.boundary_text);
+            assert(false);
+        }
+        snprintf(memstick2, sizeof(memstick2), "%s", rep->launch_session.memstick_root);
+        rep->launch_time_ms = 43000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
+        assert(player_app_monitor_game_session(rep, 44000));
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
+        assert(strcmp(rep->last_error.subject_disc_id, disc2) == 0);
+        assert(strcmp(rep->last_error.log_file_path, run_log2) == 0);
+        /* The second run's event is past the developer log's 48-line copy. */
+        assert(!dev_log_contains(rep, "entry=0x08804000"));
+        {
+            char report_text[PLAYER_ERROR_DETAILS_MAX + 4096];
+            assert(player_app_format_error_report(rep, "test", report_text,
+                                                  sizeof(report_text)) > 0);
+            assert(strstr(report_text, "Game: Second Title Fixture\n") != NULL);
+            assert(strstr(report_text, "Last boot events:\n"
+                                       "  BOOT_EVENT phase=boot reason=entry "
+                                       "entry=0x08804000\n"
+                                       "  BOOT_EVENT phase=stop reason=semantic-boundary") != NULL);
+            assert(strstr(report_text, "0x08a9c92c") == NULL);
+        }
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "");
+        set_environment_value("NK_REPEAT_LAUNCH_OUTPUT_LINES", "");
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+
         /* Final recovery launch: the session is never stuck. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
-        repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
+        repeat_launch_and_settle(rep, first_index, 11000, 12000, memstick1);
 
         /* #1289: a live synthetic runtime presents, then stops presenting.
            Its watchdog event must surface a notice at 30 seconds, clear on a
@@ -8003,6 +8097,30 @@ int main(int argc, char **argv) {
         /* Only removed when this test created it and it is now empty; a
            pre-existing per-disc save slot is left alone. */
         test_rmdir(memstick1);
+        snprintf(marker_path, sizeof(marker_path), "%s%cf511_repeat.marker",
+                 memstick2, sep);
+        remove(marker_path);
+        test_rmdir(memstick2);
+        remove(run_log2);
+        {
+            /* The second title's package, as the fixture wrote it. */
+            static const char *const files[] = {
+                "package.json", "build-report.json", "completion-manifest.json",
+                "synthetic-title2-v1_image.bin", "synthetic-title2-v1.exe"};
+            char dir2[1100];
+            char file2[1300];
+            snprintf(dir2, sizeof(dir2), "%s%cpackages%c%s", user_root, sep, sep, disc2);
+            for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
+                snprintf(file2, sizeof(file2), "%s%c%s", dir2, sep, files[i]);
+                remove(file2);
+            }
+            test_rmdir(dir2);
+            snprintf(dir2, sizeof(dir2), "%s%ctitle-input-identities%c%s", user_root, sep,
+                     sep, disc2);
+            snprintf(file2, sizeof(file2), "%s%ctitle-input-identity.json", dir2, sep);
+            remove(file2);
+            test_rmdir(dir2);
+        }
         remove(report_path);
         remove(run_log_last);
         remove(run_log_prev);

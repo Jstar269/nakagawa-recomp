@@ -2481,21 +2481,41 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
     player_report_append(raw, sizeof(raw), &used, "Reason: ", error->boundary_text);
     player_report_append(raw, sizeof(raw), &used, "Details: ", error->details);
     player_report_append(raw, sizeof(raw), &used, "Log file: ", error->log_file_path);
-    /* The runtime's boot events reach the developer log as "[runtime] BOOT_EVENT ...";
-       the last few say how far the game got. */
-    static const char event_prefix[] = "[runtime] ";
-    size_t events[8];
+    /* The last few boot events say how far the game got. They come from this
+       error's own run log (logs/game-<disc>-last.txt, #1303), never from the
+       developer log: that log spans every launch of the session and holds only
+       the first lines of each run, so a run whose events came later showed the
+       previous game's events instead. */
+    char events[8][PLAYER_DEV_LOG_LINE_MAX];
     size_t event_count = 0;
-    for (size_t i = player_dev_log_count(app); i > 0 && event_count < 8u; i--) {
-        const char *line = player_dev_log_line(app, i - 1u);
-        if (line && strncmp(line, "[runtime] BOOT_EVENT ", 21) == 0) events[event_count++] = i - 1u;
+    size_t event_next = 0;
+    FILE *run_log = error->log_file_path[0]
+        ? nk_fopen_utf8(error->log_file_path, "rb") : NULL;
+    if (run_log) {
+        static const char event_prefix[] = "BOOT_EVENT ";
+        char chunk[PLAYER_DEV_LOG_LINE_MAX];
+        bool at_line_start = true;
+        while (fgets(chunk, sizeof(chunk), run_log)) {
+            size_t len = strlen(chunk);
+            bool line_ends = len > 0 && chunk[len - 1] == '\n';
+            if (at_line_start && strncmp(chunk, event_prefix, sizeof(event_prefix) - 1u) == 0) {
+                while (len > 0 && (chunk[len - 1] == '\n' || chunk[len - 1] == '\r')) {
+                    chunk[--len] = '\0';
+                }
+                /* Keep the last eight: a ring, read back oldest first. */
+                memcpy(events[event_next], chunk, len + 1u);
+                event_next = (event_next + 1u) % 8u;
+                if (event_count < 8u) ++event_count;
+            }
+            at_line_start = line_ends;
+        }
+        fclose(run_log);
     }
     if (event_count > 0) {
         player_report_append(raw, sizeof(raw), &used, "", "Last boot events:");
-        while (event_count > 0) {
+        for (size_t i = 0; i < event_count; ++i) {
             player_report_append(raw, sizeof(raw), &used, "  ",
-                                 player_dev_log_line(app, events[--event_count]) +
-                                     sizeof(event_prefix) - 1u);
+                                 events[(event_next + 8u - event_count + i) % 8u]);
         }
     }
     const char *profile = NULL;
