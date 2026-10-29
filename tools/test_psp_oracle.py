@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 101)
+        self.assertEqual(len(routes), 102)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108}
-                         | {110, 111, 112, 113, 114, 115, 116}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2464,6 +2464,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(routes.get("vfpu-compare"), "68")
+        self.assertEqual(routes.get("sas-init"), "117")
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(

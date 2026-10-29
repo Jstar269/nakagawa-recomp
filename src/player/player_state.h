@@ -48,7 +48,8 @@ typedef enum {
     VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
     VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
-    VIEW_UPDATES            /* Settings > Updates: check for and fetch a newer version; the last value */
+    VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
+    VIEW_CONFIRM_FACTORY_RESET /* Settings > Factory reset: what moves aside; the last value */
 } PlayerView;
 
 typedef enum {
@@ -523,6 +524,12 @@ typedef struct PlayerApp {
        this instead of starting the game from draw code. */
     bool request_launch;
     int request_launch_index;
+    /* Factory reset's Reset button asked for the reset. The event loop runs
+       it, because only it knows which background jobs are still working. */
+    bool request_factory_reset;
+    /* The reset moved the user data aside: the player quits without saving
+       anything and starts a fresh copy of itself, which opens on a first run. */
+    bool factory_reset_done;
     /* A launch is checking the package or starting the process on that
        worker; `launch_pending_disc_id` names the game. The UI keeps drawing
        and shows the game as starting until the worker hands back. */
@@ -1179,6 +1186,26 @@ bool player_app_open_prerequisite_about(PlayerApp *app);
 bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
+
+/* Factory reset (owner, 2026-10-29): the player goes back to a first run by
+ * moving its user data aside, never by deleting it. The folders that move are
+ * the config, data, cache and saves folders (library, settings, saves,
+ * imported PSP fonts, keys, built games and downloaded build tools), and the
+ * runtime root when one is set; a folder inside another one moves with it.
+ * Each is renamed in place to
+ * "<folder>-backup-<stamp>", so the move is a rename on the same disk and the
+ * user can move it back. Logs stay: the player is writing to them.
+ *
+ * player_factory_reset_folders lists the folders that would move (at most
+ * `cap`). player_app_factory_reset refuses while a game, a launch, a build or
+ * a tool download runs; otherwise it renames each folder, and when one rename
+ * fails it moves the earlier ones back and raises FACTORY_RESET_FAILED naming
+ * the folder. On success it sets factory_reset_done and should_quit. `stamp`
+ * is the backup suffix (YYYYMMDD-HHMMSS). */
+#define PLAYER_FACTORY_RESET_FOLDERS 5
+size_t player_app_factory_reset_folders(const PlayerApp *app, char out[][NK_MAX_PATH],
+                                        size_t cap);
+bool player_app_factory_reset(PlayerApp *app, const char *stamp);
 /* Settings > Build tools and cache: delete the shared library cache and say so. */
 void player_app_clear_shared_library_cache(PlayerApp *app);
 void player_app_set_build_error(

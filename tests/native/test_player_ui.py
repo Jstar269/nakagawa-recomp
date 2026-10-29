@@ -1379,6 +1379,37 @@ class NativePlayerUiTests(unittest.TestCase):
         back = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"))
         self.assertEqual(self.screens(back)[-1][0], "settings", "Esc goes back to Settings")
 
+    def test_settings_factory_reset_asks_then_moves_the_data_aside(self) -> None:
+        """Owner 2026-10-29: Factory reset asks first, with Keep everything focused.
+
+        Keep everything and Esc go back to Settings with nothing moved. Reset
+        renames this run's scratch user data folders to "-backup-<stamp>" and
+        quits; the test build skips starting the fresh copy and says so."""
+        keep = self.run_player("factory-reset", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in keep["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = keep["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "confirm_factory_reset")
+        self.assertEqual(self.focus_trail(keep)[0], str(0x4517), "Keep everything has focus")
+        self.assertEqual(self.screens(keep)[-1][0], "settings")
+        self.assertNotIn("Factory reset: moved", keep["stdout"])
+        escape = self.run_player("factory-reset", ("WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"))
+        self.assertEqual(self.screens(escape)[-1][0], "settings", "Esc goes back to Settings")
+        self.assertNotIn("Factory reset: moved", escape["stdout"])
+
+        reset = self.run_player("factory-reset",
+                                ("WAIT_MS=100", "KEY_RIGHT", "WAIT_MS=50", "KEY_RETURN",
+                                 "WAIT_MS=300"))
+        stdout = str(reset["stdout"])
+        self.assertIn(str(0x452A), self.focus_trail(reset), "Right reaches Reset")
+        moved = re.findall(r"\[PLAYER\] Factory reset: moved (.+) to (.+)$", stdout, re.M)
+        self.assertTrue(moved, stdout)
+        for before, after in moved:
+            self.assertRegex(after, r"-backup-\d{8}-\d{6}(-\d+)?$")
+            self.assertTrue(after.startswith(before), (before, after))
+        self.assertIn("[PLAYER_UI_TEST] factory_reset restart=skipped", stdout)
+
     def test_next_ui_mouse_and_keyboard_reach_the_add_card(self) -> None:
         click = self.run_player("library", ("MOUSE_MOVE=794,257", "MOUSE_DOWN", "MOUSE_UP"))
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in click["stdout"]:
