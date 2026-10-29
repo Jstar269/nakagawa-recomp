@@ -3863,6 +3863,123 @@ static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
            "a UMD read that would run past the end of guest memory is refused");
 }
 
+/* One asynchronous call on fd: nid with a1..a3 and t0, returning v0. */
+static uint32_t umd_test_async_call(uint32_t nid, uint32_t fd, uint32_t a1, uint32_t a2,
+                                    uint32_t a3, uint32_t t0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = a1;
+    cpu.r[6] = a2;
+    cpu.r[7] = a3;
+    cpu.r[8] = t0;
+    return sr_syscall(&cpu, nid);
+}
+
+#define UMD_NID_READ_ASYNC 0xa0b5a7c2u
+#define UMD_NID_LSEEK_ASYNC 0x71b19e77u
+#define UMD_NID_LSEEK32_ASYNC 0x1b385d8fu
+#define UMD_NID_WAIT_ASYNC 0xe23eec33u
+#define UMD_NID_POLL_ASYNC 0x3251ea56u
+#define UMD_NID_CLOSE_ASYNC 0xff5940b6u
+
+/* The 64-bit result an asynchronous status call stored at result_addr. */
+static int64_t umd_test_async_result(uint32_t result_addr) {
+    return (int64_t)(((uint64_t)MEM_R32(result_addr + 4u) << 32) | MEM_R32(result_addr));
+}
+
+/* Asynchronous requests on the UMD block device (PSP-UMDRAW-001 async cells): sceIoReadAsync
+ * returns 0, an immediate sceIoPollAsync returns 1 because the request is still pending, and
+ * sceIoWaitAsync returns 0 and stores the sector count as the 64-bit result. The queued read
+ * copies the same sectors and advances the same position as a synchronous one; a queued seek
+ * returns the sector position as its result, and its refusals are the synchronous ones. While
+ * a request is pending a synchronous read or seek on the descriptor is refused as busy. Every
+ * import advances the request queue (sr_syscall), so each busy check is the first call after
+ * its submission. */
+static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_t result_addr) {
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD async setup seeks to sector 16");
+    for (uint32_t i = 0; i < 2u * 2048u; i++) MEM_W8(data_addr + i, 0u);
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 2u, 0u, 0u) == 0u,
+           "a raw UMD sceIoReadAsync of two sectors returns 0");
+    expect(umd_test_async_call(UMD_NID_POLL_ASYNC, fd, result_addr, 0u, 0u, 0u) == 1u,
+           "an immediate sceIoPollAsync of the raw UMD read returns 1 (pending)");
+    MEM_W32(result_addr, 0xdeadbeefu);
+    MEM_W32(result_addr + 4u, 0xdeadbeefu);
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 2,
+           "sceIoWaitAsync of the raw UMD read returns 0 with the sector count as its result");
+    expect(umd_test_sectors_match(data_addr, 16u, 2u),
+           "the queued UMD read copied sectors 16 and 17");
+    expect(umd_test_seek32(fd, 0, 1u) == 18u,
+           "the queued UMD read advanced the position by its sector count");
+
+    /* Busy while pending: the synchronous read, then the synchronous seek. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u &&
+               umd_test_read(fd, data_addr + 2048u, 1u) == 0x80020329u,
+           "a synchronous UMD read while a request is pending is refused as busy");
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 18u, 1u) && umd_test_seek32(fd, 0, 1u) == 19u,
+           "the request a refused synchronous read left pending still reads sector 18");
+    uint32_t high = 0;
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u &&
+               umd_test_seek64(fd, 0, 1u, &high) == 0x80020329u && high == 0xffffffffu,
+           "a synchronous UMD seek while a request is pending is refused as busy");
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 19u, 1u) && umd_test_seek32(fd, 0, 1u) == 20u,
+           "the request a refused synchronous seek left pending still reads sector 19");
+
+    /* A queued read is completed by the dispatch of later imports as well as by a wait. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u,
+           "a raw UMD sceIoReadAsync completed by polling returns 0");
+    int polled = 0;
+    for (int i = 0; i < 8; i++) {
+        uint32_t rc = umd_test_async_call(UMD_NID_POLL_ASYNC, fd, result_addr, 0u, 0u, 0u);
+        if (rc == 0u) { polled = 1; break; }
+        expect(rc == 1u, "a pending raw UMD read polls as 1 until it completes");
+    }
+    expect(polled && umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 20u, 1u) && umd_test_seek32(fd, 0, 1u) == 21u,
+           "a polled raw UMD read completes with its sector count and data");
+
+    /* A zero count is the device's refusal, delivered as the request's result. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 21u,
+           "a zero-sector raw UMD async read completes with 0x80010016 and keeps the position");
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, 0x0bffff00u, 1u, 0u, 0u) == 0x80010016u,
+           "a raw UMD async read into memory that cannot hold a whole sector is refused");
+
+    /* Queued seeks count sectors like the synchronous ones. */
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 32u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 32 && umd_test_seek32(fd, 0, 1u) == 32u,
+           "a raw UMD sceIoLseekAsync SEEK_SET 32 completes with sector 32");
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 0u, 0u, 2u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a raw UMD sceIoLseekAsync SEEK_END 0 completes with the last sector");
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 0xffffffffu, 0xffffffffu, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x8001b003u &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a queued negative raw UMD seek completes refused with 0x8001b003, position kept");
+    expect(umd_test_async_call(UMD_NID_LSEEK32_ASYNC, fd, 16u, 0u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 16 && umd_test_seek32(fd, 0, 1u) == 16u,
+           "a raw UMD sceIoLseek32Async SEEK_SET 16 completes with sector 16");
+
+    /* A read crossing the last sector stays at the named boundary as its result. */
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 2u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010086u,
+           "a queued UMD read across the last sector completes at the raw-device boundary");
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
@@ -3877,12 +3994,8 @@ static void test_umd_io_console_model(void) {
     static const uint32_t nid_io_open_async = 0x89aa9906u;
     static const uint32_t nid_io_read_async = 0xa0b5a7c2u;
     static const uint32_t nid_io_write_async = 0x0facab19u;
-    static const uint32_t nid_io_lseek_async = 0x71b19e77u;
-    static const uint32_t nid_io_lseek32_async = 0x1b385d8fu;
     static const uint32_t nid_io_ioctl_async = 0xe95a012bu;
     static const uint32_t nid_io_wait_async = 0xe23eec33u;
-    static const uint32_t nid_io_poll_async = 0x3251ea56u;
-    static const uint32_t nid_io_get_async_stat = 0xcb05f8d6u;
     static const uint32_t nid_io_close_async = 0xff5940b6u;
     typedef struct {
         const char *path;
@@ -3989,6 +4102,11 @@ static void test_umd_io_console_model(void) {
            "with no disc image a UMD sceIoRead fails closed without changing guest memory");
     expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
            "with no disc image a UMD sceIoLseek32 fails closed");
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, raw_fd, DATA_ADDR, 1u, 0u, 0u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoReadAsync fails closed");
+    expect(umd_test_async_call(UMD_NID_POLL_ASYNC, raw_fd, 0u, 0u, 0u, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoPollAsync fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
@@ -4001,6 +4119,7 @@ static void test_umd_io_console_model(void) {
         raw_fd = sr_syscall(&cpu, nid_io_open);
         expect(raw_fd == 3u, "each UMD block device opens read-only");
         test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        test_umd_block_device_async(raw_fd, DATA_ADDR, PATH_ADDR + 0x100u);
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = raw_fd;
         expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
@@ -4033,8 +4152,12 @@ static void test_umd_io_console_model(void) {
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read_async) == 0x80010086u,
-           "raw UMD sceIoReadAsync fails closed");
+    expect(sr_syscall(&cpu, nid_io_read_async) == 0u,
+           "raw UMD sceIoReadAsync with a disc image queues the read");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_wait_async) == 0u,
+           "the queued raw UMD read completes on sceIoWaitAsync");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
@@ -4043,32 +4166,8 @@ static void test_umd_io_console_model(void) {
            "raw UMD sceIoWriteAsync fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek_async) == 0x80010086u,
-           "raw UMD sceIoLseekAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32_async) == 0x80010086u,
-           "raw UMD sceIoLseek32Async fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl_async) == 0x80010086u,
            "raw UMD sceIoIoctlAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_get_async_stat) == 0x80010086u,
-           "raw UMD sceIoGetAsyncStat fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_wait_async) == 0x80010086u,
-           "raw UMD sceIoWaitAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_poll_async) == 0x80010086u,
-           "raw UMD sceIoPollAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_close_async) == 0x80010086u,
-           "raw UMD sceIoCloseAsync fails closed without closing the descriptor");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
@@ -4080,8 +4179,15 @@ static void test_umd_io_console_model(void) {
            "raw UMD sceIoDclose fails closed without closing the descriptor");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_close) == 0u,
-           "raw UMD sceIoClose succeeds after rejected operations");
+    expect(sr_syscall(&cpu, nid_io_close_async) == 0u,
+           "raw UMD sceIoCloseAsync queues the close");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = PATH_ADDR + 0x100u;
+    expect(sr_syscall(&cpu, nid_io_wait_async) == 0u &&
+               umd_test_async_result(PATH_ADDR + 0x100u) == 0 &&
+               sr_hle_test_fd_kind(raw_fd) != FD_KIND_RAW_DEVICE,
+           "the queued raw UMD close completes with 0 and releases the descriptor");
 
     fd_set_path(&cpu, PATH_ADDR, "umd0:");
     cpu.r[5] = 1u;

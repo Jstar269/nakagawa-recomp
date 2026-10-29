@@ -2889,8 +2889,16 @@ captured cells show what the console counts:
 Do not relaunch this case as written: its size cells must first be expressed
 in sectors, at most 16 for the 32 KiB buffer. The runtime's UMD block device
 (sceIoRead, sceIoLseek and sceIoLseek32 on umd0:, umd1: and umd:) follows these
-captured cells. It keeps a named boundary for a read that crosses the last
-sector and for the asynchronous calls, which no runtime path serves yet, and it
+captured cells. Its asynchronous reads and seeks (sceIoReadAsync, sceIoLseekAsync,
+sceIoLseek32Async, sceIoCloseAsync and the poll, wait and status calls) go through
+the runtime's asynchronous request queue and complete through the same sector
+calls, matching the captured async cells: submission returns 0, an immediate poll
+returns 1 and the wait stores the sector count. A synchronous read or seek while a
+request is pending is refused as busy, as for files. The completion delay is the
+queue's synthetic two-import policy, not a measured interval, and a zero count is
+refused as the request's result rather than at submission, which no cell
+distinguishes. It keeps a named boundary for a read that crosses the last sector,
+for sceIoOpenAsync, sceIoWriteAsync and sceIoIoctlAsync on the device, and it
 refuses every position past the last sector: the edge between the last sector
 and 0x7fffffff is inferred from SEEK_END, not captured.
 
