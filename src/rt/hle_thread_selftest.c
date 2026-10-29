@@ -5897,6 +5897,7 @@ static void osk_guest_build(int fields, uint32_t out_len, uint32_t out_limit) {
         MEM_W32(f + 0x2cu, 0u);                            /* result: UNCHANGED */
         MEM_W32(f + 0x30u, out_limit);
     }
+    MEM_W32(OSK_PARAM_ADDR, 0x40u);
     MEM_W32(OSK_PARAM_ADDR + 0x30u, (uint32_t)fields);
     MEM_W32(OSK_PARAM_ADDR + 0x34u, OSK_FIELDS_ADDR);
     MEM_W32(OSK_PARAM_ADDR + 0x38u, 0u);
@@ -5942,6 +5943,30 @@ static int osk_write_script(const char *const *lines, int count) {
  * after use, and retain the earlier INIT refusal coverage. */
 #define NID_OSK_UPDATE 0x4b85c861u
 extern void sr_hle_test_osk_slot_reset(void);
+
+static void test_osk_parameter_sizes(void) {
+    CpuState cpu = {0};
+    static const uint32_t invalid[] = {0u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    sr_hle_test_osk_slot_reset();
+    cpu.r[4] = OSK_PARAM_ADDR;
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        MEM_W32(OSK_PARAM_ADDR, invalid[i]);
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+               "OSK rejects an unsupported parameter size");
+    }
+    expect(osk_poll(&cpu) == 0x80110005u, "invalid OSK sizes do not claim the dialog slot");
+    for (uint32_t size = 0x40u; size <= 0x44u; size += 4u) {
+        MEM_W32(OSK_PARAM_ADDR, size);
+        cpu.r[4] = OSK_PARAM_ADDR;
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "OSK accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    cpu.r[4] = 0x0bffffc0u;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+           "OSK rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
+}
 
 static void test_osk_update_and_shutdown_init_states(void) {
     CpuState cpu;
@@ -6517,7 +6542,63 @@ static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
  * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
 static void utility_param_block(uint32_t addr, uint32_t size) {
     for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr, size);
     MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_netconf_parameter_sizes(void) {
+    CpuState cpu;
+    static const uint32_t invalid[] = {0u, 0x37u, 0x39u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    static const uint32_t valid[] = {0x38u, 0x40u, 0x44u};
+    sr_hle_test_osk_slot_reset();
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x44u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, invalid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "netconf rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    for (unsigned i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, valid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0u,
+               "netconf accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, 0x0bffffc0u) == 0x80110004u,
+           "netconf rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
+}
+
+static uint32_t utility_fixture_size(uint32_t init) {
+    if (init == NID_GAMEDATA_DIALOG_INIT) return 0x590u;
+    if (init == NID_SHARING_DIALOG_INIT) return 0x50u;
+    return 0x40u;
+}
+
+static void test_storage_dialog_parameter_sizes(void) {
+    static const struct { uint32_t nid; uint32_t valid[3]; unsigned count; } cases[] = {
+        {NID_GAMEDATA_DIALOG_INIT, {0x590u, 0x598u, 0u}, 2},
+        {NID_SHARING_DIALOG_INIT, {0x50u, 0x54u, 0x64u}, 3},
+    };
+    CpuState cpu;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x600u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, 0x20u);
+        expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "storage dialog rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+        for (unsigned j = 0; j < cases[i].count; ++j) {
+            utility_param_block(UTILITY_OTHER_PARAM_ADDR, cases[i].valid[j]);
+            expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0u,
+                   "storage dialog accepts a versioned parameter size");
+            sr_hle_test_osk_slot_reset();
+        }
+        MEM_W32(0x0bffffc0u, cases[i].valid[0]);
+        expect(utility_call(&cpu, cases[i].nid, 0x0bffffc0u) == 0x80110004u,
+               "storage dialog rejects a truncated parameter block");
+        sr_hle_test_osk_slot_reset();
+    }
 }
 
 static void test_utility_dialog_single_slot(void) {
@@ -6576,7 +6657,8 @@ static void test_utility_dialog_single_slot(void) {
         if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
-        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        utility_param_block(block, savedata ? 0x600u : utility_fixture_size(dialogs[i].init));
+        if (dialogs[i].init == NID_OSK_INIT) MEM_W32(block, 0x40u);
         snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
                  "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
@@ -6630,7 +6712,7 @@ static void test_utility_dialog_single_slot(void) {
         const uint32_t init = dialogs[i].init;
         if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
             continue;
-        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, utility_fixture_size(init));
         snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
                  "then winds down to NONE after ShutdownStart", dialogs[i].name);
         expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
@@ -6772,7 +6854,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
                  "still reports INIT, then RUNNING", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
@@ -6789,7 +6871,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
         utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
         snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
@@ -36583,11 +36665,14 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
     test_volatile_mem_output_preflight();
+    test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_storage_dialog_parameter_sizes();
+    test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();

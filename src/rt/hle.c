@@ -12302,9 +12302,36 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
-UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
-UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
-UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
+/* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
+static uint32_t h_NetDialogInit(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x38u && size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
+    return utility_dialog_init(&s_net_dialog, A0);
+}
+static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
+static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_net_dialog); }
+static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
+/* PSPAutotests utility/dialog/sizes lists the storage dialog versions. */
+static uint32_t utility_storage_init(UtilityDialog *d, uint32_t param) {
+    if (!param || !sr_guest_span_readable(param, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(param);
+    int valid = d->kind == UTILITY_GAMEDATA ? (size == 0x590u || size == 0x598u) :
+        (size == 0x50u || size == 0x54u || size == 0x64u);
+    if (!valid || !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size))
+        return 0x80110004u;
+    return utility_dialog_init(d, param);
+}
+static uint32_t h_GamedataDialogInit(CpuState *s) { return utility_storage_init(&s_gamedata_dialog, A0); }
+static uint32_t h_GamedataDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_gamedata_dialog); }
+static uint32_t h_SharingDialogInit(CpuState *s) { return utility_storage_init(&s_sharing_dialog, A0); }
+static uint32_t h_SharingDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_sharing_dialog); }
+static uint32_t h_SharingDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_sharing_dialog); }
+static uint32_t h_SharingDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_sharing_dialog); }
 
 /* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
  * box (osk_win.c) or, for automation, from a scripted answer.
@@ -12518,7 +12545,13 @@ static int osk_collect(void) {
 /* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
  * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
+    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. Check the
+     * size word first, then the entire version before retaining the guest address. */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {
