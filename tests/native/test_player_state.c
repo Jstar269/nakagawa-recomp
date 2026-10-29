@@ -208,6 +208,7 @@ static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
 
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
+    if (!file) fprintf(stderr, "write_text_file: cannot create %s: %s\n", path, strerror(errno));
     assert(file != NULL);
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
@@ -3761,6 +3762,15 @@ int main(int argc, char **argv) {
                runtime_package_status_name(status), reason);
         free(probe);
         return 0;
+    }
+    /* Copies of this binary stand in for the bundled python and child modes above. Any other
+     * arguments are a mode this binary does not have: name them and stop, instead of running
+     * the whole suite again inside a child (which would start its own children). */
+    if (argc > 1) {
+        fprintf(stderr, "test_player_state: no mode takes these arguments:");
+        for (int i = 1; i < argc; i++) fprintf(stderr, " [%s]", argv[i]);
+        fprintf(stderr, "\n");
+        return 97;
     }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
