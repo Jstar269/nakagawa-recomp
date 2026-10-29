@@ -2100,6 +2100,30 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(int(games.group(1)), MAX_LIBRARY_GAMES)
         self.assertEqual(int(size.group(1)) * 1024 * 1024, MAX_LIBRARY_JSON_BYTES)
 
+    def test_full_library_written_by_the_player_is_readable(self) -> None:
+        """MAX_LIBRARY_GAMES records in the player's format (nk_library_save), with
+        long paths, fit the byte limit and the structural budgets of the CLI route."""
+        folder = "D:/PSP collection/" + "A" * 80
+        games = [{
+            "disc_id": f"TEST{i:05d}", "title_name": "Synthetic title " + "T" * 100,
+            "disc_version": "1.00", "iso_path": f"{folder}/disc-{i:05d}.iso",
+            "prepared_root": f"{folder}/prepared/TEST{i:05d}",
+            "title_id": f"experimental-test{i:05d}", "iso_size_bytes": 1800000000,
+            "status": 1, "is_experimental": True, "executable_eboot_kind": 2,
+            "executable_boot_kind": 1, "executable_selection": 1,
+            "executable_boot_fallback": False, "boot_executable": "EBOOT.BIN",
+            "selected_executable": "EBOOT.BIN", "is_prepared": True,
+            "assets_staged": False, "extracted_asset_count": 0,
+            "extracted_audio_count": 0, "extracted_visual_count": 0,
+            "extracted_layout_count": 0, "last_played": "",
+        } for i in range(MAX_LIBRARY_GAMES)]
+        path = self.temp_dir / "library.json"
+        path.write_text(json.dumps({"schema_version": 1, "games": games}, indent=6),
+                        encoding="utf-8")
+        self.assertLess(path.stat().st_size, MAX_LIBRARY_JSON_BYTES)
+        payload = nk_cli._read_library_json(path)
+        self.assertEqual(len(payload["games"]), MAX_LIBRARY_GAMES)
+
     def test_library_exactly_at_byte_limit_is_accepted(self) -> None:
         limit = MAX_LIBRARY_JSON_BYTES
         prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "TEST80002", "settings_override": {"pad": "'
@@ -2353,30 +2377,6 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         entry = nk_cli._load_library_entry(self.temp_dir, disc_id)
         self.assertEqual(entry["title_id"], "synthetic")
         self.assertEqual(entry["iso_path"], "replacement.iso")
-
-    def test_full_library_written_by_the_player_is_readable(self) -> None:
-        """MAX_LIBRARY_GAMES records in the player's format (nk_library_save), with
-        long paths, fit the byte limit and the structural budgets of the CLI route."""
-        folder = "D:/PSP collection/" + "A" * 80
-        games = [{
-            "disc_id": f"TEST{i:05d}", "title_name": "Synthetic title " + "T" * 100,
-            "disc_version": "1.00", "iso_path": f"{folder}/disc-{i:05d}.iso",
-            "prepared_root": f"{folder}/prepared/TEST{i:05d}",
-            "title_id": f"experimental-test{i:05d}", "iso_size_bytes": 1800000000,
-            "status": 1, "is_experimental": True, "executable_eboot_kind": 2,
-            "executable_boot_kind": 1, "executable_selection": 1,
-            "executable_boot_fallback": False, "boot_executable": "EBOOT.BIN",
-            "selected_executable": "EBOOT.BIN", "is_prepared": True,
-            "assets_staged": False, "extracted_asset_count": 0,
-            "extracted_audio_count": 0, "extracted_visual_count": 0,
-            "extracted_layout_count": 0, "last_played": "",
-        } for i in range(MAX_LIBRARY_GAMES)]
-        path = self.temp_dir / "library.json"
-        path.write_text(json.dumps({"schema_version": 1, "games": games}, indent=6),
-                        encoding="utf-8")
-        self.assertLess(path.stat().st_size, MAX_LIBRARY_JSON_BYTES)
-        payload = nk_cli._read_library_json(path)
-        self.assertEqual(len(payload["games"]), MAX_LIBRARY_GAMES)
 
     def test_cli_library_append_over_limit_preserves_existing_file(self) -> None:
         path = self._cli_library(2)
