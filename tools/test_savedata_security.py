@@ -68,6 +68,9 @@ void sr_heap_note_bulk_write(uint32_t a, uint32_t w, uint32_t p)
     { (void)a; (void)w; (void)p; }
 uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
+/* src/rt/hle.c supplies the host Memory Stick free space; these cases do not size it. */
+/* 1 GiB free, the Memory Stick in pspautotests utility/savedata/getsize.expected (2ed7c9c5). */
+int sr_hle_memstick_free_bytes(uint64_t *free_bytes) { *free_bytes = 0x40000000ull; return 1; }
 
 #ifdef ORDER_INSTRUMENTED
 static int g_write_open_count;
@@ -867,8 +870,8 @@ static void check_getsize_cases(void) {
     /* G1: a normal zero-count request remains a successful no-op calculation. */
     reset_guest();
     result = run_getsize(SIZE_INFO, 0, 0, 0, 0);
-    CHECK(result == 0 && MEM_R32(SIZE_INFO + 36) == 64,
-          "normal zero-count GETSIZE must preserve the base requirement");
+    CHECK(result == 0 && MEM_R32(SIZE_INFO + 36) == 0 && MEM_R32(SIZE_INFO + 48) == 0,
+          "normal zero-count GETSIZE needs nothing more (neededKB and overwriteKB stay 0)");
 
     /* G1: normal small request and the existing cluster model. */
     reset_guest();
@@ -876,8 +879,8 @@ static void check_getsize_cases(void) {
     set_size_entry(NORM_ENTRIES, 0, 0x100);
     result = run_getsize(SIZE_INFO, 1, 1, SEC_ENTRIES, NORM_ENTRIES);
     CHECK(result == 0, "normal GETSIZE must succeed");
-    CHECK(MEM_R32(SIZE_INFO + 16) == CLUSTER && MEM_R32(SIZE_INFO + 36) == 128,
-          "normal GETSIZE output must preserve the cluster semantics");
+    CHECK(MEM_R32(SIZE_INFO + 16) == CLUSTER && MEM_R32(SIZE_INFO + 36) == 0,
+          "normal GETSIZE that fits reports 32 KiB sectors and no shortfall");
 
     /* G2: both arrays at the maintained 99-entry ceiling. */
     reset_guest();
