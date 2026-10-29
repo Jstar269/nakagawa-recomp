@@ -1,0 +1,1431 @@
+{
+  "$comment": "Nakagawa Recomp failure-code taxonomy. docs/FAILURE_CODES.md explains every code; tools/test_failure_codes.py keeps this file, that document and every emitter in agreement. Codes are stable: a code is never renamed or given a new meaning, and a code no emitter uses any more moves to \"retired\".",
+  "taxonomy_version": 1,
+  "stages": [
+    "inspect",
+    "decrypt",
+    "import",
+    "analyze",
+    "codegen",
+    "compile",
+    "package",
+    "run",
+    "host"
+  ],
+  "report_stages": {
+    "inspect": "inspect",
+    "import": "prepare_import",
+    "analyze": "analyze",
+    "codegen": "codegen",
+    "compile": "compile",
+    "package": "build_package",
+    "run": "launch"
+  },
+  "vocabularies": [
+    "report",
+    "route",
+    "staging",
+    "decrypt",
+    "disc",
+    "player",
+    "library"
+  ],
+  "codes": {
+    "DISC_IDENTIFY_FAILED": {
+      "stage": "inspect",
+      "in": [
+        "library"
+      ]
+    },
+    "DISC_IMAGE_BLOCK_CORRUPT": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_CHD_CD_UNSUPPORTED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_CHD_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_CHD_UNAVAILABLE": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_CHD_UNSUPPORTED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_EXPANDED_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_HEADER_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_ID_MISSING": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_INDEX_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_NOT_COMPRESSED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_NOT_EXPANDED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_READ_FAILED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_REFUSED": {
+      "stage": "inspect",
+      "in": [
+        "report"
+      ]
+    },
+    "DISC_IMAGE_SIZE_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_TRUNCATED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_VERSION_UNSUPPORTED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_IMAGE_WRITE_FAILED": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "DISC_NOT_PSP": {
+      "stage": "inspect",
+      "in": [
+        "disc",
+        "player"
+      ]
+    },
+    "EXECUTABLE_UNSUPPORTED": {
+      "stage": "inspect",
+      "in": [
+        "report"
+      ]
+    },
+    "INVALID_ISO": {
+      "stage": "inspect",
+      "in": [
+        "report"
+      ]
+    },
+    "ISO_CORRUPT": {
+      "stage": "inspect",
+      "in": [
+        "player"
+      ]
+    },
+    "MODIFIED_DUMP_CFW_LOADER": {
+      "stage": "inspect",
+      "in": [
+        "report"
+      ]
+    },
+    "PBP_HEADER_TRUNCATED": {
+      "stage": "inspect",
+      "in": [
+        "report",
+        "route",
+        "disc",
+        "player"
+      ]
+    },
+    "PBP_OFFSETS_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "report",
+        "route",
+        "disc",
+        "player"
+      ]
+    },
+    "PBP_PACKAGE_UNSUPPORTED": {
+      "stage": "inspect",
+      "in": [
+        "report",
+        "route",
+        "disc",
+        "player"
+      ]
+    },
+    "PBP_SFO_INVALID": {
+      "stage": "inspect",
+      "in": [
+        "report",
+        "route",
+        "disc",
+        "player"
+      ]
+    },
+    "SOURCE_NOT_FOUND": {
+      "stage": "inspect",
+      "in": [
+        "player"
+      ]
+    },
+    "CONTEXT_REQUIRED": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "DECOMPRESS_FAILURE": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "FIRMWARE_OUT_OF_SCOPE": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "INTEGRITY_FAILURE": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "IO_FAILURE": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "KEY_FILE_INVALID": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "KEY_REQUIRED": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "MALFORMED_INPUT": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "OUTPUT_EXISTS": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "PSONE_CLASSIC_UNSUPPORTED": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "disc",
+        "player"
+      ]
+    },
+    "RESOURCE_LIMIT": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "UNSUPPORTED_SCHEME": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "VALIDATION_FAILURE": {
+      "stage": "decrypt",
+      "in": [
+        "decrypt",
+        "player"
+      ]
+    },
+    "DISC_FILES_STAGE_FAILED": {
+      "stage": "import",
+      "in": [
+        "report"
+      ]
+    },
+    "EXECUTABLE_LOAD_BINDING_REQUIRED": {
+      "stage": "import",
+      "in": [
+        "route"
+      ]
+    },
+    "EXPERIMENTAL_CODEGEN_PROFILE_MISSING": {
+      "stage": "import",
+      "in": [
+        "route"
+      ]
+    },
+    "EXPERIMENTAL_IMPORT_FAILED": {
+      "stage": "import",
+      "in": [
+        "report"
+      ]
+    },
+    "EXPERIMENTAL_PROFILE_FAILED": {
+      "stage": "import",
+      "in": [
+        "player"
+      ]
+    },
+    "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM": {
+      "stage": "import",
+      "in": [
+        "route"
+      ]
+    },
+    "GAME_FILES_NOT_READY": {
+      "stage": "import",
+      "in": [
+        "player"
+      ]
+    },
+    "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE": {
+      "stage": "import",
+      "in": [
+        "route"
+      ]
+    },
+    "GUEST_MODULE_DECRYPTION_REQUIRED": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "GUEST_MODULE_DISCOVERY_FAILED": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "GUEST_MODULE_FORMAT_UNSUPPORTED": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "GUEST_MODULE_LOAD_BINDING_REQUIRED": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "GUEST_MODULE_STAGE_FAILED": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "ISO_UNQUALIFIED_REVISION": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "ISO_UNSUPPORTED_TITLE": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "PLAYER_NOT_FOUND": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "PLAYER_START_FAILED": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "PREPARATION_CANCELLED": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "PREPARATION_FAILED": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "PREPARATION_OUTPUT_INVALID": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
+    "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED": {
+      "stage": "import",
+      "in": [
+        "report"
+      ]
+    },
+    "RUNTIME_HLE_REGISTRY_UNAVAILABLE": {
+      "stage": "import",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "TITLE_PROFILE_MISSING": {
+      "stage": "import",
+      "in": [
+        "player"
+      ]
+    },
+    "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED": {
+      "stage": "analyze",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "ANALYZER_IMPORT_NID_TABLE_MISSING": {
+      "stage": "analyze",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "ANALYZER_IMPORT_REGIONS_MISMATCH": {
+      "stage": "analyze",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "ANALYZER_IMPORT_TABLE_INVALID": {
+      "stage": "analyze",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "ANALYZER_INTERNAL_ERROR": {
+      "stage": "analyze",
+      "in": [
+        "report"
+      ]
+    },
+    "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED": {
+      "stage": "analyze",
+      "in": [
+        "report",
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_ELF": {
+      "stage": "analyze",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_IMPORT_TABLE": {
+      "stage": "analyze",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_MODULE_DIR_REQUIRED": {
+      "stage": "analyze",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_NO_EXECUTABLE_REGIONS": {
+      "stage": "analyze",
+      "in": [
+        "route"
+      ]
+    },
+    "CODEGEN_FAILED": {
+      "stage": "codegen",
+      "in": [
+        "report"
+      ]
+    },
+    "PACKAGE_INVALID_CODEGEN_REPORT": {
+      "stage": "codegen",
+      "in": [
+        "route"
+      ]
+    },
+    "COMPILE_FAILED": {
+      "stage": "compile",
+      "in": [
+        "report"
+      ]
+    },
+    "PACKAGE_TOOLCHAIN_MISSING": {
+      "stage": "compile",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_TOOLCHAIN_VERSION_FAILED": {
+      "stage": "compile",
+      "in": [
+        "route"
+      ]
+    },
+    "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE": {
+      "stage": "compile",
+      "in": [
+        "report"
+      ]
+    },
+    "BUILD_PACKAGE_FAILED": {
+      "stage": "package",
+      "in": [
+        "report"
+      ]
+    },
+    "PACKAGE_AMBIENT_ENHANCEMENT": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_BUILD_FAILED": {
+      "stage": "package",
+      "in": [
+        "route",
+        "player"
+      ]
+    },
+    "PACKAGE_BUILD_INCOMPLETE": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_BUILD_IN_PROGRESS": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "PACKAGE_BUILD_REFUSED": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "PACKAGE_DISK_FULL": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "PACKAGE_INPUT_CHANGED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INPUT_MISSING": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_ENHANCEMENT": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_GAME_NAME": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_IDENTITY": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_MANIFEST": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_PATH": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_INVALID_PLAN": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_LICENSE_RECORD_MISSING": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_LICENSE_TEXT_MISSING": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_OUTPUT_CONFLICT": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_OUTPUT_NOT_DEDICATED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_OUTPUT_NOT_UNTRACKED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_PRIVATE_IDENTITY_PATH": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_PSP_HEADER_REQUIRED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_REBUILD_NOT_INCOMPATIBLE": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "PACKAGE_REPORT_TOO_LARGE": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_REUSE_INVALID": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_REUSE_REFUSED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_REVALIDATION_FAILED": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "PACKAGE_ROUTE_FAILED": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "PACKAGE_UNSUPPORTED_PATH": {
+      "stage": "package",
+      "in": [
+        "route"
+      ]
+    },
+    "RUNTIME_PACKAGE_NOT_READY": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
+    "DISPLAY_PROGRESS_UNVERIFIED": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "ENTRY_NOT_COMPILED": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "EXITED_ZERO_BEFORE_HLE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "EXPERIMENTAL_LAUNCH_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "GUEST_ACTIVITY_UNVERIFIED": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "HEADLESS_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "LAUNCH_DETAILS_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "LAUNCH_FAILED": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "LAUNCH_TIMEOUT": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "LOOSE_CONTENT_ROOTS_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "MANIFEST_MISMATCH": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "NATIVE_RUNTIME_CRASH": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "NO_FRAME_SUBMISSIONS": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "PROCESS_SPAWN_FAILED": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_ARGUMENT_FAILURE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "RUNTIME_ELF_REJECTED": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "RUNTIME_ERROR_EXIT": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_INPUT_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "RUNTIME_NOT_FOUND": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_NO_NEW_FRAMES": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_NO_PICTURE": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_PREMATURE_EXIT": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_SEMANTIC_BOUNDARY": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_START_TIMEOUT": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "RUNTIME_TRACE_UNAVAILABLE": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "STAGED_EXECUTABLE_INVALID": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "TITLE_DATA_MISSING": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "TITLE_PROFILE_INVALID": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "UNRESOLVED_DISPATCH_TARGET": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "UNSUPPORTED_IMPORT": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "UNSUPPORTED_INSTRUCTION": {
+      "stage": "run",
+      "in": [
+        "report"
+      ]
+    },
+    "WINDOWS_BLOCKED_START": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "WINDOWS_DEFENDER_THREAT": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "WINDOWS_POLICY_BLOCKED": {
+      "stage": "run",
+      "in": [
+        "player"
+      ]
+    },
+    "BUILD_TOOLCHAIN_MISSING": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "CACHE_CLEAR_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "CANCELLED": {
+      "stage": "host",
+      "in": [
+        "decrypt",
+        "disc",
+        "player"
+      ]
+    },
+    "CLI_NOT_FOUND": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "DATA_DIR_UNAVAILABLE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "DESTINATION_WRITE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "DISK_FULL": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "DISK_WRITE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "ERROR_UNKNOWN": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "FACTORY_RESET_BUSY": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "FACTORY_RESET_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "FOLDER_OPEN_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "HASH_MISMATCH": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "HASH_UNAVAILABLE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "INSTALL_CANCELLED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "INTERNAL_ERROR": {
+      "stage": "host",
+      "in": [
+        "decrypt",
+        "disc",
+        "player"
+      ]
+    },
+    "LIBRARY_WRITE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "MANIFEST_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "OFFLINE_OR_NETWORK_ERROR": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PATH_TOO_LONG": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PLATFORM_UNSUPPORTED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PREREQUISITE_BUNDLE_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PREREQUISITE_FETCH_START_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PREREQUISITE_INSTALL_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PREREQUISITE_MANIFEST_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PYTHON_ARCHIVE_EXTRACT_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PYTHON_ARCHIVE_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PYTHON_BOOTSTRAP_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PYTHON_BOOTSTRAP_START_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "PYTHON_NOT_FOUND": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "REDIRECT_REJECTED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "REMOVE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SIZE_MISMATCH": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SPAWN_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SWEEP_REPORT_INVALID": {
+      "stage": "host",
+      "in": [
+        "library"
+      ]
+    },
+    "SWEEP_ROUTE_FAILED": {
+      "stage": "host",
+      "in": [
+        "library"
+      ]
+    },
+    "SWEEP_TIME_BUDGET": {
+      "stage": "host",
+      "in": [
+        "library"
+      ]
+    },
+    "TITLE_TIME_BUDGET": {
+      "stage": "host",
+      "in": [
+        "library"
+      ]
+    },
+    "TOOLS_IN_USE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "TOOLS_REMOVE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "TRUNCATED_BODY": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_ANSWER_TOO_LARGE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_ANSWER_UNEXPECTED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_ANSWER_UNREADABLE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_CHECKSUM_CONFLICT": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_CHECKSUM_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_CHECKSUM_MISSING": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_DOWNLOAD_CANCELLED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_DOWNLOAD_REMOVED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_HASH_MISMATCH": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INCOMPLETE_DOWNLOAD": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_EXISTS": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_INCOMPLETE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_LEFTOVER": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_MOVE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_NOT_WRITABLE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_INSTALL_PATH": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_NO_RELEASES": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_NO_WINDOWS_ZIP": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_OFFLINE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_PLATFORM_UNSUPPORTED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_REDIRECT_REJECTED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_SAVE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_START_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_UNPACK_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_UNPACK_UNAVAILABLE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_VERSION_UNKNOWN": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    }
+  },
+  "retired": {
+    "ANALYSIS_FAILED": "never emitted",
+    "ANALYZER_FAILURE_UNCLASSIFIED": "replaced by named analyze-stage codes and ANALYZER_INTERNAL_ERROR"
+  },
+  "stop_boundaries": {
+    "names": {
+      "host-fiber-stack-bounds-unavailable": {
+        "issue": 118
+      },
+      "host-fiber-stack-exhausted": {
+        "issue": 118
+      },
+      "incomplete-executable-span": {
+        "issue": 118
+      },
+      "interpreter-rejection": {
+        "issue": 118
+      },
+      "invalid-control-flow": {
+        "issue": 118
+      },
+      "invalid-guest-memory-access": {
+        "issue": 118
+      },
+      "libfont-startup-unavailable": {
+        "issue": 299
+      },
+      "misaligned-control-target": {
+        "issue": 118
+      },
+      "misaligned-guest-memory-access": {
+        "issue": 118
+      },
+      "target-not-executable": {
+        "issue": 118
+      },
+      "unsupported-interpreter-form": {
+        "issue": 118
+      }
+    },
+    "prefixes": {
+      "unsupported-import-": {
+        "issue": 308
+      }
+    }
+  }
+}
