@@ -1801,6 +1801,23 @@ _register_campaign_probe(
     {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
 )
 
+# insn-trace (119, probe_insn_trace.c): the #312 real-PSP instruction trace. Per fixture of
+# fixtures/psp_oracle/insn_trace_fixtures.h, an `<id>-init` record (34 words), one
+# `<id>-sNNNN` record per executed instruction (34 words: pc, op, r1..r25, r29..r31, hi,
+# lo and the store's address and value) and an `<id>-end` record (4 words). The step counts are those of the
+# fixtures' architectural execution, which Nakagawa's trace of the same words reproduces
+# (tools/test_insn_trace.py checks both against this table).
+INSN_TRACE_STEPS = (("alu-branch-ls", 105), ("delay-slots", 27))
+INSN_TRACE_CASES = tuple(
+    case for fixture, steps in INSN_TRACE_STEPS
+    for case in (f"{fixture}-init", *(f"{fixture}-s{step:04d}" for step in range(steps)),
+                 f"{fixture}-end"))
+_register_campaign_probe(
+    "insn-trace", "PSP-TRACE-001", INSN_TRACE_CASES,
+    {case: (34 if case.endswith("-init") else 4 if case.endswith("-end") else 34)
+     for case in INSN_TRACE_CASES},
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",

@@ -83,8 +83,11 @@ reports the validated v2 tier from the strict loader. A
 satisfy the hardware gate. That gate reports `STRICT_V2_AGREEMENT` (not a hardware
 measurement) when a `PSP_HARDWARE` + `LOCAL_COSIM` pair passes `strict_hardware_diff`;
 with no pair supplied it is an optional gate reported as `NOT_RUN`, and with only one
-trace supplied it fails. The PSP-side v2 trace producer is in the works under
-issue #312 and is not provided by this verifier change.
+trace supplied it fails. The PSP-side producer is the `insn-trace` probe
+(`fixtures/psp_oracle/probe_insn_trace.c`): `tools/psp_oracle/insn_trace.py psp`
+turns its host0 log into one `PSP_HARDWARE` trace per fixture, `insn_trace.py local`
+writes the matching `LOCAL_COSIM` trace from Nakagawa's generated code, and
+`insn_trace.py compare` runs this strict comparison (#312).
 
 A strict match proves that the two complete, identically identified streams
 agree. The gate's evidence-tier result comes from the `source_tier` metadata;
