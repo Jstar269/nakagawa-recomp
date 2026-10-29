@@ -5897,6 +5897,26 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 /* Pictures the reference player always reports as "not yet" before the first frame.  Guest
  * middleware is written against this: several titles depend on the first calls failing. */
 #define PSMF_WARMUP_FRAMES 3
+/* PsmfPlayerData (scePsmfPlayerStart's second argument): six words. */
+#define PSMF_PLAYER_DATA_BYTES 24u
+/* scePsmfPlayerSetTempBuf refuses a buffer smaller than this. */
+#define PSMF_TEMP_BUF_MIN_BYTES 0x10000u
+/* PsmfPlayerData codec fields: AVC video and ATRAC3+ audio. */
+#define PSMF_VIDEO_CODEC_AVC 0xeu
+#define PSMF_AUDIO_CODEC_ATRAC3PLUS 0xfu
+/* playerVersion of a PSMF without entry points (the BASIC player). */
+#define PSMF_PLAYER_VERSION_BASIC 1u
+/* How long each call keeps the calling thread, in microseconds. */
+#define PSMF_SET_PSMF_DELAY_US 3100
+#define PSMF_STOP_DELAY_US 3000
+#define PSMF_VIDEO_DATA_DELAY_US 3000
+#define PSMF_AUDIO_RETRY_DELAY_US 10000
+#define PSMF_AUDIO_DATA_DELAY_US 30000
+#define PSMF_CREATE_DELETE_DELAY_US 20000
+/* scePsmfPlayerCreate: the smallest player buffer it accepts, and its thread-priority range. */
+#define PSMF_PLAYER_BUFFER_MIN_BYTES 0x00285800u
+#define PSMF_PLAYER_PRIORITY_MIN 0x10u
+#define PSMF_PLAYER_PRIORITY_LIMIT 0x6eu
 enum { PSMF_TRACK_VIDEO = 0, PSMF_TRACK_AUDIO = 1, PSMF_TRACKS = 2 };
 enum { PSMF_Q_INPUT = 0, PSMF_Q_AU = 1, PSMF_Q_DECODED = 2, PSMF_Q_STAGES = 3 };
 typedef struct { uint8_t state, flags; uint16_t reserved; uint32_t guestAddr, bytes; int64_t pts, dts; void *hostData; } SrPsmfQueueSlot;
@@ -6946,24 +6966,135 @@ static uint32_t h_PsmfCreate(CpuState *s) {
     /* Parameters are checked before a slot is claimed, so a refused create keeps nothing;
      * creating over a live control block gives the old player's decoder and producer back
      * and starts a fresh player (issue #279). */
-    SrPsmfPlayer *p=psmf_find(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
-    if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
-    psmf_player_release(p); p=psmf_slot(A0,1); if(!p)return PSMF_ERR_PARAM;
-    p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!A0 || !A1 || !sr_guest_span_readable(A1, 12u)) return PSMF_ERR_PARAM;
+    uint32_t b = MEM_R32(A1), sz = MEM_R32(A1 + 4), pri = MEM_R32(A1 + 8);
+    if (!b || sz < PSMF_PLAYER_BUFFER_MIN_BYTES) {
+        MEM_W32(A0, 0);
+        return PSMF_ERR_BUFSIZE;
+    }
+    if (pri < PSMF_PLAYER_PRIORITY_MIN || pri >= PSMF_PLAYER_PRIORITY_LIMIT) {
+        MEM_W32(A0, 0);
+        return PSMF_ERR_PARAM;
+    }
+    psmf_player_release(p);
+    p = psmf_slot(A0, 1);
+    if (!p) return PSMF_ERR_PARAM;
+    p->buffer = b;
+    p->bufferSize = sz;
+    p->priority = pri;
+    p->status = PSMF_STATUS_INIT;
+    p->pixelMode = 3;
+    p->loopStatus = 1;
+    p->videoCodec = PSMF_VIDEO_CODEC_AVC;
+    p->audioCodec = PSMF_AUDIO_CODEC_ATRAC3PLUS;
+    MEM_W32(A0, A0);
+    sched_delay_current(PSMF_CREATE_DELETE_DELAY_US);
+    return 0;
 }
-static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_player_release(p);psmf_av_final("player_delete");MEM_W32(A0,0);sched_delay_current(20000);return 0;}
-static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
+static uint32_t h_PsmfDelete(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p) return PSMF_ERR_STATUS;
+    psmf_player_release(p);
+    psmf_av_final("player_delete");
+    MEM_W32(A0, 0);
+    sched_delay_current(PSMF_CREATE_DELETE_DELAY_US);
+    return 0;
+}
+static uint32_t h_PsmfSetTempBuf(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status != PSMF_STATUS_INIT) return PSMF_ERR_STATUS;
+    if (!A1 || A2 < PSMF_TEMP_BUF_MIN_BYTES) return PSMF_ERR_PARAM;
+    p->tempBuf = A1;
+    p->tempSize = A2;
+    return 0;
+}
 /* scePsmfPlayerSetPsmf and scePsmfPlayerSetPsmfCB open the same file the same way and differ only in
  * whether the caller's callbacks may run during the call (PPSSPP Core/HLE/scePsmf.cpp 3f40ddc8,
  * _PsmfPlayerSetPsmfOffset).  Neither services callbacks here yet: the 3,100 us wait is a plain delay
  * for both. */
-static uint32_t psmf_set_psmf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
+static uint32_t psmf_set_psmf(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status != PSMF_STATUS_INIT) return PSMF_ERR_STATUS;
+    if (!A1) return PSMF_ERR_PARAM;
+    char path[512];
+    if (!guest_cstr(A1, path, sizeof(path))) return PSMF_ERR_PARAM;
+    uint32_t lba = 0, sz = 0;
+    uint8_t h[2048];
+    if (iso_lookup(path, &lba, &sz) != 0 || sz < sizeof(h) ||
+        iso_read(lba, 0, h, sizeof(h)) != (int)sizeof(h) ||
+        !psmf_parse_header(p, h, sizeof(h)))
+        return PSMF_ERR_PARAM;
+    if (p->producer) sr_psmf_producer_close(p->producer);
+    p->producer = NULL;
+    p->source.lba = lba;
+    p->source.size = sz;
+    SrPsmfSource source = {psmf_iso_read, p, sz};
+    p->producer = sr_psmf_producer_open(&source, p->presentationBase);
+    if (!p->producer) return PSMF_ERR_PARAM;
+    strncpy(p->path, path, sizeof(p->path) - 1);
+    p->fileLba = lba;
+    p->fileSize = sz;
+    p->readOffset = p->streamOffset;
+    p->status = PSMF_STATUS_STANDBY;
+    psmf_flush(p);
+    psmf_media_reset(p);
+    sched_delay_current(PSMF_SET_PSMF_DELAY_US);
+    return 0;
+}
 static uint32_t h_PsmfSetPsmf(CpuState *s){return psmf_set_psmf(s);}
 static uint32_t h_PsmfSetPsmfCB(CpuState *s){return psmf_set_psmf(s);}
-static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
+static uint32_t h_PsmfConfig(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p) return PSMF_ERR_STATUS;
+    if (A1 == 0) {  /* loop */
+        if (A2 > 1) return PSMF_ERR_PARAM;
+        p->loopStatus = A2;
+        return 0;
+    }
+    if (A1 == 1) {  /* pixel mode; -1 keeps the default, 3 */
+        if ((int32_t)A2 < -1 || A2 > 3) return PSMF_ERR_PARAM;
+        p->pixelMode = (A2 == (uint32_t)-1) ? 3 : A2;
+        return 0;
+    }
+    return PSMF_ERR_CONFIG;
+}
 /* scePsmfPlayerStart(player, PsmfPlayerData *data, int initPts): initPts is the third
  * argument (a2). t0 is the fifth EABI argument, which this call never sets. */
-static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)A2;if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams?(as>=p->audioStreams):(as>0&&as!=(uint32_t)-1)))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(!p->audioStreams&&ac!=0)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer){if(!sr_psmf_producer_select_streams(p->producer,vs,p->audioStreams?as:SR_PSMF_STREAM_NONE))return PSMF_ERR_CONFIG;}psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+static uint32_t h_PsmfStart(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status == PSMF_STATUS_INIT) return PSMF_ERR_STATUS;
+    if (!A1 || !sr_guest_span_readable(A1, PSMF_PLAYER_DATA_BYTES)) return PSMF_ERR_PARAM;
+    uint32_t d = A1, vc = MEM_R32(d), vs = MEM_R32(d + 4), ac = MEM_R32(d + 8), as = MEM_R32(d + 12);
+    int32_t mode = (int32_t)MEM_R32(d + 16), speed = (int32_t)MEM_R32(d + 20), pts = (int32_t)A2;
+    if (mode < 0 || mode > PSMF_PLAY_MODE_REWIND || vs >= p->videoStreams ||
+        (p->audioStreams ? (as >= p->audioStreams) : (as > 0 && as != (uint32_t)-1)))
+        return PSMF_ERR_CONFIG;
+    if (vc && vc != PSMF_VIDEO_CODEC_AVC) return PSMF_ERR_STREAM;
+    /* An audio codec of 1 is the other value the reference player accepts. */
+    if (p->audioStreams && ac != 1 && ac != PSMF_AUDIO_CODEC_ATRAC3PLUS) return PSMF_ERR_STREAM;
+    if (!p->audioStreams && ac != 0) return PSMF_ERR_STREAM;
+    if (p->playerVersion == PSMF_PLAYER_VERSION_BASIC && pts != 0) return PSMF_ERR_PARAM;
+    p->videoCodec = vc;
+    p->videoStreamNum = vs;
+    p->audioCodec = ac;
+    p->audioStreamNum = as;
+    p->playMode = (uint32_t)mode;
+    p->playSpeed = (uint32_t)speed;
+    p->currentPts = pts;
+    p->warmup = 0;
+    p->breakRequested = 0;
+    psmf_select_streams(p, vs, as);
+    psmf_flush(p);
+    if (p->producer) {
+        if (!sr_psmf_producer_select_streams(p->producer, vs,
+                                             p->audioStreams ? as : SR_PSMF_STREAM_NONE))
+            return PSMF_ERR_CONFIG;
+    }
+    psmf_media_reset(p);
+    p->status = PSMF_STATUS_PLAYING;
+    return 0;
+}
 /* scePsmfPlayerChangePlayMode(player, playMode, playSpeed): checks and their order follow PPSSPP
  * Core/HLE/scePsmf.cpp (3f40ddc8).  A player that is not playing yet answers INVALID_STATUS, a mode outside
  * PLAY..REWIND (0..5) INVALID_CONFIG, and FORWARD or REWIND on a PSMF without entry points (BASIC player)
@@ -6975,7 +7106,7 @@ static uint32_t h_PsmfChangePlayMode(CpuState *s){
     int32_t mode = (int32_t)A1;
     if (mode < 0 || mode > 5) return PSMF_ERR_CONFIG;
     if (mode == PSMF_PLAY_MODE_FORWARD || mode == PSMF_PLAY_MODE_REWIND) {
-        if (p->playerVersion == 1u) return PSMF_ERR_STREAM;
+        if (p->playerVersion == PSMF_PLAYER_VERSION_BASIC) return PSMF_ERR_STREAM;
         p->playSpeed = A2;
     }
     if (psmf_log_on())
@@ -6984,10 +7115,41 @@ static uint32_t h_PsmfChangePlayMode(CpuState *s){
     p->playMode = (uint32_t)mode;
     return 0;
 }
-static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);sched_delay_current(3000);return 0;}
-static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
-static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
-static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return p?p->status:PSMF_ERR_STATUS;}
+static uint32_t h_PsmfStop(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    p->status = PSMF_STATUS_STANDBY;
+    p->breakRequested = 0;
+    psmf_flush(p);
+    if (p->producer) sr_psmf_producer_reset(p->producer);
+    psmf_media_reset(p);
+    sched_delay_current(PSMF_STOP_DELAY_US);
+    return 0;
+}
+static uint32_t h_PsmfBreak(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p) return PSMF_ERR_STATUS;
+    p->breakRequested = 1;
+    psmf_flush(p);
+    return 0;
+}
+static uint32_t h_PsmfRelease(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_STANDBY) return PSMF_ERR_STATUS;
+    p->status = PSMF_STATUS_INIT;
+    p->fileLba = p->fileSize = p->streamOffset = p->streamSize = 0;
+    psmf_flush(p);
+    if (p->producer) {
+        sr_psmf_producer_close(p->producer);
+        p->producer = NULL;
+    }
+    psmf_media_reset(p);
+    return 0;
+}
+static uint32_t h_PsmfStatus(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    return p ? p->status : PSMF_ERR_STATUS;
+}
 /* scePsmfPlayerGetPsmfInfo(player, PsmfInfo *info, u32 *width, u32 *height).  PsmfInfo is five
  * words: lastFrameTs, numVideoStreams, numAudioStreams, numPcmStreams, playerVersion.  Checks and
  * their order follow PPSSPP Core/HLE/scePsmf.cpp (3f40ddc8): an unusable player or info address is
@@ -7011,34 +7173,92 @@ static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
     MEM_W32(A1 + 16u, p->playerVersion);
     return 0;
 }
-static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;psmf_log_summary(p);}}return 0;}
+static uint32_t h_PsmfUpdate(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    psmf_produce(p);
+    psmf_video_pump(p);
+    if (p->status == PSMF_STATUS_PLAYING && psmf_reached_end(p)) {
+        if (p->loopStatus == 0u) {  /* loop: start the stream again */
+            psmf_flush(p);
+            if (p->producer) sr_psmf_producer_reset(p->producer);
+            psmf_media_reset(p);
+        } else {
+            p->status = PSMF_STATUS_FINISHED;
+            psmf_log_summary(p);
+        }
+    }
+    return 0;
+}
 /* scePsmfPlayerGetVideoData(player, ScePsmfPlayerVideoData *d): d->frameWidth is the
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
  * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
  * enters the warm-up-held disposition on this path. */
-static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable_any_view(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
+static uint32_t h_PsmfGetVideo(CpuState *s) {
+    s_psmf_getvideo++;
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    if (!A1 || !sr_guest_span_readable(A1, 12u)) return PSMF_ERR_INVALID_POINTER;
+    int32_t bufw = (int32_t)MEM_R32(A1);
+    uint32_t displaybuf = MEM_R32(A1 + 4);
+    if (bufw < 0) return PSMF_ERR_PRIV_REQUIRED;
+    if (bufw != 0 && (uint32_t)bufw < p->videoWidth) return PSMF_ERR_INVALID_VALUE;
+    if (p->warmup < PSMF_WARMUP_FRAMES) {
+        p->warmup++;
+        return PSMF_ERR_NO_DATA;
+    }
+    p->warmup = PSMF_WARMUP_FRAMES;
+    if (!displaybuf || !sr_guest_span_writable_any_view(displaybuf, 4u))
+        return PSMF_ERR_INVALID_POINTER;
+    psmf_produce(p);
+    psmf_video_pump(p);
+    int64_t pts = 0;
+    int r = psmf_video_take(p, displaybuf, bufw == 0 ? 512 : (int)((uint32_t)bufw & ~1u),
+                            (int)p->pixelMode, &pts);
+    if (r <= 0) return PSMF_ERR_NO_DATA;
+    sched_delay_current(PSMF_VIDEO_DATA_DELAY_US);
+    MEM_W32(A1 + 4, displaybuf);
+    MEM_W32(A1 + 8, (uint32_t)pts);
+    return 0;
+}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
  * for a real decode; a frame that cannot be decoded yields NO_MORE_DATA, never silence. */
-static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_writable(A1,PSMF_AUDIO_BYTES))return PSMF_ERR_INVALID_POINTER;/* Audio is never handed out ahead of the first pictures the player calls
+static uint32_t h_PsmfGetAudio(CpuState *s) {
+    s_psmf_getaudio++;
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    if (!A1 || !sr_guest_span_writable(A1, PSMF_AUDIO_BYTES)) return PSMF_ERR_INVALID_POINTER;
+    /* Audio is never handed out ahead of the first pictures the player calls
      * "still warming up", and a paused player produces nothing.  A track that has genuinely run
      * dry reports no-more-data; the reference player's trailing zero fill sits behind an
      * unassigned duration field and is not observable behaviour, so no silence is invented. */
-    if(p->warmup<PSMF_WARMUP_FRAMES||p->playMode==PSMF_PLAY_MODE_PAUSE)return PSMF_ERR_NO_DATA;
-    psmf_produce(p);psmf_video_pump(p);
-    if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
-    const uint8_t*src=(const uint8_t*)p->audioPcm;
-    for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    if (p->warmup < PSMF_WARMUP_FRAMES || p->playMode == PSMF_PLAY_MODE_PAUSE) return PSMF_ERR_NO_DATA;
+    psmf_produce(p);
+    psmf_video_pump(p);
+    if (!psmf_audio_fill(p)) {
+        sched_delay_current(PSMF_AUDIO_RETRY_DELAY_US);
+        return PSMF_ERR_NO_DATA;
+    }
+    const uint8_t *src = (const uint8_t *)p->audioPcm;
+    for (uint32_t i = 0; i < PSMF_AUDIO_BYTES; i++) MEM_W8(A1 + i, src[i]);
     sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
                                  SR_PSMF_MEDIA_DELIVERED);
     psmf_av_delivered(PSMF_AV_AUDIO, A1, PSMF_AUDIO_BYTES, p->audioPcmPts, p->audioPcmPtsValid);
-    p->audioDisplayPts=p->audioPcmPts; p->audioDisplayPtsValid=p->audioPcmPtsValid;
-    p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
-    sched_delay_current(30000);
-    return 0;}
-static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
+    p->audioDisplayPts = p->audioPcmPts;
+    p->audioDisplayPtsValid = p->audioPcmPtsValid;
+    p->audioPcmValid = 0;
+    p->audioPcmSampleCount = 0;
+    p->audioBlocksOut++;
+    sched_delay_current(PSMF_AUDIO_DATA_DELAY_US);
+    return 0;
+}
+/* scePsmfPlayerGetAudioOutSize: one GetAudioData frame, PSMF_AUDIO_BYTES (8192). */
+static uint32_t h_PsmfAudioOutSize(CpuState *s) {
+    return psmf_find(A0, 0) ? PSMF_AUDIO_BYTES : PSMF_ERR_STATUS;
+}
 
 /* Host path helpers defined with the rest of the host-path layer below. */
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
@@ -14535,11 +14755,15 @@ static uint32_t h_StartModule(CpuState *s) {
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
+/* The module-stop NIDs sr_syscall routes onto a guest thread for direct test calls. */
+#define NID_SCE_KERNEL_STOP_MODULE 0xd1ff982au
+#define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
+
 /* Test-build-only call-throughs to the production handlers. */
 uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
-uint32_t sr_hle_test_stop_module(CpuState *s) { return sr_syscall(s, 0xd1ff982au); }
+uint32_t sr_hle_test_stop_module(CpuState *s) { return sr_syscall(s, NID_SCE_KERNEL_STOP_MODULE); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
 
 #define HLE_TEST_SCHED_CALL_ENTRY 0x08ffdf00u
@@ -28294,6 +28518,17 @@ static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
     fclose(events);
 }
 
+/* SR_NIDLOG: one line per syscall (NID, thread, VBLANK) to nidseq_mine.txt in the run
+ * folder (docs/DEBUGGING.md), flushed every 64 lines. */
+static void hle_nidlog_note(uint32_t nid) {
+    static FILE *nf = NULL;
+    static unsigned long nc = 0;
+    if (!nf) nf = fopen("nidseq_mine.txt", "w");
+    if (!nf) return;
+    fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
+    if ((++nc & 0x3f) == 0) fflush(nf);
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
@@ -28301,7 +28536,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     /* Direct white-box calls have no current TCB. Route module stop/self-stop
      * through the production handlers inside the real scheduler; nested calls
      * from that guest thread take the ordinary dispatch path below. */
-    if ((nid == 0xd1ff982au || nid == 0xd675ebb8u) && !sched_guest_thread_running())
+    if ((nid == NID_SCE_KERNEL_STOP_MODULE || nid == NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE) &&
+        !sched_guest_thread_running())
         return hle_test_run_on_guest_thread(s, nid);
 #endif
     io_async_dispatch_tick();
@@ -28323,12 +28559,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
     }
     sr_last_nid = nid;
-    if (hle_nidlog_on()) {
-        static FILE *nf = NULL; static unsigned long nc = 0;
-        if (!nf) nf = fopen("nidseq_mine.txt", "w");
-        if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
-                  if ((++nc & 0x3f) == 0) fflush(nf); }
-    }
+    if (hle_nidlog_on()) hle_nidlog_note(nid);
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
