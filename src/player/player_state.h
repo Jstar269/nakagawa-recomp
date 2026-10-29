@@ -513,7 +513,7 @@ typedef struct {
 
 /* The queue file, rebuild-queue.json beside settings.json:
  *   {"format": "nakagawa-rebuild-queue", "schema_version": 1,
- *    "titles": [{"disc_id": "ULUS10001", "state": "pending"}, ...]}
+ *    "titles": [{"disc_id": "TEST00006", "state": "pending"}, ...]}
  * state is "pending", "done", "missing_disc" or "failed"; a title whose build
  * was running when the player closed is saved as "pending" and starts again.
  * A file with a newer schema_version, another format, or an unknown member is
