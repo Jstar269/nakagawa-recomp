@@ -1822,9 +1822,12 @@ endif
 # -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
 # -O1: Measured and qualified default for HST.
 # -fno-var-tracking: Saves significant memory on huge functions.
-# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
+# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code. GCC only: Clang
+#   refuses the option, so it is passed only when $(CC) is not Clang (#317). GCC builds are unchanged.
 RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+RECOMP_CC_IS_CLANG := $(findstring clang version,$(shell "$(CC)" --version 2>&1))
+RECOMP_GCC_ONLY_FLAGS := $(if $(RECOMP_CC_IS_CLANG),,-ftrack-macro-expansion=0)
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking $(RECOMP_GCC_ONLY_FLAGS) $(NAN_TRAP_CFLAG)
 override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 ifeq ($(TRACE),1)
