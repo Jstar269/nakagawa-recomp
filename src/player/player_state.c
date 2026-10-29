@@ -664,6 +664,28 @@ int player_app_ttf_library_candidates(const char *exe_dir,
     return count;
 }
 
+static const char *player_showcase_package_status_word(NkRuntimePackageStatus status) {
+    switch (status) {
+        case NK_RUNTIME_PACKAGE_OK: return "OK";
+        case NK_RUNTIME_PACKAGE_MISSING: return "MISSING";
+        case NK_RUNTIME_PACKAGE_INCOMPATIBLE: return "INCOMPATIBLE";
+        case NK_RUNTIME_PACKAGE_STALE: return "STALE";
+        case NK_RUNTIME_PACKAGE_UNKNOWN:
+        default: return "UNKNOWN";
+    }
+}
+
+/* A bundled demo the library leaves out says why, in the player log and the
+   developer log, so a hidden demo can be diagnosed from the user's logs. */
+static void player_showcase_skipped(PlayerApp *app, const NkTitleEntry *title,
+                                    const char *reason) {
+    const char *why = reason && reason[0] ? reason : "no reason was given";
+    fprintf(stderr, "[PLAYER] Showcase %s (%s) skipped: %s\n", title->primary_disc_id,
+            title->id, why);
+    player_dev_log_add(app, "showcase", "%s (%s) skipped: %s", title->primary_disc_id,
+                       title->id, why);
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -688,23 +710,51 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
         snprintf(game.disc_version, sizeof(game.disc_version), "1.00");
         snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
         if (!player_join_path(game.iso_path, sizeof(game.iso_path), app->showcase_root,
-                              "images")) continue;
+                              "images")) {
+            player_showcase_skipped(app, title, "the demos folder path is too long");
+            continue;
+        }
         size_t image_root_len = strlen(game.iso_path);
         int image_written = snprintf(game.iso_path + image_root_len,
             sizeof(game.iso_path) - image_root_len, "%c%s.iso",
             nk_platform_path_separator(), title->primary_disc_id);
         if (image_written <= 0 ||
-            (size_t)image_written >= sizeof(game.iso_path) - image_root_len ||
-            !nk_platform_file_exists(game.iso_path)) continue;
+            (size_t)image_written >= sizeof(game.iso_path) - image_root_len) {
+            player_showcase_skipped(app, title, "the demo's disc image path is too long");
+            continue;
+        }
+        if (!nk_platform_file_exists(game.iso_path)) {
+            player_showcase_skipped(app, title,
+                                    "its disc image is not in the demos images folder");
+            continue;
+        }
         snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
         game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        char data_root_reason[512] = "";
         NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
-            app, &game, NULL, 0, NULL, 0);
-        game.is_prepared = nk_launch_validate_runtime_package(
-            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
-            (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
-             data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
-        if (!game.is_prepared) continue;
+            app, &game, NULL, 0, data_root_reason, sizeof(data_root_reason));
+        char package_reason[1024] = "";
+        NkRuntimePackageStatus package_status = nk_launch_validate_runtime_package(
+            app->showcase_root, &game, NULL, package_reason, sizeof(package_reason));
+        bool data_root_ready = data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+                               data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED;
+        game.is_prepared = package_status == NK_RUNTIME_PACKAGE_OK && data_root_ready;
+        if (package_status != NK_RUNTIME_PACKAGE_OK) {
+            char why[1200];
+            snprintf(why, sizeof(why), "package %s: %s",
+                     player_showcase_package_status_word(package_status),
+                     package_reason[0] ? package_reason : "no reason was given");
+            player_showcase_skipped(app, title, why);
+            continue;
+        }
+        if (!data_root_ready) {
+            char why[600];
+            snprintf(why, sizeof(why), "data folder %s: %s",
+                     data_root_status == NK_LAUNCH_DATA_ROOT_MISSING ? "missing" : "invalid",
+                     data_root_reason[0] ? data_root_reason : "no reason was given");
+            player_showcase_skipped(app, title, why);
+            continue;
+        }
         game.status = NK_STATUS_PREPARED;
         snprintf(game.last_played, sizeof(game.last_played), "Never");
         app->showcase_games[app->showcase_count++] = game;
@@ -974,9 +1024,9 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_BUILD_CACHE:
             return 4; /* share switch, clear cache, remove tools, back */
         case VIEW_ONLINE_SETTINGS:
-            /* online switch (+ updates, news, reports while it is on), developer
+            /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */
-            return 1 + (app->settings.online_mode ? 3 : 0) + 1 +
+            return 1 + (app->settings.online_mode ? 2 : 0) + 1 +
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
@@ -1067,10 +1117,10 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->controller_connected = false;
     settings->network_mode = NK_NETWORK_MODE_OFFLINE;
     settings->online_mode = false;
-    settings->online_updates = true;
     settings->online_news = true;
     settings->online_reports = true;
     settings->share_system_libraries = true;
+    settings->check_updates_at_start = false;
     settings->developer_mode = false;
     settings->experimental_60hz = false;
 }
@@ -1272,13 +1322,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[6] = {"online_mode", "online_updates", "online_news",
-                                            "online_reports", "developer_mode",
-                                            "experimental_60hz"};
-        bool *fields[6] = {&app->settings.online_mode, &app->settings.online_updates,
-                           &app->settings.online_news, &app->settings.online_reports,
-                           &app->settings.developer_mode, &app->settings.experimental_60hz};
-        for (int k = 0; k < 6; ++k) {
+        static const char *const keys[5] = {"online_mode", "online_news", "online_reports",
+                                            "developer_mode", "experimental_60hz"};
+        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_news,
+                           &app->settings.online_reports, &app->settings.developer_mode,
+                           &app->settings.experimental_60hz};
+        for (int k = 0; k < 5; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
@@ -1295,6 +1344,14 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     bool share_val = true;
     if (share_node && nk_json_get_bool(share_node, &share_val)) {
         app->settings.share_system_libraries = share_val;
+    }
+
+    /* Off unless the file says true: a missing or non-boolean value keeps the
+       check at start off. */
+    NkJsonNode *update_node = nk_json_obj_get(root, "check_updates_at_start");
+    bool update_val = false;
+    if (update_node && nk_json_get_bool(update_node, &update_val)) {
+        app->settings.check_updates_at_start = update_val;
     }
 
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
@@ -1381,7 +1438,6 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"network_mode\": \"offline\",\n");
     fprintf(f, "  \"online_mode\": %s,\n", app->settings.online_mode ? "true" : "false");
-    fprintf(f, "  \"online_updates\": %s,\n", app->settings.online_updates ? "true" : "false");
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
@@ -1391,6 +1447,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
             app->settings.share_system_libraries ? "true" : "false");
+    fprintf(f, "  \"check_updates_at_start\": %s,\n",
+            app->settings.check_updates_at_start ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1849,6 +1907,14 @@ bool player_app_experimental_60hz_active(const PlayerApp *app) {
     return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
 }
 
+void player_app_toggle_update_check_at_start(PlayerApp *app) {
+    if (!app) return;
+    app->settings.check_updates_at_start = !app->settings.check_updates_at_start;
+    player_dev_log_add(app, "settings", "check for updates at start %s",
+                       app->settings.check_updates_at_start ? "on" : "off");
+    maybe_persist_settings(app);
+}
+
 void player_app_toggle_share_system_libraries(PlayerApp *app) {
     if (!app) return;
     app->settings.share_system_libraries = !app->settings.share_system_libraries;
@@ -1866,9 +1932,8 @@ void player_app_set_online_mode(PlayerApp *app, bool on) {
 void player_app_toggle_online_feature(PlayerApp *app, int feature) {
     bool *field;
     if (!app) return;
-    field = feature == 0 ? &app->settings.online_updates
-          : feature == 1 ? &app->settings.online_news
-          : feature == 2 ? &app->settings.online_reports : NULL;
+    field = feature == 0 ? &app->settings.online_news
+          : feature == 1 ? &app->settings.online_reports : NULL;
     if (!field) return;
     *field = !*field;
     maybe_persist_settings(app);
@@ -2302,10 +2367,21 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
             app->last_error.details);
 }
 
+const char *player_disc_refusal_title(const char *boundary_code) {
+    if (boundary_code && strcmp(boundary_code, "DISC_IMAGE_COMPRESSED") == 0) {
+        return "Compressed Disc Image";
+    }
+    if (boundary_code && strcmp(boundary_code, "DISC_NOT_PSP") == 0) {
+        return "Not a PSP Disc Image";
+    }
+    return "Not a Disc Image";
+}
+
 const char *player_error_badge(const ErrorState *error) {
     static const struct { const char *code; const char *badge; } badges[] = {
         {"RUNTIME_SEMANTIC_BOUNDARY", "Game stopped"},
         {"RUNTIME_NO_NEW_FRAMES", "Game stopped"},
+        {"RUNTIME_NO_PICTURE", "Game stopped"},
         {"RUNTIME_PREMATURE_EXIT", "Game didn't start"},
         {"RUNTIME_ERROR_EXIT", "Game closed"},
         {"RUNTIME_START_TIMEOUT", "Game didn't start"},
@@ -2316,6 +2392,9 @@ const char *player_error_badge(const ErrorState *error) {
         {"PACKAGE_BUILD_FAILED", "Build stopped"},
         {"PACKAGE_BUILD_REFUSED", "Build not started"},
         {"PACKAGE_DISK_FULL", "Disk full"},
+        {"WINDOWS_BLOCKED_START", "Blocked by Windows"},
+        {"WINDOWS_DEFENDER_THREAT", "Blocked by Windows"},
+        {"WINDOWS_POLICY_BLOCKED", "Blocked by Windows"},
     };
     if (!error) return "Problem";
     for (size_t i = 0; i < sizeof(badges) / sizeof(badges[0]); i++) {
@@ -2327,11 +2406,12 @@ const char *player_error_badge(const ErrorState *error) {
 
 bool player_error_leads_with_message(const ErrorState *error) {
     static const char *const codes[] = {
-        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES",
+        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES", "RUNTIME_NO_PICTURE",
         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
         "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
         "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
         "PACKAGE_DISK_FULL", "RUNTIME_START_TIMEOUT",
+        "WINDOWS_BLOCKED_START", "WINDOWS_DEFENDER_THREAT", "WINDOWS_POLICY_BLOCKED",
     };
     if (!error) return false;
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
@@ -2510,6 +2590,15 @@ void player_app_set_game_stop_error(PlayerApp *app, const char *code,
                              "Return to Library", VIEW_LIBRARY);
         snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
                  where);
+    } else if (strcmp(code, "RUNTIME_NO_PICTURE") == 0) {
+        snprintf(message, sizeof(message),
+                 "The game kept running but showed only a black screen. %s Press Restart game "
+                 "to try again.",
+                 progress);
+        player_app_set_error(app, code, "Game Stopped Early", message,
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
+                 where);
     } else if (strcmp(code, "RUNTIME_PREMATURE_EXIT") == 0) {
         player_app_set_error(app, code, "Game Couldn't Start",
                              "The game closed while it was starting. Press Restart game to try "
@@ -2646,6 +2735,7 @@ static void player_clear_stalled_game_notice(PlayerApp *app, bool restore_game_w
     app->stalled_game_notice_dismissed = false;
     app->stalled_game_notice_raise_requested = false;
     app->stalled_game_no_frame_vblanks = 0;
+    app->stalled_game_dark_picture = false;
     app->stalled_game_seconds = 0;
     app->stalled_game_ready = 0;
     app->stalled_game_delay = 0;
@@ -2897,6 +2987,18 @@ bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work) {
     }
     if (work->failed_step == PLAYER_LAUNCH_STEP_START) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+        /* Windows Security or a policy refused the game's program: say so, and
+           name what Windows reported, instead of a generic launch failure. */
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(app->launch_session.process.spawn_error,
+                                           "the game", "Game",
+                                           app->launch_session.executable_path, &block)) {
+            player_app_set_error(app, block.code, block.title, block.message,
+                                 "Return to Library", VIEW_LIBRARY);
+            player_set_boundary_text(app, block.details);
+            fprintf(stderr, "[PLAYER] %s: %s\n", block.code, block.details);
+            return false;
+        }
         player_app_set_error(
             app,
             "PROCESS_SPAWN_FAILED",
@@ -3111,8 +3213,9 @@ void player_app_stop_stalled_game(PlayerApp *app) {
     snprintf(disc_id, sizeof(disc_id), "%s", app->launch_session.disc_id);
     char stall_details[256];
     snprintf(stall_details, sizeof(stall_details),
-             "no_frame_vblanks=%u seconds=%u; scheduler summary: "
+             "%s=%u seconds=%u; scheduler summary: "
              "ready=%u delay=%u wait=%u spin=%u",
+             app->stalled_game_dark_picture ? "dark_vblanks" : "no_frame_vblanks",
              app->stalled_game_no_frame_vblanks, app->stalled_game_seconds,
              app->stalled_game_ready, app->stalled_game_delay,
              app->stalled_game_wait, app->stalled_game_spin);
@@ -3135,7 +3238,10 @@ void player_app_stop_stalled_game(PlayerApp *app) {
         }
     }
     const char *run_log = kept_log[0] ? kept_log : app->boot_event_file_path;
-    player_app_set_game_stop_error(app, "RUNTIME_NO_NEW_FRAMES", stall_details,
+    player_app_set_game_stop_error(app,
+                                   app->stalled_game_dark_picture ? "RUNTIME_NO_PICTURE"
+                                                                  : "RUNTIME_NO_NEW_FRAMES",
+                                   stall_details,
                                    0u, 0, 0u, disc_id, run_log);
     player_clear_stalled_game_notice(app, true);
 }
@@ -3261,20 +3367,43 @@ static void player_consume_stall_event_line(PlayerApp *app, const char *line) {
         "BOOT_EVENT phase=stalled observation=no_new_flip ";
     static const char resumed_prefix[] =
         "BOOT_EVENT phase=resumed observation=frame_present";
+    /* The runtime's dark-picture watch (src/rt/fbcap.h): frames keep coming,
+       but none of them shows anything. */
+    static const char dark_prefix[] =
+        "BOOT_EVENT phase=stalled observation=dark_picture ";
+    static const char picture_prefix[] =
+        "BOOT_EVENT phase=resumed observation=picture";
     if (!app || !line) return;
+    bool dark = false;
     if (strncmp(line, resumed_prefix, sizeof(resumed_prefix) - 1u) == 0) {
-        player_clear_stalled_game_notice(app, true);
+        if (!app->stalled_game_dark_picture) player_clear_stalled_game_notice(app, true);
         return;
     }
-    if (strncmp(line, stalled_prefix, sizeof(stalled_prefix) - 1u) != 0) return;
+    if (strncmp(line, picture_prefix, sizeof(picture_prefix) - 1u) == 0) {
+        if (app->stalled_game_dark_picture) player_clear_stalled_game_notice(app, true);
+        return;
+    }
+    const char *fields = NULL;
+    if (strncmp(line, stalled_prefix, sizeof(stalled_prefix) - 1u) == 0) {
+        fields = line + sizeof(stalled_prefix) - 1u;
+    } else if (strncmp(line, dark_prefix, sizeof(dark_prefix) - 1u) == 0) {
+        fields = line + sizeof(dark_prefix) - 1u;
+        dark = true;
+    } else {
+        return;
+    }
 
     unsigned int no_frame_vblanks = 0u, seconds = 0u;
     unsigned int ready = 0u, delay = 0u, wait = 0u, spin = 0u;
-    if (sscanf(line + sizeof(stalled_prefix) - 1u,
-               "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u",
+    if (sscanf(fields,
+               dark ? "dark_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u"
+                    : "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u",
                &no_frame_vblanks, &seconds, &ready, &delay, &wait, &spin) != 6) {
         return;
     }
+    /* One notice at a time: an open notice keeps the observation that raised it. */
+    if (app->stalled_game_notice_visible && app->stalled_game_dark_picture != dark) return;
+    app->stalled_game_dark_picture = dark;
     app->stalled_game_no_frame_vblanks = (uint32_t)no_frame_vblanks;
     app->stalled_game_seconds = (uint32_t)seconds;
     app->stalled_game_ready = (uint32_t)ready;
@@ -3287,8 +3416,9 @@ static void player_consume_stall_event_line(PlayerApp *app, const char *line) {
         app->stalled_game_notice_visible = true;
         app->stalled_game_notice_raise_requested = true;
         player_dev_log_add(app, "runtime",
-                           "no new frame for %u seconds; scheduler ready=%u delay=%u "
+                           "%s for %u seconds; scheduler ready=%u delay=%u "
                            "wait=%u spin=%u",
+                           dark ? "only dark frames" : "no new frame",
                            app->stalled_game_seconds, app->stalled_game_ready,
                            app->stalled_game_delay, app->stalled_game_wait,
                            app->stalled_game_spin);
@@ -3554,6 +3684,16 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
                 app, "PACKAGE_BUILD_IN_PROGRESS", "Package Build Already Running",
                 "A package build is already running. Wait for it to finish before starting another.",
                 "Return to Build", VIEW_BUILDING_PACKAGE);
+            return false;
+        }
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(app->build_session.process.spawn_error,
+                                           "the package builder", "Package Builder",
+                                           python_path, &block)) {
+            player_app_set_error(app, block.code, block.title, block.message,
+                                 "Return to Library", VIEW_LIBRARY);
+            player_set_boundary_text(app, block.details);
+            fprintf(stderr, "[PLAYER] %s: %s\n", block.code, block.details);
             return false;
         }
         player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",
@@ -3996,8 +4136,8 @@ void player_app_start_setup_wizard(PlayerApp *app) {
     app->wizard.step = WIZARD_STEP_WELCOME;
     app->wizard.extraction_result = NK_OK;
     app->wizard.iso_selected = (app->inspecting_game.iso_path[0] != '\0');
-    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-             "Welcome to the Nakagawa Recomp First-Time Setup Wizard.");
+    /* The status line stays empty until something happens: the Game step
+       draws it as the reason no disc is chosen. */
     app->active_view = VIEW_SETUP_WIZARD;
     app->focus_index = 0;
 }
@@ -4265,7 +4405,8 @@ const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
     }
     if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
     if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
-        return check->status == PREFLIGHT_INVALID ? "Can't read" : "Some missing";
+        if (check->status == PREFLIGHT_INVALID) return "Can't read";
+        return check->status == PREFLIGHT_SYNTHETIC ? "Synthetic" : "Some missing";
     }
     switch (check->status) {
         case PREFLIGHT_MISSING: return "Needed";
@@ -4321,8 +4462,13 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
     } else if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
         if (ok) return "PSP system fonts found.";
         if (check->status == PREFLIGHT_INVALID) {
-            return "Your imported PSP fonts can't be read. You can import them again in the "
-                   "setup wizard.";
+            return "Your imported PSP fonts can't be read. You can import them again in "
+                   "Settings, PSP fonts.";
+        }
+        if (check->status == PREFLIGHT_SYNTHETIC) {
+            return "Every PSP system font has a stand-in, but some are not your PSP's own, so "
+                   "some text may look different. You can import your PSP's own fonts in "
+                   "Settings, PSP fonts.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
                "You can import your PSP's own fonts in Settings, PSP fonts.";
@@ -5458,7 +5604,7 @@ static void player_font_missing_sentence(char *out, size_t out_len,
         player_font_append(out, out_len, ". ");
     }
     player_font_append(out, out_len, one ? "Import it" : "Import them");
-    player_font_append(out, out_len, " from your own PSP in the setup wizard.");
+    player_font_append(out, out_len, " from your own PSP in Settings, PSP fonts.");
 }
 
 void player_app_refresh_font_status(PlayerApp *app) {
@@ -5498,12 +5644,14 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
     if (!app) return false;
     if (!folder || !*folder) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
+        app->wizard.font_message_kind = PLAYER_NOTE_NEUTRAL;
         return false;
     }
     if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
     if (!nk_font_import_folder(root, folder, NULL, &result, error, sizeof(error))) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Import stopped: %s.", error);
+        app->wizard.font_message_kind = PLAYER_NOTE_ERROR;
         player_app_refresh_font_status(app);
         return false;
     }
@@ -5521,9 +5669,11 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
         }
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "No font was imported: %.400s.", reason);
+        app->wizard.font_message_kind = PLAYER_NOTE_WARNING;
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Imported %d PSP font file(s) into the player's font cache.", result.imported_count);
+        app->wizard.font_message_kind = PLAYER_NOTE_DONE;
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
@@ -5541,12 +5691,15 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     if (removed < 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Could not remove the imported fonts: %s.", error);
+        app->wizard.font_message_kind = PLAYER_NOTE_ERROR;
     } else if (removed == 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "No imported PSP font to remove.");
+        app->wizard.font_message_kind = PLAYER_NOTE_NEUTRAL;
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Removed %d imported PSP font file(s). Project fonts, if any, are unchanged.", removed);
+        app->wizard.font_message_kind = PLAYER_NOTE_DONE;
     }
     player_app_refresh_font_status(app);
     return removed >= 0;
@@ -5788,12 +5941,16 @@ static void player_build_compatibility_preflight_for_game(
             player_font_append(summary, sizeof(summary), " ");
         }
         player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_KOREAN].detail);
-        player_preflight_add(preflight, "SYSTEM_FONTS",
-                             every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
-                             summary, font_issues, every_slot ? 0 : 1);
         {
+            /* Every font served but one not the user's own is Synthetic, not OK (#1300):
+               the sentence names the fonts that are stand-ins. */
             char missing[sizeof(preflight->checks[0].plain)];
+            PlayerPreflightStatus font_preflight;
             player_font_missing_sentence(missing, sizeof(missing), states, latin_states);
+            font_preflight = !every_slot ? PREFLIGHT_MISSING
+                : missing[0] ? PREFLIGHT_SYNTHETIC : PREFLIGHT_OK;
+            player_preflight_add(preflight, "SYSTEM_FONTS", font_preflight, summary, font_issues,
+                                 font_preflight == PREFLIGHT_OK ? 0 : 1);
             if (missing[0]) player_preflight_set_plain(preflight, "%s", missing);
         }
     }

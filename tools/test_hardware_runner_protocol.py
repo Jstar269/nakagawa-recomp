@@ -1558,6 +1558,32 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             IO_SPEC.record_count,
         )
 
+    def test_thread_k0_block_is_a_strict_fixed_record_sequence(self):
+        case = "thread-k0-block"
+        self.assertEqual(
+            run_psplink_module._campaign_completeness_contract(case),
+            "strict-fixed-record-sequence",
+        )
+        test_id, contract = run_psplink_module._FIXED_CAMPAIGN_CASES[case]
+        self.assertEqual(test_id, "PSP-THREAD-K0-001")
+        self.assertEqual(
+            [row[0] for row in contract],
+            ["K0-MAIN", "K0-FRESH", "K0-FRESH-W00", "K0-FRESH-W10", "K0-FRESH-W20",
+             "K0-FRESH-W30", "K0-REUSE-DEF", "K0-REUSE-NOFILL", "K0-REUSE-CLEAR"],
+        )
+        rows = "".join(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} case_id={case_id} "
+            "status=PASS result=0x00000000 "
+            + " ".join(f"out{i}=0x{i:08x}" for i in range(count)) + "\n"
+            for case_id, count, _statuses in contract
+        )
+        stream = CAMPAIGN_META + rows
+        self.assertTrue(run_psplink_module._campaign_stream_complete(stream, case))
+        self.assertEqual(len(_parse_campaign_records(stream, case).results), len(contract))
+        self.assertFalse(run_psplink_module._campaign_stream_complete(
+            CAMPAIGN_META + rows.rsplit("NAKAGAWA_PSP_TEST", 1)[0], case
+        ))
+
     def test_new_probe_cases_register_strict_runner_completeness(self):
         for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero", "cpu-timing"):
             with self.subTest(case_id=case_id):

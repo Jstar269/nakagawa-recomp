@@ -33,23 +33,27 @@ const char *input_settings_control_name(int control_idx) {
     return "Unknown Control";
 }
 
+/* A host input by the label a pad prints on it, with its other common name in brackets
+   (the PlayStation-style label for a face button or shoulder): short enough that a
+   control's two inputs together fit its button on the Controls page
+   (INPUT_SETTINGS_BINDING_TEXT_MAX). */
 static const char *friendly_host_button_name(NkHostGamepadButton btn) {
     switch (btn) {
-    case NK_HOST_BUTTON_SOUTH:          return "Button South (A / Cross)";
-    case NK_HOST_BUTTON_EAST:           return "Button East (B / Circle)";
-    case NK_HOST_BUTTON_WEST:           return "Button West (X / Square)";
-    case NK_HOST_BUTTON_NORTH:          return "Button North (Y / Triangle)";
-    case NK_HOST_BUTTON_BACK:           return "Button Back / Select";
-    case NK_HOST_BUTTON_START:          return "Button Start";
+    case NK_HOST_BUTTON_SOUTH:          return "A (Cross)";
+    case NK_HOST_BUTTON_EAST:           return "B (Circle)";
+    case NK_HOST_BUTTON_WEST:           return "X (Square)";
+    case NK_HOST_BUTTON_NORTH:          return "Y (Triangle)";
+    case NK_HOST_BUTTON_BACK:           return "Back (Select)";
+    case NK_HOST_BUTTON_START:          return "Start";
     case NK_HOST_BUTTON_LEFT_STICK:     return "Left Stick Click";
     case NK_HOST_BUTTON_RIGHT_STICK:    return "Right Stick Click";
-    case NK_HOST_BUTTON_LEFT_SHOULDER:  return "Left Bumper (LB / L1)";
-    case NK_HOST_BUTTON_RIGHT_SHOULDER: return "Right Bumper (RB / R1)";
+    case NK_HOST_BUTTON_LEFT_SHOULDER:  return "LB (L1)";
+    case NK_HOST_BUTTON_RIGHT_SHOULDER: return "RB (R1)";
     case NK_HOST_BUTTON_DPAD_UP:        return "D-Pad Up";
     case NK_HOST_BUTTON_DPAD_DOWN:      return "D-Pad Down";
     case NK_HOST_BUTTON_DPAD_LEFT:      return "D-Pad Left";
     case NK_HOST_BUTTON_DPAD_RIGHT:     return "D-Pad Right";
-    case NK_HOST_BUTTON_GUIDE:          return "Guide / Home";
+    case NK_HOST_BUTTON_GUIDE:          return "Guide (Home)";
     case NK_HOST_BUTTON_MISC1:          return "Misc Button";
     case NK_HOST_BUTTON_TOUCHPAD:       return "Touchpad";
     default:                            return nk_host_button_name(btn);
@@ -62,8 +66,8 @@ static const char *friendly_host_axis_name(NkHostGamepadAxis axis) {
     case NK_HOST_AXIS_LEFTY:         return "Left Stick Y";
     case NK_HOST_AXIS_RIGHTX:        return "Right Stick X";
     case NK_HOST_AXIS_RIGHTY:        return "Right Stick Y";
-    case NK_HOST_AXIS_LEFT_TRIGGER:  return "Left Trigger (LT / L2)";
-    case NK_HOST_AXIS_RIGHT_TRIGGER: return "Right Trigger (RT / R2)";
+    case NK_HOST_AXIS_LEFT_TRIGGER:  return "LT (L2)";
+    case NK_HOST_AXIS_RIGHT_TRIGGER: return "RT (R2)";
     default:                         return nk_host_axis_name(axis);
     }
 }
@@ -130,6 +134,28 @@ void input_settings_format_key(int key, char *buf, size_t buf_sz) {
     nk_host_key_words(key, buf, buf_sz);
 }
 
+/* A left-right pair of one modifier (Left Shift and Right Shift) reads as the modifier alone:
+   either key works, and the binding stays short enough for its button. */
+static const char *input_settings_key_pair_word(int a, int b) {
+    static const struct {
+        const char *left;
+        const char *right;
+        const char *word;
+    } kPairs[] = {
+        { "lshift", "rshift", "Shift" }, { "lctrl", "rctrl", "Ctrl" }, { "lalt", "ralt", "Alt" }
+    };
+    const char *first = nk_host_key_name(a);
+    const char *second = nk_host_key_name(b);
+    if (!first || !second) return NULL;
+    for (size_t i = 0; i < sizeof(kPairs) / sizeof(kPairs[0]); i++) {
+        if ((strcmp(first, kPairs[i].left) == 0 && strcmp(second, kPairs[i].right) == 0) ||
+            (strcmp(first, kPairs[i].right) == 0 && strcmp(second, kPairs[i].left) == 0)) {
+            return kPairs[i].word;
+        }
+    }
+    return NULL;
+}
+
 void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
                                        char *buf, size_t buf_sz) {
     char primary[32];
@@ -140,6 +166,11 @@ void input_settings_format_key_binding(const InputSettingsState *state, int cont
         return;
     }
     const NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    const char *pair = input_settings_key_pair_word(keys->primary, keys->secondary);
+    if (pair) {
+        snprintf(buf, buf_sz, "%s", pair);
+        return;
+    }
     input_settings_format_key(keys->primary, primary, sizeof(primary));
     if (keys->secondary != NK_HOST_KEY_NONE && keys->secondary != keys->primary) {
         input_settings_format_key(keys->secondary, secondary, sizeof(secondary));

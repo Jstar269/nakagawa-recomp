@@ -214,6 +214,24 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+/* The whole file as a NUL-terminated string; the caller frees it. */
+static char *read_text_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    char *text;
+    long length;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length >= 0);
+    rewind(file);
+    text = (char *)malloc((size_t)length + 1u);
+    assert(text != NULL);
+    assert(fread(text, 1, (size_t)length, file) == (size_t)length);
+    text[length] = '\0';
+    fclose(file);
+    return text;
+}
+
 #define TEST_ISO_SECTOR_BYTES 2048u
 #define TEST_ISO_MAX_NODES 2048u
 #define TEST_ISO_MODULE_BYTES 128u
@@ -2312,6 +2330,119 @@ static void test_error_cards_are_plain(void) {
     printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");
 }
 
+/* A game Windows refused to start gets a card that says Windows blocked it and
+   names what Windows reported, not the generic launch failure. The OS error is
+   the one CreateProcessW gave (test_win32_process checks that it is kept). */
+static void test_windows_block_cards_name_the_block(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerLaunchWork *work = (PlayerLaunchWork *)calloc(1, sizeof(PlayerLaunchWork));
+    assert(app != NULL && work != NULL);
+    nk_library_init(&app->library);
+    work->game_index = -1;
+    work->failed_step = PLAYER_LAUNCH_STEP_START;
+    work->result = NK_ERROR_PROCESS_SPAWN;
+    snprintf(work->session.executable_path, sizeof(work->session.executable_path),
+             "C:/synthetic/packages/TEST00042/test00042-v1.exe");
+#if defined(_WIN32) || defined(_WIN64)
+    static const struct {
+        int os_error;
+        const char *code;
+        const char *title;
+        const char *names;
+    } blocks[] = {
+        {5, "WINDOWS_BLOCKED_START", "Windows Blocked the Game",
+         "attack surface reduction rule"},
+        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+         "contains a threat"},
+        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+         "contains a threat"},
+        {1260, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+        {4551, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+    };
+    for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+        work->session.process.spawn_error = blocks[i].os_error;
+        assert(!player_app_launch_finish(app, work));
+        assert(app->active_view == VIEW_ERROR);
+        assert(strcmp(app->last_error.error_code, blocks[i].code) == 0);
+        assert(strcmp(app->last_error.title, blocks[i].title) == 0);
+        assert(strstr(app->last_error.message, blocks[i].names) != NULL);
+        assert(strstr(app->last_error.message, "Protection history") != NULL ||
+               blocks[i].os_error >= 1260);
+        assert(strcmp(player_error_badge(&app->last_error), "Blocked by Windows") == 0);
+        assert(player_error_leads_with_message(&app->last_error));
+        /* The details carry what Windows reported and which program it was. */
+        char expected[32];
+        snprintf(expected, sizeof(expected), "Windows error %d", blocks[i].os_error);
+        assert(strstr(app->last_error.boundary_text, expected) != NULL);
+        assert(strstr(app->last_error.boundary_text, "test00042-v1.exe") != NULL);
+    }
+#endif
+    /* Any other refusal keeps the plain launch-failure card. */
+    work->session.process.spawn_error = 2;
+    assert(!player_app_launch_finish(app, work));
+    assert(strcmp(app->last_error.error_code, "PROCESS_SPAWN_FAILED") == 0);
+    NkSpawnBlockReport report;
+    assert(!nk_launch_describe_spawn_block(0, "the game", "Game", "x.exe", &report));
+    assert(report.code[0] == '\0');
+    free(work);
+    free(app);
+    printf("[PLAYER_STATE_TEST] a Windows block of the game names the block PASS\n");
+}
+
+/* A bundled demo the library leaves out says why in the developer log (and the
+   player log): a demo whose image is there but whose package is not, and one
+   whose image is missing too. */
+static void test_skipped_showcase_logs_its_reason(void) {
+    const NkTitleEntry *with_image = NULL;
+    const NkTitleEntry *without_image = NULL;
+    for (int i = 0; i < nk_title_catalog_count; i++) {
+        const NkTitleEntry *title = &nk_title_catalog_entries[i];
+        if (!title->id || strncmp(title->id, "showcase-", 9) != 0 ||
+            !title->primary_disc_id || !title->display_name) continue;
+        if (!with_image) with_image = title;
+        else if (!without_image) without_image = title;
+    }
+    assert(with_image != NULL && without_image != NULL);
+
+    char exe_dir[NK_MAX_PATH];
+    char images[NK_MAX_PATH + 32];
+    char iso[NK_MAX_PATH + 96];
+    char sep = nk_platform_path_separator();
+    snprintf(exe_dir, sizeof(exe_dir), "%s%cshowcase_skip_fixture%c", SR_SELFTEST_BUILD_ROOT,
+             sep, sep);
+    (void)nk_platform_remove_tree(exe_dir, NULL);
+    snprintf(images, sizeof(images), "%sdemos%cimages", exe_dir, sep);
+    assert(nk_platform_mkdir_p(images));
+    snprintf(iso, sizeof(iso), "%s%c%s.iso", images, sep, with_image->primary_disc_id);
+    write_file(iso);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(!player_app_discover_showcase(app, exe_dir));
+    assert(app->showcase_count == 0);
+
+    bool package_reason = false;
+    bool image_reason = false;
+    for (size_t i = 0; i < player_dev_log_count(app); i++) {
+        const char *line = player_dev_log_line(app, i);
+        if (strncmp(line, "[showcase] ", 11) != 0) continue;
+        if (strstr(line, with_image->primary_disc_id) && strstr(line, "skipped: package ") &&
+            strlen(strstr(line, "skipped: package ")) > strlen("skipped: package MISSING: ")) {
+            package_reason = true;
+        }
+        if (strstr(line, without_image->primary_disc_id) &&
+            strstr(line, "skipped: its disc image is not in the demos images folder")) {
+            image_reason = true;
+        }
+    }
+    assert(package_reason);
+    assert(image_reason);
+    (void)nk_platform_remove_tree(exe_dir, NULL);
+    free(app);
+    printf("[PLAYER_STATE_TEST] a skipped showcase demo logs why PASS\n");
+}
+
 /* #1277: the main loop asks for the build outcome every frame. A failure card
    and a cancel's return to the Library are shown once per build session, so
    the card can be dismissed and the Library left. */
@@ -3546,6 +3677,8 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_windows_block_cards_name_the_block();
+    test_skipped_showcase_logs_its_reason();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
@@ -4193,6 +4326,10 @@ int main(int argc, char **argv) {
         assert(wiz->active_view == VIEW_SETUP_WIZARD);
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         assert(wiz->focus_index == 0);
+        /* The Game step draws the status line as the reason no disc is chosen:
+           a new wizard has nothing to report (the walkthrough saw a welcome
+           sentence there in the warning colour). */
+        assert(wiz->wizard.status_message[0] == '\0');
 
         player_app_wizard_next(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
@@ -4448,8 +4585,9 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_OK);
         check = find_preflight_check(&wiz->wizard.preflight, "DATA_ROOT");
         assert(check && check->status == PREFLIGHT_OK);
+        /* Project fonts only: every font is served, none is the user's own (#1300). */
         check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
-        assert(check && check->status == PREFLIGHT_OK);
+        assert(check && check->status == PREFLIGHT_SYNTHETIC);
 
         /* A refused local title profile remains identifiable by its declared
            disc ID, so the player can show the same refusal beside the card. */
@@ -5283,6 +5421,7 @@ int main(int argc, char **argv) {
 
         assert(player_app_fonts_import_folder(font_app, source_dir) == false);
         assert(strstr(font_app->wizard.font_message, "No font was imported") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_WARNING);
         snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
         remove(path);
         snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
@@ -5296,6 +5435,7 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
         assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_DONE);
         assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "your imported font") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
@@ -5318,12 +5458,16 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* The Korean font is the project's stand-in: Synthetic, not OK (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+            assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
+            assert(!player_preflight_check_blocks(fcheck));
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
             assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_DONE);
 
         /* 14g: a slot file that cannot be deleted keeps its manifest entry. The Japanese file is
            replaced by a directory holding a file, so the delete fails for a reason other than the
@@ -5367,6 +5511,7 @@ int main(int argc, char **argv) {
                removed, and the message names the Japanese file that stayed. */
             assert(!player_app_fonts_remove_imports(font_app));
             assert(strstr(font_app->wizard.font_message, "Could not remove the imported fonts") != NULL);
+            assert(font_app->wizard.font_message_kind == PLAYER_NOTE_ERROR);
             assert(strstr(font_app->wizard.font_message, "Japanese") != NULL);
             snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
             assert(!nk_platform_file_exists(path));
@@ -5634,7 +5779,8 @@ int main(int argc, char **argv) {
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* One Latin file stands in for the sixteen Latin fonts: Synthetic (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
             assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
@@ -5731,10 +5877,10 @@ int main(int argc, char **argv) {
                       "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
                       "Korean font. Games that ask for them get a stand-in font that looks "
                       "different; for 8 of the 16 Latin fonts and the Korean font they get no "
-                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
+                      "font at all. Import them from your own PSP in Settings, PSP fonts.") == 0);
 
-        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
-           it still names the fonts a game gets a stand-in for. */
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is
+           Synthetic (#1300), and it names the fonts a game gets a stand-in for. */
         snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
         assert(nk_platform_mkdir_p(path));
         snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
@@ -5743,27 +5889,29 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+        assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
                       "Korean font. Games that ask for them get a stand-in font that looks "
-                      "different. Import them from your own PSP in the setup wizard.") == 0);
+                      "different. Import them from your own PSP in Settings, PSP fonts.") == 0);
 
         /* 3. Every Latin file imported: only the Korean font is named. */
         assert(player_app_fonts_import_folder(missing_app, rest));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "This PSP system font was not found: the Korean font. Games that ask for it "
                       "get a stand-in font that looks different. Import it from your own PSP in "
-                      "the setup wizard.") == 0);
+                      "Settings, PSP fonts.") == 0);
 
         /* 4. Every font is the user's own: nothing is named. */
         assert(player_app_fonts_import_folder(missing_app, korean));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_status_word(fcheck), "Ready") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
 
         free(missing_app);
@@ -6280,8 +6428,7 @@ int main(int argc, char **argv) {
            default, and none of them moves network_mode off offline. */
         player_app_init(s_app2);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(s_app2->settings.online_news && s_app2->settings.online_reports);
         s_app2->settings.online_mode = true;
         s_app2->settings.online_news = false;
         s_app2->settings.developer_mode = true;
@@ -6289,8 +6436,7 @@ int main(int argc, char **argv) {
         player_app_init(s_app2);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(!s_app2->settings.online_news && s_app2->settings.online_reports);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
         write_text_file(test_settings_path,
                         "{\"schema_version\": 2, \"network_mode\": \"online\", "
@@ -6299,6 +6445,41 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
+        /* Check for updates at start (AGENTS.md section 5): off by default and
+           after a reset, saved and read back once the user turns it on, and a
+           value that is not a boolean keeps it off. */
+        player_app_init(s_app2);
+        assert(!s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "\"check_updates_at_start\": false") != NULL);
+            free(saved);
+        }
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        s_app2->settings_path[0] = '\0';
+        player_app_toggle_update_check_at_start(s_app2);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"check_updates_at_start\": \"yes\"}");
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        /* The retired online-mode "Update check" part is no longer written. */
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "online_updates") == NULL);
+            free(saved);
+        }
 
         remove(test_settings_path);
         free(s_app);
@@ -6359,7 +6540,7 @@ int main(int argc, char **argv) {
         dev->active_view = VIEW_ONLINE_SETTINGS;
         assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
         dev->settings.online_mode = true;
-        assert(player_app_focus_count(dev) == 7);
+        assert(player_app_focus_count(dev) == 6); /* + news, reports */
 
         /* The wizard step: Welcome -> Options -> Select game, and skipping
            turns both off. Every first run passes through it: it needs no game. */
@@ -7709,6 +7890,86 @@ int main(int argc, char **argv) {
         assert(warning_stopped_game);
         assert(warning_card_has_details);
         assert(stall_log_kept);
+
+        /* #308: a live synthetic runtime keeps flipping frames that show nothing.
+           The dark-picture event raises the same notice at 30 seconds, worded for
+           a black screen; a flip-watchdog resume does not clear it, a visible
+           picture does; and Stop game reaches the no-picture card. */
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "1");
+        bool dark_launched = player_app_launch_game(rep, 0);
+        bool dark_events_ok = dark_launched && rep->is_game_running &&
+                              rep->boot_event_file_path[0] != '\0';
+        bool dark_no_early_notice = false;
+        bool dark_notice = false;
+        bool dark_kept_on_flip_resume = false;
+        bool dark_cleared_on_picture = false;
+        bool dark_returned = false;
+        bool dark_stopped = false;
+        char dark_events_path[NK_MAX_PATH] = "";
+        if (dark_events_ok) {
+            snprintf(dark_events_path, sizeof(dark_events_path), "%s",
+                     rep->boot_event_file_path);
+            dark_events_ok = append_runtime_event(
+                dark_events_path,
+                "BOOT_EVENT phase=stalled observation=dark_picture "
+                "dark_vblanks=1200 seconds=20 ready=2 delay=1 wait=4 spin=0\n");
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 80000);
+                dark_no_early_notice = !rep->stalled_game_notice_visible;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=stalled observation=dark_picture "
+                    "dark_vblanks=1800 seconds=30 ready=2 delay=1 wait=4 spin=0\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81000);
+                dark_notice = rep->stalled_game_notice_visible &&
+                    rep->stalled_game_dark_picture &&
+                    rep->stalled_game_no_frame_vblanks == 1800u &&
+                    rep->stalled_game_seconds == 30u && rep->stalled_game_wait == 4u;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=resumed observation=frame_present\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81050);
+                dark_kept_on_flip_resume = rep->stalled_game_notice_visible &&
+                    rep->stalled_game_dark_picture;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=resumed observation=picture brightest=200\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 81100);
+                dark_cleared_on_picture = !rep->stalled_game_notice_visible &&
+                    !rep->stalled_game_dark_picture;
+                rep->stalled_game_restore_game_front_requested = false;
+                dark_events_ok = append_runtime_event(
+                    dark_events_path,
+                    "BOOT_EVENT phase=stalled observation=dark_picture "
+                    "dark_vblanks=2400 seconds=40 ready=2 delay=1 wait=4 spin=0\n");
+            }
+            if (dark_events_ok) {
+                (void)player_app_monitor_game_session(rep, 122000);
+                dark_returned = rep->stalled_game_notice_visible &&
+                                rep->stalled_game_dark_picture;
+                player_app_stop_stalled_game(rep);
+                dark_stopped = !rep->is_game_running &&
+                    strcmp(rep->last_error.error_code, "RUNTIME_NO_PICTURE") == 0 &&
+                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strstr(rep->last_error.message, "black screen") != NULL &&
+                    strstr(rep->last_error.details, "dark_vblanks=2400") != NULL;
+            }
+        }
+        if (rep->is_game_running) player_app_stop_game(rep);
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "");
+        assert(dark_events_ok);
+        assert(dark_no_early_notice);
+        assert(dark_notice);
+        assert(dark_kept_on_flip_resume);
+        assert(dark_cleared_on_picture);
+        assert(dark_returned);
+        assert(dark_stopped);
 
         /* (d) No repository-tracked file changed across the runs. */
         if (git_available) {

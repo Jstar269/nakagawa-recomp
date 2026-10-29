@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Generate SPDX 2.3, SPDX 3.0.1 JSON-LD, and CycloneDX 1.5 SBOM artifacts for Nakagawa Recomp releases."""
 
@@ -778,7 +778,7 @@ def generate_spdx23(manifest_data: dict, py_packages: list[dict],
         "filesAnalyzed": False,
         "licenseConcluded": manifest_data.get("license", "GPL-3.0-or-later"),
         "licenseDeclared": manifest_data.get("license", "GPL-3.0-or-later"),
-        "copyrightText": "Copyright (C) 2025-2026 the psp-recomp authors",
+        "copyrightText": "Copyright (C) 2025-2026 the psp-recomp authors; Copyright (C) 2026 the Nakagawa Recomp authors",
         "summary": manifest_data.get("description", ""),
     }]
     relationships = [{

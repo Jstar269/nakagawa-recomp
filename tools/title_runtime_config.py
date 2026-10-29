@@ -39,8 +39,9 @@ import title_manifest
 #: build failure rather than a silently wrong runtime.
 #: 8 splits the single profile macro into a diagnostic one and an honest
 #: compatibility-debt one (#363). Version 9 removes host libfont readiness
-#: injection from the generated runtime contract.
-GENERATED_SCHEMA_VERSION = 10
+#: injection from the generated runtime contract. Version 11 removes the display
+#: bring-up, runtime-sync and frame-latch bindings (#363).
+GENERATED_SCHEMA_VERSION = 11
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -48,7 +49,6 @@ FIELD_BITS: dict[str, str] = {
     "fallback_entry": "SR_TITLE_CFG_FALLBACK_ENTRY",
     "worker_thread_entry": "SR_TITLE_CFG_WORKER_ENTRY",
     "launcher_thread_entry": "SR_TITLE_CFG_LAUNCHER_ENTRY",
-    "frame_ready_latch_addr": "SR_TITLE_CFG_FRAME_LATCH",
 }
 
 #: Emitted count -> the C validity bit that gates it. Zero is disabled.
@@ -66,10 +66,7 @@ COLLECTION_BITS: dict[str, str] = {
 
 #: Emitted object -> the C validity bit that gates it. An object is atomic:
 #: either fully configured or absent.
-OBJECT_BITS: dict[str, str] = {
-    "display_bringup": "SR_TITLE_CFG_DISPLAY_BRINGUP",
-    "runtime_sync": "SR_TITLE_CFG_RUNTIME_SYNC",
-}
+OBJECT_BITS: dict[str, str] = {}
 
 GENERIC_SOURCE_ID = "none"
 
@@ -155,13 +152,6 @@ def binding_summary(config: dict[str, Any]) -> str:
         entries = bindings.get(name, [])
         if entries:
             parts.append(f"{len(entries)} {name.replace('_', ' ')}")
-    for name in OBJECT_BITS:
-        if name in bindings:
-            obj = bindings[name]
-            if name == "runtime_sync":
-                parts.append(f"{len(obj.get('wrappers', []))} runtime sync wrappers")
-            else:
-                parts.append(f"1 {name.replace('_', ' ')}")
     for name in COUNT_BITS:
         if name in bindings:
             parts.append(f"{name}={bindings[name]}")
@@ -244,43 +234,6 @@ def render_header(config: dict[str, Any]) -> str:
             f"0x{entry['sentinel']:08x}u, "
             f"{1 if 'pc' in entry else 0}u, 0x{entry.get('pc', 0):08x}u, "
             f"{1 if 'ra' in entry else 0}u, 0x{entry.get('ra', 0):08x}u){tail}")
-
-    # Display bringup: atomic object, zero when unconfigured.
-    bringup = bindings.get('display_bringup')
-    if bringup:
-        lines += ['',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY 0x{bringup["malloc_entry"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_VBLANK_DEVICE_INIT_ENTRY 0x{bringup["vblank_device_init_entry"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_INIT_ENTRY 0x{bringup["render_context_init_entry"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_MAGIC_ADDR 0x{bringup["render_context_magic_addr"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_TABLE_READY_FLAG_ADDR 0x{bringup["render_table_ready_flag_addr"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_WORD_ADDR 0x{bringup["render_context_word_addr"]:08x}u']
-    else:
-        lines += ['',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY 0x00000000u',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_VBLANK_DEVICE_INIT_ENTRY 0x00000000u',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_INIT_ENTRY 0x00000000u',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_MAGIC_ADDR 0x00000000u',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_TABLE_READY_FLAG_ADDR 0x00000000u',
-                  '#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_RENDER_CONTEXT_WORD_ADDR 0x00000000u']
-
-    # Runtime sync: atomic object with mode-keyed wrapper pairs.
-    runtime_sync = bindings.get('runtime_sync')
-    if runtime_sync:
-        lines += ['',
-                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_CONFIG_BASE 0x{runtime_sync["config_base"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_SEMA_NAME_PTR 0x{runtime_sync["sema_name_ptr"]:08x}u',
-                  f'#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_COUNT {len(runtime_sync["wrappers"])}',
-                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_LIST' + (CONT if runtime_sync["wrappers"] else '')]
-        for idx, w in enumerate(runtime_sync["wrappers"]):
-            tail = CONT if idx + 1 < len(runtime_sync["wrappers"]) else ''
-            lines.append(f'    SR_TITLE_CFG_RUNTIME_SYNC_WRAPPER({w["mode"]}u, 0x{w["enter"]:08x}u, 0x{w["leave"]:08x}u){tail}')
-    else:
-        lines += ['',
-                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_CONFIG_BASE 0x00000000u',
-                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_SEMA_NAME_PTR 0x00000000u',
-                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_COUNT 0',
-                  '#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_LIST']
 
     # Expected data file count: scalar typed census, 0 = disabled.
     for name in COUNT_BITS:

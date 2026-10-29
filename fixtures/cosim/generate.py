@@ -181,7 +181,8 @@ JR_RA = _r(RA, 0, 0, 0, 0x08)
 # the relocated j/jal targets and the patched intra-fixture leaf pointers.
 
 def _cell_alu() -> list[int]:
-    """Ordinary three-operand ALU, immediate ALU, and all three shift kinds.
+    """Ordinary three-operand ALU, immediate ALU, all three shift kinds and the Allegrex
+    rotate (srl with rs=1, #308).
 
     Chosen so signed and unsigned interpretations disagree: $t1 is 0xfffffffd, so
     `slt` yields 1 while `sltu` yields 0, and `sra` differs from `srl`.
@@ -201,6 +202,9 @@ def _cell_alu() -> list[int]:
         _r(0, T0, S1, 5, 0x02),             # srl   s1, t0, 5
         _r(0, T1, S2, 5, 0x03),             # sra   s2, t1, 5        -> 0xffffffff
         _r(0, T1, S3, 5, 0x02),             # srl   s3, t1, 5        -> 0x07ffffff
+        _r(1, T0, S4, 5, 0x02),             # rotr  s4, t0, 5        -> 0xc091a2b3
+        _r(1, T0, S5, 0, 0x02),             # rotr  s5, t0, 0        -> 0x12345678
+        _r(1, T1, S6, 31, 0x02),            # rotr  s6, t1, 31       -> 0xfffffffb
         _r(T2, ZERO, V0, 0, 0x21),          # addu  v0, t2, zero
         JR_RA,
         NOP,

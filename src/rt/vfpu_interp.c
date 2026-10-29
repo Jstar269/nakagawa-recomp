@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -419,6 +420,19 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         /* Opcode 0x34 sub-dispatch by bits [25:21]: 3 = vcst, 0 = VV2Op,
          * 16-20 = vf2i/vi2f conversions. */
         int sub21 = (w >> 21) & 0x1F;
+        /* PSP-VFPU-FORMS-001 (PSP-3000, 2026-10-28, issue #326): vh2f.s/.p, vuc2i.s,
+         * vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s, measured under identity prefixes
+         * only. A pending S, T or D prefix, and every other width, fails closed with no
+         * state change. The rules are the recomp.h helpers the generated code also
+         * calls; none of these forms writes VFPU_CC. */
+        const int forms_identity = s->vfpuCtrl[0] == 0xe4u && s->vfpuCtrl[1] == 0xe4u &&
+                                   s->vfpuCtrl[2] == 0u;
+        if (sub21 >= 24) {  /* vwbn: imm8 in bits 16-23 */
+            if (n != 1 || !forms_identity) return SR_VFPU_OTHER;
+            vreg_idx(vs, 1, si); vreg_idx(vd, 1, di);
+            s->vi[di[0]] = sr_vfpu_wbn(s->vi[si[0]], (w >> 16) & 0xFFu);
+            return SR_VFPU_COMPUTE;
+        }
         if (sub21 == 3) {  /* vcst: broadcast a constant */
             sr_cst_load();
             vreg_idx(vd, n, di);
@@ -446,6 +460,15 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         if (sub21 == 2) {  /* VFPU9 group */
             int op9 = (w >> 16) & 0x1F;
+            if (op9 == 5) {  /* vsocp.s/.p: each lane x -> (sat0(1 - x), sat0(x)) */
+                uint32_t sv[2], d[4];
+                if (n > 2 || !forms_identity) return SR_VFPU_OTHER;
+                vreg_idx(vs, n, si); vreg_idx(vd, 2 * n, di);
+                for (int i = 0; i < n; i++) sv[i] = s->vi[si[i]];
+                for (int i = 0; i < n; i++) sr_vfpu_socp(sv[i], &d[2 * i]);
+                for (int i = 0; i < 2 * n; i++) s->vi[di[i]] = d[i];
+                return SR_VFPU_COMPUTE;
+            }
             if (op9 == 4) {  /* vocp: d = 1 - s, computed as forced prefixes per PPSSPP:
                               * S gains negate-all, T is forced to constant ONE (user T abs
                               * may swap the constant, negate still applies). NaN stays
@@ -592,8 +615,37 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 s->vi[di[0]] = sr_vfpu_rnd_step(&s->vfpuCtrl[8]);
                 return SR_VFPU_COMPUTE;
             }
-            /* vrnds (seeding) and vrndf1/vrndf2 (float draws): docs/HARDWARE_ORACLE.md
-             * records no rule for them yet. vf2h/vh2f have no emitter either. */
+            if ((idx7 == 2 || idx7 == 3) && n == 1 && forms_identity) {
+                /* vrndf1.s / vrndf2.s: one random-unit step into a float of [1, 2) / [2, 4).
+                 * Which lane draws first at .p/.t/.q is unmeasured (fail closed). */
+                vreg_idx(vd, 1, di);
+                s->vi[di[0]] = sr_vfpu_rndf_step(&s->vfpuCtrl[8], idx7 == 3);
+                return SR_VFPU_COMPUTE;
+            }
+            if (idx7 == 19 && n <= 2 && forms_identity) {
+                /* vh2f.s/.p: each source word's low then high half to a float32; the
+                 * output is double width (.s -> pair, .p -> quad). Sources are read first,
+                 * so the in-place form (measured) is the same as a disjoint one. */
+                uint32_t sv[2], d[4];
+                vreg_idx(vs, n, si); vreg_idx(vd, 2 * n, di);
+                for (int i = 0; i < n; i++) sv[i] = s->vi[si[i]];
+                for (int i = 0; i < n; i++) {
+                    d[2 * i] = sr_vfpu_h2f(sv[i] & 0xFFFFu);
+                    d[2 * i + 1] = sr_vfpu_h2f(sv[i] >> 16);
+                }
+                for (int i = 0; i < 2 * n; i++) s->vi[di[i]] = d[i];
+                return SR_VFPU_COMPUTE;
+            }
+            if (idx7 == 24 && n == 1 && forms_identity) {
+                /* vuc2i.s: the four bytes of one word, low first, to a quad. */
+                vreg_idx(vs, 1, si); vreg_idx(vd, 4, di);
+                const uint32_t x = s->vi[si[0]];
+                for (int i = 0; i < 4; i++) s->vi[di[i]] = sr_vfpu_uc2i(x >> (8 * i));
+                return SR_VFPU_COMPUTE;
+            }
+            /* vrnds (seeding), vf2h, the other vuc2i/vc2i/vus2i widths and the forms
+             * above outside their measured widths or under a prefix: docs/HARDWARE_ORACLE.md
+             * records no rule for them. */
             return SR_VFPU_OTHER;
         }
         if (sub21 >= 16 && sub21 <= 19) {  /* vf2in / vf2iz / vf2iu / vf2id: float -> s32

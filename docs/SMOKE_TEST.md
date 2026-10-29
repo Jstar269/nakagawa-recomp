@@ -1,7 +1,7 @@
 # Release Smoke Test: Native Player
 
 Status: CURRENT. This is the 13-step pass/fail smoke test for the Nakagawa Recomp desktop player: `build/nakagawa_player.exe`
-from a source checkout, or `bin/nakagawa_player.exe` from the v0.0.1 package. Every release candidate must pass it on
+from a source checkout, or `bin/nakagawa_player.exe` from a release package. Every release candidate must pass it on
 a clean Windows 11 system before it can qualify.
 
 The test covers the player and the project's own test discs only. It doesn't set or change the status of any retail game; only [`COMPATIBILITY.md`](COMPATIBILITY.md) does that (see the status rule in [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#status-of-retail-games)). Button and label names below are the player's own; buttons show their labels in capitals.

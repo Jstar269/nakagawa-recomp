@@ -318,23 +318,123 @@ static const SrModuleFunc k_module_b_funcs[] = {
 static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
 static const SrModuleCode k_module_a = {
     "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
-    k_module_a_funcs, 2u, k_module_spans, 1u,
+    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u,
 };
 static const SrModuleCode k_module_b = {
     "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
-    k_module_b_funcs, 2u, k_module_spans, 1u,
+    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u,
 };
 static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
 static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
 static const SrModuleCode k_module_fixed = {
     "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u,
 };
 static const SrModuleCode k_module_unsupported = {
     "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
     "relocations cannot be translated: synthetic", &g_module_fixed_base,
-    NULL, 0u, NULL, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u,
 };
+
+/* Two code overlays translated for the same link range. Each is bound only while guest
+ * memory holds its identifying bytes (header and text, the first OVERLAY_CHECK_BYTES),
+ * which the synthetic images below fill with a per-overlay tag. */
+#define OVERLAY_LINK        0x08B10000u
+#define OVERLAY_CHECK_BYTES 0x50u
+#define OVERLAY_ENTRY       (OVERLAY_LINK + 0x40u)
+#define OVERLAY_TAG_A       0xa5a50000u
+#define OVERLAY_TAG_B       0x5b5b0000u
+
+static uint32_t g_overlay_a_base, g_overlay_b_base;
+static void overlay_a_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0au; s->pc = s->r[31]; }
+static void overlay_b_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0bu; s->pc = s->r[31]; }
+static const SrModuleFunc k_overlay_a_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_a_body } };
+static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b_body } };
+/* The span runs past the identifying bytes, so it also covers OVERLAY_UNTRANSLATED: code
+ * the analysis did not find, which the interpreter runs inside the bound overlay. */
+#define OVERLAY_UNTRANSLATED (OVERLAY_LINK + 0x60u)
+static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
+static SrModuleCode k_overlay_a = {
+    "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+};
+static SrModuleCode k_overlay_b = {
+    "B.ovl", OVERLAY_CHECK_BYTES, 0x6666u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+};
+
+static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
+
+static void write_overlay_image(uint32_t tag) {
+    for (uint32_t off = 0; off < OVERLAY_CHECK_BYTES; off += 4u)
+        MEM_W32(OVERLAY_LINK + off, overlay_word(tag, off));
+}
+
+static uint64_t overlay_image_digest(uint32_t tag) {
+    unsigned char bytes[OVERLAY_CHECK_BYTES];
+    for (uint32_t off = 0; off < OVERLAY_CHECK_BYTES; off += 4u) {
+        uint32_t word = overlay_word(tag, off);
+        for (unsigned b = 0; b < 4u; b++) bytes[off + b] = (unsigned char)(word >> (8u * b));
+    }
+    return sr_module_code_fnv1a64(bytes, sizeof bytes);
+}
+
+static void test_code_overlays_follow_guest_memory(void) {
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    k_overlay_a.overlay_check_fnv1a64 = overlay_image_digest(OVERLAY_TAG_A);
+    k_overlay_b.overlay_check_fnv1a64 = overlay_image_digest(OVERLAY_TAG_B);
+    sr_module_code_register(&k_overlay_a);
+    sr_module_code_register(&k_overlay_b);
+
+    write_overlay_image(0x12340000u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              !sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              !sr_module_code_is_bound(&k_overlay_b, NULL),
+          "memory that holds neither overlay binds neither");
+    Probe none = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(!none.body_ran && none.dispatch_result < 0,
+          "a call into an unbound overlay range misses instead of running a translation");
+
+    write_overlay_image(OVERLAY_TAG_A);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              !sr_module_code_is_bound(&k_overlay_b, NULL),
+          "the overlay whose header and text are in memory is bound");
+    Probe a = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(a.body_ran && a.v0 == 0x0au, "the bound overlay's translation runs");
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u,
+          "a second invalidate with the same code changes nothing");
+    MEM_W32(OVERLAY_UNTRANSLATED, 0x24020077u);       /* addiu v0, zero, 0x77 */
+    MEM_W32(OVERLAY_UNTRANSLATED + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(OVERLAY_UNTRANSLATED + 8u, 0x00000000u);  /* nop */
+    /* The interpreted code returns to a translated body, as test_valid_aot_miss does. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    Probe interp = probe(OVERLAY_UNTRANSLATED, PROBE_PC, PROBE_RA);
+    CHECK(interp.dispatch_result >= 0 && g_interp_handoff_hits == 1 &&
+              g_interp_handoff_v0 == 0x77u,
+          "code the analysis missed inside a bound overlay's span is interpreted");
+    MEM_W32(OVERLAY_LINK + 0x74u, 0xdeadbeefu);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL),
+          "a write past the identifying bytes (the overlay's data) keeps it bound");
+
+    write_overlay_image(OVERLAY_TAG_B);
+    CHECK(sr_module_code_sync_overlays(0x08000000u, 0x08001000u) == 0u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL),
+          "an invalidate that does not cover the overlay leaves its binding alone");
+    CHECK(sr_module_code_sync_overlays(OVERLAY_ENTRY, OVERLAY_ENTRY + 4u) == 2u &&
+              !sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              sr_module_code_is_bound(&k_overlay_b, NULL),
+          "loading another overlay over the range swaps the binding");
+    Probe b = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(b.body_ran && b.v0 == 0x0bu, "the newly bound overlay's translation runs");
+
+    sr_module_code_reset();
+}
 
 static void test_runtime_module_binding_is_the_authority_for_its_range(void) {
     SrModuleBindDetail detail;
@@ -1804,6 +1904,7 @@ int main(int argc, char **argv) {
     test_call_boundary_keeps_callee_register_writes();
     test_historical_call_target_fails_at_named_boundary();
     test_runtime_module_binding_is_the_authority_for_its_range();
+    test_code_overlays_follow_guest_memory();
     test_late_import_retirement_is_visible_after_warm_dispatch();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();

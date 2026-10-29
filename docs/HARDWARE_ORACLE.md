@@ -770,6 +770,59 @@ One console is one data point; see §11. Nothing here closes issue #70
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
 
+- **PSP-3000 single-case run of the `vfpu-forms` probe on commit `781ccd34` (2026-10-28)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `781ccd34` is the commit that adds the probe (case 108 in
+  `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 950 records and the done record, all PASS. Both passes in the launch returned the same words.
+  The row cites only the cells named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-28, `781ccd34`) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-FORMS-001` | `h2f-p0-*`, `uc2i-p0-*`, `socp-p0-*`, `wbn-p0-*`, `rndf1-p0-*`, `rndf2-p0-*`, `h2f-p1-*`, `uc2i-p1-*`, `socp-p1-*`, `wbn-p1-*`, `rndf1-p1-*`, `rndf2-p1-*`, `vfpu-forms-done` | Anything the words do not show: the probe compares no value, and PASS records only that the instruction ran | MEASURED (`vfpu-forms`) |
+
+  What the cells establish, for these exact words only (issue #326). Each cell loads the whole register file
+  (word i = `0x3F800000 | i << 16`), presets VFPU_CC to `0x15`, places the operands in C000, runs one word and
+  stores the register file again. No form wrote VFPU_CC or any register outside its destination.
+  - *`vh2f.s`/`vh2f.p` (half to float, double-width output).* Each source word gives two lanes, low half first.
+    A normal half converts exactly (`0x3C00` to `0x3F800000`, `0x7BFF` to `0x477FE000`, `0x0400` to
+    `0x38800000`). A half denormal becomes a zero of its sign (`0x0001`, `0x03FF` to `0x00000000`, `0x83FF` to
+    `0x80000000`). Exponent 31 keeps the 10-bit payload in the low mantissa bits: `0x7C00` to `0x7F800000`,
+    `0x7C01` to `0x7F800001`, `0x7E00` to `0x7F800200`, `0x7FFF` to `0x7F8003FF`, `0xFE00` to `0xFF800200`.
+    The in-place `vh2f.p C000, C000` gave the same words as the disjoint form.
+  - *`vuc2i.s`.* Byte i of the source word (low first) becomes lane i = `(b * 0x01010101) >> 1`
+    (`0x80402010` to `0x08080808 0x10101010 0x20202020 0x40404040`; `0xFF` to `0x7FFFFFFF`).
+  - *`vsocp.s`/`vsocp.p`.* Each operand x gives the lanes (sat0(1 - x), sat0(x)), sat0 clamping to [0, 1] with
+    +0 at or below zero: 0.25 to (0.75, 0.25), 1.5 and +inf to (0, 1), -0, -0.5 and -inf to (1, +0),
+    `0x3F7FFFFF` to (`0x33800000`, `0x3F7FFFFF`), `0xB3800000` (-2^-24) to (1, 0). A denormal operand counts as
+    a zero of its sign, and every NaN operand (quiet, signalling or negative) writes `0x7F800001` to both lanes.
+  - *`vwbn.s` at exponents `0x00`, `0x01`, `0x7E`, `0x7F`, `0x80`, `0x96`, `0xFE` and `0xFF`.* An operand whose
+    exponent field is `0xFF` is returned unchanged. Otherwise, with x_exp the operand's exponent field and e the
+    immediate, the significand (implicit bit included for a normal; the raw mantissa for a zero or denormal)
+    shifts left by (x_exp - e) & 15 when x_exp > e, right by (e - x_exp) & 15 when 0 < x_exp < e, and not at all
+    otherwise; its low 23 bits become the mantissa of a word with the operand's sign and exponent e. At e =
+    `0x7F`: 0 to `0x3F800000`, 3.0 to `0x3F800000`, 5.5 to `0x3FC00000`, 0.75 to `0x3FE00000`, 1e10
+    (`0x501502F9`) to `0x3FAA05F2` (shift 33 & 15 = 1), the largest normal to `0x3FFF8000` (shift 127 & 15 = 15),
+    the smallest normal to `0x3F800200`, denormal `0x00400000` to `0x3FC00000`, -3.25 to `0xBFA00000`. This rule
+    reproduces all 448 no-prefix words.
+  - *`vrndf1.s`/`vrndf2.s`.* One draw takes exactly the `vrndi.s` step of `PSP-HLE-ISSUES-001` (RCX0-7 after the
+    draw matched it in all 68 cells) and returns `0x3F800000` (vrndf1) or `0x40000000` (vrndf2) OR'd with the low
+    23 bits of the word `vrndi.s` would return. From the thread-entry RCX the first draws are `0x3F894E24` and
+    `0x40094E24`. C000 lanes 1-3 kept their values.
+
+  Prefix cells, recorded but not implemented: under a negate-all S prefix `vh2f`, `vuc2i` and `vwbn` flipped the
+  raw sign bit of each source word, NaN words included. Under the `wzyx` swizzle with lanes 0 and 2 negated,
+  `vh2f` read +0 (then negated) for a lane outside the width, while `vuc2i` kept the source word and applied only
+  the negation. `vsocp` ignored both S prefixes. The generated code and `sr_vfpu_interp` implement these forms
+  under identity S, T and D prefixes only (`sr_vfpu_h2f`, `sr_vfpu_uc2i`, `sr_vfpu_socp`, `sr_vfpu_wbn` and
+  `sr_vfpu_rndf_step` in `src/rt/recomp.h`), at the measured widths `vh2f.s/.p`, `vuc2i.s`, `vsocp.s/.p`,
+  `vwbn.s` and `vrndf1.s/vrndf2.s`. Before this entry both lanes refused every one of them.
+  `check_vfpu_forms_measured` in `src/rt/vfpu_interp_selftest.c` pins every no-prefix word above in both lanes.
+  `vwbn.s` applies the rule at every exponent; only the eight listed have cells. Unmeasured, and failing closed in
+  both lanes: a pending prefix (the T and D prefixes were never set), the other widths, `vf2h`, `vrnds`, and
+  `vc2i`/`vus2i`.
+
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
 
@@ -2527,6 +2580,8 @@ not expected PSP values.
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
 | `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
+| `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
+| `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 
