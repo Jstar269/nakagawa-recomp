@@ -847,11 +847,14 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
                 if isinstance(text, codegen_llvm.LLVMBody) and text.address == addr]
         if llvm:
             # The LLVM backend defines the wrapped body itself (codegen_llvm.census_body_symbol).
+            # Its chunk weight grows as the C body's would: the renamed head and the wrapper.
             index = llvm[0]
-            func_texts[index] = func_texts[index].with_text(
-                f"void {body}(CpuState *s);  /* body in LLVM IR (#330) */")
-            func_texts[index] = func_texts[index].with_text(
-                func_texts[index] + stack_census_wrapper(symbol, body, addr))
+            wrapper = stack_census_wrapper(symbol, body, addr)
+            lowered = func_texts[index].with_text(
+                f"void {body}(CpuState *s);  /* body in LLVM IR (#330) */" + wrapper)
+            lowered.chunk_bytes += (len(f"static void {body}(CpuState *s) {{")
+                                    - len(f"void {symbol}(CpuState *s) {{") + len(wrapper))
+            func_texts[index] = lowered
             continue
         pattern = re.compile(
             rf"(?m)^void {re.escape(symbol)}\(CpuState \*s\) \{{"
@@ -3890,7 +3893,8 @@ def main(argv):
             return text
         try:
             body = codegen_llvm.lower(sys.modules[__name__], image, a, image_ranges, image_known,
-                                      stack_census=stack_census, profile=profile, **kwargs)
+                                      c_text=text, stack_census=stack_census, profile=profile,
+                                      **kwargs)
         except codegen_llvm.LLVMUnsupported as exc:
             llvm_fallbacks.append((a, str(exc)))
             return text
@@ -4289,7 +4293,8 @@ def main(argv):
         cur = []
         cur_bytes = 0
         for ft in func_texts:
-            w = len(ft)
+            # An LLVM body weighs what its C body would, so chunks fall where C cuts them.
+            w = getattr(ft, "chunk_bytes", len(ft))
             if cur and (cur_bytes + w > chunk_target_bytes or len(cur) >= funcs_per_chunk):
                 boundaries.append(cur)
                 cur = []

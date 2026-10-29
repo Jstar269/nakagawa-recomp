@@ -94,7 +94,7 @@ class LoweringTests(unittest.TestCase):
 
     def lower(self, words, start=0x1000, end=0x1100, known=None):
         return codegen_llvm.lower(codegen, FakeElf(words), start, [(start, end)],
-                                  known or {start})
+                                  known or {start}, c_text="void f(CpuState *s) { }")
 
     def ir(self, words, **kwargs):
         body = self.lower(words, **kwargs)
@@ -206,7 +206,7 @@ class CodegenIntegrationTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, str(ROOT / "tools" / "codegen.py"),
                  str(root / "fixture" / "guest.prx"), str(out / "g_recomp.c"),
-                 f"--base=0x{BASE:08x}", "--funcs-per-chunk=1", "--stack-census",
+                 f"--base=0x{BASE:08x}", "--target-chunk-bytes=2000", "--stack-census",
                  f"--backend={backend}"],
                 capture_output=True, text=True, check=False)
             if result.returncode != 0:
@@ -258,11 +258,25 @@ class CodegenIntegrationTests(unittest.TestCase):
 
     def test_functions_kept_in_c_are_emitted_unchanged(self):
         kept = {int(row["address"], 16) for row in self.manifest()["fallbacks"]}
-        c_chunks, llvm_chunks = self.files("c", "g_recomp_*.c"), self.files("llvm", "g_recomp_*.c")
+
+        def body(backend, addr):
+            # The census-wrapped body through the end of its wrapper.
+            text = "\n".join(self.files(backend, "g_recomp_*.c").values())
+            match = re.search(rf"static void _sr_stack_census_body_{addr:08x}\(.*?"
+                              rf"\nvoid f_{addr:08x}\(CpuState \*s\) \{{.*?\n\}}", text, re.S)
+            self.assertIsNotNone(match, f"0x{addr:08x} under {backend}")
+            return match.group(0)
+        self.assertTrue(kept)
         for addr in kept:
-            marker = f"sr_register(0x{addr:08x}u"
-            self.assertEqual(next(t for t in c_chunks.values() if marker in t),
-                             next(t for t in llvm_chunks.values() if marker in t))
+            self.assertEqual(body("c", addr), body("llvm", addr))
+
+    def test_size_bounded_chunks_cut_at_the_same_functions(self):
+        # An LLVM body weighs what its C body weighs, so --target-chunk-bytes puts the
+        # same functions in each chunk under both backends.
+        def chunks(backend):
+            text = self.files(backend, "g_recomp_[0-9]*.c")
+            return sorted(tuple(re.findall(r"sr_register\((0x[0-9a-f]+)u", t)) for t in text.values())
+        self.assertEqual(chunks("c"), chunks("llvm"))
 
     def test_layout_guard_only_in_llvm_builds(self):
         out, _ = self.runs["llvm"]

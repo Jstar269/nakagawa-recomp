@@ -116,24 +116,30 @@ class LLVMBody(str):
 
     The chunk and registration machinery treat it like any other function text
     (it declares the symbol and names it); ``module`` holds the lowered body,
-    which the chunk writer links into that chunk's ``.ll`` file.
+    which the chunk writer links into that chunk's ``.ll`` file. ``chunk_bytes`` is
+    the length of the C body it replaces: size-bounded chunking weighs the function
+    by that, so both backends cut chunks at the same functions.
     """
 
     module: L.Module
     function: L.Function
     address: int
+    chunk_bytes: int
 
     @classmethod
-    def make(cls, symbol: str, address: int, module: L.Module, function: L.Function):
+    def make(cls, symbol: str, address: int, module: L.Module, function: L.Function,
+             chunk_bytes: int):
         text = cls(f"void {symbol}(CpuState *s);  /* body in LLVM IR (#330) */")
         text.module = module
         text.function = function
         text.address = address
+        text.chunk_bytes = chunk_bytes
         return text
 
     def with_text(self, text: str) -> "LLVMBody":
         other = LLVMBody(text)
         other.module, other.function, other.address = self.module, self.function, self.address
+        other.chunk_bytes = self.chunk_bytes
         return other
 
 
@@ -816,8 +822,8 @@ class FunctionLowering:
             self.dead()
 
 
-def lower(cg, elf, start, ranges, known, *, resume_owners=None, resumable=False, profile=None,
-          dispatch_boundaries=None, stack_census=False) -> LLVMBody:
+def lower(cg, elf, start, ranges, known, *, c_text: str, resume_owners=None, resumable=False,
+          profile=None, dispatch_boundaries=None, stack_census=False) -> LLVMBody:
     """Lower one function the C emitter already translated; raises LLVMUnsupported.
 
     ``cg`` is the running codegen module (its flags and address space are live state).
@@ -825,7 +831,7 @@ def lower(cg, elf, start, ranges, known, *, resume_owners=None, resumable=False,
     lowering = FunctionLowering(cg, elf, start, ranges, known, resume_owners, resumable,
                                 profile, dispatch_boundaries, stack_census)
     function = lowering.lower()
-    return LLVMBody.make(lowering.definition_name, start, lowering.module, function)
+    return LLVMBody.make(lowering.definition_name, start, lowering.module, function, len(c_text))
 
 
 def chunk_module(name: str, bodies, renames: dict[str, str]) -> L.Module:
