@@ -1795,8 +1795,12 @@ typedef struct {
 } SrHostStackWindow;
 extern SrHostStackWindow sr_host_stack_window;
 void  sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame);
-#define SR_HOST_STACK_CHECK(entry) do { \
-    uintptr_t _sr_frame = (uintptr_t)__builtin_frame_address(0); \
+#define SR_HOST_STACK_CHECK(entry) \
+    SR_HOST_STACK_CHECK_FRAME((entry), (uintptr_t)__builtin_frame_address(0))
+/* The same check for a frame address the caller supplies: the LLVM backend (#330) passes
+ * its body's own frame (llvm.frameaddress) through src/rt/llvm_abi.c. */
+#define SR_HOST_STACK_CHECK_FRAME(entry, frame) do { \
+    uintptr_t _sr_frame = (frame); \
     if (__builtin_expect(_sr_frame - sr_host_stack_window.low > sr_host_stack_window.span, 0)) \
         sr_host_stack_entry_slow((entry), _sr_frame); \
 } while (0)

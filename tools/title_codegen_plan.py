@@ -1536,6 +1536,8 @@ def _cache_codegen_options(
     if enhancement_package_path is not None:
         env_for_enh["ENHANCEMENT_PACKAGE"] = str(enhancement_package_path)
     options.update(package_cache.enhancement_package_options(env_for_enh))
+    # Named only for the LLVM IR backend (#330), so C-backend keys are unchanged.
+    options.update(package_cache.llvm_backend_options(os.environ, repository_root=ROOT))
     return options
 
 
@@ -1570,12 +1572,14 @@ def _read_static_coverage(path: Path) -> dict[str, Any] | None:
 
 
 def _is_aot_output(name: str, game_name: str) -> bool:
-    """Whether ``name`` is generation-phase output: a required output, a C chunk, or a
-    system library's own translation unit (``nk_lib_*.c``, named apart from the game
-    so that another game's build compiles the identical file)."""
+    """Whether ``name`` is generation-phase output: a required output, a C chunk, the LLVM
+    IR half of a chunk and the backend's record (``--backend=llvm``, #330), or a system
+    library's own translation unit (``nk_lib_*.c``, named apart from the game so that
+    another game's build compiles the identical file)."""
     return name in _aot_required_outputs(game_name) or (
-        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h"}
-    ) or name == f"{game_name}_recomp_coverage.json" or bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
+        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h", ".ll"}
+    ) or name in (f"{game_name}_recomp_coverage.json", f"{game_name}_recomp_llvm.json") or bool(
+        SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:

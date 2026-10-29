@@ -71,6 +71,8 @@ Each row is something you are about to do. Find yours and read what it points to
   and separate AOT cache epochs.
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
   external-input gates.
+- [`LLVM_BACKEND.md`](LLVM_BACKEND.md) — the opt-in LLVM IR code generation backend (#330):
+  structured IR, explicit MIPS semantics, verification, and the in-process stage.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
   source-owned probes are not hardware acceptance without measured provenance.
 - [`research/PSP_THREADING_SEMANTICS.md`](research/PSP_THREADING_SEMANTICS.md) —

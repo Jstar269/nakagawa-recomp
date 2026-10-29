@@ -70,6 +70,12 @@ For titles requiring dynamic or local recompilation from novel ISO revisions:
 
 ### Option E: Embedded Cranelift MIPS-to-Host Code Generator (Long-Term North Star)
 
+> Decision (2026-10-29, #330): the maintainer chose LLVM IR over Cranelift and a
+> project-authored encoder for this engine. Its first stage, an opt-in backend that emits
+> verified LLVM IR and compiles it with Clang, is described in
+> [`LLVM_BACKEND.md`](LLVM_BACKEND.md), including the in-process LLVM stage that replaces
+> only its delivery.
+
 * Replace the `MIPS -> C -> Host Machine Code` two-stage pipeline with a direct `MIPS AST -> Cranelift IR -> Host Native Machine Code` in-process compiler.
 * **Advantages:**
   * Native execution speed without intermediate C files or external compiler invocations.

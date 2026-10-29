@@ -1561,6 +1561,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     if package_cache.nan_trap_enabled(environment):
         options["nan_trap"] = True
     options.update(package_cache.enhancement_package_options(environment))
+    # Mirrors the planner: the LLVM IR backend (#330) names its sources and toolchain.
+    options.update(package_cache.llvm_backend_options(environment, repository_root=ROOT))
     return options
 
 

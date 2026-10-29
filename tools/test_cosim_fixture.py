@@ -520,6 +520,17 @@ class FixtureSemanticTests(unittest.TestCase):
                           "the delay slot must have an observable register, memory, or FPU effect")
         self.assertEqual(counts, {name: 2 for name in counts})
 
+    def test_integer_branch_likely_cell_has_no_cop1_code(self):
+        # The COP1-free copy of the integer cases: a backend that keeps COP1 code in
+        # another tier (the LLVM IR backend, #330) still lowers this whole cell.
+        _offset, words = self.layout["branch_likely_int"]
+        self.assertFalse([w for w in words if (w >> 26) in (0x11, 0x31, 0x39)])
+        likely = [w for w in words if (w >> 26) in (0x14, 0x15, 0x16, 0x17)
+                  or ((w >> 26) == 0x01 and ((w >> 16) & 31) in (2, 3))]
+        self.assertEqual(len(likely), 2 * len(cosim.INTEGER_LIKELY_CASES))
+        for word in likely:
+            self.assertEqual(word & 0xFFFF, 2)
+
     def test_bitops_cell_covers_field_edges_aliases_and_unsigned_conversion(self):
         _offset, words = self.layout["bitops"]
         special3 = [word for word in words if (word >> 26) == 0x1F]

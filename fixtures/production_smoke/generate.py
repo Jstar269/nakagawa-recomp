@@ -715,12 +715,21 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         raise RuntimeError("production build is missing: " + ", ".join(missing))
 
     chunk_sources = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.c"))
-    chunk_objects = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.o"))
+    # With the LLVM IR backend (CODEGEN_BACKEND=llvm, #330) a chunk's lowered bodies are
+    # <chunk>.ll, compiled to <chunk>_ll.o beside the C chunk's own object.
+    llvm_objects = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*_ll.o"))
+    chunk_objects = sorted(set(build_dir.glob(f"{stem}_recomp_[0-9]*.o")) - set(llvm_objects))
     emitted_count = emitted_function_count(mode)
     if len(chunk_sources) != emitted_count or len(chunk_objects) != emitted_count:
         raise RuntimeError(
             f"expected {emitted_count} generated chunk sources and objects; "
             f"found sources={len(chunk_sources)} objects={len(chunk_objects)}"
+        )
+    llvm_sources = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.ll"))
+    if [p.with_name(p.stem + "_ll.o") for p in llvm_sources] != llvm_objects:
+        raise RuntimeError(
+            f"LLVM IR chunks and their objects differ: sources={len(llvm_sources)} "
+            f"objects={len(llvm_objects)}"
         )
 
     main_text = main_c.read_text(encoding="ascii")

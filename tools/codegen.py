@@ -36,6 +36,7 @@ from analyze import (
     static_coverage,
 )
 from host_stubs import HST_SIMPLE_STUBS
+import codegen_llvm
 import compat_overrides
 import enhancement_package
 import entry_frame_balance
@@ -841,6 +842,17 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
         if addr in resume_owners:
             continue
         symbol = f"f_{addr:08x}"
+        body = f"_sr_stack_census_body_{addr:08x}"
+        llvm = [i for i, text in enumerate(func_texts)
+                if isinstance(text, codegen_llvm.LLVMBody) and text.address == addr]
+        if llvm:
+            # The LLVM backend defines the wrapped body itself (codegen_llvm.census_body_symbol).
+            index = llvm[0]
+            func_texts[index] = func_texts[index].with_text(
+                f"void {body}(CpuState *s);  /* body in LLVM IR (#330) */")
+            func_texts[index] = func_texts[index].with_text(
+                func_texts[index] + stack_census_wrapper(symbol, body, addr))
+            continue
         pattern = re.compile(
             rf"(?m)^void {re.escape(symbol)}\(CpuState \*s\) \{{"
         )
@@ -855,25 +867,29 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
                 f"0x{addr:08x}, found {len(matches)}"
             )
         index, match = matches[0]
-        body = f"_sr_stack_census_body_{addr:08x}"
         replacement = f"static void {body}(CpuState *s) {{"
         func_texts[index] = (
             func_texts[index][:match.start()]
             + replacement
             + func_texts[index][match.end():]
         )
-        func_texts[index] += (
-            f"\n\nvoid {symbol}(CpuState *s) {{\n"
-            f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
-            f"    sr_stack_census_enter(0x{addr:08x}u);\n"
-            f"    {body}(s);\n"
-            "    SR_TAIL_DRAIN(s);\n"
-            f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
-            "s->r[29], s->flow_kind);\n"
-            "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
-            "}"
-        )
+        func_texts[index] += stack_census_wrapper(symbol, body, addr)
     return func_texts
+
+
+def stack_census_wrapper(symbol, body, addr):
+    """The census wrapper that observes one callable body's SP across its tail chain."""
+    return (
+        f"\n\nvoid {symbol}(CpuState *s) {{\n"
+        f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
+        f"    sr_stack_census_enter(0x{addr:08x}u);\n"
+        f"    {body}(s);\n"
+        "    SR_TAIL_DRAIN(s);\n"
+        f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
+        "s->r[29], s->flow_kind);\n"
+        "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
+        "}"
+    )
 
 R = lambda i: "0u" if i == 0 else f"s->r[{i}]"           # read GPR (r0 is constant 0)
 F = lambda i: f"s->f[{i}]"
@@ -3550,7 +3566,7 @@ def main(argv):
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
             "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census] [--symbol-map=FILE] [--name-imports]\n"
+            "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -3586,6 +3602,7 @@ def main(argv):
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
     name_imports = False
+    backend = "c"
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
@@ -3614,6 +3631,14 @@ def main(argv):
             cfg_gate = True
         elif o == "--stack-census":
             stack_census = True
+        elif o.startswith("--backend="):
+            # #330: --backend=llvm lowers each function the LLVM backend supports to
+            # LLVM IR (<g>_recomp_<n>.ll beside its C chunk) and keeps a C body, with
+            # the recorded reason, for every other one. The default is C, unchanged.
+            backend = o.split("=", 1)[1]
+            if backend not in ("c", "llvm"):
+                sys.stderr.write(f"--backend must be c or llvm, not {backend!r}\n")
+                return 2
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -3856,6 +3881,21 @@ def main(argv):
     stubbed = []
     func_texts = []
     stale_funcs = []  # TD-27: primary-image addresses with real translations
+    llvm_lowered = []   # --backend=llvm: addresses whose body is LLVM IR
+    llvm_fallbacks = []  # --backend=llvm: (address, reason) kept in C
+
+    def llvm_body(text, image, a, image_ranges, image_known, **kwargs):
+        """--backend=llvm: the function's LLVM body, else its C text with the reason."""
+        if backend != "llvm":
+            return text
+        try:
+            body = codegen_llvm.lower(sys.modules[__name__], image, a, image_ranges, image_known,
+                                      stack_census=stack_census, profile=profile, **kwargs)
+        except codegen_llvm.LLVMUnsupported as exc:
+            llvm_fallbacks.append((a, str(exc)))
+            return text
+        llvm_lowered.append(a)
+        return body
     import_nids = {}  # import stub address -> NID, for --name-imports
 
     # Semantic name overrides for known HST functions. Single source of truth is
@@ -4082,11 +4122,13 @@ def main(argv):
             continue
         applied_before = set(ENHANCEMENT_APPLIED) if ENHANCEMENT_SITES else None
         try:
-            func_texts.append("\n".join(emit_function(
+            func_texts.append(llvm_body("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census)))
+                stack_census=stack_census)), elf, a, ranges, known,
+                resume_owners=resume_owners, resumable=catalog[a].resumable,
+                dispatch_boundaries=dispatch_boundaries))
             emitted.append(a)
             if STALE_DETECT:
                 stale_funcs.append(a)
@@ -4187,9 +4229,9 @@ def main(argv):
                 emitted.append(a)
                 continue
             try:
-                func_texts.append("\n".join(emit_function(
+                func_texts.append(llvm_body("\n".join(emit_function(
                     extra_elf, a, extra_ranges, extra_known, profile=profile,
-                    stack_census=stack_census)))
+                    stack_census=stack_census)), extra_elf, a, extra_ranges, extra_known))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
@@ -4458,6 +4500,11 @@ def main(argv):
         main_out.append(f"    sr_register_chunk_{i}();")
     main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
 
+    if llvm_lowered:
+        # The IR addresses CpuState fields by byte offset; this build's compiler checks them.
+        main_out.append("")
+        main_out.append("/* --backend=llvm (#330): the CpuState offsets the generated IR uses. */")
+        main_out.extend(codegen_llvm.layout_asserts())
     with open(out_c, "w", encoding="ascii", newline="\n") as f:
         f.write(rename_generated_entries("\n".join(main_out), renames))
 
@@ -4479,6 +4526,22 @@ def main(argv):
         parts.append("}\n")
         with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
             f.write(rename_generated_entries("".join(parts), renames))
+        llvm_bodies = [ft for ft in chunk if isinstance(ft, codegen_llvm.LLVMBody)]
+        llvm_path = f"{base_name}_{i}.ll"
+        if llvm_bodies:
+            module = codegen_llvm.chunk_module(os.path.basename(llvm_path), llvm_bodies, renames)
+            with open(llvm_path, "w", encoding="ascii", newline="\n") as f:
+                f.write(module.render())
+        else:
+            for stale in (llvm_path, f"{base_name}_{i}_ll.o", f"{base_name}_{i}_ll.bc"):
+                if os.path.exists(stale):
+                    os.remove(stale)
+    llvm_manifest_path = f"{base_name}_llvm.json"
+    if backend == "llvm":
+        with open(llvm_manifest_path, "w", encoding="ascii", newline="\n") as f:
+            f.write(codegen_llvm.manifest(llvm_lowered, llvm_fallbacks))
+    elif os.path.exists(llvm_manifest_path):
+        os.remove(llvm_manifest_path)
 
     write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
 
@@ -4495,14 +4558,13 @@ def main(argv):
     # Delete stale chunk files from previous runs
     j = num_files
     while True:
-        stale_c = f"{base_name}_{j}.c"
-        stale_o = f"{base_name}_{j}.o"
-        if os.path.exists(stale_c) or os.path.exists(stale_o):
-            if os.path.exists(stale_c): os.remove(stale_c)
-            if os.path.exists(stale_o): os.remove(stale_o)
-            j += 1
-        else:
+        stale = [f"{base_name}_{j}{suffix}" for suffix in (".c", ".o", ".ll", "_ll.o", "_ll.bc")]
+        present = [path for path in stale if os.path.exists(path)]
+        if not present:
             break
+        for path in present:
+            os.remove(path)
+        j += 1
 
     resume_count = sum(1 for a in emitted if a in resume_owners)
     if chunk_target_bytes > 0:
@@ -4513,6 +4575,9 @@ def main(argv):
           f"{len(emitted) - resume_count} callable functions + {resume_count} resume entries, "
           f"{len(stubbed)} fallbacks. "
           f"Stub list: {base_name}_stubs.txt")
+    if backend == "llvm":
+        print(f"llvm backend: {len(llvm_lowered)} functions lowered to LLVM IR, "
+              f"{len(llvm_fallbacks)} kept in C (reasons: {llvm_manifest_path})")
     if SV_ENABLED:
         print(f"static-verify: {SV_STATS['checks']} register assertions "
               f"across {SV_STATS['funcs']} functions")
