@@ -223,7 +223,35 @@ variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), 
 stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
 them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
 different instrumentation. So the cost of the counters on a workload with substantial guest work is not
-measured here.
+measured here; the real-workload measurement follows.
+
+**Real workload (2026-10-29).** The workload is a private Hot Shots Tennis route (boot, menus, then the
+exhibition match): 14,000 vblanks with the window hidden, dummy audio, and vblank pacing off, so the route's
+guest work sets the wall time. It runs about 0.93 billion AOT instructions and no interpreter instructions.
+No route, capture or title data is in the repository.
+
+Three arms ran round-robin with the start arm rotated: 15 rounds, 45 runs, no failures.
+
+- `base-p0`: main `c0e6056e`, `SR_PERF=0`.
+- `base-p1`: the same build, `SR_PERF=1`.
+- `p2-p0`: the same main plus the always-on execution share (#1632), `SR_PERF=0`.
+
+The decision rule is the one above. The host ran the private regression gate's title runs at the same time,
+so process CPU time (which includes GPU driver threads) is far noisier than wall time. Both are reported.
+
+| Arm | Wall median, IQR (s) | CPU median, IQR (s) |
+| --- | --- | --- |
+| `base-p0` | 52.43, 2.44 | 62.25, 15.80 |
+| `base-p1` | 53.81, 5.20 | 58.69, 10.98 |
+| `p2-p0` | 53.99, 3.31 | 68.05, 17.23 |
+
+| Comparison | Wall 95% interval (s) | CPU 95% interval (s) | Result |
+| --- | --- | --- | --- |
+| `SR_PERF` on minus off | [-1.66, +2.91] | [-12.16, +9.09] | not distinguishable from noise at 15 runs |
+| execution share in minus out | [-0.65, +2.71] | [-10.86, +13.97] | not distinguishable from noise at 15 runs |
+
+Both costs are therefore bounded at about +5% of this route's wall time, at 95%. Neither is shown to be
+zero. Tightening the bound needs a quiet host or more rounds.
 
 Historical environment for the recorded base commit `788465b2`. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
 other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
@@ -298,8 +326,9 @@ measured with a micro-benchmark linked against `perf.c` at the default `-O0` (Ry
 | interpreter entry plus exit (two tier switches, entry-point set) | 74 to 80 ns |
 | scheduler slice begin plus end | 66 to 70 ns |
 
-A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). The
-cost on a full title run with the #282 method is not measured yet.
+A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). On a
+full title route, measured with the #282 method, the cost is not distinguishable from noise at 15 runs
+(wall-time 95% interval [-0.65, +2.71] s on a 52 s route; see "Measured overhead of the perf counters").
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
