@@ -270,9 +270,9 @@ class BuildTests(MatrixTestCase):
     def test_wsl_path_style_converts_staged_paths(self) -> None:
         plan = self.load([{"case_id": "delay-zero", "timeout_seconds": 60}])
         wsl = om.MatrixPlan(**{**plan.__dict__, "path_style": "wsl",
-                               "host0_root": Path("C:/nk/wt/fixtures/psp_oracle/build/h")})
-        self.assertIn("/mnt/c/nk/wt/fixtures/psp_oracle/build/h/delay_zero.prx",
-                      om.build_script(wsl, "/mnt/c/nk/main/.git", [plan.cases[0]]))
+                               "host0_root": Path("X:/repo/fixtures/psp_oracle/build/h")})
+        self.assertIn("/mnt/x/repo/fixtures/psp_oracle/build/h/delay_zero.prx",
+                      om.build_script(wsl, "/mnt/x/repo/.git", [plan.cases[0]]))
 
     def test_build_script_reaches_the_shell_with_lf_line_ends(self) -> None:
         # Measured on Windows 2026-10-29: text-mode stdin turned every LF into CRLF and bash refused the script.
