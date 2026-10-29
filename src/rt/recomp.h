@@ -1253,6 +1253,11 @@ void sr_module_code_register(const SrModuleCode *code);   /* from generated sr_r
  * generated sr_register_all() while SR_EXPERIMENTAL_60HZ=1. Returns 0 when it cannot be held. */
 int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha256[32],
                                  const uint8_t *data, uint32_t size);
+/* An enhancement build's logic-update counter, registered while SR_EXPERIMENTAL_60HZ=1, and
+ * whether that logic has stayed under 60 updates/s long enough to report (section 9.5).
+ * sr_enhancement_logic_slowed() may be called from the presenter thread. */
+void sr_enhancement_register_updates(const volatile uint32_t *counter);
+int sr_enhancement_logic_slowed(unsigned *rate);
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);

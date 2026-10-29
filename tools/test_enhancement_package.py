@@ -1015,6 +1015,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertEqual(rc, 0, output)
             combined = b"\n".join(files.values()).decode("utf-8")
             self.assertIn("if (nk_enhancement_on()) nk_enhancement_apply_data();", combined)
+            self.assertIn("sr_enhancement_register_updates(&nk_enhancement_updates);", combined)
             self.assertIn("nk_enh_data_new_0[] = {0x2a, 0x00, 0x00, 0x00}", combined)  # 21 -> 42
             self.assertIn("nk_enh_data_new_1[] = {0x00, 0x00, 0x00, 0x3f}", combined)  # 1.0 -> 0.5
             self.assertIn("ENHANCEMENT_DATA_MISMATCH: data site D_COUNT", combined)

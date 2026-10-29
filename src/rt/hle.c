@@ -17308,6 +17308,7 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
         hle_enhancement_attach((int)rc, path, flags) < 0) {
         fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: the run stops here\n");
         sr_trace_close();
+        sr_perf_shutdown();
         fflush(stderr);
         _Exit(1);
     }
@@ -22597,6 +22598,7 @@ static FILE *s_sample_out;
 
 static void hle_state_sample_refuse(const char *path, int line, const char *why) {
     fprintf(stderr, "SR_SAMPLE_SPEC: %s line %d: %s; the run stops here\n", path, line, why);
+    sr_perf_shutdown();
     fflush(stderr);
     _Exit(2);
 }
@@ -22694,12 +22696,61 @@ static void hle_state_sample_close(void) {
     }
 }
 
+/* 60 FPS logic speed (docs/ENHANCEMENT_CONTRACT.md section 9.5). An enhancement build with
+ * the toggle on registers its logic-update counter. Once a second the runtime compares it with
+ * the previous second: logic that runs but stays under 57 updates for three seconds in a row
+ * plays slower than the original game (its per-update steps were halved), so it is reported
+ * on stderr and through sr_enhancement_logic_slowed() for the presenter to show. A second with
+ * no update at all (a load, a pause) is not a slowdown and clears the state. */
+enum { HLE_ENH_SLOW_BELOW = 57, HLE_ENH_SLOW_SECONDS = 3 };
+static const volatile uint32_t *s_enh_updates;
+static uint32_t s_enh_updates_last;
+static uint32_t s_enh_vblank_mark;
+static uint32_t s_enh_slow_seconds;
+static atomic_uint s_enh_slow_rate;   /* updates in the last second while slowed, else 0 */
+
+void sr_enhancement_register_updates(const volatile uint32_t *counter) {
+    s_enh_updates = counter;
+    s_enh_updates_last = counter ? *counter : 0u;
+    s_enh_vblank_mark = s_vcount;
+    s_enh_slow_seconds = 0u;
+    atomic_store(&s_enh_slow_rate, 0u);
+}
+
+int sr_enhancement_logic_slowed(unsigned *rate) {
+    unsigned r = atomic_load(&s_enh_slow_rate);
+    if (rate) *rate = r;
+    return r != 0u;
+}
+
+static void hle_enhancement_speed_vblank(uint32_t vcount) {
+    if (!s_enh_updates || vcount - s_enh_vblank_mark < 60u) return;
+    s_enh_vblank_mark = vcount;
+    uint32_t now = *s_enh_updates;
+    uint32_t delta = now - s_enh_updates_last;
+    s_enh_updates_last = now;
+    unsigned was = atomic_load(&s_enh_slow_rate);
+    if (delta > 0u && delta < HLE_ENH_SLOW_BELOW) {
+        if (++s_enh_slow_seconds >= HLE_ENH_SLOW_SECONDS) {
+            if (!was)
+                fprintf(stderr, "ENHANCEMENT_LOGIC_SLOWED: 60 FPS logic is running at %u updates/s; "
+                                "the game plays slower than the original\n", (unsigned)delta);
+            atomic_store(&s_enh_slow_rate, (unsigned)delta);
+        }
+        return;
+    }
+    if (was) fprintf(stderr, "ENHANCEMENT_LOGIC_SLOWED: cleared (%u updates/s)\n", (unsigned)delta);
+    s_enh_slow_seconds = 0u;
+    atomic_store(&s_enh_slow_rate, 0u);
+}
+
 /* Self-test seams: one sample row, and a reset that re-reads SR_SAMPLE_SPEC. */
 void sr_hle_test_state_sample_vblank(uint32_t vcount) { hle_state_sample_vblank(vcount); }
 void sr_hle_test_state_sample_reset(void) {
     hle_state_sample_close();
     s_sample_count = -1;
 }
+void sr_hle_test_enhancement_speed_vblank(uint32_t vcount) { hle_enhancement_speed_vblank(vcount); }
 
 void sr_vblank_tick(void) {
     if (s_display_latched_pending) {
@@ -22856,6 +22907,7 @@ void sr_vblank_tick(void) {
      * It ends the process; it never skips guest work, changes pacing, or touches rendering.
      * Exit status 0 -- reaching the requested vblank is success, unlike the watchdog abort. */
     hle_state_sample_vblank(s_vcount);
+    hle_enhancement_speed_vblank(s_vcount);
     {
         static uint32_t exit_at = 0; static int exit_init = 0;
         if (!exit_init) {

@@ -2827,6 +2827,46 @@ static void test_state_sampler_rows(void) {
     remove(out_path);
 }
 
+/* 60 FPS logic under 57 updates/s for three seconds in a row is reported as slowed; a fast
+ * second clears it, and a second with no update (a load or a pause) never counts. */
+static void test_enhancement_logic_speed(void) {
+    extern void sr_hle_test_enhancement_speed_vblank(uint32_t vcount);
+    static volatile uint32_t updates;
+    unsigned rate = 99u;
+    updates = 0u;
+    sr_enhancement_register_updates(&updates);
+    uint32_t v = sr_display_vcount();
+    for (int second = 1; second <= 2; second++) {
+        updates += 30u;
+        v += 60u;
+        sr_hle_test_enhancement_speed_vblank(v);
+    }
+    expect(!sr_enhancement_logic_slowed(&rate) && rate == 0u,
+           "logic speed: two slow seconds are not yet reported");
+    updates += 30u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(sr_enhancement_logic_slowed(&rate) && rate == 30u,
+           "logic speed: three seconds at 30 updates/s are reported with their rate");
+    updates += 60u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(!sr_enhancement_logic_slowed(NULL), "logic speed: a full-rate second clears the report");
+    for (int second = 1; second <= 2; second++) {
+        updates += 30u;
+        v += 60u;
+        sr_hle_test_enhancement_speed_vblank(v);
+    }
+    v += 60u;   /* a second with no update: a load or a pause */
+    sr_hle_test_enhancement_speed_vblank(v);
+    updates += 30u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(!sr_enhancement_logic_slowed(NULL),
+           "logic speed: a second without updates restarts the count instead of adding to it");
+    sr_enhancement_register_updates(NULL);
+}
+
 static void test_io_async_and_path_imports(void) {
     enum {
         PATH_ADDR = 0x09010000u,
@@ -3727,6 +3767,7 @@ static void test_fd_namespace(void) {
     test_io_open_async_notifies_later_callback();
     test_io_enhancement_data_file();
     test_state_sampler_rows();
+    test_enhancement_logic_speed();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */

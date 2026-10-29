@@ -1607,6 +1607,9 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
     the game's frame rate. It used to be the overlay's "FPS" line.
   - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
   - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
+  - **60 FPS logic** (enhancement builds only): when a 60 Hz logic package runs below 57 updates per second for
+    three seconds, a red `60 FPS logic: <n>/s - SLOWED` line appears, also with the HUD off
+    ([ENHANCEMENT_CONTRACT.md section 9.5](ENHANCEMENT_CONTRACT.md#95-update-boundary-gating-counts-logic-updates)).
 - **Timing and Performance Guarantees**:
   - Reuses the low-overhead counters already tracked by `SR_PERF`; no parallel measurement system or polling thread is introduced.
   - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.

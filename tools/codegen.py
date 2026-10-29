@@ -757,10 +757,11 @@ def _c_bytes(data: bytes) -> str:
 
 
 def _enhancement_data_lines() -> list[str]:
-    """The data half of an enhancement build, applied once at start-up while the
-    toggle is on: executable data sites, verified against the loaded bytes before
-    they are rewritten, and disc data files handed to the runtime with the digest
-    of the stock file they replace. Any mismatch stops the run."""
+    """The start-up half of an enhancement build, run once while the toggle is on:
+    the logic-update counter handed to the runtime's speed check, executable data
+    sites verified against the loaded bytes before they are rewritten, and disc
+    data files handed to the runtime with the digest of the stock file they
+    replace. Any mismatch stops the run."""
     out = []
     for i, (_addr, stock, data, _sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
         out.append(f"static const uint8_t nk_enh_data_stock_{i}[] = {{{_c_bytes(stock)}}};")
@@ -769,6 +770,8 @@ def _enhancement_data_lines() -> list[str]:
         out.append(f"static const uint8_t nk_enh_file_sha_{i}[32] = {{{_c_bytes(bytes.fromhex(sha))}}};")
         out.append(f"static const uint8_t nk_enh_file_data_{i}[] = {{{_c_bytes(data)}}};")
     out.append("static void nk_enhancement_apply_data(void) {")
+    # The runtime reports logic that cannot keep 60 updates/s (section 9.5).
+    out.append("    sr_enhancement_register_updates(&nk_enhancement_updates);")
     for i, (addr, stock, _data, sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
         n = len(stock)
         out += [
@@ -789,8 +792,6 @@ def _enhancement_data_lines() -> list[str]:
             "        exit(1);",
             "    }",
         ]
-    if not ENHANCEMENT_DATA_PATCHES and not ENHANCEMENT_DATA_FILES:
-        out.append("    /* the package declares no data sites or data files */")
     out += ["}", ""]
     return out
 

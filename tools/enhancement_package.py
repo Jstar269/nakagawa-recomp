@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import struct
@@ -1163,13 +1164,19 @@ def find_data_file(entry: Mapping[str, Any], data_root: Path | str) -> bytes:
     """
     root = Path(data_root)
     want = entry["path"].lower().split("/")
-    for candidate in sorted(root.rglob(want[-1]), key=str):
-        parts = [p.lower() for p in candidate.relative_to(root).parts]
-        if parts[-len(want):] != want or not candidate.is_file():
-            continue
-        data = candidate.read_bytes()
-        if hashlib.sha256(data).hexdigest() == entry["sha256"]:
-            return data
+    # Walk by hand: a glob matches names with the host's case rules, and the extracted
+    # tree keeps the disc's case on a case-sensitive host.
+    for folder, _dirs, files in sorted(os.walk(root)):
+        for name in sorted(files):
+            if name.lower() != want[-1]:
+                continue
+            candidate = Path(folder) / name
+            parts = [p.lower() for p in candidate.relative_to(root).parts]
+            if parts[-len(want):] != want:
+                continue
+            data = candidate.read_bytes()
+            if hashlib.sha256(data).hexdigest() == entry["sha256"]:
+                return data
     fail(f"data_files({entry['id']})",
          f"No file {entry['path']} with sha256 {entry['sha256']} under the title's data (fail-closed refusal)")
 

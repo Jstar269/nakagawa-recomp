@@ -415,6 +415,7 @@ void gui_init(const char *title) {
                 extern int sr_audio_is_active(void);
                 sdl3vk_set_audio_active_cb(sr_audio_is_active);
 #endif
+                sdl3vk_set_logic_slowed_cb(sr_enhancement_logic_slowed);
                 s_sdl3 = 1;
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();
