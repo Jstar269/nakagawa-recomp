@@ -783,7 +783,8 @@ class TestOnlyMinisigner:
 
     def __init__(self, label: bytes = TEST_ONLY_SIGNER_LABEL) -> None:
         seed = hashlib.blake2b(label, digest_size=32).digest()
-        self.key_id = hashlib.blake2b(label, digest_size=64).digest()[:8]
+        # minisign calls these 8 bytes the key ID; they are public.
+        self.signer_id = hashlib.blake2b(label, digest_size=64).digest()[:8]
         digest = hashlib.sha512(seed).digest()
         scalar = int.from_bytes(digest[:32], "little")
         self._scalar = (scalar & ((1 << 254) - 8)) | (1 << 254)
@@ -800,8 +801,8 @@ class TestOnlyMinisigner:
 
     def public_file(self) -> bytes:
         import base64
-        number = int.from_bytes(self.key_id, "little")
-        line = base64.b64encode(b"Ed" + self.key_id + self.public).decode("ascii")
+        number = int.from_bytes(self.signer_id, "little")
+        line = base64.b64encode(b"Ed" + self.signer_id + self.public).decode("ascii")
         return f"untrusted comment: minisign public key {number:016X}\n{line}\n".encode("ascii")
 
     def minisig(self, data: bytes, trusted_comment: str) -> bytes:
@@ -810,7 +811,7 @@ class TestOnlyMinisigner:
         signature = self._sign(hashlib.blake2b(data, digest_size=64).digest())
         comment = trusted_comment.encode("utf-8")
         global_signature = self._sign(signature + comment)
-        line = base64.b64encode(b"ED" + self.key_id + signature).decode("ascii")
+        line = base64.b64encode(b"ED" + self.signer_id + signature).decode("ascii")
         return (f"untrusted comment: signature from minisign secret key\n{line}\n"
                 f"trusted comment: {trusted_comment}\n"
                 f"{base64.b64encode(global_signature).decode('ascii')}\n").encode("utf-8")
