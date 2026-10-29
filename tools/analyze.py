@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
@@ -3293,7 +3294,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     # return / compiler-split cold-path / trampoline idiom. Left unpromoted,
     # whichever function linearly covers the target absorbs its body, and every
     # OTHER function's tail `j` has no entry to dispatch to at runtime -- a
-    # silent NONPLT_MISS of the 0x000e1724 class (ISSUES.md 2026-07-18; found by
+    # silent NONPLT_MISS of the 0x000e1724 class (found on 2026-07-18 by
     # tools/ghidra_crosscheck.py, 16 live cases). Promotion is safe: codegen's
     # continuation machinery stops the covering function's extent at the new
     # entry and emits a continuation call, so both owners stay correct.

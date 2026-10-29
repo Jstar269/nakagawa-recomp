@@ -38,7 +38,8 @@ void nk_ui_router_destroy(NkUiRouter *router) {
    push, and its screen can never open (#1281: About was missing). */
 static bool nk_ui_router_known(PlayerUiRoute route) {
     return route == PLAYER_UI_ROUTE_LIBRARY || route == PLAYER_UI_ROUTE_TITLE ||
-           route == PLAYER_UI_ROUTE_ABOUT || route == PLAYER_UI_ROUTE_REMOVE;
+           route == PLAYER_UI_ROUTE_ABOUT || route == PLAYER_UI_ROUTE_REMOVE ||
+           route == PLAYER_UI_ROUTE_STOP;
 }
 
 bool nk_ui_router_replace(NkUiRouter *router, PlayerUiRoute route) {

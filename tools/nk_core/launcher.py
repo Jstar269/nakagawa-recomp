@@ -243,9 +243,9 @@ class RuntimeLauncher:
                 continue
             for pattern in IMAGE_CANDIDATES:
                 candidates.append(self.repo_root / pattern.format(name=name))
-        for cand in candidates:
-            if cand.is_file():
-                return cand
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
         return None
 
     def runtime_package_available(self, title_profile: Any) -> bool:
@@ -277,13 +277,13 @@ class RuntimeLauncher:
         ``user_data_root`` is the per-user data directory the imported fonts live under
         (``--user-data-root``); it defaults to the platform's per-user directory.
         """
-        g_dir = Path(game_dir).resolve()
-        manifest_file = g_dir / "manifest.json"
+        game_root = Path(game_dir).resolve()
+        manifest_file = game_root / "manifest.json"
         if not manifest_file.is_file():
             raise RuntimeLaunchError(f"Missing game manifest: {manifest_file}")
 
-        with open(manifest_file, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
+        with open(manifest_file, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
         if not isinstance(manifest, dict):
             raise RuntimeLaunchError(
                 f"Game manifest must be a JSON object: {manifest_file}"
@@ -320,27 +320,28 @@ class RuntimeLauncher:
         exe_candidates = self._exe_candidates(names)
 
         exe_path: Optional[Path] = None
-        for cand in exe_candidates:
-            if cand.is_file():
-                exe_path = cand
+        for candidate in exe_candidates:
+            if candidate.is_file():
+                exe_path = candidate
                 break
 
         if not exe_path:
-            looked = [str(c) for c in exe_candidates] or ["(no identity-derived candidates)"]
+            looked = [str(candidate) for candidate in exe_candidates] or ["(no identity-derived candidates)"]
             raise RuntimeLaunchError(
                 f"Runtime binary not found for title '{title_id}'. "
                 f"Looked in: {looked}. Build the runtime executable first."
             )
 
-        # Environment variables configured strictly for this execution session
+        # Start from the caller's environment, minus variables this plan sets itself, so a
+        # stale PSP_ISO or SR_BOOT_PATH cannot leak into the session.
         env = dict(os.environ)
         env.pop("PSP_ISO", None)
         env.pop("SR_BOOT_PATH", None)
         if iso_path:
             iso_file = Path(iso_path)
             if not iso_file.is_file():
-                # Check fallback in prepared directory: disc/game.iso
-                fallback_iso = g_dir / "disc" / "game.iso"
+                # prepare_game links the source image at disc/game.iso in the prepared directory.
+                fallback_iso = game_root / "disc" / "game.iso"
                 if fallback_iso.is_file():
                     iso_path = str(fallback_iso)
                 else:
@@ -362,7 +363,7 @@ class RuntimeLauncher:
         env["SR_FPS_CAP"] = "native" if fps_cap == -1 else str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
         env.pop("SR_DATAROOT", None)
-        data_root = self._resolve_data_root(title_profile, g_dir, iso_path)
+        data_root = self._resolve_data_root(title_profile, game_root, iso_path)
         if data_root is not None:
             env["SR_DATAROOT"] = str(data_root)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
@@ -424,7 +425,7 @@ class RuntimeLauncher:
         entry = (int(title_profile.fallback_entry, 16) if title_profile.fallback_entry
                  else title_profile.executable_entry)
 
-        cmd = [
+        argv = [
             str(exe_path),
             "--image",
             str(image_path),
@@ -435,4 +436,4 @@ class RuntimeLauncher:
             "--sched" if no_gui else "--gui",
         ]
 
-        return cmd, env
+        return argv, env
