@@ -10,13 +10,20 @@ betterleaksMinVersion = "1.9.0"
 # signing key that verified a pinned source. A fingerprint identifies a public
 # key, so it is not a secret, but generic-api-key matches the XZ maintainer's
 # key next to the word "key". Allow that exact fingerprint in that file only.
+#
+# The player-state test checks a path-keyed module name (the module's file name with an
+# 8-hex-digit hash of its disc path), which generic-api-key matches next to a variable
+# named "key". It is a synthetic test string; allow that exact value in that file only.
 filter = '''
 (attributes["path"] == "tools/test_history_audit.py" &&
  finding["rule_id"] == "github-pat" &&
  finding["secret"] == ("ghp_" + "123456789012345678901234567890123456")) ||
 (attributes["path"] == "assets/prereq_manifest.json" &&
  finding["rule_id"] == "generic-api-key" &&
- finding["secret"] == "3690C240CE51B4670D30AD1C38EE757D69184620")
+ finding["secret"] == "3690C240CE51B4670D30AD1C38EE757D69184620") ||
+(attributes["path"] == "tests/native/test_player_state.c" &&
+ finding["rule_id"] == "generic-api-key" &&
+ finding["secret"] == "libadler.1951c218.prx")
 '''
 
 [extend]
