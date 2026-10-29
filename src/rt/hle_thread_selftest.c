@@ -8460,6 +8460,12 @@ static void test_psp_measured_power_battery_20261024(void) {
                sr_hle_test_is_registered(NID_POWER_LIFE_TIME),
            "scePowerGetBatteryChargingStatus and scePowerGetBatteryLifeTime are registered");
 
+    expect(sr_hle_test_is_registered(0xa85880d0u),
+           "scePowerCheckWlanCoexistenceClock is registered");
+    if (sr_hle_test_is_registered(0xa85880d0u))
+        expect(td24b_dispatch4(0xa85880d0u, 0u, 0u, 0u, 0u) == 0u,
+               "scePowerCheckWlanCoexistenceClock reports the PSP-1000 limit");
+
     /* On AC, battery full: online 1, exists 1, charging 0, status 0, 96 %, low 0, life time 0. */
     expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 1u,
            "on AC scePowerIsPowerOnline reports 1 (measured)");
@@ -37209,6 +37215,13 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(s_sched_coro != NULL, "scheduler coroutine was adopted");
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
+
+    if (argc > 1 && strcmp(argv[1], "--power-battery") == 0) {
+        test_psp_measured_power_battery_20261024();
+        fprintf(stderr, "power-battery: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
 
     if (argc > 1 && strcmp(argv[1], "--msgpipe-rendezvous") == 0) {
         test_msgpipe_rendezvous();

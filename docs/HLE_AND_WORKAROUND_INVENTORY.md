@@ -43,10 +43,14 @@ handler that `PROFILE_ZERO_UNREVIEWED_IMPORTS` in `tools/hle_registry_meta.py` d
 list, and when an entry there is no longer imported or no longer `unreviewed`. That list
 names #341 on every entry and only shrinks: reviewing a handler retires its entries.
 
+`scePowerCheckWlanCoexistenceClock` returns the PSP-1000 capability value 0. This is
+**derived** from PPSSPP revision `7fab97c05f9568b17ac79c235b945f568eaf6384`, not
+measured here; later models can report 1. The runtime does not yet select a model.
+
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **640** (dedicated **533**, fake_success **4**, controlled_unsupported **103**).
+Registered NIDs: **641** (dedicated **533**, fake_success **5**, controlled_unsupported **103**).
 Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |

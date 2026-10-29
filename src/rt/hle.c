@@ -12688,6 +12688,13 @@ static uint32_t h_WlanGetEtherAddr(CpuState *s) {
     for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, mac[i]);
     return 0;
 }
+/* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
+ * model capability.  Use its PSP-1000 value until model selection exists. */
+static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
 static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
 
 static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
@@ -27772,6 +27779,10 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
+static void hle_register_power_coexistence_handlers(void) {
+    sr_hle_register(0xa85880d0u, "scePowerCheckWlanCoexistenceClock", h_PowerCheckWlanCoexistenceClock);
+}
+
 /* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The system-param getter reads
  * the registry's modeled keys, so both are registered here: the executable harness and the
  * production registry then dispatch one mapping. sceRegExit (0x9b25edf1), sceRegRemoveKey
@@ -28083,6 +28094,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_power_register_callback();
     sr_hle_power_register_battery();
     hle_register_devkit_version_handler();
@@ -28201,6 +28213,7 @@ void sr_hle_init(void) {
      * sr_hle_power_register_clock(), which carries the canonical #86
      * getter NIDs noted above. */
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);

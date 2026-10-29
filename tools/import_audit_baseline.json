@@ -2667,6 +2667,12 @@
     "name": "sceFontOpen",
     "status": "unreviewed"
   },
+  "0xa85880d0": {
+    "classification": "fake_success",
+    "handler": "h_PowerCheckWlanCoexistenceClock",
+    "name": "scePowerCheckWlanCoexistenceClock",
+    "status": "stub"
+  },
   "0xa8e8c846": {
     "classification": "dedicated",
     "handler": "h_ReferMbxStatus",
