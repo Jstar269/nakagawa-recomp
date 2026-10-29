@@ -1419,6 +1419,57 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-TRACE-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "alu-branch-ls-*",
+          "delay-slots-*"
+        ],
+        "uncited_cases": [
+          "insn-trace-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink 3.2.1, boot 65) of commit 84568280, case insn-trace after the transport-write preflight: 136 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: every step record of both fixtures, which tools/psp_oracle/insn_trace.py turns into v2 PSP_HARDWARE traces (105 and 27 records) that agree with Nakagawa's LOCAL_COSIM traces under strict_hardware_diff. An earlier launch of 3edde7f2 is not cited (its step records were cut to 34 of 35 words). The raw log and traces stay in the private campaign directory.",
+        "evidence_note": "Built from fixtures/psp_oracle/probe_insn_trace.c (with insn_trace_tramp.S and insn_trace_fixtures.h) as insn_trace.prx and run as a single launch, not in the campaign queue; its stream is fixed-shape (CAMPAIGN_PROBE_CASES['insn-trace']). tools/psp_oracle/insn_trace.py turns the host0 log into one v2 PSP_HARDWARE trace per fixture.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_insn_trace.c",
+        "prx": "insn_trace.prx",
+        "apis": [
+          "sceKernelAllocPartitionMemory",
+          "sceKernelGetBlockHeadAddr",
+          "sceKernelFreePartitionMemory",
+          "sceKernelDcacheWritebackRange",
+          "sceKernelDcacheWritebackInvalidateRange",
+          "sceKernelIcacheInvalidateRange",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "Allegrex integer, load/store and branch instructions"
+        ],
+        "diagnostic_case_ids": [
+          "insn-trace"
+        ],
+        "case_ids": [
+          "alu-branch-ls-*",
+          "delay-slots-*",
+          "insn-trace-done"
+        ],
+        "invariant": "#312: per instruction of each source-owned microprogram in fixtures/psp_oracle/insn_trace_fixtures.h, executed one instruction at a time on the Allegrex (conditional branches decided by the CPU, delay slots as their own steps, an annulled likely delay slot not run), the complete traced register state (r1..r25, r29..r31, hi, lo) and any store's width, address and value, from the header's initial state and a zeroed 4 KiB data block at 0x09f00000.",
+        "issues": [
+          312
+        ],
+        "risk": "low; user-mode instructions only, on probe-owned registers and the 4 KiB data block allocated at its address; a word outside the supported forms ends the fixture instead of running",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-INTR-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
