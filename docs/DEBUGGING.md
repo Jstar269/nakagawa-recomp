@@ -205,8 +205,9 @@ inspected its counted guest region was about 5 to 6 ms, and the runtime's own `w
 inside a 178 ms harness run. Its GE, Vulkan and texture counters are all zero. A null result here bounds
 the counter cost only for a workload this small. The platform-ladder fixtures delete every ambient `SR_*`
 variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), so their `SR_PERF=1` runs
-stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
-them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
+stay counter-off. Of 60 such runs, none printed `PERF enabled`. The benchmark runner
+(`tools/run_perf_benchmarks.py`) therefore times the three ladder workloads without expecting a summary,
+and records a `note` saying so, instead of failing them. `cosim-selftest` builds with `TRACE=1`, which measures a
 different instrumentation. So the cost of the counters on a workload with substantial guest work is not
 measured here.
 
