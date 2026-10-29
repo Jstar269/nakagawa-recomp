@@ -36,8 +36,8 @@
 #include <string.h>
 
 PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
-#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 118 || PSP_ORACLE_CASE == 120
-/* hle-issues-batch, vfpu-forms, vfpu-funnel and vfpu-sort run VFPU words on the main thread;
+#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 118 || PSP_ORACLE_CASE == 120 || PSP_ORACLE_CASE == 121
+/* hle-issues-batch, vfpu-forms, vfpu-funnel, vfpu-sort and vfpu-forms2 run VFPU words on the main thread;
    without the VFPU attribute the first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
@@ -54,6 +54,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_VFPU_FORMS 108
 #define HLE_CASE_VFPU_FUNNEL 118
 #define HLE_CASE_VFPU_SORT 120
+#define HLE_CASE_VFPU_FORMS2 121
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -75,6 +76,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "vfpu-sort"
 #define HLE_TEST_ID "PSP-VFPU-SORT-001"
 #define HLE_LOG "host0:/vfpu_sort_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS2
+#define HLE_CAMPAIGN_ID "vfpu-forms2"
+#define HLE_TEST_ID "PSP-VFPU-FORMS2-001"
+#define HLE_LOG "host0:/vfpu_forms2_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1180,6 +1185,362 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_VFPU_SORT */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS2
+
+/* #326 VFPU forms, second batch (PSP-VFPU-FORMS2-001), one launch, register-only: the raw
+   result words of the forms the runtime does not model yet. vrnds.s (the random seed, each of
+   24 seed words from two written RCX states, followed by one vrndi.s draw), vrndi, vrndf1 and
+   vrndf2 at .p, .t and .q from eight written RCX states, vf2h.p and vf2h.q over 28 operand
+   quads, and vc2i.s over the byte patterns of the vfpu-forms case. vf2h and vc2i run under no
+   S prefix and the two TN_PFX forms. Two passes for repeatability. Every word is emitted as a
+   word; the encodings were checked against psp-as (pspdev binutils): VFPU op 0x34, jump field
+   1, op field 0 (vrnds), 1 (vrndi), 2 (vrndf1), 3 (vrndf2), 18 (vf2h) and 25 (vc2i), size
+   bits 7 (.p) and 15 (.t), both for .q. Nothing outside the VFPU registers of this thread is
+   touched. */
+
+#include "hle_vfpu_cells.h"
+
+/* Source C000 (image 0-3, S000 for a single), destination C200 (image 32-35, S200). */
+TN_CELL_SET(f2_f2h_p, "0xd0320088")   /* vf2h.p S200, C000.p */
+TN_CELL_SET(f2_f2h_q, "0xd0328088")   /* vf2h.q C200.p, C000.q */
+TN_CELL_SET(f2_c2i, "0xd0390008")     /* vc2i.s C200.q, S000 */
+
+typedef void (*f2_cell_fn)(const uint32_t *in, uint32_t *out, uint32_t *cc);
+
+/* Operand quads, four float32 words each (lanes 0-3 of C000; the .p form reads lanes 0-1). */
+static const uint32_t s_f2_quads[28][4] = {
+    /*  0: +0, -0, smallest denormal, -smallest denormal */
+    {0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u},
+    /*  1: largest float denormal, 2^-14, its float neighbour below and above */
+    {0x007fffffu, 0x38800000u, 0x387fffffu, 0x38800001u},
+    /*  2: -2^-14, 2^-24, 2^-15, 1.5 * 2^-24 */
+    {0xb8800000u, 0x33800000u, 0x38000000u, 0x33c00000u},
+    /*  3: 0.5 * 2^-24 (tie) and its neighbours, 1.5 * 2^-24 + 1ulp */
+    {0x33000000u, 0x33000001u, 0x32ffffffu, 0x33c00001u},
+    /*  4: 1.5 * 2^-24 - 1ulp, largest half denormal, -2^-24, -1.5 * 2^-24 */
+    {0x33bfffffu, 0x387fc000u, 0xb3800000u, 0xb3c00000u},
+    /*  5: 1 + 2^-11 (tie), its neighbours, 1 + 3 * 2^-11 (tie) */
+    {0x3f801000u, 0x3f800fffu, 0x3f801001u, 0x3f803000u},
+    /*  6: 1 + 3 * 2^-11 neighbours, -(1 + 2^-11), -(1 + 3 * 2^-11) */
+    {0x3f802fffu, 0x3f803001u, 0xbf801000u, 0xbf803000u},
+    /*  7: 65504, 65519, 65520, 65535 */
+    {0x477fe000u, 0x477fef00u, 0x477ff000u, 0x477fff00u},
+    /*  8: 65536, 1e6, -65504, -65520 */
+    {0x47800000u, 0x49742400u, 0xc77fe000u, 0xc77ff000u},
+    /*  9: +inf, -inf, quiet NaN, negative quiet NaN */
+    {0x7f800000u, 0xff800000u, 0x7fc00000u, 0xffc00000u},
+    /* 10: signalling NaN, negative signalling NaN, quiet NaN payload, negative quiet NaN payload */
+    {0x7f800001u, 0xff800001u, 0x7fc12345u, 0xffd54321u},
+    /* 11: signalling NaN payload, negative one, all-ones payload NaNs */
+    {0x7fa5a5a5u, 0xffbfffffu, 0x7fffffffu, 0xffffffffu},
+    /* 12: 1, -2, 0.333, 3.14159 */
+    {0x3f800000u, 0xc0000000u, 0x3eaa7efau, 0x40490fd0u},
+    /* 13: quiet NaN against finite values and -inf in lane 3 */
+    {0x7fc00000u, 0x3f800000u, 0x477ff000u, 0xff800000u},
+    /* 14: finite lane 0 against a signalling NaN in lane 1 */
+    {0x3f800000u, 0x7f800001u, 0x33800000u, 0x477fe000u},
+    /* 15: +inf with +0, then 65519 and a tie neighbour */
+    {0x7f800000u, 0x00000000u, 0x477fef00u, 0x33000001u},
+    /* 16: -inf with -0, -denormal and 1 + 2^-11 */
+    {0xff800000u, 0x80000000u, 0x80000001u, 0x3f801000u},
+    /* 17: 65519, 65520 (tie), 65504, 65535 */
+    {0x477fef00u, 0x477ff000u, 0x477fe000u, 0x477fff00u},
+    /* 18: FLT_MAX, -FLT_MAX, FLT_MIN, -FLT_MIN */
+    {0x7f7fffffu, 0xff7fffffu, 0x00800000u, 0x80800000u},
+    /* 19: 2^-15 neighbours, 2^-24 neighbours */
+    {0x38000001u, 0x37ffffffu, 0x33800001u, 0x337fffffu},
+    /* 20: 0.75, 2.5, 3 and 3.5 times 2^-24 */
+    {0x33400000u, 0x34200000u, 0x34400000u, 0x34600000u},
+    /* 21: 1/3, -1/3, 0.1, 100 */
+    {0x3eaaaaabu, 0xbeaaaaabu, 0x3dcccccdu, 0x42c80000u},
+    /* 22: 2 + 2^-10 (tie) at exponent 1, neighbours, 2 + 3 * 2^-10 */
+    {0x40001000u, 0x40000fffu, 0x40001001u, 0x40003000u},
+    /* 23: quiet and signalling NaN payload 1 of each sign */
+    {0x7fc00001u, 0xffc00001u, 0x7f800002u, 0xff800002u},
+    /* 24: -0, +0, quiet NaN, 1 */
+    {0x80000000u, 0x00000000u, 0x7fc00000u, 0x3f800000u},
+    /* 25: 65536 neighbours below and above, 65520 neighbours */
+    {0x477fffffu, 0x47800001u, 0x477ff001u, 0x477fefffu},
+    /* 26: arbitrary words */
+    {0xc0600000u, 0x12345678u, 0x8abcdef0u, 0x3727c5acu},
+    /* 27: denormal, 2^-14 and a normal, -inf */
+    {0x00000002u, 0xb8800000u, 0x3f000000u, 0xff800000u},
+};
+
+/* vc2i.s operands: the byte patterns of the vfpu-forms case. */
+static const uint32_t s_f2_bytes[10] = {
+    0x00000000u, 0xffffffffu, 0x7f80ff01u, 0x80402010u, 0x01020304u,
+    0xfedcba98u, 0x3f800000u, 0x7fc00000u, 0x00000001u, 0x00ff00ffu,
+};
+
+/* vrnds.s seed words. */
+static const uint32_t s_f2_seeds[24] = {
+    0x00000000u, /* 0 */
+    0x00000001u, /* 1 */
+    0x80000000u, /* sign bit */
+    0xffffffffu, /* all ones */
+    0x3f800000u, /* 1.0f */
+    0x7fc00000u, /* quiet NaN */
+    0x12345678u, /* arbitrary */
+    0xdeadbeefu, /* arbitrary */
+    0x00000002u, /* walking bit 1 */
+    0x00000100u, /* walking bit 8 */
+    0x00010000u, /* walking bit 16 */
+    0x01000000u, /* walking bit 24 */
+    0x40000000u, /* walking bit 30 */
+    0x7fffffffu, /* all but the sign */
+    0x55555555u, /* alternating */
+    0xaaaaaaaau, /* alternating */
+    0x0000ffffu, /* low half */
+    0xffff0000u, /* high half */
+    0x2468ace0u, /* RCX image word */
+    0x13579bdfu, /* RCX image word */
+    0x907f6e50u, /* RCX image word */
+    0xc4d5e6d8u, /* RCX image word */
+    0x3f800001u, /* 1.0f + 1ulp */
+    0x00000fffu, /* twelve ones */
+};
+
+static const char *const s_f2_pfx_names[3] = {"none", "p1", "p2"};
+static const uint32_t s_f2_pfx_words[3] = {TN_PFXW_NONE, TN_PFXW_P1, TN_PFXW_P2};
+
+static uint32_t s_f2_in[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+static uint32_t s_f2_out[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+
+/* One cell: background image word i = 0x3f800000 | i << 16, source lanes at image 0-3, then
+   the word. Row <name>: result = the instruction word; out0-3 = image 32-35 after (C200);
+   out4/out5 = VFPU_CC after the preset / after the word; out6-9 = image 0-3 before;
+   out10 = number of image words outside 32-35 that changed; out11 = the first such index
+   (0xffffffff when none); out12 = the vpfxs word issued before it (0 = none). */
+static void f2_cell(const char *name, f2_cell_fn fn, uint32_t word, uint32_t pfx,
+                    const uint32_t *lanes)
+{
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        s_f2_in[i] = 0x3f800000u | (i << 16);
+    }
+    for (unsigned i = 0; i < 4u; i++) {
+        s_f2_in[i] = lanes[i];
+    }
+    uint32_t cc[2] = {0u, 0u};
+    fn(s_f2_in, s_f2_out, cc);
+    uint32_t changed = 0u, first = 0xffffffffu;
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        if ((i < 32u || i > 35u) && s_f2_out[i] != s_f2_in[i]) {
+            if (changed++ == 0u) {
+                first = i;
+            }
+        }
+    }
+    const uint32_t w[13] = {
+        s_f2_out[32], s_f2_out[33], s_f2_out[34], s_f2_out[35], cc[0], cc[1], s_f2_in[0],
+        s_f2_in[1], s_f2_in[2], s_f2_in[3], changed, first, pfx,
+    };
+    hle_record(name, "PASS", word, w, 13);
+}
+
+/* Rows f2h-p<pass>-<p|q>-<i>-<pfx>: vf2h.p (lanes 0-1) or vf2h.q (lanes 0-3) of quad i. */
+static void f2_f2h(unsigned pass, unsigned wide)
+{
+    static const f2_cell_fn cells[2][3] = {
+        {f2_f2h_p_none, f2_f2h_p_p1, f2_f2h_p_p2}, {f2_f2h_q_none, f2_f2h_q_p1, f2_f2h_q_p2}};
+    static const uint32_t words[2] = {0xd0320088u, 0xd0328088u};
+    char name[64];
+    snprintf(name, sizeof(name), "f2h-p%u-%c", pass, wide ? 'q' : 'p');
+    hle_step(name);
+    for (unsigned i = 0; i < 28u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "f2h-p%u-%c-%u-%s", pass, wide ? 'q' : 'p', i,
+                     s_f2_pfx_names[f]);
+            f2_cell(name, cells[wide][f], words[wide], s_f2_pfx_words[f], s_f2_quads[i]);
+        }
+    }
+}
+
+/* Rows c2i-p<pass>-<i>-<pfx>: vc2i.s of s_f2_bytes[i] (lane 0; lane 1 carries the vfpu-forms
+   sentinel). */
+static void f2_c2i(unsigned pass)
+{
+    static const f2_cell_fn fns[3] = {f2_c2i_none, f2_c2i_p1, f2_c2i_p2};
+    char name[64];
+    snprintf(name, sizeof(name), "c2i-p%u", pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 10u; i++) {
+        const uint32_t lanes[4] = {s_f2_bytes[i], TN_SENTINEL, 0x3f820000u, 0x3f830000u};
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "c2i-p%u-%u-%s", pass, i, s_f2_pfx_names[f]);
+            f2_cell(name, fns[f], 0xd0390008u, s_f2_pfx_words[f], lanes);
+        }
+    }
+}
+
+/* ---- random-unit cells -------------------------------------------------------- */
+
+/* RCX image of four 32-bit components and a 32-bit carry, as vf_rcx_image in the
+   vfpu-forms section: Ck = (RCX(k+4) & 0xffff) << 16 | (RCXk & 0xffff), carry nibble k in
+   bits 16-19 of RCXk. */
+static void f2_rcx_image(uint32_t *rcx, const uint32_t c[4], uint32_t carry)
+{
+    for (unsigned k = 0; k < 8u; k++) {
+        const uint32_t half = (c[k & 3u] >> (k < 4u ? 0u : 16u)) & 0xffffu;
+        rcx[k] = 0x3f800000u | (((carry >> (4u * k)) & 0xfu) << 16) | half;
+    }
+}
+
+/* The thread-entry RCX image vf_rndf uses for its k = 16 row. */
+static void f2_rcx_entry(uint32_t *rcx)
+{
+    for (unsigned r = 0; r < 8u; r++) {
+        rcx[r] = r < 4u ? (0x3f800000u | (1u << r)) : 0x3f800000u;
+    }
+}
+
+/* One seed cell. out: RCX0-7 read back after the write (0-7), RCX0-7 after vrnds.s (8-15),
+   the vrndi.s draw (16), RCX0-7 after the draw (17-24). */
+static void f2_rnds_step(const uint32_t *rcx_in, const uint32_t *seed, uint32_t *out)
+{
+    __asm__ volatile(
+        "lv.s S000, 0(%[seed])\n\t"
+        TN_RCX_WRITE("%[st]")
+        "move $t0, %[out]\n\t"
+        TN_RCX_READ("$t0")
+        ".word 0xd0200000\n\t" /* vrnds.s S000 */
+        "addiu $t0, %[out], 32\n\t"
+        TN_RCX_READ("$t0")
+        ".word 0xd0210000\n\t" /* vrndi.s S000 */
+        "sv.s S000, 64(%[out])\n\t"
+        "addiu $t0, %[out], 68\n\t"
+        TN_RCX_READ("$t0")
+        :
+        : [st] "r"(rcx_in), [seed] "r"(seed), [out] "r"(out)
+        : "t0", "t1", "memory");
+}
+
+/* One wide draw cell per instruction word. out: C000 lanes 0-3 after the draw (0-3), RCX0-7
+   after it (4-11), RCX0-7 after the write (12-19). C000 holds the sentinel before. */
+#define F2_DRAW_FN(fname, word)                                                      \
+    static void fname(const uint32_t *rcx_in, const uint32_t *sentinel, uint32_t *out) \
+    {                                                                                \
+        __asm__ volatile(                                                            \
+            "lv.q C000, 0(%[sen])\n\t"                                               \
+            TN_RCX_WRITE("%[st]")                                                    \
+            "addiu $t0, %[out], 48\n\t"                                              \
+            TN_RCX_READ("$t0")                                                       \
+            ".word " word "\n\t"                                                     \
+            "sv.q C000, 0(%[out])\n\t"                                               \
+            "addiu $t0, %[out], 16\n\t"                                              \
+            TN_RCX_READ("$t0")                                                       \
+            :                                                                        \
+            : [st] "r"(rcx_in), [sen] "r"(sentinel), [out] "r"(out)                  \
+            : "t0", "t1", "memory");                                                 \
+    }
+
+F2_DRAW_FN(f2_rndi_p, "0xd0210080")   /* vrndi.p C000.p */
+F2_DRAW_FN(f2_rndi_t, "0xd0218000")   /* vrndi.t C000.t */
+F2_DRAW_FN(f2_rndi_q, "0xd0218080")   /* vrndi.q C000.q */
+F2_DRAW_FN(f2_rndf1_p, "0xd0220080")  /* vrndf1.p C000.p */
+F2_DRAW_FN(f2_rndf1_t, "0xd0228000")  /* vrndf1.t C000.t */
+F2_DRAW_FN(f2_rndf1_q, "0xd0228080")  /* vrndf1.q C000.q */
+F2_DRAW_FN(f2_rndf2_p, "0xd0230080")  /* vrndf2.p C000.p */
+F2_DRAW_FN(f2_rndf2_t, "0xd0238000")  /* vrndf2.t C000.t */
+F2_DRAW_FN(f2_rndf2_q, "0xd0238080")  /* vrndf2.q C000.q */
+
+typedef void (*f2_draw_fn)(const uint32_t *rcx_in, const uint32_t *sentinel, uint32_t *out);
+
+static const char *const s_f2_draw_stems[3] = {"wrndi", "wrndf1", "wrndf2"};
+static const char s_f2_draw_sizes[3] = {'p', 't', 'q'};
+static const f2_draw_fn s_f2_draw_fns[3][3] = {
+    {f2_rndi_p, f2_rndi_t, f2_rndi_q}, {f2_rndf1_p, f2_rndf1_t, f2_rndf1_q},
+    {f2_rndf2_p, f2_rndf2_t, f2_rndf2_q}};
+static const uint32_t s_f2_draw_words[3][3] = {
+    {0xd0210080u, 0xd0218000u, 0xd0218080u}, {0xd0220080u, 0xd0228000u, 0xd0228080u},
+    {0xd0230080u, 0xd0238000u, 0xd0238080u}};
+
+static const uint32_t s_f2_c2[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xfffffffeu, 0xffffffffu, 0x907f6e50u, 0x5a5a5a5au};
+static const uint32_t s_f2_c3[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xc0000000u, 0xffffffffu, 0xc4d5e6d8u, 0x89abcdefu};
+static const uint32_t s_f2_carry[8] = {0x0u, 0x1u, 0x2u, 0x3u, 0xfu, 0x10u, 0xffffu,
+                                       0x12345678u};
+
+/* The RCX state k of the vfpu-forms draws (k < 8): C0 = 0x2468ace0 + k * 0x11111111,
+   C1 = 0x13579bdf ^ (k << 20), C2 = s_f2_c2[k], C3 = s_f2_c3[(3k) & 7], carry = s_f2_carry[k]. */
+static void f2_rcx_state(unsigned k, uint32_t *rcx)
+{
+    const uint32_t c[4] = {0x2468ace0u + k * 0x11111111u, 0x13579bdfu ^ (k << 20),
+                           s_f2_c2[k & 7u], s_f2_c3[(3u * k) & 7u]};
+    f2_rcx_image(rcx, c, s_f2_carry[k & 7u]);
+}
+
+/* Rows rnds-p<pass>-<i>-<a|b>: seed i from the entry RCX (a) or from the carry state
+   (b: C0 = 0x2468ace0, C1 = 0x13579bdf, C2 = 0x907f6e50, C3 = 0xc4d5e6d8, carry
+   0x12345678). result = the seed; out0-7 = RCX0-7 after the write, out8-15 = after vrnds.s,
+   out16 = the vrndi.s draw, out17-24 = RCX0-7 after the draw. */
+static void f2_rnds(unsigned pass)
+{
+    static const uint32_t c_b[4] = {0x2468ace0u, 0x13579bdfu, 0x907f6e50u, 0xc4d5e6d8u};
+    uint32_t rcx[8] __attribute__((aligned(16)));
+    uint32_t seedq[4] __attribute__((aligned(16))) = {0u, 0u, 0u, 0u};
+    uint32_t out[25] __attribute__((aligned(16)));
+    char name[48];
+    snprintf(name, sizeof(name), "rnds-p%u", pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 24u; i++) {
+        for (unsigned st = 0; st < 2u; st++) {
+            if (st == 0u) {
+                f2_rcx_entry(rcx);
+            } else {
+                f2_rcx_image(rcx, c_b, 0x12345678u);
+            }
+            seedq[0] = s_f2_seeds[i];
+            f2_rnds_step(rcx, seedq, out);
+            snprintf(name, sizeof(name), "rnds-p%u-%u-%c", pass, i, st == 0u ? 'a' : 'b');
+            hle_record(name, "PASS", s_f2_seeds[i], out, 25);
+        }
+    }
+}
+
+/* Rows <wrndi|wrndf1|wrndf2>-p<pass>-<p|t|q>-<k>: the draw from RCX state k (0-7).
+   result = the instruction word; out0-3 = C000 lanes 0-3 after, out4-11 = RCX0-7 after,
+   out12-19 = RCX0-7 after the write. */
+static void f2_wide(unsigned pass, unsigned op, unsigned size)
+{
+    static const uint32_t sentinel[4] __attribute__((aligned(16))) = {
+        TN_SENTINEL, TN_SENTINEL, TN_SENTINEL, TN_SENTINEL};
+    uint32_t rcx[8] __attribute__((aligned(16)));
+    uint32_t out[20] __attribute__((aligned(16)));
+    char name[48];
+    snprintf(name, sizeof(name), "%s-p%u-%c", s_f2_draw_stems[op], pass, s_f2_draw_sizes[size]);
+    hle_step(name);
+    for (unsigned k = 0; k < 8u; k++) {
+        f2_rcx_state(k, rcx);
+        s_f2_draw_fns[op][size](rcx, sentinel, out);
+        snprintf(name, sizeof(name), "%s-p%u-%c-%u", s_f2_draw_stems[op], pass,
+                 s_f2_draw_sizes[size], k);
+        hle_record(name, "PASS", s_f2_draw_words[op][size], out, 20);
+    }
+}
+
+static int hle_run(void)
+{
+    /* Traps off before the first VFPU cell, as in the vfpu-compare case. */
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        f2_rnds(pass);
+        for (unsigned op = 0; op < 3u; op++) {
+            for (unsigned size = 0; size < 3u; size++) {
+                f2_wide(pass, op, size);
+            }
+        }
+        f2_f2h(pass, 0u);
+        f2_f2h(pass, 1u);
+        f2_c2i(pass);
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_VFPU_FORMS2 */
 
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_INTR_CELLS

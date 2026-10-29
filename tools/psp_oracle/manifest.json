@@ -1475,6 +1475,65 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-VFPU-FORMS2-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists: this probe has not been run on a PSP. It is built from fixtures/psp_oracle/probe_hle_issues.c as vfpu_forms2.prx and runs as a single launch, not in the campaign queue. Its stream is a strict golden sequence of 636 records and the done record; PASS means the instruction result was recorded, and the parser compares no value.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_hle_issues.c",
+        "prx": "vfpu_forms2.prx",
+        "apis": [
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "Allegrex VFPU vrnds.s",
+          "Allegrex VFPU vrndi.s",
+          "Allegrex VFPU vrndi.p",
+          "Allegrex VFPU vrndi.t",
+          "Allegrex VFPU vrndi.q",
+          "Allegrex VFPU vrndf1.p",
+          "Allegrex VFPU vrndf1.t",
+          "Allegrex VFPU vrndf1.q",
+          "Allegrex VFPU vrndf2.p",
+          "Allegrex VFPU vrndf2.t",
+          "Allegrex VFPU vrndf2.q",
+          "Allegrex VFPU vf2h.p",
+          "Allegrex VFPU vf2h.q",
+          "Allegrex VFPU vc2i.s"
+        ],
+        "diagnostic_case_ids": [
+          "vfpu-forms2"
+        ],
+        "case_ids": [
+          "rnds-p0-*",
+          "wrndi-p0-*",
+          "wrndf1-p0-*",
+          "wrndf2-p0-*",
+          "f2h-p0-*",
+          "c2i-p0-*",
+          "rnds-p1-*",
+          "wrndi-p1-*",
+          "wrndf1-p1-*",
+          "wrndf2-p1-*",
+          "f2h-p1-*",
+          "c2i-p1-*",
+          "vfpu-forms2-done"
+        ],
+        "invariant": "#326, two passes, register-only: the raw words of vrnds.s (24 seed words, from the entry RCX image and from a carry RCX image, with RCX read back after the write, after the seed and after one vrndi.s draw), vrndi, vrndf1 and vrndf2 at .p, .t and .q from eight written RCX states (C000 lanes and RCX before and after), vf2h.p and vf2h.q over 28 operand quads (signed zeros, float and half denormals, the half normal limit and its neighbours, round-to-nearest-even ties, 65504 to 65536 and 1e6, infinities, quiet and signalling NaNs with payloads of both signs) and vc2i.s over ten byte patterns, with the F2H and C2I words under no S prefix, negate-all and a wzyx swizzle with lanes 0 and 2 negated (C200 words, VFPU_CC and a changed-word census of the rest of the register file).",
+        "issues": [
+          326
+        ],
+        "risk": "low; register-only VFPU cells on the main thread (VFPU attribute); no handler, timer, kernel call or device state is installed or changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-GE-SAMPLE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
