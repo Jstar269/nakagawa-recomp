@@ -155,6 +155,12 @@ _FIXED_CAMPAIGN_CASES = {
     "smoke": _fixed_campaign_rows(
         "PSP-SMOKE-001", [("sum-1-to-100", 1, _PASS)]
     ),
+    "thread-k0-block": _fixed_campaign_rows(
+        "PSP-THREAD-K0-001",
+        [("K0-MAIN", 6, _PASS), ("K0-FRESH", 11, _PASS)]
+        + [(f"K0-FRESH-W{row}0", 16, _PASS) for row in range(4)]
+        + [(f"K0-REUSE-{attr}", 9, _PASS) for attr in ("DEF", "NOFILL", "CLEAR")],
+    ),
     "thread-exit-delete": _fixed_campaign_rows(
         "PSP-THREAD-EXIT-001",
         [(case_id, 6, _PASS) for case_id in (
@@ -298,6 +304,7 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "umd-raw-read": 180,
     "smoke": 60,
     "thread-exit-delete": 180,
+    "thread-k0-block": 60,
     "teardown-test": 60,
     "io-matrix": 180,
     "display-mask-duty": 300,
