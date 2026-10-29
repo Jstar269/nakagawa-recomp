@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Deliberately disjoint from fixtures/production_smoke (0x08804000) so a stale
 # artifact from one fixture can never satisfy the other's assertions.
 BASE = 0x08900000
-DATA_SEGMENT_OFFSET = 0x1000
+DATA_SEGMENT_OFFSET = 0x2000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
@@ -62,7 +62,7 @@ WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
 TEXT_FILE_OFFSET = 0x100
-DATA_FILE_OFFSET = 0x1200
+DATA_FILE_OFFSET = 0x2200
 DATA_FILE_SIZE = 0x40
 DATA_MEMORY_SIZE = 0x40 + SCRATCH_SIZE
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
@@ -161,7 +161,7 @@ def _regimm(rs: int, sub: int, offset_words: int) -> int:
 
 
 # Register numbers used by the cells.
-ZERO, AT, V0, V1, A0, A1 = 0, 1, 2, 3, 4, 5
+ZERO, AT, V0, V1, A0, A1, A2, A3 = 0, 1, 2, 3, 4, 5, 6, 7
 T0, T1, T2, T3, T4, T5, T6, T7 = 8, 9, 10, 11, 12, 13, 14, 15
 S0, S1, S2, S3, S4, S5, S6, S7 = 16, 17, 18, 19, 20, 21, 22, 23
 T8, T9 = 24, 25
@@ -597,6 +597,135 @@ def _cell_rarewrite_target() -> list[int]:
         _r(A1, ZERO, RA, 0, 0x21),            # addu ra, a1, zero (resume belongs to caller)
         JR_RA,
         NOP,
+    ]
+
+
+def _cell_imm() -> list[int]:
+    """The immediate ALU forms: addi, slti, sltiu, andi, xori.
+
+    sltiu compares unsigned against the SIGN-extended immediate, and the logical
+    forms zero-extend theirs; t0 = -5 exercises both edges.
+    """
+    return [
+        _i(0x09, ZERO, T0, 0xFFFB),         # addiu t0, zero, -5
+        _i(0x08, T0, T1, 7),                # addi  t1, t0, 7        -> 2
+        _i(0x0A, T0, T2, 0xFFFC),           # slti  t2, t0, -4       -> 1
+        _i(0x0A, T0, T3, 0xFFFA),           # slti  t3, t0, -6       -> 0
+        _i(0x0B, T0, T4, 0xFFFC),           # sltiu t4, t0, -4       -> 1
+        _i(0x0B, T1, T5, 1),                # sltiu t5, t1, 1        -> 0
+        _i(0x0C, T0, T6, 0xFF0F),           # andi  t6, t0, 0xff0f   -> 0x0000ff0b
+        _i(0x0E, T0, T7, 0x00FF),           # xori  t7, t0, 0x00ff   -> 0xffffff04
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_alu_more() -> list[int]:
+    """Variable shifts and rotate, add/sub/nor, and Allegrex clz/clo/max/min."""
+    return [
+        _i(0x0F, ZERO, T0, 0x8000),         # lui   t0, 0x8000
+        _i(0x0D, T0, T0, 0x00F1),           # ori   t0, t0, 0x00f1   -> 0x800000f1
+        _i(0x09, ZERO, T1, 36),             # addiu t1, zero, 36     (amounts use bits 4..0)
+        _r(T1, T0, T2, 0, 0x04),            # sllv  t2, t0, t1
+        _r(T1, T0, T3, 0, 0x06),            # srlv  t3, t0, t1
+        _r(T1, T0, T4, 1, 0x06),            # rotrv t4, t0, t1
+        _r(T1, T0, T5, 0, 0x07),            # srav  t5, t0, t1
+        _r(T0, T1, T6, 0, 0x27),            # nor   t6, t0, t1
+        _r(T0, T1, T7, 0, 0x20),            # add   t7, t0, t1
+        _r(T0, T1, T8, 0, 0x22),            # sub   t8, t0, t1
+        _r(T0, ZERO, T9, 0, 0x16),          # clz   t9, t0           -> 0
+        _r(T1, ZERO, A1, 0, 0x16),          # clz   a1, t1           -> 26
+        _r(T0, ZERO, A2, 0, 0x17),          # clo   a2, t0           -> 1
+        _r(T0, T1, A3, 0, 0x2C),            # max   a3, t0, t1       -> 36
+        _r(T0, T1, V1, 0, 0x2D),            # min   v1, t0, t1       -> t0
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_muldiv() -> list[int]:
+    """div/divu, including the PSP's zero-divisor and overflow results, HI/LO moves
+    and the Allegrex multiply-accumulate forms."""
+    return [
+        _i(0x09, ZERO, T0, 0xFFF9),         # addiu t0, zero, -7
+        _i(0x09, ZERO, T1, 2),              # addiu t1, zero, 2
+        _r(T0, T1, 0, 0, 0x1A),             # div   t0, t1
+        _r(0, 0, T2, 0, 0x12),              # mflo  t2               -> -3
+        _r(0, 0, T3, 0, 0x10),              # mfhi  t3               -> -1
+        _r(T0, ZERO, 0, 0, 0x1A),           # div   t0, zero (the PSP's zero-divisor result)
+        _r(0, 0, T4, 0, 0x12),              # mflo  t4               -> 1
+        _r(0, 0, T5, 0, 0x10),              # mfhi  t5               -> -7
+        _r(T0, T1, 0, 0, 0x1B),             # divu  t0, t1
+        _r(0, 0, T6, 0, 0x12),              # mflo  t6
+        _r(T1, ZERO, 0, 0, 0x1B),           # divu  t1, zero         -> lo 0xffff, hi 2
+        _r(0, 0, T7, 0, 0x12),              # mflo  t7
+        _i(0x0F, ZERO, T8, 0x8000),         # lui   t8, 0x8000       (INT32_MIN)
+        _i(0x09, ZERO, T9, 0xFFFF),         # addiu t9, zero, -1
+        _r(T8, T9, 0, 0, 0x1A),             # div   t8, t9 (overflow)
+        _r(0, 0, A1, 0, 0x12),              # mflo  a1               -> 0x80000000
+        _r(T1, 0, 0, 0, 0x11),              # mthi  t1
+        _r(T0, 0, 0, 0, 0x13),              # mtlo  t0
+        _r(T0, T1, 0, 0, 0x1C),             # madd  t0, t1
+        _r(T0, T1, 0, 0, 0x1D),             # maddu t0, t1
+        _r(T1, T1, 0, 0, 0x2E),             # msub  t1, t1
+        _r(T0, T1, 0, 0, 0x2F),             # msubu t0, t1
+        _r(0, 0, A2, 0, 0x12),              # mflo  a2
+        _r(0, 0, A3, 0, 0x10),              # mfhi  a3
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_bshfl() -> list[int]:
+    """Allegrex wsbh, wsbw and bitrev."""
+    return [
+        _i(0x0F, ZERO, T0, 0x1234),         # lui   t0, 0x1234
+        _i(0x0D, T0, T0, 0x5681),           # ori   t0, t0, 0x5681   -> 0x12345681
+        _r(0, T0, T1, 0x02, 0x20) | (0x1F << 26),   # wsbh   t1, t0
+        _r(0, T0, T2, 0x03, 0x20) | (0x1F << 26),   # wsbw   t2, t0
+        _r(0, T0, T3, 0x14, 0x20) | (0x1F << 26),   # bitrev t3, t0
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_zbranch() -> list[int]:
+    """bltz/bgez/blez/bgtz, each taken or not, with delay slots that always run."""
+    return [
+        _i(0x09, ZERO, T0, 0xFFFF),         # 0x00 addiu t0, zero, -1
+        _i(0x09, ZERO, V0, 0),              # 0x04 addiu v0, zero, 0
+        _regimm(T0, 0x00, 2),               # 0x08 bltz  t0, +2 (taken)
+        _i(0x09, V0, V0, 1),                # 0x0c delay slot
+        _i(0x09, V0, V0, 0x100),            # 0x10 skipped
+        _regimm(T0, 0x01, 2),               # 0x14 bgez  t0, +2 (not taken)
+        _i(0x09, V0, V0, 2),                # 0x18 delay slot
+        _i(0x09, V0, V0, 0x10),             # 0x1c runs
+        _i(0x06, T0, ZERO, 2),              # 0x20 blez  t0, +2 (taken)
+        _i(0x09, V0, V0, 4),                # 0x24 delay slot
+        _i(0x09, V0, V0, 0x200),            # 0x28 skipped
+        _i(0x07, T0, ZERO, 2),              # 0x2c bgtz  t0, +2 (not taken)
+        _i(0x09, V0, V0, 8),                # 0x30 delay slot
+        _i(0x09, V0, V0, 0x20),             # 0x34 runs                -> v0 = 0x3f
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_zlink() -> list[int]:
+    """bltzal calls leaf A; a not-taken bgezal still links $ra = pc + 8."""
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _i(0x09, ZERO, V0, 0),              # 0x08 addiu v0, zero, 0
+        _i(0x09, ZERO, T0, 0xFFFF),         # 0x0c addiu t0, zero, -1
+        _regimm(T0, 0x10, 0),               # 0x10 bltzal t0, leafA (patched, taken)
+        _i(0x09, V0, V0, 1),                # 0x14 delay slot
+        _regimm(T0, 0x11, 0),               # 0x18 bgezal t0, leafA (patched, not taken)
+        _i(0x09, V0, V0, 2),                # 0x1c delay slot
+        _r(RA, ZERO, S0, 0, 0x21),          # 0x20 addu  s0, ra, zero (the not-taken link)
+        _i(0x23, SP, RA, 12),               # 0x24 lw    ra, 12(sp)
+        JR_RA,                              # 0x28
+        _i(0x09, SP, SP, 16),               # 0x2c addiu sp, sp, 16 (return slot)
     ]
 
 
@@ -1073,6 +1202,12 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("rarewrite", "rewritten $ra at an AOT linked-call boundary", _cell_rarewrite),
     ("rarewrite_callee", "callee that rewrites its live $ra", _cell_rarewrite_callee),
     ("rarewrite_target", "guest destination of the rewritten $ra", _cell_rarewrite_target),
+    ("imm", "immediate ALU forms", _cell_imm),
+    ("alu_more", "variable shifts, nor, add/sub, clz/clo, max/min", _cell_alu_more),
+    ("muldiv", "div/divu, HI/LO moves and multiply-accumulate", _cell_muldiv),
+    ("bshfl", "wsbh, wsbw and bitrev", _cell_bshfl),
+    ("zbranch", "bltz/bgez/blez/bgtz taken and not taken", _cell_zbranch),
+    ("zlink", "bltzal/bgezal link semantics", _cell_zlink),
     ("linkr", "jalr link semantics", _cell_linkr),
     ("jrslot", "computed-transfer target vs its delay slot", _cell_jrslot),
     ("jrtail", "computed tail call vs its delay slot", _cell_jrtail),
@@ -1251,6 +1386,13 @@ def build_text_segment() -> bytes:
     struct.pack_into(
         "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
     )
+    for slot in (0x10, 0x18):  # zlink's bltzal / bgezal reach leaf A
+        branch = layout["zlink"][0] + slot
+        word = struct.unpack_from("<I", text, branch)[0]
+        struct.pack_into(
+            "<I", text, branch,
+            (word & 0xFFFF0000) | (((layout["link_leaf"][0] - (branch + 4)) // 4) & 0xFFFF),
+        )
     rewrite_resume = BASE + layout["rarewrite"][0] + 16
     struct.pack_into(
         "<I", text, layout["rarewrite"][0],

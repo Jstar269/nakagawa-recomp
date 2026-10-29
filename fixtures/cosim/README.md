@@ -204,6 +204,12 @@ returns through its callee's `jr $ra` instead.
 | `branch` | conditional branch delay-slot ownership, taken and not taken, condition read before the slot |
 | `branch_likely` | all nine compiler branch-likely forms, with real taken slots and annulled not-taken slots |
 | `bitops` | `ext`/`ins` edge sizes, `seb`/`seh`, aliased `movn`/`movz`, and unsigned-to-float via `bltzl` |
+| `imm` | `addi`, `slti`, `sltiu` (unsigned against the sign-extended immediate), `andi`, `xori` |
+| `alu_more` | `sllv`/`srlv`/`rotrv`/`srav` with masked amounts, `nor`, `add`/`sub`, `clz`/`clo`, `max`/`min` |
+| `muldiv` | `div`/`divu`, including the PSP's zero-divisor and overflow results, `mthi`/`mtlo`, `madd`/`maddu`/`msub`/`msubu` |
+| `bshfl` | `wsbh`, `wsbw`, `bitrev` |
+| `zbranch` | `bltz`/`bgez`/`blez`/`bgtz`, each taken and not taken |
+| `zlink` | `bltzal` calling a leaf, and a not-taken `bgezal` that still links `$ra` |
 | `jump` | direct `j` with its slot, and a word only a mis-computed target could reach |
 | `jthunk` / `jtarget` | a known-entry direct `j` tail crossing with a this-adjusting delay slot |
 | `link` / `linkr` | `jal` and `jalr` link semantics with a conventional `$ra`-preserving frame |

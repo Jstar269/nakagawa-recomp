@@ -130,9 +130,10 @@ MUTANTS: tuple[Mutant, ...] = (
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism. The
             # count is the number of per-instruction restore sites in guest_interp.c
-            # (the unaligned word forms added the eleventh and the SPECIAL3 forms
-            # the twelfth); a new site bumps it.
-            ("s->r[0] = 0u;", "(void)0;", 12),
+            # (the unaligned word forms added the eleventh, the SPECIAL3 forms the
+            # twelfth, and addi/slti/sltiu/andi/xori the thirteenth to seventeenth);
+            # a new site bumps it.
+            ("s->r[0] = 0u;", "(void)0;", 17),
         ],
     ),
     Mutant(
@@ -157,11 +158,12 @@ MUTANTS: tuple[Mutant, ...] = (
         "wrong-branch-target",
         "incorrect branch target",
         [(
-            # Four decoders share this expression: beq/bne and their likely
-            # forms, blezl/bgtzl, bltzl/bgezl, and the bc1 group.
+            # Six decoders share this expression: beq/bne and their likely
+            # forms, blez/bgtz, blezl/bgtzl, bltz/bgez/bltzal/bgezal,
+            # bltzl/bgezl, and the bc1 group.
             "        out->target = pc + 4u + (sign_extend_16(opcode) << 2);",
             "        out->target = pc + 8u + (sign_extend_16(opcode) << 2);",
-            4,
+            6,
         )],
     ),
     Mutant(

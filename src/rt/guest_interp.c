@@ -694,6 +694,26 @@ static SrGuestInterpResult execute_noncontrol(
         case 0x03u: /* sra */
             write_gpr(s, rd, (uint32_t)(sr_u32_as_s32(read_gpr(s, rt)) >> shift));
             break;
+        case 0x04u: /* sllv */
+            write_gpr(s, rd, read_gpr(s, rt) << (read_gpr(s, rs) & 31u));
+            break;
+        case 0x06u: { /* srlv; Allegrex sa=1 is the rotate rotrv, other sa values are reserved */
+            const uint32_t v = read_gpr(s, rt);
+            const uint32_t amount = read_gpr(s, rs) & 31u;
+            if (shift == 1u) {
+                write_gpr(s, rd, amount == 0u ? v : (v >> amount) | (v << (32u - amount)));
+            } else if (shift == 0u) {
+                write_gpr(s, rd, v >> amount);
+            } else {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            break;
+        }
+        case 0x07u: /* srav */
+            write_gpr(s, rd, (uint32_t)(sr_u32_as_s32(read_gpr(s, rt)) >>
+                                        (read_gpr(s, rs) & 31u)));
+            break;
         case 0x0au: /* movz rd, rs, rt */
             if (read_gpr(s, rt) == 0u) write_gpr(s, rd, read_gpr(s, rs));
             break;
@@ -701,7 +721,23 @@ static SrGuestInterpResult execute_noncontrol(
             if (read_gpr(s, rt) != 0u) write_gpr(s, rd, read_gpr(s, rs));
             break;
         case 0x10u: write_gpr(s, rd, s->hi); break;                      /* mfhi */
+        case 0x11u: s->hi = read_gpr(s, rs); break;                      /* mthi */
         case 0x12u: write_gpr(s, rd, s->lo); break;                      /* mflo */
+        case 0x13u: s->lo = read_gpr(s, rs); break;                      /* mtlo */
+        case 0x16u: { /* clz (Allegrex) */
+            const uint32_t v = read_gpr(s, rs);
+            uint32_t count = 0u;
+            while (count < 32u && (v & (UINT32_C(0x80000000) >> count)) == 0u) count++;
+            write_gpr(s, rd, count);
+            break;
+        }
+        case 0x17u: { /* clo (Allegrex) */
+            const uint32_t v = read_gpr(s, rs);
+            uint32_t count = 0u;
+            while (count < 32u && (v & (UINT32_C(0x80000000) >> count)) != 0u) count++;
+            write_gpr(s, rd, count);
+            break;
+        }
         case 0x18u: { /* mult */
             const int64_t product = (int64_t)sr_u32_as_s32(read_gpr(s, rs)) *
                                     (int64_t)sr_u32_as_s32(read_gpr(s, rt));
@@ -715,11 +751,53 @@ static SrGuestInterpResult execute_noncontrol(
             s->hi = (uint32_t)(product >> 32);
             break;
         }
+        case 0x1au: { /* div: the PSP's results for overflow and a zero divisor */
+            const int32_t a = sr_u32_as_s32(read_gpr(s, rs));
+            const int32_t b = sr_u32_as_s32(read_gpr(s, rt));
+            if (a == INT32_MIN && b == -1) {
+                s->lo = 0x80000000u;
+                s->hi = 0xffffffffu;
+            } else if (b != 0) {
+                s->lo = (uint32_t)(a / b);
+                s->hi = (uint32_t)(a % b);
+            } else {
+                s->lo = a < 0 ? 1u : 0xffffffffu;
+                s->hi = (uint32_t)a;
+            }
+            break;
+        }
+        case 0x1bu: { /* divu */
+            const uint32_t a = read_gpr(s, rs);
+            const uint32_t b = read_gpr(s, rt);
+            if (b != 0u) {
+                s->lo = a / b;
+                s->hi = a % b;
+            } else {
+                s->lo = a <= 0xffffu ? 0xffffu : 0xffffffffu;
+                s->hi = a;
+            }
+            break;
+        }
+        case 0x1cu: case 0x1du: case 0x2eu: case 0x2fu: {
+            /* madd / maddu / msub / msubu (Allegrex, in the SPECIAL table) */
+            uint64_t acc = ((uint64_t)s->hi << 32) | s->lo;
+            const uint64_t product = (funct == 0x1cu || funct == 0x2eu)
+                ? (uint64_t)((int64_t)sr_u32_as_s32(read_gpr(s, rs)) *
+                             (int64_t)sr_u32_as_s32(read_gpr(s, rt)))
+                : (uint64_t)read_gpr(s, rs) * (uint64_t)read_gpr(s, rt);
+            acc = funct <= 0x1du ? acc + product : acc - product;
+            s->lo = (uint32_t)acc;
+            s->hi = (uint32_t)(acc >> 32);
+            break;
+        }
+        case 0x20u: /* add: the PSP's add does not trap on overflow */
         case 0x21u: write_gpr(s, rd, read_gpr(s, rs) + read_gpr(s, rt)); break;  /* addu */
+        case 0x22u: /* sub: likewise */
         case 0x23u: write_gpr(s, rd, read_gpr(s, rs) - read_gpr(s, rt)); break;  /* subu */
         case 0x24u: write_gpr(s, rd, read_gpr(s, rs) & read_gpr(s, rt)); break;  /* and */
         case 0x25u: write_gpr(s, rd, read_gpr(s, rs) | read_gpr(s, rt)); break;  /* or */
         case 0x26u: write_gpr(s, rd, read_gpr(s, rs) ^ read_gpr(s, rt)); break;  /* xor */
+        case 0x27u: write_gpr(s, rd, ~(read_gpr(s, rs) | read_gpr(s, rt))); break;  /* nor */
         case 0x2au: /* slt */
             write_gpr(s, rd,
                       sr_u32_as_s32(read_gpr(s, rs)) < sr_u32_as_s32(read_gpr(s, rt))
@@ -728,6 +806,18 @@ static SrGuestInterpResult execute_noncontrol(
         case 0x2bu: /* sltu */
             write_gpr(s, rd, read_gpr(s, rs) < read_gpr(s, rt) ? 1u : 0u);
             break;
+        case 0x2cu: { /* max (Allegrex) */
+            const int32_t a = sr_u32_as_s32(read_gpr(s, rs));
+            const int32_t b = sr_u32_as_s32(read_gpr(s, rt));
+            write_gpr(s, rd, (uint32_t)(a > b ? a : b));
+            break;
+        }
+        case 0x2du: { /* min (Allegrex) */
+            const int32_t a = sr_u32_as_s32(read_gpr(s, rs));
+            const int32_t b = sr_u32_as_s32(read_gpr(s, rt));
+            write_gpr(s, rd, (uint32_t)(a < b ? a : b));
+            break;
+        }
         default:
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
@@ -762,9 +852,21 @@ static SrGuestInterpResult execute_noncontrol(
             const uint32_t old_value = read_gpr(s, rt);
             const uint32_t inserted = (read_gpr(s, rs) << pos) & field_mask;
             write_gpr(s, rt, (old_value & ~field_mask) | inserted);
-        } else if (funct == 0x20u && rs == 0u && (shift == 0x10u || shift == 0x18u)) {
+        } else if (funct == 0x20u && rs == 0u &&
+                   (shift == 0x02u || shift == 0x03u || shift == 0x10u ||
+                    shift == 0x14u || shift == 0x18u)) {
             const uint32_t value = read_gpr(s, rt);
-            if (shift == 0x10u) { /* seb */
+            if (shift == 0x02u) { /* wsbh */
+                write_gpr(s, rd, ((value & 0x00ff00ffu) << 8) | ((value >> 8) & 0x00ff00ffu));
+            } else if (shift == 0x03u) { /* wsbw */
+                write_gpr(s, rd, (value << 24) | ((value & 0x0000ff00u) << 8) |
+                                 ((value >> 8) & 0x0000ff00u) | (value >> 24));
+            } else if (shift == 0x14u) { /* bitrev (Allegrex) */
+                uint32_t reversed = 0u;
+                for (unsigned bit = 0u; bit < 32u; bit++)
+                    reversed |= ((value >> bit) & 1u) << (31u - bit);
+                write_gpr(s, rd, reversed);
+            } else if (shift == 0x10u) { /* seb */
                 const uint32_t byte = value & 0xffu;
                 write_gpr(s, rd, (byte & 0x80u) != 0u ? byte | 0xffffff00u : byte);
             } else { /* seh */
@@ -871,6 +973,32 @@ static SrGuestInterpResult execute_noncontrol(
     }
 
     /* Immediate ALU. */
+    if (primary == 0x08u) {        /* addi: the PSP's addi does not trap on overflow */
+        write_gpr(s, rt, read_gpr(s, rs) + sign_extend_16(opcode));
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+    if (primary == 0x0au) {        /* slti rt, rs, immediate */
+        write_gpr(s, rt, sr_u32_as_s32(read_gpr(s, rs)) <
+                             sr_u32_as_s32(sign_extend_16(opcode)) ? 1u : 0u);
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+    if (primary == 0x0bu) {        /* sltiu: an unsigned compare with the sign-extended immediate */
+        write_gpr(s, rt, read_gpr(s, rs) < sign_extend_16(opcode) ? 1u : 0u);
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+    if (primary == 0x0cu) {        /* andi rt, rs, immediate (zero extended) */
+        write_gpr(s, rt, read_gpr(s, rs) & (opcode & 0xffffu));
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+    if (primary == 0x0eu) {        /* xori rt, rs, immediate (zero extended) */
+        write_gpr(s, rt, read_gpr(s, rs) ^ (opcode & 0xffffu));
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
     if (primary == 0x09u) {        /* addiu rt, rs, immediate */
         write_gpr(s, rt, read_gpr(s, rs) + sign_extend_16(opcode));
         s->r[0] = 0u;
@@ -1210,6 +1338,24 @@ static SrGuestInterpCtl classify_control(
         out->taken = (primary == 0x04u || primary == 0x14u)
             ? (left == right) : (left != right);
         out->likely = primary == 0x14u || primary == 0x15u;
+        return SR_CTL_TRANSFER;
+    }
+
+    if (primary == 0x06u || primary == 0x07u) {  /* blez/bgtz */
+        if (rt != 0u) return SR_CTL_REJECT;
+        const int32_t value = sr_u32_as_s32(read_gpr(s, rs));
+        out->target = pc + 4u + (sign_extend_16(opcode) << 2);
+        out->taken = primary == 0x06u ? value <= 0 : value > 0;
+        return SR_CTL_TRANSFER;
+    }
+
+    if (primary == 0x01u && (rt == 0u || rt == 1u || rt == 0x10u || rt == 0x11u)) {
+        /* bltz / bgez, and bltzal / bgezal, which link $ra = pc + 8 whether or not
+         * they are taken, exactly as generated code writes it. */
+        const int32_t value = sr_u32_as_s32(read_gpr(s, rs));
+        out->target = pc + 4u + (sign_extend_16(opcode) << 2);
+        out->taken = (rt & 1u) == 0u ? value < 0 : value >= 0;
+        out->link_register = rt >= 0x10u ? 31 : -1;
         return SR_CTL_TRANSFER;
     }
 
