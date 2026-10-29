@@ -12,10 +12,12 @@ same sense as
 > [`tools/psp_readiness.py`](../tools/psp_readiness.py) cover the implemented subset. Read those
 > first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the readiness tool
 > — extend that tool rather than adding a second precondition checker.
-> What remains unbuilt here is the PSP-side v2 instruction-trace producer and capture path.
-> `verify_gates.py` can consume a supplied `PSP_HARDWARE` + `LOCAL_COSIM` pair, but the scalar
-> probe and this verifier change do not produce a real-PSP trace. The producer is in the works
-> as a later hardware slice under issue #312.
+> The PSP-side v2 instruction-trace producer now exists for source-owned microprograms: the
+> `insn-trace` probe (`PSP-TRACE-001`, `fixtures/psp_oracle/probe_insn_trace.c`) single-steps the
+> fixtures of `fixtures/psp_oracle/insn_trace_fixtures.h` on the PSP, and
+> `tools/psp_oracle/insn_trace.py` writes the `PSP_HARDWARE` and `LOCAL_COSIM` traces that
+> `verify_gates.py` and `tracediff.py --strict-hardware` compare (#312). The resident producer
+> for arbitrary code described below remains a proposal.
 
 ## GE raster pixel corpus (#343)
 
@@ -903,6 +905,31 @@ One console is one data point; see §11. Nothing here closes issue #70
     16 trials, both when the first to arrive was the weaker (priorities 0x1c then 0x18) and the stronger.
   - *Busy window.* A weaker thread polling a 0x10000-byte Try saw the channel busy until the first call returned
     (within -142 to +31 us of its return; 0x10000 to 0x100000 bytes).
+
+- **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
+  `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`
+  preflight (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0 blockers:
+  evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence of 136 records and the done record, all PASS. An earlier launch of `3edde7f2` traced the same
+  steps but its step records were cut to 34 of 35 words by the record writer, so it is not cited. The raw
+  log and traces stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `84568280`) |
+  | --- | --- | --- | --- |
+  | `PSP-TRACE-001` | `alu-branch-ls-*`, `delay-slots-*` | `insn-trace-done`; any instruction form, register or memory outside the two fixtures | MEASURED (`insn-trace`) |
+
+  What the run establishes (issue #312). The probe executed each fixture one instruction at a time on the
+  Allegrex: conditional branches were decided by the CPU, the link value (pc + 8) and the j/jal/jr targets
+  follow the architecture's definition in the probe, and every delay slot ran as its own step except the
+  annulled delay slot of a not-taken `beql`. `tools/psp_oracle/insn_trace.py` turned the log into v2
+  `PSP_HARDWARE` traces: `alu-branch-ls` 105 records (SHA-256 of the step records
+  `6d0acdf1a49be864ffe909991c302d534d8f75b7fa588da3a50d6ff2fd85654c`) and `delay-slots` 27 records
+  (`4b70f42c94fc8460efd0f81295fdbe9b9c680ae67d59a47a7ff587a2fecbfbec`). Nakagawa's `LOCAL_COSIM` traces of
+  the same words at the same commit agree with both under `strict_hardware_diff` (`STRICT_V2_AGREEMENT`, also
+  through `verify_gates.run_hardware_trace_gate`), and `tools/test_insn_trace.py` pins the two digests. A
+  codegen mutation that emits the fixture's `xor` as `or` is reported at step 13, pc `0x08900034`, the first
+  `xor`, with its differing `r16` write.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
@@ -2665,6 +2692,7 @@ not expected PSP values.
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
+| `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 
@@ -3008,8 +3036,8 @@ The legacy v1 trace header is:
 
 Strict v2 adds the `source_tier` field (`PSP_HARDWARE`, `LOCAL_COSIM`, or
 `PPSSPP_CORROBORATIVE`) and the identity fields described in
-[`TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md). The producer that emits
-`PSP_HARDWARE` traces on the PSP is in the works as a later hardware slice under issue #312.
+[`TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md). The `insn-trace` probe emits `PSP_HARDWARE` traces of
+the source-owned microprograms (#312, `PSP-TRACE-001` above); arbitrary code is not traced.
 
 ## 3. Architecture: a resident runner, not per-test rebuilds
 

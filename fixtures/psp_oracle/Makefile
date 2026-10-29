@@ -242,6 +242,9 @@ CASE_ID = 117
 # 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
 else ifeq ($(CASE),dma-timing)
 CASE_ID = 118
+# 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
+else ifeq ($(CASE),insn-trace)
+CASE_ID = 119
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -439,6 +442,12 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),dma-timing)
 TARGET = $(BUILD_DIR)/dma_timing
 OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
+# The instruction trace: its own source, the single-step trampoline and the fixtures
+# header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
+# issue cells.
+else ifeq ($(CASE),insn-trace)
+TARGET = $(BUILD_DIR)/insn_trace
+OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -580,6 +589,10 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_dmac_timing.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the instruction trace (probe_insn_trace.c).
+ifneq ($(filter $(BUILD_DIR)/probe_insn_trace.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -652,6 +665,12 @@ $(BUILD_DIR)/probe_ge_sample.o: probe_ge_sample.c
 
 $(BUILD_DIR)/probe_dmac_timing.o: probe_dmac_timing.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/hle_power_imports.o: hle_power_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@

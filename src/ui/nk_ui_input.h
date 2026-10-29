@@ -57,6 +57,8 @@ typedef enum {
     NK_UI_BTN_MENU,
     NK_UI_BTN_CYCLE_NEXT,
     NK_UI_BTN_CYCLE_PREV,
+    NK_UI_BTN_PAGE_PREV,   /* Page Up, the pad's left trigger */
+    NK_UI_BTN_PAGE_NEXT,   /* Page Down, the pad's right trigger */
     NK_UI_BTN_COUNT
 } NkUiInputButton;
 
@@ -253,6 +255,7 @@ typedef struct {
     float event_scale;        /* window-event units to logical UI pixels */
     float stick_x;
     float stick_y;
+    bool trigger_down[2];     /* left, right: pressed past the stick thresholds */
     float wheel_acc_x;
     float wheel_acc_y;
 } NkUiSdlInput;
