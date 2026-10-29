@@ -161,6 +161,9 @@ jobs:
       - name: Enforce tracked-tree reference ratchet
         run: python tools/tree_lint.py --check
 
+      - name: Enforce core runtime purity (no game addresses in src/rt)
+        run: python tools/purity_gate.py
+
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |

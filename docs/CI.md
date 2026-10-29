@@ -118,7 +118,11 @@ current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit
 stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
 names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
-scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+scan in git mode and the synthetic canary gate. It also runs the core purity gate,
+[`tools/purity_gate.py`](../tools/purity_gate.py): a hexadecimal literal in PSP user RAM
+(`0x08800000`-`0x09ffffff`) in `src/rt/` code fails it, outside title-config files, native
+self-tests, registered NIDs and the reviewed allowlist in that file (one entry per literal,
+with its reason). A fix for one game goes in its title config, not the core. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,

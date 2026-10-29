@@ -1020,6 +1020,7 @@ class PublicExportJobTests(unittest.TestCase):
         "Install pre-commit",
         "Run shared all-files checks",
         "Enforce tracked-tree reference ratchet",
+        "Enforce core runtime purity (no game addresses in src/rt)",
         "Locate the pinned Betterleaks binary",
         "Scan reachable sanitized Git history with Betterleaks",
         "Run Betterleaks synthetic canaries",
