@@ -954,11 +954,14 @@ class PackageCacheTests(unittest.TestCase):
                 )
             self.assertEqual(target, "fixture-target")
             self.assertEqual(run.call_args.args[0], [str(compiler), "-dumpmachine"])
+            # The fixture file is not a program, so it reports no version and no
+            # programs; the identity still names its bytes and says so.
             self.assertEqual(
                 package_cache.compiler_identity(
                     environment=environment, repository_root=repository,
                 ),
-                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}",
+                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}|version=unavailable"
+                "|cc1:unavailable|as:unavailable|ld:unavailable",
             )
             # Without the repository root neither can find the compiler, and both say so.
             self.assertEqual(
@@ -969,6 +972,131 @@ class PackageCacheTests(unittest.TestCase):
                 package_cache.compiler_identity(environment=environment),
                 "nk-fixture-cc:unavailable",
             )
+
+    def _fake_toolchain(self, root: Path) -> tuple[dict[str, str], dict[str, Path]]:
+        """A driver and the three programs it names, answered by a stand-in for ``run``."""
+        driver = root / "nk-fake-cc"
+        driver.write_bytes(b"driver bytes")
+        programs = {}
+        for name in package_cache.COMPILER_PROGRAMS:
+            programs[name] = root / f"{name}-program"
+            programs[name].write_bytes(f"{name} bytes".encode("utf-8"))
+        return {"CC": driver.name, "PATH": ""}, programs
+
+    def _identity(self, environment: dict[str, str], programs: dict[str, Path],
+                  version: str = "16.2.0", root: Path | None = None) -> str:
+        def run(argv, **_kwargs):
+            argument = argv[1]
+            if argument == "-dumpfullversion":
+                return subprocess.CompletedProcess(argv, 0, stdout=version + "\n", stderr="")
+            name = argument.removeprefix("-print-prog-name=")
+            return subprocess.CompletedProcess(argv, 0, stdout=str(programs[name]) + "\n",
+                                               stderr="")
+        with mock.patch.object(package_cache.subprocess, "run", side_effect=run):
+            return package_cache.compiler_identity(
+                environment=environment,
+                repository_root=root if root is not None else self._toolchain_root,
+            )
+
+    def test_compiler_identity_names_the_programs_the_driver_runs(self) -> None:
+        # A binutils update replaces the assembler and the linker and leaves the driver
+        # alone; the identity, and so the native key, must change with it. The driver
+        # hash alone did not.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self._toolchain_root = root
+            environment, programs = self._fake_toolchain(root)
+            first = self._identity(environment, programs)
+            self.assertTrue(first.startswith(
+                f"nk-fake-cc:{package_cache.sha256_file(root / 'nk-fake-cc')}|version=16.2.0|"))
+            for path in programs.values():
+                self.assertIn(f"{path.name}:{package_cache.sha256_file(path)}", first)
+            self.assertNotIn(str(root), first)
+            self.assertEqual(self._identity(environment, programs), first)
+            for name in package_cache.COMPILER_PROGRAMS:
+                original = programs[name].read_bytes()
+                programs[name].write_bytes(original + b" updated")
+                changed = self._identity(environment, programs)
+                self.assertNotEqual(changed, first, name)
+                programs[name].write_bytes(original)
+            self.assertNotEqual(self._identity(environment, programs, "16.3.0"), first)
+            # An unchanged toolchain at another path keeps its identity.
+            moved = root / "moved"
+            moved.mkdir()
+            moved_programs = {}
+            for name, path in programs.items():
+                moved_programs[name] = moved / path.name
+                shutil.copyfile(path, moved_programs[name])
+            shutil.copyfile(root / "nk-fake-cc", moved / "nk-fake-cc")
+            self.assertEqual(self._identity(environment, moved_programs, root=moved), first)
+
+    def test_compiler_identity_changes_the_native_key_alone(self) -> None:
+        old = self.key(compiler="gcc:" + "1" * 64)
+        new = self.key(compiler="gcc:" + "1" * 64 + "|version=16.2.0|as:" + "2" * 64)
+        decision = package_cache.compare_cache_keys(old, new)
+        self.assertEqual(decision.action, "native-recompile")
+        self.assertTrue(decision.generated_c_reusable)
+        self.assertEqual(decision.reasons, ("native:compiler_identity",))
+
+    def _digest_tree(self, root: Path) -> None:
+        for relative in (
+            "Makefile", "mk/nk_ui.mk", "src/rt/recomp.c", "src/core/nk_json.c",
+            "src/ui/nk_ui.c", "src/player/main.c", "third_party/clay/clay.h",
+            "third_party/stb/stb_image.h",
+            "third_party/portable-snippets/safe-math/safe-math.h",
+            "third_party/libchdr/src/libchdr_chd.c",
+        ):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"/* {relative} */\n", encoding="utf-8")
+
+    def test_runtime_digest_follows_what_a_package_compiles(self) -> None:
+        # The runtime package compiles src/rt, the core it links, the overlay's UI
+        # library (src/ui) and the third-party headers those include, under the
+        # Makefile and its fragments. The player is not part of a package.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self._digest_tree(root)
+            base = package_cache.source_tree_digest(root)
+            for relative in (
+                "Makefile", "mk/nk_ui.mk", "src/rt/recomp.c", "src/core/nk_json.c",
+                "src/ui/nk_ui.c", "third_party/clay/clay.h", "third_party/stb/stb_image.h",
+                "third_party/portable-snippets/safe-math/safe-math.h",
+            ):
+                path = root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"/* changed */\n")
+                self.assertNotEqual(package_cache.source_tree_digest(root), base, relative)
+                path.write_bytes(original)
+            for relative in ("src/player/main.c", "third_party/libchdr/src/libchdr_chd.c"):
+                path = root / relative
+                path.write_bytes(path.read_bytes() + b"/* changed */\n")
+                self.assertEqual(package_cache.source_tree_digest(root), base, relative)
+
+    def test_runtime_digest_lists_every_third_party_directory_the_runtime_uses(self) -> None:
+        # A runtime source that includes a third-party header, or a runtime flag that
+        # names a third-party include directory, makes that directory part of the
+        # package; a change there must rebuild it.
+        listed = set(package_cache.RUNTIME_SOURCE_DIRECTORIES)
+        used: set[str] = set()
+        include = re.compile(r'#\s*include\s*[<"](?:\.\./)*(third_party/[^/">]+)')
+        for directory in ("src/rt", "src/ui", "src/core"):
+            for path in (ROOT / directory).rglob("*"):
+                if path.suffix in {".c", ".h"} and path.is_file():
+                    used.update(include.findall(path.read_text(encoding="utf-8",
+                                                               errors="replace")))
+        lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("RT_NK_UI_FLAGS"))
+        flags = [lines[start]]
+        while flags[-1].endswith("\\"):
+            flags.append(lines[start + len(flags)])
+        used.update(re.findall(r"-I(third_party/[^\s/\\]+)", " ".join(flags)))
+        self.assertIn("third_party/clay", used)
+        self.assertIn("third_party/stb", used)
+        self.assertEqual(sorted(used - listed), [])
+        for directory in ("src/rt", "src/core", "src/ui"):
+            self.assertIn(directory, listed)
+        self.assertNotIn("src/player", listed)
 
     # A generated-code stage: the outputs of one generation phase, named as the planner
     # names them for the game "game", recorded with the package completion discipline.

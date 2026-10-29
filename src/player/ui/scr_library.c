@@ -48,6 +48,9 @@
 /* The LIBRARY heading's line height (NK_UI_TYPE_DISPLAY), reserved when working
    out how much room is left for the grid or the empty card. */
 #define LIBRARY_HEADING_ROW_HEIGHT 32.0f
+/* The library notice under the heading (two NK_UI_TYPE_BODY lines) and its gap. */
+#define LIBRARY_ID_NOTICE 0x10000026u
+#define LIBRARY_NOTICE_ROW_HEIGHT (44.0f + NK_UI_SPACE_4)
 
 static NkUiSizing sizing_grow(void) {
     NkUiSizing sizing = {NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
@@ -516,11 +519,20 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
             nk_ui_end_container(ui);
         }
 
+        /* A library.json a newer Nakagawa saved is kept as it is, not shown as an
+           empty library without a word: the notice says why no games are listed. */
+        bool has_notice = model->library_notice != NULL && model->library_notice[0] != '\0';
+        if (has_notice) {
+            nk_ui_text_role(ui, LIBRARY_ID_NOTICE, model->library_notice, NK_UI_TYPE_BODY,
+                            theme->warning);
+        }
+
         if (!has_games) {
             /* Room for the card under the heading, above TEST THIS PC. */
             float room = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
                          NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM -
                          LIBRARY_HEADING_ROW_HEIGHT - NK_UI_SPACE_4 -
+                         (has_notice ? LIBRARY_NOTICE_ROW_HEIGHT : 0.0f) -
                          library_demos_height(demo_count, columns);
             PlayerUiAction empty = library_empty(ui, room >= LIBRARY_EMPTY_CARD_HEIGHT);
             if (empty.kind != PLAYER_UI_ACTION_NONE) result = empty;

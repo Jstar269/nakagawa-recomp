@@ -68,6 +68,32 @@ MAX_LIBRARY_JSON_NODES = max(
 )
 
 
+def _existing_schema_version(path: Path) -> Optional[int]:
+    """The integer schema_version of the library file at ``path``, or None.
+
+    None when there is no file or it cannot be read as a library object: the
+    loader has already reported such a file, and replacing it loses nothing a
+    reader could use.
+    """
+    if not path.is_file():
+        return None
+    try:
+        data = read_bounded_json(
+            path,
+            max_bytes=MAX_LIBRARY_JSON_BYTES,
+            max_depth=MAX_LIBRARY_JSON_DEPTH,
+            max_members=MAX_LIBRARY_JSON_MEMBERS,
+            max_items=MAX_LIBRARY_JSON_ITEMS,
+            max_nodes=MAX_LIBRARY_JSON_NODES,
+        )
+    except (OSError, BoundedJsonError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("schema_version")
+    return version if type(version) is int else None
+
+
 @dataclass
 class LibraryGameRecord:
     disc_id: str
@@ -210,6 +236,17 @@ class GameLibrary:
         if len(self._games) > MAX_LIBRARY_GAMES:
             raise ValueError(
                 f"library holds {len(self._games)} games, over the {MAX_LIBRARY_GAMES}-record limit"
+            )
+
+        # A library a newer player wrote is never replaced, as the native writer
+        # refuses it (src/core/nk_user_data_schema.h): rewriting it as this
+        # schema would drop whatever the newer one added.
+        existing = _existing_schema_version(out_file)
+        if existing is not None and existing > LIBRARY_SCHEMA_VERSION:
+            raise ValueError(
+                f"{out_file}: library schema_version {existing} was written by a newer "
+                f"Nakagawa; this build writes version {LIBRARY_SCHEMA_VERSION} and left "
+                "the file as it is"
             )
 
         out_file.parent.mkdir(parents=True, exist_ok=True)

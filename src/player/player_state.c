@@ -28,6 +28,7 @@
 #include "nk_psp_npumdimg.h"
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
+#include "nk_user_data_schema.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -152,6 +153,18 @@ static bool player_join_path(char *out, size_t out_size, const char *root,
     return written > 0 && (size_t)written < out_size;
 }
 
+void player_app_note_library_load(PlayerApp *app, NkResult load_result) {
+    if (!app) return;
+    app->library_notice[0] = '\0';
+    if (load_result != NK_ERROR_NEWER_SCHEMA) return;
+    long version = app->library.newer_schema_version;
+    snprintf(app->library_notice, sizeof(app->library_notice),
+             "Your library was saved by a newer Nakagawa (format %ld; this one reads %d). "
+             "It is kept as it is: update Nakagawa to see your games.",
+             version > 999 ? 999L : version, NK_LIBRARY_SCHEMA_VERSION);
+    printf("[PLAYER] %s\n", app->library_notice);
+}
+
 void player_app_init(PlayerApp *app) {
     if (!app) return;
     memset(app, 0, sizeof(*app));
@@ -177,6 +190,7 @@ void player_app_init(PlayerApp *app) {
     if (lib_res == NK_OK && app->library.count > 0) {
         player_app_sync_library(app);
     }
+    player_app_note_library_load(app, lib_res);
 
     /* Initialize controller input settings (#357) */
     input_settings_init(&app->input_settings);
@@ -1183,8 +1197,33 @@ static bool present_scaling_valid(int scaling) {
            scaling == NK_PRESENT_SCALING_BILINEAR;
 }
 
+/* settings.json is read at its own version and then carried forward one step at
+ * a time: kSettingsMigrations[n - 1] takes what a version-n file meant to what
+ * version n + 1 means, and runs on the values already read. Version 1 predates
+ * v0.0.1; v0.0.1 wrote version 2. The file itself is rewritten only by the next
+ * save, which keeps the original as settings.json.v<n>.bak first. */
+typedef void (*PlayerSettingsMigration)(PlayerSettings *settings, const NkJsonNode *root);
+
+/* The largest settings.json the reader accepts. */
+#define PLAYER_SETTINGS_MAX_BYTES (1024 * 1024)
+
+static void settings_migrate_v1_to_v2(PlayerSettings *settings, const NkJsonNode *root) {
+    /* Version 1's fps_cap 30 and 60 capped host presentation and could hide a
+       game's native cadence (60 was its default). Version 2 has no host cap, so
+       both become the PSP scanout path; an explicit 0 (uncapped) is kept. */
+    int64_t fps = 0;
+    if (nk_json_get_int64(nk_json_obj_get(root, "fps_cap"), &fps) && (fps == 30 || fps == 60)) {
+        settings->fps_cap = -1;
+    }
+}
+
+static const PlayerSettingsMigration kSettingsMigrations[NK_PLAYER_SETTINGS_SCHEMA_VERSION - 1] = {
+    settings_migrate_v1_to_v2,
+};
+
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     if (!app) return NK_ERROR_GENERIC;
+    app->settings_newer_schema = false;
 
     char resolved_path[MAX_PATH_LEN];
     const char *target = file_path;
@@ -1232,7 +1271,7 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (sz <= 0 || sz > 1024 * 1024) {
+    if (sz <= 0 || sz > PLAYER_SETTINGS_MAX_BYTES) {
         fclose(f);
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -1265,8 +1304,20 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *sv_node = nk_json_obj_get(root, "schema_version");
     int64_t sv = 0;
-    if (!sv_node || !nk_json_get_int64(sv_node, &sv) ||
-        (sv != 1 && sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION)) {
+    if (sv_node && nk_json_get_int64(sv_node, &sv) &&
+        sv > NK_PLAYER_SETTINGS_SCHEMA_VERSION) {
+        /* A newer player wrote this file. It is left exactly as it is: this
+           session runs on the defaults, and player_app_save_settings refuses to
+           replace the file (nk_user_data_schema.h). */
+        nk_json_free(root);
+        player_app_settings_init_default(&app->settings);
+        app->settings_newer_schema = true;
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Settings are from a newer Nakagawa (format %d); they are kept as they are, "
+                 "and changes here are not saved.", (int)(sv > 999 ? 999 : sv));
+        return NK_ERROR_NEWER_SCHEMA;
+    }
+    if (!sv_node || !nk_json_get_int64(sv_node, &sv) || sv < 1) {
         nk_json_free(root);
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -1291,14 +1342,8 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
     int64_t fps_val = 0;
-    if (fps_node && nk_json_get_int64(fps_node, &fps_val)) {
-        if (sv == 1 && (fps_val == 30 || fps_val == 60)) {
-            /* Legacy values capped host presentation and could hide a game's
-             * native cadence. Migrate both to the authentic PSP scanout path. */
-            app->settings.fps_cap = -1;
-        } else if (fps_val == -1 || fps_val == 0) {
-            app->settings.fps_cap = (int)fps_val;
-        }
+    if (fps_node && nk_json_get_int64(fps_node, &fps_val) && (fps_val == -1 || fps_val == 0)) {
+        app->settings.fps_cap = (int)fps_val;
     }
 
     NkJsonNode *vsync_node = nk_json_obj_get(root, "vsync");
@@ -1414,6 +1459,10 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.master_volume = (int)vol_val;
     }
 
+    for (int64_t version = sv; version < NK_PLAYER_SETTINGS_SCHEMA_VERSION; ++version) {
+        kSettingsMigrations[version - 1](&app->settings, root);
+    }
+
     nk_json_free(root);
     app->settings_notice[0] = '\0';
     return NK_OK;
@@ -1504,6 +1553,12 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
             target = resolved_path;
         }
     }
+
+    /* Settings a newer player wrote are never replaced, and an older file is kept
+       as settings.json.v<n>.bak before this one replaces it. */
+    NkResult guard = nk_user_data_prepare_replace(target, NK_PLAYER_SETTINGS_SCHEMA_VERSION,
+                                                  PLAYER_SETTINGS_MAX_BYTES, NULL);
+    if (guard != NK_OK) return guard;
 
     char tmp_path[MAX_PATH_LEN + 16];
     size_t tlen = strlen(target);

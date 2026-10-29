@@ -705,6 +705,11 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     if (model.page == PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE && app->settings_notice[0] != '\0') {
         model.notice = app->settings_notice;
     }
+    /* Settings a newer Nakagawa saved are kept and not replaced; every page says
+       so, since no change made on any of them is saved. */
+    if (app->settings_newer_schema && app->settings_notice[0] != '\0') {
+        model.notice = app->settings_notice;
+    }
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -1952,6 +1957,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                      "Version %.40s is out", app->update.check.newest.version);
             model.update_notice = player->update_notice;
         }
+        if (app->library_notice[0] != '\0') model.library_notice = app->library_notice;
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
             app->selected_game_index = (int)action.title_index;

@@ -176,6 +176,9 @@ typedef struct {
     /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
        opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
     const char *update_notice;
+    /* Why no saved games are listed although a library file exists (a newer
+       Nakagawa wrote it, and it is kept as it is), or NULL. */
+    const char *library_notice;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides

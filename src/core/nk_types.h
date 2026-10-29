@@ -39,7 +39,10 @@ typedef enum {
     NK_ERROR_INVALID_EXECUTABLE = -12,
     /* A host path the work needs is longer than the OS file APIs accept
        (nk_platform_path_exceeds_limit); the input itself is fine. */
-    NK_ERROR_PATH_TOO_LONG = -13
+    NK_ERROR_PATH_TOO_LONG = -13,
+    /* A per-user file carries a schema_version newer than this build reads: a
+       later player wrote it. It is left exactly as it is (nk_user_data_schema.h). */
+    NK_ERROR_NEWER_SCHEMA = -14
 } NkResult;
 
 typedef enum {

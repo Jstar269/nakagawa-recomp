@@ -2816,6 +2816,37 @@ static void test_package_build_lifecycle(const char *self_executable) {
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_OK);
 
+    /* A package a newer Nakagawa built says so on its card, before any member
+       check its newer layout would fail, and the player leaves it as it is. */
+    {
+        static const char current_format[] =
+            "\"format\":\"nakagawa-aot-package\",\"schema_version\":2,";
+        char line[256];
+        snprintf(package_path, sizeof(package_path), "%s%cpackages%c%s%cpackage.json",
+                 user_root, sep, sep, rebuild_app->games[0].disc_id, sep);
+        char *package_text = read_text_file(package_path);
+        char *at = strstr(package_text, current_format);
+        assert(at != NULL);
+        at[strlen(current_format) - 2u] = '3';
+        write_text_file(package_path, package_text);
+        player_app_runtime_package_cache_invalidate(rebuild_app);
+        assert(player_app_validate_runtime_package(
+                   rebuild_app, &rebuild_app->games[0], NULL,
+                   incompatible_reason, sizeof(incompatible_reason)) ==
+               NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(strstr(incompatible_reason,
+                      "built by a newer Nakagawa (package format 3; this player reads 2)") !=
+               NULL);
+        assert(player_incompatible_reason_line(incompatible_reason, line, sizeof(line)) > 0);
+        static const char card_line[] = "No longer fits this player: built by a newer Nakagawa";
+        assert(strncmp(line, card_line, strlen(card_line)) == 0);
+        char *after = read_text_file(package_path);
+        assert(strcmp(after, package_text) == 0);
+        free(after);
+        free(package_text);
+        printf("[PLAYER_STATE_TEST] a newer package format is named on its card PASS\n");
+    }
+
     write_runtime_package_fixture_with_source_media(
         user_root, rebuild_app->games[0].disc_id,
         rebuild_app->games[0].title_id, incompatible_abi,
@@ -3569,6 +3600,198 @@ static void psn_test_refused(const char *path, const char *want_code, const char
     assert(package.iso_path[0] == '\0');
 }
 
+/* ---- Versioned per-user data ---------------------------------------------------------
+   The files fixtures/user_data holds were written by earlier players' own writers. Each
+   loads, migrates forward and round-trips here; an older file is kept byte for byte as
+   <file>.v<n>.bak before the first save replaces it; a newer one is refused by name and
+   never replaced (src/core/nk_user_data_schema.h). */
+
+#define VERSIONED_DATA_ROOT SR_SELFTEST_BUILD_ROOT "/versioned_user_data"
+
+static void versioned_copy_fixture(const char *fixture, const char *destination) {
+    char *bytes = read_text_file(fixture);
+    write_text_file(destination, bytes);
+    free(bytes);
+}
+
+static bool versioned_file_equals(const char *path, const char *fixture) {
+    if (!nk_platform_file_exists(path)) return false;
+    char *left = read_text_file(path);
+    char *right = read_text_file(fixture);
+    bool same = strcmp(left, right) == 0;
+    free(left);
+    free(right);
+    return same;
+}
+
+static void versioned_remove(const char *path) {
+    if (nk_platform_file_exists(path)) assert(remove(path) == 0);
+}
+
+static void test_versioned_settings(PlayerApp *app) {
+    const char *path = VERSIONED_DATA_ROOT "/settings.json";
+    const char *v1_backup = VERSIONED_DATA_ROOT "/settings.json.v1.bak";
+    const char *v2_backup = VERSIONED_DATA_ROOT "/settings.json.v2.bak";
+
+    /* v0.0.1 wrote schema 2: every value loads as it was saved, and a save
+       writes the same version again with no backup. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/settings.json", path);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings_notice[0] == '\0' && !app->settings_newer_schema);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(app->settings.fps_cap == 0);
+    assert(app->settings.vsync == false);
+    assert(app->settings.launcher_window_position_valid);
+    assert(app->settings.launcher_window_x == 64 && app->settings.launcher_window_y == 48);
+    assert(app->settings.launcher_window_width == 1600);
+    assert(app->settings.launcher_window_height == 900);
+    assert(app->settings.reduce_motion == true);
+    assert(app->settings.master_volume == 55);
+    player_app_adjust_volume(app, 5);
+    assert(!nk_platform_file_exists(v2_backup));
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.master_volume == 60);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.launcher_window_width == 1600);
+
+    /* Schema 1 (before v0.0.1) migrates to 2: its 60 fps cap becomes PSP
+       timing, and the first save keeps the schema 1 file as settings.json.v1.bak. */
+    versioned_copy_fixture("fixtures/user_data/settings_v1.json", path);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.fps_cap == -1);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.launcher_window_maximized == true);
+    assert(app->settings.launcher_window_width == 1440);
+    assert(app->settings.reduce_motion == true);
+    assert(app->settings.master_volume == 65);
+    assert(!nk_platform_file_exists(v1_backup));
+    player_app_adjust_volume(app, -5);
+    assert(versioned_file_equals(v1_backup, "fixtures/user_data/settings_v1.json"));
+    {
+        char *saved = read_text_file(path);
+        assert(strstr(saved, "\"schema_version\": 2,") != NULL);
+        free(saved);
+    }
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.fps_cap == -1 && app->settings.master_volume == 60);
+    assert(app->settings.launcher_window_width == 1440);
+
+    /* A newer player's settings are refused by name and never replaced, by any
+       change made in this session. */
+    static const char newer[] =
+        "{\"schema_version\": 3, \"master_volume\": 12, \"a_later_setting\": true}\n";
+    write_text_file(path, newer);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(app->settings_newer_schema);
+    assert(strstr(app->settings_notice, "newer Nakagawa (format 3)") != NULL);
+    assert(strstr(app->settings_notice, "not saved") != NULL);
+    assert(app->settings.master_volume == 80);
+    player_app_adjust_volume(app, 5);
+    player_app_set_resolution_scale(app, 4);
+    assert(player_app_save_settings(app, path) == NK_ERROR_NEWER_SCHEMA);
+    {
+        char *kept = read_text_file(path);
+        assert(strcmp(kept, newer) == 0);
+        free(kept);
+    }
+    assert(!nk_platform_file_exists(VERSIONED_DATA_ROOT "/settings.json.v3.bak"));
+    versioned_remove(v1_backup);
+    versioned_remove(path);
+    printf("[PLAYER_STATE_TEST] settings.json: v0.0.1 and schema 1 load and migrate, "
+           "a newer file is kept PASS\n");
+}
+
+static void test_versioned_library(PlayerApp *app) {
+    static NkLibrary library;
+    static NkLibrary reloaded;
+    const char *path = VERSIONED_DATA_ROOT "/library.json";
+    const char *bak = VERSIONED_DATA_ROOT "/library.json.bak";
+
+    /* v0.0.1's library.json (schema 1) loads whole and round-trips. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/library.json", path);
+    assert(nk_library_load(&library, path) == NK_OK);
+    assert(library.count == 2 && library.newer_schema_version == 0);
+    const NkGameEntry *one = nk_library_find_by_disc_id(&library, "TEST80001");
+    const NkGameEntry *two = nk_library_find_by_disc_id(&library, "TEST80002");
+    assert(one != NULL && two != NULL);
+    assert(strcmp(one->title_name, "Synthetic Title \"One\"") == 0);
+    assert(strcmp(one->iso_path, "<drive>:\\Games\\synthetic-one.iso") == 0);
+    assert(one->source_image_path[0] == '\0');
+    assert(one->status == NK_STATUS_PREPARED && one->is_prepared && one->assets_staged);
+    assert(one->executable_eboot_kind == 1 && one->executable_boot_kind == 2);
+    assert(one->executable_selection == 1);
+    assert(strcmp(one->boot_executable, "BOOT.BIN") == 0);
+    assert(strcmp(one->selected_executable, "EBOOT.BIN") == 0);
+    assert(one->extracted_asset_count == 42 && one->extracted_layout_count == 5);
+    assert(one->iso_size_bytes == 123456789ull);
+    assert(strcmp(one->last_played, "2026-10-27T12:00:00Z") == 0);
+    assert(strcmp(two->title_name, "Synthetic Two \xE6\x97\xA5\xE6\x9C\xAC") == 0);
+    assert(two->is_experimental && two->status == NK_STATUS_IDENTIFIED);
+    assert(nk_library_save(&library, path) == NK_OK);
+    assert(!nk_platform_file_exists(VERSIONED_DATA_ROOT "/library.json.v1.bak"));
+    assert(nk_library_load(&reloaded, path) == NK_OK);
+    assert(reloaded.count == 2);
+    assert(memcmp(reloaded.entries, library.entries,
+                  sizeof(library.entries[0]) * (size_t)library.count) == 0);
+
+    /* A newer player's library is refused by name. The older .bak beside it is
+       not loaded in its place, and no save replaces either file. */
+    static const char newer[] =
+        "{\n  \"schema_version\": 2,\n  \"games\": [\n    {\n"
+        "      \"disc_id\": \"TEST80003\",\n      \"a_later_member\": 7\n    }\n  ]\n}\n";
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/library.json", bak);
+    write_text_file(path, newer);
+    assert(nk_library_load(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(library.count == 0 && library.newer_schema_version == 2);
+    NkGameEntry added;
+    seed_entry(&added, "TEST80004", "Added While Refused");
+    assert(nk_library_add_or_update(&library, &added) == NK_OK);
+    assert(nk_library_save(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(nk_library_save(&library, NULL) == NK_ERROR_NEWER_SCHEMA);
+    {
+        char *kept = read_text_file(path);
+        assert(strcmp(kept, newer) == 0);
+        free(kept);
+    }
+    assert(versioned_file_equals(bak, "fixtures/user_data/v0.0.1/library.json"));
+
+    /* The Library screen names it. */
+    app->library = library;
+    player_app_note_library_load(app, NK_ERROR_NEWER_SCHEMA);
+    assert(strstr(app->library_notice, "newer Nakagawa (format 2; this one reads 1)") != NULL);
+    player_app_note_library_load(app, NK_OK);
+    assert(app->library_notice[0] == '\0');
+
+    /* With no primary, a newer .bak is refused the same way, and a save does not
+       write a primary the next save would rotate over it. */
+    versioned_remove(path);
+    write_text_file(bak, newer);
+    assert(nk_library_load(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(library.count == 0 && library.newer_schema_version == 2);
+    assert(nk_library_save(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(!nk_platform_file_exists(path));
+    versioned_remove(bak);
+    printf("[PLAYER_STATE_TEST] library.json: v0.0.1 loads and round-trips, a newer file "
+           "and its .bak are kept PASS\n");
+}
+
+static void test_versioned_user_data(void) {
+    assert(nk_platform_file_exists("fixtures/user_data/v0.0.1/library.json") &&
+           "run from the repository root");
+    assert(nk_platform_mkdir_p(VERSIONED_DATA_ROOT));
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    test_versioned_settings(app);
+    test_versioned_library(app);
+    free(app);
+}
+
 /* A synthetic PSN package imports as its ISO: converted once into
    <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
    nothing, reuse of a checked conversion, and the wizard panel returning to
@@ -3806,6 +4029,7 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_versioned_user_data();
     test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
@@ -6507,15 +6731,22 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "corrupt") != NULL);
 
-        /* Unknown / unsupported schema version resets to defaults and produces notice */
+        /* A newer schema version runs this session on the defaults, says why, and
+           keeps the file (test_versioned_settings covers the save refusal). */
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
-        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_NEWER_SCHEMA);
         assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
         assert(s_app2->settings.master_volume == 80);
+        assert(strstr(s_app2->settings_notice, "newer Nakagawa (format 999)") != NULL);
+
+        /* A version below 1 is not one any player wrote: defaults, with a notice. */
+        write_text_file(test_settings_path, "{\"schema_version\": 0, \"resolution_scale\": 2}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
 
         /* A legacy persisted 8x preset is refused at load: the GPU rasterizer

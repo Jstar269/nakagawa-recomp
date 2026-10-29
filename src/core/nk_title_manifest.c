@@ -2717,6 +2717,24 @@ static bool package_number(const JsonNode *node, int64_t expected) {
            node->u.num.int_val == expected;
 }
 
+/* True, with the reason in `error`, when `node` holds a format number above the
+ * one this player reads: a later Nakagawa built the package. It is named as
+ * such, before any member check a newer layout would fail, and never mistaken
+ * for a damaged package. The player does not change it; only a rebuild the user
+ * asks for replaces it. */
+static bool package_newer_format(const JsonNode *node, int64_t reads, const char *what,
+                                 char *error, size_t error_size) {
+    if (!node || node->type != JSON_NUMBER || !node->u.num.is_integer ||
+        node->u.num.int_val <= reads) return false;
+    if (error && error_size) {
+        snprintf(error, error_size,
+                 "built by a newer Nakagawa (%s format %lld; this player reads %lld); "
+                 "update Nakagawa to play it, or rebuild it for this one.",
+                 what, (long long)node->u.num.int_val, (long long)reads);
+    }
+    return true;
+}
+
 static bool package_read_json(const char *path, size_t max_bytes,
                               bool *out_exceeds_limit,
                               char **out_text, size_t *out_length,
@@ -4120,6 +4138,13 @@ static bool package_validate_contract(const JsonNode *package,
     static const char * const object_keys[] = {"path", "sha256", NULL};
     static const char * const object_required[] = {"path", "sha256", NULL};
     const char *value = NULL;
+    if (package_newer_format(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION,
+                             "package", error, error_size) ||
+        package_newer_format(obj_get(obj_get(package, "cache"), "schema_version"),
+                             NK_AOT_CACHE_SCHEMA_VERSION, "package cache", error,
+                             error_size)) {
+        return false;
+    }
     if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
     if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
         !package_number(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION)) {
@@ -4461,6 +4486,12 @@ static bool package_validate_completion(const char *package_root,
         return false;
     }
     const char *value = NULL;
+    if (package_newer_format(obj_get(completion, "schema_version"),
+                             NK_AOT_COMPLETION_SCHEMA_VERSION, "package completion", error,
+                             error_size)) {
+        json_free(completion);
+        return false;
+    }
     if (!package_check_object(completion, "completion-manifest", allowed_keys, required_keys,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
