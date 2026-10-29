@@ -1467,6 +1467,18 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size);
 #define sr_end(s, mem_addr, size) ((void)0)
 #endif
 
+/* Local guest-register promotion (tools/codegen.py --promote-registers, #284): a
+ * promoted instruction writes a C local, and the body writes dirty locals back to
+ * s->r[] at every label, control transfer and other boundary. A build that compiles
+ * the trace hooks in also mirrors each promoted write at once, so the
+ * per-instruction trace and the cosimulation see the architectural register file
+ * after every instruction. Elsewhere the mirror compiles out. */
+#if PERF_AOT_INSTRUCTIONS || defined(SR_INSTRUCTION_TRACE)
+#define SR_PROMO_SYNC(s, i, v) ((s)->r[(i)] = (v))
+#else
+#define SR_PROMO_SYNC(s, i, v) ((void)0)
+#endif
+
 /* HLE boundary marker used by the bring-up driver: a call to an unresolved import stop the
  * traced run so the comparison ends exactly where the reference trace reaches its first syscall. */
 void sr_hle_call(CpuState *s, uint32_t nid);

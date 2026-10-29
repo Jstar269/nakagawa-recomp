@@ -208,6 +208,24 @@ These tools run on the development host before the native compiler.
 - **Chunking:** generated functions are split into `<game>_recomp_0.c` through
   `<game>_recomp_N.c`. The count is computed from the discovered functions and
   `FUNCS_PER_CHUNK`; it is not fixed to eight HST chunks.
+- **Local register promotion (opt-in, #284):** `codegen.py --promote-registers` keeps the guest
+  GPRs that a run of simple instructions touches in C locals (`_gpr<n>`). A GPR is loaded from
+  `s->r[]` before its first read in the run, and every written local is stored back before each
+  label, control transfer, instruction emitted the legacy way and the end of the body, so
+  dispatch, the interpreter floor, HLE, the scheduler and the stale-code redirect always see the
+  architectural register file. An instruction is promoted only when its translated line touches no
+  other guest state than its GPRs, HI and LO, calls only the guest memory accessors, and neither
+  returns nor jumps (`promoted_line_is_safe`); LLE-guarded accesses, FPU, VFPU, COP0, LL/SC and
+  unaligned accesses stay legacy. A trace build mirrors every promoted write at once
+  (`SR_PROMO_SYNC` in `src/rt/recomp.h`), so `mingw32-make cosim-selftest-promoted` compares the
+  whole cosimulation corpus channel for channel. The win comes from the guest stores: they call
+  runtime code, so without promotion the host compiler reloads `s->r[]` after each one. Generated
+  code built at `-O0` gains nothing, so the option only pays off at `-O1` or above. Codegen prints
+  `CODEGEN_PROMOTION` with the promoted, span, load and write-back counts. Making it the default
+  needs all of these: the promoted cosimulation and the production-smoke and profile-zero routes
+  pass; HST and PAC-MAN CE reach the same route results as the legacy build; HST's guest CPU time
+  per frame (`SR_PERF` `cpu_ms`) improves by at least 5% at its qualified `-O1`; and compile time
+  and peak compiler memory grow by at most 10%.
 
 ### Verification tools
 
