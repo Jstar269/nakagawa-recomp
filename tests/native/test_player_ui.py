@@ -835,6 +835,7 @@ class NativePlayerUiTests(unittest.TestCase):
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
+        dedicated_data_root: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1091,6 +1092,9 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
                 (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
+            dedicated = scratch / "dedicated-data-root"
+            if dedicated_data_root:
+                args.append(f"--user-data-root={dedicated}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
 
@@ -1130,6 +1134,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 if isinstance(candidate, dict) and "fps_cap" in candidate:
                     persisted_settings = candidate
                     break
+
+            def files_under(folder: Path) -> list[str]:
+                return sorted(path.relative_to(folder).as_posix()
+                              for path in folder.rglob("*") if path.is_file())
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -1141,6 +1149,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
                 "settings": persisted_settings,
+                "default_profile_files": files_under(localappdata / "Nakagawa"),
+                "dedicated_files": files_under(dedicated),
                 "downloaded_tool_marker_exists": (
                     tool_marker.is_file() if tool_marker is not None else None
                 ),
@@ -1631,6 +1641,23 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
+
+    def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
+        """--user-data-root=<folder> opens the player on a second profile, for example a
+        whole collection under test: a settings change lands in <folder>/config, and
+        nothing is written under the default profile. Before, only the library moved;
+        settings, logs, the cache and saves still went to the default profile."""
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+            dedicated_data_root=True,
+        )
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("resolution_scale"), 2, "the change was saved")
+        self.assertIn("config/settings.json", run["dedicated_files"])
+        self.assertEqual(run["default_profile_files"], [],
+                         "nothing is written under the default profile")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are
@@ -4382,7 +4409,20 @@ class PlayerVersionIdentityTests(unittest.TestCase):
     A dry run of the player link shows the define the build passes; nothing is
     compiled. The date itself (MM-DD-YYYY from the epoch) is checked by
     tests/native/test_player_screens.c.
+
+    `player-ui-regressions` runs this module under `make -j4 --output-sync=target`,
+    and that make's MAKEFLAGS (its jobserver and its output-sync mutex handle) reach
+    the dry run through the environment. The handle is a raw Windows handle number
+    the child never inherits, so a dry run that used it could wait on whatever
+    handle has that number in its own process: hosted runs hung for the whole
+    timeout holding jobserver tokens. `-j1 --output-sync=none` makes the dry run
+    a standalone make while keeping the variables the shard passes (CC, VULKAN_SDK).
     """
+
+    # A dry run takes about 13 s on a Windows desktop, and the shard that runs both
+    # of them takes 41-67 s on hosted Windows runners; 180 s is about three times
+    # that whole shard, so a stuck dry run fails in minutes, not after ten.
+    DRY_RUN_TIMEOUT_S = 180
 
     def _player_defines(self, env_extra: dict[str, str]) -> list[str]:
         make = shutil.which("mingw32-make") or shutil.which("make")
@@ -4394,8 +4434,10 @@ class PlayerVersionIdentityTests(unittest.TestCase):
             build_root = Path(scratch).as_posix()
             exe = f"{build_root}/nakagawa_player{'.exe' if os.name == 'nt' else ''}"
             run = subprocess.run(
-                [make, "--no-print-directory", "-n", "-B", f"BUILD_ROOT={build_root}", exe],
-                cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+                [make, "--no-print-directory", "-j1", "--output-sync=none", "-n", "-B",
+                 f"BUILD_ROOT={build_root}", exe],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+                timeout=self.DRY_RUN_TIMEOUT_S,
             )
         if run.returncode != 0:
             self.skipTest(f"the player dry run needs its build dependencies: {run.stderr[-400:]}")

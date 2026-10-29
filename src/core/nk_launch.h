@@ -39,6 +39,7 @@ typedef struct {
     bool fullscreen;
     bool vsync;
     bool experimental_60hz; /* exports SR_EXPERIMENTAL_60HZ=1; only an enhancement-package build reads it */
+    bool developer_mode;    /* exports SR_DEVELOPER_MODE=1: the runtime's developer HUD and pages (#314) */
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
     uint32_t headless_accept_presented_frames; /* 0 disables the windowed acceptance checkpoint */

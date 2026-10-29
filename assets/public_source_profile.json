@@ -911,6 +911,7 @@
     "src/rt/overlay/nk_overlay.c",
     "src/rt/overlay/nk_overlay.h",
     "src/rt/overlay/overlay_controls.c",
+    "src/rt/overlay/overlay_dev.c",
     "src/rt/overlay/overlay_dialogs.c",
     "src/rt/overlay/overlay_host.c",
     "src/rt/overlay/overlay_host.h",

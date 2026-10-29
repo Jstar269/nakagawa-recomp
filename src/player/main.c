@@ -3838,7 +3838,9 @@ static int player_run_command_line_launch(PlayerApp *app, int game_index,
 
 /* --user-data-root=<folder> makes this process keep its library, title
  * manifests, packages and staged games in <folder>, the same meaning as
- * nk_cli's --user-data-root. It must apply before the library loads. */
+ * nk_cli's --user-data-root, and its settings, cache, logs and saves in the
+ * folder's config, cache, logs and saves folders (nk_platform_set_app_data_dir_
+ * override). It must apply before anything resolves a per-user folder. */
 static bool player_apply_user_data_root(int argc, char *argv[]) {
     static const char prefix[] = "--user-data-root=";
     for (int i = 1; i < argc; i++) {
