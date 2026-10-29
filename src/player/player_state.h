@@ -302,6 +302,12 @@ typedef struct {
     PlayerErrorRetry retry;
     /* Copy details has put this card's report on the clipboard. */
     bool details_copied;
+    /* A game that ended on its own (player_app_set_game_stop_error): the named
+       stop boundary, [a-z0-9-] only, "" for none, and the child's exit code.
+       Report this game names them; they never hold a path. */
+    char stop_boundary[96];
+    int stop_exit_code;
+    bool stop_has_exit_code;
 } ErrorState;
 
 typedef enum {
@@ -730,11 +736,70 @@ const char *player_error_retry_label(const ErrorState *error);
    starts the build. */
 bool player_app_retry_from_error(PlayerApp *app);
 /* The report Copy details puts on the clipboard: version, problem, code, game,
-   disc ID, stage, details, log file and the last runtime boot events. The
-   user's profile folder and name are redacted, as in the developer log. Only
+   disc ID and version, stage, details, log file, the system, the renderer,
+   the package check and the last runtime boot events. The user's profile
+   folder is shown as "~" and the user name as "<user>". Only
    the clipboard sees it; nothing is sent anywhere. Returns its length. */
 size_t player_app_format_error_report(const PlayerApp *app, const char *version,
                                       char *out, size_t out_size);
+/* The same report with the profile folder given explicitly: it is shown as
+   "~" (player_display_text_with_home) and the user name, wherever else it
+   appears, as "<user>" (player_dev_log_redact). */
+size_t player_app_format_error_report_for(const PlayerApp *app, const char *version,
+                                          const char *profile, const char *user,
+                                          char *out, size_t out_size);
+
+/* Report this game (docs/ONLINE_FEATURES.md "Reports"). These are links the user
+   opens in their own browser; the player makes no network call for them. */
+#define PLAYER_REPORT_REPO_URL "https://github.com/Jstar269/nakagawa-recomp"
+#define PLAYER_REPORT_CATEGORY "compatibility-reports"
+/* The longest report link. Windows hands a link to the browser through the
+   shell, whose limit is INTERNET_MAX_URL_LENGTH (2083 characters); GitHub's
+   own 414 limit is far above that. 2000 keeps clear of the shell's limit. */
+#define PLAYER_REPORT_URL_MAX 2000u
+/* What a report link carries, and nothing else: no path, log or setting. */
+typedef struct {
+    const char *title_name;
+    const char *disc_id;
+    const char *disc_version;
+    const char *version;      /* "v0.0.2-dev (commit 3efc890)" */
+    const char *platform;     /* player_platform_name() */
+    const char *problem;      /* the named boundary or stop code; "" from a title page */
+} PlayerReportFacts;
+/* "Windows (x86-64)", "Linux (arm64)", ...: the system the player was built for. */
+const char *player_platform_name(void);
+/* Percent-encodes UTF-8 text for a query value: RFC 3986's unreserved set
+   (A-Z a-z 0-9 - . _ ~) stays, every other byte becomes %XX. Appends to out
+   at *used and stops before a character whose encoding would pass `limit`
+   characters, so the cut is never inside an escape or a UTF-8 sequence.
+   Returns false when it had to stop. */
+bool player_url_encode_append(const char *in, char *out, size_t out_size, size_t *used,
+                              size_t limit);
+/* The new-discussion link in Compatibility reports, title and body filled in
+   (at most PLAYER_REPORT_URL_MAX characters). The text passes through the
+   same redaction as Copy details, with this profile folder and user name,
+   before it is encoded. Returns false when out is too small. */
+bool player_report_discussion_url(const PlayerReportFacts *facts, const char *profile,
+                                  const char *user, char *out, size_t out_size);
+/* The Compatibility reports search for a disc ID. */
+bool player_report_search_url(const char *disc_id, char *out, size_t out_size);
+/* An issue's page. */
+bool player_report_issue_url(unsigned int issue, char *out, size_t out_size);
+/* The open issue that tracks a named stop boundary, from the player's table of
+   known causes (player_state.c, k_known_causes); 0 when none does. */
+unsigned int player_known_issue_for_boundary(const char *boundary);
+unsigned int player_error_known_issue(const ErrorState *error);
+/* The card is about a game that stopped, crashed or did not start, so it
+   offers Report this game. */
+bool player_error_offers_report(const ErrorState *error);
+/* The short cause a report names: "stopped at <boundary>", or the stop code
+   and its exit code. */
+size_t player_error_report_problem(const ErrorState *error, char *out, size_t out_size);
+/* The report link for library game `game_index`, from the error card when
+   error is non-NULL, else from its title page; the current user's profile
+   folder and name are redacted. */
+bool player_app_report_url(const PlayerApp *app, int game_index, const ErrorState *error,
+                           const char *version, char *out, size_t out_size);
 /* Text after a leading "[CODE] " or "CODE: " prefix, so a card shows the
    sentence, not the code. */
 const char *player_plain_reason(const char *text);

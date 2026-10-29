@@ -1907,6 +1907,267 @@ static void test_license_folder_request(void) {
     free(app);
 }
 
+/* Decodes one query value of a report link (up to the next '&'), or returns
+   false on a malformed escape. */
+static bool report_query_value(const char *url, const char *key, char *out, size_t out_size) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s=", key);
+    const char *p = strstr(url, needle);
+    size_t used = 0;
+    if (!p || out_size == 0) return false;
+    for (p += strlen(needle); *p && *p != '&'; p++) {
+        unsigned value;
+        if (used + 1u >= out_size) return false;
+        if (*p == '%') {
+            if (!isxdigit((unsigned char)p[1]) || !isxdigit((unsigned char)p[2]) ||
+                sscanf(p + 1, "%2x", &value) != 1) {
+                return false;
+            }
+            out[used++] = (char)value;
+            p += 2;
+        } else {
+            out[used++] = *p;
+        }
+    }
+    out[used] = '\0';
+    return true;
+}
+
+/* Every character of a report link is from RFC 3986's unreserved set, a
+   query delimiter, or a whole %XX escape. */
+static bool report_url_is_encoded(const char *url) {
+    const char *query = strchr(url, '?');
+    if (!query) return false;
+    for (const char *p = query + 1; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '%') {
+            if (!isxdigit((unsigned char)p[1]) || !isxdigit((unsigned char)p[2])) return false;
+            p += 2;
+        } else if (!(isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~' ||
+                     c == '&' || c == '=')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool report_utf8_valid(const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        size_t extra = *p < 0x80u ? 0u : (*p & 0xE0u) == 0xC0u ? 1u
+                     : (*p & 0xF0u) == 0xE0u ? 2u : (*p & 0xF8u) == 0xF0u ? 3u : 9u;
+        if (extra == 9u) return false;
+        for (size_t i = 1; i <= extra; i++) {
+            if ((p[i] & 0xC0u) != 0x80u) return false;
+        }
+        p += extra + 1u;
+    }
+    return true;
+}
+
+/* Report this game: the discussion link, the search link, the known causes
+   and the Copy details redaction. Synthetic profile folders and user names
+   only; nothing here opens a browser or the network. */
+static void test_report_this_game(void) {
+#if defined(_WIN32) || defined(_WIN64)
+#define RP_HOME "C:\\path\\Synthetic Example"
+#define RP_SEP "\\"
+#else
+#define RP_HOME "/srv/synthetic-example"
+#define RP_SEP "/"
+#endif
+    static const char user[] = "Synthetic Example";
+    char url[PLAYER_REPORT_URL_MAX + 64];
+    char value[1200];
+
+    /* Encoding: spaces, '&', '#', '+', '%', a newline and non-ASCII text all
+       become escapes; the unreserved set stays as it is. */
+    {
+        size_t used = 0;
+        assert(player_url_encode_append("a b&c#d+e%f/g\nh~i_j.k-l", url, sizeof(url),
+                                        &used, sizeof(url)));
+        assert(strcmp(url, "a%20b%26c%23d%2Be%25f%2Fg%0Ah~i_j.k-l") == 0);
+        used = 0;
+        assert(player_url_encode_append("\xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9 \xC3\xA9", url,
+                                        sizeof(url), &used, sizeof(url)));
+        assert(strcmp(url, "%E3%83%86%E3%83%8B%E3%82%B9%20%C3%A9") == 0);
+        /* A limit inside the second character's escapes stops before it. */
+        used = 0;
+        assert(!player_url_encode_append("\xE3\x83\x86\xE3\x83\x8B", url, sizeof(url),
+                                         &used, 12u));
+        assert(strcmp(url, "%E3%83%86") == 0 && used == 9u);
+    }
+
+    /* The link: title "<game> (<DISC>): <problem>", the facts and two empty
+       headed sections, and nothing else. */
+    PlayerReportFacts facts = {
+        "Synthetic & Co. #1 + \xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9", "TEST00042", "1.01",
+        "v0.0.2-dev (commit 3efc890)", "Windows (x86-64)",
+        "stopped at unsupported-import-scenetadhocinit"
+    };
+    assert(player_report_discussion_url(&facts, RP_HOME, user, url, sizeof(url)));
+    assert(strncmp(url, "https://github.com/Jstar269/nakagawa-recomp/discussions/new"
+                        "?category=compatibility-reports&title=", 97) == 0);
+    assert(strlen(url) <= PLAYER_REPORT_URL_MAX);
+    assert(report_url_is_encoded(url));
+    assert(report_query_value(url, "title", value, sizeof(value)));
+    assert(strcmp(value, "Synthetic & Co. #1 + \xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9 (TEST00042): "
+                         "stopped at unsupported-import-scenetadhocinit") == 0);
+    assert(report_query_value(url, "body", value, sizeof(value)));
+    assert(strstr(value, "- Disc ID: TEST00042\n") != NULL);
+    assert(strstr(value, "- Disc version: 1.01\n") != NULL);
+    assert(strstr(value, "- Nakagawa: v0.0.2-dev (commit 3efc890)\n") != NULL);
+    assert(strstr(value, "- System: Windows (x86-64)\n") != NULL);
+    assert(strstr(value, "- Problem: stopped at unsupported-import-scenetadhocinit\n") != NULL);
+    assert(strstr(value, "### What I did\n\n\n### What I saw\n") != NULL);
+    /* The raw '&', '#' and '+' of the title never reach the query unescaped. */
+    assert(strstr(url, "Co.%20%231%20%2B%20") != NULL);
+
+    /* The length cap: a title far longer than any disc's is cut on a
+       character boundary, the link stays under the cap, both headings stay,
+       and every escape is whole. */
+    {
+        static char long_title[4096];
+        size_t n = 0;
+        while (n + 3u < sizeof(long_title)) {
+            memcpy(long_title + n, "\xE3\x83\x86", 3u);
+            n += 3u;
+        }
+        long_title[n] = '\0';
+        PlayerReportFacts big = facts;
+        big.title_name = long_title;
+        big.problem = long_title;
+        assert(player_report_discussion_url(&big, RP_HOME, user, url, sizeof(url)));
+        assert(strlen(url) <= PLAYER_REPORT_URL_MAX);
+        assert(report_url_is_encoded(url));
+        assert(report_query_value(url, "title", value, sizeof(value)));
+        assert(report_utf8_valid(value));
+        assert(report_query_value(url, "body", value, sizeof(value)));
+        assert(report_utf8_valid(value));
+        assert(strstr(value, "### What I saw") != NULL);
+        /* A buffer smaller than the cap still ends on a whole escape. */
+        char small[300];
+        assert(player_report_discussion_url(&big, RP_HOME, user, small, sizeof(small)));
+        assert(strlen(small) < sizeof(small) && report_url_is_encoded(small));
+    }
+
+    /* No path or user name leaks: the profile folder and the user name in
+       the boundary text, the details and the run log never reach the link. */
+    {
+        PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(app != NULL);
+        nk_library_init(&app->library);
+        snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00042");
+        snprintf(app->games[0].title_name, sizeof(app->games[0].title_name),
+                 "Report Fixture");
+        snprintf(app->games[0].disc_version, sizeof(app->games[0].disc_version), "1.00");
+        app->game_count = 1;
+        const char *run_log = SR_SELFTEST_BUILD_ROOT "/player_state_report_link-last.txt";
+        write_text_file(run_log,
+                        "loading " RP_HOME RP_SEP "Games" RP_SEP "disc.iso for Synthetic Example\n"
+                        "BOOT_EVENT phase=window_ready backend=vulkan\n"
+                        "BOOT_EVENT phase=stop reason=semantic-boundary "
+                        "boundary=unsupported-import-scenetadhocinit issue=308\n");
+        player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
+                                       "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
+                                       "TEST00042", run_log);
+        snprintf(app->last_error.details, sizeof(app->last_error.details),
+                 "Seen in " RP_HOME RP_SEP "AppData by Synthetic Example");
+        snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text),
+                 "Stopped at " RP_HOME RP_SEP "x (Synthetic Example)");
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
+                 "%s", run_log);
+        assert(player_error_offers_report(&app->last_error));
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "stopped at unsupported-import-scenetadhocinit") == 0);
+        PlayerReportFacts from_card = {
+            app->games[0].title_name, app->games[0].disc_id, app->games[0].disc_version,
+            "v0.0.2-dev", player_platform_name(), value
+        };
+        assert(player_report_discussion_url(&from_card, RP_HOME, user, url, sizeof(url)));
+        assert(strstr(url, "Synthetic") == NULL && strstr(url, "synthetic") == NULL);
+        assert(strstr(url, "%5C") == NULL && strstr(url, "%2Fsrv") == NULL);
+        assert(strstr(url, "path") == NULL && strstr(url, "AppData") == NULL);
+        assert(strstr(url, "player_state_report_link") == NULL);
+        assert(player_app_report_url(app, 0, &app->last_error, "v0.0.2-dev", url, sizeof(url)));
+        assert(strstr(url, "player_state_report_link") == NULL && strstr(url, "%5C") == NULL);
+        /* A user name that is also part of the game's own title is still redacted. */
+        PlayerReportFacts named = from_card;
+        named.title_name = "Synthetic Example Tennis";
+        assert(player_report_discussion_url(&named, RP_HOME, user, url, sizeof(url)));
+        assert(strstr(url, "Synthetic") == NULL);
+        assert(strstr(url, "%3Cuser%3E%20Tennis") != NULL);
+
+        /* The known cause: the card links issue 308; the copied details name
+           the boundary, the renderer and the known issue. Paths show as "~",
+           and the user name appears nowhere, in a path or out of it. */
+        assert(player_error_known_issue(&app->last_error) == 308u);
+        static char report[PLAYER_ERROR_DETAILS_MAX + 4096];
+        assert(player_app_format_error_report_for(app, "v0.0.2-dev (commit 3efc890)",
+                                                  RP_HOME, user, report, sizeof(report)) > 0);
+        assert(strstr(report, "Nakagawa Recomp v0.0.2-dev (commit 3efc890)\n") != NULL);
+        assert(strstr(report, "Disc version: 1.00\n") != NULL);
+        assert(strstr(report, "Boundary: unsupported-import-scenetadhocinit\n") != NULL);
+        assert(strstr(report, "Known issue: #308\n") != NULL);
+        assert(strstr(report, "Renderer: vulkan\n") != NULL);
+        assert(strstr(report, "System: ") != NULL);
+        assert(strstr(report, "Details: Seen in ~" RP_SEP "AppData by <user>\n") != NULL);
+        assert(strstr(report, "Reason: Stopped at ~" RP_SEP "x (<user>)\n") != NULL);
+        assert(strstr(report, "Synthetic") == NULL && strstr(report, "synthetic-example") == NULL);
+        assert(strstr(report, "%USERPROFILE%") == NULL);
+
+        /* A crash with no boundary: no known issue, its exit code in the
+           problem, Windows crash codes in hex. */
+        player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, -1073741819, 9000u,
+                                       "TEST00042", NULL);
+        assert(player_error_offers_report(&app->last_error));
+        assert(player_error_known_issue(&app->last_error) == 0u);
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "RUNTIME_ERROR_EXIT, exit code 0xC0000005") == 0);
+        player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, 3, 120u,
+                                       "TEST00042", NULL);
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "RUNTIME_PREMATURE_EXIT, exit code 3") == 0);
+        /* A card that is not about a game stopping offers no report. */
+        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library", "x",
+                             "Return to Library", VIEW_LIBRARY);
+        assert(!player_error_offers_report(&app->last_error));
+        assert(app->last_error.stop_boundary[0] == '\0');
+        /* The title page's report has no problem line. */
+        assert(player_app_report_url(app, 0, NULL, "v0.0.2-dev", url, sizeof(url)));
+        assert(report_query_value(url, "title", value, sizeof(value)));
+        assert(strcmp(value, "Report Fixture (TEST00042)") == 0);
+        assert(report_query_value(url, "body", value, sizeof(value)));
+        assert(strstr(value, "Problem") == NULL);
+        assert(!player_app_report_url(app, 1, NULL, "v0.0.2-dev", url, sizeof(url)));
+        remove(run_log);
+        free(app);
+    }
+
+    /* The known causes: imports and interpreter boundaries are tracked by
+       #308; boundaries whose issues are closed, and unknown names, are not. */
+    assert(player_known_issue_for_boundary("unsupported-import-scenetadhocinit") == 308u);
+    assert(player_known_issue_for_boundary("unsupported-import-0x12345678") == 308u);
+    assert(player_known_issue_for_boundary("unsupported-interpreter-form") == 308u);
+    assert(player_known_issue_for_boundary("interpreter-rejection") == 308u);
+    assert(player_known_issue_for_boundary("host-fiber-stack-exhausted") == 0u);
+    assert(player_known_issue_for_boundary("libfont-startup-unavailable") == 0u);
+    assert(player_known_issue_for_boundary("unsupported-interpreter-form-2") == 0u);
+    assert(player_known_issue_for_boundary("") == 0u);
+    assert(player_known_issue_for_boundary(NULL) == 0u);
+
+    /* The other links. */
+    assert(player_report_search_url("TEST00042", url, sizeof(url)));
+    assert(strcmp(url, "https://github.com/Jstar269/nakagawa-recomp/discussions/categories/"
+                       "compatibility-reports?discussions_q=TEST00042") == 0);
+    assert(player_report_issue_url(308u, url, sizeof(url)));
+    assert(strcmp(url, "https://github.com/Jstar269/nakagawa-recomp/issues/308") == 0);
+    assert(!player_report_issue_url(0u, url, sizeof(url)));
+#undef RP_HOME
+#undef RP_SEP
+    printf("[PLAYER_STATE_TEST] report this game links and redaction PASS\n");
+}
+
 static void test_display_path_hides_profile_folder(void) {
     /* Each platform's own path spelling: the profile folder and its separator. */
 #if defined(_WIN32) || defined(_WIN64)
@@ -3822,6 +4083,7 @@ int main(int argc, char **argv) {
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_report_this_game();
     test_license_folder_request();
     test_library_card_status_text();
     /* Saves a library file under the cache root, so it runs only once that

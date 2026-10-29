@@ -2453,6 +2453,9 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     app->last_error.subject_disc_id[0] = '\0';
     app->last_error.retry = PLAYER_ERROR_RETRY_NONE;
     app->last_error.details_copied = false;
+    app->last_error.stop_boundary[0] = '\0';
+    app->last_error.stop_exit_code = 0;
+    app->last_error.stop_has_exit_code = false;
     app->active_view = VIEW_ERROR;
     player_dev_log_add(app, "error", "%s: %s", app->last_error.error_code,
                        app->last_error.title);
@@ -2627,8 +2630,43 @@ static void player_report_append(char *out, size_t out_size, size_t *used,
     *used += (size_t)written < room ? (size_t)written : room;
 }
 
+/* Copy details and the report link share one redaction: the profile folder as
+   "~" (the display rewrite the Settings paths use), then the user name, as a
+   whole word anywhere else, as "<user>" (the developer log's rewrite). */
+static void player_report_redact(const char *in, const char *profile, const char *user,
+                                 char *out, size_t out_size) {
+    char *homed = malloc(out_size);
+    if (!homed) {
+        if (out_size) out[0] = '\0';
+        return;
+    }
+    (void)player_display_text_with_home(in, profile, homed, out_size);
+    (void)player_dev_log_redact(homed, NULL, user, out, out_size);
+    free(homed);
+}
+
+static const char *player_package_status_word(NkRuntimePackageStatus status) {
+    switch (status) {
+        case NK_RUNTIME_PACKAGE_OK: return "ready";
+        case NK_RUNTIME_PACKAGE_MISSING: return "missing";
+        case NK_RUNTIME_PACKAGE_INCOMPATIBLE: return "incompatible";
+        case NK_RUNTIME_PACKAGE_STALE: return "out of date";
+        case NK_RUNTIME_PACKAGE_UNKNOWN:
+        default: return "not checked";
+    }
+}
+
 size_t player_app_format_error_report(const PlayerApp *app, const char *version,
                                       char *out, size_t out_size) {
+    const char *profile = NULL;
+    const char *user = NULL;
+    player_dev_log_identity(&profile, &user);
+    return player_app_format_error_report_for(app, version, profile, user, out, out_size);
+}
+
+size_t player_app_format_error_report_for(const PlayerApp *app, const char *version,
+                                          const char *profile, const char *user,
+                                          char *out, size_t out_size) {
     if (!out || out_size == 0) return 0;
     out[0] = '\0';
     if (!app) return 0;
@@ -2639,6 +2677,7 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
     player_report_append(raw, sizeof(raw), &used, "", "Nakagawa Recomp problem report");
     player_report_append(raw, sizeof(raw), &used, "Nakagawa Recomp ",
                          version && version[0] ? version : "(unknown version)");
+    player_report_append(raw, sizeof(raw), &used, "System: ", player_platform_name());
     player_report_append(raw, sizeof(raw), &used, "Problem: ", error->title);
     player_report_append(raw, sizeof(raw), &used, "Code: ", error->error_code);
     int index = error->subject_disc_id[0]
@@ -2647,6 +2686,29 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
         player_report_append(raw, sizeof(raw), &used, "Game: ", app->games[index].title_name);
     }
     player_report_append(raw, sizeof(raw), &used, "Disc ID: ", error->subject_disc_id);
+    if (index >= 0) {
+        player_report_append(raw, sizeof(raw), &used, "Disc version: ",
+                             app->games[index].disc_version);
+        const PlayerRuntimePackageCacheEntry *package =
+            player_runtime_cache_for_game(app, &app->games[index]);
+        if (package && package->status_valid) {
+            char line[128];
+            snprintf(line, sizeof(line), "%s%s%.12s",
+                     player_package_status_word(package->status),
+                     package->package_identity[0] ? ", identity " : "",
+                     package->package_identity);
+            player_report_append(raw, sizeof(raw), &used, "Package: ", line);
+        }
+    }
+    player_report_append(raw, sizeof(raw), &used, "Boundary: ", error->stop_boundary);
+    {
+        unsigned int issue = player_error_known_issue(error);
+        if (issue != 0) {
+            char line[16];
+            snprintf(line, sizeof(line), "#%u", issue);
+            player_report_append(raw, sizeof(raw), &used, "Known issue: ", line);
+        }
+    }
     player_report_append(raw, sizeof(raw), &used, "Stage: ", error->failed_stage);
     player_report_append(raw, sizeof(raw), &used, "Reason: ", error->boundary_text);
     player_report_append(raw, sizeof(raw), &used, "Details: ", error->details);
@@ -2659,10 +2721,12 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
     char events[8][PLAYER_DEV_LOG_LINE_MAX];
     size_t event_count = 0;
     size_t event_next = 0;
+    char renderer[32] = "";
     FILE *run_log = error->log_file_path[0]
         ? nk_fopen_utf8(error->log_file_path, "rb") : NULL;
     if (run_log) {
         static const char event_prefix[] = "BOOT_EVENT ";
+        static const char window_prefix[] = "BOOT_EVENT phase=window_ready backend=";
         char chunk[PLAYER_DEV_LOG_LINE_MAX];
         bool at_line_start = true;
         while (fgets(chunk, sizeof(chunk), run_log)) {
@@ -2671,6 +2735,15 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
             if (at_line_start && strncmp(chunk, event_prefix, sizeof(event_prefix) - 1u) == 0) {
                 while (len > 0 && (chunk[len - 1] == '\n' || chunk[len - 1] == '\r')) {
                     chunk[--len] = '\0';
+                }
+                /* The game window's renderer: vulkan, gdi or offscreen. */
+                if (strncmp(chunk, window_prefix, sizeof(window_prefix) - 1u) == 0) {
+                    const char *name = chunk + sizeof(window_prefix) - 1u;
+                    size_t n = strcspn(name, " ");
+                    if (n > 0 && n < sizeof(renderer)) {
+                        memcpy(renderer, name, n);
+                        renderer[n] = '\0';
+                    }
                 }
                 /* Keep the last eight: a ring, read back oldest first. */
                 memcpy(events[event_next], chunk, len + 1u);
@@ -2681,6 +2754,7 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
         }
         fclose(run_log);
     }
+    player_report_append(raw, sizeof(raw), &used, "Renderer: ", renderer);
     if (event_count > 0) {
         player_report_append(raw, sizeof(raw), &used, "", "Last boot events:");
         for (size_t i = 0; i < event_count; ++i) {
@@ -2688,11 +2762,267 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
                                  events[(event_next + 8u - event_count + i) % 8u]);
         }
     }
+    player_report_redact(raw, profile, user, out, out_size);
+    return strlen(out);
+}
+
+/* ---- Report this game -------------------------------------------------------
+   Links the user opens in their own browser: a new discussion in Compatibility
+   reports, the reports already there for a disc, and the issue behind a known
+   cause. The player sends nothing itself. */
+
+const char *player_platform_name(void) {
+#if defined(_WIN32) || defined(_WIN64)
+#  define PLAYER_PLATFORM_OS "Windows"
+#elif defined(__APPLE__)
+#  define PLAYER_PLATFORM_OS "macOS"
+#elif defined(__linux__)
+#  define PLAYER_PLATFORM_OS "Linux"
+#else
+#  define PLAYER_PLATFORM_OS "another system"
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+    return PLAYER_PLATFORM_OS " (x86-64)";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return PLAYER_PLATFORM_OS " (arm64)";
+#else
+    return PLAYER_PLATFORM_OS;
+#endif
+#undef PLAYER_PLATFORM_OS
+}
+
+/* The known causes: a stop boundary the runtime names (BOOT_EVENT phase=stop
+   ... boundary=<name>) and the open issue that tracks lifting it. A card whose
+   boundary is here says "This is a known issue" and links the issue. Only open
+   issues belong here (checked with gh issue view): host-fiber-stack-* (#855)
+   and libfont-startup-unavailable (#299) are left out because those issues are
+   closed, so such a stop is a new problem worth a report. */
+static const struct {
+    const char *boundary;
+    bool prefix;            /* every boundary that starts with it */
+    unsigned int issue;
+} k_known_causes[] = {
+    /* An import with no handler (hle_record_unsupported_import_stop, src/rt/hle.c). */
+    {"unsupported-import-", true, 308u},
+    /* The dispatcher's and interpreter's boundaries (dispatch_semantic_boundary_name,
+       src/rt/recomp.c), which the runtime files under #308. */
+    {"target-not-executable", false, 308u},
+    {"misaligned-control-target", false, 308u},
+    {"incomplete-executable-span", false, 308u},
+    {"unsupported-interpreter-form", false, 308u},
+    {"invalid-guest-memory-access", false, 308u},
+    {"misaligned-guest-memory-access", false, 308u},
+    {"invalid-control-flow", false, 308u},
+    {"interpreter-rejection", false, 308u},
+};
+
+unsigned int player_known_issue_for_boundary(const char *boundary) {
+    if (!boundary || !boundary[0]) return 0;
+    for (size_t i = 0; i < sizeof(k_known_causes) / sizeof(k_known_causes[0]); i++) {
+        const char *known = k_known_causes[i].boundary;
+        if (k_known_causes[i].prefix ? strncmp(boundary, known, strlen(known)) == 0
+                                     : strcmp(boundary, known) == 0) {
+            return k_known_causes[i].issue;
+        }
+    }
+    return 0;
+}
+
+unsigned int player_error_known_issue(const ErrorState *error) {
+    if (!error || strcmp(error->error_code, "RUNTIME_SEMANTIC_BOUNDARY") != 0) return 0;
+    return player_known_issue_for_boundary(error->stop_boundary);
+}
+
+bool player_error_offers_report(const ErrorState *error) {
+    /* The cards player_app_set_game_stop_error raises: stopped early, closed
+       unexpectedly, or did not start. */
+    static const char *const codes[] = {
+        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES", "RUNTIME_NO_PICTURE",
+        "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT", "RUNTIME_START_TIMEOUT",
+    };
+    if (!error || !error->subject_disc_id[0]) return false;
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        if (strcmp(error->error_code, codes[i]) == 0) return true;
+    }
+    return false;
+}
+
+size_t player_error_report_problem(const ErrorState *error, char *out, size_t out_size) {
+    int written;
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!error || !error->error_code[0]) return 0;
+    if (error->stop_boundary[0]) {
+        written = snprintf(out, out_size, "stopped at %s", error->stop_boundary);
+    } else if (error->stop_has_exit_code) {
+        /* A Windows crash code (an NTSTATUS such as 0xC0000005) reads in hex. */
+        if (error->stop_exit_code < 0 || error->stop_exit_code > 255) {
+            written = snprintf(out, out_size, "%s, exit code 0x%08X", error->error_code,
+                               (unsigned int)error->stop_exit_code);
+        } else {
+            written = snprintf(out, out_size, "%s, exit code %d", error->error_code,
+                               error->stop_exit_code);
+        }
+    } else {
+        written = snprintf(out, out_size, "%s", error->error_code);
+    }
+    if (written < 0) {
+        out[0] = '\0';
+        return 0;
+    }
+    return strlen(out);
+}
+
+bool player_url_encode_append(const char *in, char *out, size_t out_size, size_t *used,
+                              size_t limit) {
+    static const char hex[] = "0123456789ABCDEF";
+    const unsigned char *p = (const unsigned char *)(in ? in : "");
+    if (!out || !used || out_size == 0 || *used >= out_size) return false;
+    if (limit > out_size - 1u) limit = out_size - 1u;
+    while (*p) {
+        /* One whole character at a time: a UTF-8 lead byte and its
+           continuation bytes are encoded together or not at all. */
+        size_t bytes = 1;
+        while (p[bytes] && (p[bytes] & 0xC0u) == 0x80u && bytes < 4u) bytes++;
+        size_t need = 0;
+        for (size_t i = 0; i < bytes; i++) {
+            unsigned char c = p[i];
+            bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                              (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+                              c == '_' || c == '~';
+            need += unreserved ? 1u : 3u;
+        }
+        if (*used + need > limit) {
+            out[*used] = '\0';
+            return false;
+        }
+        for (size_t i = 0; i < bytes; i++) {
+            unsigned char c = p[i];
+            bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                              (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+                              c == '_' || c == '~';
+            if (unreserved) {
+                out[(*used)++] = (char)c;
+            } else {
+                out[(*used)++] = '%';
+                out[(*used)++] = hex[c >> 4];
+                out[(*used)++] = hex[c & 15u];
+            }
+        }
+        p += bytes;
+    }
+    out[*used] = '\0';
+    return true;
+}
+
+/* Copies at most max_bytes of text, never cutting a UTF-8 sequence. */
+static void player_report_copy_text(char *out, size_t out_size, const char *in,
+                                    size_t max_bytes) {
+    size_t n = in ? strlen(in) : 0;
+    if (out_size == 0) return;
+    if (max_bytes > out_size - 1u) max_bytes = out_size - 1u;
+    if (n > max_bytes) {
+        n = max_bytes;
+        while (n > 0 && ((unsigned char)in[n] & 0xC0u) == 0x80u) n--;
+    }
+    if (n) memcpy(out, in, n);
+    out[n] = '\0';
+}
+
+bool player_report_discussion_url(const PlayerReportFacts *facts, const char *profile,
+                                  const char *user, char *out, size_t out_size) {
+    /* The free text each field may take; with these the whole link stays near
+       1500 characters even when every byte of the title needs an escape, so
+       the final cap below only matters for text this table did not foresee. */
+    char name[100];
+    char problem[100];
+    char disc_id[32];
+    char disc_version[24];
+    char version[64];
+    char platform[48];
+    char raw[1024];
+    char title[sizeof(raw)];
+    char body[sizeof(raw)];
+    size_t used = 0;
+    if (!facts || !out || out_size == 0) return false;
+    out[0] = '\0';
+    player_report_copy_text(name, sizeof(name), facts->title_name, 96u);
+    player_report_copy_text(problem, sizeof(problem), facts->problem, 96u);
+    player_report_copy_text(disc_id, sizeof(disc_id), facts->disc_id, 31u);
+    player_report_copy_text(disc_version, sizeof(disc_version), facts->disc_version, 23u);
+    player_report_copy_text(version, sizeof(version), facts->version, 63u);
+    player_report_copy_text(platform, sizeof(platform), facts->platform, 47u);
+    if (!disc_id[0]) return false;
+
+    /* "<game title> (<DISC_ID>): <boundary or crash>". */
+    snprintf(raw, sizeof(raw), "%s (%s)%s%s", name[0] ? name : "Unknown game", disc_id,
+             problem[0] ? ": " : "", problem);
+    player_report_redact(raw, profile, user, title, sizeof(title));
+    /* The facts, then the two parts the reporter writes. GitHub renders the
+       body as Markdown. A .github/DISCUSSION_TEMPLATE/compatibility-reports.yml
+       form, when one is added, takes its fields by id instead of body
+       (&disc_id=...&what_i_did=...); this one body is for the plain form. */
+    snprintf(raw, sizeof(raw),
+             "- Game: %s\n"
+             "- Disc ID: %s\n"
+             "- Disc version: %s\n"
+             "- Nakagawa: %s\n"
+             "- System: %s\n"
+             "%s%s%s"
+             "\n### What I did\n\n\n"
+             "### What I saw\n\n",
+             name[0] ? name : "Unknown game", disc_id,
+             disc_version[0] ? disc_version : "unknown",
+             version[0] ? version : "unknown", platform[0] ? platform : "unknown",
+             problem[0] ? "- Problem: " : "", problem, problem[0] ? "\n" : "");
+    player_report_redact(raw, profile, user, body, sizeof(body));
+
+    size_t limit = PLAYER_REPORT_URL_MAX < out_size - 1u ? PLAYER_REPORT_URL_MAX : out_size - 1u;
+    static const char base[] = PLAYER_REPORT_REPO_URL "/discussions/new?category="
+                               PLAYER_REPORT_CATEGORY "&title=";
+    if (sizeof(base) - 1u >= limit) return false;
+    memcpy(out, base, sizeof(base));
+    used = sizeof(base) - 1u;
+    /* The title takes at most a third of what is left, so the body's facts
+       and its two headings always follow it. */
+    (void)player_url_encode_append(title, out, out_size, &used,
+                                   used + (limit - used) / 3u);
+    if (used + 6u > limit) return false;
+    memcpy(out + used, "&body=", 7u);
+    used += 6u;
+    (void)player_url_encode_append(body, out, out_size, &used, limit);
+    return true;
+}
+
+bool player_report_search_url(const char *disc_id, char *out, size_t out_size) {
+    static const char base[] = PLAYER_REPORT_REPO_URL "/discussions/categories/"
+                               PLAYER_REPORT_CATEGORY "?discussions_q=";
+    size_t used = sizeof(base) - 1u;
+    if (!disc_id || !disc_id[0] || !out || out_size <= used) return false;
+    memcpy(out, base, sizeof(base));
+    return player_url_encode_append(disc_id, out, out_size, &used, out_size - 1u);
+}
+
+bool player_report_issue_url(unsigned int issue, char *out, size_t out_size) {
+    if (issue == 0 || !out || out_size == 0) return false;
+    int written = snprintf(out, out_size, "%s/issues/%u", PLAYER_REPORT_REPO_URL, issue);
+    return written > 0 && (size_t)written < out_size;
+}
+
+bool player_app_report_url(const PlayerApp *app, int game_index, const ErrorState *error,
+                           const char *version, char *out, size_t out_size) {
+    char problem[128] = "";
     const char *profile = NULL;
     const char *user = NULL;
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    const GameRecord *game = &app->games[game_index];
+    if (error) (void)player_error_report_problem(error, problem, sizeof(problem));
+    PlayerReportFacts facts = {
+        game->title_name, game->disc_id, game->disc_version, version,
+        player_platform_name(), problem
+    };
     player_dev_log_identity(&profile, &user);
-    (void)player_dev_log_redact(raw, profile, user, out, out_size);
-    return strlen(out);
+    return player_report_discussion_url(&facts, profile, user, out, out_size);
 }
 
 const char *player_plain_reason(const char *text) {
@@ -2823,6 +3153,24 @@ void player_app_set_game_stop_error(PlayerApp *app, const char *code,
         snprintf(app->last_error.subject_disc_id, sizeof(app->last_error.subject_disc_id),
                  "%s", disc_id);
         app->last_error.retry = PLAYER_ERROR_RETRY_RESTART_GAME;
+    }
+    /* What Report this game names: the boundary only in the alphabet the
+       boot-event parser accepts, so it can never carry a path. */
+    if (strcmp(code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 && boundary) {
+        size_t n = 0;
+        while (boundary[n] && n + 1u < sizeof(app->last_error.stop_boundary) &&
+               ((boundary[n] >= 'a' && boundary[n] <= 'z') ||
+                (boundary[n] >= '0' && boundary[n] <= '9') || boundary[n] == '-')) {
+            n++;
+        }
+        if (boundary[n] == '\0') {
+            memcpy(app->last_error.stop_boundary, boundary, n);
+            app->last_error.stop_boundary[n] = '\0';
+        }
+    }
+    if (strcmp(code, "RUNTIME_PREMATURE_EXIT") == 0 || strcmp(code, "RUNTIME_ERROR_EXIT") == 0) {
+        app->last_error.stop_exit_code = exit_code;
+        app->last_error.stop_has_exit_code = true;
     }
     player_dev_log_add(app, "runtime", "%s: %s", code,
                        app->last_error.boundary_text[0] ? app->last_error.boundary_text
