@@ -439,7 +439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8395f9079fe0f77d41cb648f44844d118a1e31a582b8a2ab0a5e54baf51741ca"
+      "sha256": "de5388bb0d14e0a05f64a302e9739db9646cf82052154a197c758b46562c191f"
     },
     {
       "path": "NOTICE.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "51febb0f7cf4382682e1f6e557425dc64516d5dc86adc81b35b936d8997e6ccf"
+      "sha256": "a2349ac35ffb0d4f69a81814cf6f92327c90bebf7faf18075804caee48945182"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -13357,7 +13357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac795c17d476b42c19a7ff289a4339d752b9d719841ba362e0f749ddb06fc5ec"
+      "sha256": "8d19781a979a6626032e19394751d1eb6706017dab40997f3d258e7fe00ed6e2"
     },
     {
       "path": "tools/scratch_dir.py",
@@ -13573,7 +13573,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c06de3791755723a96ddb905d34110f2d40a71180785c22324f3bf3243bf9dd0"
+      "sha256": "bb7cc53c6c4986a4ef37210a02f6e962d6879197500ad35ebee99d4a1b630913"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -13802,7 +13802,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20998f3f9a01dc98825e04a22da10310eb351d2adffd59d48a58a1f33adfd337"
+      "sha256": "8be78233c2975b7fe1d8dbe766954f092b22f3165e49de4b95714e10f48d85d0"
     },
     {
       "path": "tools/test_contrib_check.py",
