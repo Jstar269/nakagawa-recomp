@@ -692,6 +692,11 @@ def _artifact_stem(mode: str) -> str:
     return "production_smoke" if mode == "aot" else "production_smoke_gap"
 
 
+def _signed32(value: int) -> int:
+    """An i32 constant as LLVM IR prints it (signed decimal)."""
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
 def verify(build_dir: Path, mode: str = "aot") -> int:
     if mode not in MODES:
         raise RuntimeError(f"unknown mode {mode!r}")
@@ -750,7 +755,8 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         if f"sr_register_chunk_{index}();" not in main_text:
             raise RuntimeError(f"generated main omits chunk registration {index}")
 
-    generated_text = "\n".join(path.read_text(encoding="ascii") for path in chunk_sources)
+    generated_text = "\n".join(path.read_text(encoding="ascii")
+                               for path in [*chunk_sources, *llvm_sources])
     if mode == "aot":
         emitted = (ENTRY, HELPER, IMPORT_STUB)
         omitted = ()
@@ -813,7 +819,12 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
             f"dispatch_call(s, 0x{HELPER:08x}u, "
             f"0x{ENTRY + 0x10:08x}u)"
         )
-        if seam not in generated_text:
+        # The same CALL as the LLVM IR backend spells it (codegen_llvm.call_target).
+        llvm_seam = (
+            f"call void @dispatch_call(ptr %s, i32 {_signed32(HELPER)}, "
+            f"i32 {_signed32(ENTRY + 0x10)})"
+        )
+        if seam not in generated_text and llvm_seam not in generated_text:
             raise RuntimeError("AOT-gap generated code lacks the production dispatch seam")
         resume = f"f_{REGION_B:08x}"
         if resume not in generated_text:

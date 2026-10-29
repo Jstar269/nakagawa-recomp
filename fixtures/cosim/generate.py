@@ -49,7 +49,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # Deliberately disjoint from fixtures/production_smoke (0x08804000) so a stale
 # artifact from one fixture can never satisfy the other's assertions.
 BASE = 0x08900000
-DATA_SEGMENT_OFFSET = 0x1000
+# The text segment may fill everything below the data segment (build_text_segment checks).
+DATA_SEGMENT_OFFSET = 0x2000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
@@ -62,7 +63,7 @@ WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
 TEXT_FILE_OFFSET = 0x100
-DATA_FILE_OFFSET = 0x1200
+DATA_FILE_OFFSET = TEXT_FILE_OFFSET + DATA_SEGMENT_OFFSET + 0x100
 DATA_FILE_SIZE = 0x40
 DATA_MEMORY_SIZE = 0x40 + SCRATCH_SIZE
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
@@ -1253,6 +1254,9 @@ def entry_words(layout: dict[str, tuple[int, list[int]]]) -> list[int]:
 def build_text_segment() -> bytes:
     layout = cell_layout()
     end = max(offset + len(words) * 4 for offset, words in layout.values())
+    if ((end + 15) & ~15) > DATA_SEGMENT_OFFSET:
+        raise ValueError(f"cells need 0x{end:x} bytes of text; the data segment starts at "
+                         f"0x{DATA_SEGMENT_OFFSET:x} (raise DATA_SEGMENT_OFFSET)")
     text = bytearray((end + 15) & ~15)
     head = entry_words(layout)
     text[0 : len(head) * 4] = struct.pack(f"<{len(head)}I", *head)
