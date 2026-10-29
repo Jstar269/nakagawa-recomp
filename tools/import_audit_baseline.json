@@ -1956,6 +1956,12 @@
     "name": "sceAtracAddStreamData",
     "status": "unreviewed"
   },
+  "0x7de6711b": {
+    "classification": "dedicated",
+    "handler": "h_RtcFormatRFC2822Local",
+    "name": "sceRtcFormatRFC2822LocalTime",
+    "status": "unreviewed"
+  },
   "0x7e65b999": {
     "classification": "dedicated",
     "handler": "h_CancelAlarm",

@@ -47,11 +47,15 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 **derived** from PPSSPP revision `7fab97c05f9568b17ac79c235b945f568eaf6384`, not
 measured here; later models can report 1. The runtime does not yet select a model.
 
+`sceRtcFormatRFC2822LocalTime` uses the runtime profile offset. Its format and
+invalid-address result are **derived** from PPSSPP revision
+`7fab97c05f9568b17ac79c235b945f568eaf6384`; PPSSPP marks the error as untested.
+
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **641** (dedicated **533**, fake_success **5**, controlled_unsupported **103**).
-Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
+Registered NIDs: **642** (dedicated **534**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **513** handlers across **25** API families, covering **540** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -59,7 +63,7 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 324 | 336 |
+| `unreviewed` | 325 | 337 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -83,12 +87,12 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
 | `scePsmf` | 0 | 3 | 0 | 0 | 14 | 17 | 17 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
-| `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
+| `sceRtc` | 4 | 5 | 0 | 0 | 1 | 10 | 10 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **324** | **512** | **539** |
+| **Total** | **13** | **172** | **1** | **2** | **325** | **513** | **540** |
 
 #### Complete Handlers (Evidence-Backed)
 

@@ -9492,6 +9492,34 @@ static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_mi
  * reports, so the two can never disagree, and a setting a game writes through
  * sceReg moves local time at once. Production dispatch only; nothing is
  * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_rfc2822_local(void) {
+    const uint32_t nid = 0x7de6711bu, tick = 0x00200210u, out = 0x00200300u;
+    CpuState cpu = {0};
+    uint32_t rc, reg, cat;
+    reset_fixture(); sr_hle_init(); sysreg_scratch_clean(); sysreg_restart();
+    reg = sysreg_open_registry(2u, &rc);
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &rc);
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u &&
+           sysreg_set_int(cat, "summer_time", 0u) == 0u, "set RTC test zone");
+    expect(sr_hle_test_is_registered(nid), "RFC2822 local time is registered");
+    if (sr_hle_test_is_registered(nid)) {
+        uint64_t epoch = 62135596800000000ull;
+        MEM_W32(tick, (uint32_t)epoch); MEM_W32(tick + 4u, (uint32_t)(epoch >> 32));
+        cpu.r[4] = out; cpu.r[5] = tick;
+        expect(sr_syscall(&cpu, nid) == 0u, "RFC2822 local time succeeds");
+        const char *expected = "Thu, 01 Jan 1970 09:00:00 +0900";
+        int equal = 1;
+        for (size_t i = 0; i <= strlen(expected); i++)
+            if (MEM_R8(out + (uint32_t)i) != (uint8_t)expected[i]) equal = 0;
+        expect(equal, "RFC2822 local time formats the profile zone");
+        cpu.r[4] = 0u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects null output");
+        cpu.r[4] = out; cpu.r[5] = tick + 1u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects unaligned tick");
+    }
+    sysreg_scratch_clean();
+}
+
 static void test_rtc_local_time_follows_the_system_profile(void) {
     uint32_t r = 0u, reg, cat;
     reset_fixture();
@@ -37216,6 +37244,13 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
 
+    if (argc > 1 && strcmp(argv[1], "--rtc-rfc2822-local") == 0) {
+        test_rtc_rfc2822_local();
+        fprintf(stderr, "rtc-rfc2822-local: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--power-battery") == 0) {
         test_psp_measured_power_battery_20261024();
         fprintf(stderr, "power-battery: %d checks, %d failures\n", s_checks, s_failures);
@@ -37446,6 +37481,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
     test_rtc_local_time_follows_the_system_profile();
+    test_rtc_rfc2822_local();
     test_first_run_time_zone_comes_from_the_host();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();

@@ -14314,6 +14314,29 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* Format and invalid-address result derived from PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384.
+ * Local offset comes from the PSP profile, as for the other local RTC calls. */
+static uint32_t h_RtcFormatRFC2822Local(CpuState *s) {
+    static const char *const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    uint64_t tick, local;
+    if (!A0 || !sr_guest_span_writable(A0, 32u) || (A1 & 3u) || !rtc_read_u64(A1, &tick)) return 0xffffffffu;
+    int64_t offset = psp_profile_local_offset_minutes(NULL, NULL);
+    rtc_add_offset_wrap(tick, offset, &local);
+    RtcDateTime date, utc;
+    rtc_tick_to_datetime(local, &date);
+    rtc_tick_to_datetime(tick, &utc);
+    uint64_t magnitude = offset < 0 ? (uint64_t)(-offset) : (uint64_t)offset;
+    char result[128];
+    snprintf(result, sizeof(result), "%s, %02u %s %04u %02u:%02u:%02u %c%02llu%02llu",
+             days[(local / 86400000000ull + 1u) % 7u], date.day, months[date.month - 1u], utc.year,
+             date.hour, date.minute, date.second, offset < 0 ? '-' : '+',
+             (unsigned long long)(magnitude / 60u), (unsigned long long)(magnitude % 60u));
+    result[31] = 0;
+    for (size_t i = 0; i < 32u; i++) { MEM_W8(A0 + (uint32_t)i, result[i]); if (!result[i]) break; }
+    return 0;
+}
+
 static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
@@ -27416,6 +27439,7 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x3f7ad767, "sceRtcGetCurrentTick", h_RtcGetCurrentTick);
     sr_hle_register(0x34885e0d, "sceRtcConvertUtcToLocalTime", h_RtcConvertUtcToLocal);
     sr_hle_register(0x779242a2, "sceRtcConvertLocalTimeToUTC", h_RtcConvertLocalToUtc);
+    sr_hle_register(0x7de6711b, "sceRtcFormatRFC2822LocalTime", h_RtcFormatRFC2822Local);
     sr_hle_register(0x91e4f6a7, "sceKernelLibcClock", h_LibcClock);
     sr_hle_register(0x27cc57f0, "sceKernelLibcTime", h_LibcTime);
     sr_hle_register(0x71ec4271, "sceKernelLibcGettimeofday", h_LibcGettimeofday);
