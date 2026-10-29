@@ -33499,6 +33499,84 @@ static void test_psmf_start_reads_init_pts_from_the_third_argument(void) {
     s_psmf_synthetic_enabled = 0;
 }
 
+/* scePsmfPlayerSetPsmf (the variant without callbacks) opens a stream exactly as SetPsmfCB does, and
+ * scePsmfPlayerChangePlayMode follows the reference player's checks (PPSSPP Core/HLE/scePsmf.cpp
+ * 3f40ddc8): not playing yet is INVALID_STATUS, a mode outside 0..5 INVALID_CONFIG, and FORWARD on a
+ * stream without entry points INVALID_STREAM.  LocoRoco 2 imports both; neither had a handler, and the
+ * first SetPsmf stopped the title as an unimplemented import.
+ *
+ * MUTANT: drop the 0x3d6d25a9 registration -- the first SetPsmf stops the selftest at the unsupported
+ *   import.  MUTANT: drop the playing-status check in ChangePlayMode -- the standby cell fails. */
+#define NID_SCE_PSMF_PLAYER_SET_PSMF         0x3d6d25a9u
+#define NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE 0xa3d81169u
+#define PSMF_STATUS_STANDBY                  0x00000002u
+#define PSMF_ERR_STATUS_SELFTEST             0x80616001u
+#define PSMF_ERR_STREAM_SELFTEST             0x80616003u
+#define PSMF_ERR_CONFIG_SELFTEST             0x80616006u
+
+static uint32_t psmf_change_play_mode(CpuState *cpu, int32_t mode, int32_t speed) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = PSMF_SELFTEST_PLAYER;
+    cpu->r[5] = (uint32_t)mode;
+    cpu->r[6] = (uint32_t)speed;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE);
+}
+
+static void psmf_play_mode_cells(int basic) {
+    CpuState cpu;
+    const char *what = basic ? "psmf play mode (basic)" : "psmf play mode (full)";
+    char msg[160];
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    if (basic) memset(s_psmf_synthetic + 0x82 + 4, 0, 4);   /* no entry points: a BASIC player */
+    s_psmf_synthetic_enabled = 1;
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode PLAY */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 1u);             /* play speed */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf play mode: the player is created");
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode before SetPsmf is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf without callbacks opens the stream", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf leaves the player in STANDBY", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_STANDBY, msg);
+    snprintf(msg, sizeof msg, "%s: a second SetPsmf on a set player is INVALID_STATUS", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode in STANDBY is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    expect(psmf_start_call(&cpu, 0u, 0u) == 0u, "psmf play mode: playback starts");
+    snprintf(msg, sizeof msg, "%s: modes outside PLAY..REWIND are INVALID_CONFIG", what);
+    expect(psmf_change_play_mode(&cpu, 6, 1) == PSMF_ERR_CONFIG_SELFTEST &&
+               psmf_change_play_mode(&cpu, -1, 1) == PSMF_ERR_CONFIG_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: PAUSE and PLAY are accepted while playing", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == 0u && psmf_change_play_mode(&cpu, 0, 1) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: FORWARD %s", what,
+             basic ? "is INVALID_STREAM without entry points" : "is accepted with entry points");
+    expect(psmf_change_play_mode(&cpu, 4, 2) == (basic ? PSMF_ERR_STREAM_SELFTEST : 0u), msg);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf play mode: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
+}
+
+static void test_psmf_set_psmf_and_change_play_mode(void) {
+    psmf_play_mode_cells(0);
+    psmf_play_mode_cells(1);
+}
+
 static void test_flight_recorder_trace(void) {
     const char *output = "flight_recorder_hle_selftest.json";
     char bundle[16384];
@@ -37433,6 +37511,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
+    test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
