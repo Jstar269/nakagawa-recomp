@@ -824,6 +824,12 @@ static void dt_b5_cell(const char *case_id, uint32_t vram, uint32_t n)
 static const uint32_t s_dt_c_sizes[13] = {0x10u, 0x20u, 0x40u, 0x80u, 0x100u, 0x200u, 0x400u,
                                           0x800u, 0x1000u, 0x2000u, 0x4000u, 0x8000u, 0x10000u};
 static const uint32_t s_dt_align2[6][2] = {{2, 0}, {0, 2}, {3, 0}, {8, 0}, {0, 8}, {12, 0}};
+/* Between the largest size a pending transfer let through (0x100) and the smallest it
+   refused (0x200) in the first runs. */
+static const uint32_t s_dt_c3_sizes[11] = {0x101u, 0x104u, 0x108u, 0x110u, 0x120u, 0x140u,
+                                           0x180u, 0x1c0u, 0x1f0u, 0x1fcu, 0x1ffu};
+/* Sizes between the t-cell points, for the duration table. */
+static const uint32_t s_dt_t2_sizes[6] = {0x200u, 0x800u, 0x2000u, 0x8000u, 0x20000u, 0x80000u};
 
 static void dt_followup_cells(void)
 {
@@ -844,6 +850,22 @@ static void dt_followup_cells(void)
     dt_b5_cell("b5-vv-100000", 1u, 0x100000u);
     dt_b5_cell("b5-rr-040000", 0u, 0x40000u);
     dt_b5_cell("b5-rr-0c0000", 0u, 0xc0000u);
+    hle_step("c3");
+    for (unsigned s = 0; s < 11u; s++) {
+        snprintf(id, sizeof(id), "c3-try-%06x", (unsigned int)s_dt_c3_sizes[s]);
+        dt_c_cell(id, DT_API_TRY, s_dt_c3_sizes[s]);
+    }
+    hle_step("t2-cells");
+    for (unsigned p = 0; p < 4u; p++) {
+        const DtPair *pair = &s_dt_pairs[p];
+        const uint32_t src = pair->vram_src ? DT_VRAM_SRC : s_dt_a;
+        const uint32_t dst = pair->vram_dst ? DT_VRAM_DST : s_dt_b;
+        const uint32_t cap = pair->vram_dst ? DT_VRAM_BYTES : DT_BLOCK_BYTES;
+        for (unsigned s = 0; s < 6u; s++) {
+            snprintf(id, sizeof(id), "t2-%s-m-%06x", pair->name, (unsigned int)s_dt_t2_sizes[s]);
+            dt_time_cell(id, src, dst, cap, DT_API_MEMCPY, s_dt_t2_sizes[s], 0u, 0u, 0x700u + p * 8u + s);
+        }
+    }
     hle_step("a2-cells");
     for (unsigned k = 0; k < 6u; k++) {
         for (unsigned z = 0; z < 2u; z++) {

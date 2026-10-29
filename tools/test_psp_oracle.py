@@ -7564,13 +7564,19 @@ class DmaTimingProbeTests(unittest.TestCase):
         self.assertEqual(spec.test_id, "PSP-DMAC-002")
         self.assertEqual(spec.terminal_case, "dma-timing-done")
         self.assertEqual(len(parse_golden.DMA_TIMING_CASES),
-                         72 + 22 + 1 + 5 + 2 + 6 + 13 + 13 + 5 + 12)
+                         72 + 22 + 1 + 5 + 2 + 6 + 13 + 13 + 5 + 11 + 24 + 12)
         self.assertEqual(parse_golden.DMA_TIMING_CASES[:2], ("t-rr-m-000010", "t-rr-m-000040"))
         self.assertEqual(parse_golden.DMA_TIMING_CASES[107], "b4-rr-100000")
         self.assertEqual(parse_golden.DMA_TIMING_CASES[-1], "a-0c-00-010000")
         self.assertEqual(counts["c1-try-000010"], 13)
         self.assertEqual(counts["c2-memcpy-010000"], 13)
         self.assertEqual(counts["b5-rr-0c0000"], 16)
+        self.assertEqual(counts["c3-try-0001ff"], 13)
+        self.assertEqual(counts["t2-vv-m-080000"], 13)
+        self.assertIn("s_dt_c3_sizes[11] = {0x101u, 0x104u, 0x108u, 0x110u, 0x120u, 0x140u,",
+                      self.section)
+        self.assertIn("s_dt_t2_sizes[6] = {0x200u, 0x800u, 0x2000u, 0x8000u, 0x20000u, 0x80000u}",
+                      self.section)
         self.assertIn("s_dt_c_sizes[13] = {0x10u, 0x20u, 0x40u, 0x80u, 0x100u, 0x200u, 0x400u,",
                       self.section)
         self.assertIn("s_dt_align2[6][2] = {{2, 0}, {0, 2}, {3, 0}, {8, 0}, {0, 8}, {12, 0}}",
