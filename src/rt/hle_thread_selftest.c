@@ -5633,7 +5633,6 @@ static void test_unregistered_batch_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
@@ -8518,6 +8517,147 @@ static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
     expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
            "the accepted request is the CPU clock the getter reports");
     sr_hle_test_power_reset();
+}
+
+/* scePowerSetBusClockFrequency against PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded
+ * on a PSP): from the power-on clocks, 1..111 return 0, -1, 0 and 112 return 0x800001FE, and no
+ * request moves any clock. At a PLL other than 222 the range is not measured and the run stops by
+ * name. Before this handler the NID was unknown and ten titles stopped on it. */
+static void test_power_set_bus_clock_frequency_autotest(void) {
+    enum {
+        NID_POWER_SET_BUS_CLOCK = 0xb8d7b3fbu, NID_POWER_SET_CLOCK = 0x737486f2u,
+        NID_POWER_GET_CPU_INT = 0xfdb5bfe9u, NID_POWER_GET_BUS_INT = 0xbd681969u,
+        NID_POWER_GET_PLL_INT = 0x34f9c463u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    expect(sr_hle_test_is_registered(NID_POWER_SET_BUS_CLOCK), "scePowerSetBusClockFrequency is registered");
+    int all_ok = 1, clocks_held = 1;
+    for (int32_t freq = -1; freq <= 112; freq++) {
+        uint32_t want = (freq >= 1 && freq <= 111) ? 0u : 0x800001feu;
+        if (td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, (uint32_t)freq, 0u, 0u, 0u) != want) all_ok = 0;
+        if (td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) != 222u ||
+            td24b_dispatch4(NID_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) != 111u ||
+            td24b_dispatch4(NID_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) != 222u)
+            clocks_held = 0;
+    }
+    expect(all_ok, "scePowerSetBusClockFrequency accepts 1..111 and refuses -1, 0 and 112 with 0x800001FE");
+    expect(clocks_held, "no bus clock request moves the CPU, bus or PLL clock (222/111/222)");
+    expect(td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, 166u, 0u, 0u, 0u) == 0x800001feu,
+           "a title's 166 MHz request after a refused 333 CPU request is refused at PLL 222");
+    expect(td24b_dispatch4(NID_POWER_SET_CLOCK, 333u, 333u, 166u, 0u) == 0u, "the PLL moves to 333");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, 111u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "at PLL 333, where the range is not measured, the request stops the run by name");
+    sr_hle_test_power_reset();
+}
+
+/* sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution against PSPAutotests
+ * tests/rtc/{convert,arithmetic}.expected (2ed7c9c5, recorded on a PSP). Dates go to ticks and
+ * back through sceRtcGetTick / sceRtcSetTick, as the autotests do. Before these handlers the
+ * three NIDs were unknown. */
+enum {
+    RTCT_NID_GET_TICK = 0x6ff40accu, RTCT_NID_SET_TICK = 0x7ed29e40u,
+    RTCT_NID_GET_TIME_T = 0x27c4594cu, RTCT_NID_ADD_YEARS = 0x42842c77u,
+    RTCT_NID_RESOLUTION = 0xc41c2853u,
+    RTCT_DATE = 0x00200300u, RTCT_SRC = 0x00200320u, RTCT_DST = 0x00200330u, RTCT_OUT = 0x00200340u,
+};
+
+static void rtct_date(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec,
+                      uint32_t us) {
+    MEM_W16(RTCT_DATE + 0u, y); MEM_W16(RTCT_DATE + 2u, mo); MEM_W16(RTCT_DATE + 4u, d);
+    MEM_W16(RTCT_DATE + 6u, h); MEM_W16(RTCT_DATE + 8u, mi); MEM_W16(RTCT_DATE + 10u, sec);
+    MEM_W32(RTCT_DATE + 12u, us);
+}
+
+/* checkAddDateValue: the date's tick into src, dest filled with 0x1337, then AddYears. */
+static uint32_t rtct_add_years(uint16_t y, uint16_t mo, uint16_t d, uint32_t us, int32_t years) {
+    rtct_date(y, mo, d, 0u, 0u, 0u, us);
+    expect(td24b_dispatch4(RTCT_NID_GET_TICK, RTCT_DATE, RTCT_SRC, 0u, 0u) == 0u, "the source date converts");
+    MEM_W32(RTCT_DST, 0x1337u); MEM_W32(RTCT_DST + 4u, 0u);
+    return td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, RTCT_SRC, (uint32_t)years, 0u);
+}
+
+static int rtct_dst_is(uint16_t y, uint16_t mo, uint16_t d, uint32_t us) {
+    rtct_date(0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    if (td24b_dispatch4(RTCT_NID_SET_TICK, RTCT_DATE, RTCT_DST, 0u, 0u) != 0u) return 0;
+    return MEM_R16(RTCT_DATE) == y && MEM_R16(RTCT_DATE + 2u) == mo && MEM_R16(RTCT_DATE + 4u) == d &&
+           MEM_R16(RTCT_DATE + 6u) == 0u && MEM_R16(RTCT_DATE + 8u) == 0u &&
+           MEM_R16(RTCT_DATE + 10u) == 0u && MEM_R32(RTCT_DATE + 12u) == us;
+}
+
+static void test_rtc_time_t_add_years_resolution_autotest(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(RTCT_NID_GET_TIME_T) && sr_hle_test_is_registered(RTCT_NID_ADD_YEARS) &&
+               sr_hle_test_is_registered(RTCT_NID_RESOLUTION),
+           "sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution are registered");
+    expect(td24b_dispatch4(RTCT_NID_RESOLUTION, 0u, 0u, 0u, 0u) == 1000000u,
+           "sceRtcGetTickResolution reports 1000000 ticks per second");
+
+    /* convert.expected checkRtcGetTime_t: 2012-09-20 07:12:15.000500 -> 1348125135. */
+    rtct_date(2012u, 9u, 20u, 7u, 12u, 15u, 500u);
+    MEM_W32(RTCT_OUT, 0xdeadbeefu); MEM_W32(RTCT_OUT + 4u, 0xdeadbeefu);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u &&
+               MEM_R32(RTCT_OUT) == 1348125135u && MEM_R32(RTCT_OUT + 4u) == 0xdeadbeefu,
+           "sceRtcGetTime_t writes 1348125135 as one 32-bit word for 2012-09-20 07:12:15.000500");
+    rtct_date(1970u, 1u, 1u, 0u, 0u, 0u, 0u);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u && MEM_R32(RTCT_OUT) == 0u,
+           "sceRtcGetTime_t writes 0 for the epoch");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    rtct_date(1969u, 12u, 31u, 23u, 59u, 59u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2025u, 13u, 1u, 0u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2106u, 2u, 7u, 6u, 28u, 16u, 0u);       /* 2^32 seconds */
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2012u, 9u, 20u, 7u, 12u, 15u, 500u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, 0u, 0u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, 0u, RTCT_OUT, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 5u,
+           "sceRtcGetTime_t stops by name before 1970, on a field out of range, past 32 bits and on NULL");
+    rtct_date(2106u, 2u, 7u, 6u, 28u, 15u, 0u);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u &&
+               MEM_R32(RTCT_OUT) == 0xffffffffu,
+           "sceRtcGetTime_t writes 0xFFFFFFFF for the last second that fits");
+
+    /* arithmetic.expected checkRtcTickAddYears. */
+    expect(rtct_add_years(2012u, 2u, 29u, 445u, 1) == 0u && rtct_dst_is(2013u, 2u, 28u, 445u),
+           "2012-02-29 + 1 year is 2013-02-28");
+    expect(rtct_add_years(2012u, 2u, 29u, 445u, 4) == 0u && rtct_dst_is(2016u, 2u, 29u, 445u),
+           "2012-02-29 + 4 years is 2016-02-29");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -1969) == 0u && rtct_dst_is(1u, 1u, 1u, 445u),
+           "1970 - 1969 years is 0001-01-01, microseconds kept");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -1968) == 0u && rtct_dst_is(2u, 1u, 1u, 445u),
+           "1970 - 1968 years is 0002-01-01");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, 2000) == 0u && rtct_dst_is(3970u, 1u, 1u, 445u),
+           "1970 + 2000 years is 3970-01-01");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -20) == 0u && rtct_dst_is(1950u, 1u, 1u, 445u),
+           "1970 - 20 years is 1950-01-01");
+    expect(rtct_add_years(10u, 1u, 1u, 0u, -9) == 0u && rtct_dst_is(1u, 1u, 1u, 0u),
+           "0010 - 9 years is 0001-01-01");
+    expect(rtct_add_years(9998u, 1u, 1u, 0u, 1) == 0u && rtct_dst_is(9999u, 1u, 1u, 0u),
+           "9998 + 1 year is 9999-01-01");
+    int range_ok = 1;
+    for (uint16_t y = 1850u; y <= 2300u; y += 50u)
+        if (rtct_add_years(y, 1u, 1u, 0u, 1) != 0u || !rtct_dst_is((uint16_t)(y + 1u), 1u, 1u, 0u)) range_ok = 0;
+    expect(range_ok, "1850 to 2300 + 1 year each move one year");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -2000) == 0u && MEM_R32(RTCT_DST) == 0x1337u &&
+               MEM_R32(RTCT_DST + 4u) == 0u,
+           "a result below year 1 returns 0 and leaves dest unwritten");
+    expect(rtct_add_years(10u, 1u, 1u, 0u, -10) == 0u && MEM_R32(RTCT_DST) == 0x1337u,
+           "0010 - 10 years returns 0 and leaves dest unwritten");
+    expect(rtct_add_years(9998u, 1u, 1u, 0u, 2) == 0u && MEM_R32(RTCT_DST) == 0x1337u,
+           "a result above year 9999 returns 0 and leaves dest unwritten");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, 0u, RTCT_SRC, 1u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, 0u, 1u, 0u);
+    MEM_W32(RTCT_SRC, 0xffffffffu); MEM_W32(RTCT_SRC + 4u, 0xffffffffu);
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, RTCT_SRC, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcTickAddYears stops by name on NULL pointers and on a source past year 9999");
 }
 
 static void test_psp_measured_rtc_time64_20261024(void) {
@@ -15873,6 +16013,103 @@ static void test_thread_stack_free_size_contract(void) {
     memset(s_cpu, 0, sizeof(*s_cpu));
     sched_run(SFS_MAIN_ENTRY, 0u, 0u);
     expect(s_sfs.main_done, "stack free: the main body ran to its end");
+    sr_test_guest_fn_reset();
+}
+
+/* sceKernelCheckThreadStack: the caller's $sp minus its stack's low end, against PSPAutotests
+ * tests/threads/threads/stackfree.expected (2ed7c9c5, recorded on a PSP): on a 0x1000-byte
+ * stack a 1 KiB frame reads 0x400 less, with the stack fill or without it, and with the fill
+ * and no 0xFF bytes written the value is 0x10 above GetThreadStackFreeSize; the main thread's
+ * value is above 0x30000. Entered through sr_syscall from guest bodies the real scheduler runs.
+ * Before this handler the NID was unknown and the title stopped on it. */
+#define CTS_NID_CHECK_STACK 0xd13bde95u
+#define CTS_MAIN_ENTRY      0x08a30200u
+#define CTS_WORKER_ENTRY    0x08a30280u
+
+static struct {
+    int main_done;
+    int worker_ran;
+    uint32_t worker_base, worker_size, worker_sp;
+    uint32_t worker_check, worker_check_frame, worker_free_frame;
+} s_cts;
+
+static uint32_t cts_check(CpuState *cpu) { return sfs_call(cpu, CTS_NID_CHECK_STACK, 0u, 0u, 0u, 0u); }
+
+/* A 0x1000-byte thread: its value, then the value and free size with a 1 KiB 0x00 frame. */
+static void cts_worker_fn(CpuState *cpu) {
+    const uint32_t uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(uid);
+    s_cts.worker_ran = 1;
+    s_cts.worker_base = self ? self->stack_base : 0u;
+    s_cts.worker_size = self ? self->stack_size : 0u;
+    s_cts.worker_sp = cpu->r[29];
+    s_cts.worker_check = cts_check(cpu);
+    const uint32_t sp = cpu->r[29];
+    sfs_fill(sp - 0x400u, sp, 0x00u);
+    cpu->r[29] = sp - 0x400u;
+    s_cts.worker_check_frame = cts_check(cpu);
+    s_cts.worker_free_frame = sfs_free(cpu, 0u);
+    cpu->r[29] = sp;
+    cpu->r[2] = 0u;
+}
+
+static void cts_main_fn(CpuState *cpu) {
+    const uint32_t self_uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(self_uid);
+    const uint32_t sp = cpu->r[29];
+    expect(self != NULL, "check stack: the main body runs on a scheduler thread");
+    if (!self) return;
+    const uint32_t main_check = cts_check(cpu);
+    expect(main_check == sp - self->stack_base && main_check > 0x00030000u,
+           "check stack: the main thread reads $sp minus its stack's low end, above 0x30000");
+
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, CTS_WORKER_ENTRY,
+                                     0x10u, 0u);
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
+           "check stack: the 0x1000-byte worker starts");
+    expect(s_cts.worker_ran && s_cts.worker_size == 0x1000u &&
+           s_cts.worker_check == s_cts.worker_sp - s_cts.worker_base,
+           "check stack: the worker reads its own $sp minus its own stack's low end");
+    expect(s_cts.worker_check_frame == s_cts.worker_check - 0x400u,
+           "check stack: a 1 KiB frame reads 0x400 less");
+    expect(s_cts.worker_free_frame + 0x10u == s_cts.worker_check_frame,
+           "check stack: with the fill and a 0x00 frame it is 0x10 above GetThreadStackFreeSize");
+
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    cpu->r[29] = self->stack_base - 0x10u;
+    (void)cts_check(cpu);
+    cpu->r[29] = self->stack_base + self->stack_size + 0x10u;
+    (void)cts_check(cpu);
+    cpu->r[29] = sp;
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "check stack: $sp below or above the thread's stack stops the run by name");
+    expect(cts_check(cpu) == main_check, "check stack: back on its stack the value is unchanged");
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, worker, 0u, 0u, 0u);
+    s_cts.main_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void test_check_thread_stack_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    memset(&s_cts, 0, sizeof s_cts);
+    const int registered = sr_hle_test_is_registered(CTS_NID_CHECK_STACK);
+    expect(registered, "check stack: sceKernelCheckThreadStack has its production registration");
+    if (!registered) return;
+    sr_test_register_guest_fn(CTS_MAIN_ENTRY, cts_main_fn);
+    sr_test_register_guest_fn(CTS_WORKER_ENTRY, cts_worker_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(CTS_MAIN_ENTRY, 0u, 0u);
+    expect(s_cts.main_done, "check stack: the main body ran to its end");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    s_cur = -1;
+    (void)sr_syscall(&cpu, CTS_NID_CHECK_STACK);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "check stack: a call with no current thread stops the run by name");
     sr_test_guest_fn_reset();
 }
 
@@ -33792,7 +34029,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME) == 0x80020002u,
+    expect(sr_syscall(&cpu, 0x469989adu /* scePower_469989ad, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "a repeated refusal returns the same error");
@@ -33820,7 +34057,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x469989adu);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -35447,6 +35684,93 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* sceFontGetNumFontList / sceFontGetFontList against PSPAutotests tests/font/fontlist.expected
+ * (2ed7c9c5, the console's libfont on a PSP): 18 fonts and error 0 for a live library, 0 and
+ * 0x80460002 for a NULL one; GetFontList writes one 0xA8-byte style per font (num 1 writes
+ * exactly one), num -1 and 0 write nothing, a NULL library is 0x80460002 and NULL styles
+ * 0x80460003. Each style is the served registry index's values, the ones sceFontGetFontInfo
+ * reports. The fixture serves no Korean font, so a list reaching index 17 stops by name. Before
+ * these handlers both NIDs were unknown and the title stopped on the first. */
+#define FLT_NID_NUM_LIST  0x27f6e642u
+#define FLT_NID_FONT_LIST 0xbc75d85bu
+#define FLT_STYLES        0x09051000u
+#define FLT_STYLE_SIZE    0xa8u
+
+static int flt_style_matches(uint32_t at, const SrFontRegistryInfo *e) {
+    const float metrics[4] = {
+        (float)e->h_size / 64.0f, (float)e->v_size / 64.0f,
+        (float)e->h_resolution / 64.0f, (float)e->v_resolution / 64.0f,
+    };
+    for (uint32_t i = 0; i < 4u; i++)
+        if (MEM_R32(at + i * 4u) != f0t_float_word(metrics[i])) return 0;
+    return MEM_R32(at + 0x10u) == e->weight && MEM_R16(at + 0x14u) == e->family_code &&
+           MEM_R16(at + 0x16u) == e->style && MEM_R16(at + 0x18u) == e->sub_style &&
+           MEM_R16(at + 0x1au) == e->language_code && MEM_R16(at + 0x1cu) == e->region_code &&
+           MEM_R16(at + 0x1eu) == e->country_code &&
+           f0t_guest_string_field_is(at + 0x20u, 64u, e->font_name) &&
+           f0t_guest_string_field_is(at + 0x60u, 64u, e->file_name) &&
+           MEM_R32(at + 0xa0u) == e->extra_attributes && MEM_R32(at + 0xa4u) == e->expire_date;
+}
+
+static void test_font_list_contract(const Flash0Sources *sources) {
+    expect(sr_hle_test_is_registered(FLT_NID_NUM_LIST) && sr_hle_test_is_registered(FLT_NID_FONT_LIST),
+           "sceFontGetNumFontList and sceFontGetFontList are registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u, "a library opens for the font list");
+
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_NUM_LIST, lib, FLT_ERR, 0u, 0u) == 18u && MEM_R32(FLT_ERR) == 0u,
+           "sceFontGetNumFontList returns 18 and error 0 for a live library");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_NUM_LIST, 0u, FLT_ERR, 0u, 0u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontGetNumFontList returns 0 and error 0x80460002 for a NULL library");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_NUM_LIST, lib, 0u, 0u, 0u);
+    (void)flt_call(FLT_NID_NUM_LIST, FLT_LIB_B, FLT_ERR, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "a NULL error pointer and a library that is not live stop sceFontGetNumFontList by name");
+
+    expect(flt_call(FLT_NID_FONT_LIST, 0u, FLT_STYLES, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "sceFontGetFontList returns 0x80460002 for a NULL library");
+    expect(flt_call(FLT_NID_FONT_LIST, lib, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "sceFontGetFontList returns 0x80460003 for NULL styles");
+    for (uint32_t i = 0; i < FLT_STYLE_SIZE * 19u; i += 4u) MEM_W32(FLT_STYLES + i, 0xddddddddu);
+    expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 0xffffffffu, 0u) == 0u &&
+               flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 0u, 0u) == 0u &&
+               MEM_R32(FLT_STYLES) == 0xddddddddu,
+           "sceFontGetFontList with num -1 or 0 returns 0 and writes nothing");
+
+    uint32_t served = 0u;
+    SrFontRegistryInfo info[SR_FONT_REGISTRY_COUNT];
+    while (served < SR_FONT_REGISTRY_COUNT &&
+           sr_flash0_font_registry_info(sources, served, &info[served]) == SR_FONT_REGISTRY_PRESENT)
+        served++;
+    expect(served > 0u && served < SR_FONT_REGISTRY_COUNT,
+           "the fixture serves the leading indices and leaves a later one unserved");
+    if (served > 0u) {
+        expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 1u, 0u) == 0u &&
+                   flt_style_matches(FLT_STYLES, &info[0]) &&
+                   MEM_R32(FLT_STYLES + FLT_STYLE_SIZE) == 0xddddddddu,
+               "num 1 writes exactly one 0xA8-byte style, index 0's");
+        expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, served, 0u) == 0u,
+               "a list of the served indices returns 0");
+        int all = 1;
+        for (uint32_t i = 0; i < served; i++)
+            if (!flt_style_matches(FLT_STYLES + i * FLT_STYLE_SIZE, &info[i])) all = 0;
+        expect(all && MEM_R32(FLT_STYLES + served * FLT_STYLE_SIZE) == 0xddddddddu,
+               "each style is its registry index's values, in index order, and no more are written");
+    }
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 30u, 0u);
+    (void)flt_call(FLT_NID_FONT_LIST, FLT_LIB_B, FLT_STYLES, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "a list reaching an unserved index and a library that is not live stop by name");
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u, "the font-list library is retired");
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -35800,6 +36124,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        test_font_list_contract(&expected_sources);
     }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
@@ -36098,15 +36423,106 @@ static void test_vtimer_measured_limits_and_base(void) {
     s_vtime_us = saved_vtime;
 }
 
-/* The VTimer handler family and the time setter stay refused by name (issue #325 gates the
- * handlers). Each refusal is a production registration that returns its named code. */
-static void test_vtimer_refusals_are_named(void) {
+/* VTimer time: GetVTimerTimeWide, SetVTimerTimeWide and SetVTimerTime against pspautotests
+ * tests/threads/vtimers/{gettime,settime}.expected (2ed7c9c5, recorded on a PSP). Before these
+ * handlers SetVTimerTime was a named refusal (0x80020002) and the two Wide NIDs were unknown. */
+#define NID_VT_GET_TIME_WIDE 0xc0b3ffd2u
+#define NID_VT_SET_TIME_WIDE 0xfb6425c3u
+
+/* A 64-bit call result: $v0 low, $v1 high. */
+static uint64_t vt_call64(uint32_t nid, uint32_t uid, uint64_t value) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[6] = (uint32_t)value;          /* the aligned 64-bit argument skips a1 */
+    cpu.r[7] = (uint32_t)(value >> 32);
+    cpu.r[3] = 0x5a5a5a5au;
+    uint32_t lo = sr_syscall(&cpu, nid);
+    return ((uint64_t)cpu.r[3] << 32) | lo;
+}
+
+static uint32_t vt_set_time(uint32_t uid, uint64_t value) {
+    MEM_W32(VT_CLOCK, (uint32_t)value);
+    MEM_W32(VT_CLOCK + 4u, (uint32_t)(value >> 32));
+    return vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, uid, VT_CLOCK);
+}
+
+static void test_vtimer_time_wide_and_setters(void) {
+    int saved_pace = s_pace_on;
+    uint64_t saved_vtime = s_vtime_us;
     reset_fixture();
     sr_hle_init();
-    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
-           "SetVTimerTime has a named refusal registration");
-    expect(vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, 0u, 0u) == VT_REFUSED_ERR,
-           "SetVTimerTime returns the named refusal");
+    s_pace_on = 0;
+    s_vtime_us = 2000000u;
+    expect(sr_hle_test_is_registered(NID_VT_GET_TIME_WIDE) &&
+               sr_hle_test_is_registered(NID_VT_SET_TIME_WIDE) &&
+               sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
+           "GetVTimerTimeWide, SetVTimerTimeWide and SetVTimerTime are registered");
+    uint32_t vt = vt_create_named("vt-time");
+    uint32_t gone = vt_create_named("vt-gone");
+    expect(vt_call(NID_VT_DELETE, gone, 0u) == 0u, "a timer to delete deletes");
+
+    /* gettime "Objects (wide)": a new timer reads 0; uid 0, 0xDEADBEEF and deleted read -1. */
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 0u, "GetVTimerTimeWide reads 0 on a new timer");
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, 0u, 0u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, 0xdeadbeefu, 0u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, gone, 0u) == UINT64_MAX,
+           "GetVTimerTimeWide returns -1 in $v0/$v1 for uid 0, an invalid and a deleted uid");
+    /* gettime "Running (wide)": 5 ms running reads 5000, and holds once stopped. */
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    sr_hle_advance_time(5000u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 5000u, "GetVTimerTimeWide reads 5000 after 5 ms");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "the timer stops");
+    sr_hle_advance_time(7000u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 5000u &&
+               vt_time_of(vt, "GetVTimerTime agrees") == 5000u,
+           "GetVTimerTimeWide holds 5000 once stopped, the value GetVTimerTime writes");
+
+    /* settime "Values (wide)": each Set returns the previous time, all 64 bits. */
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 1u) == 5000u, "SetVTimerTimeWide returns the time held before");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0x1234567890123ull) == 1u,
+           "SetVTimerTimeWide returns 1 after 1 was set");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, UINT64_MAX) == 0x1234567890123ull,
+           "SetVTimerTimeWide returns 0x1234567890123 after that was set");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0u) == UINT64_MAX,
+           "SetVTimerTimeWide returns -1 after -1 was set: the full 64 bits round-trip");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(48u) == 0u && MEM_R32(VT_INFO + 36u) == 0u &&
+               vt_info_u64(40u) == 0u,
+           "ReferVTimerStatus reports current 0 after setting 0, still inactive with base 0");
+    /* settime "Objects (wide)": uid 0, invalid and deleted return -1 and change nothing. */
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, 0u, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_SET_TIME_WIDE, 0xdeadbeefu, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_SET_TIME_WIDE, gone, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 0u,
+           "SetVTimerTimeWide returns -1 for uid 0, an invalid and a deleted uid, changing nothing");
+
+    /* settime "Values": SetVTimerTime swaps the time through its pointer and returns 0. */
+    expect(vt_set_time(vt, 1u) == 0u && vt_clock_u64() == 0u, "SetVTimerTime returns 0 and writes back the old 0");
+    expect(vt_set_time(vt, 0x1234567890123ull) == 0u && vt_clock_u64() == 1u,
+           "SetVTimerTime writes back the old 1");
+    expect(vt_set_time(vt, UINT64_MAX) == 0u && vt_clock_u64() == 0x1234567890123ull,
+           "SetVTimerTime writes back the old 0x1234567890123");
+    expect(vt_set_time(vt, 0u) == 0u && vt_clock_u64() == UINT64_MAX, "SetVTimerTime writes back the old -1");
+    /* settime "Objects": uid 0, invalid and deleted return 0x800201BE and leave the clock. */
+    expect(vt_set_time(0u, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u &&
+               vt_set_time(0xdeadbeefu, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u &&
+               vt_set_time(gone, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u,
+           "SetVTimerTime returns 0x800201BE for uid 0, an invalid and a deleted uid, leaving *time");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, vt, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "SetVTimerTime with a NULL pointer (a crash on the PSP) stops the run by name");
+
+    /* A running timer counts on from the value set. */
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer restarts");
+    sr_hle_advance_time(300u);
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 10000u) == 300u, "Set while running returns the running time");
+    sr_hle_advance_time(250u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 10250u, "a running timer counts on from the set value");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 1u,
+           "a Set leaves a running timer running");
+    s_pace_on = saved_pace;
+    s_vtime_us = saved_vtime;
 }
 
 /* VTimer handlers, against pspautotests tests/threads/vtimers/{sethandler,cancelhandler}
@@ -36240,6 +36656,29 @@ static void test_vtimer_handler_runs_at_its_schedule_and_reschedules(void) {
     vth_run_until(2100000u);
     expect(s_vth_calls == 2u, "a cleared handler never runs again");
     expect(s_cur >= 0 && !sched_is_intr_context(), "normal context is restored after the handler");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
+/* settime.expected "While scheduled": a handler due at 20000 on a timer set to 20000 1 ms after
+ * Start does not run inside the Set; it runs on the next pass, and its 100000 return moves the
+ * schedule to 120000. */
+static void test_vtimer_set_time_while_scheduled(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-set");
+    s_vth_returns[0] = 100000u;
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0u) == 0u, "the timer is set to 0");
+    expect(vth_set(vt, 20000u, VTH_ENTRY, 0x1337u) == 0u, "a handler is scheduled at 20000");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    vth_run_until(2001000u);
+    expect(s_vth_calls == 0u, "After start: 0");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 20000u) == 1000u, "the Set returns the 1000 run so far");
+    expect(s_vth_calls == 0u, "After set: 0 (the handler does not run inside the Set)");
+    vth_run_until(2002000u);
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "the timer stops");
+    expect(s_vth_calls == 1u && s_vth_sched[0] == 20000u, "After set and delay: 1, called for 20000");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(56u) == 120000u, "the schedule reads 120000");
     s_cur = -1;
     s_pace_on = saved_pace;
 }
@@ -37291,7 +37730,8 @@ static int hle_selftest_main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--vtimer") == 0) {
         test_vtimer_lifecycle();
         test_vtimer_measured_limits_and_base();
-        test_vtimer_refusals_are_named();
+        test_vtimer_time_wide_and_setters();
+        test_vtimer_set_time_while_scheduled();
         test_vtimer_handler_registration_and_errors();
         test_vtimer_handler_runs_at_its_schedule_and_reschedules();
         test_vtimer_handler_catches_up_and_refuses_cancel_inside();
@@ -37389,6 +37829,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
     test_thread_stack_free_size_contract();
+    test_check_thread_stack_contract();
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
@@ -37417,6 +37858,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_power_battery_20261024();
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
+    test_power_set_bus_clock_frequency_autotest();
+    test_rtc_time_t_add_years_resolution_autotest();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_ctrl_sampling_mode_cycle_matrix();
@@ -37467,7 +37910,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_fpl_refer_status();
     test_vtimer_lifecycle();
     test_vtimer_measured_limits_and_base();
-    test_vtimer_refusals_are_named();
+    test_vtimer_time_wide_and_setters();
+    test_vtimer_set_time_while_scheduled();
     test_vtimer_handler_registration_and_errors();
     test_vtimer_handler_runs_at_its_schedule_and_reschedules();
     test_vtimer_handler_catches_up_and_refuses_cancel_inside();

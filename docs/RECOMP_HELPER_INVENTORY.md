@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **370** (declared in `recomp.h`: 312)
-- reach class: emitter-reached 69, production-runtime-only 271, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 344
+- helpers: **371** (declared in `recomp.h`: 313)
+- reach class: emitter-reached 69, production-runtime-only 272, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 345
 
 ## Helpers
 
@@ -105,6 +105,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_current_is_worker` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_current_join_result_pending` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_current_priority` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_current_thread_stack_range` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_current_uid` | `rt/ge_replay.c`, `rt/sched.c` | yes | production-runtime-only | `rt/ge_replay.c`: project_authored_attested; `rt/sched.c`: upstream_derived |
 | `sched_delay_current` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_delete_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |

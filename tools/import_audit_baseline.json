@@ -595,6 +595,12 @@
     "name": "sceKernelWaitThreadEnd",
     "status": "unreviewed"
   },
+  "0x27c4594c": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetTime_t",
+    "name": "sceRtcGetTime_t",
+    "status": "partial"
+  },
   "0x27cc57f0": {
     "classification": "dedicated",
     "handler": "h_LibcTime",
@@ -611,6 +617,12 @@
     "classification": "dedicated",
     "handler": "h_IoLseek",
     "name": "sceIoLseek",
+    "status": "partial"
+  },
+  "0x27f6e642": {
+    "classification": "dedicated",
+    "handler": "h_FontGetNumFontList",
+    "name": "sceFontGetNumFontList",
     "status": "partial"
   },
   "0x289d82fe": {
@@ -1139,6 +1151,12 @@
     "name": "__sceSasInit",
     "status": "unreviewed"
   },
+  "0x42842c77": {
+    "classification": "dedicated",
+    "handler": "h_RtcTickAddYears",
+    "name": "sceRtcTickAddYears",
+    "status": "partial"
+  },
   "0x42ec03ac": {
     "classification": "dedicated",
     "handler": "h_IoWrite",
@@ -1353,11 +1371,10 @@
     "status": "unreviewed"
   },
   "0x542ad630": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerTime",
     "name": "sceKernelSetVTimerTime",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x54f5fb11": {
     "classification": "dedicated",
@@ -2899,6 +2916,12 @@
     "name": "sceIoChstat",
     "status": "partial"
   },
+  "0xb8d7b3fb": {
+    "classification": "dedicated",
+    "handler": "h_PowerSetBusClockFrequency",
+    "name": "scePowerSetBusClockFrequency",
+    "status": "partial"
+  },
   "0xb9685118": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -2934,6 +2957,12 @@
     "classification": "dedicated",
     "handler": "h_ReferSemaStatus",
     "name": "sceKernelReferSemaStatus",
+    "status": "partial"
+  },
+  "0xbc75d85b": {
+    "classification": "dedicated",
+    "handler": "h_FontGetFontList",
+    "name": "sceFontGetFontList",
     "status": "partial"
   },
   "0xbd11b7c2": {
@@ -3002,6 +3031,12 @@
     "name": "sceKernelCreateFpl",
     "status": "partial"
   },
+  "0xc0b3ffd2": {
+    "classification": "dedicated",
+    "handler": "h_GetVTimerTimeWide",
+    "name": "sceKernelGetVTimerTimeWide",
+    "status": "partial"
+  },
   "0xc11ba8c4": {
     "classification": "dedicated",
     "handler": "h_NotifyCallback",
@@ -3031,6 +3066,12 @@
     "handler": "h_CacheInvalidateRangeOther",
     "name": "sceKernelIcacheInvalidateRange",
     "status": "unreviewed"
+  },
+  "0xc41c2853": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetTickResolution",
+    "name": "sceRtcGetTickResolution",
+    "status": "complete"
   },
   "0xc492f751": {
     "classification": "dedicated",
@@ -3184,6 +3225,12 @@
     "classification": "dedicated",
     "handler": "h_StopVTimer",
     "name": "sceKernelStopVTimer",
+    "status": "partial"
+  },
+  "0xd13bde95": {
+    "classification": "dedicated",
+    "handler": "h_CheckThreadStack",
+    "name": "sceKernelCheckThreadStack",
     "status": "partial"
   },
   "0xd1c8945e": {
@@ -3874,6 +3921,12 @@
     "handler": "h_AtracGetLoopStatus",
     "name": "sceAtracGetLoopStatus",
     "status": "unreviewed"
+  },
+  "0xfb6425c3": {
+    "classification": "dedicated",
+    "handler": "h_SetVTimerTimeWide",
+    "name": "sceKernelSetVTimerTimeWide",
+    "status": "partial"
   },
   "0xfb8e22ec": {
     "classification": "dedicated",

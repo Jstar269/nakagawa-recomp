@@ -2356,6 +2356,16 @@ uint32_t sched_thread_stack_free_size(uint32_t uid) {
     return free_bytes;
 }
 
+/* The calling thread's user-visible stack: its low end and size, the same range
+ * sched_thread_stack_free_size counts in. Returns 0 when no guest thread is current. */
+int sched_current_thread_stack_range(uint32_t *base_out, uint32_t *size_out) {
+    TCB *t = tcb_by_uid(resolve_thread_uid(0u));
+    if (!t || !t->stack_size) return 0;
+    if (base_out) *base_out = t->stack_base;
+    if (size_out) *size_out = t->stack_size;
+    return 1;
+}
+
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name) {
     if (s_ntcb >= MAXTHREADS) {

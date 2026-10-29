@@ -103,6 +103,23 @@ uint32_t h_PowerSetCpuClockFrequency(CpuState *s) {
     return 0;
 }
 
+/* scePowerSetBusClockFrequency(busfreq): validate a bus clock request. Measured on a PSP by
+ * pspautotests tests/power/freq.expected (rev 2ed7c9c5), from the power-on clocks (PLL 222,
+ * CPU 222, bus 111): every request from 1 to 111 returns 0, and -1, 0 and 112 return
+ * 0x800001FE. No request changes any clock: after each call the three getters still report
+ * CPU 222, bus 111 and PLL 222, so an accepted request is validated and then has no
+ * PSP-visible effect, and the retained clocks stay untouched here too. The range is measured at
+ * PLL 222 only; whether its upper end is a fixed 111 or half the PLL is not, so a request made
+ * while the retained PLL is anything else stops the run by name instead of guessing. */
+uint32_t h_PowerSetBusClockFrequency(CpuState *s) {
+    if (s_pll_freq != SR_POWER_BOOT_PLL_MHZ)
+        return sr_hle_unmodelled_stop("scePowerSetBusClockFrequency",
+                                      "at a PLL other than the measured 222 MHz is not measured");
+    int32_t bus = (int32_t)A0;
+    if (bus < 1 || bus > (int32_t)SR_POWER_BOOT_BUS_MHZ) return SCE_ERROR_INVALID_VALUE;
+    return 0;
+}
+
 /* scePowerSetClockFrequency350(pllfreq, cpufreq, busfreq): same shape, same
  * retained state. Whether firmware 350 permits a distinct PLL ceiling is
  * UNMEASURED here. */
@@ -229,6 +246,7 @@ void sr_hle_power_register_clock(void) {
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
     sr_hle_register(0x843fbf43, "scePowerSetCpuClockFrequency", h_PowerSetCpuClockFrequency);
+    sr_hle_register(0xb8d7b3fb, "scePowerSetBusClockFrequency", h_PowerSetBusClockFrequency);
     /* Battery state query, in the shared helper so the executable harness registers it too. */
     sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
 }

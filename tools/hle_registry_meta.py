@@ -259,6 +259,39 @@ HANDLER_METADATA = {
         ],
         "limitation": "accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured",
     },
+    "h_PowerSetBusClockFrequency": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest",
+            "PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): at PLL 222, 1..111 return 0 and -1, 0, 112 return 0x800001fe, and no request moves any clock",
+        ],
+        "limitation": "validates 1..111 against the measured range at PLL 222 and changes no clock, as measured; at any other retained PLL the range is not measured and the run stops by name",
+    },
+    "h_CheckThreadStack": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_check_thread_stack_contract",
+            "PSPAutotests tests/threads/threads/stackfree.expected (2ed7c9c5, recorded on a PSP): 0xEB0 and 0xAB0 on 0x1000-byte stacks, 0x10 above GetThreadStackFreeSize, main thread above 0x30000",
+        ],
+        "limitation": "returns the caller's $sp minus its stack's low end, the quantity the recorded cells follow; a $sp outside the calling thread's stack and a call with no current thread are not measured and stop the run by name",
+    },
+    "h_FontGetNumFontList": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_list_contract",
+            "PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library",
+            "hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)",
+        ],
+        "limitation": "returns the measured 18 for a live library whether or not every index has a served font; a library handle that is not live and a NULL error pointer are not measured and stop the run by name",
+    },
+    "h_FontGetFontList": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_list_contract",
+            "PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): one 0xA8-byte style per font, num 1 writes exactly one, num -1 and 0 write nothing, 0x80460002 for a NULL library and 0x80460003 for NULL styles",
+        ],
+        "limitation": "writes min(num, 18) styles in index order from the served registry values, of which the capture shows only the first; an index whose font is not served, a library that is not live and an unwritable array stop the run by name",
+    },
     "h_PowerGetBatteryLifeTime": {
         "status": "partial",
         "evidence": [
@@ -742,6 +775,31 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "deleted-UID code 0x800201BE with the output untouched measured (PSP-HLE-VTIMER-003); time = system time - base and the microsecond unit are consistent with PSP-HLE-VTIMER-002 (deltas within about 8%), not a precise rate measurement; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; no game relies on the output (#325)",
     },
+    "h_GetVTimerTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "PSPAutotests tests/threads/vtimers/gettime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Running (wide)",
+        ],
+        "limitation": "returns the elapsed time GetVTimerTime writes, as $v0/$v1, and -1 for uid 0, an invalid and a deleted uid (pspautotests-recorded); the microsecond unit carries GetVTimerTime's limits (PSP-HLE-VTIMER-002, not a precise rate measurement)",
+    },
+    "h_SetVTimerTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "src/rt/hle_thread_selftest.c:test_vtimer_set_time_while_scheduled",
+            "PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Values (wide), While scheduled",
+        ],
+        "limitation": "makes the value the timer's time and returns the previous time (all 64 bits), -1 for uid 0, an invalid and a deleted uid, and a handler already due runs on the next scheduler pass, not inside the Set (pspautotests-recorded); a running timer counts on from the set value, consistent with the While scheduled cell but its exact microseconds are not measured",
+    },
+    "h_SetVTimerTime": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects, Values",
+        ],
+        "limitation": "swaps the time through the SceKernelSysClock pointer and returns 0, 0x800201BE for uid 0, an invalid and a deleted uid with the clock untouched (pspautotests-recorded); a NULL or unwritable pointer (a crash on the PSP per the test's note) stops the run by name; running-timer timing as for SetVTimerTimeWide",
+    },
     "h_GetVTimerBase": {
         "status": "partial",
         "limitation": "returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; deleted-UID code is unmeasured and reused by analogy; no game relies on the NULL output (#325)",
@@ -937,6 +995,30 @@ HANDLER_METADATA = {
             "hardware measurement 2026-10-24, PSP-3000 6.61 (valid dates convert; year 1 and pre-1970 dates return 0x800001fe; month 13, day 32, Feb 30 and hour 24 return 0 and normalise; NULL output returns 0; NULL date faults inside the module)",
         ],
         "limitation": "out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop",
+    },
+    "h_RtcGetTime_t": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "PSPAutotests tests/rtc/convert.expected (2ed7c9c5, recorded on a PSP): checkRtcGetTime_t, 2012-09-20 07:12:15.000500 -> 1348125135",
+        ],
+        "limitation": "converts in-range dates from 1970 whose seconds fit 32 bits, as one 32-bit word (the measured cell); a field out of range, a date before 1970, a value past 32 bits and a NULL or unmapped pointer are not measured for this function and stop the run by name",
+    },
+    "h_RtcTickAddYears": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears",
+        ],
+        "limitation": "moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name",
+    },
+    "h_RtcGetTickResolution": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "uOFW src/kd/rtc/rtc.c (MIT): sceRtcGetTickResolution returns 1000000, marked as matching the firmware assembly",
+            "PSPAutotests tests/rtc (2ed7c9c5): every RTC tick conversion uses one-microsecond ticks",
+        ],
     },
     "h_RtcGetWin32FileTime": {
         "status": "partial",
@@ -1766,6 +1848,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetThreadExitStatus": "kernel_thread",
     "sceKernelGetThreadId": "kernel_thread",
     "sceKernelGetThreadStackFreeSize": "kernel_thread",
+    "sceKernelCheckThreadStack": "kernel_thread",
     "sceKernelGetThreadmanIdList": "kernel_thread",
     "sceKernelNotifyCallback": "kernel_thread",
     "sceKernelReferCallbackStatus": "kernel_thread",

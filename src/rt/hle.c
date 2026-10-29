@@ -3021,6 +3021,11 @@ static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ..
 #endif
 }
 
+/* The same named stop for handlers that live outside this file (hle_power.c). */
+uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail) {
+    return hle_unmodelled_stop(import_name, "%s", detail);
+}
+
 /* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
  * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
  * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
@@ -4377,6 +4382,28 @@ static uint32_t h_GetThreadExitStatus(CpuState *s) { return sched_thread_exit_st
 static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
     (void)s;
     return sched_thread_stack_free_size(A0);
+}
+/* sceKernelCheckThreadStack(void): the calling thread's stack space left below its stack
+ * pointer, that is $sp minus the low end of its stack. Measured on a PSP by pspautotests
+ * tests/threads/threads/stackfree.expected (rev 2ed7c9c5), threads with a 0x1000-byte stack:
+ * a thread that only calls it reads 0xEB0, and one that first puts a 1 KiB array in its frame
+ * reads 0xAB0, 0x400 less, with or without the stack fill, so the value follows the stack
+ * pointer and not the fill bytes. With the fill, and no 0xFF bytes written in the frame, it is
+ * 0x10 above sceKernelGetThreadStackFreeSize (0xEB0 against 0xEA0, 0xAB0 against 0xAA0): the
+ * 0x10 bytes at the low end that call does not count (sched_thread_stack_free_size). The main
+ * thread's value is above 0x30000.
+ * The caller's $sp is the guest's own: the import stub has no frame. A stack pointer outside
+ * the thread's stack (an overflow, or code running on another stack) is not measured, nor is
+ * a call with no current thread, so both stop the run by name. */
+static uint32_t h_CheckThreadStack(CpuState *s) {
+    uint32_t base = 0u, size = 0u, sp = s->r[29];
+    if (!sched_current_thread_stack_range(&base, &size))
+        return hle_unmodelled_stop("sceKernelCheckThreadStack", "with no current thread is not measured");
+    if (sp < base || sp - base > size)
+        return hle_unmodelled_stop("sceKernelCheckThreadStack",
+                                   "with $sp 0x%08x outside the thread's stack 0x%08x+0x%x is not measured",
+                                   sp, base, size);
+    return sp - base;
 }
 /* sceKernelSleepThread[CB] blocks only when no wakeup is banked; a pending wakeup is
  * consumed and the call returns without waiting. The context check therefore asks the
@@ -9483,6 +9510,10 @@ static const PGF *font_pgf_for_index(uint32_t index) {
     return s_pgf_slot[slot];
 }
 
+/* One 0xA8-byte PGFFontStyle at `st` from a registry index's values: the shape FontInfo embeds
+ * at +0x5c and sceFontGetFontList writes one of per font. */
+static void font_write_style(uint32_t st, const SrFontRegistryInfo *info);
+
 static void font_overlay_style(uint32_t fi, const SrFontRegistryInfo *info, int userMemory) {
     if (!fi) return;
     /* PGFFontStyle begins at +0x5c. For user-memory PGFs, intrinsic metrics remain useful but
@@ -9491,6 +9522,11 @@ static void font_overlay_style(uint32_t fi, const SrFontRegistryInfo *info, int 
         for (uint32_t i = 0; i < 0x90; i++) MEM_W8(fi + 0x70u + i, 0);
         return;
     }
+    font_write_style(fi + 0x5cu, info);
+}
+
+static void font_write_style(uint32_t st, const SrFontRegistryInfo *info) {
+    const uint32_t fi = st - 0x5cu; /* the offsets below are FontInfo's */
     float f[4] = {
         (float)info->h_size / 64.0f, (float)info->v_size / 64.0f,
         (float)info->h_resolution / 64.0f, (float)info->v_resolution / 64.0f,
@@ -9807,6 +9843,57 @@ uint32_t h_FontGetGlyphImageById(CpuState *s) {
 static uint32_t h_FontFindOptimumFont(CpuState *s) {
     if (A2) MEM_W32(A2, 0);            /* *errorCode */
     return 0;                          /* font index 0 */
+}
+/* ---- sceFontGetNumFontList / sceFontGetFontList: the system font list ----------------------
+ * Measured on a PSP by pspautotests tests/font/fontlist.expected (rev 2ed7c9c5, the console's
+ * own libfont.prx, a library made with numFonts 4):
+ *   - GetNumFontList(lib, &err) returns 18 and sets err 0; a NULL library returns 0 and sets
+ *     err 0x80460002.
+ *   - GetFontList(lib, styles, num) returns 0 and writes one 0xA8-byte style per font: with num 1
+ *     exactly one (the word after it is left alone), the first being the Japanese font (index 0:
+ *     10.125 x 10.125 at 128 x 128, family 1, style 103, language 1, country 1). num -1 and 0
+ *     return 0 and write nothing. A NULL library returns 0x80460002; NULL styles with a live
+ *     library return 0x80460003.
+ * 18 is SR_FONT_REGISTRY_COUNT, the measured index map /DATA/FONT and sceFontOpen already use,
+ * and each style comes from the same per-index registry values (font_write_style). A count
+ * above 1 writes min(num, 18) styles in index order; only the first of them is shown by the
+ * capture. Not measured, so the run stops by name: a library handle that is not live (the
+ * capture's DoneLib cell reads freed memory and answers like an empty library), a NULL error
+ * pointer (the capture notes it crashes), an unwritable style array, and an index whose font is
+ * not served (the console has all 18; a missing user font would leave a hole the PSP never
+ * shows). */
+static uint32_t h_FontGetNumFontList(CpuState *s) {
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop("sceFontGetNumFontList",
+                                   "with an unwritable error pointer 0x%08x is not measured", A1);
+    if (!A0) { MEM_W32(A1, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    if (!fontlib_snapshot(A0, NULL))
+        return hle_unmodelled_stop("sceFontGetNumFontList",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    MEM_W32(A1, 0u);
+    return SR_FONT_REGISTRY_COUNT;
+}
+static uint32_t h_FontGetFontList(CpuState *s) {
+    const uint32_t style_size = 0xa8u;
+    if (!A0) return SR_FONT_ERROR_INVALID_LIB;
+    if (!fontlib_snapshot(A0, NULL))
+        return hle_unmodelled_stop("sceFontGetFontList",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    if (!A1) return SR_FONT_ERROR_INVALID_ARG;
+    int32_t num = (int32_t)A2;
+    if (num <= 0) return 0;
+    uint32_t count = (uint32_t)num < SR_FONT_REGISTRY_COUNT ? (uint32_t)num : SR_FONT_REGISTRY_COUNT;
+    if (!sr_guest_span_writable(A1, count * style_size))
+        return hle_unmodelled_stop("sceFontGetFontList",
+                                   "with an unwritable style array 0x%08x is not measured", A1);
+    SrFontRegistryInfo info[SR_FONT_REGISTRY_COUNT];
+    for (uint32_t i = 0; i < count; i++) {
+        if (font_registry_info_for_index(i, &info[i]) != SR_FONT_REGISTRY_PRESENT)
+            return hle_unmodelled_stop("sceFontGetFontList",
+                                       "with font index %u not served is not measured", i);
+    }
+    for (uint32_t i = 0; i < count; i++) font_write_style(A1 + i * style_size, &info[i]);
+    return 0;
 }
 /* ---- sceMpeg (PSMF video): faithful port in src/rt/mpeg.c (from PPSSPP) ----
  * These thin wrappers marshal MIPS args to the ported mpeg_* functions. The port implements the
@@ -13537,7 +13624,8 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
  *
- * Refused by name, out of scope: SetVTimerTime. The handler family is below its own header. */
+ * The Wide getter and the two time setters are below their own header, after GetVTimerTime; the
+ * handler family is below its own header. */
 /* The PSP-3000 accepted 64 creates in a row without a refusal (PSP-HLE-VTIMER-003), so the table
  * holds 64 timers. What the console does past 64 is unmeasured. */
 #define VTIMER_MAX 64
@@ -13795,6 +13883,70 @@ static uint32_t h_GetVTimerTime(CpuState *s) {
     uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
     MEM_W32(A1, (uint32_t)value);
     MEM_W32(A1 + 4u, (uint32_t)(value >> 32));
+    return 0;
+}
+
+/* ---- VTimer time, Wide getter and the two setters ------------------------------------------
+ * Measured on a PSP by pspautotests tests/threads/vtimers/gettime.expected and settime.expected
+ * (rev 2ed7c9c5, recorded on a PSP):
+ *   - GetVTimerTimeWide(uid) returns the same elapsed time GetVTimerTime writes, as a 64-bit
+ *     value in $v0/$v1 (0 for a new timer, about 5000 after a 5 ms run, unchanged once stopped);
+ *     uid 0, 0xDEADBEEF and a deleted uid return -1 (0xFFFFFFFF_FFFFFFFF), not an error code.
+ *   - SetVTimerTimeWide(uid, time) makes `time` the timer's time and returns the time it held
+ *     before, 64-bit in $v0/$v1: on a new timer 0, then 1 after setting 1, 0x1234567890123 after
+ *     setting that, and -1 after setting -1 (the full 64 bits round-trip). Unknown, zero and
+ *     deleted uids return -1 and change nothing. ReferVTimerStatus then reports current 0 after
+ *     setting 0 and non-zero after any other value, while active and base stay as they were.
+ *   - SetVTimerTime(uid, SceKernelSysClock *time) swaps: it returns 0, makes *time the timer's
+ *     time, and writes the time it held before back into *time. uid 0, 0xDEADBEEF and a deleted
+ *     uid return 0x800201BE and leave *time as it was.
+ *   - Set while running with a handler due at the new time (settime.expected "While scheduled":
+ *     handler scheduled at 20000, timer set to 20000 1 ms after Start) does not call the handler
+ *     inside the Set; it runs after the next 1 ms delay, and its return of 100000 moves the
+ *     schedule to 120000. Here the handler deadline is derived from the timer's time on every
+ *     scheduler pass (vtimer_handler_deadline), so a Set takes effect at the next pass.
+ * A running timer keeps running from the new time: its open interval restarts now. That the PSP
+ * counts on from the set value while running is what "While scheduled" shows (the handler due
+ * at 20000 runs once the timer had been set to 20000 and run on); the exact microseconds are not
+ * measured. A NULL or unwritable SetVTimerTime pointer is not measured (the test notes the NULL
+ * case crashes), so the run stops by name. */
+static uint64_t vtimer_swap_time(VTimer *t, uint64_t value) {
+    uint64_t now = vtimer_now_us();
+    uint64_t previous = vtimer_elapsed_at(t, now);
+    t->accum_us = value;
+    if (t->running) t->started_us = now;
+    return previous;
+}
+
+static uint32_t h_GetVTimerTimeWide(CpuState *s) {
+    /* a0=uid. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) { s->r[3] = 0xffffffffu; return 0xffffffffu; }
+    uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
+    s->r[3] = (uint32_t)(value >> 32);
+    return (uint32_t)value;
+}
+
+static uint32_t h_SetVTimerTimeWide(CpuState *s) {
+    /* a0=uid, a2/a3=aligned 64-bit time (a1 is skipped, as in SetVTimerHandlerWide). */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) { s->r[3] = 0xffffffffu; return 0xffffffffu; }
+    uint64_t previous = vtimer_swap_time(t, ((uint64_t)A3 << 32) | A2);
+    s->r[3] = (uint32_t)(previous >> 32);
+    return (uint32_t)previous;
+}
+
+static uint32_t h_SetVTimerTime(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock * (low word, then high word), read and written. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (!A1 || !sr_guest_span_writable(A1, 8u))
+        return hle_unmodelled_stop("sceKernelSetVTimerTime",
+                                   "with an unwritable time pointer 0x%08x is not measured", A1);
+    uint64_t value = (uint64_t)MEM_R32(A1) | ((uint64_t)MEM_R32(A1 + 4u) << 32);
+    uint64_t previous = vtimer_swap_time(t, value);
+    MEM_W32(A1, (uint32_t)previous);
+    MEM_W32(A1 + 4u, (uint32_t)(previous >> 32));
     return 0;
 }
 
@@ -14250,6 +14402,62 @@ static uint32_t h_RtcGetTime64_t(CpuState *s) {
     }
     return rtc_write_u64(A1, (tick - RTC_UNIX_EPOCH_TICK) / 1000000u) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* sceRtcGetTime_t(const pspTime *date, u32 *time): the date as seconds since 1970-01-01 00:00:00,
+ * the microseconds dropped, written as one 32-bit word. Measured on a PSP by pspautotests
+ * tests/rtc/convert.expected (rev 2ed7c9c5, checkRtcGetTime_t): 2012-09-20 07:12:15.000500
+ * returns 0 and writes 1348125135, the same seconds sceRtcGetTime64_t gives for that date.
+ * Only in-range dates on or after the epoch whose seconds fit the 32-bit word are measured.
+ * What the PSP does with a field out of range, a date before 1970, a value past 32 bits, or a
+ * NULL or unmapped pointer is not measured for this function (sceRtcGetTime64_t's measured
+ * answers are not assumed to carry over), so each of those stops the run by name. */
+static uint32_t h_RtcGetTime_t(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 16u))
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with an unreadable date 0x%08x is not measured", A0);
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with an unwritable output 0x%08x is not measured", A1);
+    RtcDateTime value;
+    if (rtc_read_datetime(A0, &value) != 0)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date field out of range is not measured");
+    uint64_t tick = rtc_datetime_to_tick(&value);
+    if (tick < RTC_UNIX_EPOCH_TICK)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date before 1970 is not measured");
+    uint64_t seconds = (tick - RTC_UNIX_EPOCH_TICK) / 1000000u;
+    if (seconds > UINT32_MAX)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date past the 32-bit range is not measured");
+    MEM_W32(A1, (uint32_t)seconds);
+    return 0;
+}
+/* sceRtcTickAddYears(u64 *dest, const u64 *src, int years): the source tick moved by whole
+ * calendar years, its month, day and time of day kept. Measured on a PSP by pspautotests
+ * tests/rtc/arithmetic.expected (rev 2ed7c9c5, checkRtcTickAddYears), which fills dest with
+ * 0x1337 before each call:
+ *   - 2012-02-29 + 1 year is 2013-02-28 (the leap day clamps), + 4 years is 2016-02-29;
+ *   - 1970-01-01 00:00:00.000445 - 1969 is 0001-01-01 (the microseconds kept), - 1968 is
+ *     0002-01-01, + 2000 is 3970-01-01, - 20 is 1950-01-01; 1850 to 2300 + 1 move one year;
+ *   - a result year below 1 (1970 - 1970 and beyond, 10 - 10) or above 9999 (9998 + 2) still
+ *     returns 0 but leaves dest holding 0x1337, unwritten.
+ * A source tick past year 9999, and a NULL or unmapped pointer, are not measured, so each stops
+ * the run by name. */
+static uint32_t h_RtcTickAddYears(CpuState *s) {
+    uint64_t tick;
+    if (!rtc_read_u64(A1, &tick))
+        return hle_unmodelled_stop("sceRtcTickAddYears", "with an unreadable source 0x%08x is not measured", A1);
+    if (!A0 || !sr_guest_span_writable(A0, 8u))
+        return hle_unmodelled_stop("sceRtcTickAddYears", "with an unwritable destination 0x%08x is not measured", A0);
+    RtcDateTime value;
+    rtc_tick_to_datetime(tick, &value);
+    if (value.year > 9999u)
+        return hle_unmodelled_stop("sceRtcTickAddYears", "from a tick past year 9999 is not measured");
+    int64_t year = (int64_t)value.year + (int32_t)A2;
+    if (year < 1 || year > 9999) return 0;
+    value.year = (uint32_t)year;
+    if (value.month == 2u && value.day == 29u && !rtc_is_leap(value.year)) value.day = 28u;
+    return rtc_write_u64(A0, rtc_datetime_to_tick(&value)) ? 0u : RTC_ILLEGAL_ADDR;
+}
+/* sceRtcGetTickResolution(void): ticks per second. The RTC tick is one microsecond, the unit every
+ * tick conversion above uses (pspautotests rtc tests); uOFW src/kd/rtc/rtc.c (MIT) reconstructs
+ * this function, marked as matching the firmware's assembly, as returning 1000000. */
+static uint32_t h_RtcGetTickResolution(CpuState *s) { (void)s; return 1000000u; }
 static uint32_t h_LibcTime(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 4u)) return RTC_ILLEGAL_ADDR;
@@ -27834,6 +28042,18 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
 }
 
+/* Imports that stopped titles first in the 2026-10-29 all-games launch sweep, each implemented
+ * from PSP-recorded behaviour (the evidence is at each handler). One helper for both
+ * sr_hle_init() branches, so the executable harness dispatches the production mapping. */
+static void hle_register_launch_sweep_blocker_handlers(void) {
+    sr_hle_register(0x27c4594c, "sceRtcGetTime_t", h_RtcGetTime_t);
+    sr_hle_register(0x42842c77, "sceRtcTickAddYears", h_RtcTickAddYears);
+    sr_hle_register(0xc41c2853, "sceRtcGetTickResolution", h_RtcGetTickResolution);
+    sr_hle_register(0xd13bde95, "sceKernelCheckThreadStack", h_CheckThreadStack);
+    sr_hle_register(0x27f6e642, "sceFontGetNumFontList", h_FontGetNumFontList);
+    sr_hle_register(0xbc75d85b, "sceFontGetFontList", h_FontGetFontList);
+}
+
 /* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
  * profiler registers, or NULL when no profiler data is available. This runtime models no
  * profiler, so the honest answer is always NULL, which is what firmware with profiling off
@@ -27894,8 +28114,11 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0x328f9e52u, "sceKernelDeleteVTimer", h_DeleteVTimer);
     sr_hle_register(0xb3a59970u, "sceKernelGetVTimerBase", h_GetVTimerBase);
     sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
-    /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
-    sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    /* VTimer time: the Wide getter and both setters (pspautotests-recorded; see their header). */
+    sr_hle_register(0xc0b3ffd2u, "sceKernelGetVTimerTimeWide", h_GetVTimerTimeWide);
+    sr_hle_register(0x542ad630u, "sceKernelSetVTimerTime", h_SetVTimerTime);
+    sr_hle_register(0xfb6425c3u, "sceKernelSetVTimerTimeWide", h_SetVTimerTimeWide);
+    /* VTimer handler family (issue #325). */
     sr_hle_register(0xd8b299aeu, "sceKernelSetVTimerHandler", h_SetVTimerHandler);
     sr_hle_register(0x53b00e9au, "sceKernelSetVTimerHandlerWide", h_SetVTimerHandlerWide);
     sr_hle_register(0xd2d615efu, "sceKernelCancelVTimerHandler", h_CancelVTimerHandler);
@@ -28075,6 +28298,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_launch_sweep_blocker_handlers();
     hle_register_sysreg_handlers();
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
@@ -28106,6 +28330,7 @@ void sr_hle_init(void) {
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_launch_sweep_blocker_handlers();
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
     hle_register_partition_savedata_handlers();
