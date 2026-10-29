@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 103)
+        self.assertEqual(len(routes), 104)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 119}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3109,6 +3109,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VFPU-FORMS-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
+                # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
+                "PSP-TRACE-001",
             },
         )
         self.assertEqual(

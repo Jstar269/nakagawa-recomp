@@ -49,7 +49,7 @@ static void seed_game_entry(NkGameEntry *entry, const char *disc_id, const char 
 static void test_nk_library_init_and_null_guards(void) {
     printf("[NATIVE_TEST] Testing nk_library init and NULL guards...\n");
 
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     memset(&lib, 0xFF, sizeof(lib));
     nk_library_init(&lib);
 
@@ -90,7 +90,7 @@ static void test_nk_library_init_and_null_guards(void) {
 static void test_nk_library_add_update_remove_bounds(void) {
     printf("[NATIVE_TEST] Testing nk_library add, update, remove, and bounds...\n");
 
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
 
     NkGameEntry g1, g2;
@@ -166,7 +166,7 @@ static void test_nk_library_save_load_escaping_and_samples(void) {
     snprintf(file_path, sizeof(file_path), "%s%clibrary_test.json",
              test_root, nk_platform_path_separator());
 
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
 
     NkGameEntry g1, g2;
@@ -194,7 +194,7 @@ static void test_nk_library_save_load_escaping_and_samples(void) {
     assert(nk_library_save(&lib, file_path) == NK_OK);
     assert(nk_platform_file_exists(file_path));
 
-    NkLibrary loaded;
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&loaded);
     assert(nk_library_load(&loaded, file_path) == NK_OK);
 
@@ -223,6 +223,66 @@ static void test_nk_library_save_load_escaping_and_samples(void) {
     assert(nk_library_find_by_disc_id(&loaded, "TEST00002") == NULL);
 }
 
+/* A full library (NK_MAX_GAMES titles, the tools' record limit) saves and
+   loads whole; one title more is refused, never truncated. The player held 64
+   titles before, and the first library of a whole collection loaded as empty. */
+static void test_nk_library_full_library_round_trip(void) {
+    printf("[NATIVE_TEST] Testing a full library round trip...\n");
+
+    const char *test_root = native_test_get_root();
+    char file_path[NATIVE_TEST_PATH_MAX];
+    snprintf(file_path, sizeof(file_path), "%s%cfull_library_test.json",
+             test_root, nk_platform_path_separator());
+
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
+    nk_library_init(&lib);
+    for (int i = 0; i < NK_MAX_GAMES; i++) {
+        char disc_id[NK_MAX_DISC_ID_LEN];
+        NkGameEntry entry;
+        snprintf(disc_id, sizeof(disc_id), "FULL%05d", i);
+        seed_game_entry(&entry, disc_id, "A synthetic title with a long enough name");
+        snprintf(entry.iso_path, sizeof(entry.iso_path),
+                 "D:\\PSP collection\\a folder name of typical length\\disc-%05d.iso", i);
+        snprintf(entry.prepared_root, sizeof(entry.prepared_root),
+                 "D:\\Nakagawa data\\prepared\\%s", disc_id);
+        snprintf(entry.title_id, sizeof(entry.title_id), "experimental-full%05d", i);
+        assert(nk_library_add_or_update(&lib, &entry) == NK_OK);
+    }
+    assert(nk_library_save(&lib, file_path) == NK_OK);
+
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
+    assert(nk_library_load(&loaded, file_path) == NK_OK);
+    assert(nk_library_count(&loaded) == NK_MAX_GAMES);
+    const NkGameEntry *last = nk_library_get(&loaded, NK_MAX_GAMES - 1);
+    assert(last != NULL);
+    assert(strcmp(last->disc_id, lib.entries[NK_MAX_GAMES - 1].disc_id) == 0);
+    assert(strcmp(last->iso_path, lib.entries[NK_MAX_GAMES - 1].iso_path) == 0);
+    assert(strcmp(last->title_id, lib.entries[NK_MAX_GAMES - 1].title_id) == 0);
+
+    /* One record over the limit: the load fails and hands back no titles. */
+    size_t capacity = (size_t)(NK_MAX_GAMES + 1) * 32u + 64u;
+    char *over = (char *)malloc(capacity);
+    assert(over != NULL);
+    size_t used = (size_t)snprintf(over, capacity, "{\"schema_version\": 1, \"games\": [");
+    for (int i = 0; i <= NK_MAX_GAMES; i++) {
+        used += (size_t)snprintf(over + used, capacity - used, "%s{\"disc_id\": \"OVER%05d\"}",
+                                 i ? "," : "", i);
+    }
+    used += (size_t)snprintf(over + used, capacity - used, "]}");
+    assert(used < capacity);
+    FILE *f = fopen(file_path, "wb");
+    assert(f != NULL);
+    assert(fwrite(over, 1, used, f) == used);
+    fclose(f);
+    free(over);
+    char bak_path[NATIVE_TEST_PATH_MAX + 8];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", file_path);
+    remove(bak_path);
+    assert(nk_library_load(&loaded, file_path) == NK_ERROR_GENERIC);
+    assert(nk_library_count(&loaded) == 0);
+    remove(file_path);
+}
+
 static void test_nk_library_null_path_default_routing(void) {
     printf("[NATIVE_TEST] Testing nk_library load/save default path routing (file_path == NULL)...\n");
 
@@ -240,7 +300,7 @@ static void test_nk_library_null_path_default_routing(void) {
     snprintf(bak_file, sizeof(bak_file), "%s.bak", expected_default_file);
     remove(bak_file);
 
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
 
     /* 1. Loading with file_path == NULL on non-existent file returns NK_OK with empty library */
@@ -256,7 +316,7 @@ static void test_nk_library_null_path_default_routing(void) {
     assert(nk_platform_file_exists(expected_default_file));
 
     /* 3. Re-load with file_path == NULL and verify entry */
-    NkLibrary reloaded;
+    static NkLibrary reloaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&reloaded);
     assert(nk_library_load(&reloaded, NULL) == NK_OK);
     assert(nk_library_count(&reloaded) == 1);
@@ -283,7 +343,7 @@ static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     snprintf(bak_path, sizeof(bak_path), "%s%crecovery_lib.json.bak",
              test_root, nk_platform_path_separator());
 
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
 
     NkGameEntry g1;
@@ -305,7 +365,7 @@ static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     fputs("{ \"schema_version\": 1, \"games\": [ corrupt_json ", f);
     fclose(f);
 
-    NkLibrary loaded;
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&loaded);
     assert(nk_library_load(&loaded, primary_path) == NK_OK);
     assert(nk_library_count(&loaded) == 1);
@@ -417,6 +477,7 @@ int main(void) {
     test_nk_library_init_and_null_guards();
     test_nk_library_add_update_remove_bounds();
     test_nk_library_save_load_escaping_and_samples();
+    test_nk_library_full_library_round_trip();
     test_nk_library_null_path_default_routing();
     test_nk_library_corrupt_load_and_backup_recovery();
     test_nk_font_classify_verdict();
@@ -525,7 +586,7 @@ int main(void) {
     assert(!nk_title_catalog_find_by_id("private-local-test-v1", &missing));
 
     printf("[NATIVE_TEST] Verifying library in-memory operations...\n");
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
     assert(nk_library_count(&lib) == 0);
 

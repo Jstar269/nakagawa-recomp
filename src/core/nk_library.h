@@ -11,6 +11,11 @@
 extern "C" {
 #endif
 
+/* The largest library.json either reader accepts: room for NK_MAX_GAMES
+   records as nk_library_save writes them. tools/nk_core/library.py holds the
+   same limit (MAX_LIBRARY_JSON_BYTES). */
+#define NK_LIBRARY_MAX_BYTES (16L * 1024L * 1024L)
+
 typedef struct {
     NkGameEntry entries[NK_MAX_GAMES];
     int count;
