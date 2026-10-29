@@ -473,3 +473,34 @@ class TestReportValidator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimingOnlyWorkloadTests(unittest.TestCase):
+    """The platform ladder clears SR_*, so its benchmark runs can never write a perf summary (#317)."""
+
+    def _run(self, name: str) -> dict:
+        import run_perf_benchmarks
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="built and ran\n")
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(run_perf_benchmarks.subprocess, "run", return_value=done):
+            return run_perf_benchmarks._run_one("make", sys.executable, name, (name,), Path(temp),
+                                                True, "build/perf-benchmark")
+
+    def test_a_ladder_workload_without_a_summary_is_timed_not_failed(self) -> None:
+        for name in ("platform-ladder-gap", "platform-ladder-sched", "platform-ladder-fs"):
+            record = self._run(name)
+            self.assertEqual(record["status"], "PASS", name)
+            self.assertIsNone(record["summary"])
+            self.assertIn("SR_* namespace rule", record["note"])
+
+    def test_any_other_workload_without_a_summary_still_fails(self) -> None:
+        record = self._run("production-smoke-gap")
+        self.assertEqual(record["status"], "FAIL")
+        self.assertIn("SR_PERF summary was not produced", record["output"])
+        self.assertNotIn("note", record)
+
+    def test_every_timing_only_workload_is_a_real_ladder_workload(self) -> None:
+        import run_perf_benchmarks
+        names = {name for name, _targets in run_perf_benchmarks.WORKLOADS}
+        self.assertTrue(run_perf_benchmarks.TIMING_ONLY <= names)
+        self.assertTrue(all(name.startswith("platform-ladder-") for name in run_perf_benchmarks.TIMING_ONLY))
