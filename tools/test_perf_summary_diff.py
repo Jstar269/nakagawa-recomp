@@ -312,7 +312,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
             self.skipTest("gcc is not available")
         names = ["queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
                  "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps",
-                 "upload_ring_fallbacks"]
+                 "upload_ring_fallbacks", "snapshot_copy_px"]
         with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "gpu_replay_harness.c"
@@ -332,6 +332,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
                 "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 107;\n"
                 "    counts[SR_PERF_GPU_DRAWS] = 3;\n"
                 "    counts[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = 2;\n"
+                "    counts[SR_PERF_GPU_SNAPSHOT_COPY_PX] = 4096;\n"
                 "    sr_perf_shutdown();\n"
                 "    return 0;\n"
                 "}\n",
@@ -358,7 +359,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
             expected = {"queue_submits": 7, "batches": 0, "draws": 3, "snapshot_requests": 0,
                         "snapshot_copies": 0, "upload_ring_reservations": 0,
                         "upload_ring_bytes": 0, "upload_ring_wraps": 0,
-                        "upload_ring_fallbacks": 2}
+                        "upload_ring_fallbacks": 2, "snapshot_copy_px": 4096}
             for name in names:
                 column = f"gpu_replay_{name}"
                 self.assertIn(column, header)
