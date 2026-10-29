@@ -269,6 +269,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
 | `ci_test_shards.py` | Deterministic cost-weighted partition of the Python test modules into CI shards; weights in `tools/ci_test_weights.json`. |
+| `ci_trust_verdict.py` | Post the `Trusted CI verdict` status for a pull-request head: judges required CI jobs by producer and refuses unapproved CI changes (#373). |
 | `portability_inventory.py` | Public-safe portability inventory of the native runtime and build. |
 | `tree_lint.py` | Report tracked files that no other tracked file names; `--check` enforces the reference ratchet. |
 | `purity_gate.py` | Fail on PSP user-RAM address literals in `src/rt/` outside title config, self-tests, NIDs and its reviewed allowlist. |
@@ -549,6 +550,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_ci_paths.py` | Path-gated CI classification tests. |
 | `test_ci_required.py` | Required-CI status evaluation tests. |
 | `test_ci_test_shards.py` | CI test-shard planner: exactly-once coverage, separation and workflow wiring. |
+| `test_ci_trust_verdict.py` | Trusted CI verdict canaries: same-name jobs, deleted jobs, duplicate contexts, `exit 0` swaps, stale heads, forks and unapproved CI-tool edits. |
 | `test_compiler_compare.py` | The compiler comparison must not publish a timing its semantic veto did not earn. |
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
