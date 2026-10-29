@@ -737,7 +737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dad433c090b0f8f1da2256f5edc8d397d351452c5f2abd55388ab0db1b98f442"
+      "sha256": "ceb8e276d100b1bb9873ea7f007a46b05806f1db9940b7ae6c5df6d68ff582b2"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -12447,7 +12447,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dc55fa3b4540a36c7d329a6e4d3ed33dafef7ce8fab050f65939e1256b115c1b"
+      "sha256": "a51c0ae9f82715d2c9f50ef7db7173b4f33e5aacc50a3fc53e5724ea061e2628"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -12701,7 +12701,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd0d12ff1882e36557b69b0bf091d8600363577fa0741aec641b214607d13ba4"
+      "sha256": "fa57203355c9b3aac1508e2d4ff9f479f6c802e302b1a8a8b9547e4a13beae55"
     },
     {
       "path": "tools/enhancement_package.py",
@@ -13294,7 +13294,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f18c99c82aed8a3f2a3004a6ed11c8e44618ce9adc039f1f089349fa164094f"
+      "sha256": "c95eea6a37faaa60dcda438f16554e383a7433dda1dc12ef28c75d9066bff0c8"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -14233,7 +14233,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e0545951535be031629fd99e4640feb556800cd67ed33c6d27282bafa8718f86"
+      "sha256": "aa78aec9c21b3a92fcb0783b0980562492514c2ed754184321366e8a72eb96e8"
     },
     {
       "path": "tools/test_app_icon.py",
@@ -14750,7 +14750,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d472ba80bec5304b42acae5f283c9a14d27257dc472d9ca41b6971596c43edb"
+      "sha256": "a4c7d80d8e4ce6a6b766d936e52c3be29c48c9281c6b52e6cca5f663c2304314"
     },
     {
       "path": "tools/test_enhancement_package.py",
@@ -15747,7 +15747,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc296161966222cda654685a164188f8cc74e612a02db04968057cf8a5ea8545"
+      "sha256": "23a3a151d0bdf1a2eb09ada723905e4158706e8082544fdfdce5c68d24fe4c1d"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -16900,7 +16900,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d80d1086df8d9714668aa4d0a2009ba9ceb8decdf7b13220133876f7b4f4146e"
+      "sha256": "18e26e14466515ffce7c17874507733c3c47e60dcf5a656030463c6827b98385"
     },
     {
       "path": "tools/title_manager_plan.ps1",
