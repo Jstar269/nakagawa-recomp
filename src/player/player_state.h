@@ -766,6 +766,10 @@ int player_app_ttf_library_candidates(const char *exe_dir,
 /* True when a disc directory entry name is safe to write under the private
  * per-title folder (the tooling's FILENAME_RE and WINDOWS_RESERVED rules). */
 bool player_module_name_is_safe(const char *name);
+/* The path-qualified host name of a disc module whose file name another file in
+ * the module tree shares (see player_state.c). False when it does not fit. */
+bool player_module_path_key(const char *rel_path, const char *disc_name,
+                            char *out, size_t out_size);
 bool player_game_is_showcase(const GameRecord *game);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
 bool player_app_title_profile_refusal_for_disc(

@@ -27,7 +27,9 @@ PVD_SECTOR = 16
 ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
 MAX_DIRECTORY_BYTES = 512 * 1024
-MAX_DIRECTORY_ENTRIES = 4096
+# A directory record is at least 34 bytes, so MAX_DIRECTORY_BYTES is also the bound on
+# how many entries one directory can list; no separate entry cap applies (a disc's
+# speech or data folder can list several thousand files).
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
@@ -1143,10 +1145,11 @@ def _read_iso_directory_entries(
         offset += record_size
         if raw_name in (b"\0", b"\1"):
             continue
-        try:
-            name = raw_name.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise IsoInspectionError("ISO directory identifier is not ASCII") from exc
+        # The PSP's file system takes identifier bytes as they are, and discs carry
+        # Shift-JIS names. A byte outside ASCII is kept as a lone surrogate
+        # (surrogateescape), so the name round-trips to its disc bytes, folds only in
+        # ASCII, and can never pass the portable filename rule a host path needs.
+        name = raw_name.decode("ascii", "surrogateescape")
         # ISO9660 file versions are metadata, not part of the guest filename.
         name = _iso_name_without_version(name)
         if not name or name in {".", ".."}:
@@ -1159,8 +1162,6 @@ def _read_iso_directory_entries(
             is_directory=is_directory,
             multi_extent=bool(record[25] & 0x80),
         ))
-        if len(entries) > MAX_DIRECTORY_ENTRIES:
-            raise IsoInspectionError("ISO directory exceeds the supported entry count")
     return entries
 
 
@@ -1460,6 +1461,62 @@ def walk_disc_module_entries(
             yield directory, entry
 
 
+def _fnv1a32(data: bytes) -> int:
+    value = 0x811C9DC5
+    for byte in data:
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+def _native_component(name: str) -> str:
+    """A path component as the native lister spells it: one trailing dot dropped."""
+    return name[:-1] if name.endswith(".") else name
+
+
+def disc_module_path_key(member: Sequence[str]) -> str:
+    """The path-qualified host name of the disc file at ``member``.
+
+    ``<stem>.<8 hex digits><suffix>``: the digits are the 32-bit FNV-1a hash of the
+    member path's bytes ('/'-joined, ASCII letters upper-cased, because the PSP's
+    file system matches paths without regard to case), so the name stays readable,
+    keeps its suffix and differs for every disc folder. Mirrored by
+    player_module_path_key in src/player/player_state.c.
+    """
+    path_bytes = "/".join(_native_component(part) for part in member).encode(
+        "ascii", "surrogateescape").upper()
+    digest = f"{_fnv1a32(path_bytes):08x}"
+    name = member[-1]
+    stem, dot, suffix = name.rpartition(".")
+    if not dot or not stem:
+        return f"{name}.{digest}"
+    return f"{stem}.{digest}.{suffix}"
+
+
+def disc_module_host_names(
+    walked: Sequence[tuple[tuple[str, ...], IsoDirectoryEntry]],
+) -> dict[tuple[str, ...], str]:
+    """The host file name of every file in a walked module tree, by member path.
+
+    A module's identity is its disc path; the per-title folders key its host copy by
+    file name. A file whose name (ASCII case-insensitively) no other file in the walked
+    tree carries keeps that name, so a disc without such duplicates names every copy
+    exactly as before. Every file sharing a name with another gets its path-qualified
+    name (disc_module_path_key), so two disc folders holding one file name never meet
+    in a host folder. The rule reads only the tree, never the files' contents, so the
+    player's disc check, the decryption step and the import name each copy the same.
+    """
+    counts: dict[str, int] = {}
+    for _directory, entry in walked:
+        folded = _native_component(entry.name).casefold()
+        counts[folded] = counts.get(folded, 0) + 1
+    names: dict[tuple[str, ...], str] = {}
+    for directory, entry in walked:
+        member = directory + (entry.name,)
+        unique = counts[_native_component(entry.name).casefold()] == 1
+        names[member] = entry.name if unique else disc_module_path_key(member)
+    return names
+
+
 def _prx_container_header_supported(header: bytes) -> bool:
     """The bounded ``~PSP`` shape the container decoder can accept."""
     if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
@@ -1482,12 +1539,15 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
     file_size = path.stat().st_size
     candidates: list[dict] = []
     seen_names: dict[str, str] = {}
+    walked = list(walk_disc_module_entries(path))
+    host_names = disc_module_host_names(walked)
     with path.open("rb") as stream:
-        for directory, entry in walk_disc_module_entries(path):
-            name = entry.name
-            if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
-                    name.casefold() in _EXECUTABLE_FILENAMES:
+        for directory, entry in walked:
+            if Path(entry.name).suffix.casefold() not in _MODULE_SUFFIXES or \
+                    entry.name.casefold() in _EXECUTABLE_FILENAMES:
                 continue
+            # The host name keys the module's copy in the per-title folders.
+            name = host_names[directory + (entry.name,)]
             if not title_manifest.FILENAME_RE.fullmatch(name) or \
                     name.endswith(".") or \
                     name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
@@ -1517,21 +1577,22 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 kind = "encrypted"
             else:
                 continue
-            member_path = "/".join(directory + (name,))
+            member_path = "/".join(directory + (entry.name,))
             folded_name = name.casefold()
             prior_path = seen_names.get(folded_name)
             if prior_path is not None:
+                # Only a path-qualified name that equals another file's own name (or
+                # a 32-bit hash collision) gets here: the copies would share one file.
                 raise IsoInspectionError(
-                    "DUPLICATE_DISC_MODULE_BASENAME: module filename "
-                    f"{name!r} occurs at {prior_path} and {member_path}; "
-                    "the decrypted module folder is keyed by filename; "
-                    "path-aware duplicate handling is in the works."
+                    "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                    f"{name!r} stands for both {prior_path} and {member_path}; "
+                    "their copies would share one file in the per-title folder."
                 )
             seen_names[folded_name] = member_path
             candidates.append({
                 "name": name,
                 "names": (name,),
-                "members": (directory + (name,),),
+                "members": (directory + (entry.name,),),
                 "directory": directory,
                 "kind": kind,
             })

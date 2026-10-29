@@ -88,6 +88,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     encrypted_executable_message,
     inspect_compatibility_preflight,
     plan_guest_module_layout,
+    disc_module_host_names,
     walk_disc_module_entries,
     write_experimental_profile,
 )
@@ -554,22 +555,30 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     file_size = iso_path.stat().st_size
     candidates: list[dict] = []
     selected_name = Path(selected).name.casefold()
-    for directory, entry in walk_disc_module_entries(iso_path):
+    walked = list(walk_disc_module_entries(iso_path))
+    # A module is identified by its disc path; its host name keys its copies in the
+    # per-title folders and stays unique however many disc folders share a file name.
+    host_names = disc_module_host_names(walked)
+    for directory, entry in walked:
+        host_name = host_names[directory + (entry.name,)]
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
             # Any other file is a candidate only when it is a code overlay, found by
             # its magic whatever its name (analyze.code_overlay_layout).
-            overlay = _iso_code_overlay_candidate(iso_path, file_size, directory, entry)
+            overlay = _iso_code_overlay_candidate(
+                iso_path, file_size, directory, entry, host_name
+            )
             if overlay is not None:
                 candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
         reason: str | None = None
-        if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
-                entry.name.endswith(".") or \
-                entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+        if not _disc_module_name_ok(host_name):
             kind = "unsupported"
             reason = "its file name is not a supported module name"
+        elif not _disc_member_is_ascii(directory):
+            kind = "unsupported"
+            reason = "its disc folder name is not ASCII, so its disc path has no manifest spelling"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
             reason = "it is multi-extent, empty, or larger than the module size limit"
@@ -612,7 +621,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     kind = "unsupported"
                     reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
-            "name": entry.name,
+            "name": host_name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
@@ -628,12 +637,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
-        member_path = "/".join(candidate["directory"] + (candidate["name"],))
+        member_path = _candidate_member_path(candidate)
         if folded in names:
+            # Only a path-qualified name equal to another file's own name (or a
+            # 32-bit hash collision) gets here: the copies would share one file.
             raise PackageBuildError(
-                "DUPLICATE_DISC_MODULE_BASENAME: module filename "
-                f"{candidate['name']!r} occurs at {names[folded]} and "
-                f"{member_path}; automatic intake is in the works."
+                "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                f"{candidate['name']!r} stands for both {names[folded]} and "
+                f"{member_path}; their copies would share one file in the per-title folder."
             )
         names[folded] = member_path
     staged_size = sum(
@@ -649,8 +660,19 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
 _PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
 
 
+def _candidate_member_path(candidate: dict) -> str:
+    """A discovered candidate's disc path (its identity), '/'-joined."""
+    return "/".join(candidate["directory"] + (candidate["entry"].name,))
+
+
+def _disc_member_is_ascii(components: tuple[str, ...]) -> bool:
+    """Whether every component of a disc path is ASCII (the manifest spells it as text)."""
+    return all(component.isascii() for component in components)
+
+
 def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
-                                entry: IsoDirectoryEntry) -> dict | None:
+                                entry: IsoDirectoryEntry,
+                                host_name: str | None = None) -> dict | None:
     """The candidate for a code overlay among a title's other disc files, else None.
 
     A game reads a code overlay into memory itself and announces it with an
@@ -663,15 +685,19 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
         if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
             return None
         data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    name = host_name or entry.name
     kind, reason = "code-overlay", None
-    if not _disc_module_name_ok(entry.name):
+    if not _disc_module_name_ok(name):
         kind, reason = "unsupported", "its file name is not a supported module name"
+    elif not _disc_member_is_ascii(directory):
+        kind, reason = ("unsupported", "its disc folder name is not ASCII, so its disc path "
+                        "has no manifest spelling")
     else:
         try:
             code_overlay_layout(data)
         except ValueError as exc:
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
-    return {"name": entry.name, "directory": directory, "entry": entry,
+    return {"name": name, "directory": directory, "entry": entry,
             "kind": kind, "reason": reason}
 
 
@@ -850,7 +876,7 @@ def _declare_experimental_disc_modules(
             (
                 candidate["name"],
                 module_dir / candidate["name"],
-                "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
+                "disc0:/" + _candidate_member_path(candidate),
             )
             for candidate, _source, _folder_copy in module_sources
         ]

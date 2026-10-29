@@ -4671,9 +4671,31 @@ int main(int argc, char **argv) {
         snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-duplicate.iso",
                  preflight_root, nk_platform_path_separator());
         write_module_scan_iso(module_iso_path, 0, true, 0, false);
-        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
-                                    "DUPLICATE_DISC_MODULE_BASENAME");
+        /* One file name in two disc folders: each module gets its path-qualified
+         * host name (the tools compute the same names), so the scan goes on to
+         * the modules themselves -- here synthetic containers that do not
+         * decrypt -- instead of stopping at the shared name. */
+        assert(strlen(module_iso_path) < sizeof(wiz->inspecting_game.iso_path));
+        memcpy(wiz->inspecting_game.iso_path, module_iso_path, strlen(module_iso_path) + 1);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+        assert(check != NULL && check->status != PREFLIGHT_OK);
+        assert(strstr(check->message, "DUPLICATE_DISC_MODULE_BASENAME") == NULL);
+        assert(strstr(check->message, "0 of 2 ready") != NULL);
+        assert(strstr(check->message, "shared.167b7754.prx") != NULL);
         assert(remove(module_iso_path) == 0);
+        {
+            char key[256];
+            assert(player_module_path_key("PSP_GAME/USRDIR/SHARED.PRX", "SHARED.PRX",
+                                          key, sizeof(key)));
+            assert(strcmp(key, "SHARED.bf26060f.PRX") == 0);
+            assert(player_module_path_key("PSP_GAME/USRDIR/data/pspsys/module/libadler.prx",
+                                          "libadler.prx", key, sizeof(key)));
+            assert(strcmp(key, "libadler.1951c218.prx") == 0);
+            assert(player_module_path_key("PSP_GAME/USRDIR/OVL", "OVL", key, sizeof(key)));
+            assert(strcmp(key, "OVL.d0b7d601") == 0);
+            assert(!player_module_path_key("PSP_GAME/USRDIR/OVL", "OVL", key, 8));
+        }
 
         snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-candidate-limit.iso",
                  preflight_root, nk_platform_path_separator());

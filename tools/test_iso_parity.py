@@ -340,7 +340,7 @@ def create_test_iso_with_module_tree(
         for name, _child_path, is_directory in sorted(
             children, key=lambda child: child[0].casefold()
         ):
-            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            encoded = name.encode("latin-1") if is_directory else name.encode("latin-1") + b";1"
             placeholder.append(_dir_record(encoded, 1, sector_size, is_directory))
         directory_sizes[directory] = len(pack_records(placeholder))
 
@@ -372,7 +372,7 @@ def create_test_iso_with_module_tree(
         for name, child_path, is_directory in sorted(
             children, key=lambda child: child[0].casefold()
         ):
-            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            encoded = name.encode("latin-1") if is_directory else name.encode("latin-1") + b";1"
             records.append(_dir_record(
                 encoded,
                 directory_lbas[child_path] if is_directory else file_lbas[child_path],
@@ -986,7 +986,7 @@ int main(int argc, char **argv) {{
     ) -> tuple[int, list[str]]:
         result = subprocess.run(
             [str(executable or self.exe_path), "module_walk", str(iso_path)],
-            capture_output=True, text=True, encoding="utf-8", errors="strict",
+            capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         status = None
@@ -1349,33 +1349,122 @@ int main(int argc, char **argv) {{
         self.assertIsNotNone(output)
         self.assertEqual((output / "manifest-sdk.prx").read_bytes(), module_bytes)
 
-    def test_module_discovery_rejects_duplicate_basenames_with_both_paths(self) -> None:
+    def test_one_module_name_in_two_disc_folders_gets_path_qualified_host_names(self) -> None:
+        # A module is identified by its disc path. Two folders holding one file name
+        # (ASCII case-insensitively) each get a path-qualified host name, so their
+        # copies never meet in the per-title folders, while a name no other file
+        # carries keeps its own spelling.
         iso_file = self.temp_dir / "duplicate-module-name.iso"
         first = "PSP_GAME/USRDIR/module/shared.prx"
         second = "PSP_GAME/USRDIR/BIN/SHARED.PRX"
+        unique = "PSP_GAME/USRDIR/module/unique.prx"
         create_test_iso_with_module_tree(iso_file, {
             first: build_psp_container(), second: build_psp_container(),
+            unique: build_psp_container(),
         })
-        with self.assertRaisesRegex(
-            IsoInspectionError,
-            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
-        ):
-            list_disc_module_candidates(iso_file)
-        with self.assertRaisesRegex(
-            nk_cli.PackageBuildError,
-            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
-        ):
-            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        first_key = iso_inspect.disc_module_path_key(tuple(first.split("/")))
+        second_key = iso_inspect.disc_module_path_key(tuple(second.split("/")))
+        self.assertRegex(first_key, r"^shared\.[0-9a-f]{8}\.prx$")
+        self.assertRegex(second_key, r"^SHARED\.[0-9a-f]{8}\.PRX$")
+        self.assertNotEqual(first_key.casefold(), second_key.casefold())
+        # The PSP matches paths without regard to case; so does the key.
+        self.assertEqual(
+            iso_inspect.disc_module_path_key(tuple(first.upper().split("/"))).casefold(),
+            first_key.casefold(),
+        )
+
+        expected = {tuple(first.split("/")): first_key,
+                    tuple(second.split("/")): second_key,
+                    tuple(unique.split("/")): "unique.prx"}
+        candidates = list_disc_module_candidates(iso_file)
+        self.assertEqual(
+            {candidate["members"][0]: candidate["name"] for candidate in candidates},
+            expected,
+        )
+        package_candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual(
+            {nk_cli._candidate_member_path(candidate): candidate["name"]
+             for candidate in package_candidates},
+            {"/".join(member): name for member, name in expected.items()},
+        )
         report = inspect_compatibility_preflight(
             iso_file, metadata=inspect_iso(iso_file), runtime_root=self.temp_dir,
         )
         module_check = next(
             check for check in report["checks"] if check["code"] == "GUEST_MODULES"
         )
-        self.assertEqual(module_check["status"], "UNSUPPORTED")
-        self.assertIn(first, module_check["message"])
-        self.assertIn(second, module_check["message"])
-        self.assertEqual(module_check["issues"], [308])
+        self.assertNotIn("DUPLICATE_DISC_MODULE_BASENAME", module_check["message"])
+        self.assertIn("0 of 3 ready", module_check["message"])
+
+    def test_path_qualified_host_name_equal_to_a_real_name_is_refused(self) -> None:
+        # The copies would share one host file: a named refusal, never a silent pick.
+        first = ("PSP_GAME", "USRDIR", "A", "lib.prx")
+        clash = iso_inspect.disc_module_path_key(first)
+        iso_file = self.temp_dir / "module-host-name-clash.iso"
+        create_test_iso_with_module_tree(iso_file, {
+            "/".join(first): build_psp_container(),
+            "PSP_GAME/USRDIR/B/lib.prx": build_psp_container(),
+            f"PSP_GAME/USRDIR/C/{clash}": build_psp_container(),
+        })
+        with self.assertRaisesRegex(
+            IsoInspectionError, f"DUPLICATE_DISC_MODULE_BASENAME.*{clash}.*A/lib.prx"
+        ):
+            list_disc_module_candidates(iso_file)
+        with self.assertRaisesRegex(
+            nk_cli.PackageBuildError, f"DUPLICATE_DISC_MODULE_BASENAME.*{clash}"
+        ):
+            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+
+    def test_module_walk_lists_non_ascii_identifiers(self) -> None:
+        # Discs carry Shift-JIS file names; the PSP's file system takes the bytes as
+        # they are. The walk lists them (the native walker always has) and never
+        # turns one into a module candidate or a host name.
+        iso_file = self.temp_dir / "non-ascii-identifier.iso"
+        module = "PSP_GAME/USRDIR/module/sdk.prx"
+        create_test_iso_with_module_tree(iso_file, {
+            module: build_psp_container(),
+            "PSP_GAME/USRDIR/demo/fra/\x95\xe2\x91\xab.txt": b"text",
+            "PSP_GAME/USRDIR/demo/\x8f\xda/inner.prx": build_psp_container(),
+        })
+        walked = {
+            "/".join(directory + (entry.name,)).encode("ascii", "surrogateescape")
+            for directory, entry in iso_inspect.walk_disc_module_entries(iso_file)
+        }
+        self.assertIn(b"PSP_GAME/USRDIR/demo/fra/\x95\xe2\x91\xab.txt", walked)
+        self.assertEqual(
+            {candidate["members"][0] for candidate in list_disc_module_candidates(iso_file)},
+            {tuple(module.split("/")), ("PSP_GAME", "USRDIR", "demo", "\udc8f\udcda",
+                                        "inner.prx")},
+        )
+        package = {
+            nk_cli._candidate_member_path(candidate): candidate
+            for candidate in nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        }
+        self.assertEqual(package[module]["kind"], "encrypted-prx")
+        inner = package["PSP_GAME/USRDIR/demo/\udc8f\udcda/inner.prx"]
+        self.assertEqual(inner["kind"], "unsupported")
+        self.assertIn("not ASCII", inner["reason"])
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertIn(module, native_paths)
+
+    def test_module_walk_lists_a_directory_of_thousands_of_entries(self) -> None:
+        # A speech folder of several thousand files is bounded by the directory's
+        # byte size (512 KiB), not by a separate entry count.
+        iso_file = self.temp_dir / "large-module-directory.iso"
+        files = {
+            f"PSP_GAME/USRDIR/DATA/SPEECH/line_{index:05}.at3": b"" for index in range(4200)
+        }
+        files["PSP_GAME/USRDIR/module/sdk.prx"] = build_psp_container()
+        create_test_iso_with_module_tree(iso_file, files)
+        listed = iso_inspect.list_iso_directory(
+            iso_file, ("PSP_GAME", "USRDIR", "DATA", "SPEECH")
+        )
+        self.assertEqual(len(listed), 4200)
+        self.assertEqual(
+            [candidate["name"] for candidate in list_disc_module_candidates(iso_file)],
+            ["sdk.prx"],
+        )
 
     def test_nonexperimental_bringup_keeps_module_boundary_detail_and_issue(self) -> None:
         failure, issues, detail = nk_cli._bringup_import_failure(

@@ -5527,11 +5527,13 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
 #define PLAYER_MAX_GUEST_MODULES 256
 
 typedef struct {
-    char name[256];
-    char rel_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+    char name[256];       /* host name: keys the copy in the per-title folder */
+    char disc_name[256];  /* the file's own name on the disc */
+    char rel_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];  /* identity: its disc path */
     uint32_t lba;
     uint32_t size;
     bool encrypted;
+    bool shared_name;     /* another file in the module tree carries disc_name */
 } PlayerModuleCandidate;
 
 typedef enum {
@@ -5664,17 +5666,6 @@ static bool player_scan_module_entry(const char *member_path,
         return true;
     }
 
-    for (size_t i = 0; i < context->count; i++) {
-        if (player_name_equals_ignore_case(context->modules[i].name,
-                                           entry->name)) {
-            context->status = PLAYER_MODULE_SCAN_DUPLICATE_NAME;
-            snprintf(context->boundary_message, context->boundary_message_size,
-                     "DUPLICATE_DISC_MODULE_BASENAME: %.128s occurs at %.900s "
-                     "and %.900s; automatic module intake is in the works.",
-                     entry->name, context->modules[i].rel_path, member_path);
-            return false;
-        }
-    }
     if (context->count >= context->max_modules) {
         context->status = PLAYER_MODULE_SCAN_CANDIDATE_LIMIT;
         snprintf(context->boundary_message, context->boundary_message_size,
@@ -5687,12 +5678,117 @@ static bool player_scan_module_entry(const char *member_path,
            sizeof(context->modules[context->count]));
     snprintf(context->modules[context->count].name,
              sizeof(context->modules[context->count].name), "%s", entry->name);
+    snprintf(context->modules[context->count].disc_name,
+             sizeof(context->modules[context->count].disc_name), "%s", entry->name);
     snprintf(context->modules[context->count].rel_path,
              sizeof(context->modules[context->count].rel_path), "%s", member_path);
     context->modules[context->count].lba = entry->lba;
     context->modules[context->count].size = entry->size;
     context->modules[context->count].encrypted = encrypted;
     context->count++;
+    return true;
+}
+
+/* Second pass over the module tree: a candidate whose file name another walked
+ * file also carries (ASCII case-insensitively, any folder, any contents) is
+ * marked shared. tools/nk_core/iso_inspect.py disc_module_host_names applies
+ * the same rule. */
+typedef struct {
+    PlayerModuleCandidate *modules;
+    size_t count;
+} PlayerModuleNameShareContext;
+
+static bool player_mark_shared_module_names(const char *member_path,
+                                            const NkIsoDirEntry *entry,
+                                            void *userdata) {
+    PlayerModuleNameShareContext *context = (PlayerModuleNameShareContext *)userdata;
+    for (size_t i = 0; i < context->count; i++) {
+        PlayerModuleCandidate *module = &context->modules[i];
+        if (module->shared_name || strcmp(module->rel_path, member_path) == 0) continue;
+        if (player_name_equals_ignore_case(module->disc_name, entry->name)) {
+            module->shared_name = true;
+        }
+    }
+    return true;
+}
+
+static uint32_t player_fnv1a32_upper(const char *text) {
+    uint32_t value = 0x811c9dc5u;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        unsigned char c = *p;
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        value = (value ^ c) * 0x01000193u;
+    }
+    return value;
+}
+
+/* The path-qualified host name of a module whose file name another disc file
+ * shares: "<stem>.<FNV-1a 32 of the upper-cased disc path, 8 hex>.<suffix>".
+ * Mirrors disc_module_path_key in tools/nk_core/iso_inspect.py. Returns false
+ * when it does not fit `out`. */
+bool player_module_path_key(const char *rel_path, const char *disc_name,
+                            char *out, size_t out_size) {
+    const char *dot = strrchr(disc_name, '.');
+    uint32_t digest = player_fnv1a32_upper(rel_path);
+    int written;
+    if (dot == NULL || dot == disc_name) {
+        written = snprintf(out, out_size, "%s.%08x", disc_name, (unsigned)digest);
+    } else {
+        written = snprintf(out, out_size, "%.*s.%08x%s", (int)(dot - disc_name),
+                           disc_name, (unsigned)digest, dot);
+    }
+    return written > 0 && (size_t)written < out_size;
+}
+
+/* Give every candidate its host name and keep the ones that can name a host
+ * file: a module keeps its own name unless another file in the walked tree
+ * carries it, so two disc folders holding one file name never meet in the
+ * per-title folder. Returns false (with the boundary message) when the tree
+ * cannot be walked again or two host names would still coincide. */
+static bool player_assign_module_host_names(NkIsoReader *reader,
+                                            PlayerModuleCandidate *modules,
+                                            size_t *count, bool *duplicate,
+                                            char *boundary_message,
+                                            size_t boundary_message_size) {
+    PlayerModuleNameShareContext share;
+    size_t kept = 0;
+    *duplicate = false;
+    share.modules = modules;
+    share.count = *count;
+    if (nk_iso_reader_walk_module_tree(reader, player_mark_shared_module_names,
+                                       &share) != NK_ISO_MODULE_WALK_OK) {
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_TREE_INVALID: ISO module directories could "
+                     "not be listed safely.");
+        }
+        return false;
+    }
+    for (size_t i = 0; i < *count; i++) {
+        PlayerModuleCandidate *module = &modules[i];
+        if (module->shared_name &&
+            (!player_module_path_key(module->rel_path, module->disc_name,
+                                     module->name, sizeof(module->name)) ||
+             !player_module_name_is_safe(module->name))) {
+            continue;  /* like an unusable disc name: not a candidate */
+        }
+        for (size_t j = 0; j < kept; j++) {
+            if (player_name_equals_ignore_case(modules[j].name, module->name)) {
+                *duplicate = true;
+                if (boundary_message && boundary_message_size) {
+                    snprintf(boundary_message, boundary_message_size,
+                             "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                             "%.200s stands for both %.900s and %.900s; their "
+                             "copies would share one file in the per-title folder.",
+                             module->name, modules[j].rel_path, module->rel_path);
+                }
+                return false;
+            }
+        }
+        if (kept != i) modules[kept] = *module;
+        kept++;
+    }
+    *count = kept;
     return true;
 }
 
@@ -5722,6 +5818,16 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     context.boundary_message_size = boundary_message_size;
     walk_status = nk_iso_reader_walk_module_tree(
         reader, player_scan_module_entry, &context);
+    if (context.status == PLAYER_MODULE_SCAN_OK &&
+        walk_status == NK_ISO_MODULE_WALK_OK) {
+        bool duplicate = false;
+        if (!player_assign_module_host_names(reader, modules, &context.count,
+                                             &duplicate, boundary_message,
+                                             boundary_message_size)) {
+            context.status = duplicate ? PLAYER_MODULE_SCAN_DUPLICATE_NAME
+                                       : PLAYER_MODULE_SCAN_INVALID_TREE;
+        }
+    }
     nk_iso_reader_close(reader);
     if (out_count) *out_count = context.count;
     if (context.status != PLAYER_MODULE_SCAN_OK) return context.status;
