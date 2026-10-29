@@ -515,12 +515,31 @@ bool nk_platform_set_app_data_dir_override(const char *path) {
     return true;
 }
 
+/* With an override, every per-user folder of this process is in it: the data
+   folder is the override itself, and settings, cache, logs and saves are its
+   config, cache, logs and saves folders. A player opened on another data root
+   then never reads or writes the default profile's settings or saves. */
+static bool resolve_override_path(NkPathType type, char sep, char *out_path, size_t max_len) {
+    const char *leaf = NULL;
+    switch (type) {
+        case NK_PATH_DATA:   leaf = NULL; break;
+        case NK_PATH_CONFIG: leaf = "config"; break;
+        case NK_PATH_CACHE:  leaf = "cache"; break;
+        case NK_PATH_LOGS:   leaf = "logs"; break;
+        case NK_PATH_SAVES:  leaf = "saves"; break;
+        default: return false;
+    }
+    int written = leaf
+        ? snprintf(out_path, max_len, "%s%c%s", s_app_data_dir_override, sep, leaf)
+        : snprintf(out_path, max_len, "%s", s_app_data_dir_override);
+    return written > 0 && (size_t)written < max_len;
+}
+
 static bool resolve_windows_path(NkPathType type, char *out_path,
                                  size_t max_len) {
     if (!out_path || max_len == 0) return false;
-    if (type == NK_PATH_DATA && s_app_data_dir_override[0]) {
-        int written = snprintf(out_path, max_len, "%s", s_app_data_dir_override);
-        return written > 0 && (size_t)written < max_len;
+    if (s_app_data_dir_override[0]) {
+        return resolve_override_path(type, '\\', out_path, max_len);
     }
     char base[32768];
     if (!get_windows_data_base(base, sizeof(base))) return false;
