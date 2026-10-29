@@ -410,6 +410,22 @@ bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len) {
     return resolve_posix_path(type, out_path, max_len);
 }
 
+bool nk_platform_get_executable_path(char *out_path, size_t max_len) {
+    if (!out_path || max_len < 2) return false;
+    out_path[0] = '\0';
+#if defined(__linux__)
+    ssize_t length = readlink("/proc/self/exe", out_path, max_len - 1u);
+    if (length <= 0 || (size_t)length >= max_len - 1u) {
+        out_path[0] = '\0';
+        return false;
+    }
+    out_path[length] = '\0';
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
 }

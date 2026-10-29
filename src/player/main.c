@@ -46,8 +46,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <io.h>
-#else
-#include <unistd.h>
 #endif
 
 static const char k_invalid_disc_message[] = "This file isn't a PSP disc image.";
@@ -3956,22 +3954,7 @@ static void player_update_prerequisite_operation(PlayerApp *app) {
  * where this program's own path is unknown, or the start failed. */
 static bool player_start_fresh_copy(void) {
     char exe[NK_MAX_PATH];
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wexe[NK_MAX_PATH];
-    DWORD length = GetModuleFileNameW(NULL, wexe, NK_MAX_PATH);
-    if (length == 0 || length >= NK_MAX_PATH ||
-        WideCharToMultiByte(CP_UTF8, 0, wexe, -1, exe, (int)sizeof(exe), NULL, NULL) <= 0) {
-        return false;
-    }
-#elif defined(__linux__)
-    ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1u);
-    if (length <= 0 || (size_t)length >= sizeof(exe) - 1u) return false;
-    exe[length] = '\0';
-#else
-    (void)exe;
-    return false;
-#endif
-#if defined(_WIN32) || defined(_WIN64) || defined(__linux__)
+    if (!nk_platform_get_executable_path(exe, sizeof(exe))) return false;
     const char *args[] = { exe, NULL };
     SDL_PropertiesID props = SDL_CreateProperties();
     if (!props) return false;
@@ -3988,7 +3971,6 @@ static bool player_start_fresh_copy(void) {
     if (!process) return false;
     SDL_DestroyProcess(process);
     return true;
-#endif
 }
 
 #if defined(_WIN32) || defined(_WIN64)
