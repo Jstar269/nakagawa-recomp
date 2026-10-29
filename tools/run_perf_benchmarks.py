@@ -27,6 +27,12 @@ WORKLOADS = (
     ("platform-ladder-sched", ("platform-ladder-sched",)),
     ("platform-ladder-fs", ("platform-ladder-fs",)),
 )
+# The platform ladder deletes every ambient SR_* variable before it starts its child (the "SR_*
+# namespace rule" in fixtures/platform_ladder/generate.py), so SR_PERF never reaches those runs and
+# no summary can exist. They are timed only; a missing summary there is the contract, not a failure.
+TIMING_ONLY = frozenset({"platform-ladder-gap", "platform-ladder-sched", "platform-ladder-fs"})
+TIMING_ONLY_NOTE = ("timed only: the platform ladder clears SR_* (fixtures/platform_ladder/generate.py, "
+                    "SR_* namespace rule), so it writes no SR_PERF summary")
 
 
 def _make_name(value: str) -> str:
@@ -75,7 +81,7 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
     summary_path = output_dir / "perf.json"
     output = completed.stdout[-4000:]
     status = _status_from_returncode(completed.returncode)
-    if enabled and completed.returncode == 0 and not summary_path.exists():
+    if enabled and completed.returncode == 0 and not summary_path.exists() and name not in TIMING_ONLY:
         status = "FAIL"
         output += "\nSR_PERF summary was not produced"
     try:
@@ -89,6 +95,7 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
         "returncode": completed.returncode,
         "duration_s": duration,
         "summary": summary,
+        **({"note": TIMING_ONLY_NOTE} if name in TIMING_ONLY else {}),
         "output": output,
     }
 

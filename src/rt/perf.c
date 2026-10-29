@@ -526,6 +526,115 @@ static void json_top_pcs(FILE *json, unsigned direction) {
     fputc(']', json);
 }
 
+/* ---- native AOT VFPU time (census builds: PERF_AOT_INSTRUCTIONS=1) -----------------------
+ * Generated code runs VFPU instructions inline, so there is no call to time. In a census build
+ * every AOT instruction passes sr_perf_aot_instruction(pc, opcode) as it starts. That gives an
+ * exact count per family and, by sampling, a time per family: one VFPU instruction in
+ * AOT_VFPU_STRIDE is timed from its start to the start of the next instruction, and one scalar
+ * instruction in AOT_VFPU_BASELINE_STRIDE is timed the same way as the baseline (the hook plus an
+ * ordinary instruction). A sample counts only when the next instruction is at pc + 4, so a branch,
+ * call, return or dispatch never lands in it. The estimate for a family is
+ * count * max(0, mean sample - mean baseline): the VFPU instruction's cost above an ordinary
+ * one. It is an estimate from samples, labelled so in the summary. */
+#define AOT_VFPU_STRIDE 64u
+#define AOT_VFPU_BASELINE_STRIDE 1024u
+
+typedef enum AotVfpuFamily {
+    AOT_VFPU_LOAD = 0,      /* lv.s, lv.q, lvl.q/lvr.q */
+    AOT_VFPU_STORE,         /* sv.s, sv.q, svl.q/svr.q */
+    AOT_VFPU_VFPU0,         /* opcode 0x18: vadd, vsub, vsbn, vdiv */
+    AOT_VFPU_VFPU1,         /* opcode 0x19: vmul, vdot, vscl, vhdp, vcrs, vdet */
+    AOT_VFPU_VFPU3,         /* opcode 0x1b: vcmp, vmin, vmax, vscmp, vsge, vslt */
+    AOT_VFPU_VFPU4,         /* opcode 0x34: unary, conversion and transcendental forms */
+    AOT_VFPU_MATRIX,        /* opcode 0x3c: vmmul, vtfm, vhtfm, vmscl, vqmul, matrix moves */
+    AOT_VFPU_PREFIX_IMM,    /* opcode 0x37: prefixes, viim, vfim */
+    AOT_VFPU_MOVE_CONTROL,  /* opcode 0x12 (mfv, mtv, bvf) and 0x3f (vflush) */
+    AOT_VFPU_FAMILY_COUNT,
+    AOT_VFPU_NOT_VFPU = -1,
+} AotVfpuFamily;
+
+static const char *const s_aot_vfpu_family_names[AOT_VFPU_FAMILY_COUNT] = {
+    "load", "store", "vfpu0", "vfpu1", "vfpu3", "vfpu4", "matrix", "prefix_imm", "move_control",
+};
+
+static struct {
+    uint64_t count[AOT_VFPU_FAMILY_COUNT];
+    uint64_t sample_ns[AOT_VFPU_FAMILY_COUNT];
+    uint64_t samples[AOT_VFPU_FAMILY_COUNT];
+    uint64_t baseline_ns, baseline_samples;
+    uint64_t vfpu_seen, scalar_seen;
+    int pending;            /* a sample is open: -1 baseline, else 1 + family */
+    uint32_t pending_pc;
+    uint64_t pending_start_ns;
+} s_aot_vfpu;
+
+static int aot_vfpu_family(uint32_t opcode) {
+    switch ((opcode >> 26) & 0x3fu) {
+    case 0x32u: case 0x35u: case 0x36u: return AOT_VFPU_LOAD;
+    case 0x3au: case 0x3du: case 0x3eu: return AOT_VFPU_STORE;
+    case 0x18u: return AOT_VFPU_VFPU0;
+    case 0x19u: return AOT_VFPU_VFPU1;
+    case 0x1bu: return AOT_VFPU_VFPU3;
+    case 0x34u: return AOT_VFPU_VFPU4;
+    case 0x3cu: return AOT_VFPU_MATRIX;
+    case 0x37u: return AOT_VFPU_PREFIX_IMM;
+    case 0x12u: case 0x3fu: return AOT_VFPU_MOVE_CONTROL;
+    default: return AOT_VFPU_NOT_VFPU;
+    }
+}
+
+/* Called for each AOT instruction start in a census build, with the AOT tier current. */
+static void aot_vfpu_observe(uint32_t pc, uint32_t opcode) {
+    if (s_aot_vfpu.pending) {
+        uint64_t now = raw_now_ns();
+        /* A zero-length sample is a measurement too: the clock's tick can exceed one instruction. */
+        if (pc == s_aot_vfpu.pending_pc + 4u && now >= s_aot_vfpu.pending_start_ns) {
+            uint64_t elapsed = now - s_aot_vfpu.pending_start_ns;
+            if (s_aot_vfpu.pending < 0) {
+                s_aot_vfpu.baseline_ns += elapsed;
+                s_aot_vfpu.baseline_samples++;
+            } else {
+                unsigned family = (unsigned)(s_aot_vfpu.pending - 1);
+                s_aot_vfpu.sample_ns[family] += elapsed;
+                s_aot_vfpu.samples[family]++;
+            }
+        }
+        s_aot_vfpu.pending = 0;
+    }
+    int family = aot_vfpu_family(opcode);
+    if (family >= 0) {
+        s_aot_vfpu.count[family]++;
+        if (++s_aot_vfpu.vfpu_seen % AOT_VFPU_STRIDE != 0u) return;
+        s_aot_vfpu.pending = 1 + family;
+    } else {
+        if (++s_aot_vfpu.scalar_seen % AOT_VFPU_BASELINE_STRIDE != 0u) return;
+        s_aot_vfpu.pending = -1;
+    }
+    s_aot_vfpu.pending_pc = pc;
+    s_aot_vfpu.pending_start_ns = raw_now_ns();
+}
+
+/* The "aot_families" member of the summary's "vfpu" object. */
+static void json_aot_vfpu(FILE *json) {
+    double baseline = s_aot_vfpu.baseline_samples
+        ? (double)s_aot_vfpu.baseline_ns / (double)s_aot_vfpu.baseline_samples : 0.0;
+    fprintf(json, "\"aot_families\":{\"status\":\"%s\",\"stride\":%u,\"baseline_stride\":%u,"
+            "\"baseline_samples\":%llu,\"baseline_mean_ns\":%.3f,\"families\":{",
+            PERF_AOT_INSTRUCTIONS ? "sampled" : "not_compiled", AOT_VFPU_STRIDE,
+            AOT_VFPU_BASELINE_STRIDE, (unsigned long long)s_aot_vfpu.baseline_samples, baseline);
+    for (unsigned i = 0; i < AOT_VFPU_FAMILY_COUNT; i++) {
+        double mean = s_aot_vfpu.samples[i]
+            ? (double)s_aot_vfpu.sample_ns[i] / (double)s_aot_vfpu.samples[i] : 0.0;
+        double above = s_aot_vfpu.samples[i] && mean > baseline ? mean - baseline : 0.0;
+        fprintf(json, "%s\"%s\":{\"count\":%llu,\"samples\":%llu,\"mean_ns\":%.3f,"
+                "\"estimated_ns\":%.0f}",
+                i ? "," : "", s_aot_vfpu_family_names[i],
+                (unsigned long long)s_aot_vfpu.count[i], (unsigned long long)s_aot_vfpu.samples[i],
+                mean, above * (double)s_aot_vfpu.count[i]);
+    }
+    fputs("}}", json);
+}
+
 static void write_summary(const char *path, uint64_t wall_ns) {
     FILE *json = fopen(path, "w");
     if (!json) {
@@ -565,7 +674,7 @@ static void write_summary(const char *path, uint64_t wall_ns) {
             (unsigned long long)m->sched_ns[SR_PERF_SCHED_IDLE],
             (unsigned long long)m->sched_switches, (unsigned long long)m->sched_blocked,
             (unsigned long long)m->sched_wakes);
-    fprintf(json, "  \"vfpu\":{\"ns\":%llu,\"count\":%llu,\"interpreter_count\":%llu,\"aot_instruction_count\":%llu,\"interpreter_ns\":%llu,\"aot_ns\":%llu,\"errors\":%llu,\"families\":{\"load\":%llu,\"store\":%llu,\"arithmetic\":%llu,\"prefix\":%llu,\"other\":%llu}},\n",
+    fprintf(json, "  \"vfpu\":{\"ns\":%llu,\"count\":%llu,\"interpreter_count\":%llu,\"aot_instruction_count\":%llu,\"interpreter_ns\":%llu,\"aot_ns\":%llu,\"errors\":%llu,\"families\":{\"load\":%llu,\"store\":%llu,\"arithmetic\":%llu,\"prefix\":%llu,\"other\":%llu},",
             (unsigned long long)m->vfpu_ns, (unsigned long long)m->vfpu_count,
             (unsigned long long)m->vfpu_interp_count,
             (unsigned long long)m->vfpu_aot_count,
@@ -576,6 +685,8 @@ static void write_summary(const char *path, uint64_t wall_ns) {
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_ARITHMETIC],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_PREFIX],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_OTHER]);
+    json_aot_vfpu(json);
+    fputs("},\n", json);
     fprintf(json, "  \"ge\":{\"cpu_ns\":%llu,\"cpu_calls\":%llu,\"transform_sample_ns\":%llu,\"primitive_ns\":%llu,\"submits\":%llu,\"waits\":%llu,\"wait_ns\":%llu,\"present_submits\":%llu,\"present_waits\":%llu,\"present_wait_ns\":%llu,\"frontend_profile\":{\"enabled\":%s,\"stride\":%llu,\"calibration_enabled\":%s,\"stages\":{",
             (unsigned long long)m->ge_cpu_ns, (unsigned long long)m->ge_cpu_calls,
             (unsigned long long)m->ge_transform_sample_ns,
@@ -632,7 +743,10 @@ static void write_summary(const char *path, uint64_t wall_ns) {
     fputs("  \"boundaries\":[", json);
     fputs("{\"metric\":\"aot_instruction_count\",\"status\":", json);
     fputs(PERF_AOT_INSTRUCTIONS ? "\"compiled\"" : "\"not_compiled\"", json);
-    fputs("},{\"metric\":\"aot_vfpu_time\",\"status\":\"partial\"},{\"metric\":\"ge_primitive_phase\",\"status\":\"sampled\"}]\n", json);
+    fputs("},{\"metric\":\"aot_vfpu_time\",\"status\":\"",
+          json);
+    fputs(PERF_AOT_INSTRUCTIONS ? "sampled" : "partial", json);
+    fputs("\"},{\"metric\":\"ge_primitive_phase\",\"status\":\"sampled\"}]\n", json);
     fputs("}\n", json);
     fclose(json);
 }
@@ -1038,6 +1152,7 @@ static void perf_exit(void) {
 void sr_perf_init(void) {
     if (s_perf.initialized) return;
     memset(&s_perf, 0, sizeof(s_perf));
+    memset(&s_aot_vfpu, 0, sizeof(s_aot_vfpu));
     sr_perf_history_reset(&s_history);
     s_perf.initialized = 1;
     s_perf_stderr_enabled = env_on("SR_PERF");
@@ -1393,9 +1508,8 @@ void sr_perf_aot_instruction(uint32_t pc, uint32_t opcode) {
     if (!s_perf.enabled || s_perf.shutdown ||
         s_perf.current_tier != SR_PERF_TIER_AOT)
         return;
-    (void)pc;
-    (void)opcode;
     ADD(aot_instructions, 1);
+    aot_vfpu_observe(pc, opcode);
 }
 
 void sr_perf_interp_set_reason(SrPerfInterpReason reason) {

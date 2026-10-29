@@ -1822,9 +1822,12 @@ endif
 # -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
 # -O1: Measured and qualified default for HST.
 # -fno-var-tracking: Saves significant memory on huge functions.
-# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
+# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code. GCC only: Clang
+#   refuses the option, so it is passed only when $(CC) is not Clang (#317). GCC builds are unchanged.
 RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+RECOMP_CC_IS_CLANG := $(findstring clang version,$(shell "$(CC)" --version 2>&1))
+RECOMP_GCC_ONLY_FLAGS := $(if $(RECOMP_CC_IS_CLANG),,-ftrack-macro-expansion=0)
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking $(RECOMP_GCC_ONLY_FLAGS) $(NAN_TRAP_CFLAG)
 override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 ifeq ($(TRACE),1)
@@ -2028,9 +2031,48 @@ endif
 sdl3-check:
 	@"$(PYTHON)" -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
+# libchdr (third_party/libchdr, BSD-3-Clause; see its PROVENANCE.md) reads CHD disc images
+# for the import step (src/core/nk_disc_chd.c). It is built once into its own archive with
+# upstream's default configuration: the bundled miniz, single-file zstd decompressor and LZMA
+# SDK decoder, no assembly, and upstream code compiled without the project's warning flags.
+# Only the player, the player UI test binary and the disc-expansion selftest link it; the
+# runtime never does.
+LIBCHDR_DIR := third_party/libchdr
+LIBCHDR_SRCS := $(addprefix $(LIBCHDR_DIR)/src/,libchdr_bitstream.c libchdr_cdrom.c libchdr_chd.c \
+	libchdr_codec_avhuff.c libchdr_codec_cdfl.c libchdr_codec_cdlz.c libchdr_codec_cdzl.c \
+	libchdr_codec_cdzs.c libchdr_codec_flac.c libchdr_codec_huff.c libchdr_codec_lzma.c \
+	libchdr_codec_zlib.c libchdr_codec_zstd.c libchdr_flac.c libchdr_huffman.c) \
+	$(LIBCHDR_DIR)/deps/lzma-26.02/src/LzmaDec.c $(LIBCHDR_DIR)/deps/miniz-3.1.2/miniz.c \
+	$(LIBCHDR_DIR)/deps/zstd-1.5.7/zstddeclib.c
+LIBCHDR_OBJ_DIR := $(BUILD_ROOT)/libchdr
+LIBCHDR_OBJS := $(addprefix $(LIBCHDR_OBJ_DIR)/,$(notdir $(LIBCHDR_SRCS:.c=.o)))
+LIBCHDR_LIB := $(LIBCHDR_OBJ_DIR)/libnkchdr.a
+LIBCHDR_INC := -I$(LIBCHDR_DIR)/include
+LIBCHDR_CFLAGS := -std=c99 -O2 $(LIBCHDR_INC) -I$(LIBCHDR_DIR)/deps/lzma-26.02/include \
+	-I$(LIBCHDR_DIR)/deps/miniz-3.1.2 -I$(LIBCHDR_DIR)/deps/zstd-1.5.7 \
+	-DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME
+# The CHD backend over libchdr, compiled into the programs that read CHD.
+PLAYER_CHD_SRCS := src/core/nk_disc_chd.c
+
+$(LIBCHDR_OBJ_DIR):
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(LIBCHDR_OBJ_DIR)').mkdir(parents=True, exist_ok=True)"
+
+# One object per source, from each folder libchdr keeps its sources in.
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/src/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/lzma-26.02/src/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/miniz-3.1.2/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/zstd-1.5.7/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+
+$(LIBCHDR_LIB): $(LIBCHDR_OBJS)
+	$(AR) rcs $@ $(LIBCHDR_OBJS)
+
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/nk_disc_expand.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
@@ -2054,9 +2096,9 @@ endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
+$(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
@@ -2067,9 +2109,9 @@ player: $(PLAYER_EXE)
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # The regressions are independent player processes, so they run as parallel shards
 # (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
@@ -3323,7 +3365,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player $(LIBCHDR_LIB) clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
@@ -3351,6 +3393,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
 		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -Werror $(LIBCHDR_INC) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) $(PLAYER_CHD_SRCS) \
+		tests/native/native_test_isolation.c tests/native/test_disc_expand.c $(LIBCHDR_LIB) $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_expand$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_disc_expand$(EXE_EXT)
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
 		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)
