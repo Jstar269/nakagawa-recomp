@@ -294,6 +294,9 @@ class TestPackageNotices(unittest.TestCase):
         self.assertTrue(package_notices.is_system_dll("api-ms-win-crt-runtime-l1-1-0.dll"))
         self.assertTrue(package_notices.is_system_dll("ext-ms-win-gdi-draw-l1-1-0.dll"))
         self.assertTrue(package_notices.is_system_dll("mfplat.dll"))
+        # The player imports both (update check, #324 runtime manifest closure).
+        self.assertTrue(package_notices.is_system_dll("bcrypt.dll"))
+        self.assertTrue(package_notices.is_system_dll("WINHTTP.dll"))
 
         self.assertFalse(package_notices.is_system_dll("SDL3.dll"))
         self.assertFalse(package_notices.is_system_dll("libwinpthread-1.dll"))

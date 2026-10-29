@@ -610,8 +610,10 @@ jobs:
             -ExcludeOptionalFonts
           # --include-ui-fonts: the player starts its launcher UI only when assets/fonts/ui is
           # beside it, and otherwise falls back to the old renderer (the Makefile's player
-          # target stages the same set).
-          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts
+          # target stages the same set). --runtime-manifest records the size, SHA-256 and imports
+          # of every .exe and .dll in dist/bin and fails when an import is not beside them (#324).
+          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts --runtime-manifest
+          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --verify-runtime-manifest
           test -s dist/bin/assets/fonts/ui/manifest.json
           cp "$NAKAGAWA_TOOLCHAIN_JSON" dist/toolchain.json
           test -s dist/bin/nakagawa_player.exe

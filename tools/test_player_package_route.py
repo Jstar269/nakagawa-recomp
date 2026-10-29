@@ -1964,6 +1964,158 @@ def _builder_probe(name: str) -> str:
     return "".join(re.findall(r"\"([^\"]*)\"", match.group(1)))
 
 
+class TestRuntimeManifest(unittest.TestCase):
+    """bin/runtime-manifest.json records and checks the shipped runtime identity (#324)."""
+
+    GRAPH = {
+        "nakagawa_player.exe": ["SDL3.dll", "KERNEL32.dll", "vulkan-1.dll"],
+        "sdl3.dll": ["KERNEL32.dll"],
+        "sdl3_ttf.dll": ["SDL3.dll", "zlib1.dll"],
+        "zlib1.dll": ["KERNEL32.dll"],
+    }
+    FILES = ("nakagawa_player.exe", "SDL3.dll", "SDL3_ttf.dll", "zlib1.dll")
+
+    def setUp(self) -> None:
+        import stage_runtime_dlls
+
+        self.stager = stage_runtime_dlls
+        self._temp = tempfile.TemporaryDirectory()
+        self.bin = Path(self._temp.name) / "bin"
+        self.bin.mkdir()
+        for name in self.FILES:
+            (self.bin / name).write_bytes(b"MZ\0\0synthetic-" + name.encode())
+        notices = self.bin / "THIRD_PARTY_NOTICES"
+        notices.mkdir()
+        components = [{"binary": name} for name in self.FILES]
+        (notices / "index.json").write_text(json.dumps({"components": components}), encoding="utf-8")
+        self.graph = dict(self.GRAPH)
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def resolver(self) -> dict:
+        return {
+            "imports_of": lambda path: list(self.graph.get(path.name.lower(), [])),
+            "is_system": lambda name: name.lower() == "kernel32.dll",
+            "host_libraries": frozenset({"vulkan-1.dll"}),
+        }
+
+    def assert_refused(self, code: str, **overrides) -> None:
+        with self.assertRaisesRegex(self.stager.RuntimeManifestError, code):
+            self.stager.verify_runtime_manifest(self.bin, **{**self.resolver(), **overrides})
+
+    def test_written_manifest_names_every_binary_with_its_identity(self) -> None:
+        manifest = self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        on_disk = json.loads((self.bin / "runtime-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest, on_disk)
+        self.assertEqual(on_disk["format"], "nakagawa-runtime-manifest")
+        self.assertEqual(on_disk["schema_version"], 1)
+        self.assertEqual(on_disk["host_libraries"], ["vulkan-1.dll"])
+        by_name = {entry["path"]: entry for entry in on_disk["files"]}
+        self.assertEqual(set(by_name), set(self.FILES))
+        player = by_name["nakagawa_player.exe"]
+        self.assertEqual(player["kind"], "executable")
+        self.assertEqual(player["imports"], ["SDL3.dll", "vulkan-1.dll"])
+        self.assertEqual(by_name["SDL3_ttf.dll"]["kind"], "runtime-library")
+        for name, entry in by_name.items():
+            data = (self.bin / name).read_bytes()
+            self.assertEqual(entry["size"], len(data))
+            self.assertEqual(entry["sha256"], hashlib.sha256(data).hexdigest())
+        # Canonical bytes: writing again gives the same file.
+        before = (self.bin / "runtime-manifest.json").read_bytes()
+        self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        self.assertEqual((self.bin / "runtime-manifest.json").read_bytes(), before)
+        self.assertEqual(self.stager.verify_runtime_manifest(self.bin, **self.resolver()), manifest)
+
+    def test_incomplete_closure_is_refused_when_writing(self) -> None:
+        (self.bin / "zlib1.dll").unlink()
+        with self.assertRaisesRegex(self.stager.RuntimeManifestError,
+                                    r"RUNTIME_CLOSURE_INCOMPLETE: zlib1\.dll \(imported by SDL3_ttf\.dll\)"):
+            self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        self.assertFalse((self.bin / "runtime-manifest.json").exists())
+
+    def test_folder_without_an_executable_is_refused(self) -> None:
+        (self.bin / "nakagawa_player.exe").unlink()
+        with self.assertRaisesRegex(self.stager.RuntimeManifestError, "RUNTIME_MANIFEST_NO_EXECUTABLE"):
+            self.stager.write_runtime_manifest(self.bin, **self.resolver())
+
+    def test_verification_names_each_kind_of_drift(self) -> None:
+        self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        original = (self.bin / "zlib1.dll").read_bytes()
+        (self.bin / "zlib1.dll").write_bytes(original[:-1] + b"X")
+        self.assert_refused("RUNTIME_FILE_CHANGED: zlib1.dll")
+        (self.bin / "zlib1.dll").unlink()
+        self.assert_refused("RUNTIME_FILE_MISSING: zlib1.dll")
+        (self.bin / "zlib1.dll").write_bytes(original)
+        (self.bin / "extra.dll").write_bytes(b"MZ")
+        self.assert_refused("RUNTIME_FILE_UNLISTED: extra.dll")
+        (self.bin / "extra.dll").unlink()
+        self.graph["sdl3.dll"] = ["KERNEL32.dll", "zlib1.dll"]
+        self.assert_refused("RUNTIME_IMPORTS_CHANGED: SDL3.dll")
+        self.graph = dict(self.GRAPH)
+        self.stager.verify_runtime_manifest(self.bin, **self.resolver())
+
+    def test_a_dll_without_a_licence_record_is_refused(self) -> None:
+        self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        index = self.bin / "THIRD_PARTY_NOTICES" / "index.json"
+        index.write_text(json.dumps({"components": [{"binary": "SDL3.dll"}]}), encoding="utf-8")
+        self.assert_refused("RUNTIME_LICENCE_RECORD_MISSING: SDL3_ttf.dll")
+        index.unlink()
+        self.assert_refused("RUNTIME_LICENCE_INDEX_MISSING")
+        self.stager.verify_runtime_manifest(self.bin, **self.resolver(), require_licence_records=False)
+
+    def test_malformed_or_missing_manifest_is_refused(self) -> None:
+        self.assert_refused("RUNTIME_MANIFEST_MISSING")
+        manifest = self.stager.write_runtime_manifest(self.bin, **self.resolver())
+        path = self.bin / "runtime-manifest.json"
+        for broken in (
+            {**manifest, "schema_version": 2},
+            {**manifest, "extra": True},
+            {**manifest, "files": [{**manifest["files"][0], "path": "../nakagawa_player.exe"}]},
+            {**manifest, "files": [{**manifest["files"][0], "sha256": "0" * 63}]},
+            {**manifest, "files": manifest["files"] + manifest["files"][:1]},
+        ):
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            self.assert_refused("RUNTIME_MANIFEST_INVALID")
+        path.write_text(json.dumps({**manifest, "host_libraries": ["evil.dll"]}), encoding="utf-8")
+        self.assert_refused("RUNTIME_MANIFEST_INVALID: evil.dll")
+        path.write_text("{", encoding="utf-8")
+        self.assert_refused("RUNTIME_MANIFEST_INVALID")
+
+    def test_staging_writes_the_manifest_last_when_asked(self) -> None:
+        package_dir = Path(self._temp.name) / "package"
+        package_dir.mkdir()
+        (package_dir / "nakagawa_player.exe").write_bytes(b"MZplayer")
+        resolver = self.resolver()
+        with patch.object(self.stager, "host_resolved_libraries", lambda: frozenset({"vulkan-1.dll"})):
+            self.stager.stage_runtime_dlls(
+                package_dir, roots=["SDL3.dll", "SDL3_ttf.dll"], search_dirs=[self.bin], env={},
+                imports_of=resolver["imports_of"], is_system=resolver["is_system"],
+                notices=False, runtime_manifest=True)
+        manifest = json.loads((package_dir / "runtime-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([entry["path"] for entry in manifest["files"]], list(self.FILES))
+
+    def test_the_inventory_names_the_vulkan_loader_as_host_resolved(self) -> None:
+        self.assertIn("vulkan-1.dll", self.stager.host_resolved_libraries())
+
+    def test_cli_verification_fails_closed(self) -> None:
+        import contextlib
+        import io
+
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            status = self.stager.main(["--target", str(self.bin), "--verify-runtime-manifest"])
+        self.assertEqual(status, 1)
+        self.assertIn("RUNTIME_MANIFEST_MISSING", stderr.getvalue())
+
+    def test_release_binaries_are_staged_with_the_manifest(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "provenance-attestation.yml").read_text(encoding="utf-8")
+        self.assertIn("tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts --runtime-manifest",
+                      workflow)
+        preview = (ROOT / "docs" / "PREVIEW_RELEASE.md").read_text(encoding="utf-8")
+        self.assertIn("tools/stage_install.py --portable-zip", preview)
+        self.assertNotIn("CreateFromDirectory", preview)
+
+
 def _probe_exit(code: str) -> int:
     return subprocess.run([sys.executable, "-c", code], check=False,
                           capture_output=True, timeout=60).returncode

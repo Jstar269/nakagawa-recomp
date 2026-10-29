@@ -403,3 +403,103 @@ already held the key's generated C). The report's
 `counts.unsupported_opcodes` is read from the stub report inside the built
 package, so it describes the code that shipped; only a build that fails
 before packaging falls back to the stage's stub report.
+
+## 7. Portable layout, runtime identity and user state
+
+This section records what the Windows portable ZIP holds today and where the player keeps
+everything it writes ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)). The
+installer, upgrade and uninstall rules that #324 also asks for are not built yet; the portable
+ZIP is the one supported distribution form.
+
+### The install image (read-only)
+
+The release ZIP (`docs/PREVIEW_RELEASE.md`) and `tools/stage_install.py --dest` share one
+layout. Nothing in it is written at run time, so it can sit in a read-only folder:
+
+| Path | Contents |
+| --- | --- |
+| `bin/nakagawa_player.exe` | The player. Release builds also carry `bin/production_smoke.exe` and the showcase demos in `bin/demos/`. |
+| `bin/*.dll` | `SDL3.dll`, `SDL3_ttf.dll` and their resolved closure (Section 5, #421). |
+| `bin/runtime-manifest.json` | The runtime identity record (below). |
+| `bin/assets/fonts/ui/`, `bin/font/nk*.pgf` | The project's own UI fonts and generated PGF fonts. No firmware font. |
+| `bin/THIRD_PARTY_NOTICES/`, `SOURCE.txt`, `RELINK.md` | Licence texts for every bundled binary, the exact source commit, LGPL relinking. |
+| `source/` | The public-safe source export BUILD PACKAGE runs from (`tools/nk_cli.py`, the Makefile, `assets/prereq_manifest.json`). |
+| `prereqs/` | The pinned build prerequisites (#1285), checked by the player against `installed.json` and `bundle-inventory.txt` before BUILD PACKAGE uses them. |
+| `docs/`, `README.md`, `LICENSE`, `NOTICE.md`, `START HERE.txt` | User documentation. |
+| `SBOM.*`, `toolchain.json`, `SHA256SUMS.txt` | SPDX 2.3, SPDX 3 and CycloneDX SBOMs, the attested toolchain record, and the SHA-256 of every other file. |
+
+The image never holds a game, decrypted module, generated title code, save, key or firmware
+font: the release script's forbidden-file and private-path scans refuse them.
+
+### Runtime identity manifest
+
+`bin/runtime-manifest.json` (format `nakagawa-runtime-manifest`, schema 1) lists every
+`.exe` and `.dll` directly in `bin/` with its size, SHA-256 and the non-system DLLs it imports,
+plus `host_libraries`, the imports the host provides and no route ships (today only the Vulkan
+loader `vulkan-1.dll`, from `host_resolved_components` in `assets/third_party_components.json`).
+`tools/stage_runtime_dlls.py --runtime-manifest` writes it after staging; writing fails with
+`RUNTIME_CLOSURE_INCOMPLETE` when a binary imports a DLL that is neither beside it, a Windows
+system DLL nor a host library, which is the loader failure a clean machine would otherwise show.
+The attestation workflow writes and attests it with the binaries, and
+`--verify-runtime-manifest` checks a staged or extracted `bin/`: every listed file present with
+its size and SHA-256 (`RUNTIME_FILE_MISSING`, `RUNTIME_FILE_CHANGED`), no unlisted `.exe` or
+`.dll` (`RUNTIME_FILE_UNLISTED`), imports unchanged (`RUNTIME_IMPORTS_CHANGED`) and a licence
+record in `THIRD_PARTY_NOTICES/index.json` for every DLL (`RUNTIME_LICENCE_RECORD_MISSING`).
+`tools/stage_install.py` writes the same file into an installed `bin/`, so portable and
+installed layouts share one identity contract. The player does not read it yet; a start-time
+check is open under #324.
+
+### Reproducible portable ZIP
+
+`tools/stage_install.py --portable-zip <zip> --zip-stage <folder>` writes the ZIP from the
+staged folder. It rewrites `SHA256SUMS.txt` in ordinal path order, verifies
+`bin/runtime-manifest.json`, and stores one entry per file and per empty folder, sorted by
+UTF-8 path, every entry dated `SOURCE_DATE_EPOCH` (the commit time of `--revision` unless the
+variable or `--source-date-epoch` sets it; times before 1980 become 1980-01-01), mode 0644 for
+files and 0755 for folders, Deflate level 9, no extra fields and no comment. A link, junction,
+special file, absolute or `..` name is refused. The same staged bytes then give the same ZIP
+bytes with the same CPython zlib build, which the tool reports as `zlib`.
+
+Measured on 2026-10-29 at `77a1a5e3`, before this change: two packages built from one commit
+differed in every ZIP entry's timestamp (`ZipFile.CreateFromDirectory` stores each file's write
+time, and the prerequisite tree is unpacked fresh each time), and the player executable differed
+in its PE `TimeDateStamp` and checksum because its link line lacked `--no-insert-timestamp`.
+Both are fixed; `tools/test_stage_install.py` builds one stage twice in different orders and
+with different file times and compares the bytes.
+
+### Per-user state (writable)
+
+Everything the player writes lives outside the install image, under the per-user root, so an
+upgrade or a second extracted version finds the same library, saves and settings. On Windows
+the root is `%LOCALAPPDATA%\Nakagawa` (then `FOLDERID_LocalAppData`, then `%APPDATA%`; never
+`USERPROFILE` alone, `nk_platform_resolve_windows_data_base`). `--user-data-root=<folder>`
+moves all of it into one folder (`nk_platform_set_app_data_dir_override`).
+
+| Folder (Windows) | Holds | Owner |
+| --- | --- | --- |
+| `Nakagawa\config` | `settings.json` | player |
+| `Nakagawa\data` (`<user data>`) | the library and title manifests | player, `nk_cli` |
+| `<user data>\titles\<DISC_ID>\` | staged title inputs; `decrypted\` holds the player's decryption output or the user's own plain files | user's private inputs |
+| `<user data>\title-input-identities\<DISC_ID>\` | the exact local input identity a package must match (Section 5) | `nk_cli` |
+| `<user data>\cache\packages\<DISC_ID>\` | built AOT packages, content-addressed, promoted by rename (Section 6) | `nk_cli` |
+| `<user data>\cache\objects\`, `cache\shared-libraries\` | shared compiled objects and disc libraries (#1306) | `nk_cli` |
+| `<user data>\fonts\v2\` | fonts imported from the user's own PSP, with `manifest.json` | user |
+| `<user data>\prerequisites\` | the consented per-user prerequisite download (absent when `prereqs/` is bundled) | player |
+| `<user data>\downloads\` | a verified update ZIP and, outside a release folder, its unpacked copy | player |
+| `<user data>\logs\` | build logs (`build_<DISC_ID>_progress.jsonl`) | player, `nk_cli` |
+| `Nakagawa\saves\<DISC_ID>\` | the title's Memory Stick root (`SR_MEMSTICK`) when the install is not writable | runtime |
+| `Nakagawa\logs\` | `game-<DISC_ID>-last.txt`, the last game session's output | player |
+| `Nakagawa\cache\` | the platform cache folder (`NK_PATH_CACHE`) | player |
+| `Nakagawa\fonts\` | optional UI font overrides | user |
+
+Linux uses `$XDG_DATA_HOME/nakagawa-recomp` (else `~/.local/share/nakagawa-recomp`) and the XDG
+config and cache homes; macOS uses `~/Library/Application Support/NakagawaRecomp`. Each launch
+still starts one child process per title (Section 2, Option C), with the #297 run-package and
+save-root semantics unchanged.
+
+Updates today: Check for updates (`src/player/update_check.c`) downloads a release ZIP into
+`<user data>\downloads\`, keeps it only when its SHA-256 matches the published `.sha256`, and
+INSTALL unpacks it into `<folder>.partial` beside the running version, checks every file
+`SHA256SUMS.txt` lists, and renames it into place. It never replaces the running version and
+never touches the per-user folders. Removing an extracted folder removes the install image
+only; the per-user folders above stay until the user deletes them.

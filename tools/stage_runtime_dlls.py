@@ -32,6 +32,13 @@ failures name both the per-file override and those environment knobs (#368).
 Licence texts are staged beside the DLLs through
 ``tools/package_notices.py`` (``THIRD_PARTY_NOTICES/``), which fails closed when
 any staged binary has no licence record in ``assets/third_party_components.json``.
+
+The runtime manifest (#324, ``runtime-manifest.json`` beside the executables)
+records the identity of every executable and DLL in the folder: its size, its
+SHA-256 and the non-system DLLs it imports. Writing it fails closed when an
+import resolves to no file in the folder, and ``--verify-runtime-manifest``
+re-checks a staged or extracted folder against it, so a release cannot ship a
+changed, missing, extra or unlisted runtime library unnoticed.
 """
 
 from __future__ import annotations
@@ -39,7 +46,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 from collections import deque
+import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -259,6 +268,7 @@ def stage_runtime_dlls(
     toolchain_root: Path | None = None,
     include_ui_fonts: bool = False,
     refresh: bool = False,
+    runtime_manifest: bool = False,
 ) -> list[str]:
     """Stage the runtime DLL roots, their resolved closure, and (optionally)
     the generated licence notices into ``target_dir``.
@@ -275,6 +285,10 @@ def stage_runtime_dlls(
     package files keep upstream timestamps). Identical files are left alone.
     With ``refresh=False`` (the default) pre-bundled package DLLs are kept,
     preserving the existing package-staging behaviour.
+
+    With ``runtime_manifest=True``, ``runtime-manifest.json`` is written last
+    (after the notices, which can add toolchain DLLs), describing every
+    executable and DLL then in ``target_dir``.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     names = list(roots) if roots is not None else [name for name, _ in RUNTIME_ROOTS]
@@ -328,7 +342,233 @@ def stage_runtime_dlls(
         package_notices.generate_package_notices(
             target_dir, repo_root=repo_root, toolchain_root=toolchain_root
         )
+    if runtime_manifest:
+        write_runtime_manifest(target_dir, imports_of=imports_of, is_system=is_system)
     return sorted(staged)
+
+
+# ---- Runtime manifest (#324) ---------------------------------------------
+
+#: The manifest's file name, beside the executables it describes.
+RUNTIME_MANIFEST_NAME = "runtime-manifest.json"
+RUNTIME_MANIFEST_FORMAT = "nakagawa-runtime-manifest"
+RUNTIME_MANIFEST_SCHEMA_VERSION = 1
+#: The binaries the manifest covers, by suffix, and the kind each is recorded as.
+RUNTIME_BINARY_KINDS = {".exe": "executable", ".dll": "runtime-library"}
+_SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
+_ENTRY_KEYS = {"path", "kind", "size", "sha256", "imports"}
+
+
+class RuntimeManifestError(StageError):
+    """The runtime manifest is missing, malformed, or does not match the folder."""
+
+
+def host_resolved_libraries() -> frozenset[str]:
+    """Lower-case names of the DLLs the host provides and no route ships (the Vulkan loader).
+
+    They come from ``host_resolved_components`` in ``assets/third_party_components.json``.
+    A binary may import one without the folder holding it; the manifest names each
+    such import in ``host_libraries`` as a true runtime requirement of the host.
+    """
+    inventory = package_notices.load_component_inventory()
+    return frozenset(str(record["dll"]).lower()
+                     for record in inventory["native"].get("host_resolved_components", [])
+                     if record.get("dll"))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _runtime_binaries(target_dir: Path) -> list[Path]:
+    """Every executable and DLL directly in ``target_dir``, sorted by lower-case name."""
+    if not target_dir.is_dir():
+        raise RuntimeManifestError(f"RUNTIME_MANIFEST_FOLDER_MISSING: {target_dir} is not a folder")
+    found: list[Path] = []
+    for entry in target_dir.iterdir():
+        if entry.suffix.lower() not in RUNTIME_BINARY_KINDS:
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            raise RuntimeManifestError(
+                f"RUNTIME_FILE_NOT_REGULAR: {entry.name} is a link or not a regular file"
+            )
+        found.append(entry)
+    return sorted(found, key=lambda path: (path.name.lower(), path.name))
+
+
+def build_runtime_manifest(
+    target_dir: Path,
+    *,
+    imports_of: Callable[[Path], list[str]] = package_notices.get_binary_imports,
+    is_system: Callable[[str], bool] = package_notices.is_system_dll,
+    host_libraries: frozenset[str] | None = None,
+) -> dict:
+    """The runtime manifest of ``target_dir``: identity and imports of each binary in it.
+
+    Raises :class:`RuntimeManifestError` when the folder has no executable or when
+    any binary imports a non-system DLL that is not in the folder: a closure that
+    would only load on a machine with a developer toolchain on ``PATH``.
+    """
+    binaries = _runtime_binaries(target_dir)
+    if not any(path.suffix.lower() == ".exe" for path in binaries):
+        raise RuntimeManifestError(f"RUNTIME_MANIFEST_NO_EXECUTABLE: {target_dir} holds no .exe")
+    present = {path.name.lower() for path in binaries}
+    host = host_resolved_libraries() if host_libraries is None else host_libraries
+    files: list[dict] = []
+    unresolved: list[str] = []
+    required_from_host: set[str] = set()
+    for path in binaries:
+        imports = sorted({name for name in imports_of(path) if not is_system(name)},
+                         key=lambda name: (name.lower(), name))
+        for name in imports:
+            if name.lower() in present:
+                continue
+            if name.lower() in host:
+                required_from_host.add(name.lower())
+            else:
+                unresolved.append(f"{name} (imported by {path.name})")
+        files.append({
+            "path": path.name,
+            "kind": RUNTIME_BINARY_KINDS[path.suffix.lower()],
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "imports": imports,
+        })
+    if unresolved:
+        raise RuntimeManifestError(
+            "RUNTIME_CLOSURE_INCOMPLETE: " + ", ".join(unresolved)
+            + f" is not in {target_dir}; stage the runtime DLLs first"
+        )
+    return {
+        "format": RUNTIME_MANIFEST_FORMAT,
+        "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
+        "files": files,
+        "host_libraries": sorted(required_from_host),
+    }
+
+
+def _manifest_bytes(manifest: dict) -> bytes:
+    return (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
+
+
+def write_runtime_manifest(target_dir: Path, **resolver) -> dict:
+    """Write ``runtime-manifest.json`` into ``target_dir`` and return it."""
+    manifest = build_runtime_manifest(target_dir, **resolver)
+    (target_dir / RUNTIME_MANIFEST_NAME).write_bytes(_manifest_bytes(manifest))
+    return manifest
+
+
+def _load_runtime_manifest(target_dir: Path) -> dict:
+    path = target_dir / RUNTIME_MANIFEST_NAME
+    if not path.is_file():
+        raise RuntimeManifestError(f"RUNTIME_MANIFEST_MISSING: {RUNTIME_MANIFEST_NAME} is not in {target_dir}")
+
+    def invalid(detail: str) -> RuntimeManifestError:
+        return RuntimeManifestError(f"RUNTIME_MANIFEST_INVALID: {detail}")
+
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise invalid(f"{RUNTIME_MANIFEST_NAME} is not readable JSON ({exc})") from exc
+    if (not isinstance(manifest, dict)
+            or set(manifest) != {"format", "schema_version", "files", "host_libraries"}
+            or manifest["format"] != RUNTIME_MANIFEST_FORMAT
+            or manifest["schema_version"] != RUNTIME_MANIFEST_SCHEMA_VERSION
+            or not isinstance(manifest["files"], list)
+            or not isinstance(manifest["host_libraries"], list)
+            or not all(isinstance(name, str) and name == name.lower() for name in manifest["host_libraries"])):
+        raise invalid(f"not a {RUNTIME_MANIFEST_FORMAT} schema {RUNTIME_MANIFEST_SCHEMA_VERSION} record")
+    seen: set[str] = set()
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict) or set(entry) != _ENTRY_KEYS:
+            raise invalid("a files entry does not have exactly path, kind, size, sha256 and imports")
+        name = entry["path"]
+        if (not isinstance(name, str) or not name or Path(name).name != name or "/" in name
+                or "\\" in name or ":" in name
+                or RUNTIME_BINARY_KINDS.get(Path(name).suffix.lower()) != entry["kind"]):
+            raise invalid(f"entry {name!r} is not a plain .exe or .dll name of its recorded kind")
+        if name.lower() in seen:
+            raise invalid(f"{name} is listed twice")
+        seen.add(name.lower())
+        if (not isinstance(entry["size"], int) or isinstance(entry["size"], bool) or entry["size"] < 0
+                or not isinstance(entry["sha256"], str) or not _SHA256_TEXT.fullmatch(entry["sha256"])
+                or not isinstance(entry["imports"], list)
+                or not all(isinstance(item, str) and item for item in entry["imports"])):
+            raise invalid(f"entry {name} has a malformed size, sha256 or imports")
+    return manifest
+
+
+def verify_runtime_manifest(
+    target_dir: Path,
+    *,
+    imports_of: Callable[[Path], list[str]] | None = package_notices.get_binary_imports,
+    is_system: Callable[[str], bool] = package_notices.is_system_dll,
+    require_licence_records: bool = True,
+    host_libraries: frozenset[str] | None = None,
+) -> dict:
+    """Check ``target_dir`` against its runtime manifest; return the manifest.
+
+    Every listed binary must exist with its recorded size and SHA-256, no
+    unlisted executable or DLL may be present, every recorded import must be a
+    listed file or a recorded host library (``host_libraries``, only names from
+    :func:`host_resolved_libraries`), and (with ``imports_of``) the recorded imports must be the
+    binary's real non-system imports. With ``require_licence_records`` every
+    listed DLL must also have a component in ``THIRD_PARTY_NOTICES/index.json``.
+    """
+    manifest = _load_runtime_manifest(target_dir)
+    listed = {entry["path"].lower(): entry for entry in manifest["files"]}
+    host = host_resolved_libraries() if host_libraries is None else host_libraries
+    stray_host = sorted(set(manifest["host_libraries"]) - host)
+    if stray_host:
+        raise RuntimeManifestError(
+            f"RUNTIME_MANIFEST_INVALID: {', '.join(stray_host)} is not a recorded host-resolved library"
+        )
+    for path in _runtime_binaries(target_dir):
+        if path.name.lower() not in listed:
+            raise RuntimeManifestError(
+                f"RUNTIME_FILE_UNLISTED: {path.name} is in {target_dir} but not in {RUNTIME_MANIFEST_NAME}"
+            )
+    for entry in manifest["files"]:
+        path = target_dir / entry["path"]
+        if not path.is_file():
+            raise RuntimeManifestError(f"RUNTIME_FILE_MISSING: {entry['path']}")
+        if path.stat().st_size != entry["size"] or _sha256_file(path) != entry["sha256"]:
+            raise RuntimeManifestError(
+                f"RUNTIME_FILE_CHANGED: {entry['path']} does not match its recorded size and SHA-256"
+            )
+        for name in entry["imports"]:
+            if name.lower() not in listed and name.lower() not in manifest["host_libraries"]:
+                raise RuntimeManifestError(
+                    f"RUNTIME_CLOSURE_INCOMPLETE: {name} (imported by {entry['path']}) is not listed"
+                )
+        if imports_of is not None:
+            actual = sorted({name for name in imports_of(path) if not is_system(name)},
+                            key=lambda name: (name.lower(), name))
+            if actual != entry["imports"]:
+                raise RuntimeManifestError(
+                    f"RUNTIME_IMPORTS_CHANGED: {entry['path']} imports {actual}, "
+                    f"the manifest records {entry['imports']}"
+                )
+    if require_licence_records:
+        index_path = target_dir / "THIRD_PARTY_NOTICES" / "index.json"
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            licensed = {str(component.get("binary", "")).lower() for component in index["components"]}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+            raise RuntimeManifestError(
+                f"RUNTIME_LICENCE_INDEX_MISSING: THIRD_PARTY_NOTICES/index.json is not readable ({exc})"
+            ) from exc
+        for entry in manifest["files"]:
+            if entry["kind"] == "runtime-library" and entry["path"].lower() not in licensed:
+                raise RuntimeManifestError(
+                    f"RUNTIME_LICENCE_RECORD_MISSING: {entry['path']} has no component in "
+                    "THIRD_PARTY_NOTICES/index.json"
+                )
+    return manifest
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -359,7 +599,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="replace staged DLLs whose bytes differ from the resolved toolchain copy",
     )
+    manifest_mode = parser.add_mutually_exclusive_group()
+    manifest_mode.add_argument(
+        "--runtime-manifest",
+        action="store_true",
+        help=f"after staging, write {RUNTIME_MANIFEST_NAME} (size, SHA-256 and imports of "
+             "every .exe and .dll in the target)",
+    )
+    manifest_mode.add_argument(
+        "--write-runtime-manifest-only",
+        action="store_true",
+        help=f"stage nothing; write {RUNTIME_MANIFEST_NAME} for the files already in the target",
+    )
+    manifest_mode.add_argument(
+        "--verify-runtime-manifest",
+        action="store_true",
+        help=f"stage nothing; check the target against its {RUNTIME_MANIFEST_NAME}",
+    )
     args = parser.parse_args(argv)
+
+    if args.verify_runtime_manifest or args.write_runtime_manifest_only:
+        try:
+            if args.verify_runtime_manifest:
+                manifest = verify_runtime_manifest(args.target)
+                verb = "verified"
+            else:
+                manifest = write_runtime_manifest(args.target)
+                verb = "wrote"
+        except (StageError, package_notices.PackageRouteError) as exc:
+            print(f"stage_runtime_dlls: FAIL: {exc}", file=sys.stderr)
+            return 1
+        print(f"stage_runtime_dlls: {verb} {RUNTIME_MANIFEST_NAME} for "
+              f"{len(manifest['files'])} file(s) in {args.target}")
+        return 0
 
     if os.name != "nt":
         # POSIX hosts resolve shared libraries through the system loader. The
@@ -384,6 +656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             notices=not args.no_notices,
             include_ui_fonts=args.include_ui_fonts,
             refresh=args.refresh,
+            runtime_manifest=args.runtime_manifest,
         )
     except (StageError, package_notices.PackageRouteError) as exc:
         print(f"stage_runtime_dlls: FAIL: {exc}", file=sys.stderr)
@@ -396,6 +669,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if font_assets:
         print(f"stage_runtime_dlls: staged {len(font_assets)} UI font asset(s) into {args.target}")
+    if args.runtime_manifest:
+        print(f"stage_runtime_dlls: wrote {RUNTIME_MANIFEST_NAME} into {args.target}")
     return 0
 
 

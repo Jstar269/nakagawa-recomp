@@ -85,7 +85,7 @@ mingw32-make --no-print-directory display-smoke
 
 The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_assets.ps1`, so the optional repository font directory is not copied into the attested bundle.
 
-The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts` (Windows CPython 3.15.1) under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
+The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts --runtime-manifest` (Windows CPython 3.15.1) under `set -euo pipefail`, then checks the result with `--verify-runtime-manifest`; a nonzero exit aborts the job before artifact upload. The runtime manifest, `bin/runtime-manifest.json`, is attested with the binaries ([layout](RUNTIME_PACKAGING_ARCHITECTURE.md#7-portable-layout-runtime-identity-and-user-state)). Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
 Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, builds the two showcase demos into `dist/bin/demos/` (where the player finds them and lists them under **Test this PC**), creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. The demos' PSP programs need PSPDEV, so its `showcase_prx` job first builds them on Linux with the PSPDEV pinned in `assets/upstream/pspdev.lock.json` (`fixtures/showcase/showcase.py build-prx`); the Windows job then builds their packages from those PRXs with its own toolchain (`showcase.py build --prebuilt-prx-dir`). This workflow does not create a tag, release, or release asset.
 
@@ -253,20 +253,17 @@ python tools/verify_sbom.py --expected-release-version $Version `
     --spdx3 (Join-Path $Stage 'SBOM.spdx3.jsonld') `
     --cyclonedx (Join-Path $Stage 'SBOM.cyclonedx.json')
 
-Get-ChildItem -LiteralPath $Stage -Recurse -File -Force |
-    Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
-    Sort-Object FullName |
-    Get-FileHash -Algorithm SHA256 |
-    ForEach-Object {
-        $relative = $_.Path.Substring($Stage.Length + 1).Replace('\', '/')
-        "$($_.Hash.ToLowerInvariant())  $relative"
-    } |
-    Set-Content -LiteralPath (Join-Path $Stage 'SHA256SUMS.txt') -Encoding utf8NoBOM
-
-# ZipFile includes hidden source-export files such as .github and .editorconfig.
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $Stage, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+# A bundle attested before #324 has no runtime manifest: record it here, from the verified files.
+if (-not (Test-Path -LiteralPath (Join-Path $Bin 'runtime-manifest.json') -PathType Leaf)) {
+    python tools/stage_runtime_dlls.py --target $Bin --write-runtime-manifest-only
+    if ($LASTEXITCODE -ne 0) { throw 'Recording the runtime manifest failed.' }
+}
+# Writes SHA256SUMS.txt, checks bin/ against its runtime manifest, then writes the ZIP with
+# sorted entries dated at the candidate commit's time, fixed permissions and no extra fields,
+# so the same commit and staged inputs give the same ZIP bytes. Hidden files (.github,
+# .editorconfig) are included; a link anywhere in the stage is refused.
+python tools/stage_install.py --portable-zip $Zip --zip-stage $Stage --revision $CandidateSha
+if ($LASTEXITCODE -ne 0) { throw 'Writing the portable ZIP failed.' }
 # The ZIP itself is a container, not an attested subject: publish its SHA-256 next to it so a
 # download can be checked before it is extracted. The source archive gets the same.
 foreach ($Asset in @($Zip, $SourceZip)) {
@@ -276,7 +273,7 @@ foreach ($Asset in @($Zip, $SourceZip)) {
 Write-Output $Zip, "$Zip.sha256", $SourceZip, "$SourceZip.sha256"
 ```
 
-The package contains the native player and synthetic verification binary under `bin/`, the showcase demos under `bin/demos/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
+The package contains the native player and synthetic verification binary under `bin/`, the showcase demos under `bin/demos/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself, in ordinal path order. Two runs of this script on the same commit with the same attested bundle, trusted ledger and prerequisite pins give a byte-identical ZIP when the same CPython writes it (Deflate output depends on the zlib build, which `--portable-zip` reports as `zlib`). Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
 
 `prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), removes the documentation folders `share/doc`, `share/info` and `share/man`, writes `notices/SOURCES.txt`, and then verifies the whole tree, file contents included. It prints the bundle's `file_count`, `unpacked_bytes` and `stripped_documentation`: record the first two and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. A ZIP that contains `prereqs/` is published only together with its prerequisite source archive, in the same release ([policy below](#bundled-prerequisite-licensing-policy)).
 
