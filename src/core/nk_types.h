@@ -15,7 +15,11 @@ extern "C" {
 #define NK_MAX_PATH 512
 #define NK_MAX_TITLE_LEN 128
 #define NK_MAX_DISC_ID_LEN 32
-#define NK_MAX_GAMES 64
+/* The most titles one library holds: the same record limit as the Python
+   tools (MAX_LIBRARY_GAMES in tools/nk_core/library.py), so a library the
+   tools write always loads in the player. A library of this size is too large
+   for a stack frame; keep NkLibrary and PlayerApp in static or heap storage. */
+#define NK_MAX_GAMES 4096
 #define NK_MAX_EXECUTABLE_PATH (255u + 1u) /* Python boot-name limit plus NUL */
 #define NK_MAX_SELECTED_EXECUTABLE_PATH 16
 

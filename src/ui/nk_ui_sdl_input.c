@@ -88,6 +88,25 @@ static float nk_ui_sdl_axis(Sint16 value) {
     return v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
 }
 
+/* A trigger is a button that engages past NK_UI_STICK_ENGAGE and lets go
+   below NK_UI_STICK_RELEASE, so a resting or half-held trigger does not
+   flicker between pages. */
+static size_t nk_ui_sdl_trigger(NkUiSdlInput *state, const SDL_GamepadAxisEvent *axis,
+                                double now_s, NkUiEvent *out, size_t cap) {
+    int side = axis->axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 0 : 1;
+    float value = nk_ui_sdl_axis(axis->value);
+    bool down = state->trigger_down[side] ? value >= NK_UI_STICK_RELEASE
+                                          : value > NK_UI_STICK_ENGAGE;
+    if (down == state->trigger_down[side]) {
+        return 0u;
+    }
+    state->trigger_down[side] = down;
+    return nk_ui_input_button(&state->input,
+                              side == 0 ? NK_UI_BTN_PAGE_PREV : NK_UI_BTN_PAGE_NEXT, down,
+                              (int)axis->which, nk_ui_sdl_family(axis->which), now_s,
+                              out, cap);
+}
+
 static size_t nk_ui_sdl_key(NkUiSdlInput *state, const SDL_KeyboardEvent *key, double now_s,
                             NkUiEvent *out, size_t cap) {
     NkUiInput *in = &state->input;
@@ -113,6 +132,8 @@ static size_t nk_ui_sdl_key(NkUiSdlInput *state, const SDL_KeyboardEvent *key, d
     case SDLK_Q: button = NK_UI_BTN_TAB_PREV; break;
     case SDLK_E: button = NK_UI_BTN_TAB_NEXT; break;
     case SDLK_F1: button = NK_UI_BTN_MENU; break;
+    case SDLK_PAGEUP: button = NK_UI_BTN_PAGE_PREV; break;
+    case SDLK_PAGEDOWN: button = NK_UI_BTN_PAGE_NEXT; break;
     case SDLK_TAB:
         if (!down) {
             /* Release both so a Shift taken off before Tab cannot leave one stuck down. */
@@ -205,6 +226,9 @@ size_t nk_ui_sdl_input_translate(NkUiSdlInput *state, const union SDL_Event *eve
             state->stick_x = nk_ui_sdl_axis(event->gaxis.value);
         } else if (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
             state->stick_y = nk_ui_sdl_axis(event->gaxis.value);
+        } else if (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
+                   event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
+            return nk_ui_sdl_trigger(state, &event->gaxis, now_s, out, cap);
         } else {
             return 0u;
         }
@@ -223,6 +247,8 @@ size_t nk_ui_sdl_input_translate(NkUiSdlInput *state, const union SDL_Event *eve
             nk_ui_input_reset(&state->input);
             state->stick_x = 0.0f;
             state->stick_y = 0.0f;
+            state->trigger_down[0] = false;
+            state->trigger_down[1] = false;
         }
         return nk_ui_input_device_change(&state->input, device, family, false, out, cap);
     }

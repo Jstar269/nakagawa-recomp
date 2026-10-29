@@ -2780,8 +2780,38 @@ static void player_package_status_queue_all(PlayerApp *app,
     }
 }
 
+/* Picks the next queued title to check: the selected one, then the titles the
+   launcher shows, then one a build or staging asked for. A title off screen
+   waits until it is shown: a full check hashes the disc's executable and
+   modules, and checking every title of a large library at every start read
+   every disc. Without the launcher (the regression build's old renderer) any
+   queued title goes, in library order. */
+static int player_package_status_pick(const PlayerApp *app, const PlayerUiNk *next_ui,
+                                      const bool requested[MAX_LIBRARY_GAMES],
+                                      const bool force_requested[MAX_LIBRARY_GAMES]) {
+    int selected = app->selected_game_index;
+    bool shown_only = player_ui_nk_view_active(next_ui, app);
+    if (selected >= 0 && selected < app->game_count && requested[selected]) {
+        return selected;
+    }
+    if (shown_only) {
+        int shown[PLAYER_UI_SHOWN_TITLES_MAX];
+        size_t shown_count = player_ui_nk_shown_titles(next_ui, shown,
+                                                       PLAYER_UI_SHOWN_TITLES_MAX);
+        for (size_t i = 0; i < shown_count; i++) {
+            if (shown[i] >= 0 && shown[i] < app->game_count && requested[shown[i]]) {
+                return shown[i];
+            }
+        }
+    }
+    for (int i = 0; i < app->game_count; i++) {
+        if (requested[i] && (!shown_only || force_requested[i])) return i;
+    }
+    return -1;
+}
+
 static bool player_package_status_start_next(
-    PlayerApp *app, PlayerPackageStatusJob **job_slot,
+    PlayerApp *app, const PlayerUiNk *next_ui, PlayerPackageStatusJob **job_slot,
     bool requested[MAX_LIBRARY_GAMES], bool force_requested[MAX_LIBRARY_GAMES],
     const char build_check_disc_id[MAX_DISC_ID_LEN],
     uint64_t build_check_session_generation,
@@ -2789,18 +2819,7 @@ static bool player_package_status_start_next(
     bool *build_check_pending) {
     if (!app || !job_slot || *job_slot) return false;
     (void)build_check_cache_generation;
-    int selected = app->selected_game_index;
-    int index = -1;
-    if (selected >= 0 && selected < app->game_count && requested[selected]) {
-        index = selected;
-    } else {
-        for (int i = 0; i < app->game_count; i++) {
-            if (requested[i]) {
-                index = i;
-                break;
-            }
-        }
-    }
+    int index = player_package_status_pick(app, next_ui, requested, force_requested);
     if (index < 0) return false;
 
     PlayerPackageStatusJob *job =
@@ -2866,6 +2885,7 @@ static bool player_package_status_start_next(
         player_app_runtime_package_cache_mark_pending(app, index);
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    printf("[PLAYER_UI_TEST] package_check index=%d disc=%s\n", index, job->game.disc_id);
     s_ui_test_package_status_thread_create_attempts++;
     bool fail_thread_create =
         player_ui_test_fail_thread_create_for_game(&job->game);
@@ -4106,7 +4126,9 @@ int main(int argc, char *argv[]) {
 #endif
     player_report_legacy_data_root();
 
-    PlayerApp app;
+    /* Static storage: a full library (NK_MAX_GAMES titles) makes the app state
+       tens of megabytes, far more than a thread's stack. */
+    static PlayerApp app;
     player_app_init(&app);
     const char *executable_directory = SDL_GetBasePath();
     if (executable_directory) {
@@ -5323,7 +5345,7 @@ int main(int argc, char *argv[]) {
     uint64_t build_check_cache_generation = 0;
     bool build_check_pending = false;
     (void)player_package_status_start_next(
-        &app, &package_status_job, package_status_requested,
+        &app, next_ui, &package_status_job, package_status_requested,
         package_status_force_requested, build_check_disc_id,
         build_check_session_generation, build_check_cache_generation,
         &build_check_pending);
@@ -5961,7 +5983,7 @@ int main(int argc, char *argv[]) {
         }
 
         (void)player_package_status_start_next(
-            &app, &package_status_job, package_status_requested,
+            &app, next_ui, &package_status_job, package_status_requested,
             package_status_force_requested, build_check_disc_id,
             build_check_session_generation, build_check_cache_generation,
             &build_check_pending);

@@ -2048,7 +2048,7 @@ static void test_sample_entries_never_reach_library_json(void) {
     seed_entry(&user, "TEST00041", "Synthetic User Title");
     assert(player_app_add_game(app, &user));
 
-    NkLibrary loaded;
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&loaded);
     assert(nk_library_load(&loaded, path) == NK_OK);
     assert(nk_library_count(&loaded) == 1);
@@ -4520,7 +4520,7 @@ int main(int argc, char **argv) {
         assert(player_app_find_game_by_disc_id(wiz, "UCUS98701") == 0);
         assert(wiz->games[0].extracted_asset_count == 4);
         assert(wiz->active_view == PLAYER_VIEW_READY_LIBRARY);
-        NkLibrary persisted;
+        static NkLibrary persisted;  /* too large for the stack (NK_MAX_GAMES) */
         assert(nk_library_load(&persisted, staged_library_path) == NK_OK);
         const NkGameEntry *persisted_game = nk_library_find_by_disc_id(&persisted, "UCUS98701");
         assert(persisted_game != NULL);
@@ -4752,7 +4752,7 @@ int main(int argc, char **argv) {
                                                   sizeof(refusal_report)) == 0);
         assert(strstr(refusal_report, "(disc TEST00001)") != NULL);
         assert(strstr(refusal_report, "(disc TEST00002)") != NULL);
-        PlayerApp refusal_app;
+        static PlayerApp refusal_app;  /* too large for the stack (NK_MAX_GAMES) */
         memset(&refusal_app, 0, sizeof(refusal_app));
         snprintf(refusal_app.title_manifest_report,
                  sizeof(refusal_app.title_manifest_report), "%s", refusal_report);
