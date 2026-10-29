@@ -8618,6 +8618,113 @@ int main(int argc, char **argv) {
         printf("[PLAYER_STATE_TEST] ADD TO LIBRARY staging decision PASSED\n");
     }
 
+    /* 24. Factory reset (owner, 2026-10-29) moves the user data aside, never
+       deletes it, and puts everything back when one folder cannot move. The
+       folders are this test's isolated ones (native_test_isolation). */
+    printf("[PLAYER_STATE_TEST] Subtest 24: factory reset moves the user data aside\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        static const NkPathType types[] = {
+            NK_PATH_CONFIG, NK_PATH_DATA, NK_PATH_CACHE, NK_PATH_SAVES
+        };
+        char dirs[4][NK_MAX_PATH];
+        char marks[4][NK_MAX_PATH + 32];
+        for (size_t i = 0; i < 4u; ++i) {
+            assert(nk_platform_get_path(types[i], dirs[i], sizeof(dirs[i])));
+            snprintf(marks[i], sizeof(marks[i]), "%s%creset-mark.txt", dirs[i], sep);
+            write_text_file(marks[i], "user data\n");
+        }
+        char logs_dir[NK_MAX_PATH];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+
+        PlayerApp *reset = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(reset != NULL);
+        nk_library_init(&reset->library);
+        char folders[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH];
+        size_t folder_count =
+            player_app_factory_reset_folders(reset, folders, PLAYER_FACTORY_RESET_FOLDERS);
+        assert(folder_count >= 1u && folder_count <= 4u);
+        for (size_t i = 0; i < folder_count; ++i) {
+            for (size_t j = 0; j < folder_count; ++j) {
+                if (i != j) assert(strncmp(folders[i], folders[j], strlen(folders[j])) != 0 ||
+                                   folders[i][strlen(folders[j])] != sep);
+            }
+        }
+
+        /* A running game: nothing moves. */
+        reset->is_game_running = true;
+        assert(!player_app_factory_reset(reset, "20261029-010203"));
+        assert(strcmp(reset->last_error.error_code, "FACTORY_RESET_BUSY") == 0);
+        assert(!reset->factory_reset_done && !reset->should_quit);
+        for (size_t i = 0; i < 4u; ++i) assert(nk_platform_file_exists(marks[i]));
+        reset->is_game_running = false;
+
+#if defined(_WIN32) || defined(_WIN64)
+        /* A file held open in the cache folder: that folder cannot move, and
+           the folders moved before it are put back. */
+        {
+            FILE *held = nk_fopen_utf8(marks[2], "rb");
+            assert(held != NULL);
+            assert(!player_app_factory_reset(reset, "20261029-010204"));
+            fclose(held);
+            assert(strcmp(reset->last_error.error_code, "FACTORY_RESET_FAILED") == 0);
+            assert(strstr(reset->last_error.message, "Nothing was moved.") != NULL);
+            assert(!reset->factory_reset_done && !reset->should_quit);
+            for (size_t i = 0; i < 4u; ++i) assert(nk_platform_file_exists(marks[i]));
+            assert(dev_log_contains(reset, "factory reset stopped at "));
+        }
+#endif
+
+        /* The reset: every folder is renamed with the stamp; logs stay. */
+        assert(player_app_factory_reset(reset, "20261029-010205"));
+        assert(reset->factory_reset_done && reset->should_quit);
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205", folders[i]);
+            assert(!nk_platform_dir_exists(folders[i]));
+            assert(nk_platform_dir_exists(moved));
+        }
+        for (size_t i = 0; i < 4u; ++i) {
+            char moved_mark[NK_MAX_PATH + 96];
+            const char *name = strrchr(marks[i], sep) + 1;
+            assert(!nk_platform_file_exists(marks[i]));
+            /* The mark is in the backup of the outermost folder holding it. */
+            bool found = false;
+            for (size_t j = 0; j < folder_count && !found; ++j) {
+                size_t n = strlen(folders[j]);
+                if (strncmp(dirs[i], folders[j], n) != 0) continue;
+                snprintf(moved_mark, sizeof(moved_mark), "%s-backup-20261029-010205%s%c%s",
+                         folders[j], dirs[i] + n, sep, name);
+                found = nk_platform_file_exists(moved_mark);
+            }
+            assert(found);
+        }
+        assert(nk_platform_dir_exists(logs_dir));
+
+        /* A second reset in the same second keeps the first backup's name. */
+        reset->factory_reset_done = false;
+        reset->should_quit = false;
+        for (size_t i = 0; i < folder_count; ++i) assert(nk_platform_mkdir_p(folders[i]));
+        assert(player_app_factory_reset(reset, "20261029-010205"));
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205-2", folders[i]);
+            assert(nk_platform_dir_exists(moved));
+            assert(test_rmdir(moved) == 0);
+        }
+
+        /* Put this test's data back for anything that runs after it. */
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205", folders[i]);
+            assert(nk_rename_utf8(moved, folders[i]) == 0);
+        }
+        for (size_t i = 0; i < 4u; ++i) remove(marks[i]);
+        free(reset);
+        printf("[PLAYER_STATE_TEST] factory reset PASSED\n");
+    }
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     native_test_assert_real_config_untouched();
