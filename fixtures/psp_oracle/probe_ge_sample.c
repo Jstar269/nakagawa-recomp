@@ -477,7 +477,7 @@ static int hle_run(void)
 #define GR_N 64u                   /* pixels in the window, and texels in each texture */
 #define GR_LIST_WORDS 256u
 #define GR_VTX_WORDS 800u
-#define GR_TEX_BYTES 256u          /* the largest texture (16x4 8888) */
+#define GR_TEX_BYTES 512u          /* room for the largest texture (GR_T_8888W, 320 bytes) */
 #define GR_CLUT_BYTES 1024u
 #define GR_Z 32768.0f              /* depth of every tested through-mode primitive */
 #define GR_RED 0xff0000ffu
@@ -486,12 +486,13 @@ static int hle_run(void)
 enum { GR_K_SPRITE, GR_K_ZSPRITE, GR_K_TRI, GR_K_WRAP, GR_K_CLEAR, GR_K_FOG, GR_K_XTRI,
        GR_K_LINE, GR_K_POINT };
 enum { GR_T_8888, GR_T_5650, GR_T_5551, GR_T_4444, GR_T_CLUT8, GR_T_CLUT4, GR_T_CLUT4W,
-       GR_T_COUNT };
+       GR_T_8888W, GR_T_COUNT };
 enum { GR_D_PATTERN, GR_D_WHITE };
 
 /* kind: what is drawn (GR_K_*); psm: framebuffer format; tex: source texture (GR_T_*);
-   dst: window contents before the draw (GR_D_*); arg: the kind's table row; vcol: vertex
-   colour (ABGR); w: command words applied after the base state, 0 ends them. */
+   dst: window contents before the draw (GR_D_*); arg: the kind's table row, the texture
+   buffer width of a GR_K_SPRITE (0: 16) or, for GR_K_FOG, 1 to give every pixel colour vcol;
+   vcol: vertex colour (ABGR); w: command words applied after the base state, 0 ends them. */
 struct gr_cell {
     const char *name;
     uint8_t kind, psm, tex, dst, arg;
@@ -499,7 +500,7 @@ struct gr_cell {
     uint32_t w[6];
 };
 
-#define GR_CELL_COUNT 175u
+#define GR_CELL_COUNT 189u
 static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"b-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe040c0ffu, 0xe17f3f01u}},
@@ -522,6 +523,11 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"b5551-sa-isa", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b4444-sa-isa", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b565-da-ida", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b-2sa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a6u, 0xe1000000u}},
+    {"b-2isa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a7u, 0xe1000000u}},
+    {"b-2da-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a8u, 0xe1000000u}},
+    {"b-ffix-2isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00007au, 0xe0ffffffu}},
+    {"b-ffix-2ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00009au, 0xe0ffffffu}},
     {"b5551-da-ida", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
     {"b4444-da-ida", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
     {"at-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8000u}},
@@ -565,6 +571,7 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"st5551-repl7f", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff7f01u, 0xdd020000u}},
     {"st5551-inv", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd030000u}},
     {"st565-repl", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st565-eq0", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff0002u, 0xdd000000u}},
     {"z-f0", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000000u}},
     {"z-f1", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000001u}},
     {"z-f2", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000002u}},
@@ -611,7 +618,10 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"tx-c8-5551", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff01u}},
     {"tx-c4-4444", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
     {"tx-c4-off3", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc503ff03u}},
-    {"tx-c4-bw48", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-bw48", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 48u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-bw64", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 64u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-8888-bw20", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 20u, 0x9aff7f20u, {0u}},
+    {"tx-c8-bw24", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 24u, 0x9aff7f20u, {0xc3000005u, 0xc500ff03u}},
     {"wr-c-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u}},
     {"wr-w-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u}},
     {"wr-uw-vc", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000100u}},
@@ -631,6 +641,7 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"e-line0", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
     {"e-line1", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
     {"e-line2", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line3", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 3u, 0x9aff7f20u, {0x1e000000u}},
     {"e-points", GR_K_POINT, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
     {"fmt-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
     {"fmt-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
@@ -676,6 +687,10 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"fog-a", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf8040c0u, 0xcdc08000u, 0xce3c9249u}},
     {"fog-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf0080ffu, 0xcd000000u, 0xce3c8080u}},
     {"fog-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k0-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k0-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k1-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k1-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd3f0000u, 0xce3c8000u}},
 };
 
 /* GR_K_WRAP texture rectangles: u0, v0 at the left/top edge, u1, v1 at the right/bottom. */
@@ -697,10 +712,11 @@ static const float gr_tris[8][12] = {
 };
 
 /* GR_K_LINE: two lines (red, then green), x/y of both ends relative to the window origin. */
-static const float gr_lines[3][8] = {
+static const float gr_lines[4][8] = {
     {0.0f, 0.0f, 16.0f, 0.0f, 0.5f, 2.5f, 15.5f, 2.5f},
     {0.0f, 0.0f, 15.0f, 3.0f, 2.0f, 3.5f, 13.0f, 0.5f},
     {3.25f, 0.0f, 3.25f, 4.0f, 10.75f, 0.5f, 12.5f, 3.75f},
+    {15.5f, 3.0f, 0.25f, 0.5f, 12.0f, 3.75f, 9.5f, 0.25f},
 };
 
 /* GR_K_POINT: eight points, alternately red and green. */
@@ -757,8 +773,8 @@ static uint32_t gr_depth(uint32_t i)
     return ((uint32_t)gr_byte(40u, i) << 8) | gr_byte(41u, i);
 }
 
-/* Texture t's bytes (16x4 texels; buffer width 16, or 48 for GR_T_CLUT4W); returns the byte
-   count. */
+/* Texture t's bytes (16x4 texels at buffer width 16; GR_T_CLUT4W and GR_T_8888W carry 128
+   and 320 bytes for wider buffers); returns the byte count. */
 static uint32_t gr_texture(uint32_t t, uint8_t *out)
 {
     uint32_t n = 0;
@@ -777,6 +793,10 @@ static uint32_t gr_texture(uint32_t t, uint8_t *out)
         } else if (t == GR_T_CLUT4W) {
             out[n++] = gr_byte(44u, i);
             out[n++] = gr_byte(45u, i);
+        } else if (t == GR_T_8888W) {
+            for (uint32_t b = 0; b < 5u; b++) {
+                out[n++] = gr_byte(46u + b, i);
+            }
         } else {
             out[n++] = gr_byte(21u + t, i);
             out[n++] = gr_byte(25u + t, i);
@@ -842,8 +862,9 @@ static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
                 n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x, y, z);
                 n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x + 1.0f, y + 1.0f, z);
             } else {
-                n += gr_xvtx(out + n, gr_rgba(1u, i), x, y, (float)i);
-                n += gr_xvtx(out + n, gr_rgba(1u, i), x + 1.0f, y + 1.0f, (float)i);
+                const uint32_t col = c->arg == 1u ? c->vcol : gr_rgba(1u, i);
+                n += gr_xvtx(out + n, col, x, y, (float)i);
+                n += gr_xvtx(out + n, col, x + 1.0f, y + 1.0f, (float)i);
             }
         }
     }
@@ -938,7 +959,7 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
     GR_W(0xc2, 0);
     GR_W(0xc3, 3);
     GR_W(0xa0, t);
-    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | (c->tex == GR_T_CLUT4W ? 48u : GR_WW));
+    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | (c->kind == GR_K_SPRITE && c->arg ? c->arg : GR_WW));
     GR_W(0xb8, (2u << 8) | 4u); /* 16x4 */
     GR_W(0xc6, 0);              /* nearest */
     GR_W(0xc7, 0x101u);         /* clamp u and v */
@@ -949,7 +970,8 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
     GR_W(0x49, gr_fbits(1.0f) >> 8);
     GR_W(0x4a, 0);
     GR_W(0x4b, 0);
-    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4 || c->tex == GR_T_CLUT4W) {
+    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4 || c->tex == GR_T_CLUT4W ||
+        c->tex == GR_T_8888W) {
         GR_W(0xb0, clut);
         GR_W(0xb1, (clut >> 8) & 0x000f0000u);
         GR_W(0xc5, 0x00ff03u);

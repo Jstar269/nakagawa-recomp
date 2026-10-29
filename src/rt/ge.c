@@ -2490,6 +2490,9 @@ static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int st
     }
     uint32_t oldraw=read_fb_raw(x,y);
     int dr,dg,db,da; unpack_color(oldraw,ge.fbfmt&3,&dr,&dg,&db,&da);
+    /* A 565 pixel has no alpha bits; blending reads its alpha as 0 (PSP-GE-RASTER-001
+     * b565-da-ida). */
+    if ((ge.fbfmt & 3) == 0) da = 0;
     if (ge.clear) {
         int write_color = (ge.clear_mode & 0x100) != 0;
         int write_alpha = (ge.clear_mode & 0x200) != 0;
@@ -3279,9 +3282,19 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
     int use_z    = persp ? ge.ztest_enable : thru_ztest();
     int use_fog  = persp && ge.fog_enable && !ge.clear;
     s_in3d = persp;
-    for (int i=0; i<=steps; i++) {
-        float t=(float)i/(float)steps;
-        int x=(int)(A->x+dx*t), y=(int)(A->y+dy*t);
+    /* The PSP steps the major axis one pixel at a time from the first endpoint's pixel and
+     * leaves the last endpoint's pixel out; the minor coordinate is the line's value at
+     * the centre of each major-axis pixel, truncated (PSP-GE-RASTER-001 e-line0..2). */
+    int xmajor = fabsf(dx) >= fabsf(dy);
+    float a_major = xmajor ? A->x : A->y, d_major = xmajor ? dx : dy;
+    float a_minor = xmajor ? A->y : A->x, d_minor = xmajor ? dy : dx;
+    int p0 = (int)floorf(a_major), dir = d_major < 0.0f ? -1 : 1;
+    for (int i=0; i<steps; i++) {
+        int p = p0 + i * dir;
+        float t = d_major != 0.0f ? ((float)p + 0.5f - a_major) / d_major : 0.0f;
+        int q = (int)floorf(a_minor + d_minor * t);
+        t = clampf01(t);
+        int x = xmajor ? p : q, y = xmajor ? q : p;
         float u=0, fv=0;
         float rho2 = 0.0f;
         if (textured) {
