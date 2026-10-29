@@ -161,6 +161,9 @@ jobs:
       - name: Enforce tracked-tree reference ratchet
         run: python tools/tree_lint.py --check
 
+      - name: Enforce core runtime purity (no game addresses in src/rt)
+        run: python tools/purity_gate.py
+
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |
@@ -836,6 +839,11 @@ jobs:
       # windows_runtime selftests part (#306). It links SDL3 (sched.c's host clock).
       - name: Build and run HLE thread selftest (links SDL3)
         run: make CC=gcc -j4 hle-thread-selftest
+
+      # The same production-HLE harness under the generic and both fixture title
+      # configurations (#306); it ran on no hosted job before.
+      - name: Run Linux title-configured HLE selftests
+        run: make CC=gcc -j4 hle-title-selftest
 
       - name: Run Linux scheduler selftest matrix
         run: make CC=gcc -j4 sched-selftest

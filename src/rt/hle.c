@@ -5871,6 +5871,8 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 #define PSMF_ERR_PRIV_REQUIRED 0x80000023u
 /* scePsmfPlayerStart playMode values (PSMF_PLAYER_MODE_*). */
 #define PSMF_PLAY_MODE_PAUSE 3u
+#define PSMF_PLAY_MODE_FORWARD 4
+#define PSMF_PLAY_MODE_REWIND 5
 /* Pictures the reference player always reports as "not yet" before the first frame.  Guest
  * middleware is written against this: several titles depend on the first calls failing. */
 #define PSMF_WARMUP_FRAMES 3
@@ -6931,11 +6933,37 @@ static uint32_t h_PsmfCreate(CpuState *s) {
 }
 static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_player_release(p);psmf_av_final("player_delete");MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
-static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
+/* scePsmfPlayerSetPsmf and scePsmfPlayerSetPsmfCB open the same file the same way and differ only in
+ * whether the caller's callbacks may run during the call (PPSSPP Core/HLE/scePsmf.cpp 3f40ddc8,
+ * _PsmfPlayerSetPsmfOffset).  Neither services callbacks here yet: the 3,100 us wait is a plain delay
+ * for both. */
+static uint32_t psmf_set_psmf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
+static uint32_t h_PsmfSetPsmf(CpuState *s){return psmf_set_psmf(s);}
+static uint32_t h_PsmfSetPsmfCB(CpuState *s){return psmf_set_psmf(s);}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
 /* scePsmfPlayerStart(player, PsmfPlayerData *data, int initPts): initPts is the third
  * argument (a2). t0 is the fifth EABI argument, which this call never sets. */
 static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)A2;if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams?(as>=p->audioStreams):(as>0&&as!=(uint32_t)-1)))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(!p->audioStreams&&ac!=0)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer){if(!sr_psmf_producer_select_streams(p->producer,vs,p->audioStreams?as:SR_PSMF_STREAM_NONE))return PSMF_ERR_CONFIG;}psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+/* scePsmfPlayerChangePlayMode(player, playMode, playSpeed): checks and their order follow PPSSPP
+ * Core/HLE/scePsmf.cpp (3f40ddc8).  A player that is not playing yet answers INVALID_STATUS, a mode outside
+ * PLAY..REWIND (0..5) INVALID_CONFIG, and FORWARD or REWIND on a PSMF without entry points (BASIC player)
+ * INVALID_STREAM; only FORWARD and REWIND take the new speed.  The mode itself is what the getters read:
+ * PAUSE stops the audio getter, as scePsmfPlayerStart's mode does. */
+static uint32_t h_PsmfChangePlayMode(CpuState *s){
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    int32_t mode = (int32_t)A1;
+    if (mode < 0 || mode > 5) return PSMF_ERR_CONFIG;
+    if (mode == PSMF_PLAY_MODE_FORWARD || mode == PSMF_PLAY_MODE_REWIND) {
+        if (p->playerVersion == 1u) return PSMF_ERR_STREAM;
+        p->playSpeed = A2;
+    }
+    if (psmf_log_on())
+        fprintf(stderr, "PSMF_PLAY_MODE: player=0x%08x mode %u -> %d speed=%d\n", A0, p->playMode, mode,
+                (int32_t)A2);
+    p->playMode = (uint32_t)mode;
+    return 0;
+}
 static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);sched_delay_current(3000);return 0;}
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
@@ -27806,7 +27834,9 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
     sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
     sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x3d6d25a9, "scePsmfPlayerSetPsmf", h_PsmfSetPsmf);
     sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0xa3d81169, "scePsmfPlayerChangePlayMode", h_PsmfChangePlayMode);
     sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
     sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
     sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
@@ -28325,7 +28355,9 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
