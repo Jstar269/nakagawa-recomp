@@ -12459,7 +12459,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dc55fa3b4540a36c7d329a6e4d3ed33dafef7ce8fab050f65939e1256b115c1b"
+      "sha256": "086d5289cfcb3af8b6048812bce1198ff91dfa242daf367daf63093feb84e90c"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -14245,7 +14245,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e5b06cd56842723e6301063dff9322de39680cab212670d25de8110e0d12eab"
+      "sha256": "dbe00a389a8e52732496f13a31823e0585c19e3ea03f6f7654e4a113b82b2e4b"
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
@@ -14786,7 +14786,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d472ba80bec5304b42acae5f283c9a14d27257dc472d9ca41b6971596c43edb"
+      "sha256": "86986465dc11613204e0ee77dbded6e33a332957fab6979ed687d37dcddd6013"
     },
     {
       "path": "tools/test_enhancement_package.py",
