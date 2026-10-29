@@ -267,6 +267,7 @@ class BuildTests(MatrixTestCase):
         self.assertEqual([name for name, _ in staged], ["transport-write", "delay-zero"])
         self.assertTrue(staged[1][1].endswith("host0-m1/delay_zero.prx"))
 
+    @unittest.skipUnless(sys.platform == "win32", "WSL drive paths come from a Windows host; POSIX paths have no drive")
     def test_wsl_path_style_converts_staged_paths(self) -> None:
         plan = self.load([{"case_id": "delay-zero", "timeout_seconds": 60}])
         wsl = om.MatrixPlan(**{**plan.__dict__, "path_style": "wsl",
