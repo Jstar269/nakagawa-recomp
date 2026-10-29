@@ -4887,16 +4887,30 @@ int main(int argc, char *argv[]) {
             /* The cards a finished game session shows (#1282), from a synthetic
                stop of the first library game. */
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "";
-            player_dev_log_add(&app, "runtime",
-                               "BOOT_EVENT phase=stop reason=semantic-boundary "
-                               "boundary=unsupported-import-scenetadhocinit issue=308");
+            static const char stop_event[] =
+                "BOOT_EVENT phase=stop reason=semantic-boundary "
+                "boundary=unsupported-import-scenetadhocinit issue=308";
+            player_dev_log_add(&app, "runtime", "%s", stop_event);
+            /* The run's output, kept as logs/game-<disc>-last.txt as a real
+               stop keeps it (#1303); the report reads its boot events there. */
+            char logs_dir[NK_MAX_PATH];
+            char run_log[NK_MAX_PATH + 64] = "";
+            if (disc[0] && nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)) &&
+                snprintf(run_log, sizeof(run_log), "%s%cgame-%s-last.txt", logs_dir,
+                         nk_platform_path_separator(), disc) < (int)sizeof(run_log)) {
+                FILE *log = nk_fopen_utf8(run_log, "wb");
+                if (!log || fprintf(log, "synthetic runtime output\n%s\n", stop_event) < 0) {
+                    run_log[0] = '\0';
+                }
+                if (log && fclose(log) != 0) run_log[0] = '\0';
+            }
             player_app_set_game_stop_error(&app, ui_test_error_code,
                                            "unsupported-import-scenetadhocinit", 308u,
                                            strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0
                                                ? 3 : 9,
                                            strcmp(ui_test_error_code,
                                                   "RUNTIME_PREMATURE_EXIT") == 0 ? 120u : 9000u,
-                                           disc, NULL);
+                                           disc, run_log[0] ? run_log : NULL);
         } else if (strcmp(ui_test_error_code, "PACKAGE_BUILD_REFUSED") == 0) {
             /* A preflight refusal (#1286): the build never started. */
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
