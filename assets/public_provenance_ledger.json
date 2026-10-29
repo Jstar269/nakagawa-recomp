@@ -4295,7 +4295,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ad1340b06c89c79b357963095f925f5af0c558bea254418bfecb12441292a44"
+      "sha256": "f24d4b653a2532d3d08342ce782516cf4ba0a4c846c8465ebcb57c24f7242f29"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -10854,7 +10854,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "66860dc62cf279300b6344b0942f44e1f888d833e6fbc131c96829bff1c819f8"
+      "sha256": "d5f8b6b34be2e14678c1d5c9e89c257c348013b0b7092f227ac5d2e65bbc75b4"
     },
     {
       "path": "tests/native/test_player_state.c",
