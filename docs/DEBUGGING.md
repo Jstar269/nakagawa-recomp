@@ -1313,6 +1313,27 @@ Output uses `SR_WATCH: pc=... addr=... val=... width=... vblank=...`. A vblank v
 means no vblank has been delivered yet. The watch is inert when unset; the shared store helpers
 take only a predicted-false flag check in that case.
 
+### Sampling guest state per vblank
+
+A store watch says when a value changed; a timing comparison also needs the value at every
+vblank, including values inside objects whose address is only known through a pointer. Set
+`SR_SAMPLE_SPEC` to a file of lines `<label> <type> <address> [<offset>...]`. The sample starts
+at `<address>`; each `<offset>` reads the guest word there as a pointer and adds the offset.
+`<type>` is `u8`, `s8`, `u16`, `s16`, `u32`, `s32` or `f32`. `#` starts a comment.
+
+```text
+updates   u32 0x08a00010          # a global
+clock     f32 0x08a00020 0x1e0    # field 0x1e0 of the object the global at 0x08a00020 points to
+```
+
+At the end of every serviced vblank, at the same point `SR_EXIT_AT_VBLANK` is checked, one CSV
+row `vblank,<value>...` is appended to `SR_SAMPLE_OUT` (default `samples.csv` in the runtime's
+working directory). A value whose pointer chain leaves readable guest memory is left empty. A
+spec line the reader cannot use (unknown type, bad number, more than 32 samples or six offsets)
+stops the run before it starts. Sampling reads guest memory and never writes it, so two runs of
+the same route are comparable. Addresses are guest addresses, so a spec belongs with the private
+route it measures and is never committed.
+
 ### Adding Watches in Code
 
 ```c

@@ -2535,6 +2535,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 planner.extend(("--psp-header", str(cached_header)))
             if enhancement_package_path is not None:
                 planner.extend(("--enhancement-package", str(enhancement_package_path)))
+                # The title's extracted files, where the package's data_files are read.
+                prepared_root = entry.get("prepared_root") or ""
+                if prepared_root and Path(prepared_root).is_dir():
+                    planner.extend(("--enhancement-data-root", prepared_root))
             return planner
 
         def log_command(planner: list[str]) -> None:

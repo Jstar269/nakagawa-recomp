@@ -484,6 +484,12 @@ else
 ENHANCEMENT_PACKAGE_ARG := --enhancement-package=$(ENHANCEMENT_PACKAGE)
 ENHANCEMENT_PACKAGE_PROFILE_LINE := $(NEWLINE)ENHANCEMENT_PACKAGE=$(ENHANCEMENT_PACKAGE)
 endif
+# The title's extracted files, where a package's data_files are read and checked.
+# Only a package build passes it; the package digest already names those files.
+ENHANCEMENT_DATA_ROOT ?=
+ifneq ($(and $(strip $(ENHANCEMENT_PACKAGE)),$(strip $(ENHANCEMENT_DATA_ROOT))),)
+ENHANCEMENT_PACKAGE_ARG += --enhancement-data-root=$(ENHANCEMENT_DATA_ROOT)
+endif
 
 # ---------------------------------------------------------------------------
 # BUILD IDENTITY: the source revision every commit-stamped artifact records --

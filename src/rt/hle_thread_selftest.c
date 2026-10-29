@@ -66,6 +66,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "../core/nk_font.h"    /* owner font import/cache path */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 #include "audio_resample.h"
+#include "vfpu_tables.h"        /* sr_vfpu_sha256: enhancement data-file digests */
 
 #include <math.h>
 #include <stdint.h>
@@ -2711,6 +2712,121 @@ static void test_io_open_async_notifies_later_callback(void) {
     nk_remove_utf8(host);
 }
 
+/* An enhancement data file is served rewritten only when the stock bytes it replaces match
+ * (docs/ENHANCEMENT_CONTRACT.md section 9.6); other paths are untouched. */
+static void test_io_enhancement_data_file(void) {
+    extern int sr_hle_test_io_open_enhanced(const char *path, uint32_t *fd);
+    extern void sr_hle_test_enhancement_files_reset(void);
+    enum { BUF_ADDR = 0x09018400u };
+    static const char guest[] = "ms0:/NKENH/TIMING.CSV";
+    static const char other[] = "ms0:/NKENH/OTHER.CSV";
+    static const uint8_t stock[] = "a,30\nb,12\n";
+    static const uint8_t rewritten[] = "a,60\nb,24\n";
+    char host[256];
+    uint8_t digest[32];
+    uint8_t wrong[32];
+    CpuState cpu;
+    uint32_t fd = 0u;
+
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKENH");
+    const char *names[] = {guest, other};
+    for (size_t i = 0; i < 2u; i++) {
+        fd_host_path(host, sizeof(host), names[i]);
+        FILE *fixture = fopen(host, "wb");
+        expect(fixture != NULL, "enhancement data file: fixture is written");
+        if (!fixture) return;
+        fwrite(stock, 1, sizeof(stock) - 1u, fixture);
+        fclose(fixture);
+    }
+    sr_vfpu_sha256(stock, sizeof(stock) - 1u, digest);
+    memset(wrong, 0, sizeof(wrong));
+    sr_hle_test_enhancement_files_reset();
+    expect(sr_enhancement_file_register("NKENH/Timing.csv", digest, rewritten,
+                                        (uint32_t)(sizeof(rewritten) - 1u)) == 1,
+           "enhancement data file: a disc path registers");
+
+    expect(sr_hle_test_io_open_enhanced(guest, &fd) == 1 && fd < 64u,
+           "enhancement data file: the stock file opens rewritten");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = BUF_ADDR;
+    cpu.r[6] = 64u;
+    uint32_t got = sr_hle_test_io_read(&cpu);
+    int same = got == sizeof(rewritten) - 1u;
+    for (uint32_t i = 0; same && i < got; i++) same = MEM_R8(BUF_ADDR + i) == rewritten[i];
+    expect(same, "enhancement data file: reads return the rewritten bytes and size");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+
+    expect(sr_hle_test_io_open_enhanced(other, &fd) == 0 && fd < 64u,
+           "enhancement data file: an unregistered path opens unchanged");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+
+    sr_hle_test_enhancement_files_reset();
+    expect(sr_enhancement_file_register("NKENH/TIMING.CSV", wrong, rewritten,
+                                        (uint32_t)(sizeof(rewritten) - 1u)) == 1,
+           "enhancement data file: a second registration is held");
+    rt_capture_begin();
+    int mismatch = sr_hle_test_io_open_enhanced(guest, &fd);
+    const char *out = rt_capture_end();
+    expect(mismatch == -1 && strstr(out, "ENHANCEMENT_DATA_MISMATCH") != NULL,
+           "enhancement data file: stock bytes that do not match are refused by name");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+    sr_hle_test_enhancement_files_reset();
+    for (size_t i = 0; i < 2u; i++) {
+        fd_host_path(host, sizeof(host), names[i]);
+        nk_remove_utf8(host);
+    }
+}
+
+/* SR_SAMPLE_SPEC writes one CSV row per vblank: globals, pointer chains, and an empty value
+ * where a chain leaves guest memory (docs/DEBUGGING.md, "Sampling guest state per vblank"). */
+static void test_state_sampler_rows(void) {
+    extern void sr_hle_test_state_sample_vblank(uint32_t vcount);
+    extern void sr_hle_test_state_sample_reset(void);
+    enum { GLOBAL = 0x09018500u, POINTER = 0x09018504u, OBJECT = 0x09018600u };
+    static const char spec_path[] = HLE_BUILD_ROOT "/state_sampler_spec.txt";
+    static const char out_path[] = HLE_BUILD_ROOT "/state_sampler_out.csv";
+    FILE *spec = fopen(spec_path, "w");
+    expect(spec != NULL, "state sampler: spec is written");
+    if (!spec) return;
+    fputs("# comment line\n", spec);
+    fputs("count u32 0x09018500\n", spec);
+    fprintf(spec, "field s16 0x%08x 0x6   # field 6 of the object\n", (unsigned)POINTER);
+    fputs("speed f32 0x09018504 0x8\n", spec);
+    fputs("lost u32 0x7ff00000 0x0\n", spec);
+    fclose(spec);
+    MEM_W32(GLOBAL, 7u);
+    MEM_W32(POINTER, OBJECT);
+    MEM_W16(OBJECT + 6u, (uint16_t)0xfffeu);
+    MEM_W32(OBJECT + 8u, 0x3fc00000u);   /* 1.5f */
+    hle_test_setenv("SR_SAMPLE_SPEC", spec_path);
+    hle_test_setenv("SR_SAMPLE_OUT", out_path);
+    sr_hle_test_state_sample_reset();
+    sr_hle_test_state_sample_vblank(41u);
+    MEM_W32(GLOBAL, 8u);
+    sr_hle_test_state_sample_vblank(42u);
+    sr_hle_test_state_sample_reset();
+    hle_test_setenv("SR_SAMPLE_SPEC", "");
+    hle_test_setenv("SR_SAMPLE_OUT", "");
+    char text[256] = "";
+    FILE *out = fopen(out_path, "r");
+    size_t got = out ? fread(text, 1, sizeof(text) - 1u, out) : 0u;
+    if (out) fclose(out);
+    text[got] = '\0';
+    static const char expected[] = "vblank,count,field,speed,lost\n41,7,-2,1.5,\n42,8,-2,1.5,\n";
+    if (strcmp(text, expected) != 0) fprintf(stderr, "state sampler wrote:\n%s", text);
+    expect(strcmp(text, expected) == 0,
+           "state sampler: one row per vblank with globals, pointer chains and empty misses");
+    remove(spec_path);
+    remove(out_path);
+}
+
 static void test_io_async_and_path_imports(void) {
     enum {
         PATH_ADDR = 0x09010000u,
@@ -3609,6 +3725,8 @@ static void test_fd_namespace(void) {
 
     test_io_async_and_path_imports();
     test_io_open_async_notifies_later_callback();
+    test_io_enhancement_data_file();
+    test_state_sampler_rows();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */

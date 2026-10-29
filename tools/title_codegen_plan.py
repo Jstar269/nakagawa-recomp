@@ -1830,6 +1830,7 @@ def build_package(
     aot_stage: bool = False,
     reuse_aot_stage: Path | None = None,
     enhancement_package_path: Path | None = None,
+    enhancement_data_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON.
 
@@ -2165,6 +2166,8 @@ def build_package(
         })
         if enhancement_package_path is not None:
             build_environment["ENHANCEMENT_PACKAGE"] = enhancement_package_path.as_posix()
+            if enhancement_data_root is not None:
+                build_environment["ENHANCEMENT_DATA_ROOT"] = enhancement_data_root.as_posix()
         build_jobs, build_jobs_reason = _host_package_build_jobs(
             build_environment["CHUNK_TARGET_BYTES"]
         )
@@ -2407,6 +2410,12 @@ def main(argv: list[str] | None = None) -> int:
         help="optional declarative enhancement package (e.g. experimental 60 Hz logic rescale)",
     )
     parser.add_argument(
+        "--enhancement-data-root",
+        type=Path,
+        default=None,
+        help="the title's extracted files, where the enhancement package's data_files are read",
+    )
+    parser.add_argument(
         "--profile",
         dest="codegen_profile",
         choices=("none", "hst"),
@@ -2463,6 +2472,7 @@ def main(argv: list[str] | None = None) -> int:
                 aot_stage=args.aot_stage,
                 reuse_aot_stage=args.reuse_aot_stage,
                 enhancement_package_path=args.enhancement_package,
+                enhancement_data_root=args.enhancement_data_root,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:

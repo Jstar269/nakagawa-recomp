@@ -70,6 +70,7 @@
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
 #include "hle_power.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector */
+#include "vfpu_tables.h" /* sr_vfpu_sha256(): enhancement data-file digests */
 #include "prx_loader.h"  /* clean-room PRX image loader (G3) */
 #include "flight_recorder.h"
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
@@ -14733,6 +14734,7 @@ typedef struct {
     SrArchiveVfs *archive_vfs;
     size_t archive_mount;
     size_t archive_entry;
+    const uint8_t *enhancement_data; /* rewritten bytes of an enhancement data file, or NULL */
     char guest_path[256];        /* the path the guest opened it with ("" if too long) */
 } Fd;
 static Fd s_fds[64];
@@ -16981,7 +16983,7 @@ static uint32_t io_open_exclusive_existing_boundary(const char *path) {
  * a full "disc0:/PSP_GAME/USRDIR/..." path. Returns the fd (>=1) on success or
  * -1 if the path is not in the extracted set (caller should fall through to the
  * real opener). The returned entry is owned by the immutable cache. */
-static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
+static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int forced_slot) {
     /* PSP flags: WRONLY=2, RDWR=3, APPEND=0x100, CREAT=0x200, TRUNC=0x400. */
     if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG"))
@@ -17199,6 +17201,119 @@ static const char *hle_fd_guest_path(uint32_t fd) {
     return s_fds[fd].guest_path;
 }
 
+/* Enhancement data files (docs/ENHANCEMENT_CONTRACT.md section 9.6). An enhancement build
+ * registers, only while SR_EXPERIMENTAL_60HZ=1, the rewritten bytes of disc files with the
+ * SHA-256 of the stock file each replaces. Opening a registered path reads the stock bytes
+ * first; matching bytes are then served rewritten, and any other bytes stop the run. Without
+ * a registration nothing here runs. */
+typedef struct {
+    char key[256];               /* disc path, lower case, as data_normalize_guest_key folds it */
+    uint8_t stock_sha256[32];
+    const uint8_t *data;
+    uint32_t size;
+} HleEnhancementFile;
+
+static HleEnhancementFile s_enhancement_files[128];
+static size_t s_enhancement_file_count;
+
+int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha256[32],
+                                 const uint8_t *data, uint32_t size) {
+    if (!disc_path || !stock_sha256 || !data) return 0;
+    size_t length = strlen(disc_path);
+    size_t capacity = sizeof(s_enhancement_files) / sizeof(s_enhancement_files[0]);
+    if (length == 0u || length >= sizeof(s_enhancement_files[0].key) ||
+        s_enhancement_file_count >= capacity)
+        return 0;
+    HleEnhancementFile *entry = &s_enhancement_files[s_enhancement_file_count++];
+    for (size_t i = 0; i <= length; i++) {
+        char c = disc_path[i];
+        entry->key[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    memcpy(entry->stock_sha256, stock_sha256, 32u);
+    entry->data = data;
+    entry->size = size;
+    return 1;
+}
+
+/* The whole stock content behind a freshly opened read descriptor. */
+static int hle_enhancement_read_stock(Fd *f, uint8_t *buf, uint32_t size) {
+    if (f->pgd) return 0;
+    if (f->archive_vfs) {
+        SrArchiveFile archive_file = {f->archive_mount, f->archive_entry, f->size, -1};
+        uint32_t done = 0;
+        while (done < size) {
+            size_t got = 0;
+            if (sr_archive_vfs_read(f->archive_vfs, &archive_file, done, buf + done,
+                                    size - done, &got) != NK_OK || got == 0u ||
+                got > size - done)
+                return 0;
+            done += (uint32_t)got;
+        }
+        return 1;
+    }
+    if (f->host) {
+        if (fseek(f->host, 0, SEEK_SET) != 0) return 0;
+        return fread(buf, 1, size, f->host) == size;
+    }
+    uint32_t done = 0;
+    while (done < size) {
+        int got = iso_read(f->lba, done, buf + done, size - done);
+        if (got <= 0) return 0;
+        done += (uint32_t)got;
+    }
+    return 1;
+}
+
+/* Serve a registered data file rewritten, after checking the stock bytes it replaces.
+ * Returns 1 when the descriptor now serves rewritten bytes, 0 when the path is not
+ * registered, and -1 when a registered path does not hold the stock bytes. */
+static int hle_enhancement_attach(int slot, const char *path, uint32_t flags) {
+    if (s_enhancement_file_count == 0u || (flags & 0x3u) != 0x1u) return 0;
+    Fd *f = &s_fds[slot];
+    if (f->kind != FD_KIND_FILE || f->raw_umd || f->flash0) return 0;
+    int variant = -2;
+    char *key = data_normalize_guest_key(path, &variant);
+    if (!key) return 0;
+    int registered = 0;
+    for (size_t i = 0; i < s_enhancement_file_count; i++)
+        registered |= strcmp(s_enhancement_files[i].key, key) == 0;
+    if (!registered) { free(key); return 0; }
+    uint8_t digest[32];
+    uint8_t *stock = (uint8_t *)malloc(f->size ? f->size : 1u);
+    int read_ok = stock && hle_enhancement_read_stock(f, stock, f->size);
+    if (read_ok) sr_vfpu_sha256(stock, f->size, digest);
+    free(stock);
+    for (size_t i = 0; read_ok && i < s_enhancement_file_count; i++) {
+        const HleEnhancementFile *entry = &s_enhancement_files[i];
+        if (strcmp(entry->key, key) != 0 || memcmp(entry->stock_sha256, digest, 32u) != 0)
+            continue;
+        f->enhancement_data = entry->data;
+        f->size = entry->size;
+        f->off = 0;
+        if (getenv("SR_IOLOG"))
+            fprintf(stderr, "Open(%s) -> enhancement data file size=%u\n", path, entry->size);
+        free(key);
+        return 1;
+    }
+    fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: %s (%s) does not hold the stock bytes the "
+                    "enhancement package rewrites\n",
+            path, read_ok ? "digest differs" : "read failed");
+    free(key);
+    return -1;
+}
+
+static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
+    uint32_t rc = h_io_open_path_stock(path, flags, forced_slot);
+    if (rc < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) && s_fds[rc].used &&
+        hle_enhancement_attach((int)rc, path, flags) < 0) {
+        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: the run stops here\n");
+        sr_trace_close();
+        fflush(stderr);
+        _Exit(1);
+    }
+    return rc;
+}
+
 static uint32_t h_IoOpen(CpuState *s) {
     char path[512];
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
@@ -17251,6 +17366,14 @@ static uint32_t h_IoRead(CpuState *s) {
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
     uint64_t perf_started = sr_perf_now_ns();
+    if (f->enhancement_data) {
+        if (f->off >= f->size || count == 0u) return 0u;
+        if (count > f->size - f->off) count = f->size - f->off;
+        if (!sr_guest_span_writable(dst, count)) return 0x80010016u;
+        for (uint32_t i = 0; i < count; i++) MEM_W8(dst + i, f->enhancement_data[f->off + i]);
+        f->off += count;
+        return count;
+    }
     if (f->archive_vfs) {
         if (dst && !sr_guest_span_writable(dst, count)) return 0x80010016u;
         if (f->off >= f->size || count == 0u) return 0u;
@@ -17462,6 +17585,12 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         if (!out || count > outlen) return 0x80010016;
         if (f->off + count > f->size) count = f->size - f->off;
         uint64_t perf_started = sr_perf_now_ns();
+        if (f->enhancement_data) {
+            if (!sr_guest_span_writable(out, count)) return 0x80010016u;
+            for (uint32_t i = 0; i < count; i++) MEM_W8(out + i, f->enhancement_data[f->off + i]);
+            f->off += count;
+            return count;
+        }
         if (f->archive_vfs) {
             if (!out || !sr_guest_span_writable(out, count)) return 0x80010016u;
             uint8_t archive_tmp[4096];
@@ -18893,6 +19022,15 @@ static uint32_t h_IoChstat(CpuState *s) {
  * that executable.  The wrappers and identity probe are test-build-only. */
 static void hle_register_iofilemgr_handlers(void);
 uint32_t sr_hle_test_io_open(CpuState *s) { return h_IoOpen(s); }
+/* Open read-only without the run-stopping mismatch exit: the attach result (1, 0 or -1),
+ * with the descriptor in *fd. */
+int sr_hle_test_io_open_enhanced(const char *path, uint32_t *fd) {
+    uint32_t rc = h_io_open_path_stock(path, 1u, -1);
+    *fd = rc;
+    if (rc >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[rc].used) return 0;
+    return hle_enhancement_attach((int)rc, path, 1u);
+}
+void sr_hle_test_enhancement_files_reset(void) { s_enhancement_file_count = 0u; }
 uint32_t sr_hle_test_io_read(CpuState *s) { return h_IoRead(s); }
 uint32_t sr_hle_test_io_write(CpuState *s) { return h_IoWrite(s); }
 uint32_t sr_hle_test_io_lseek(CpuState *s) { return h_IoLseek(s); }
@@ -22435,6 +22573,134 @@ void sr_display_advance_vcount(uint32_t elapsed_periods) {
     s_vcount_fwd = s_vcount;
 }
 uint32_t sr_display_vcount(void) { return s_vcount; }
+
+/* SR_SAMPLE_SPEC=<file>: a per-vblank record of guest state, for timing comparisons such as
+ * an authentic run against an enhancement build of the same scripted route
+ * (docs/DEBUGGING.md, "Sampling guest state per vblank"). Each spec line is
+ * `<label> <type> <address> [<offset>...]`: start at <address>, and for each <offset> read the
+ * guest word there as a pointer and add <offset>. <type> is u8, s8, u16, s16, u32, s32 or f32.
+ * At the end of every serviced vblank one CSV row `vblank,<value>...` is appended to
+ * SR_SAMPLE_OUT (default samples.csv); a value whose pointer chain leaves readable guest
+ * memory is left empty. A spec the reader cannot use stops the run before it starts. Unset,
+ * nothing is read or written. */
+enum { HLE_SAMPLE_MAX = 32, HLE_SAMPLE_MAX_OFFSETS = 6 };
+typedef struct {
+    char label[48];
+    char type[4];
+    uint32_t base;
+    uint32_t offsets[HLE_SAMPLE_MAX_OFFSETS];
+    int offset_count;
+} HleStateSample;
+static HleStateSample s_samples[HLE_SAMPLE_MAX];
+static int s_sample_count = -1;
+static FILE *s_sample_out;
+
+static void hle_state_sample_refuse(const char *path, int line, const char *why) {
+    fprintf(stderr, "SR_SAMPLE_SPEC: %s line %d: %s; the run stops here\n", path, line, why);
+    fflush(stderr);
+    _Exit(2);
+}
+
+static void hle_state_sample_init(void) {
+    s_sample_count = 0;
+    const char *path = getenv("SR_SAMPLE_SPEC");
+    if (!path || !path[0]) return;
+    FILE *spec = fopen(path, "r");
+    if (!spec) hle_state_sample_refuse(path, 0, "cannot be read");
+    char text[512];
+    int line = 0;
+    while (fgets(text, sizeof(text), spec)) {
+        line++;
+        char *hash = strchr(text, '#');
+        if (hash) *hash = '\0';
+        char *tokens[3 + HLE_SAMPLE_MAX_OFFSETS + 1];
+        int n = 0;
+        for (char *t = strtok(text, " \t\r\n"); t; t = strtok(NULL, " \t\r\n")) {
+            if (n == (int)(sizeof(tokens) / sizeof(tokens[0]))) hle_state_sample_refuse(path, line, "too many offsets");
+            tokens[n++] = t;
+        }
+        if (n == 0) continue;
+        if (n < 3) hle_state_sample_refuse(path, line, "expected <label> <type> <address> [<offset>...]");
+        if (s_sample_count == HLE_SAMPLE_MAX) hle_state_sample_refuse(path, line, "more than 32 samples");
+        HleStateSample *sample = &s_samples[s_sample_count];
+        if (strlen(tokens[0]) >= sizeof(sample->label)) hle_state_sample_refuse(path, line, "label too long");
+        for (const char *c = tokens[0]; *c; c++)
+            if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') ||
+                  *c == '_' || *c == '.'))
+                hle_state_sample_refuse(path, line, "label must be [A-Za-z0-9_.]");
+        static const char *const types[] = {"u8", "s8", "u16", "s16", "u32", "s32", "f32"};
+        int known = 0;
+        for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) known |= strcmp(tokens[1], types[i]) == 0;
+        if (!known) hle_state_sample_refuse(path, line, "unknown type");
+        uint32_t values[1 + HLE_SAMPLE_MAX_OFFSETS];
+        for (int i = 2; i < n; i++) {
+            char *end = NULL;
+            unsigned long long v = strtoull(tokens[i], &end, 0);
+            if (!end || *end || v > UINT32_MAX) hle_state_sample_refuse(path, line, "bad address or offset");
+            values[i - 2] = (uint32_t)v;
+        }
+        snprintf(sample->label, sizeof(sample->label), "%s", tokens[0]);
+        snprintf(sample->type, sizeof(sample->type), "%s", tokens[1]);
+        sample->base = values[0];
+        sample->offset_count = n - 3;
+        for (int i = 0; i < sample->offset_count; i++) sample->offsets[i] = values[1 + i];
+        s_sample_count++;
+    }
+    fclose(spec);
+    if (s_sample_count == 0) hle_state_sample_refuse(path, line, "names no samples");
+    const char *out = getenv("SR_SAMPLE_OUT");
+    if (!out || !out[0]) out = "samples.csv";
+    s_sample_out = fopen(out, "w");
+    if (!s_sample_out) hle_state_sample_refuse(out, 0, "SR_SAMPLE_OUT cannot be written");
+    fputs("vblank", s_sample_out);
+    for (int i = 0; i < s_sample_count; i++) fprintf(s_sample_out, ",%s", s_samples[i].label);
+    fputc('\n', s_sample_out);
+}
+
+static void hle_state_sample_vblank(uint32_t vcount) {
+    if (s_sample_count < 0) hle_state_sample_init();
+    if (!s_sample_out) return;
+    fprintf(s_sample_out, "%u", vcount);
+    for (int i = 0; i < s_sample_count; i++) {
+        const HleStateSample *sample = &s_samples[i];
+        uint32_t addr = sample->base;
+        int ok = 1;
+        for (int k = 0; ok && k < sample->offset_count; k++) {
+            ok = sr_guest_span_readable(addr, 4u);
+            if (ok) addr = MEM_R32(addr) + sample->offsets[k];
+        }
+        uint32_t width = sample->type[1] == '8' ? 1u : sample->type[1] == '1' ? 2u : 4u;
+        if (!ok || !sr_guest_span_readable(addr, width)) { fputc(',', s_sample_out); continue; }
+        if (strcmp(sample->type, "u8") == 0) fprintf(s_sample_out, ",%u", (unsigned)MEM_R8(addr));
+        else if (strcmp(sample->type, "s8") == 0) fprintf(s_sample_out, ",%d", (int)(int8_t)MEM_R8(addr));
+        else if (strcmp(sample->type, "u16") == 0) fprintf(s_sample_out, ",%u", (unsigned)MEM_R16(addr));
+        else if (strcmp(sample->type, "s16") == 0) fprintf(s_sample_out, ",%d", (int)(int16_t)MEM_R16(addr));
+        else if (strcmp(sample->type, "u32") == 0) fprintf(s_sample_out, ",%u", (unsigned)MEM_R32(addr));
+        else if (strcmp(sample->type, "s32") == 0) fprintf(s_sample_out, ",%d", (int)(int32_t)MEM_R32(addr));
+        else {
+            uint32_t bits = MEM_R32(addr);
+            float f;
+            memcpy(&f, &bits, sizeof(f));
+            fprintf(s_sample_out, ",%.9g", (double)f);
+        }
+    }
+    fputc('\n', s_sample_out);
+}
+
+static void hle_state_sample_close(void) {
+    if (s_sample_out) {
+        fclose(s_sample_out);
+        s_sample_out = NULL;
+    }
+}
+
+/* Self-test seams: one sample row, and a reset that re-reads SR_SAMPLE_SPEC. */
+void sr_hle_test_state_sample_vblank(uint32_t vcount) { hle_state_sample_vblank(vcount); }
+void sr_hle_test_state_sample_reset(void) {
+    hle_state_sample_close();
+    s_sample_count = -1;
+}
+
 void sr_vblank_tick(void) {
     if (s_display_latched_pending) {
         s_display_active = s_display_latched;
@@ -22589,6 +22855,7 @@ void sr_vblank_tick(void) {
      *
      * It ends the process; it never skips guest work, changes pacing, or touches rendering.
      * Exit status 0 -- reaching the requested vblank is success, unlike the watchdog abort. */
+    hle_state_sample_vblank(s_vcount);
     {
         static uint32_t exit_at = 0; static int exit_init = 0;
         if (!exit_init) {
@@ -22615,6 +22882,7 @@ void sr_vblank_tick(void) {
             psmf_av_final("exit_at_vblank");
             sr_compat_report();
             sr_perf_shutdown();
+            hle_state_sample_close();
             _Exit(0);
         }
     }

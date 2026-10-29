@@ -88,6 +88,8 @@ ROOT_KEYS = frozenset({
     "rng_policy",
     "sites",
     "update_boundary",
+    "data_sites",
+    "data_files",
 })
 
 REQUIRED_ROOT_KEYS = frozenset({
@@ -110,6 +112,61 @@ TIMING_PACKAGE_KEYS = frozenset({
 # Timing-package fields that may be left out.
 OPTIONAL_TIMING_PACKAGE_KEYS = frozenset({
     "update_boundary",
+    "data_sites",
+    "data_files",
+})
+
+# A data site: constants in the executable's loaded data, rescaled once at load.
+DATA_SITE_KEYS = frozenset({
+    "id",
+    "symbol",
+    "offset",
+    "type",
+    "count",
+    "stock_digest",
+    "transform",
+})
+
+# Element types a data site may name: (size in bytes, struct format).
+DATA_TYPES = {
+    "u8": (1, "<B"),
+    "s8": (1, "<b"),
+    "u16": (2, "<H"),
+    "s16": (2, "<h"),
+    "u32": (4, "<I"),
+    "s32": (4, "<i"),
+    "f32": (4, "<f"),
+}
+
+# Transforms a data value or a data-file cell may declare: the operand scalings of
+# section 9.2. Gating and the vblank wait act on code, not on data.
+DATA_TRANSFORMS = frozenset({
+    "count_x2",
+    "step_x0.5",
+    "probability_per_update_x0.5",
+    "decay_k_to_1-sqrt(1-k)",
+    "retention_m_to_sqrt(m)",
+})
+
+# A data file: a file the title reads from its disc, rewritten when it is opened.
+DATA_FILE_KEYS = frozenset({
+    "id",
+    "path",
+    "sha256",
+    "format",
+    "header_row",
+    "first_data_row",
+    "cells",
+})
+
+DATA_FILE_FORMATS = frozenset({
+    "csv",
+})
+
+CSV_CELL_KEYS = frozenset({
+    "column",
+    "rows",
+    "transform",
 })
 
 HOOK_KEYS = frozenset({
@@ -149,6 +206,9 @@ SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 SYMBOL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}$")
 SITE_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$")
+# A disc path relative to the disc root: forward slashes, no empty, '.' or '..' part.
+DATA_FILE_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$")
+CSV_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 HEX_ADDRESS_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
 DECOMP_ADDRESS_RE = re.compile(r"^(?:sub|loc|func|fun)_[0-9a-fA-F]+$", re.IGNORECASE)
@@ -529,7 +589,126 @@ def validate_package(data: Any) -> dict[str, Any]:
                 "alternate logic updates, counted where each update begins",
             )
 
+        if "data_sites" in data:
+            _validate_data_sites(data["data_sites"])
+        if "data_files" in data:
+            _validate_data_files(data["data_files"])
+
     return data
+
+
+def _check_id(value: Any, path: str, seen: set[str], role: str) -> None:
+    check_not_address_literal(value, path, f"{role} id")
+    if not SITE_ID_RE.match(value):
+        fail(path, f"{role} id {value!r} does not match required pattern {SITE_ID_RE.pattern}")
+    if value in seen:
+        fail(path, f"duplicate {role} id {value!r}")
+    seen.add(value)
+
+
+def _check_keys(obj: Any, path: str, allowed: frozenset[str], required: Sequence[str], role: str) -> None:
+    if not isinstance(obj, dict):
+        fail(path, f"{role} entry must be an object, got {type(obj).__name__}")
+    unknown = sorted(set(obj.keys()) - allowed)
+    if unknown:
+        fail(path, f"Unknown properties forbidden in {role}: {unknown}")
+    for req in required:
+        if req not in obj:
+            fail(path, f"Missing required property {req!r} in {role}")
+
+
+def _check_int(value: Any, path: str, lo: int, hi: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not lo <= value <= hi:
+        fail(path, f"must be an integer in [{lo}, {hi}], got {value!r}")
+    return value
+
+
+def _validate_data_sites(data_sites: Any) -> None:
+    if not isinstance(data_sites, list) or not data_sites:
+        fail("data_sites", "data_sites must be a non-empty array")
+    seen_ids: set[str] = set()
+    seen_spans: list[tuple[str, int, int]] = []
+    for idx, site in enumerate(data_sites):
+        path = f"data_sites[{idx}]"
+        _check_keys(site, path, DATA_SITE_KEYS,
+                    ("id", "symbol", "offset", "type", "stock_digest", "transform"), "data site")
+        _check_id(site["id"], f"{path}.id", seen_ids, "data site")
+        symbol = site["symbol"]
+        check_not_address_literal(symbol, f"{path}.symbol", "data site symbol")
+        if not SYMBOL_RE.match(symbol):
+            fail(f"{path}.symbol", f"data site symbol {symbol!r} does not match required pattern {SYMBOL_RE.pattern}")
+        dtype = site["type"]
+        if dtype not in DATA_TYPES:
+            fail(f"{path}.type", f"Unknown data type {dtype!r}; must be one of {sorted(DATA_TYPES)}")
+        size = DATA_TYPES[dtype][0]
+        offset = _check_int(site["offset"], f"{path}.offset", 0, 1 << 20)
+        if offset % size:
+            fail(f"{path}.offset", f"offset {offset} is not aligned to its {size}-byte type")
+        count = _check_int(site.setdefault("count", 1), f"{path}.count", 1, 256)
+        digest = site["stock_digest"]
+        if not isinstance(digest, str) or not SHA256_HEX_RE.match(digest):
+            fail(f"{path}.stock_digest", "stock_digest must be a 64-character lowercase hex SHA-256 digest")
+        if site["transform"] not in DATA_TRANSFORMS:
+            fail(f"{path}.transform",
+                 f"Transform {site['transform']!r} has no data rescale; must be one of {sorted(DATA_TRANSFORMS)}")
+        lo, hi = offset, offset + size * count
+        for other_symbol, other_lo, other_hi in seen_spans:
+            if other_symbol == symbol and lo < other_hi and other_lo < hi:
+                fail(path, f"data site overlaps another data site of {symbol!r}")
+        seen_spans.append((symbol, lo, hi))
+
+
+def _validate_data_files(data_files: Any) -> None:
+    if not isinstance(data_files, list) or not data_files:
+        fail("data_files", "data_files must be a non-empty array")
+    seen_ids: set[str] = set()
+    seen_files: set[tuple[str, str]] = set()
+    for idx, entry in enumerate(data_files):
+        path = f"data_files[{idx}]"
+        _check_keys(entry, path, DATA_FILE_KEYS,
+                    ("id", "path", "sha256", "format", "header_row", "first_data_row", "cells"),
+                    "data file")
+        _check_id(entry["id"], f"{path}.id", seen_ids, "data file")
+        file_path = entry["path"]
+        if not isinstance(file_path, str) or len(file_path) > 255 or not DATA_FILE_PATH_RE.match(file_path):
+            fail(f"{path}.path", f"path {file_path!r} must be a relative disc path of plain names separated by '/'")
+        digest = entry["sha256"]
+        if not isinstance(digest, str) or not SHA256_HEX_RE.match(digest):
+            fail(f"{path}.sha256", "sha256 must be a 64-character lowercase hex SHA-256 digest")
+        key = (file_path.lower(), digest)
+        if key in seen_files:
+            fail(path, f"duplicate data file {file_path!r} with the same sha256")
+        seen_files.add(key)
+        if entry["format"] not in DATA_FILE_FORMATS:
+            fail(f"{path}.format", f"Unknown data file format {entry['format']!r}; must be one of {sorted(DATA_FILE_FORMATS)}")
+        header_row = _check_int(entry["header_row"], f"{path}.header_row", 0, 255)
+        first_data_row = _check_int(entry["first_data_row"], f"{path}.first_data_row", 1, 256)
+        if first_data_row <= header_row:
+            fail(f"{path}.first_data_row", "first_data_row must come after header_row")
+        cells = entry["cells"]
+        if not isinstance(cells, list) or not cells:
+            fail(f"{path}.cells", "cells must be a non-empty array")
+        seen_columns: set[str] = set()
+        for cidx, cell in enumerate(cells):
+            cpath = f"{path}.cells[{cidx}]"
+            _check_keys(cell, cpath, CSV_CELL_KEYS, ("column", "transform"), "csv cell")
+            column = cell["column"]
+            if not isinstance(column, str) or not CSV_COLUMN_RE.match(column):
+                fail(f"{cpath}.column", f"column {column!r} must be an ASCII header name matching {CSV_COLUMN_RE.pattern}")
+            if column in seen_columns:
+                fail(f"{cpath}.column", f"column {column!r} is rescaled twice")
+            seen_columns.add(column)
+            if cell["transform"] not in DATA_TRANSFORMS:
+                fail(f"{cpath}.transform",
+                     f"Transform {cell['transform']!r} has no data rescale; must be one of {sorted(DATA_TRANSFORMS)}")
+            if "rows" in cell:
+                rows = cell["rows"]
+                if not isinstance(rows, list) or not rows:
+                    fail(f"{cpath}.rows", "rows must be a non-empty array of data-row indexes")
+                for ridx, row in enumerate(rows):
+                    _check_int(row, f"{cpath}.rows[{ridx}]", 0, 65535)
+                if len(set(rows)) != len(rows):
+                    fail(f"{cpath}.rows", "rows must not repeat")
 
 
 def compute_stock_words_digest(words: Sequence[int]) -> str:
@@ -672,17 +851,29 @@ def verify_and_resolve_sites(
                 f"Duplicate resolved instruction address 0x{site_addr:08x} (fail-closed refusal)",
             )
 
-        if word_count != 1:
+        stock_words = [int(w) & 0xFFFFFFFF for w in words]
+        if word_count == 1:
+            rewrites = [plan_site_rewrite(site, stock_words[0])]
+        elif word_count == 2:
+            rewrites = plan_float_pair_rewrite(site, stock_words[0], stock_words[1])
+        else:
             fail(
                 f"{site_path}.word_count",
-                "Multi-word sites have no defined rewrite (fail-closed refusal)",
+                "Only one-word sites and lui/ori float pairs have a defined rewrite (fail-closed refusal)",
             )
-        resolved_entry = dict(site)
-        resolved_entry["fn_addr"] = fn_addr
-        resolved_entry["site_addr"] = site_addr
-        resolved_entry["stock_words"] = [int(w) & 0xFFFFFFFF for w in words]
-        resolved_entry["rewrite"] = plan_site_rewrite(site, resolved_entry["stock_words"][0])
-        resolved_by_addr[site_addr] = resolved_entry
+        for word_index, rewrite in enumerate(rewrites):
+            word_addr = site_addr + 4 * word_index
+            if word_addr in resolved_by_addr:
+                fail(
+                    site_path,
+                    f"Duplicate resolved instruction address 0x{word_addr:08x} (fail-closed refusal)",
+                )
+            resolved_entry = dict(site)
+            resolved_entry["fn_addr"] = fn_addr
+            resolved_entry["site_addr"] = word_addr
+            resolved_entry["stock_words"] = [stock_words[word_index]]
+            resolved_entry["rewrite"] = rewrite
+            resolved_by_addr[word_addr] = resolved_entry
 
     if "update_boundary" not in validated:
         gated = sorted(e["id"] for e in resolved_by_addr.values() if e["rewrite"]["kind"] == "gate")
@@ -811,6 +1002,178 @@ def _read_verified_words(
     return site_addr, list(words)
 
 
+def _scale_value(transform: str, value: float) -> float:
+    """The rescaled value of one data operand; the caller checks it is representable."""
+    if transform == "count_x2":
+        return value * 2
+    if transform in ("step_x0.5", "probability_per_update_x0.5"):
+        return value / 2
+    if not 0.0 < value < 1.0:
+        raise ValueError(f"{value!r} is outside (0, 1)")
+    if transform == "decay_k_to_1-sqrt(1-k)":
+        return 1.0 - math.sqrt(1.0 - value)
+    return math.sqrt(value)
+
+
+def plan_data_value(transform: str, dtype: str, raw: bytes) -> bytes:
+    """Rescale one little-endian data element; refuse a value with no exact rescale."""
+    size, fmt = DATA_TYPES[dtype]
+    (value,) = struct.unpack(fmt, raw)
+    if dtype == "f32":
+        if not math.isfinite(value):
+            raise ValueError(f"float {value!r} is not finite")
+        scaled = _scale_value(transform, value)
+        out = struct.pack(fmt, scaled)
+        if not math.isfinite(struct.unpack(fmt, out)[0]):
+            raise ValueError(f"float {value!r} overflows when rescaled")
+        return out
+    if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5"):
+        raise ValueError(f"{transform} needs a float, not {dtype}")
+    scaled = _scale_value(transform, value)
+    if scaled != int(scaled):
+        raise ValueError(f"{dtype} {value} has no exact rescale")
+    try:
+        return struct.pack(fmt, int(scaled))
+    except struct.error as exc:
+        raise ValueError(f"{dtype} {value} overflows when rescaled") from exc
+
+
+def verify_and_resolve_data_sites(
+    pkg_data: Mapping[str, Any],
+    *,
+    symbol_to_addr: Mapping[str, int],
+    read_data_fn: Any,
+) -> list[dict[str, Any]]:
+    """Resolve, digest-check and rescale a package's executable data sites fail-closed.
+
+    ``read_data_fn(vaddr, size)`` returns the stock bytes of initialised loaded data
+    (never code or zero-fill), or ``None``. Returns one entry per site with its
+    ``addr``, ``stock`` bytes and rescaled ``data`` bytes.
+    """
+    validated = validate_package(dict(pkg_data))
+    resolved: list[dict[str, Any]] = []
+    for idx, site in enumerate(validated.get("data_sites", ())):
+        path = f"data_sites[{idx}]({site['id']})"
+        symbol = site["symbol"]
+        if symbol not in symbol_to_addr:
+            fail(f"{path}.symbol", f"Cannot resolve data symbol {symbol!r} (fail-closed refusal)")
+        size = DATA_TYPES[site["type"]][0]
+        addr = int(symbol_to_addr[symbol]) + int(site["offset"])
+        length = size * int(site["count"])
+        stock = read_data_fn(addr, length)
+        if stock is None or len(stock) != length:
+            fail(path, f"{symbol}+{site['offset']} is not {length} bytes of initialised data (fail-closed refusal)")
+        stock = bytes(stock)
+        actual = hashlib.sha256(stock).hexdigest()
+        if actual != site["stock_digest"]:
+            fail(f"{path}.stock_digest",
+                 f"Stock data digest mismatch at {symbol}+{site['offset']} (fail-closed refusal): "
+                 f"expected {site['stock_digest']}, got {actual}")
+        out = bytearray()
+        for elem in range(int(site["count"])):
+            raw = stock[elem * size:(elem + 1) * size]
+            try:
+                out += plan_data_value(site["transform"], site["type"], raw)
+            except ValueError as exc:
+                fail(path, f"element {elem}: {exc} (fail-closed refusal)")
+        resolved.append({"id": site["id"], "addr": addr, "stock": stock, "data": bytes(out)})
+    resolved.sort(key=lambda e: e["addr"])
+    for a, b in zip(resolved, resolved[1:], strict=False):
+        if a["addr"] + len(a["stock"]) > b["addr"]:
+            fail("data_sites", f"data sites {a['id']} and {b['id']} overlap (fail-closed refusal)")
+    return resolved
+
+
+_CSV_NUMBER_RE = re.compile(rb"^(-?)([0-9]+)(?:\.([0-9]+))?$")
+
+
+def _rescale_csv_number(transform: str, text: bytes) -> bytes:
+    """Rescale one numeric CSV cell, keeping it an integer when it was one."""
+    m = _CSV_NUMBER_RE.match(text)
+    if m is None:
+        raise ValueError(f"cell {text!r} is not a plain decimal number")
+    sign, whole, frac = m.group(1), m.group(2), m.group(3)
+    if frac is None:
+        value = int(sign + whole)
+        if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5"):
+            raise ValueError(f"{transform} needs a decimal cell, not the integer {value}")
+        scaled = _scale_value(transform, value)
+        if scaled != int(scaled):
+            raise ValueError(f"integer cell {value} has no exact rescale")
+        return str(int(scaled)).encode("ascii")
+    # A decimal cell is read into a float: rescale that float and write the shortest
+    # decimal that reads back to the same float.
+    value = struct.unpack("<f", struct.pack("<f", float(text.decode("ascii"))))[0]
+    scaled = struct.unpack("<f", struct.pack("<f", _scale_value(transform, value)))[0]
+    for digits in range(1, 18):
+        rendered = f"{scaled:.{digits}f}"
+        if struct.unpack("<f", struct.pack("<f", float(rendered)))[0] == scaled:
+            return rendered.encode("ascii")
+    raise ValueError(f"cell {text!r} has no decimal rendering")
+
+
+def transform_data_file(entry: Mapping[str, Any], stock: bytes) -> bytes:
+    """Apply a validated ``data_files`` entry to the stock bytes of its file, fail-closed."""
+    if hashlib.sha256(stock).hexdigest() != entry["sha256"]:
+        fail(f"data_files({entry['id']})", f"{entry['path']} does not match its sha256 (fail-closed refusal)")
+    lines = stock.split(b"\n")
+    header_row = int(entry["header_row"])
+    first = int(entry["first_data_row"])
+    if len(lines) <= first:
+        fail(f"data_files({entry['id']})", f"{entry['path']} has no data rows (fail-closed refusal)")
+    header = lines[header_row].rstrip(b"\r").split(b",")
+    data_rows = [i for i in range(first, len(lines)) if lines[i].rstrip(b"\r")]
+    rows = [line.split(b",") for line in lines]
+    for cell in entry["cells"]:
+        column = cell["column"].encode("ascii")
+        if header.count(column) != 1:
+            fail(f"data_files({entry['id']})",
+                 f"column {cell['column']!r} is not exactly one header of {entry['path']} (fail-closed refusal)")
+        col = header.index(column)
+        wanted = cell.get("rows")
+        targets = data_rows if wanted is None else []
+        if wanted is not None:
+            for r in wanted:
+                if r >= len(data_rows):
+                    fail(f"data_files({entry['id']})", f"row {r} is past the last data row (fail-closed refusal)")
+                targets.append(data_rows[r])
+        for line_no in targets:
+            fields = rows[line_no]
+            last = len(fields) - 1
+            if col > last:
+                fail(f"data_files({entry['id']})",
+                     f"line {line_no + 1} has no column {cell['column']!r} (fail-closed refusal)")
+            text = fields[col]
+            crlf = col == last and text.endswith(b"\r")
+            try:
+                new = _rescale_csv_number(cell["transform"], text[:-1] if crlf else text)
+            except ValueError as exc:
+                fail(f"data_files({entry['id']})",
+                     f"line {line_no + 1}, column {cell['column']!r}: {exc} (fail-closed refusal)")
+            fields[col] = new + (b"\r" if crlf else b"")
+    return b"\n".join(b",".join(fields) for fields in rows)
+
+
+def find_data_file(entry: Mapping[str, Any], data_root: Path | str) -> bytes:
+    """The stock bytes of a data file under the title's extracted data root.
+
+    Any file whose path ends with the entry's disc path (compared without case, as
+    the disc's file system does) and whose bytes match ``sha256`` is the file;
+    none refuses the package.
+    """
+    root = Path(data_root)
+    want = entry["path"].lower().split("/")
+    for candidate in sorted(root.rglob(want[-1]), key=str):
+        parts = [p.lower() for p in candidate.relative_to(root).parts]
+        if parts[-len(want):] != want or not candidate.is_file():
+            continue
+        data = candidate.read_bytes()
+        if hashlib.sha256(data).hexdigest() == entry["sha256"]:
+            return data
+    fail(f"data_files({entry['id']})",
+         f"No file {entry['path']} with sha256 {entry['sha256']} under the title's data (fail-closed refusal)")
+
+
 # Constant factor each scaling transform applies to the operand the site produces.
 SCALE_FACTORS = {
     "count_x2": 2.0,
@@ -840,6 +1203,38 @@ def _refuse(site: Mapping[str, Any], w: int, why: str) -> NoReturn:
 
 def _with_imm(w: int, imm: int) -> int:
     return (w & 0xFFFF0000) | (imm & 0xFFFF)
+
+
+def plan_float_pair_rewrite(site: Mapping[str, Any], w0: int, w1: int) -> list[dict[str, Any]]:
+    """The rewrite of a float constant built by ``lui rt, hi`` then ``ori rt, rt, lo``.
+
+    The two words name the whole 32-bit value, so a scaling transform rewrites it
+    exactly (rounded to nearest) instead of only the upper half a lone ``lui`` holds.
+    Returns one ``word`` rewrite per instruction.
+    """
+    w0, w1 = int(w0) & 0xFFFFFFFF, int(w1) & 0xFFFFFFFF
+    rt = (w0 >> 16) & 0x1F
+    if (w0 >> 26) != 0x0F or (w0 >> 21) & 0x1F or rt == 0:
+        _refuse(site, w0, "a two-word site starts with lui")
+    if (w1 >> 26) != 0x0D or (w1 >> 21) & 0x1F != rt or (w1 >> 16) & 0x1F != rt:
+        _refuse(site, w1, "a two-word site ends with ori of the lui's register")
+    tf = site["transform"]
+    if tf not in DATA_TRANSFORMS:
+        _refuse(site, w0, "a float pair takes a scaling transform")
+    value = _f32(((w0 & 0xFFFF) << 16) | (w1 & 0xFFFF))
+    if not math.isfinite(value):
+        _refuse(site, w0, f"float constant {value!r} is not finite")
+    try:
+        new_value = _scale_value(tf, value)
+    except ValueError as exc:
+        _refuse(site, w0, str(exc))
+    bits = _f32_bits(new_value)
+    if not math.isfinite(_f32(bits)):
+        _refuse(site, w0, f"float constant {value!r} overflows when rescaled")
+    return [
+        {"kind": "word", "word": _with_imm(w0, bits >> 16)},
+        {"kind": "word", "word": _with_imm(w1, bits & 0xFFFF)},
+    ]
 
 
 def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
