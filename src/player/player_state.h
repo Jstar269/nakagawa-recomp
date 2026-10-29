@@ -25,6 +25,20 @@
 #define MAX_DISC_ID_LEN NK_MAX_DISC_ID_LEN
 #define MAX_SHOWCASE_GAMES 8
 
+/* The opening of every DATA_DIR_UNAVAILABLE card: what this platform could not
+   resolve and which environment variables fix it (nk_platform_get_app_data_dir).
+   Each card adds its own closing words. */
+#if defined(_WIN32) || defined(_WIN64)
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA"
+#elif defined(__APPLE__)
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set HOME"
+#else
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set XDG_DATA_HOME or HOME"
+#endif
+
 typedef enum {
     VIEW_LIBRARY = 0,
     VIEW_INSPECTING,
@@ -687,6 +701,18 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
 void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view);
+/* The LAUNCHER_UNAVAILABLE text when the launcher cannot start (reason is the
+   launcher's own error). built_without_launcher is true when this build was
+   compiled without the SDL_Renderer or SDL3_ttf support the launcher needs, so
+   the fix is to build again with them, not to reinstall. Otherwise a file is
+   missing at run time: on Windows the release ZIP was extracted incompletely,
+   elsewhere SDL3_ttf or the installed assets are absent. */
+void player_launcher_unavailable_message(const char *reason, bool built_without_launcher,
+                                         char *out, size_t out_size);
+/* FOLDER_OPEN_FAILED: the file manager could not be asked to show path (reason
+   is the host's error, or empty). The card names the folder so the user can
+   open it themselves, and returns to the view it was raised from. */
+void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason);
 /* The error card's words, shared by both launchers. The badge is a plain word
    for the kind of problem; an unknown code gets "Problem", never the code. */
 const char *player_error_badge(const ErrorState *error);

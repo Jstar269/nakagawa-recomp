@@ -2361,6 +2361,61 @@ def canonical_cfg_summary(image_or_state, ranges=None, entries=None):
     return state.summary()
 
 
+STATIC_COVERAGE_SCHEMA_VERSION = 1
+
+
+def static_coverage(image, ranges, entries, translated=(), interpreted=()):
+    """Word-level static coverage of one image, from the canonical CFG.
+
+    ``entries`` are the function entries code generation used. ``translated`` are the
+    entries whose AOT body was emitted as C; ``interpreted`` are the entries left to the
+    interpreter floor (an unsupported form, or an entry omitted from AOT). An owned word
+    counts as translated when at least one of its owners was translated, and as
+    interpreter-only when every owner was left to the floor; owned words of an owner in
+    neither set are ``other_owned_words`` (an import stub, say), so the three always add
+    up to ``owned_words``. Unowned executable words are what the analyzer could not
+    attribute to any function: the dispatcher reaches them only as a miss.
+    """
+    state = canonical_cfg_state(image, ranges=ranges, entries=sorted(set(entries)))
+    translated = frozenset(translated)
+    interpreted = frozenset(interpreted) - translated
+    classes = {"owned": 0, "interior-entry": 0, "owner-conflict": 0,
+               "unowned-executable": 0, "padding": 0}
+    translated_words = interpreter_words = 0
+    for index in range(state.node_count):
+        classes[state._classification(index)] += 1
+        owners = state._owners_for_index(index)
+        if not owners:
+            continue
+        if any(owner in translated for owner in owners):
+            translated_words += 1
+        elif all(owner in interpreted for owner in owners):
+            interpreter_words += 1
+    owned = classes["owned"] + classes["interior-entry"] + classes["owner-conflict"]
+    owners = set(state.entries)
+    unresolved = sum(1 for kind in state.edge_kinds if _CFG_KIND_NAMES[kind] == "unresolved-indirect")
+    return {
+        "schema_version": STATIC_COVERAGE_SCHEMA_VERSION,
+        "executable_words": state.node_count,
+        "executable_bytes": state.node_count * 4,
+        "owned_words": owned,
+        "owned_bytes": owned * 4,
+        "unowned_words": classes["unowned-executable"],
+        "unowned_bytes": classes["unowned-executable"] * 4,
+        "padding_words": classes["padding"],
+        "owner_conflict_words": classes["owner-conflict"],
+        "interior_entry_words": classes["interior-entry"],
+        "translated_words": translated_words,
+        "interpreter_words": interpreter_words,
+        "other_owned_words": owned - translated_words - interpreter_words,
+        "functions": len(owners),
+        "functions_translated": len(owners & translated),
+        "functions_interpreter": len(owners & interpreted),
+        "jump_table_candidates": len(state.jump_table_ownership),
+        "unresolved_indirect_edges": unresolved,
+    }
+
+
 def canonical_cfg_report(image, ranges=None, entries=None):
     """Return the legacy deterministic report, materialized on demand."""
     return canonical_cfg_state(image, ranges=ranges, entries=entries).to_report()
