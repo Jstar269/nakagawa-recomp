@@ -27,8 +27,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `ppsspp-derived` | 105 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 280 | 200 |
-| `unverified` | 194 | 51 |
-| total | 643 | 355 |
+| `unverified` | 196 | 51 |
+| total | 645 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -89,6 +89,7 @@ belongs to without the census's own grouping.
 | `0x0c116e1b` | `sceAtracLowLevelDecode` | audio_codec | `unverified` | no recorded evidence |
 | `0x0c622081` | `sceWlanGetEtherAddr` | network | `unverified` | no recorded evidence |
 | `0x0cae832b` | `sceRegCloseCategory` | system | `synthetic` | HLE selftest dispatch |
+| `0x0d5bc6d2` | `sceUtilityLoadUsbModule` | utility | `unverified` | no recorded evidence |
 | `0x0d69bf40` | `sceRegFlushCategory` | system | `synthetic` | HLE selftest dispatch |
 | `0x0d81716a` | `sceKernelPollMbx` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x0da7535e` | `sceFontGetFontInfo` | font | `unverified` | no recorded evidence |
@@ -674,6 +675,7 @@ belongs to without the census's own grouping.
 | `0xf6107f00` | `__sceSasUnsetATRAC3` | audio | `unverified` | no recorded evidence |
 | `0xf6269b82` | `sceUtilityOskInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xf6414a71` | `sceKernelFreeFpl` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
+| `0xf64910f0` | `sceUtilityUnloadUsbModule` | utility | `unverified` | no recorded evidence |
 | `0xf6837a1a` | `sceAtracSetMOutData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xf77d77cb` | `sceKernelSetCompilerVersion` | kernel_memory | `synthetic` | registry evidence `src/rt/sdkver_selftest.c` |
 | `0xf78ba90a` | `sceKernelStderr` | kernel_utils | `unverified` | no recorded evidence |

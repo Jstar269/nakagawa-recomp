@@ -5580,6 +5580,7 @@ enum {
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
 static unsigned s_utility_av_loaded;
+static unsigned s_utility_usb_loaded;
 
 static const char *module_state_name(LoadedModuleState state) {
     switch (state) {
@@ -5681,6 +5682,24 @@ static uint32_t h_UtilityUnloadAvModule(CpuState *s) {
     if (module > 7u) return SCE_ERROR_AV_MODULE_BAD_ID;
     return utility_av_unload(PSP_AV_MODULE_AVCODEC + module, 1);
 }
+
+/* USB module bookkeeping follows the current utility-module state model. The
+ * USB functions themselves are not provided. The error mapping is inferred from
+ * the generic utility-module API, and is not measured for this legacy API. */
+static uint32_t utility_usb_module(uint32_t id, int load) {
+    if (id < 1u || id > 5u) return SCE_ERROR_MODULE_BAD_ID;
+    unsigned bit = 1u << (id - 1u);
+    if (load) {
+        if (s_utility_usb_loaded & bit) return SCE_ERROR_MODULE_ALREADY_LOADED;
+        s_utility_usb_loaded |= bit;
+    } else {
+        if (!(s_utility_usb_loaded & bit)) return SCE_ERROR_MODULE_NOT_LOADED;
+        s_utility_usb_loaded &= ~bit;
+    }
+    return 0;
+}
+static uint32_t h_UtilityLoadUsbModule(CpuState *s) { return utility_usb_module(A0, 1); }
+static uint32_t h_UtilityUnloadUsbModule(CpuState *s) { return utility_usb_module(A0, 0); }
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
 
@@ -27665,6 +27684,8 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xf7d8d092, "sceUtilityUnloadAvModule", h_UtilityUnloadAvModule);
     sr_hle_register(0x2a2b3de0, "sceUtilityLoadModule", h_UtilityLoadModule);
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
+    sr_hle_register(0x0d5bc6d2, "sceUtilityLoadUsbModule", h_UtilityLoadUsbModule);
+    sr_hle_register(0xf64910f0, "sceUtilityUnloadUsbModule", h_UtilityUnloadUsbModule);
     sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
@@ -28576,6 +28597,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_request_pending = 0;
     s_exit_request_deadline_us = 0u;
     s_utility_av_loaded = 0u;
+    s_utility_usb_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;

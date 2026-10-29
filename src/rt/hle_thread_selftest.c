@@ -4439,6 +4439,21 @@ static void test_ms0_unified_namespace(void) {
     free(save_fs);
 }
 
+static void test_utility_usb_module_state(void) {
+    const uint32_t load = 0x0d5bc6d2u, unload = 0xf64910f0u;
+    CpuState cpu = {0};
+    reset_fixture(); sr_hle_init();
+    expect(sr_hle_test_is_registered(load) && sr_hle_test_is_registered(unload), "USB utility imports are registered");
+    if (!sr_hle_test_is_registered(load) || !sr_hle_test_is_registered(unload)) return;
+    expect(utility_module_call(&cpu, load, 0u) == SCE_ERROR_MODULE_BAD_ID, "USB rejects invalid ID");
+    for (uint32_t id = 1; id <= 5; id++) {
+        expect(utility_module_call(&cpu, unload, id) == SCE_ERROR_MODULE_NOT_LOADED, "USB refuses unload before load");
+        expect(utility_module_call(&cpu, load, id) == 0u, "USB loads a valid module");
+        expect(utility_module_call(&cpu, load, id) == SCE_ERROR_MODULE_ALREADY_LOADED, "USB rejects duplicate load");
+        expect(utility_module_call(&cpu, unload, id) == 0u, "USB unloads a loaded module");
+    }
+}
+
 static void test_utility_av_module_state(void) {
     CpuState cpu;
     sr_hle_init();
@@ -37273,6 +37288,13 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--utility-usb") == 0) {
+        test_utility_usb_module_state();
+        fprintf(stderr, "utility-usb: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--power-battery") == 0) {
         test_psp_measured_power_battery_20261024();
         fprintf(stderr, "power-battery: %d checks, %d failures\n", s_checks, s_failures);
@@ -37378,6 +37400,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
+    test_utility_usb_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();

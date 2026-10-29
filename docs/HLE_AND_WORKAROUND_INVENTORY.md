@@ -55,11 +55,16 @@ invalid-address result are **derived** from PPSSPP revision
 are refused with `0x80010086`. Error choices are **derived** from PPSSPP revision
 `7fab97c05f9568b17ac79c235b945f568eaf6384`; callback refusal is runtime policy.
 
+The legacy USB utility module calls retain loaded state for IDs 1 through 5.
+Their lifecycle error mapping is inferred from the generic utility-module model,
+not measured; no USB functions are implemented. The shared module state in #1701
+should absorb this local model when the changes are integrated.
+
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **643** (dedicated **535**, fake_success **5**, controlled_unsupported **103**).
-Semantic handler census: **514** handlers across **25** API families, covering **541** handler-associated NID registrations.
+Registered NIDs: **645** (dedicated **537**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **516** handlers across **25** API families, covering **543** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -67,7 +72,7 @@ Semantic handler census: **514** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 326 | 338 |
+| `unreviewed` | 328 | 340 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -94,9 +99,9 @@ Semantic handler census: **514** handlers across **25** API families, covering *
 | `sceRtc` | 4 | 5 | 0 | 0 | 1 | 10 | 10 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
+| `sceUtility` | 0 | 0 | 0 | 0 | 31 | 31 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **326** | **514** | **541** |
+| **Total** | **13** | **172** | **1** | **2** | **328** | **516** | **543** |
 
 #### Complete Handlers (Evidence-Backed)
 

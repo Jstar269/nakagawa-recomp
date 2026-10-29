@@ -195,6 +195,12 @@
     "name": "sceRegCloseCategory",
     "status": "partial"
   },
+  "0x0d5bc6d2": {
+    "classification": "dedicated",
+    "handler": "h_UtilityLoadUsbModule",
+    "name": "sceUtilityLoadUsbModule",
+    "status": "unreviewed"
+  },
   "0x0d69bf40": {
     "classification": "dedicated",
     "handler": "h_RegFlushCategory",
@@ -3786,6 +3792,12 @@
     "handler": "h_FreeFpl",
     "name": "sceKernelFreeFpl",
     "status": "partial"
+  },
+  "0xf64910f0": {
+    "classification": "dedicated",
+    "handler": "h_UtilityUnloadUsbModule",
+    "name": "sceUtilityUnloadUsbModule",
+    "status": "unreviewed"
   },
   "0xf6837a1a": {
     "classification": "dedicated",
