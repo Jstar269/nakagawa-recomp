@@ -201,6 +201,8 @@ typedef struct {
     SrWaitHandle active_wait;    /* only the currently attached semantic block */
     int      resources_released;  /* libc/reent/callback ownership released exactly once */
     int      stack_released;      /* guest stack reservation returned exactly once */
+    int      module_start;        /* sched_run's module_start thread: deleted when its entry
+                                   * returns (PSP-MODULE-START-001) */
     int      join_waiting;        /* current syscall is waiting for join_target */
     int      join_result_valid;  /* target ended while this waiter was blocked */
     uint32_t join_target;
@@ -2263,7 +2265,12 @@ static void coro_body(void *param) {
          * re-enters the body -- but a restart recreates the coroutine, so that resume path
          * is defensive only. */
         if (s_cur >= 0 && &s_tcb[s_cur] == t) {
-            sched_exit_current((int32_t)s_cpu->r[2]);
+            /* The kernel runs a module's module_start in a thread of its own and deletes
+             * that thread, freeing its stack, once module_start returns: measured on a
+             * PSP-3000 (6.61, PSP-MODULE-START-001), where the returned thread's UID answers
+             * UNKNOWN_THID and the user partition gains exactly its 256 KiB stack. */
+            if (t->module_start) sched_exit_current_delete((int32_t)s_cpu->r[2]);
+            else sched_exit_current((int32_t)s_cpu->r[2]);
         } else {
             fprintf(stderr, "coro_body: uid=0x%x returned outside its own schedule slot "
                     "(s_cur=%d) -- parking DORMANT without exit bookkeeping\n", t->uid, s_cur);
@@ -4925,6 +4932,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     sched_pause_script_load();
     uint32_t uid = sched_create_thread(entry, 32, 0);
     TCB *t0 = tcb_by_uid(uid);
+    t0->module_start = 1;
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
      * -- rather than the synthetic thread stack. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));

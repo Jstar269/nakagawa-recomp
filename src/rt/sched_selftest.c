@@ -1097,6 +1097,49 @@ static void body_explicit_exit(CpuState *s) {
     sched_exit_current(g_explicit_exit_status);
 }
 
+/* The thread sched_run starts at the module entry is the kernel's module_start thread. A
+ * PSP-3000 (6.61, PSP-MODULE-START-001) deletes it once module_start returns: its UID then
+ * answers UNKNOWN_THID and the user partition gets its 256 KiB stack back. Here module_start
+ * starts a lower-priority thread and returns; that thread finds the entry thread deleted and
+ * its stack range released.
+ *
+ * MUTANT: exit the module_start thread without deleting it in coro_body -- it stays DORMANT
+ *   with its stack held. */
+enum { MS_ENTRY = 0x09320000u, MS_SECOND = 0x09320100u };
+static uint32_t g_ms_root;
+static int g_ms_root_deleted, g_ms_done;
+static void module_start_return_body(CpuState *s) {
+    const TCB *cur = &s_tcb[s_cur];
+    if (cur->entry == MS_ENTRY) {
+        g_ms_root = cur->uid;
+        const uint32_t second = sched_create_thread(MS_SECOND, 40, 0x4000u);
+        sched_start_thread(second, 0u, 0u);
+        s->r[2] = 0u;                      /* module_start returns 0 (resident) */
+        return;
+    }
+    if (!g_ms_done && cur->entry == MS_SECOND) {
+        for (int i = 0; i < s_ntcb; i++)
+            if (s_tcb[i].uid == g_ms_root)
+                g_ms_root_deleted = s_tcb[i].deleted && s_tcb[i].stack_released;
+        g_ms_done = 1;
+    }
+    s->r[2] = 0u;
+}
+static int module_start_return_stop(void) { return g_ms_done; }
+
+static void test_module_start_thread_is_deleted_on_return(void) {
+    reset_sched();
+    g_ms_root = 0u;
+    g_ms_root_deleted = g_ms_done = 0;
+    g_test_body = module_start_return_body;
+    sr_sched_stop_requested = module_start_return_stop;
+    sched_run(MS_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    expect(g_ms_done, "the thread module_start started ran after module_start returned");
+    expect(g_ms_root_deleted,
+           "the module_start thread is deleted, its stack released, once module_start returns");
+}
+
 static void test_entry_return_is_thread_exit(void) {
     reset_sched();
     uint32_t uid = sched_create_thread(0x1000u, 32, 0x2000u);
@@ -5242,6 +5285,7 @@ int main(int argc, char **argv) {
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
+    test_module_start_thread_is_deleted_on_return();
     test_paced_vtime_is_host_anchored();
     test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();

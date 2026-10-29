@@ -1472,8 +1472,20 @@
       {
         "id": "PSP-MODULE-START-001",
         "status": "implemented",
-        "hardware_evidence": "NOT_RUN",
-        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_module_start.c as module_start.prx and runs as a single launch, not in the campaign queue. The PRX has no main thread: its own module_start (linked with --wrap=module_start so it replaces crt0's) records the thread that runs it and creates a helper thread, which reads that thread's state after module_start has returned. Its stream is fixed-shape and strictly parsed (8 records and the done record); every cell is an unconditional observation of raw words recorded PASS, and no returned value is compared with an expected PSP value.",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "ms-self",
+          "ms-mem-pre",
+          "ms-helper-create",
+          "ms-mem-created",
+          "ms-refer-after",
+          "ms-mem-after",
+          "ms-idlist",
+          "ms-helper-self",
+          "module-start-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 78) of commit fd2a75fd, the commit that added this probe, case module-start after the transport-write preflight: 8 records and the done record (out0 8), all PASS, acceptance-eligible with 0 blockers. Cited: the raw thread-status words, the free-memory words, the thread id list and the ReferThreadStatus result of every record. PASS means the call result was recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
         "group": "kernel",
         "source": "fixtures/psp_oracle/probe_module_start.c",
         "prx": "module_start.prx",
