@@ -22,6 +22,9 @@ typedef enum SrGuestInterpResult {
     SR_GUEST_INTERP_FLOW_FATAL        = -7,
     SR_GUEST_INTERP_HOST_STACK_EXHAUSTED = -8,
     SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE = -9,
+    /* jr/jalr read 0 from its target register (#1375): a null code pointer, even on
+     * an image whose offset-0 function has guest address 0. */
+    SR_GUEST_INTERP_NULL_CODE_POINTER = -10,
 } SrGuestInterpResult;
 
 typedef struct SrGuestInterpFault {

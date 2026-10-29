@@ -232,5 +232,89 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertEqual(_diagnostic_hook_violations(code), [])
 
 
+class ZeroBasedOffsetZeroPointers(unittest.TestCase):
+    """#1375: a zero-based image must not hold a code pointer to its own offset 0.
+
+    Generated code and the interpreter stop a computed jr/jalr whose target is 0 as a
+    null code pointer. That is exact only because codegen refuses a relocatable module
+    placed at base 0 whose relocations take the address of its offset 0, which the
+    loader would write as 0. These synthetic modules (built with the runtime loader
+    suite's fixture builder) pin which relocation forms take that address.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        import codegen
+        import test_prx_loader_cleanroom as fixture
+        cls.codegen = codegen
+        cls.fixture = fixture
+
+    def module(self, words, relocs, vaddr=0x0, e_type=None):
+        fx = self.fixture
+        data, offs, memsz = fx.basic_seg_with_words(words, vaddr=vaddr)
+        module = fx.Module() if e_type is None else fx.Module(e_type=e_type)
+        module.add_seg(vaddr, data, memsz, flags=7)
+        if relocs:
+            module.add_reloc(fx.PT_REL_A, b"".join(
+                fx.reloc_a(offs[index], kind) for index, kind in relocs))
+        return module.build(), [vaddr + off for off in offs]
+
+    def sites(self, blob, base):
+        return self.codegen.zero_based_offset0_pointers(blob, base, "<synthetic>")
+
+    def test_data_word_pointer_to_offset0_is_found_at_base_zero_only(self):
+        # .word 0 relocated as an absolute pointer to offset 0 (format A kind 2).
+        blob, addrs = self.module([0x00000000], [(0, 2)])
+        self.assertEqual(self.sites(blob, 0), [(addrs[0], "word32")])
+        self.assertEqual(self.sites(blob, None), [(addrs[0], "word32")])
+        # At a nonzero base the same pointer is that base, never 0: no ambiguity.
+        self.assertEqual(self.sites(blob, 0x08804000), [])
+
+    def test_hi16_lo16_pair_forming_offset0_is_found(self):
+        # lui a0, %hi(0) ; addiu a0, a0, %lo(0): the hi16 record carries the full address.
+        blob, addrs = self.module([0x3C040000, 0x24840000], [(0, 5), (1, 1)])
+        self.assertEqual(self.sites(blob, 0), [(addrs[0], "hi16")])
+
+    def test_lone_lo16_from_zero_forming_offset0_is_found(self):
+        # addiu a0, zero, %lo(0) with no hi16 half.
+        blob, addrs = self.module([0x24040000], [(0, 1)])
+        self.assertEqual(self.sites(blob, 0), [(addrs[0], "lo16")])
+
+    def test_pointers_elsewhere_and_static_calls_are_not_pointers_to_offset0(self):
+        # .word 8 (a pointer to offset 8), jal 0 (a static call), lw a0, 0(a1) relocated.
+        blob, _ = self.module([0x00000008, 0x0C000000, 0x8CA40000], [(0, 2), (1, 4), (2, 1)])
+        self.assertEqual(self.sites(blob, 0), [])
+
+    def test_fixed_address_image_has_no_relocations_to_classify(self):
+        blob, _ = self.module([0x00000000], [], vaddr=0x08804000, e_type=2)
+        self.assertEqual(self.sites(blob, 0x08804000), [])
+
+    def test_codegen_refuses_the_ambiguous_image_before_analysis(self):
+        import contextlib
+        import io
+        blob, addrs = self.module([0x00000000], [(0, 2)])
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "zero_based.prx"
+            image.write_bytes(blob)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = self.codegen.main(["codegen.py", str(image), str(Path(tmp) / "out.c"),
+                                        "--base=0"])
+            self.assertEqual(rc, 2)
+            self.assertIn("#1375", stderr.getvalue())
+            self.assertIn(f"word32 at 0x{addrs[0]:08x}", stderr.getvalue())
+            self.assertFalse((Path(tmp) / "out.c").exists())
+
+    def test_runtime_refuses_computed_null_at_the_transfer(self):
+        code = _strip_comments(RECOMP_C)
+        self.assertIn("void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc)", code)
+        self.assertIn('dispatch_record_semantic_stop_issue("null-code-pointer", 1375u);', code)
+        self.assertIn('case SR_GUEST_INTERP_NULL_CODE_POINTER: return "null-code-pointer";', code)
+        self.assertIn("#1375", DISPATCH_H)
+        self.assertNotIn("#20/#45", DISPATCH_H)
+
+
 if __name__ == "__main__":
     unittest.main()

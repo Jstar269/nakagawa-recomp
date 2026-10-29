@@ -1371,8 +1371,9 @@ void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefi
  * code address 0 -- a real function on this zero-based image -- registers and resolves like
  * any other address. The previous `addr == 0` empty-slot sentinel (and the `addr != 0` L1
  * guard) made sr_lookup(0) impossible; see the header and the selftest. Making 0
- * representable does NOT make a *computed* dispatch target of 0 execute f_00000000: a
- * null-pointer call is rejected by the ordinary dispatch miss path before any lookup runs. */
+ * representable does NOT make a *computed* transfer to 0 execute f_00000000: jr/jalr with
+ * a target of 0 is a null code pointer and stops at the transfer, before dispatch is
+ * entered (#1375, sr_null_code_pointer). Only static transfers reach address 0 here. */
 
 static SrDispatchTable g_dtab;
 
@@ -1719,6 +1720,7 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_MEMORY_FAULT: return "invalid-guest-memory-access";
     case SR_GUEST_INTERP_MISALIGNED_DATA: return "misaligned-guest-memory-access";
     case SR_GUEST_INTERP_FLOW_FATAL: return "invalid-control-flow";
+    case SR_GUEST_INTERP_NULL_CODE_POINTER: return "null-code-pointer";
     default: return "interpreter-rejection";
     }
 }
@@ -1835,6 +1837,34 @@ void sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame) {
     sr_host_stack_window.span = top - low;
 }
 
+/* Computed transfers and guest address 0 (#1375).
+ *
+ * A jr/jalr whose target register holds 0 is a null code pointer, on every image. On a
+ * zero-based image the module's offset-0 function also has guest address 0, but a guest
+ * can only reach it through a static transfer (j/jal, a branch, the module entry), never
+ * through a pointer: tools/codegen.py refuses a zero-based relocatable module whose
+ * relocations take the address of its offset 0, so no code pointer to it can exist. The
+ * check therefore sits at the computed transfer itself (the generated jr/jalr sites call
+ * sr_null_code_pointer, the interpreter returns SR_GUEST_INTERP_NULL_CODE_POINTER), before
+ * its link write and delay slot, and the dispatch table and dispatch core stay keyed on
+ * the address alone. On hardware the fetch from address 0 faults; here the run stops. */
+static void dispatch_report_null_code_pointer(const CpuState *s, uint32_t transfer_pc) {
+    fprintf(stderr,
+            "NULL_CODE_POINTER: computed transfer at 0x%08" PRIx32 " targets 0x00000000 "
+            "ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            transfer_pc, s->r[31], s->r[29], sched_current_uid());
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-code-pointer; see #1375\n");
+    dispatch_record_semantic_stop_issue("null-code-pointer", 1375u);
+    dump_dispatch_trace();
+}
+
+void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
+    dispatch_report_null_code_pointer(s, transfer_pc);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, transfer_pc, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
@@ -1853,6 +1883,10 @@ static int dispatch_run_interp(
         uint32_t flow_target = s->flow_target;
         sr_cpu_clear_flow(s);
         return dispatch_try_with_boundary(s, flow_target, call_boundary, drain);
+    }
+    if (interp_result == SR_GUEST_INTERP_NULL_CODE_POINTER) {
+        dispatch_report_null_code_pointer(s, fault.pc);
+        return (int)interp_result;
     }
     fprintf(stderr,
             "  INTERP_REJECT: target=0x%08" PRIx32 " result=%s fault_pc=0x%08" PRIx32 " "

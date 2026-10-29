@@ -799,6 +799,15 @@ def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, co
     return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
 
 
+def emit_code_pointer_check(target_expr, transfer_pc):
+    """A computed jr/jalr refuses a null code pointer before its link write and slot (#1375).
+
+    Static transfers to offset 0 of a zero-based image never pass through here, and
+    ``refuse_zero_based_offset0_pointers`` keeps a code pointer to that offset from existing.
+    """
+    return f"SR_CODE_POINTER(s, {target_expr}, {G(transfer_pc)});"
+
+
 #: The statement that ends every direct CALL of a native body (`emit_body_call`). Inside a
 #: generated body nothing else drains, so a body whose text contains it makes a direct call.
 BODY_CALL_DRAIN = "SR_TAIL_DRAIN(s);"
@@ -3053,6 +3062,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             # register redirect the call -- proven divergent against the
             # production interpreter by the `jrslot` cosim cell.
             out.append(f"    {{ uint32_t _t = {R(a)};")
+            out.append(f"      {emit_code_pointer_check('_t', addr)}")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                         indent="      "))
@@ -3106,6 +3116,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
+                out.append(f"      {emit_code_pointer_check('_t', addr)}")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
@@ -3534,6 +3545,49 @@ def runtime_module_descriptor_lines(module):
     return lines
 
 
+def zero_based_offset0_pointers(data, base, label="<module>"):
+    """Relocation sites that take the address of module offset 0 when it lands at address 0.
+
+    #1375: generated code and the interpreter treat a computed jr/jalr target of 0 as a null
+    code pointer. That is exact only while no code pointer to guest address 0 can exist. A
+    fixed-address PSP image never has code at 0 (user memory starts far above it), and a
+    relocatable module placed at a nonzero base has its offset 0 at that base. What remains
+    is a relocatable module the build places at base 0: the loader would write 0 for every
+    pointer to its offset 0, indistinguishable from null. Every absolute address a
+    relocatable module forms passes through a relocation, so its relocation records decide:
+    a word32 or hi16 site whose value at this base is 0, or an lo16 site that forms 0 from
+    $zero with addiu/ori, takes that address. A jump26 site is a static j/jal and is
+    emitted as a direct transfer, never through a register, so it is not one.
+
+    Returns ``(site, kind)`` pairs; raises ``prx_reloc_model.RelocationModelError`` when the
+    records cannot be modelled, since the question then has no answer.
+    """
+    import prx_reloc_model
+    if is_code_overlay(data):
+        return []  # a code overlay loads only at its own (fixed, nonzero) address
+    model = prx_reloc_model.model_relocations(data, label)
+    if not model.relocatable or ((base or 0) + model.load_low) & 0xFFFFFFFF:
+        return []
+    offset0 = model.load_low
+    found = []
+    for site, record in sorted(model.sites.items()):
+        if record.constant != offset0:
+            continue
+        if record.kind in (prx_reloc_model.KIND_WORD32, prx_reloc_model.KIND_HI16):
+            found.append((site, record.kind))
+        elif record.kind == prx_reloc_model.KIND_LO16:
+            word = None
+            for segment in model.segments:
+                offset = site - segment.vaddr
+                if 0 <= offset and offset + 4 <= len(segment.data):
+                    word = struct.unpack_from("<I", segment.data, offset)[0]
+                    break
+            # addiu/ori rt, $zero, %lo(offset 0): an absolute address with no hi16 half.
+            if word is not None and (word >> 26) in (0x09, 0x0D) and ((word >> 21) & 31) == 0:
+                found.append((site, record.kind))
+    return found
+
+
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
@@ -3714,6 +3768,25 @@ def main(argv):
             extra_elfs.append((extra_path, int(base_str, 16)))
         except ValueError:
             sys.stderr.write(f"invalid extra-elf base address: {spec}\n")
+            return 2
+    import prx_reloc_model
+    for image_path, image_base in [(elf_path, base)] + extra_elfs:
+        try:
+            with open(image_path, "rb") as source:
+                image_data = source.read()
+            offset0_sites = zero_based_offset0_pointers(image_data, image_base, image_path)
+        except (OSError, prx_reloc_model.RelocationModelError) as exc:
+            sys.stderr.write(
+                f"codegen: {image_path}: cannot tell a pointer to module offset 0 from a "
+                f"null code pointer at base 0x{image_base or 0:08x} (#1375): {exc}\n")
+            return 2
+        if offset0_sites:
+            listed = ", ".join(f"{kind} at 0x{site:08x}" for site, kind in offset0_sites[:8])
+            more = f" and {len(offset0_sites) - 8} more" if len(offset0_sites) > 8 else ""
+            sys.stderr.write(
+                f"codegen: {image_path}: relocations take the address of module offset 0 "
+                f"({listed}{more}), which a module placed at base 0 cannot tell from a null "
+                "code pointer (#1375); place it at a nonzero base\n")
             return 2
     elf = Elf(elf_path, base=base)
     # Only the primary image may carry an explicit extra executable span (its title's

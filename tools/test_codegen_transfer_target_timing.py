@@ -228,5 +228,45 @@ class SelfLoopJumpTests(unittest.TestCase):
         self.assertIn("goto L_00001000;", text)
 
 
+class NullCodePointerCheckTests(unittest.TestCase):
+    """#1375: a computed jr/jalr checks its latched target for null at the transfer.
+
+    The check follows the capture and precedes the link write and delay slot, so a null
+    pointer stops with no architectural effect of the transfer applied. Static transfers
+    and `jr $ra` returns carry no check: a static transfer to offset 0 of a zero-based
+    image is an ordinary one.
+    """
+
+    def _emit(self, words, start=0x1000, end=0x1030, known=None):
+        elf = FakeElf(words)
+        known = known if known is not None else {start}
+        return "\n".join(codegen.emit_function(elf, start, [(start, end)], known))
+
+    def test_jalr_checks_before_link_and_slot(self):
+        text = self._emit({0x1000: jalr(31, 8), 0x1004: addu(8, 9, 0),
+                           0x1008: JR_RA, 0x100C: NOP})
+        capture = text.index("uint32_t _t = s->r[8];")
+        check = text.index("SR_CODE_POINTER(s, _t, 0x00001000u);")
+        link = text.index("s->r[31] = 0x00001008u;")
+        slot = text.index("s->r[8] = (s->r[9] + 0u);")
+        self.assertLess(capture, check)
+        self.assertLess(check, link, "null check after the jalr link write")
+        self.assertLess(check, slot, "null check after the jalr delay slot")
+
+    def test_computed_jr_checks_before_its_slot(self):
+        text = self._emit({0x1000: jr(25), 0x1004: addu(25, 9, 0),
+                           0x1008: JR_RA, 0x100C: NOP})
+        check = text.index("SR_CODE_POINTER(s, _t, 0x00001000u);")
+        slot = text.index("s->r[25] = (s->r[9] + 0u);")
+        self.assertLess(text.index("uint32_t _t = s->r[25];"), check)
+        self.assertLess(check, slot, "null check after the jr delay slot")
+
+    def test_static_call_to_offset0_and_returns_carry_no_check(self):
+        text = self._emit({0x1000: 0x0C000000, 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP},
+                          known={0x0, 0x1000})
+        self.assertIn("f_00000000(s);", text)
+        self.assertNotIn("SR_CODE_POINTER", text)
+
+
 if __name__ == "__main__":
     unittest.main()

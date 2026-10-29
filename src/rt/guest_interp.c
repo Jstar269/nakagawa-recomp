@@ -1127,6 +1127,7 @@ typedef struct SrGuestInterpTransfer {
     int link_register;   /* -1 when the form does not link */
     int taken;
     int likely;          /* annul the delay slot when not taken */
+    int computed;        /* jr/jalr: the target is a code pointer read from a register */
     unsigned exc_code;   /* valid only for SR_CTL_EXCEPTION */
 } SrGuestInterpTransfer;
 
@@ -1152,6 +1153,7 @@ static SrGuestInterpCtl classify_control(
     out->link_register = -1;
     out->taken = 0;
     out->likely = 0;
+    out->computed = 0;
     out->exc_code = 0u;
 
     if (!is_control_opcode(opcode)) {
@@ -1182,10 +1184,12 @@ static SrGuestInterpCtl classify_control(
         if (funct == 0x08u && (opcode & 0x001fffc0u) == 0u) {  /* jr rs */
             out->target = read_gpr(s, rs);
             out->taken = 1;
+            out->computed = 1;
             return SR_CTL_TRANSFER;
         }
         if (funct == 0x09u && (opcode & 0x001f07c0u) == 0u) {  /* jalr rd, rs */
             out->target = read_gpr(s, rs);
+            out->computed = 1;
             /* rd == 0 links nowhere; the generated code omits the write for the
              * same encoding, so the two lanes agree by construction. */
             out->link_register = rd == 0u ? -1 : (int)rd;
@@ -1364,6 +1368,12 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 set_fault(fault, pc, opcode, transfer.target, 1);
                 return SR_GUEST_INTERP_MISALIGNED_PC;
             }
+            /* A code pointer of 0 is null (#1375). A static j/jal or branch to offset 0
+             * of a zero-based image is an ordinary transfer and is not refused here. */
+            if (transfer.taken && transfer.computed && transfer.target == 0u) {
+                set_fault(fault, pc, opcode, 0u, 1);
+                return SR_GUEST_INTERP_NULL_CODE_POINTER;
+            }
             if (pc > UINT32_MAX - 8u) {
                 set_fault(fault, pc, opcode, pc, 1);
                 return SR_GUEST_INTERP_FETCH_BOUNDARY;
@@ -1521,6 +1531,7 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_HOST_STACK_EXHAUSTED: return "host-stack-exhausted";
     case SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE:
         return "host-stack-bounds-unavailable";
+    case SR_GUEST_INTERP_NULL_CODE_POINTER: return "null-code-pointer";
     default: return "unknown";
     }
 }
