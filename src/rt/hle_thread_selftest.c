@@ -28799,7 +28799,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -28813,6 +28813,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 callback-wakeup delay body "
                  "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ 3 event-flag set/cancel waiters "
+                 "+ 3 flight thread-snapshot waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
                  "= %d, observed %lu)",
@@ -33216,7 +33217,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 5") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -33410,6 +33411,176 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_disable();
     hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+}
+
+/* Schema 6 terminal thread snapshot (#320). A thread blocked long before the retained event
+ * window must still say what it waits on and in which import it blocked. Real threads park
+ * through production imports (sceKernelWaitSema, sceKernelDelayThread) and through a block
+ * outside any import that happens after other imports ran; the bundle written at exit lists
+ * each with its reason, object, import NID (null for the outside block, never the stale last
+ * NID) and the virtual time waited. */
+#define FTS_PLAIN_OBJ      0x46545301u
+#define FTS_PLAIN_PC       0x08904104u
+#define FTS_PLAIN_RA       0x08904208u
+#define FTS_SEMA_PC        0x08904304u
+#define FTS_SEMA_RA        0x08904408u
+#define FTS_DELAY_PC       0x08904504u
+#define FTS_DELAY_RA       0x08904608u
+#define FTS_LIVE_PC        0x08904704u
+#define FTS_LIVE_RA        0x08904808u
+
+static uint32_t s_fts_sema;
+static int s_fts_plain_done, s_fts_sema_done, s_fts_delay_done;
+
+static void fts_plain_body(void *arg) {
+    (void)arg;
+    sched_block_on(FTS_PLAIN_OBJ);
+    s_fts_plain_done = 1;
+    selftest_park_on_scheduler();
+}
+
+static void fts_sema_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_fts_sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    s_fts_sema_done = sr_syscall(&cpu, NID_CNW_WAIT_SEMA) == 0u;
+    selftest_park_on_scheduler();
+}
+
+static void fts_delay_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 2000u;
+    s_fts_delay_done = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD) == 0u;
+    selftest_park_on_scheduler();
+}
+
+/* Switch to a fixture thread's coroutine as the scheduler would, with its pc and ra on the CPU. */
+static void fts_run(TCB *t, uint32_t pc, uint32_t ra) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    s_cpu->pc = pc;
+    s_cpu->r[31] = ra;
+    sr_coro_switch(t->coro);
+}
+
+static TCB *fts_thread(uint32_t uid, int priority, void (*body)(void *)) {
+    TCB *t = fixture_thread(uid, TH_READY, priority);
+    t->started = 1;
+    t->coro = sr_coro_create(body, NULL, (size_t)4 << 20);
+    expect(t->coro != NULL, "thread snapshot: fixture coroutine created");
+    return t;
+}
+
+static void test_flight_recorder_thread_snapshot(void) {
+    const char *output = "flight_recorder_threads_selftest.json";
+    static char bundle[16384];
+    char needle[512];
+    CpuState cpu;
+    size_t bundle_size;
+
+    remove(output);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_threads_selftest.json");
+    TCB *main_t = wsv_begin();
+    s_pace_on = 0;
+    /* Between threads the scheduler holds no import (sched_run clears the pair on every
+     * switch out); this harness switches coroutines directly, so it starts from that state. */
+    sr_import_active = 0;
+    sr_import_nid = 0u;
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_SCHED, 64u);
+    s_fts_sema = wsv_create(0, 1);
+    expect((int32_t)s_fts_sema > 0, "thread snapshot: the semaphore is created");
+    expect(sr_last_nid == NID_CNW_CREATE_SEMA, "thread snapshot: an import ran before the plain block");
+    s_fts_plain_done = s_fts_sema_done = s_fts_delay_done = 0;
+
+    TCB *plain = fts_thread(0x1e3u, 18, fts_plain_body);
+    TCB *waiter = fts_thread(0x1e4u, 16, fts_sema_body);
+    TCB *delayer = fts_thread(0x1e5u, 24, fts_delay_body);
+    if (!plain->coro || !waiter->coro || !delayer->coro) return;
+    s_vtime_us = 1000u;
+    fts_run(plain, FTS_PLAIN_PC, FTS_PLAIN_RA);
+    s_vtime_us = 2000u;
+    fts_run(waiter, FTS_SEMA_PC, FTS_SEMA_RA);
+    s_vtime_us = 3000u;
+    fts_run(delayer, FTS_DELAY_PC, FTS_DELAY_RA);
+    expect(plain->state == TH_WAIT_OBJ && waiter->state == TH_WAIT_OBJ &&
+               delayer->state == TH_WAIT_DELAY,
+           "thread snapshot: two object waits and one delay are parked");
+
+    s_vtime_us = 3500u;
+    s_cur = (int)(main_t - s_tcb);
+    main_t->state = TH_RUNNING;
+    s_cpu->pc = FTS_LIVE_PC;
+    s_cpu->r[31] = FTS_LIVE_RA;
+    sr_flight_exit(0u);
+
+    FILE *bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL &&
+               strstr(bundle, "\"threads\": [") != NULL,
+           "thread snapshot: the exit bundle is schema 6 with a threads block");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 18, \"state\": \"wait-object\", \"suspended\": false, "
+             "\"why\": \"object\", \"wait_type\": 3, \"wait_object\": %" PRIu32 ", \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 2500, \"deadline_us\": null}",
+             plain->uid, (uint32_t)FTS_PLAIN_OBJ, (uint32_t)FTS_PLAIN_PC, (uint32_t)FTS_PLAIN_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: a block outside any import records a null NID, not the last import");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 16, \"state\": \"wait-object\", \"suspended\": false, "
+             "\"why\": \"object\", \"wait_type\": 3, \"wait_object\": %" PRIu32 ", \"block_nid\": %" PRIu32 ", "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 1500, \"deadline_us\": null}",
+             waiter->uid, s_fts_sema, (uint32_t)NID_CNW_WAIT_SEMA, (uint32_t)FTS_SEMA_PC,
+             (uint32_t)FTS_SEMA_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the semaphore waiter names its semaphore, sceKernelWaitSema and 1500 us");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 24, \"state\": \"wait-delay\", \"suspended\": false, "
+             "\"why\": \"delay\", \"wait_type\": 2, \"wait_object\": 0, \"block_nid\": %" PRIu32 ", "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 500, \"deadline_us\": 1500}",
+             delayer->uid, (uint32_t)NID_SCE_KERNEL_DELAY_THREAD, (uint32_t)FTS_DELAY_PC,
+             (uint32_t)FTS_DELAY_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the delayed thread names sceKernelDelayThread, 500 us waited, 1500 us left");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 32, \"state\": \"running\", \"suspended\": false, "
+             "\"why\": \"none\", \"wait_type\": 0, \"wait_object\": 0, \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": null, \"deadline_us\": null}",
+             main_t->uid, (uint32_t)FTS_LIVE_PC, (uint32_t)FTS_LIVE_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the running thread reports its live pc and ra and no wait");
+    expect(strstr(bundle, "\"guest") == NULL && strstr(bundle, "\"path") == NULL,
+           "thread snapshot: the bundle carries no guest-derived string or path field");
+    remove(output);
+    sr_flight_test_disable();
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+
+    /* Release every parked thread through the production wake paths and let it return. */
+    sched_wake(FTS_PLAIN_OBJ);
+    fts_run(plain, 0u, 0u);
+    s_cur = (int)(main_t - s_tcb);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_fts_sema; cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "thread snapshot: the semaphore is signalled");
+    fts_run(waiter, 0u, 0u);
+    s_vtime_us = 5000u;
+    s_cur = -1;
+    (void)pick_next();
+    expect(delayer->state == TH_READY || delayer->state == TH_RUNNING,
+           "thread snapshot: the expired delay is promoted");
+    fts_run(delayer, 0u, 0u);
+    expect(s_fts_plain_done && s_fts_sema_done && s_fts_delay_done,
+           "thread snapshot: every parked thread resumed and returned");
+    sr_coro_destroy(plain->coro); plain->coro = NULL;
+    sr_coro_destroy(waiter->coro); waiter->coro = NULL;
+    sr_coro_destroy(delayer->coro); delayer->coro = NULL;
+    s_cur = (int)(main_t - s_tcb);
+    wsv_delete(s_fts_sema);
+    s_cur = -1;
 }
 
 static void test_flight_recorder_fault_trigger(void) {
@@ -36915,6 +37086,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
     test_flight_recorder_refusals_are_events_not_terminals();
+    test_flight_recorder_thread_snapshot();
     test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
