@@ -3260,16 +3260,17 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
         u1 = p1->u / (p1->rw != 0.0f ? p1->rw : 1.0f);
         v1 = p1->v / (p1->rw != 0.0f ? p1->rw : 1.0f);
     }
-    float uw = (u1 - u0) / (xb - xa), vw = (v1 - v0) / (yb - ya);
-    /* Readback selects the top-left device sample of each scaled guest pixel.  Bias
-     * texture endpoints so that sample observes the same UV as the software path. */
-    float sample_offset = 0.5f / (float)s_scale;
-    float u_bias = ((p0->x <= p1->x) ? sample_offset : 1.0f - sample_offset) * uw;
-    float v_bias = ((p0->y <= p1->y) ? sample_offset : 1.0f - sample_offset) * vw;
-    float ua = ((p0->x <= p1->x) ? u0 : u1) - u_bias;
-    float ub = ((p0->x <= p1->x) ? u1 : u0) - u_bias;
-    float va = ((p0->y <= p1->y) ? v0 : v1) - v_bias;
-    float vb = ((p0->y <= p1->y) ? v1 : v0) - v_bias;
+    /* The coordinate is linear across the rectangle, from the u of the vertex on the left
+     * edge to the u of the one on the right (likewise v), and the PSP samples it at each
+     * pixel's centre (PSP-GE-SAMPLE-001), which is where Vulkan samples a fragment at 1x.
+     * Readback keeps the top-left device sample of each scaled guest pixel, at guest
+     * offset 0.5 / scale; shift the endpoints so that sample sees the pixel-centre value. */
+    float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
+    float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
+    float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
+    float centre_shift = 0.5f - 0.5f / (float)s_scale;
+    float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
+    float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;
@@ -4284,8 +4285,10 @@ typedef struct RawSpriteVtx {
 } RawSpriteVtx;
 
 /* Synthetic through-mode sprites.  The expected table is deliberately independent of
- * the interpolation code: it names the complete texel sequence at the screen-space
- * minimum corner, including the endpoint-exclusive correction for reversed axes. */
+ * the interpolation code: it names the complete texel sequence from the screen-space
+ * minimum corner. UV is linear between the vertex on each edge and every pixel samples
+ * it at its centre (PSP-GE-SAMPLE-001), so a pixel shows texel floor(u at x + 0.5):
+ * reverse-x-scaled's first pixel reads 8 - 0.5 * 2 = 7. */
 static const SpriteExpected k_sprite_expected[] = {
     { "normal",               { 10.0f,  10.0f, 0.0f, 0.0f }, { 14.0f,  14.0f, 4.0f, 4.0f },
       10,  10, 4, 4, 0, 0,  1,  1 },
@@ -4302,7 +4305,7 @@ static const SpriteExpected k_sprite_expected[] = {
     { "reverse-x-offset",     { 14.0f,  60.0f, 2.0f, 3.0f }, { 10.0f,  64.0f, 6.0f, 7.0f },
       10,  60, 4, 4, 5, 3, -1,  1 },
     { "reverse-x-scaled",     { 14.0f,  70.0f, 0.0f, 0.0f }, { 10.0f,  74.0f, 8.0f, 4.0f },
-      10,  70, 4, 4, 6, 0, -2,  1 },
+      10,  70, 4, 4, 7, 0, -2,  1 },
     { "reverse-x-subpixel",   { 14.75f, 80.75f, 0.0f, 0.0f }, { 10.75f, 84.75f, 4.0f, 4.0f },
       10,  80, 4, 4, 3, 0, -1,  1 },
     { "reverse-x-far-edge",   { 38.0f,  90.0f, 0.0f, 0.0f }, { 30.0f,  92.0f, 8.0f, 2.0f },
@@ -5035,6 +5038,144 @@ static uint32_t coherence_mip_list(const CohMipCase *c, int draw) {
     return COH_MIP_LIST;
 }
 
+/* Texture sample points measured on a PSP-3000 (PSP-GE-SAMPLE-001, issue #282). A 32x32 8888
+ * texture shows texel (u, v) as R = 8u, G = 8v, so a pixel's R and G name its texel and, under
+ * bilinear filtering, its blend. Four through-mode cells from the record, each 8x8 pixels:
+ *   A  triangle pair, bilinear, 1:1 at integer UV 8..16: every pixel is exactly its texel;
+ *   B  the same with nearest filtering;
+ *   C  triangle pair, nearest, UV 8.5..16.5: texel 9 + dx, 9 + dy;
+ *   D  sprite, bilinear, 2x magnified (UV 8..12): the first pixel blends texel 7 at 4/16
+ *      and texel 8 at 12/16 on each axis, the second texel 8 at 12/16 and texel 9 at 4/16.
+ * Before the rule was measured, a 1:1 triangle blended half of the next texel under bilinear
+ * filtering (a glyph's last row picked up the next glyph's first) and showed the next texel
+ * under nearest. Both the Vulkan path and the software rasterizer are checked. */
+#define COH_SAMPLE_TEX   0x04048000u
+#define COH_SAMPLE_LIST  0x00102000u
+#define COH_SAMPLE_VERTS 0x00102800u
+static int coherence_sample_expect(int cell, int dx, int dy, uint32_t *want) {
+    int r, g;
+    if (cell == 0 || cell == 1) { r = 8 * (8 + dx); g = 8 * (8 + dy); }
+    else if (cell == 2) { r = 8 * (9 + dx); g = 8 * (9 + dy); }
+    else {
+        static const int first_two[2] = { (56 * 4 + 64 * 12) / 16, (64 * 12 + 72 * 4) / 16 };
+        if (dx > 1 || dy > 1) return 0;
+        r = first_two[dx]; g = first_two[dy];
+    }
+    *want = 0xFF000000u | ((uint32_t)g << 8) | (uint32_t)r;
+    return 1;
+}
+
+static int coherence_run_psp_sample_points(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 32u; v++)
+        for (unsigned u = 0; u < 32u; u++) tex[v * 32u + u] = 0xFF000000u | ((8u * v) << 8) | (8u * u);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 32u * 32u * 4u);
+
+    static const struct { int x, type; float u0, u1; uint32_t tflt; } cells[4] = {
+        { 100, 3, 8.0f, 16.0f, 0x101u }, { 110, 3, 8.0f, 16.0f, 0x000u },
+        { 120, 3, 8.5f, 16.5f, 0x000u }, { 130, 6, 8.0f, 12.0f, 0x101u },
+    };
+    const int y0 = 10;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, 0x00160000u);
+    DL_EMIT(0x9D, 512u | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 32u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (5u << 8) | 5u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC7, (1u << 8) | 1u);                         /* clamp u and v */
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < 4; c++) {
+        float x0 = (float)cells[c].x, x1 = x0 + 8.0f, ya = (float)y0, yb = ya + 8.0f;
+        float u0 = cells[c].u0, u1 = cells[c].u1;
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, cells[c].tflt);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        if (cells[c].type == 3) {                          /* TL TR BL, BL TR BR */
+            vtx[nv++] = (RawSpriteVtx){ u0, u0, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u0, x1, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u0, u1, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u0, u1, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u0, x1, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u1, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (3u << 16) | 6u);
+        } else {
+            vtx[nv++] = (RawSpriteVtx){ u0, u0, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u1, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (6u << 16) | 2u);
+        }
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    uint32_t *gpu = (uint32_t *)malloc(bytes);
+    if (!gpu) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [psp-sample-points]: GPU readback failed\n");
+    if (ok) {
+        memcpy(gpu, fb, bytes);
+        memset(fb, 0, bytes);
+        ge_set_gpu_hooks(NULL);
+        ge_run_list(COH_SAMPLE_LIST, 0);
+        ge_set_gpu_hooks(&k_hooks);
+    }
+    static const char *const names[4] = { "tri-linear-1to1", "tri-nearest-1to1",
+                                          "tri-nearest-half", "spr-linear-mag2" };
+    for (int c = 0; ok && c < 4; c++)
+        for (int dy = 0; ok && dy < 8; dy++)
+            for (int dx = 0; ok && dx < 8; dx++) {
+                uint32_t want;
+                if (!coherence_sample_expect(c, dx, dy, &want)) continue;
+                size_t at = (size_t)(y0 + dy) * stride + (size_t)(cells[c].x + dx);
+                uint32_t sw = fb[at] & 0x00FFFFFFu, gp = gpu[at] & 0x00FFFFFFu;
+                want &= 0x00FFFFFFu;
+                if (sw != want || gp != want) {
+                    fprintf(stderr, "gpu coherence selftest [psp-sample-points/%s]: pixel=(%d,%d) "
+                            "software=%06x gpu=%06x, want %06x (PSP-GE-SAMPLE-001)\n",
+                            names[c], dx, dy, sw, gp, want);
+                    ok = 0;
+                }
+            }
+    free(gpu);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s 4 cells (PSP-GE-SAMPLE-001)\n", "psp-sample-points");
+    return ok;
+}
+
 /* Put TEXMODE, TEXLEVEL and TEXFILTER back to level 0 only through the list path, so the
  * later fixtures start from the state they assume and the state serial moves with it. */
 static void coherence_mip_reset_state(void) {
@@ -5047,9 +5188,16 @@ static void coherence_mip_reset_state(void) {
     ge_run_list(COH_MIP_RESET, 0);
 }
 
+/* The texel the first pixel shows: the sprite's UV runs 0.25..8.25 level-0 texels across
+ * `rect` pixels, and the pixel samples it at its centre (PSP-GE-SAMPLE-001), so it reads
+ * s = 0.25 + 0.5 * 8 / rect, which is s / 2^level in the level. Every case with an expected
+ * level filters that level by the nearest rule, floor(s). */
 static uint32_t coherence_mip_first_texel(const CohMipCase *c) {
-    return c->level == 1 && c->alt_level1 ? coherence_mip_alt_texel(0u, 0u)
-                                          : coherence_mip_texel((unsigned)c->level, 0u, 0u);
+    float s = (0.25f + 4.0f / (float)c->rect) / (float)(1u << (unsigned)c->level);
+    unsigned size = 8u >> (unsigned)c->level, t = (unsigned)s;
+    if (t >= size) t = size - 1u;
+    return c->level == 1 && c->alt_level1 ? coherence_mip_alt_texel(t, t)
+                                          : coherence_mip_texel((unsigned)c->level, t, t);
 }
 
 static int coherence_run_mip_case(const CohMipCase *c) {
@@ -6534,6 +6682,7 @@ int gegpu_coherence_selftest(void) {
      * current depth surface to ge.c, and the fixtures above start from the depth state the
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
+    if (!coherence_run_psp_sample_points()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

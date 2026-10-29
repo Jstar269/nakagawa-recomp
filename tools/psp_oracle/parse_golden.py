@@ -1782,6 +1782,25 @@ _register_campaign_probe(
     {case: (17 if case.startswith("rndf") else 13) for case in VFPU_FORMS_CASES},
 )
 
+# ge-sample (109, probe_ge_sample.c): the #282 GE texture sample-point cells. Every draw is
+# emitted on every run, so the stream is fixed-shape: per mapping, primitive (triangle pair
+# or sprite), filter and texture, one `-draw` record (the GE wait outcome, 7 words) and one
+# record per read-back row y 3..18 (16 raw 8888 pixels, x 3..18).
+GE_SAMPLE_MAPS = ("1to1", "half", "mag2", "min20", "s16", "s16min")
+GE_SAMPLE_PRIMS = ("tri", "spr")
+GE_SAMPLE_FILTERS = ("near", "lin")
+GE_SAMPLE_TEXTURES = ("u", "v")
+GE_SAMPLE_ROWS = tuple(range(3, 19))
+GE_SAMPLE_DRAWS = tuple(f"{prim}-{filt}-{m}-{tex}" for m in GE_SAMPLE_MAPS
+                        for prim in GE_SAMPLE_PRIMS for filt in GE_SAMPLE_FILTERS
+                        for tex in GE_SAMPLE_TEXTURES)
+GE_SAMPLE_CASES = tuple(case for draw in GE_SAMPLE_DRAWS
+                        for case in (f"{draw}-draw", *(f"{draw}-r{y:02d}" for y in GE_SAMPLE_ROWS)))
+_register_campaign_probe(
+    "ge-sample", "PSP-GE-SAMPLE-001", GE_SAMPLE_CASES,
+    {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",
