@@ -2051,9 +2051,20 @@ LIBCHDR_CFLAGS := -std=c99 -O2 $(LIBCHDR_INC) -I$(LIBCHDR_DIR)/deps/lzma-26.02/i
 # The CHD backend over libchdr, compiled into the programs that read CHD.
 PLAYER_CHD_SRCS := src/core/nk_disc_chd.c
 
-$(LIBCHDR_LIB): $(LIBCHDR_SRCS)
+$(LIBCHDR_OBJ_DIR):
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(LIBCHDR_OBJ_DIR)').mkdir(parents=True, exist_ok=True)"
-	$(foreach s,$(LIBCHDR_SRCS),$(CC) $(LIBCHDR_CFLAGS) -c $(s) -o $(LIBCHDR_OBJ_DIR)/$(notdir $(s:.c=.o)) &&) true
+
+# One object per source, from each folder libchdr keeps its sources in.
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/src/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/lzma-26.02/src/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/miniz-3.1.2/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+$(LIBCHDR_OBJ_DIR)/%.o: $(LIBCHDR_DIR)/deps/zstd-1.5.7/%.c | $(LIBCHDR_OBJ_DIR)
+	$(CC) $(LIBCHDR_CFLAGS) -c $< -o $@
+
+$(LIBCHDR_LIB): $(LIBCHDR_OBJS)
 	$(AR) rcs $@ $(LIBCHDR_OBJS)
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
@@ -2084,7 +2095,7 @@ $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_ICON_OBJ) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
