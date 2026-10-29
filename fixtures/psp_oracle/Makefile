@@ -242,6 +242,10 @@ CASE_ID = 117
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
+# 120: the #325 COP0 interrupt state (probe_hle_issues.c): Cause, Status, Count and the
+# interrupt-enable word read in kernel mode across a suspended VBLANK.
+else ifeq ($(CASE),intr-cause)
+CASE_ID = 120
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -429,6 +433,9 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),vfpu-forms)
 TARGET = $(BUILD_DIR)/vfpu_forms
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),intr-cause)
+TARGET = $(BUILD_DIR)/intr_cause
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
 # same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),ge-sample)
@@ -505,6 +512,16 @@ ifeq ($(CASE),hle-intr-cells)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# intr-cause: exactly kuKernelCall from the kernel bridge, the two sceDisplay reads, and from
+# Kernel_Library the suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue
+# imports; nothing from the interrupt manager or SystemCtrlForUser.
+ifeq ($(CASE),intr-cause)
+LIBS += -lpspkubridge
+USER_MODE_IMPORT_GATE_ARGS += --exact-library KUBridge=0x9060F69D
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceDisplay=0x984C27E7,0x9C6EAAD7
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library SystemCtrlForUser
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the

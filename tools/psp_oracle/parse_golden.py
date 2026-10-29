@@ -1818,6 +1818,23 @@ _register_campaign_probe(
      for case in INSN_TRACE_CASES},
 )
 
+# intr-cause (120, probe_hle_issues.c): the #325 COP0 interrupt state. Every row is emitted
+# on every run, so the stream is fixed-shape: four snapshots with interrupts enabled, then per
+# pass 25 snapshots 1 ms apart inside a sceKernelCpuSuspendIntr window, one snapshot 200 us
+# after the resume and the window summary. A snapshot row is Cause plus six words (Status,
+# Count, interrupt-enable word, time offset, vcount, kuKernelCall return); the summary has four.
+INTR_CAUSE_ENABLED = 4
+INTR_CAUSE_SNAPS = 25
+INTR_CAUSE_PASSES = 2
+INTR_CAUSE_CASES = tuple(f"cause-enabled-{i}" for i in range(INTR_CAUSE_ENABLED)) + tuple(
+    case for p in range(INTR_CAUSE_PASSES)
+    for case in (*(f"cause-masked-p{p}-t{k:02d}" for k in range(INTR_CAUSE_SNAPS)),
+                 f"cause-resumed-p{p}", f"cause-window-p{p}"))
+_register_campaign_probe(
+    "intr-cause", "PSP-INTR-CAUSE-001", INTR_CAUSE_CASES,
+    {case: (4 if case.startswith("cause-window-") else 6) for case in INTR_CAUSE_CASES},
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",
@@ -2036,7 +2053,7 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.
-HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms"})
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "intr-cause"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (

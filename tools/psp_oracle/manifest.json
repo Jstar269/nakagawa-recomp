@@ -1540,6 +1540,55 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-INTR-CAUSE-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No acceptance-eligible capture exists yet. Built from fixtures/psp_oracle/probe_hle_issues.c as intr_cause.prx and run as a single launch, not in the campaign queue; its stream is fixed-shape (CAMPAIGN_PROBE_CASES['intr-cause']) and every row records what was read.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_hle_issues.c",
+        "prx": "intr_cause.prx",
+        "apis": [
+          "kuKernelCall",
+          "sceDisplayGetVcount",
+          "sceDisplayWaitVblankStart",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelCpuResumeIntr",
+          "sceKernelCpuSuspendIntr",
+          "sceKernelDelayThread",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetSystemTimeLow",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "Allegrex mfc0 (Cause, Status, Count)",
+          "Allegrex mfic"
+        ],
+        "diagnostic_case_ids": [
+          "intr-cause"
+        ],
+        "case_ids": [
+          "cause-enabled-*",
+          "cause-masked-p0-*",
+          "cause-resumed-p0",
+          "cause-window-p0",
+          "cause-masked-p1-*",
+          "cause-resumed-p1",
+          "cause-window-p1",
+          "intr-cause-done"
+        ],
+        "invariant": "#325: COP0 Cause, Status and Count and the Allegrex interrupt-enable word (mfic $0), each read in kernel mode by one kuKernelCall, with the system time and sceDisplayGetVcount after each read: four reads with interrupts enabled just after a VBLANK start, then per pass (two passes) a read every 1 ms for 24 ms inside a sceKernelCpuSuspendIntr window that starts just after a VBLANK start (so the next VBLANK falls inside), one read 200 us after the resume, and the window's suspend word and vcount before the suspend, at the resume and 30 ms after it.",
+        "issues": [
+          325
+        ],
+        "risk": "low; read-only COP0 and interrupt-enable reads in kernel mode through kuKernelCall; no handler, timer or alarm is installed; interrupts are suspended for about 24 ms per pass and every wait is bounded",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-LLSC-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
