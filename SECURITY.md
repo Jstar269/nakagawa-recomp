@@ -136,6 +136,8 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
 | `src/core/nk_xb.c` | FNV-32 | In-memory path table that finds duplicate paths while writing an XB archive | Keep: hash-table key |
+| `tools/nk_core/iso_inspect.py` | FNV-32 | Disc-path suffix that keeps two disc modules with the same file name apart in the per-title module folder (`disc_module_qualified_name`), mirrored by `src/player/player_state.c` | Keep: file-name key, not integrity |
+| `src/player/player_state.c` | FNV-32 | Same disc-path suffix for the player's disc check (`player_module_qualified_name`), matching `tools/nk_core/iso_inspect.py` | Keep: file-name key, not integrity |
 | `src/player/main.c` | FNV-64 | Rendered-frame hash printed by the player's UI test mode | Keep: test fingerprint |
 | `src/ui/backend/nk_ui_sdlr.c` | FNV-32 | Glyph atlas cache key | Keep: cache key, not integrity |
 | `src/ui/nk_ui_widgets.c` | FNV-32 | Picks a placeholder art tint from a key | Keep: not a digest check |
