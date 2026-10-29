@@ -1699,7 +1699,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ee07d2ece6ff299b2c2740ebd41786b03cf26ce9bffd0c5474e7a223ef2aa886"
+      "sha256": "f6548dac5412698b9cda1b126898a25142896bae45949ee132fe40042e537c87"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
