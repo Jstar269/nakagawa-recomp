@@ -185,7 +185,7 @@ class RecorderBundleTests(unittest.TestCase):
         return json.loads(raw), raw, run_result.stderr
 
     def test_named_refusals_from_the_c_recorder_are_events_until_the_real_terminal(self):
-        """Schema 5 written by the production C recorder: a refusal is counted, then the end wins."""
+        """Schema 6 written by the production C recorder: a refusal is counted, then the end wins."""
         refusal_then_fatal = (
             '#include "flight_recorder.h"\n'
             "\n"
@@ -220,7 +220,9 @@ class RecorderBundleTests(unittest.TestCase):
                 Path(tmp), "refusal_exit", identity, source=refusal_then_exit,
                 classes="unsupported", limit=8,
             )
-        self.assertEqual(fatal_bundle["schema_version"], 5)
+        self.assertEqual(fatal_bundle["schema_version"], 6)
+        # The recorder links without the scheduler here: no thread source, an empty block.
+        self.assertEqual(fatal_bundle["threads"], [])
         self.assertEqual(fatal_bundle["terminal"]["reason"], "fatal")
         self.assertEqual(fatal_bundle["terminal"]["kind"], 12)
         self.assertEqual(fatal_bundle["refusals"]["count"], 1)
@@ -247,7 +249,8 @@ class RecorderBundleTests(unittest.TestCase):
                 ],
             )
         build = bundle["build"]
-        self.assertEqual(bundle["schema_version"], 5)
+        self.assertEqual(bundle["schema_version"], 6)
+        self.assertEqual(bundle["threads"], [])
         self.assertEqual(build["source_date_epoch"], int(FAKE_EPOCH))
         self.assertEqual(build["build_id"], FAKE_COMMIT)
         self.assertNotIn("compiled_date", build)

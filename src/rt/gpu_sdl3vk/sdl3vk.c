@@ -26,6 +26,7 @@
 #include "../perf.h"
 #include "../fbcap_policy.h"
 #include "../fbcap.h"
+#include "../recomp.h"   /* sr_parse_display_bounds, sr_pick_display */
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -376,6 +377,68 @@ static int init_step_fails(void) {
 #define INIT_OK(cond, ...) do { if (init_step_fails() || !(cond)) { \
     fprintf(stderr, __VA_ARGS__); goto fail; } } while (0)
 
+/* The display the game window opens on: the one holding the launcher window, named by
+ * SR_LAUNCHER_DISPLAY_BOUNDS (sr_pick_display in recomp.h), else the primary. A value that
+ * is set but cannot be used is reported, not ignored. Returns 0 only when SDL has no primary
+ * display either; SDL_WINDOWPOS_CENTERED_DISPLAY(0) then means the primary. */
+static SDL_DisplayID sdl3vk_launcher_display(void) {
+    SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    const char *value = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
+    int bounds[4];
+    if (!value || !value[0]) return primary;
+    if (!sr_parse_display_bounds(value, bounds)) {
+        fprintf(stderr, "sdl3vk: SR_LAUNCHER_DISPLAY_BOUNDS=%s is not x,y,w,h; "
+                        "opening on the primary display\n", value);
+        return primary;
+    }
+    int count = 0;
+    SDL_DisplayID *ids = SDL_GetDisplays(&count);
+    int *rects = (ids && count > 0) ? (int *)SDL_calloc((size_t)count, 4 * sizeof(int)) : NULL;
+    int pick = -1;
+    if (rects) {
+        for (int i = 0; i < count; i++) {
+            SDL_Rect r;
+            /* A display whose bounds cannot be read keeps a zero rectangle and never matches. */
+            if (SDL_GetDisplayBounds(ids[i], &r)) {
+                rects[4 * i] = r.x;
+                rects[4 * i + 1] = r.y;
+                rects[4 * i + 2] = r.w;
+                rects[4 * i + 3] = r.h;
+            }
+        }
+        pick = sr_pick_display(bounds, rects, count);
+    }
+    SDL_DisplayID display = pick >= 0 ? ids[pick] : primary;
+    if (pick < 0)
+        fprintf(stderr, "sdl3vk: no display contains the launcher's display %s; "
+                        "opening on the primary display\n", value);
+    SDL_free(rects);
+    SDL_free(ids);
+    return display;
+}
+
+/* The game window, created centred on the launcher's display so it never appears on
+ * another one first. */
+static SDL_Window *sdl3vk_create_window(const char *title) {
+    SDL_DisplayID display = sdl3vk_launcher_display();
+    SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) return NULL;
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
+                          title ? title : "Nakagawa Recomp");
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER,
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER,
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, PSP_W * 2);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, PSP_H * 2);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                          SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                          (s_window_hidden ? SDL_WINDOW_HIDDEN : 0));
+    SDL_Window *win = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+    return win;
+}
+
 int sdl3vk_init(const char *title) {
     s_init_steps = 0;
     INIT_OK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD), "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
@@ -384,14 +447,12 @@ int sdl3vk_init(const char *title) {
      * a window nobody sees, for headless routes. It is never raised or put in front. */
     const char *hidden_env = getenv("SR_WINDOW_HIDDEN");
     s_window_hidden = hidden_env && hidden_env[0] && strcmp(hidden_env, "0") != 0;
-    INIT_OK((s_win = SDL_CreateWindow(title ? title : "Nakagawa Recomp",
-                                      PSP_W * 2, PSP_H * 2,
-                                      SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
-                                      (s_window_hidden ? SDL_WINDOW_HIDDEN : 0))) != NULL,
+    INIT_OK((s_win = sdl3vk_create_window(title)) != NULL,
             "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
     {
         /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
-         * surface is created so the swapchain picks up the right extent. */
+         * surface is created so the swapchain picks up the right extent. Desktop
+         * fullscreen takes the display the window is on, which is the launcher's. */
         const char *fs = getenv("SR_FULLSCREEN");
         if (fs && fs[0] && atoi(fs) != 0 && !SDL_SetWindowFullscreen(s_win, true)) {
             fprintf(stderr, "sdl3vk: SR_FULLSCREEN=1 could not be applied: %s\n",

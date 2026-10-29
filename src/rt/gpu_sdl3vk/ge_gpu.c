@@ -182,6 +182,8 @@ typedef struct {
     uint32_t addr, bytes;                  /* guest source range for precise CPU-write invalidation */
     TexMipKey mip;                         /* compared exactly on lookup, with key */
     uint32_t mip_bytes[7];                 /* source range of each level 1..mip.max_level */
+    uint64_t range_lo[8], range_hi[8];     /* canonical source ranges, level 0 first (#282) */
+    int range_n;
     int content_valid;
     int pending;                           /* referenced by not-yet-submitted batches */
     uint8_t *shadow;
@@ -298,6 +300,93 @@ static VkShaderModule s_vs, s_fs;
 
 static TexEnt  s_tex[MAX_TEX];
 static int     s_tex_n = 0;
+
+/* CPU-store page index (#282). hook_vram_dirty runs for every guest store into VRAM, and
+ * comparing each store with every cache entry was the largest single host cost of titles whose
+ * CPU writes VRAM. Two facts about 4 KiB pages of the canonical physical space SR_PHYS covers
+ * let a store skip that scan:
+ *   clean  no entry's source range (any level) touches the page. Entry ranges never change
+ *          after tex_get creates the entry and eviction only removes ranges, so the bit stays
+ *          true until a new entry covers the page; creating one clears exactly its pages.
+ *   quiet  every entry touching the page is already invalid. Recorded with s_tex_valid_gen,
+ *          which moves whenever an entry is created or becomes valid again, so a quiet page
+ *          stays quiet only while no entry has been (re)validated anywhere.
+ * A store wholly inside clean pages changes nothing. A store wholly inside quiet pages could
+ * only re-invalidate invalid entries; it drops the state template, which a store overlapping
+ * an invalid entry also does, so every later draw sees the same textures. */
+#define TEX_CLEAN_PAGE_SHIFT 12u
+#define TEX_CLEAN_PAGES (0x20000000u >> TEX_CLEAN_PAGE_SHIFT)
+static uint64_t s_tex_clean[TEX_CLEAN_PAGES / 64u];
+static uint32_t s_tex_quiet[TEX_CLEAN_PAGES];    /* s_tex_valid_gen when found quiet; 0 = unknown */
+static uint32_t s_tex_valid_gen = 1;
+
+/* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the mirrored
+ * 0x04xxxxxx VRAM aperture); cache ranges are compared in one physical namespace. */
+static uint32_t tex_canonical(uint32_t addr) {
+    return sr_vram_cpu_aperture(addr) ? sr_vram_cpu_address(addr) : SR_PHYS(addr);
+}
+
+/* Cache the canonical source range of level 0, then of each level 1..mip.max_level (#1373). */
+static void tex_ent_set_ranges(TexEnt *e) {
+    int n = 0;
+    e->range_lo[n] = tex_canonical(e->addr);
+    e->range_hi[n] = e->range_lo[n] + e->bytes;
+    n++;
+    for (uint32_t l = 0; l < e->mip.max_level && l < 7u; l++, n++) {
+        e->range_lo[n] = tex_canonical(e->mip.addr[l]);
+        e->range_hi[n] = e->range_lo[n] + e->mip_bytes[l];
+    }
+    e->range_n = n;
+}
+
+static int tex_ent_overlaps(const TexEnt *e, uint64_t a0, uint64_t a1) {
+    for (int i = 0; i < e->range_n; i++)
+        if (a0 < e->range_hi[i] && e->range_lo[i] < a1) return 1;
+    return 0;
+}
+
+/* Whether every page of [p0, p1] is known to hold no cached texture. */
+static int tex_clean_pages(uint64_t p0, uint64_t p1) {
+    for (uint64_t p = p0; p <= p1; p++) {
+        uint64_t word = s_tex_clean[p >> 6];
+        if ((p & 63u) == 0 && p + 63u <= p1) {
+            if (word != UINT64_MAX) return 0;
+            p += 63u;
+            continue;
+        }
+        if (!(word & (UINT64_C(1) << (p & 63u)))) return 0;
+    }
+    return 1;
+}
+
+static void tex_clean_set(uint64_t p0, uint64_t p1, int clean) {
+    for (uint64_t p = p0; p <= p1 && p < TEX_CLEAN_PAGES; p++) {
+        if (clean) s_tex_clean[p >> 6] |= UINT64_C(1) << (p & 63u);
+        else s_tex_clean[p >> 6] &= ~(UINT64_C(1) << (p & 63u));
+    }
+}
+
+static int tex_quiet_pages(uint64_t p0, uint64_t p1) {
+    for (uint64_t p = p0; p <= p1; p++)
+        if (s_tex_quiet[p] != s_tex_valid_gen) return 0;
+    return 1;
+}
+
+/* An entry became valid (created, revalidated or re-uploaded): no page is known quiet. */
+static void tex_note_valid(void) {
+    if (++s_tex_valid_gen == 0u) {          /* wrapped: no stale mark may match again */
+        memset(s_tex_quiet, 0, sizeof(s_tex_quiet));
+        s_tex_valid_gen = 1u;
+    }
+}
+
+/* A new entry: its pages may hold a cached texture from now on. */
+static void tex_clean_forget(const TexEnt *e) {
+    for (int i = 0; i < e->range_n; i++)
+        if (e->range_hi[i] > e->range_lo[i])
+            tex_clean_set(e->range_lo[i] >> TEX_CLEAN_PAGE_SHIFT,
+                          (e->range_hi[i] - 1u) >> TEX_CLEAN_PAGE_SHIFT, 0);
+}
 static VkImage s_white; static VkDeviceMemory s_white_mem;
 static VkImageView s_white_view; static VkSampler s_white_smp;
 static VkDescriptorSet s_white_set;
@@ -351,6 +440,8 @@ static unsigned long s_cnt_present_cpu = 0, s_cnt_rtt = 0;
 static unsigned long s_cnt_readback = 0, s_cnt_upload = 0, s_cnt_dirty = 0;
 static unsigned long s_cnt_snap = 0, s_cnt_texup = 0, s_cnt_xferblit = 0;
 static uint64_t s_cnt_tex_invalidations = 0;
+static uint64_t s_cnt_tex_clean_skips = 0;   /* CPU stores that skipped the texture scan (#282): */
+static uint64_t s_cnt_tex_quiet_skips = 0;   /* clean pages, and quiet pages */
 static uint64_t s_cnt_shadow_checks = 0, s_cnt_shadow_hits = 0, s_cnt_shadow_misses = 0;
 static uint64_t s_cnt_shadow_bytes = 0, s_cnt_shadow_avoided = 0, s_cnt_shadow_required = 0;
 static GeGpuReplayStats s_replay_stats;
@@ -2501,6 +2592,7 @@ static VkDescriptorSet tex_get(void) {
         }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
             e->content_valid = 1;
+            tex_note_valid();
             e->pending = 1;
             s_cnt_shadow_avoided++;
             if (sr_perf_enabled) sr_perf_texture_cache(1);
@@ -2512,6 +2604,7 @@ static VkDescriptorSet tex_get(void) {
         if (!tex_decode_upload(e->img, e->w, e->h, levels)) return s_white_set;
         e->hash = hash;
         e->content_valid = 1;
+        tex_note_valid();
         tex_shadow_store(e);
         e->pending = 1;
         s_cnt_texup++;
@@ -2539,7 +2632,10 @@ static VkDescriptorSet tex_get(void) {
     e->bytes = tex_source_size();
     e->mip = mip;
     memcpy(e->mip_bytes, mip_bytes, sizeof(e->mip_bytes));
+    tex_ent_set_ranges(e);
+    tex_clean_forget(e);
     e->content_valid = 1;
+    tex_note_valid();
     tex_shadow_store(e);
     e->pending = 1;
     e->lru = s_texlru++;
@@ -3142,16 +3238,17 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
         u1 = p1->u / (p1->rw != 0.0f ? p1->rw : 1.0f);
         v1 = p1->v / (p1->rw != 0.0f ? p1->rw : 1.0f);
     }
-    float uw = (u1 - u0) / (xb - xa), vw = (v1 - v0) / (yb - ya);
-    /* Readback selects the top-left device sample of each scaled guest pixel.  Bias
-     * texture endpoints so that sample observes the same UV as the software path. */
-    float sample_offset = 0.5f / (float)s_scale;
-    float u_bias = ((p0->x <= p1->x) ? sample_offset : 1.0f - sample_offset) * uw;
-    float v_bias = ((p0->y <= p1->y) ? sample_offset : 1.0f - sample_offset) * vw;
-    float ua = ((p0->x <= p1->x) ? u0 : u1) - u_bias;
-    float ub = ((p0->x <= p1->x) ? u1 : u0) - u_bias;
-    float va = ((p0->y <= p1->y) ? v0 : v1) - v_bias;
-    float vb = ((p0->y <= p1->y) ? v1 : v0) - v_bias;
+    /* The coordinate is linear across the rectangle, from the u of the vertex on the left
+     * edge to the u of the one on the right (likewise v), and the PSP samples it at each
+     * pixel's centre (PSP-GE-SAMPLE-001), which is where Vulkan samples a fragment at 1x.
+     * Readback keeps the top-left device sample of each scaled guest pixel, at guest
+     * offset 0.5 / scale; shift the endpoints so that sample sees the pixel-centre value. */
+    float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
+    float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
+    float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
+    float centre_shift = 0.5f - 0.5f / (float)s_scale;
+    float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
+    float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;
@@ -3242,23 +3339,28 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
      * physical namespace before deciding whether a texture is stale. The
      * target path below still uses vram_off(), because framebuffer targets are
      * indexed by their 2 MiB-local VRAM offset. */
-    uint32_t canonical_addr = sr_vram_cpu_aperture(addr)
-                            ? sr_vram_cpu_address(addr) : SR_PHYS(addr);
+    uint32_t canonical_addr = tex_canonical(addr);
     uint64_t dirty0 = canonical_addr, dirty1 = dirty0 + bytes;
-    for (int i = 0; i < s_tex_n; i++) {
+    uint64_t page0 = dirty0 >> TEX_CLEAN_PAGE_SHIFT, page1 = (dirty1 - 1u) >> TEX_CLEAN_PAGE_SHIFT;
+    int indexed = page1 < TEX_CLEAN_PAGES;
+    int scan = 1;
+    if (indexed && tex_clean_pages(page0, page1)) {
+        scan = 0;                          /* no entry reads these pages */
+        s_cnt_tex_clean_skips++;
+    } else if (indexed && tex_quiet_pages(page0, page1)) {
+        scan = 0;                          /* every entry reading them is already invalid */
+        s_tmpl_ok = 0;
+        s_cnt_tex_quiet_skips++;
+    }
+    uint64_t span0 = page0 << TEX_CLEAN_PAGE_SHIFT, span1 = (page1 + 1u) << TEX_CLEAN_PAGE_SHIFT;
+    int span_touched = 0, span_valid = 0;
+    for (int i = 0; scan && i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
-        uint32_t tex_addr = sr_vram_cpu_aperture(e->addr)
-                          ? sr_vram_cpu_address(e->addr) : SR_PHYS(e->addr);
-        uint64_t tex0 = tex_addr, tex1 = tex0 + e->bytes;
-        int dirty = dirty0 < tex1 && tex0 < dirty1;
+        if (!tex_ent_overlaps(e, span0, span1)) continue;
+        span_touched = 1;
         /* A mip chain (#1373) is stale when any of its levels is written: the same
          * canonical comparison against each level's own source range. */
-        for (uint32_t l = 0; !dirty && l < e->mip.max_level; l++) {
-            uint32_t level_addr = sr_vram_cpu_aperture(e->mip.addr[l])
-                                ? sr_vram_cpu_address(e->mip.addr[l]) : SR_PHYS(e->mip.addr[l]);
-            dirty = dirty0 < (uint64_t)level_addr + e->mip_bytes[l] && level_addr < dirty1;
-        }
-        if (dirty) {
+        if (tex_ent_overlaps(e, dirty0, dirty1)) {
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
                 e->content_valid = 0;
@@ -3269,6 +3371,12 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
              * template as well as the entry (coherence selftest texture-dirty-same-state). */
             s_tmpl_ok = 0;
         }
+        if (e->content_valid) span_valid = 1;
+    }
+    if (scan && indexed) {
+        if (!span_touched) tex_clean_set(page0, page1, 1);
+        else if (!span_valid)
+            for (uint64_t p = page0; p <= page1; p++) s_tex_quiet[p] = s_tex_valid_gen;
     }
     if (!is_vram(canonical_addr)) return;
     uint32_t a0 = vram_off(canonical_addr);
@@ -4154,8 +4262,10 @@ typedef struct RawSpriteVtx {
 } RawSpriteVtx;
 
 /* Synthetic through-mode sprites.  The expected table is deliberately independent of
- * the interpolation code: it names the complete texel sequence at the screen-space
- * minimum corner, including the endpoint-exclusive correction for reversed axes. */
+ * the interpolation code: it names the complete texel sequence from the screen-space
+ * minimum corner. UV is linear between the vertex on each edge and every pixel samples
+ * it at its centre (PSP-GE-SAMPLE-001), so a pixel shows texel floor(u at x + 0.5):
+ * reverse-x-scaled's first pixel reads 8 - 0.5 * 2 = 7. */
 static const SpriteExpected k_sprite_expected[] = {
     { "normal",               { 10.0f,  10.0f, 0.0f, 0.0f }, { 14.0f,  14.0f, 4.0f, 4.0f },
       10,  10, 4, 4, 0, 0,  1,  1 },
@@ -4172,7 +4282,7 @@ static const SpriteExpected k_sprite_expected[] = {
     { "reverse-x-offset",     { 14.0f,  60.0f, 2.0f, 3.0f }, { 10.0f,  64.0f, 6.0f, 7.0f },
       10,  60, 4, 4, 5, 3, -1,  1 },
     { "reverse-x-scaled",     { 14.0f,  70.0f, 0.0f, 0.0f }, { 10.0f,  74.0f, 8.0f, 4.0f },
-      10,  70, 4, 4, 6, 0, -2,  1 },
+      10,  70, 4, 4, 7, 0, -2,  1 },
     { "reverse-x-subpixel",   { 14.75f, 80.75f, 0.0f, 0.0f }, { 10.75f, 84.75f, 4.0f, 4.0f },
       10,  80, 4, 4, 3, 0, -1,  1 },
     { "reverse-x-far-edge",   { 38.0f,  90.0f, 0.0f, 0.0f }, { 30.0f,  92.0f, 8.0f, 2.0f },
@@ -4905,6 +5015,144 @@ static uint32_t coherence_mip_list(const CohMipCase *c, int draw) {
     return COH_MIP_LIST;
 }
 
+/* Texture sample points measured on a PSP-3000 (PSP-GE-SAMPLE-001, issue #282). A 32x32 8888
+ * texture shows texel (u, v) as R = 8u, G = 8v, so a pixel's R and G name its texel and, under
+ * bilinear filtering, its blend. Four through-mode cells from the record, each 8x8 pixels:
+ *   A  triangle pair, bilinear, 1:1 at integer UV 8..16: every pixel is exactly its texel;
+ *   B  the same with nearest filtering;
+ *   C  triangle pair, nearest, UV 8.5..16.5: texel 9 + dx, 9 + dy;
+ *   D  sprite, bilinear, 2x magnified (UV 8..12): the first pixel blends texel 7 at 4/16
+ *      and texel 8 at 12/16 on each axis, the second texel 8 at 12/16 and texel 9 at 4/16.
+ * Before the rule was measured, a 1:1 triangle blended half of the next texel under bilinear
+ * filtering (a glyph's last row picked up the next glyph's first) and showed the next texel
+ * under nearest. Both the Vulkan path and the software rasterizer are checked. */
+#define COH_SAMPLE_TEX   0x04048000u
+#define COH_SAMPLE_LIST  0x00102000u
+#define COH_SAMPLE_VERTS 0x00102800u
+static int coherence_sample_expect(int cell, int dx, int dy, uint32_t *want) {
+    int r, g;
+    if (cell == 0 || cell == 1) { r = 8 * (8 + dx); g = 8 * (8 + dy); }
+    else if (cell == 2) { r = 8 * (9 + dx); g = 8 * (9 + dy); }
+    else {
+        static const int first_two[2] = { (56 * 4 + 64 * 12) / 16, (64 * 12 + 72 * 4) / 16 };
+        if (dx > 1 || dy > 1) return 0;
+        r = first_two[dx]; g = first_two[dy];
+    }
+    *want = 0xFF000000u | ((uint32_t)g << 8) | (uint32_t)r;
+    return 1;
+}
+
+static int coherence_run_psp_sample_points(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 32u; v++)
+        for (unsigned u = 0; u < 32u; u++) tex[v * 32u + u] = 0xFF000000u | ((8u * v) << 8) | (8u * u);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 32u * 32u * 4u);
+
+    static const struct { int x, type; float u0, u1; uint32_t tflt; } cells[4] = {
+        { 100, 3, 8.0f, 16.0f, 0x101u }, { 110, 3, 8.0f, 16.0f, 0x000u },
+        { 120, 3, 8.5f, 16.5f, 0x000u }, { 130, 6, 8.0f, 12.0f, 0x101u },
+    };
+    const int y0 = 10;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, 0x00160000u);
+    DL_EMIT(0x9D, 512u | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 32u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (5u << 8) | 5u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC7, (1u << 8) | 1u);                         /* clamp u and v */
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < 4; c++) {
+        float x0 = (float)cells[c].x, x1 = x0 + 8.0f, ya = (float)y0, yb = ya + 8.0f;
+        float u0 = cells[c].u0, u1 = cells[c].u1;
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, cells[c].tflt);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        if (cells[c].type == 3) {                          /* TL TR BL, BL TR BR */
+            vtx[nv++] = (RawSpriteVtx){ u0, u0, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u0, x1, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u0, u1, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u0, u1, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u0, x1, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u1, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (3u << 16) | 6u);
+        } else {
+            vtx[nv++] = (RawSpriteVtx){ u0, u0, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ u1, u1, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (6u << 16) | 2u);
+        }
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    uint32_t *gpu = (uint32_t *)malloc(bytes);
+    if (!gpu) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [psp-sample-points]: GPU readback failed\n");
+    if (ok) {
+        memcpy(gpu, fb, bytes);
+        memset(fb, 0, bytes);
+        ge_set_gpu_hooks(NULL);
+        ge_run_list(COH_SAMPLE_LIST, 0);
+        ge_set_gpu_hooks(&k_hooks);
+    }
+    static const char *const names[4] = { "tri-linear-1to1", "tri-nearest-1to1",
+                                          "tri-nearest-half", "spr-linear-mag2" };
+    for (int c = 0; ok && c < 4; c++)
+        for (int dy = 0; ok && dy < 8; dy++)
+            for (int dx = 0; ok && dx < 8; dx++) {
+                uint32_t want;
+                if (!coherence_sample_expect(c, dx, dy, &want)) continue;
+                size_t at = (size_t)(y0 + dy) * stride + (size_t)(cells[c].x + dx);
+                uint32_t sw = fb[at] & 0x00FFFFFFu, gp = gpu[at] & 0x00FFFFFFu;
+                want &= 0x00FFFFFFu;
+                if (sw != want || gp != want) {
+                    fprintf(stderr, "gpu coherence selftest [psp-sample-points/%s]: pixel=(%d,%d) "
+                            "software=%06x gpu=%06x, want %06x (PSP-GE-SAMPLE-001)\n",
+                            names[c], dx, dy, sw, gp, want);
+                    ok = 0;
+                }
+            }
+    free(gpu);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s 4 cells (PSP-GE-SAMPLE-001)\n", "psp-sample-points");
+    return ok;
+}
+
 /* Put TEXMODE, TEXLEVEL and TEXFILTER back to level 0 only through the list path, so the
  * later fixtures start from the state they assume and the state serial moves with it. */
 static void coherence_mip_reset_state(void) {
@@ -4917,9 +5165,16 @@ static void coherence_mip_reset_state(void) {
     ge_run_list(COH_MIP_RESET, 0);
 }
 
+/* The texel the first pixel shows: the sprite's UV runs 0.25..8.25 level-0 texels across
+ * `rect` pixels, and the pixel samples it at its centre (PSP-GE-SAMPLE-001), so it reads
+ * s = 0.25 + 0.5 * 8 / rect, which is s / 2^level in the level. Every case with an expected
+ * level filters that level by the nearest rule, floor(s). */
 static uint32_t coherence_mip_first_texel(const CohMipCase *c) {
-    return c->level == 1 && c->alt_level1 ? coherence_mip_alt_texel(0u, 0u)
-                                          : coherence_mip_texel((unsigned)c->level, 0u, 0u);
+    float s = (0.25f + 4.0f / (float)c->rect) / (float)(1u << (unsigned)c->level);
+    unsigned size = 8u >> (unsigned)c->level, t = (unsigned)s;
+    if (t >= size) t = size - 1u;
+    return c->level == 1 && c->alt_level1 ? coherence_mip_alt_texel(t, t)
+                                          : coherence_mip_texel((unsigned)c->level, t, t);
 }
 
 static int coherence_run_mip_case(const CohMipCase *c) {
@@ -5320,6 +5575,137 @@ static int coherence_run_texture_dirty_same_state(void) {
     }
     printf("gpu coherence selftest: PASS %-22s invalidations=1 old=%06x new=%06x\n",
            "texture-dirty-same-state", old_texel & rgb, new_texel & rgb);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* The clean-page index of hook_vram_dirty (#282). A notified store into a page no cached texture
+ * reads marks the page, so a second store there skips the texture scan; a texture created later
+ * on that page must clear the mark, or the store that next changes its texels is skipped and the
+ * draw after it samples the stale cached copy. */
+static int coherence_run_texture_clean_page_index(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_a = 0x04040000u, tex_b = 0x04060000u;   /* different 4 KiB pages */
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t red = 0xFF0000FFu, blue = 0xFFFF0000u, green = 0xFF00FF00u;   /* ABGR */
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint32_t *a = (uint32_t *)SR_HOST(tex_a);
+    uint32_t *b = (uint32_t *)SR_HOST(tex_b);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    for (unsigned i = 0; i < 64u; i++) a[i] = red;
+    sr_gpu_vram_dirty(tex_a, 64u * 4u);
+
+    wrap_state(base, stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_a;
+    s_ge->tex_bufw = 8;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 8;
+    s_ge->tex_h = 8;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 18.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0)) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: first draw not accepted\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    /* Texture B's page holds no cached texture yet: the first store scans and marks it, the
+     * second skips the scan. */
+    uint64_t skips_before = s_cnt_tex_clean_skips;
+    for (unsigned i = 0; i < 64u; i++) b[i] = blue;
+    sr_gpu_vram_dirty(tex_b, 32u * 4u);
+    sr_gpu_vram_dirty(tex_b + 32u * 4u, 32u * 4u);
+    if (s_cnt_tex_clean_skips != skips_before + 1u) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: expected the second store "
+                "to skip the scan, skipped %llu\n",
+                (unsigned long long)(s_cnt_tex_clean_skips - skips_before));
+        coherence_reset_targets();
+        return 0;
+    }
+
+    s_ge->tex_addr = tex_b;
+    ge_state_note_external_write();   /* a TEXADDR command would bump the state serial */
+    wrap_vtx(&p0, 30.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 38.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0)) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: second draw not accepted\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    /* The store under test: B's texels change with no GE register change before the draw. */
+    uint64_t invalidations_before = s_cnt_tex_invalidations;
+    for (unsigned i = 0; i < 64u; i++) b[i] = green;
+    sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    /* B is now the only entry on its page and invalid: a second store there skips the scan. */
+    uint64_t quiet_before = s_cnt_tex_quiet_skips;
+    sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    if (s_cnt_tex_quiet_skips != quiet_before + 1u) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: expected a quiet-page skip, "
+                "skipped %llu\n", (unsigned long long)(s_cnt_tex_quiet_skips - quiet_before));
+        coherence_reset_targets();
+        return 0;
+    }
+    wrap_vtx(&p0, 50.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 58.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: third draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t left = guest[14u * stride + 14u] & rgb;
+    uint32_t mid = guest[14u * stride + 34u] & rgb;
+    uint32_t right = guest[14u * stride + 54u] & rgb;
+    if (left != (red & rgb) || mid != (blue & rgb) || right != (green & rgb) ||
+        s_cnt_tex_invalidations != invalidations_before + 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-clean-page-index]: left=%06x mid=%06x right=%06x "
+                "(want %06x %06x %06x), invalidations=%llu (want 1)%s\n",
+                left, mid, right, red & rgb, blue & rgb, green & rgb,
+                (unsigned long long)(s_cnt_tex_invalidations - invalidations_before),
+                right == (blue & rgb) ? " -- the store after the texture was created was skipped" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    /* The third draw re-uploaded B, so its page is no longer quiet: the next store must
+     * invalidate it again, and the draw after it must show the new texels. */
+    const uint32_t yellow = 0xFF00FFFFu;
+    quiet_before = s_cnt_tex_quiet_skips;
+    invalidations_before = s_cnt_tex_invalidations;
+    for (unsigned i = 0; i < 64u; i++) b[i] = yellow;
+    sr_gpu_vram_dirty(tex_b, 64u * 4u);
+    wrap_vtx(&p0, 70.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 78.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
+        fprintf(stderr, "gpu coherence selftest [texture-clean-page-index]: fourth draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t last = guest[14u * stride + 74u] & rgb;
+    if (last != (yellow & rgb) || s_cnt_tex_quiet_skips != quiet_before ||
+        s_cnt_tex_invalidations != invalidations_before + 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-clean-page-index]: after re-upload last=%06x (want %06x), "
+                "quiet skips=%llu (want 0), invalidations=%llu (want 1)%s\n",
+                last, yellow & rgb, (unsigned long long)(s_cnt_tex_quiet_skips - quiet_before),
+                (unsigned long long)(s_cnt_tex_invalidations - invalidations_before),
+                last == (green & rgb) ? " -- a stale quiet mark skipped the store" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s clean=1 quiet=1 invalidations=2\n", "texture-clean-page-index");
     coherence_reset_targets();
     return 1;
 }
@@ -6245,6 +6631,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
+    if (!coherence_run_texture_clean_page_index()) ok = 0;
     if (!coherence_run_texture_ram_unnotified_change()) ok = 0;
     if (!coherence_run_clut_format_same_palette()) ok = 0;
     if (!coherence_run_clut_format_list()) ok = 0;
@@ -6259,6 +6646,7 @@ int gegpu_coherence_selftest(void) {
      * current depth surface to ge.c, and the fixtures above start from the depth state the
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
+    if (!coherence_run_psp_sample_points()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

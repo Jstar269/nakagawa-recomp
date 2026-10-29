@@ -1118,6 +1118,7 @@ committed.
 | `SR_USER_DATA_ROOT=ABSOLUTE_PATH` | The per-user data directory, which is the one font root: the runtime reads the imported font cache at `<this>/fonts/v2` for the `flash0:` font device and the HLE `sceFont` shim. The launcher sets it for the child, overriding any inherited value. Unset uses the platform per-user directory; a runtime root does not move it. A relative or empty value is named once on stderr (`flash0: SR_USER_DATA_ROOT ...`) and skips the user-imported source, so the project font is served; it never falls back to another root. "Unreadable" means the environment read itself failed (the process could not read its own environment); that is named the same way, and skips the source too. Only an absent variable takes the platform directory. |
 | `SR_GAME_TITLE=NAME`, `SR_DISC_ID=ID` | The game's name (its PARAM.SFO TITLE) for the window caption and the pause overlay, and the disc ID the pause overlay shows ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)). The runtime drops control characters and malformed UTF-8 from the name. The launcher sets both for the child, empty when it has none, so an inherited value never names another game. Unset or empty captions the window "Nakagawa Recomp" alone, and the pause shows "Paused" and no disc ID. |
 | `SR_UI_ROOT=PATH` | The player's folder, where the pause overlay finds the UI fonts (`assets/fonts/ui`) and, if one was put there, the SDL3_ttf library. The launcher sets it for the child. Unset or empty tries the runtime's own folder and the working directory; when neither has them the pause shows the frozen frame without its pages and says why once (`SR_PAUSE: the overlay pages are unavailable ...`). |
+| `SR_LAUNCHER_DISPLAY_BOUNDS=X,Y,W,H` | Desktop bounds of the display that holds the launcher window, set by the launcher (SDL display IDs are per process, so it passes bounds). The game window, windowed or fullscreen, opens centred on the display that contains the centre of that rectangle. Empty uses the primary display; a malformed value, or one no display contains, also uses the primary and says so on stderr (`sdl3vk: ... opening on the primary display`). |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
@@ -1297,6 +1298,33 @@ refused NIDs in first-seen order with a count each (up to 32; further NIDs are c
 `nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
 they cannot show what ran after it. The private triage tooling reports those as frozen at
 a refusal; that grouping is not part of this repository.
+
+The event ring keeps only the newest events. A thread that blocked minutes ago, while other
+threads kept producing GE or audio events, has fallen out of it. So every schema 6 bundle, the
+provisional `running` ones included, also has a `threads` block: one entry per guest thread
+that exists when the bundle is written (deleted threads are left out, at most 128). It is the
+state at the cut. It needs no event class of its own and costs nothing until a bundle is
+written. A runtime with no
+scheduler writes an empty list. Every value is a number or a fixed word; nothing comes from guest
+memory.
+
+| Field | Meaning |
+| --- | --- |
+| `uid`, `priority` | The thread and its current priority. |
+| `state` | `dormant`, `ready`, `running`, `wait-delay` or `wait-object`. |
+| `suspended` | `true` while `sceKernelSuspendThread` is in effect. |
+| `why` | Why a waiting thread is parked, as `sched_dump_threads` names it: `sleep`, `delay`, `vblank`, `ctrl`, `thread-end` or `object`. `none` when it is not waiting. |
+| `wait_type` | The PSP waitType `sceKernelReferThreadStatus` reports (for example 3 semaphore, 4 event flag). 0 when not waiting. |
+| `wait_object` | The UID the thread waits on. 0 outside an object wait. |
+| `block_nid` | The import the thread last blocked in. `null` if it never blocked, or if its last block happened outside any import. |
+| `pc`, `ra` | The saved `pc` and `$ra`. The running thread reports the live ones. |
+| `waited_us` | Guest microseconds since the current wait began. `null` when not waiting. |
+| `deadline_us` | Guest microseconds left on a timed wait. `null` for an untimed wait or no wait. |
+
+`tools/flight_diff.py` prints each side's waiting threads after its verdict, also when the pair
+is incomparable because a window slid. A thread stuck in an allocation, for example, reads as
+`uid=0x110 why=object wait_object=0x... block_nid=0x... waited_us=...`. The block is reported,
+never compared.
 
 ### Disabled-recorder overhead (#320)
 

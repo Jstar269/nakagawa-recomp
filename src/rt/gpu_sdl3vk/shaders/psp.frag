@@ -28,7 +28,7 @@ layout(set = 0, binding = 0) uniform sampler2D u_tex;
 layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot (shader blend) */
 
 /* flags bits (pc.cfg.x >> 8): 1 textured, 2 texfunc-RGBA, 4 color-double, 8 fog,
- * 16 persp (apply minz/maxz), 32 clear mode, 64 nearest-filter (+0.5 texel shift),
+ * 16 persp (apply minz/maxz), 32 clear mode, 64 nearest filter (both TEXFILTER fields),
  * 128 premultiply rgb by 2*alpha (PSP src blend factor DOUBLE_SRC_ALPHA with VK factor
  * ONE), 256 premultiply rgb by (1 - 2*alpha) (ONE_MINUS_DOUBLE_SRC_ALPHA),
  * 512 ordered dithering enabled, bits 10-11 = framebuffer pixel format (psm 0..3):
@@ -87,16 +87,26 @@ void main() {
     if ((flags & 32) == 0) {
         if ((flags & 1) != 0) {
             /* Recover texel coords (u*rw interpolated affinely, divided per pixel; in
-             * through mode rw==1). An integer texel coordinate names that texel's CENTRE,
-             * so the normalized coordinate is (u + 0.5)/size for BOTH filters: nearest then
-             * takes floor(u+0.5) == u, and linear takes taps floor(u) and floor(u)+1 with
-             * weight frac(u), which reproduces the texel exactly at integer coordinates.
-             * The half-texel shift is required by the nearest filter and must not be
-             * conditional: omitting it under linear filtering moved the filter window half
-             * a texel earlier, so the first/last row and column of a linearly filtered
-             * sprite blended 50/50 with a texel OUTSIDE the sampled region. */
+             * through mode rw==1). The PSP samples the coordinate at the pixel centre with
+             * texel i centred at i + 0.5 (PSP-GE-SAMPLE-001), which is Vulkan's own
+             * convention: nearest returns floor(u), linear taps floor(u - 0.5) and the next
+             * texel. The PSP truncates the linear weight frac(u - 0.5) to 1/16; snapping
+             * u - 0.5 down to a 1/16 step reproduces that. Nearest samples the centre of
+             * texel floor(u) instead: a coordinate exactly on a texel edge (u = 2x + 1 at
+             * half scale) picks either neighbour depending on the implementation's
+             * sub-texel rounding, and floor(u) + 0.5 stays inside floor(u / 2^L) at every
+             * mip level L.
+             *
+             * Both rules floor, so the interpolated coordinate is first rounded to 1/4096
+             * of a texel: a host's fp32 attribute interpolation can land an exact edge like
+             * u = 1.0 a few ulps below it (lavapipe does at the half-scale case's first
+             * pixel), and floor then takes the texel before. The rounding moves only values
+             * within 1/8192 of that lattice, far below the 1/16 weight step. */
             float rw = max(abs(v_rw), 1e-20);
-            vec2 uv = v_uv / rw + vec2(0.5);
+            vec2 uv = v_uv / rw;
+            uv = floor(uv * 4096.0 + vec2(0.5)) / 4096.0;
+            if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
+            else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
             uv += pc.texsize.zw;
             vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             int  tf    = pc.cfg.x & 7;

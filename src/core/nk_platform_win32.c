@@ -465,6 +465,18 @@ static bool known_local_app_data_utf8(char *out_path, size_t max_len) {
     return resolved;
 }
 
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    PWSTR wide_path = NULL;
+    HRESULT result = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, NULL, &wide_path);
+    bool resolved = SUCCEEDED(result) && wide_path &&
+        wide_to_utf8(wide_path, out_path, max_len) && nk_platform_dir_exists(out_path);
+    if (wide_path) CoTaskMemFree(wide_path);
+    if (!resolved) out_path[0] = '\0';
+    return resolved;
+}
+
 static bool get_windows_data_base(char *out_base, size_t max_len) {
     char known_local_app_data[32768] = "";
     char local_app_data[32768] = "";
@@ -535,6 +547,24 @@ bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
 
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
     return resolve_windows_path(NK_PATH_DATA, out_path, max_len);
+}
+
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len) {
+    return resolve_windows_path(type, out_path, max_len);
+}
+
+bool nk_platform_get_executable_path(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    WCHAR wide_path[32768];
+    DWORD length = GetModuleFileNameW(NULL, wide_path,
+                                      (DWORD)(sizeof(wide_path) / sizeof(wide_path[0])));
+    if (length == 0 || length >= sizeof(wide_path) / sizeof(wide_path[0]) ||
+        !wide_to_utf8(wide_path, out_path, max_len)) {
+        out_path[0] = '\0';
+        return false;
+    }
+    return true;
 }
 
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
