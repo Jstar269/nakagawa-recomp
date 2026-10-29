@@ -270,7 +270,13 @@ The governance work intentionally leaves these as separate, evidence-backed foll
    target and dynamically resolves `nm` rather than assuming HST or hardcoded directories, keeps the HST
    build directory only as the named `HST_DEFAULT_BUILD_DIR` fallback for the simulation mock state and
    the unattached artifact root, and fails with a clear error when a `--exe` target does not exist on disk;
-3. make worktree asset resolution explicit and independent of the invoking checkout;
+3. [PARTIAL - #368] make worktree asset resolution explicit and independent of the invoking
+   checkout: `nk_cli.py prepare` now names its per-user data root as the preparation engine's
+   base folder, where it used to fall back to the shell's working directory, so a compressed disc
+   was expanded and a raw disc placed under whichever checkout ran the command
+   (`ExplicitAssetRootTests` in `tools/test_workspace_paths.py`). The library classes
+   `RuntimeLauncher` and `PreparationEngine` still default to the working directory when a caller
+   names no root; every shipped caller now names one;
 4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
    under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and both the
