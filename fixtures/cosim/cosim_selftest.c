@@ -2184,7 +2184,10 @@ int main(int argc, char **argv) {
     g_failures += run_negative_corpus();
 #if defined(SR_STACK_CENSUS_ENABLED)
     SrStackCensusSummary stack_census;
-    const uint64_t expected_excluded = skip_ra_return_cases ? 0u : 1u;
+    /* Returns with no ordinary return contract: the rewritten-$ra callee in both
+     * rewritten-$ra cases and the fatal exit of the caller it stops, plus the nonlocal
+     * case's exit block and the middle frame its return passes through. */
+    const uint64_t expected_excluded = (skip_ra_return_cases ? 0u : 3u) + 2u;
     sr_stack_census_snapshot(&stack_census);
     const CosimCase *stack_leak_control = NULL;
     for (unsigned i = 0; i < g_case_count; i++) {

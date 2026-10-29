@@ -2724,11 +2724,12 @@ const char *player_runtime_stop_feature(const char *boundary) {
         {"scehttp", "online features"},
     };
     /* The dispatcher and interpreter boundaries (dispatch_semantic_boundary_name
-       in src/rt/recomp.c). */
+       in src/rt/recomp.c), and the AOT linked-call return check there. */
     static const char *const processor[] = {
         "target-not-executable", "misaligned-control-target", "incomplete-executable-span",
         "unsupported-interpreter-form", "invalid-guest-memory-access",
         "misaligned-guest-memory-access", "invalid-control-flow", "interpreter-rejection",
+        "aot-return-target-mismatch",
     };
     static const char import_prefix[] = "unsupported-import-";
     if (!boundary) return "a system feature";

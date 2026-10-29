@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Deliberately disjoint from fixtures/production_smoke (0x08804000) so a stale
 # artifact from one fixture can never satisfy the other's assertions.
 BASE = 0x08900000
-DATA_SEGMENT_OFFSET = 0x1000
+DATA_SEGMENT_OFFSET = 0x2000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
@@ -62,7 +62,7 @@ WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
 TEXT_FILE_OFFSET = 0x100
-DATA_FILE_OFFSET = 0x1200
+DATA_FILE_OFFSET = 0x2200
 DATA_FILE_SIZE = 0x40
 DATA_MEMORY_SIZE = 0x40 + SCRATCH_SIZE
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
@@ -600,6 +600,52 @@ def _cell_rarewrite_target() -> list[int]:
     ]
 
 
+def _cell_nonlocal() -> list[int]:
+    """A guest return past its own caller lands at this call's resume (#1034).
+
+    The middle function's linked call enters a block that restores the middle
+    frame's $ra and $sp and returns straight here, so the middle function's own
+    continuation never runs. (Retail code reaches the same shape through bltzal.) Both lanes must reach this continuation once, with v0 =
+    0x111 and a balanced $sp.
+    """
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _i(0x09, ZERO, V0, 0),              # 0x08 addiu v0, zero, 0
+        _j(0x03, 0x00),                     # 0x0c jal   nonlocal_mid (patched + relocated)
+        NOP,                                # 0x10 delay slot
+        _i(0x09, V0, V0, 0x100),            # 0x14 continuation the guest returns to
+        _i(0x23, SP, RA, 12),               # 0x18 lw    ra, 12(sp)
+        JR_RA,                              # 0x1c
+        _i(0x09, SP, SP, 16),               # 0x20 addiu sp, sp, 16 (return slot)
+    ]
+
+
+def _cell_nonlocal_mid() -> list[int]:
+    """Linked call into the exit block; this continuation must not run."""
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        NOP,                                # 0x08
+        _j(0x03, 0x00),                     # 0x0c jal   nonlocal_exit (patched + relocated)
+        _i(0x09, V0, V0, 1),                # 0x10 addiu v0, v0, 1 (delay slot runs)
+        _i(0x09, V0, V0, 0x1000),           # 0x14 the linked resume: never reached
+        _i(0x23, SP, RA, 12),               # 0x18 lw    ra, 12(sp)
+        JR_RA,                              # 0x1c
+        _i(0x09, SP, SP, 16),               # 0x20 addiu sp, sp, 16 (return slot)
+    ]
+
+
+def _cell_nonlocal_exit() -> list[int]:
+    """Return for the middle function: restore its $ra and $sp, return to its caller."""
+    return [
+        _i(0x09, V0, V0, 0x10),             # 0x00 addiu v0, v0, 0x10
+        _i(0x23, SP, RA, 12),               # 0x04 lw    ra, 12(sp) (the middle frame's $ra)
+        JR_RA,                              # 0x08
+        _i(0x09, SP, SP, 16),               # 0x0c addiu sp, sp, 16 (pops the middle frame)
+    ]
+
+
 def _cell_linkr() -> list[int]:
     """`jalr` form: the transfer target comes from a register, not the encoding."""
     return [
@@ -1073,6 +1119,9 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("rarewrite", "rewritten $ra at an AOT linked-call boundary", _cell_rarewrite),
     ("rarewrite_callee", "callee that rewrites its live $ra", _cell_rarewrite_callee),
     ("rarewrite_target", "guest destination of the rewritten $ra", _cell_rarewrite_target),
+    ("nonlocal", "guest return past its caller to an enclosing call", _cell_nonlocal),
+    ("nonlocal_mid", "linked call whose callee returns past it", _cell_nonlocal_mid),
+    ("nonlocal_exit", "exit block that returns for the middle frame", _cell_nonlocal_exit),
     ("linkr", "jalr link semantics", _cell_linkr),
     ("jrslot", "computed-transfer target vs its delay slot", _cell_jrslot),
     ("jrtail", "computed tail call vs its delay slot", _cell_jrtail),
@@ -1104,7 +1153,8 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 # under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
     {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
-     "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target"}
+     "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target", "nonlocal_mid",
+     "nonlocal_exit"}
 )
 
 # Discovered so codegen emits a native body, but entered only by the independent
@@ -1250,6 +1300,12 @@ def build_text_segment() -> bytes:
     )
     struct.pack_into(
         "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
+    )
+    struct.pack_into(
+        "<I", text, layout["nonlocal"][0] + 0x0C, _j(0x03, layout["nonlocal_mid"][0])
+    )
+    struct.pack_into(
+        "<I", text, layout["nonlocal_mid"][0] + 0x0C, _j(0x03, layout["nonlocal_exit"][0])
     )
     rewrite_resume = BASE + layout["rarewrite"][0] + 16
     struct.pack_into(

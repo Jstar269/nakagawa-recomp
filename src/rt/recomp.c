@@ -1419,6 +1419,8 @@ const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len) {
 }
 
 #if defined(SR_STACK_CENSUS_ENABLED)
+static int sr_aot_return_is_nonlocal(void);
+
 /* The stack census is enabled only by the opt-in codegen flag. The expected
  * address vector is generated, sorted, and immutable for the process lifetime;
  * binary search keeps the diagnostic path bounded even for large images. */
@@ -1559,8 +1561,9 @@ void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
     if (s_stack_census_armed) {
         /* `unexpected` is counted once per invocation, at enter. */
         s_stack_census_returns++;
-        if (flow_kind != 0u) {
-            /* Exception/ERET/fatal exits do not have a proven ordinary return
+        if (flow_kind != 0u || sr_aot_return_is_nonlocal()) {
+            /* Exception/ERET/fatal exits, and a guest return past its caller with the
+             * frames it passes through, do not have a proven ordinary return
              * contract. Preserve that uncertainty as PARTIAL, never PASS. */
             s_stack_census_excluded++;
         } else if (expected_sp != actual_sp) {
@@ -2006,7 +2009,53 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
     boundary->resume_pc = resume_pc;
     boundary->has_resume_pc = has_resume_pc != 0u;
     boundary->observed_target = 0u;
+    boundary->call_sp = s->r[29];
+    boundary->dispatch_owned = 0u;
+    boundary->unwinding = 0u;
     sr_aot_return_boundary_top = boundary;
+    return 0;
+}
+
+/* A guest `jr $ra` that returns past its own caller (#1034). Hand-written routines do
+ * this: a branch-and-link into a block that restores the enclosing frame's $ra and $sp
+ * and returns straight to that frame's caller, so the linked call never resumes. When
+ * the target is the resume PC of a live enclosing linked call, the frames in between are
+ * abandoned and that call continues normally, as the PSP does. Only direct body calls may
+ * lie in between: their generated callers return when the end check says so, where a
+ * dispatch_call caller would run its own continuation. Never crosses a callback or
+ * interrupt floor. */
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* True while a body returns other than structurally to its caller: its guest jr $ra
+ * targeted something other than the live linked call's resume, or a guest return past
+ * its caller is unwinding through it. */
+static int sr_aot_return_is_nonlocal(void) {
+    const SrAotReturnBoundary *top = sr_aot_return_boundary_top;
+    if (top == NULL) return 0;
+    if (top->unwinding) return 1;
+    return top->has_resume_pc && (top->observed_target >> 32) != 0u &&
+           (uint32_t)top->observed_target != top->resume_pc;
+}
+#endif
+
+static uint64_t s_aot_return_unwinds;
+
+uint64_t sr_aot_return_unwind_count(void) { return s_aot_return_unwinds; }
+
+static int sr_aot_return_boundary_unwind_to(CpuState *s, uint32_t target) {
+    const size_t depth = sr_aot_return_boundary_depth;
+    for (size_t index = depth; index > sr_aot_return_boundary_floor; index--) {
+        SrAotReturnBoundary *enclosing = &sr_aot_return_boundaries[index - 1u];
+        if (enclosing->state != s) return 0;
+        if (enclosing->has_resume_pc && enclosing->resume_pc == target) {
+            for (size_t abandoned = index; abandoned < depth; abandoned++)
+                sr_aot_return_boundaries[abandoned].unwinding = 1u;
+            enclosing->observed_target = UINT64_C(0x100000000) | target;
+            enclosing->unwinding = 2u;  /* the unwind ends here */
+            s_aot_return_unwinds++;
+            return 1;
+        }
+        if (enclosing->dispatch_owned) return 0;
+    }
     return 0;
 }
 
@@ -2051,6 +2100,15 @@ int sr_aot_return_boundary_end(CpuState *s) {
     /* A fatal mismatch found in a nested direct call must return through every
      * generated caller without executing its guest continuation. */
     if (s->flow_kind == SR_FLOW_FATAL) return 1;
+    /* A frame a guest return passed through: its caller returns without running its
+     * continuation (sr_aot_return_boundary_unwind_to). */
+    if (boundary->unwinding == 1u) return 1;
+    if (boundary->unwinding == 2u) {
+        /* The enclosing call the guest returned to: its callee's structural return
+         * would have restored the callee's entry $sp, so the unwind restores it too. */
+        s->r[29] = boundary->call_sp;
+        return 0;
+    }
     if (!boundary->has_resume_pc || s->flow_kind != SR_FLOW_NONE ||
         boundary->observed_target == 0u) {
         return 0;
@@ -2058,12 +2116,15 @@ int sr_aot_return_boundary_end(CpuState *s) {
 
     const uint32_t actual_target = (uint32_t)boundary->observed_target;
     if (actual_target == boundary->resume_pc) return 0;
+    if (!boundary->dispatch_owned && sr_aot_return_boundary_unwind_to(s, actual_target))
+        return 1;
 
     fprintf(stderr,
             "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
             " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
             "; stopping before the AOT continuation\n",
             boundary->resume_pc - 8u, boundary->resume_pc, actual_target);
+    dispatch_record_semantic_stop_issue("aot-return-target-mismatch", 1034u);
     s->flow_kind = SR_FLOW_FATAL;
     s->flow_target = actual_target;
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, boundary->resume_pc - 8u,
@@ -2086,6 +2147,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
             call_pc, call_boundary != NULL ? 1u : 0u)) {
             return;
         }
+        sr_aot_return_boundary_top->dispatch_owned = 1u;
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);

@@ -1321,6 +1321,9 @@ typedef struct SrAotReturnBoundary {
     uint32_t resume_pc;
     uint32_t has_resume_pc;
     uint64_t observed_target;  /* bit 32 marks a captured target, including target 0 */
+    uint32_t call_sp;          /* guest $sp at the call, after its delay slot: the callee's entry $sp */
+    uint32_t dispatch_owned;   /* begun by dispatch_call_aot, whose caller ignores the end result */
+    uint32_t unwinding;        /* abandoned by a guest return to an enclosing linked call */
 } SrAotReturnBoundary;
 
 /* The active AOT return stack follows the running guest fiber. Each TCB owns
@@ -1346,6 +1349,8 @@ extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
 int sr_aot_return_boundary_end(CpuState *s);
+/* How many guest returns past their caller the runtime has unwound (#1034). */
+uint64_t sr_aot_return_unwind_count(void);
 void sr_aot_return_boundaries_reset(void);
 void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other);
 void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack);

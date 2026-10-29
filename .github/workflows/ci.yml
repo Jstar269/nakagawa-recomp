@@ -845,6 +845,16 @@ jobs:
       - name: Run Linux title-configured HLE selftests
         run: make CC=gcc -j4 hle-title-selftest
 
+      # The AOT linked-call return boundaries with the real recomp.c and scheduler
+      # (#1034): per-thread isolation, the callback and interrupt floors, and a guest
+      # return past its caller. Its own build directory, because it rebuilds
+      # hle_thread_selftest with SR_HLE_AOT_BOUNDARY_TEST; it ran on no hosted job before.
+      - name: Run Linux AOT return-boundary selftest
+        run: |
+          build_dir="$RUNNER_TEMP/aot-return-boundary"
+          mkdir -p "$build_dir"
+          make --no-print-directory CC=gcc BUILD_DIR="$build_dir" aot-return-boundary-thread-selftest
+
       - name: Run Linux scheduler selftest matrix
         run: make CC=gcc -j4 sched-selftest
 

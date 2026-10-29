@@ -36415,6 +36415,116 @@ static void test_aot_return_boundary_callback_and_interrupt_scopes(void) {
     sr_test_guest_fn_reset();
 }
 
+/* A guest jr $ra past its own caller (#1034): the return lands at the resume PC of a live
+ * enclosing linked call. Every frame in between is abandoned, the enclosing call continues
+ * with its callee's entry $sp, and nothing is ever unwound across a callback floor or a
+ * dispatch_call frame, whose caller would run its own continuation. */
+static void test_aot_return_boundary_nonlocal_return(void) {
+    enum {
+        OUTER_CALL = 0x08a00010u, OUTER_RESUME = 0x08a00018u,
+        MIDDLE_CALL = 0x08a00110u, MIDDLE_RESUME = 0x08a00118u,
+        INNER_CALL = 0x08a00210u, INNER_RESUME = 0x08a00218u,
+        OUTER_SP = 0x09f00000u, MIDDLE_SP = 0x09effff0u, INNER_SP = 0x09efffc0u,
+    };
+    CpuState cpu = {0};
+    FILE *capture = NULL;
+    int saved_fd = -1;
+    char captured[2048];
+
+    /* One frame between: the middle call is abandoned, the outer call continues. */
+    sr_aot_return_boundaries_reset();
+    cpu.r[29] = OUTER_SP;
+    expect(sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u) == 0,
+           "AOT nonlocal return: the enclosing call begins");
+    cpu.r[29] = MIDDLE_SP;
+    expect(sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u) == 0,
+           "AOT nonlocal return: the middle frame's linked call begins");
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    cpu.r[29] = MIDDLE_SP;  /* the exit block's structural return */
+    expect(sr_aot_return_boundary_end(&cpu) == 1 && cpu.flow_kind == SR_FLOW_NONE,
+           "AOT nonlocal return: the middle frame returns without its continuation");
+    expect(sr_aot_return_boundary_end(&cpu) == 0 && cpu.flow_kind == SR_FLOW_NONE &&
+               cpu.r[29] == OUTER_SP && sr_aot_return_boundary_top == NULL,
+           "AOT nonlocal return: the enclosing call continues with its callee's entry $sp");
+
+    /* Two frames between: both are abandoned in order. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    cpu.r[29] = INNER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    int inner = sr_aot_return_boundary_end(&cpu);
+    int middle = sr_aot_return_boundary_end(&cpu);
+    int outer = sr_aot_return_boundary_end(&cpu);
+    expect(inner == 1 && middle == 1 && outer == 0 && cpu.flow_kind == SR_FLOW_NONE &&
+               cpu.r[29] == OUTER_SP,
+           "AOT nonlocal return: every frame between the return and its target is abandoned");
+
+    /* A callback floor between the return and its target: fail closed, by name. */
+    const char *events_path = HLE_BUILD_ROOT "/aot_nonlocal_return_events.txt";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    remove(events_path);
+    hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    SrAotReturnBoundaryScope scope;
+    sr_aot_return_boundary_scope_begin(&scope);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int floor_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(floor_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: never unwinds across a callback or interrupt floor");
+    expect(!capturing || strstr(captured, "AOT_RETURN_TARGET_MISMATCH") != NULL,
+           "AOT nonlocal return: the refused return names AOT_RETURN_TARGET_MISMATCH");
+    (void)sr_aot_return_boundary_scope_end(&cpu, &scope, "AOT nonlocal return test");
+    {
+        char events[512] = {0};
+        FILE *ev = fopen(events_path, "rb");
+        size_t got = ev ? fread(events, 1, sizeof(events) - 1u, ev) : 0u;
+        if (ev) fclose(ev);
+        events[got] = '\0';
+        expect(strstr(events, "BOOT_EVENT phase=stop reason=semantic-boundary "
+                              "boundary=aot-return-target-mismatch issue=1034") != NULL,
+               "AOT nonlocal return: the refused return writes the player's stop event");
+    }
+    hle_test_setenv("SR_BOOT_EVENT_FILE", NULL);
+    remove(events_path);
+
+    /* A dispatch_call frame between: its caller would continue, so fail closed. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    sr_aot_return_boundary_top->dispatch_owned = 1u;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int dispatch_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(dispatch_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: never unwinds through a dispatch_call frame");
+
+    /* A target that is no live call's resume stays the named fail-closed stop. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int stray_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(stray_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: a target outside every live call still fails closed");
+    sr_aot_return_boundaries_reset();
+}
+
 static void test_aot_return_boundary_thread_isolation(void) {
     reset_fixture();
     sr_hle_init();
@@ -36488,6 +36598,7 @@ static void test_aot_return_boundary_thread_isolation(void) {
     sr_aot_return_boundaries_reset();
     sr_test_guest_fn_reset();
     test_aot_return_boundary_callback_and_interrupt_scopes();
+    test_aot_return_boundary_nonlocal_return();
 }
 
 #undef AOT_THREAD_TEST_CHECKED_CALL
