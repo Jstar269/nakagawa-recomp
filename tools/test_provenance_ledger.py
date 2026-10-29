@@ -588,6 +588,38 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         hash_errors = [e for e in errors if "content hash" in e]
         self.assertEqual(len(hash_errors), 2)
 
+    def test_claims_ledger_drops_only_the_hashes(self) -> None:
+        """The claims-only committed form (#1673) keeps every claim and nothing else changes."""
+        hashed = {"schema_version": 1, "generated_by": "tools/provenance_ledger.py", "entries": [
+            {"path": "src/a.c", "classification": "project_authored_attested",
+             "evidence": {"record_id": "r"}, "sha256": "a" * 64},
+            {"path": "PUBLIC_EXPORT.json", "classification": "reviewed_configuration",
+             "evidence": {"source": "x"}},
+        ]}
+        claims = provenance_ledger.claims_ledger(hashed)
+        self.assertEqual(claims["schema_version"], provenance_ledger.CLAIMS_LEDGER_SCHEMA_VERSION)
+        self.assertEqual(claims["generated_by"], hashed["generated_by"])
+        self.assertEqual(claims["entries"], [
+            {"path": "src/a.c", "classification": "project_authored_attested",
+             "evidence": {"record_id": "r"}},
+            {"path": "PUBLIC_EXPORT.json", "classification": "reviewed_configuration",
+             "evidence": {"source": "x"}},
+        ])
+        self.assertEqual(hashed["entries"][0]["sha256"], "a" * 64, "the input is not mutated")
+        self.assertTrue(provenance_ledger.is_claims_ledger(claims))
+        self.assertFalse(provenance_ledger.is_claims_ledger(hashed))
+        self.assertEqual(provenance_ledger.validate_ledger(claims, require_resolved=True), [])
+
+    def test_validate_ledger_refuses_a_half_converted_claims_ledger(self) -> None:
+        document = {"schema_version": provenance_ledger.CLAIMS_LEDGER_SCHEMA_VERSION, "entries": [
+            {"path": "src/a.c", "classification": "project_authored_attested",
+             "evidence": {"source": "x"}, "sha256": "a" * 64},
+            {"path": "src/b.c", "classification": "project_authored_attested",
+             "evidence": {"source": "x"}},
+        ]}
+        self.assertEqual(provenance_ledger.validate_ledger(document),
+                         ["claims ledger carries a content hash for src/a.c"])
+
     def test_validate_ledger_rejects_unknown_classification(self) -> None:
         document = {"entries": [
             {"path": "src/a.c", "classification": "project-authored-independent",
