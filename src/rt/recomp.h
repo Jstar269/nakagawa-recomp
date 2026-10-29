@@ -1483,6 +1483,8 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
+uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
  * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
  * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
