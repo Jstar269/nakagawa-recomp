@@ -76,6 +76,19 @@ int sr_coro_stack_remaining(size_t *remaining_out);
  * Returns 1 when known, or 0 when unavailable. */
 int sr_coro_stack_top(uintptr_t *top_out);
 
+/* Run fn(arg) on the OS thread's own stack, below the suspended main coroutine's frames, and
+ * return to the calling coroutine. A host call that can enter a managed runtime must use it:
+ * Android's JVM checks that a JNI call's frame lies within the stack it registered for the
+ * thread, and a coroutine's mmap'ed stack does not, so SDL calls that reach Java (event pumping,
+ * device polling) raise StackOverflowError from a guest coroutine. fn must not switch
+ * coroutines. Called from the main coroutine, or on a backend whose coroutines need no such
+ * care (Win32 fibers, ucontext), it calls fn(arg) directly. */
+void sr_coro_call_on_thread_stack(void (*fn)(void *arg), void *arg);
+
+/* 1 when sr_coro_call_on_thread_stack moves a coroutine's call onto the thread stack (the
+ * stack-switch backend), 0 when it calls in place. For tests. */
+int sr_coro_thread_stack_calls_switch(void);
+
 /* ---- test-only lifecycle instrumentation ---------------------------------------------
  *
  * Compiled ONLY when SR_CORO_LIFECYCLE_TEST is defined, which no production target does --

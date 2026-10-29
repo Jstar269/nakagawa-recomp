@@ -210,6 +210,13 @@ bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process);
 void nk_platform_terminate_process(NkProcessHandle *process);
 void nk_platform_close_process(NkProcessHandle *process);
 
+/* Process start, for hosts whose application model needs it. Android: copy stdout and stderr to
+   the system log under log_tag (and to NK_ANDROID_LOG_FILE when set), and make the folder the app
+   unpacked its bundled files to (NK_ANDROID_APP_DIR) the working directory, which is where
+   SDL_GetBasePath() points there. Everywhere else it does nothing and returns true. False when
+   the Android folder is missing; the process can still run but finds no bundled files. */
+bool nk_platform_host_startup(const char *log_tag);
+
 #ifdef __cplusplus
 }
 #endif

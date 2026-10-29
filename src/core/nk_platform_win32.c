@@ -1142,3 +1142,9 @@ bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     *daylight_now = id == TIME_ZONE_ID_DAYLIGHT;
     return true;
 }
+
+/* Nothing to prepare on Windows: the player and runtime start as ordinary processes. */
+bool nk_platform_host_startup(const char *log_tag) {
+    (void)log_tag;
+    return true;
+}

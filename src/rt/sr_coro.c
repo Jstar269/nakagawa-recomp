@@ -351,6 +351,12 @@ void sr_coro_destroy(SrCoro *c) {
     free(c);
 }
 
+void sr_coro_call_on_thread_stack(void (*fn)(void *arg), void *arg) {
+    if (fn) fn(arg);   /* fibers: no host runtime checks the stack a call runs on */
+}
+
+int sr_coro_thread_stack_calls_switch(void) { return 0; }
+
 #else  /* POSIX (Linux / Steam Deck / Android) */
 
 /* Context-switch mechanism. glibc and musl provide getcontext/makecontext/swapcontext; Android's
@@ -380,6 +386,11 @@ void sr_coro_destroy(SrCoro *c) {
  * a rounding mode one coroutine leaves set never leaks into another. A new coroutine's first frame
  * is built by coro_initial_frame() below with the same layout. */
 void sr_coro_stack_switch(void **save, void *load) __attribute__((visibility("hidden")));
+void sr_coro_call_with_stack(void (*fn)(void *), void *arg, uintptr_t stack_top)
+    __attribute__((visibility("hidden")));
+/* Room left below the suspended main coroutine's saved stack pointer before a thread-stack
+ * call starts: clear of the switch frame (which lies above it) and of any red zone. */
+#define SR_CORO_THREAD_CALL_GAP 4096u
 
 #if defined(__x86_64__)
 /* Frame, from the saved stack pointer up: MXCSR (4 bytes), x87 control word (2, padded to 4),
@@ -413,7 +424,24 @@ __asm__(
     "    popq %rbx\n"
     "    popq %rbp\n"
     "    ret\n"
-    ".size sr_coro_stack_switch, .-sr_coro_stack_switch\n");
+    ".size sr_coro_stack_switch, .-sr_coro_stack_switch\n"
+    /* sr_coro_call_with_stack(fn, arg, stack_top): call fn(arg) with the stack pointer at
+     * stack_top (16-byte aligned), then return on the caller's stack; rbp holds the way back. */
+    ".p2align 4\n"
+    ".globl sr_coro_call_with_stack\n"
+    ".hidden sr_coro_call_with_stack\n"
+    ".type sr_coro_call_with_stack,@function\n"
+    "sr_coro_call_with_stack:\n"
+    "    pushq %rbp\n"
+    "    movq %rsp, %rbp\n"
+    "    movq %rdx, %rsp\n"
+    "    movq %rdi, %rax\n"
+    "    movq %rsi, %rdi\n"
+    "    callq *%rax\n"
+    "    movq %rbp, %rsp\n"
+    "    popq %rbp\n"
+    "    ret\n"
+    ".size sr_coro_call_with_stack, .-sr_coro_call_with_stack\n");
 #else
 /* Frame, from the saved stack pointer up: x19..x28, x29 (frame pointer), x30 (return address),
  * d8..d15, FPCR, padding to keep the stack pointer 16-byte aligned. */
@@ -456,7 +484,24 @@ __asm__(
     "    ldp d14, d15, [sp, #144]\n"
     "    add sp, sp, #176\n"
     "    ret\n"
-    ".size sr_coro_stack_switch, .-sr_coro_stack_switch\n");
+    ".size sr_coro_stack_switch, .-sr_coro_stack_switch\n"
+    /* sr_coro_call_with_stack(fn, arg, stack_top): as on x86-64; x29 holds the way back. */
+    ".p2align 4\n"
+    ".globl sr_coro_call_with_stack\n"
+    ".hidden sr_coro_call_with_stack\n"
+    ".type sr_coro_call_with_stack,%function\n"
+    "sr_coro_call_with_stack:\n"
+    "    hint #34\n"
+    "    stp x29, x30, [sp, #-16]!\n"
+    "    mov x29, sp\n"
+    "    mov sp, x2\n"
+    "    mov x9, x0\n"
+    "    mov x0, x1\n"
+    "    blr x9\n"
+    "    mov sp, x29\n"
+    "    ldp x29, x30, [sp], #16\n"
+    "    ret\n"
+    ".size sr_coro_call_with_stack, .-sr_coro_call_with_stack\n");
 #endif
 #endif /* SR_CORO_ASM */
 
@@ -644,6 +689,29 @@ void sr_coro_destroy(SrCoro *c) {
     if (!LC_DESTROY_OK(c)) return;   /* instrumented builds: refuse an invalid destroy */
     if (c->map && c->map != MAP_FAILED && !c->is_main) munmap(c->map, c->map_size);
     free(c);
+}
+
+void sr_coro_call_on_thread_stack(void (*fn)(void *arg), void *arg) {
+    if (!fn) return;
+#if defined(SR_CORO_ASM)
+    if (s_main && s_current && s_current != s_main && s_main->sp) {
+        /* The main coroutine is suspended in sr_coro_stack_switch: its frame lies at and above
+         * s_main->sp, and nothing runs below it until it resumes, which cannot happen during
+         * fn (fn does not switch). */
+        uintptr_t top = ((uintptr_t)s_main->sp - SR_CORO_THREAD_CALL_GAP) & ~(uintptr_t)15u;
+        sr_coro_call_with_stack(fn, arg, top);
+        return;
+    }
+#endif
+    fn(arg);
+}
+
+int sr_coro_thread_stack_calls_switch(void) {
+#if defined(SR_CORO_ASM)
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 #endif

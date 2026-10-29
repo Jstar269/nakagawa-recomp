@@ -285,16 +285,19 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
     size_t len = strlen(s);
     if (len > 240) return false;
     if (s[0] == '/' || s[0] == '\\' || strchr(s, '\\') != NULL || strchr(s, ':') != NULL) return false;
-    /* strtok() treats repeated and trailing separators as delimiters rather
-       than empty path components. Reject them before tokenization so the
-       native parser agrees with the schema parser and never normalizes an
-       ambiguous path into a different path. */
+    /* Repeated and trailing separators would be empty path components. Reject
+       them before splitting so the native parser agrees with the schema parser
+       and never normalizes an ambiguous path into a different path. */
     if (s[len - 1] == '/' || strstr(s, "//") != NULL) return false;
 
     char temp[256];
     snprintf(temp, sizeof(temp), "%s", s);
-    char *token = strtok(temp, "/");
+    /* Split in place rather than with strtok(), whose hidden state is shared by
+       every thread. */
+    char *token = temp;
     while (token) {
+        char *slash = strchr(token, '/');
+        if (slash) *slash = '\0';
         if (strcmp(token, "") == 0 || strcmp(token, ".") == 0 || strcmp(token, "..") == 0) return false;
         size_t tlen = strlen(token);
         if (token[tlen - 1] == '.' || token[tlen - 1] == ' ') return false;
@@ -319,7 +322,7 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
         for (int r = 0; reserved[r]; r++) {
             if (strcmp(base, reserved[r]) == 0) return false;
         }
-        token = strtok(NULL, "/");
+        token = slash ? slash + 1 : NULL;
     }
     return true;
 }

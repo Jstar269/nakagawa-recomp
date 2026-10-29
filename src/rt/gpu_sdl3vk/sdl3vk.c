@@ -27,6 +27,7 @@
 #include "../fbcap_policy.h"
 #include "../fbcap.h"
 #include "../recomp.h"   /* sr_parse_display_bounds, sr_pick_display */
+#include "../sr_coro.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -933,7 +934,8 @@ static void pause_request_latch(int request) {
     if (s_pause_request != SDL3VK_PAUSE_REQUEST_USER) s_pause_request = request;
 }
 
-static void poll_input(int *quit) {
+static void poll_input_on_this_stack(void *arg) {
+    int *quit = (int *)arg;
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         /* Device bookkeeping and quit are the window's own, claimed or not. */
@@ -1034,6 +1036,14 @@ static void poll_input(int *quit) {
     s_buttons = b;
     s_lx = lx; s_ly = ly;
     if (s_quit_requested) *quit = 1;
+}
+
+/* Event pumping reaches Java on Android (SDL's device polling, text input, rumble), and the JVM
+   accepts a JNI call only from the stack it registered for the thread, so a present or a
+   controller read made from a guest coroutine pumps on the thread's own stack (sr_coro.h). On
+   the desktop backends this is a plain call. */
+static void poll_input(int *quit) {
+    sr_coro_call_on_thread_stack(poll_input_on_this_stack, quit);
 }
 
 int sdl3vk_get_vk(Sdl3VkInfo *out) {

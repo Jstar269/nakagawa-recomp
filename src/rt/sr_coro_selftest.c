@@ -57,9 +57,26 @@ typedef struct RingBody {
     int stack_ok;
     int format_ok;
     int round_ok;
+    int thread_call_ok;
 } RingBody;
 
 static SrCoro *s_ring_main;
+/* The main coroutine's (the OS thread's) stack, measured before the ring starts. */
+static uintptr_t s_thread_stack_low, s_thread_stack_top;
+
+typedef struct ThreadCallProbe {
+    uintptr_t frame;
+    unsigned long long value;
+} ThreadCallProbe;
+
+static void thread_call_probe(void *arg) {
+    ThreadCallProbe *probe = (ThreadCallProbe *)arg;
+    volatile unsigned char marker = 0;
+    char text[32];
+    probe->frame = (uintptr_t)&marker;
+    snprintf(text, sizeof text, "%.1f", 2.5);   /* aligned stack for a variadic call */
+    probe->value = strcmp(text, "2.5") == 0 ? 0x5eedu : 0u;
+}
 
 #if defined(__GNUC__) || defined(__clang__)
 #define RING_NOINLINE __attribute__((noinline))
@@ -115,6 +132,7 @@ static RING_NOINLINE unsigned long long ring_recurse(const RingBody *b, unsigned
     return r + depth;
 }
 
+#if !defined(_WIN32)
 /* 1/3 in binary32: 0x3eaaaaab rounded to nearest, 0x3eaaaaaa rounded downward. */
 static uint32_t ring_third_bits(void) {
     volatile float one = 1.0f;
@@ -125,6 +143,7 @@ static uint32_t ring_third_bits(void) {
     memcpy(&bits, &value, sizeof bits);
     return bits;
 }
+#endif
 
 static void ring_body(void *arg) {
     RingBody *b = (RingBody *)arg;
@@ -142,6 +161,17 @@ static void ring_body(void *arg) {
 #else
     b->round_ok = 1;
 #endif
+    /* A thread-stack call from a coroutine runs on the OS thread's stack where the backend
+     * moves it there (the stack-switch backend), on the coroutine's own stack otherwise, and
+     * returns to the coroutine either way. */
+    {
+        ThreadCallProbe probe = {0u, 0u};
+        sr_coro_call_on_thread_stack(thread_call_probe, &probe);
+        int on_thread = probe.frame >= s_thread_stack_low && probe.frame < s_thread_stack_top;
+        int on_coro = probe.frame < top && probe.frame > top - SR_GUEST_FIBER_STACK_SIZE;
+        b->thread_call_ok = probe.value == 0x5eedu && sr_coro_current() == b->self &&
+            (sr_coro_thread_stack_calls_switch() ? on_thread : on_coro);
+    }
     for (;;) {
         ring_fill_noise(b, b->rounds);
         b->total += ring_recurse(b, b->depth, b->rounds, 1);
@@ -173,6 +203,16 @@ static int ring_selftest(SrCoro *main_coro) {
     b.depth = 5u;
     b.salt = 1000003u;
     s_ring_main = main_coro;
+    {
+        size_t remaining = 0;
+        volatile unsigned char marker = 0;
+        if (sr_coro_stack_remaining(&remaining) && sr_coro_stack_top(&s_thread_stack_top)) {
+            s_thread_stack_low = (uintptr_t)&marker - remaining;
+        } else if (sr_coro_thread_stack_calls_switch()) {
+            fprintf(stderr, "coro selftest: the thread stack bounds are unknown\n");
+            return 1;
+        }
+    }
     a.self = sr_coro_create(ring_body, &a, SR_GUEST_FIBER_STACK_SIZE);
     b.self = sr_coro_create(ring_body, &b, SR_GUEST_FIBER_STACK_SIZE);
     if (!a.self || !b.self) {
@@ -206,6 +246,11 @@ static int ring_selftest(SrCoro *main_coro) {
                 "want %llu)\n", a.total, want_a, b.total, want_b);
         return 1;
     }
+    if (!a.thread_call_ok || !b.thread_call_ok) {
+        fprintf(stderr, "coro selftest: thread-stack call failed (a=%d b=%d, switching=%d)\n",
+                a.thread_call_ok, b.thread_call_ok, sr_coro_thread_stack_calls_switch());
+        return 1;
+    }
     if (!a.stack_ok || !b.stack_ok || !a.format_ok || !b.format_ok || !a.round_ok || !b.round_ok) {
         fprintf(stderr, "coro selftest: in-coroutine check failed (stack %d/%d format %d/%d "
                 "rounding %d/%d)\n", a.stack_ok, b.stack_ok, a.format_ok, b.format_ok,
@@ -215,7 +260,7 @@ static int ring_selftest(SrCoro *main_coro) {
     sr_coro_destroy(a.self);
     sr_coro_destroy(b.self);
     printf("coro selftest: ring OK (%u rounds x 2 coroutines, state, stack bounds, alignment, "
-           "rounding isolation)\n", RING_ROUNDS);
+           "rounding isolation, thread-stack calls)\n", RING_ROUNDS);
     return 0;
 }
 

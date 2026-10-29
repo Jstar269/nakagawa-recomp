@@ -4115,6 +4115,8 @@ int main(int argc, char *argv[]) {
     argv = u8_argv;
 #endif
 
+    /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
+    (void)nk_platform_host_startup("nakagawa");
     if (!player_apply_user_data_root(argc, argv)) return 2;
 #if defined(_WIN32) || defined(_WIN64)
     player_setup_standard_streams();

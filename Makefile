@@ -914,7 +914,9 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # The presenter also publishes its captures through the presenter-neutral
 # capture service (sr_capture_*, src/rt/fbcap.c), the same hard dependency.
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies both.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c \
+# Its event pump runs through sr_coro_call_on_thread_stack (src/rt/sr_coro.c), which Android
+# needs for JNI; a selftest without coroutines calls straight through it.
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/sr_coro.c \
                src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
