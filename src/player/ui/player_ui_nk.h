@@ -820,6 +820,13 @@ bool player_ui_nk_draws_view(int view);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);
+/* The most titles one frame shows: a library page's cards and its demos. */
+#define PLAYER_UI_SHOWN_TITLES_MAX 256u
+/* The library indices of the titles the last frame showed (the cards of the
+   library page and its demos, or the title page's title), at most `cap` of
+   them. The package check looks at these first: checking every title of a
+   large library reads every disc. */
+size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 /* Test only: a title's model as the last frame filled it, or NULL. */
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);

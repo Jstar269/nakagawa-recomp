@@ -281,6 +281,28 @@ def synthetic_art_iso(
     path.write_bytes(image)
 
 
+def write_large_library(scratch: Path, localappdata: Path, count: int) -> None:
+    """A saved library of `count` experimental titles, each on its own synthetic
+    disc with its own one-pixel ICON0.PNG, where the player reads its library."""
+    discs = scratch / "large-library"
+    discs.mkdir()
+    games = []
+    for index in range(count):
+        disc_id = f"SCAL{index:05d}"
+        iso = discs / f"{disc_id}.iso"
+        synthetic_art_iso(iso, include_picture=False,
+                          icon_bytes=png_pixel(index % 251, (index * 7) % 251, 90))
+        games.append({
+            "disc_id": disc_id, "title_name": f"Synthetic title {index}",
+            "iso_path": str(iso), "title_id": f"experimental-{disc_id.lower()}",
+            "is_experimental": True, "selected_executable": "EBOOT.BIN",
+        })
+    data = localappdata / "Nakagawa" / "data"
+    data.mkdir(parents=True)
+    (data / "library.json").write_text(
+        json.dumps({"schema_version": 1, "games": games}), encoding="utf-8")
+
+
 def synthetic_pbp_package(path: Path, *, disc_id: str = "TEST00424",
                           title: str = "Store Package") -> None:
     """Write a synthetic PlayStation Store package named like a disc image.
@@ -835,6 +857,7 @@ class NativePlayerUiTests(unittest.TestCase):
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
+        library_titles: int = 0,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1014,6 +1037,8 @@ class NativePlayerUiTests(unittest.TestCase):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if ready_source_iso is not None:
                 ui_iso_path = ready_source_iso
+            if library_titles:
+                write_large_library(scratch, localappdata, library_titles)
             if stale_package:
                 synthetic_stale_package(runtime_root)
             if incompatible_package:
@@ -1310,6 +1335,41 @@ class NativePlayerUiTests(unittest.TestCase):
                       "the disc's 1 x 1 ICON0.PNG is decoded and shown on its card")
         self.assertNotIn("next_ui_disc_icon", missing["stdout"],
                          "an unreadable disc keeps the placeholder")
+
+    def test_a_library_of_hundreds_of_titles_loads_pages_and_checks_what_it_shows(self) -> None:
+        """A library of 300 titles: every one loads (the player held 64, and one
+        more made the whole library load empty); the first card, not NEXT, has the
+        first focus; while the first page shows, only its titles get a package
+        check (a full check reads the disc, and every title was checked in turn);
+        Page Down turns pages, focus keeps its place, and the page shown gets its
+        disc icons (the art cache was filled by the first 64 titles)."""
+        events = (("WAIT_MS=4000", "KEY_RIGHT", "WAIT_MS=300")
+                  + ("KEY_PAGEDOWN", "WAIT_MS=100") * 9 + ("WAIT_MS=3000",))
+        run = self.run_player("library", events, library_titles=300, timeout=180.0)
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in stdout:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        statuses = {int(i) for i in re.findall(r"next_ui_library_status index=(\d+)", stdout)}
+        self.assertTrue(set(range(300)) <= statuses, "every saved title is in the launcher")
+
+        first_page = stdout.split("[PLAYER_UI_TEST] wait_ms result=PASS", 1)[0]
+        checked_first = {int(i) for i in re.findall(r"package_check index=(\d+)", first_page)}
+        self.assertIn(0, checked_first, "the first page's titles are checked")
+        self.assertLess(max(checked_first), 16,
+                        "no title off the first page is checked while it shows")
+
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", {frame["selected"] for frame in frames},
+                      "Right from the first card reaches the second card")
+        selected = int(frames[-1]["selected"])
+        self.assertGreaterEqual(selected, 64, "nine pages on, past the old 64-title limit")
+        icons = {int(i) for i in re.findall(r"next_ui_disc_icon index=(\d+)", stdout)}
+        self.assertIn(selected, icons, "the page turned to shows its disc icons")
+        checked = {int(i) for i in re.findall(r"package_check index=(\d+)", stdout)}
+        self.assertIn(selected, checked)
+        self.assertNotIn(299, checked, "the last page was never shown, so never checked")
 
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.
