@@ -233,7 +233,8 @@ instead of pretending it worked or crashing without a word.
   the game; the player then shows that the game stopped early instead of a
   frozen screen. Manifests that still set `libfont_ready_flag_addr`
   fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field and let the game's
-  own startup run. Checking that startup with real games is in the works
+  own startup run. A game that loads its `libfont.prx` by a path relative to
+  its data directory gets the translated copy too
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
   project's open-font converter is finished
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
@@ -260,7 +261,11 @@ reports the result. The runtime's environment switches are in [`DEBUGGING.md`](D
 ### Common conventions
 
 - **Player data folder.** Commands that touch the library, packages or fonts use the player's per-user data
-  folder. Choose another with `--user-data-root <dir>` (named `--root` on `inspect`).
+  folder. Choose another with `--user-data-root <dir>` (named `--root` on `inspect`). Open the player on the
+  same folder with `nakagawa_player.exe --user-data-root=<dir>`: its library, packages, settings, logs and
+  saves then all stay in that folder (settings in `config`, saves in `saves`), and the normal profile is left
+  alone. This keeps a second library, for example every disc of a collection under test, apart from the one
+  you play.
 - **Machine-readable output.** `--json` (or `--progress-json` on `build-package`) prints JSON instead of text, so
   scripts never have to parse sentences.
 - **Exit status.** `0` means success. `1` means the command ran and refused or failed, with the reason on stderr.

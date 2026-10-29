@@ -80,7 +80,7 @@ def run_hardware_trace_gate(psp_trace: str, cosim_trace: str) -> int:
             flush=True,
         )
         print(
-            "  PSP_HARDWARE_TRACE producer: in the works (issue #312)",
+            "  PSP_HARDWARE_TRACE producer: CASE=insn-trace with tools/psp_oracle/insn_trace.py (#312)",
             flush=True,
         )
         return 1
@@ -235,7 +235,7 @@ def main() -> int:
             "  NOT_RUN: optional gate; set both PSP_HARDWARE_TRACE and LOCAL_COSIM_TRACE to run it",
             flush=True,
         )
-        print("  PSP_HARDWARE_TRACE producer: in the works (issue #312)", flush=True)
+        print("  PSP_HARDWARE_TRACE producer: CASE=insn-trace with tools/psp_oracle/insn_trace.py (#312)", flush=True)
 
     print("[verify] done.", flush=True)
     return int(status != 0)

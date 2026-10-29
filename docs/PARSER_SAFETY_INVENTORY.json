@@ -598,8 +598,8 @@
     {
       "boundary": "Library JSON",
       "entry": "src/core/nk_library.c:nk_library_load_from_file; src/core/nk_library.c:nk_library_load",
-      "max_input": "4 MiB.",
-      "tables_nesting": "At most NK_MAX_GAMES entries; each scalar parser writes only fixed-size fields.",
+      "max_input": "16 MiB (NK_LIBRARY_MAX_BYTES).",
+      "tables_nesting": "At most NK_MAX_GAMES (4096) entries; each scalar parser writes only fixed-size fields.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
