@@ -128,9 +128,16 @@ the C body. What the C path leaves to a C compiler is explicit here:
 point whose body is that macro (`sr_llvm_r32` is `MEM_R32`, `sr_llvm_yield` is `SR_YIELD`,
 and so on); it adds no semantics. The build compiles it to bitcode with the generated-code
 flags and links only the functions a chunk uses into that chunk, internalized and
-`always_inline`, so an LLVM body inlines the same fast paths a C chunk expands, and a
-release build keeps the trace hooks compiled out. `tools/test_codegen_llvm.py` compiles the
-header with Clang and checks that every declaration matches the type the backend prints.
+`always_inline`, so an LLVM body reaches the same helpers a C chunk expands, and a release
+build keeps the trace hooks compiled out. `tools/test_codegen_llvm.py` compiles the header
+with Clang and checks that every declaration matches the type the backend prints.
+
+The two compilers then inline those helpers differently. GCC at `-O1` keeps the memory
+helpers (`sr_r32`, `sr_w32_pc` and the narrower forms, with their VRAM aperture, watch and
+store-context paths) as out-of-line calls; Clang at `-O1` inlines them at every guest load
+and store. That is most of the LLVM build's extra object size (#330 has the numbers), and
+splitting the helpers into an inline bounds check and an out-of-line slow path is listed
+[below](#not-yet-done).
 
 ## Scope of the first stage
 
@@ -199,6 +206,9 @@ header or library vendored or shipped later gets the usual pin, `PROVENANCE.md` 
 - Lowering for the FPU, VFPU, COP0, `eret` and the `--lle-cpu` exception path.
 - Register promotion inside the IR (above), and IR-side fast paths that do not depend on
   linking the ABI bitcode.
+- Code size: the memory helpers split into an inline fast path and an out-of-line slow path
+  (VRAM aperture, watch and store-context checks), so Clang does not inline the slow path
+  at every access ([above](#semantics-in-the-ir)).
 - Runtime-placed (relocatable) modules.
 - The in-process stage, and arm64 hosts (#329).
 - The `--stale-detect` `cache` hook. Stale-code records are kept per guest entry, and an

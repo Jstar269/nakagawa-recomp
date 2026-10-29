@@ -1552,7 +1552,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "93195fc5cd3eb187ef43b66741cf1ce620dca5765f7617b9525b0d43f7033498"
+      "sha256": "ac0d0f56515ce0da5690abc55510becf62750bce8a0c4a5e6a0d64527340b94c"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
