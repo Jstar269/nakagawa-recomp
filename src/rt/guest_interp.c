@@ -1376,6 +1376,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 sr_end(s, 0u, 0);
                 instruction_count++;
                 if (sr_perf_enabled) sr_perf_interp_instruction();
+                sr_exec_interp_instructions++;
                 pc += 8u;
                 s->pc = pc;
                 continue;
@@ -1424,6 +1425,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             instruction_count += 2u;
             if (sr_perf_enabled) sr_perf_interp_instruction();
             if (sr_perf_enabled) sr_perf_interp_instruction();
+            sr_exec_interp_instructions += 2u;
             /* A linked transfer into a registered native body is a CALL, exactly as
              * generated code treats `jal`/`jalr`: the callee runs as a nested native
              * frame and this interpreted caller resumes at its link address. Handing
@@ -1466,6 +1468,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         sr_end(s, store_address, store_size);
         instruction_count++;
         if (sr_perf_enabled) sr_perf_interp_instruction();
+        sr_exec_interp_instructions++;
         pc += 4u;
         s->pc = pc;
     }
@@ -1475,9 +1478,14 @@ SrGuestInterpResult sr_guest_interp_run(
     CpuState *s,
     uint32_t entry,
     SrGuestInterpFault *fault) {
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_INTERP);
+    sr_exec_interp_entry(entry);
     if (sr_perf_enabled) sr_perf_interp_begin(entry);
     SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, NULL, fault);
     if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
+    sr_exec_interp_exit(result == SR_GUEST_INTERP_AOT_HANDOFF || result == SR_GUEST_INTERP_CALL_RETURN,
+                        result == SR_GUEST_INTERP_CALL_RETURN);
+    sr_exec_leave(exec_previous);
     return result;
 }
 
@@ -1486,9 +1494,14 @@ SrGuestInterpResult sr_guest_interp_run_with_boundary(
     uint32_t entry,
     const SrGuestInterpCallBoundary *boundary,
     SrGuestInterpFault *fault) {
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_INTERP);
+    sr_exec_interp_entry(entry);
     if (sr_perf_enabled) sr_perf_interp_begin(entry);
     SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, boundary, fault);
     if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
+    sr_exec_interp_exit(result == SR_GUEST_INTERP_AOT_HANDOFF || result == SR_GUEST_INTERP_CALL_RETURN,
+                        result == SR_GUEST_INTERP_CALL_RETURN);
+    sr_exec_leave(exec_previous);
     return result;
 }
 

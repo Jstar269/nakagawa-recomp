@@ -658,6 +658,18 @@ void sr_perf_vblank_coalesced(void) {}
 void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 void sr_perf_shutdown(void) {}
+/* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+void sr_exec_tier_switch(int tier) { sr_exec_tier = tier; }
+void sr_exec_interp_entry(uint32_t entry_pc) { (void)entry_pc; }
+void sr_exec_interp_exit(int returned_to_aot, int call_return) { (void)returned_to_aot; (void)call_return; }
+void sr_exec_slice_begin(int tier) { sr_exec_tier = tier; }
+int sr_exec_slice_end(void) { int tier = sr_exec_tier; sr_exec_tier = 0; return tier; }
+uint64_t sr_exec_now_ns(void) { return 0; }
+void sr_exec_idle(uint64_t started_ns) { (void)started_ns; }
+void sr_exec_share_arm(void) {}
+void sr_exec_share_report(void) {}
 int sr_rt_phase;
 uint32_t sr_rt_nid;
 uint32_t (*sr_rt_pc_fn)(void);
@@ -19638,6 +19650,13 @@ static void test_ge_guest_sentinel(void) {
            "Region 3 textured texel (0,0) center matches source texture");
     expect(fb[(20 + 7 * 8 + 2) * fb_stride + (380 + 7 * 8 + 2)] == tex[7 * 8 + 7],
            "Region 3 textured texel (7,7) center matches source texture");
+    /* Each of the 8x8 texels covers exactly 8x8 pixels from (380,20): the pixel samples its
+     * centre and nearest takes floor(s) (PSP-GE-SAMPLE-001). */
+    int r3_texels_exact = 1;
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++)
+            if (fb[(20 + y) * fb_stride + (380 + x)] != tex[(y / 8) * 8 + x / 8]) r3_texels_exact = 0;
+    expect(r3_texels_exact, "Region 3 shows each texel over exactly its own 8x8 pixels (PSP-GE-SAMPLE-001)");
     expect(fb[20 * fb_stride + 379] == bg_color, "Region 3 left edge is bounded (background)");
     expect(fb[20 * fb_stride + 444] == bg_color, "Region 3 right edge is bounded (background)");
 
@@ -19666,12 +19685,12 @@ static void test_ge_guest_sentinel(void) {
            "Region 1 matches canonical 64-bit FNV-1a hash (0x0eb6697557c1d045)");
     expect(r2_hash == 0xbf1aca308f0c0a25ULL,
            "Region 2 matches canonical 64-bit FNV-1a hash (0xbf1aca308f0c0a25)");
-    expect(r3_hash == 0x2158c050396fe725ULL,
-           "Region 3 matches canonical 64-bit FNV-1a hash (0x2158c050396fe725)");
+    expect(r3_hash == 0x9923d5b929b08725ULL,
+           "Region 3 matches canonical 64-bit FNV-1a hash (0x9923d5b929b08725)");
     expect(r4_hash == 0x04cfd0712d0f88e5ULL,
            "Region 4 triangle matches canonical 64-bit FNV-1a hash (0x04cfd0712d0f88e5)");
-    expect(fb_hash == 0x6b749d6fd93580c5ULL,
-           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0x6b749d6fd93580c5)");
+    expect(fb_hash == 0xe515d6080beff4c5ULL,
+           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0xe515d6080beff4c5)");
 
     /* 7. Callback registration lifecycle */
     const uint32_t cb_struct = 0x08920000u;
@@ -23687,6 +23706,49 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
     cpu.r[4] = CORE;
     expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
            "__sceSasCoreWithMix refreshes the end flags as a cycle does");
+}
+
+/* #1595: a second __sceSasInit on an initialized core, as the PSP answers it (PSP-SAS-001, PSP-3000 6.6.1):
+ * 0, the new grain and output mode take effect, and a playing voice reads as ended again. A misaligned core
+ * is still refused with the address error after an init. */
+#define NID_SAS_GET_GRAIN      0xbd11b7c2u
+#define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+static void test_sas_reinit_is_a_fresh_init(void) {
+    CpuState cpu;
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 64u, 1u);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = VAG; cpu.r[7] = 64u * 16u; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xfffffffeu, "before the re-init only voice 0 is playing");
+
+    cpu.r[4] = CORE; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "__sceSasInit on an initialized core returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the re-init leaves every voice ended");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "the re-initialized core mixes");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the voice stays ended after the next cycle");
+
+    cpu.r[4] = CORE; cpu.r[5] = 512; cpu.r[6] = 16; cpu.r[7] = 1; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "a re-init with other parameters returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_GRAIN) == 512u, "the re-init's grain takes effect");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_OUTPUTMODE) == 1u, "the re-init's output mode takes effect");
+
+    cpu.r[4] = CORE + 4u; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == SAS_ERROR_ADDRESS,
+           "a misaligned core is refused with the address error after an init");
 }
 
 static void test_msgpipe_safety(void) {
@@ -33449,6 +33511,84 @@ static void test_psmf_start_reads_init_pts_from_the_third_argument(void) {
     s_psmf_synthetic_enabled = 0;
 }
 
+/* scePsmfPlayerSetPsmf (the variant without callbacks) opens a stream exactly as SetPsmfCB does, and
+ * scePsmfPlayerChangePlayMode follows the reference player's checks (PPSSPP Core/HLE/scePsmf.cpp
+ * 3f40ddc8): not playing yet is INVALID_STATUS, a mode outside 0..5 INVALID_CONFIG, and FORWARD on a
+ * stream without entry points INVALID_STREAM.  LocoRoco 2 imports both; neither had a handler, and the
+ * first SetPsmf stopped the title as an unimplemented import.
+ *
+ * MUTANT: drop the 0x3d6d25a9 registration -- the first SetPsmf stops the selftest at the unsupported
+ *   import.  MUTANT: drop the playing-status check in ChangePlayMode -- the standby cell fails. */
+#define NID_SCE_PSMF_PLAYER_SET_PSMF         0x3d6d25a9u
+#define NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE 0xa3d81169u
+#define PSMF_STATUS_STANDBY                  0x00000002u
+#define PSMF_ERR_STATUS_SELFTEST             0x80616001u
+#define PSMF_ERR_STREAM_SELFTEST             0x80616003u
+#define PSMF_ERR_CONFIG_SELFTEST             0x80616006u
+
+static uint32_t psmf_change_play_mode(CpuState *cpu, int32_t mode, int32_t speed) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = PSMF_SELFTEST_PLAYER;
+    cpu->r[5] = (uint32_t)mode;
+    cpu->r[6] = (uint32_t)speed;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE);
+}
+
+static void psmf_play_mode_cells(int basic) {
+    CpuState cpu;
+    const char *what = basic ? "psmf play mode (basic)" : "psmf play mode (full)";
+    char msg[160];
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    if (basic) memset(s_psmf_synthetic + 0x82 + 4, 0, 4);   /* no entry points: a BASIC player */
+    s_psmf_synthetic_enabled = 1;
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode PLAY */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 1u);             /* play speed */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf play mode: the player is created");
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode before SetPsmf is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf without callbacks opens the stream", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf leaves the player in STANDBY", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_STANDBY, msg);
+    snprintf(msg, sizeof msg, "%s: a second SetPsmf on a set player is INVALID_STATUS", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode in STANDBY is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    expect(psmf_start_call(&cpu, 0u, 0u) == 0u, "psmf play mode: playback starts");
+    snprintf(msg, sizeof msg, "%s: modes outside PLAY..REWIND are INVALID_CONFIG", what);
+    expect(psmf_change_play_mode(&cpu, 6, 1) == PSMF_ERR_CONFIG_SELFTEST &&
+               psmf_change_play_mode(&cpu, -1, 1) == PSMF_ERR_CONFIG_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: PAUSE and PLAY are accepted while playing", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == 0u && psmf_change_play_mode(&cpu, 0, 1) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: FORWARD %s", what,
+             basic ? "is INVALID_STREAM without entry points" : "is accepted with entry points");
+    expect(psmf_change_play_mode(&cpu, 4, 2) == (basic ? PSMF_ERR_STREAM_SELFTEST : 0u), msg);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf play mode: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
+}
+
+static void test_psmf_set_psmf_and_change_play_mode(void) {
+    psmf_play_mode_cells(0);
+    psmf_play_mode_cells(1);
+}
+
 static void test_flight_recorder_trace(void) {
     const char *output = "flight_recorder_hle_selftest.json";
     char bundle[16384];
@@ -37336,6 +37476,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_sas_reinit_is_a_fresh_init();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
@@ -37382,6 +37523,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
+    test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();

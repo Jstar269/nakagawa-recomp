@@ -84,17 +84,25 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode);
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 
-/* Point every per-user data lookup in this process (the library, title
- * manifests, packages, staged games, fonts) at `path` instead of the
- * platform default, the player's counterpart of nk_cli's --user-data-root.
- * NULL or "" restores the default. Returns false, leaving the previous
- * setting, when the path is too long. Call before the first data lookup. */
+/* Point every per-user folder of this process at `path` instead of the
+ * platform default, the player's counterpart of nk_cli's --user-data-root:
+ * NK_PATH_DATA (the library, title manifests, packages, staged games, fonts)
+ * is `path` itself, and NK_PATH_CONFIG, NK_PATH_CACHE, NK_PATH_LOGS and
+ * NK_PATH_SAVES are its config, cache, logs and saves folders, so nothing of
+ * the default profile is read or written. NULL or "" restores the default.
+ * Returns false, leaving the previous setting, when the path is too long.
+ * Call before the first lookup. */
 bool nk_platform_set_app_data_dir_override(const char *path);
 /* The host's local time zone: its standard offset from UTC in minutes (east of UTC positive)
  * and whether daylight saving is in effect now. False when the host does not say. */
 bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now);
 /* Resolve the canonical per-user data directory without creating it. */
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
+/* nk_platform_get_path's folder for `type`, without creating it. */
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len);
+/* This program's own executable, as UTF-8 (GetModuleFileNameW on Windows,
+ * /proc/self/exe on Linux). False where the platform does not say. */
+bool nk_platform_get_executable_path(char *out_path, size_t max_len);
 /* Get/create the canonical per-user data directory. */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
 /* Resolve the pre-canonical Windows profile location used by older builds.

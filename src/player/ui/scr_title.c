@@ -37,6 +37,10 @@
 #define TITLE_ID_STALL_EYEBROW 0x20000036u
 #define TITLE_ID_STALL_TEXT 0x20000037u
 #define TITLE_ID_STALL_ACTIONS 0x20000038u
+#define TITLE_ID_START_CARD 0x20000039u
+#define TITLE_ID_START_NAME 0x2000003Au
+#define TITLE_ID_START_TEXT 0x2000003Bu
+#define TITLE_ID_START_BAR 0x2000003Cu
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -369,6 +373,29 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     result = action(PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
                                     model->title_index, PLAYER_UI_PRIMARY_NONE);
                 }
+            }
+            /* The first start of a new package took 7 to 9 s before its window
+               opened (v0.0.1 walkthrough); a chip and one line in the package
+               card are easy to miss in that wait, so a card says what is
+               happening, with a moving bar. */
+            if (title->package_state == PLAYER_UI_PACKAGE_STARTING &&
+                nk_ui_card_begin(ui, TITLE_ID_START_CARD, sizing_grow(), sizing_fit(),
+                                 NK_UI_SPACE_3)) {
+                float bar = width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside -
+                            2.0f * NK_UI_SPACE_5;
+                char line[320];
+                NkUiTextStyle name = nk_ui_type(NK_UI_TYPE_HEADING, theme->paper);
+                (void)snprintf(line, sizeof(line), "Starting %s\xE2\x80\xA6",
+                               safe_text(title->title, "the game"));
+                nk_ui_text(ui, TITLE_ID_START_NAME,
+                           nk_ui_text_clamp(ui, line, &name, bar, 1), &name);
+                nk_ui_text_role(ui, TITLE_ID_START_TEXT,
+                                "Its window opens when it is ready. The first start can "
+                                "take several seconds.",
+                                NK_UI_TYPE_BODY_S, theme->muted);
+                nk_ui_progress_bar(ui, TITLE_ID_START_BAR, bar > 40.0f ? bar : 40.0f,
+                                   -1.0f, model->now_s);
+                nk_ui_end_container(ui);
             }
             /* The player tier, then what to expect in plain words and any
                known issues (#1297). The docs category describes the
@@ -2117,6 +2144,10 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
         }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset",
+                         NK_UI_BUTTON_DANGER)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET);
+        }
         nk_ui_end_container(ui);
     }
     nk_ui_end_container(ui);
@@ -2599,6 +2630,62 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 }
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", 0u)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET:
+        /* Owner, 2026-10-29: back to a first run, with the user data moved
+           aside (player_app_factory_reset), never deleted. */
+        flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Factory reset", theme->warning);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Reset Nakagawa Recomp to a first run?",
+                        NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Your library, saves, imported PSP fonts, keys, settings, built games "
+                        "and downloaded build tools move into backup folders. Nakagawa Recomp "
+                        "then starts again with the setup it shows the first time. Nothing is "
+                        "deleted, and your disc images and logs stay where they are.",
+                        NK_UI_TYPE_BODY, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->paper);
+            nk_ui_text_role(ui, SET_ID_TEXT + 0x200u,
+                            model->reset_folder_count > 0u
+                                ? "These folders get \"-backup-\" and today's date and time "
+                                  "added to their names:"
+                                : "Nakagawa Recomp has no user data on this PC yet.",
+                            NK_UI_TYPE_BODY_S, theme->muted);
+            for (size_t i = 0u; i < model->reset_folder_count && i < PLAYER_UI_RESET_FOLDERS;
+                 ++i) {
+                /* The folders differ at their ends (config, data, cache,
+                   saves), so a long one keeps its end and loses its middle. */
+                char folder[600];
+                settings_shorten_words(safe_text(model->reset_folders[i], ""), folder,
+                                       sizeof(folder), 72u);
+                nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0x201u + (NkUiId)i),
+                           nk_ui_text_clamp(ui, folder, &data, inner - 32.0f, 1), &data);
+            }
+            if (model->reset_folder_count > 0u) {
+                nk_ui_text_role(ui, SET_ID_TEXT + 0x20Fu,
+                                "To undo it, close Nakagawa Recomp and give each folder its "
+                                "old name back.",
+                                NK_UI_TYPE_CAPTION, theme->muted);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Keep everything",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                if (model->reset_folder_count > 0u &&
+                    nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_CONFIRM_RESET, "Reset",
+                                 NK_UI_BUTTON_DANGER)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_FACTORY_RESET);
                 }
                 nk_ui_end_container(ui);
             }
