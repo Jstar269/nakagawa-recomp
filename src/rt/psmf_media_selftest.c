@@ -846,6 +846,10 @@ static void test_video_eos_waits_for_all_access_units(void) {
           "decoder EOS opens after every video input queue is empty");
     CHECK(sr_hle_test_psmf_video_submit_limit(0) == PSMF_OUT_PTS_RING,
           "normal decode keeps the measured presentation lead bound");
+    /* MUTANT: the earlier bound of 8 -- fails here; a decoder that fills a 16-frame picture
+     * buffer before its first output never receives the picture that releases one. */
+    CHECK(sr_hle_test_psmf_video_submit_limit(0) > PSMF_H264_MAX_DPB_FRAMES,
+          "normal decode can submit a full H.264 picture buffer and the picture that releases it");
     CHECK(sr_hle_test_psmf_video_submit_limit(1) == PSMF_OUT_PTS_CAPACITY &&
               PSMF_OUT_PTS_CAPACITY == PSMF_OUT_PTS_RING +
                   PSMF_Q_DEPTH + SR_PSMF_QUEUE_DEPTH + 1u,

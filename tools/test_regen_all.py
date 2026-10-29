@@ -42,6 +42,8 @@ class StepInventoryTests(unittest.TestCase):
             "tools/test_recomp_helper_inventory.py",
             "tools/waits_census.py",
             "tools/test_waits_census.py",
+            "tools/verification_ledger.py",
+            "tools/test_verification_ledger.py",
             "tools/gen_nidnames.py",
             "tools/test_gen_nidnames.py",
             "tools/test_hle_manifest.py",
