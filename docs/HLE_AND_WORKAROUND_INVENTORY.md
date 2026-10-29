@@ -46,16 +46,16 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **640** (dedicated **533**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
+Registered NIDs: **640** (dedicated **535**, fake_success **4**, controlled_unsupported **101**).
+Semantic handler census: **514** handlers across **25** API families, covering **541** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 13 | 22 |
-| `partial` | 172 | 174 |
+| `partial` | 176 | 178 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 324 | 336 |
+| `unreviewed` | 322 | 334 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -82,9 +82,9 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
+| `sceUtility` | 0 | 4 | 0 | 0 | 27 | 31 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **324** | **512** | **539** |
+| **Total** | **13** | **176** | **1** | **2** | **322** | **514** | **541** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -675,6 +675,22 @@ Semantic handler census: **512** handlers across **25** API families, covering *
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
   - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
+- **`h_UtilityLoadModule`** (`sceUtility`): `sceUtilityLoadModule` (0x2a2b3de0)
+  - Limitation: records utility module state only; the user-partition memory a real module occupies is not reserved; IDs and dependencies follow PPSSPP, not measured on this project's PSP
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+- **`h_UtilityLoadNetModule`** (`sceUtility`): `sceUtilityLoadNetModule` (0x1579a159)
+  - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106 and their shared state; the status codes for a bad number or a repeated call are the generic module ones, unmeasured on a PSP; makes no connection, and the net libraries stay refused
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+- **`h_UtilityUnloadModule`** (`sceUtility`): `sceUtilityUnloadModule` (0xe49bfe92)
+  - Limitation: records utility module state only; does not check whether a loaded module still depends on the one unloaded (PPSSPP does not either); not measured on this project's PSP
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+- **`h_UtilityUnloadNetModule`** (`sceUtility`): `sceUtilityUnloadNetModule` (0x64d50c56)
+  - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106; the status codes for a bad number or a module that is not loaded are the generic module ones, unmeasured on a PSP
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
 
 #### Compatibility Handlers (Named Limitations)
 
