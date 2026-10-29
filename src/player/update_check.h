@@ -135,6 +135,9 @@ bool nk_update_install_folder(const char *exe_dir, const char *downloads_dir,
    output. Windows only (Windows' own tar.exe unpacks). */
 bool nk_update_install(const char *zip_path, const char *target_dir, const char *log_path,
                        NkUpdateError *error);
+/* Whether nk_update_install can work on this host: Windows only. Elsewhere the
+   Settings page offers the release page, not a download. */
+bool nk_update_install_supported(void);
 
 #ifdef __cplusplus
 }

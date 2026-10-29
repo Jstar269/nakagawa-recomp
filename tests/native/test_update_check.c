@@ -547,9 +547,12 @@ static void test_install_folder(void) {
         assert(!nk_update_install("missing.zip", install, log_path, &error));
         assert(strcmp(error.code, "UPDATE_INSTALL_EXISTS") == 0);
         assert(nk_platform_file_exists(marker));
+        /* The launcher offers the download exactly where install works. */
+        assert(nk_update_install_supported());
 #else
         assert(!nk_update_install("missing.zip", install, log_path, &error));
         assert(strcmp(error.code, "UPDATE_PLATFORM_UNSUPPORTED") == 0);
+        assert(!nk_update_install_supported());
 #endif
     }
     printf("[UPDATE_CHECK_TEST] install folder: PASS\n");

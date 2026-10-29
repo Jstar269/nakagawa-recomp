@@ -209,6 +209,74 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms);
 bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process);
 void nk_platform_terminate_process(NkProcessHandle *process);
 void nk_platform_close_process(NkProcessHandle *process);
+/* Whether nk_platform_bring_process_window_to_front can work on this host at all. Win32 can;
+   no POSIX backend raises another process's window (X11 and Wayland leave focus to the
+   window manager), so a false from the raise there is expected rather than a failure. */
+bool nk_platform_can_front_process_windows(void);
+
+/* ---- Host seam ------------------------------------------------------------------------
+ *
+ * Code outside the nk_platform_*.c backends asks these instead of testing _WIN32,
+ * __APPLE__, __linux__ or __ANDROID__ itself (docs/PLATFORM_PORTABILITY.md, "One platform
+ * seam"; tools/test_platform_seam.py keeps the count of such tests from growing). */
+
+/* The host this build runs on. User-facing text that names a host's own tools or folders
+   chooses its wording from this at run time, so every variant compiles, and is tested, on
+   every host. */
+typedef enum {
+    NK_HOST_WINDOWS = 0,
+    NK_HOST_LINUX,
+    NK_HOST_MACOS,
+    NK_HOST_ANDROID,
+    NK_HOST_OTHER_POSIX
+} NkHostKind;
+
+NkHostKind nk_platform_host_kind(void);
+
+/* Path text comparison as the host's file system compares names: Win32 folds ASCII case
+   and treats '/' and '\\' as one separator; POSIX compares bytes. Used to find a folder's
+   text inside other text (the profile folder in a message, a root above a path). */
+bool nk_platform_path_chars_equal(char a, char b);
+/* '\\' or '/' on Win32; '/' on POSIX. */
+bool nk_platform_is_path_separator(char c);
+
+/* The raw environment values naming the user: the profile folder (USERPROFILE on Win32,
+   HOME on POSIX) and the account name (USERNAME on Win32, USER on POSIX). NULL when unset.
+   Not resolved, created or checked: callers that need the per-user folders use
+   nk_platform_get_path. */
+const char *nk_platform_env_home_dir(void);
+const char *nk_platform_env_user_name(void);
+
+/* This process's id (_getpid on Win32, getpid on POSIX). */
+unsigned long nk_platform_process_id(void);
+
+/* The OS error code of the last failed nk_platform or nk_*_utf8 file call on this thread:
+   GetLastError() on Win32, errno on POSIX. Read it straight after the failing call. */
+int nk_platform_last_os_error(void);
+
+/* The SDL3_ttf shared library's file names, most specific first, NULL-terminated:
+   SDL3_ttf.dll on Win32, libSDL3_ttf.0.dylib then libSDL3_ttf.dylib on macOS, and
+   libSDL3_ttf.so.0 then libSDL3_ttf.so elsewhere. */
+const char *const *nk_platform_sdl3_ttf_library_names(void);
+
+/* The first system UI font file found (Win32: the open-source fonts in the per-user fonts
+   folder, then %WINDIR%\Fonts; macOS and Linux: a short table of system font paths).
+   False when none exists. */
+bool nk_platform_find_system_ui_font(char *out_path, size_t max_len);
+
+/* Make main's arguments UTF-8. Win32: the console's output code page becomes UTF-8 and argv
+   is rebuilt from the UTF-16 command line (the narrow argv is in the ANSI code page); the
+   new array lives until the process exits. POSIX arguments already are UTF-8 bytes: nothing
+   changes. False, leaving both untouched, when the command line cannot be converted. */
+bool nk_platform_init_utf8_main(int *argc, char ***argv);
+
+/* Give a GUI program usable stdout and stderr. Win32 (a -mwindows program has no console):
+   standard handles it was started with are kept; otherwise the streams go to the parent
+   terminal's console when there is one, else to `fallback_log_name` in the NK_PATH_LOGS
+   folder, rewritten each run. Both streams are then unbuffered, since the Windows CRT has no
+   line buffering (#1303). POSIX streams already reach the terminal or the launcher's log:
+   nothing changes. Call after nk_platform_set_app_data_dir_override. */
+void nk_platform_setup_standard_streams(const char *fallback_log_name);
 
 #ifdef __cplusplus
 }

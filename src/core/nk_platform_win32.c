@@ -6,8 +6,12 @@
 #include "nk_platform.h"
 #include "nk_types.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <objbase.h>
+#include <ctype.h>
+#include <io.h>
+#include <process.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1129,8 +1133,6 @@ void nk_platform_close_process(NkProcessHandle *process) {
     process->cached_exit_code = 0;
 }
 
-#endif /* _WIN32 */
-
 bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     TIME_ZONE_INFORMATION zone;
     DWORD id;
@@ -1142,3 +1144,186 @@ bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     *daylight_now = id == TIME_ZONE_ID_DAYLIGHT;
     return true;
 }
+
+/* ---- Host seam (nk_platform.h) ----------------------------------------------------------- */
+
+bool nk_platform_can_front_process_windows(void) {
+    return true;
+}
+
+NkHostKind nk_platform_host_kind(void) {
+    return NK_HOST_WINDOWS;
+}
+
+bool nk_platform_is_path_separator(char c) {
+    return c == '\\' || c == '/';
+}
+
+bool nk_platform_path_chars_equal(char a, char b) {
+    if (a == '/') a = '\\';
+    if (b == '/') b = '\\';
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+
+const char *nk_platform_env_home_dir(void) {
+    return getenv("USERPROFILE");
+}
+
+const char *nk_platform_env_user_name(void) {
+    return getenv("USERNAME");
+}
+
+unsigned long nk_platform_process_id(void) {
+    return (unsigned long)_getpid();
+}
+
+int nk_platform_last_os_error(void) {
+    return (int)GetLastError();
+}
+
+const char *const *nk_platform_sdl3_ttf_library_names(void) {
+    static const char *const names[] = { "SDL3_ttf.dll", NULL };
+    return names;
+}
+
+static bool system_font_file_exists(const char *path) {
+    FILE *f = nk_fopen_utf8(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+bool nk_platform_find_system_ui_font(char *out_path, size_t out_len) {
+    if (!out_path || out_len == 0) return false;
+    /* Check user-provided open-source fonts first (the fonts sibling of the
+     * canonical per-user data root), followed by Windows system fonts (%WINDIR%\Fonts\).
+     * Open-source font guidelines:
+     * - Native UI & Setup Wizard: Inter, Roboto Flex, Rubik (SIL OFL)
+     * - In-Game HUD: M PLUS Rounded 1c, Rubik, Nunito (SIL OFL)
+     * - Japanese Text: Kosugi Maru, Zen Maru Gothic (SIL OFL) */
+    static const char *kOpenSourceFiles[] = {
+        "Inter-Regular.ttf", "Inter.ttf",
+        "RobotoFlex-Regular.ttf", "Roboto-Regular.ttf",
+        "Rubik-Regular.ttf", "Rubik.ttf",
+        "MPLUSRounded1c-Regular.ttf", "Nunito-Regular.ttf",
+        "KosugiMaru-Regular.ttf",
+        NULL
+    };
+    char data_root[NK_MAX_PATH];
+    char app_fonts_root[NK_MAX_PATH];
+    bool have_app_fonts_root = false;
+    if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+        /* Windows keeps data under <vendor>/data, so fonts sit beside it in <vendor>/fonts. */
+        char *leaf = strrchr(data_root, '\\');
+        if (leaf && strcmp(leaf + 1, "data") == 0) *leaf = '\0';
+        int written = snprintf(app_fonts_root, sizeof(app_fonts_root), "%s\\fonts", data_root);
+        have_app_fonts_root = written > 0 && (size_t)written < sizeof(app_fonts_root);
+    }
+    if (have_app_fonts_root) {
+        for (int i = 0; kOpenSourceFiles[i]; i++) {
+            snprintf(out_path, out_len, "%s\\%s", app_fonts_root, kOpenSourceFiles[i]);
+            if (system_font_file_exists(out_path)) return true;
+        }
+    }
+
+    const char *windir = getenv("WINDIR");
+    char base[NK_MAX_PATH];
+    if (windir && *windir) {
+        snprintf(base, sizeof(base), "%s", windir);
+    } else {
+        snprintf(base, sizeof(base), "C:\\Windows");
+    }
+    for (int i = 0; kOpenSourceFiles[i]; i++) {
+        snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kOpenSourceFiles[i]);
+        if (system_font_file_exists(out_path)) return true;
+    }
+
+    static const char *kFiles[] = { "segoeui.ttf", "tahoma.ttf", "arial.ttf", NULL };
+    for (int i = 0; kFiles[i]; i++) {
+        snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kFiles[i]);
+        if (system_font_file_exists(out_path)) return true;
+    }
+    return false;
+}
+
+bool nk_platform_init_utf8_main(int *argc, char ***argv) {
+    if (!argc || !argv) return false;
+    SetConsoleOutputCP(CP_UTF8);
+    int wargc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv) return false;
+    /* argv[argc] is NULL, as C requires of main's own array. */
+    char **u8_argv = (char **)calloc((size_t)wargc + 1u, sizeof(char *));
+    if (!u8_argv) {
+        LocalFree(wargv);
+        return false;
+    }
+    for (int i = 0; i < wargc; i++) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        u8_argv[i] = len > 0 ? (char *)malloc((size_t)len) : NULL;
+        if (!u8_argv[i] ||
+            WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, u8_argv[i], len, NULL, NULL) <= 0) {
+            for (int j = 0; j <= i; j++) free(u8_argv[j]);
+            free(u8_argv);
+            LocalFree(wargv);
+            return false;
+        }
+    }
+    LocalFree(wargv);
+    *argc = wargc;
+    *argv = u8_argv;
+    return true;
+}
+
+/* The Windows player is a GUI-subsystem program (-mwindows, CMake WIN32_EXECUTABLE), so a
+ * double-click starts with no console window. A process that already has standard handles, one
+ * started from cmd, PowerShell or Git Bash, keeps them. Without handles, the streams go to the
+ * parent terminal's console when there is one, and otherwise to the fallback file in the logs
+ * folder under the player's data folder. */
+static void attach_standard_streams(const char *fallback_log_name) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != NULL && out != INVALID_HANDLE_VALUE) return;
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        SetConsoleOutputCP(CP_UTF8);
+        (void)freopen("CONOUT$", "w", stdout);
+        (void)freopen("CONOUT$", "w", stderr);
+        return;
+    }
+
+    char dir[NK_MAX_PATH];
+    char path[NK_MAX_PATH];
+    if (!fallback_log_name || !fallback_log_name[0] ||
+        !nk_platform_get_path(NK_PATH_LOGS, dir, sizeof(dir)) || !nk_platform_mkdir_p(dir) ||
+        snprintf(path, sizeof(path), "%s\\%s", dir, fallback_log_name) >= (int)sizeof(path)) {
+        return;
+    }
+    /* The streams themselves are reopened on the file. A GUI process started
+       without standard handles has stdout and stderr bound to no descriptor
+       (_fileno returns -2), so pointing descriptors 1 and 2 at the file with
+       _dup2 left both streams writing nowhere and the file empty. Each run
+       starts the file afresh; both streams then append, so their lines
+       interleave in order instead of overwriting each other. */
+    WCHAR wpath[NK_MAX_PATH];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0]))) return;
+    FILE *fresh = _wfopen(wpath, L"wb");
+    if (!fresh) return;
+    fclose(fresh);
+    if (!_wfreopen(wpath, L"ab", stdout)) return;
+    if (!_wfreopen(wpath, L"ab", stderr)) return;
+    /* Code that writes to the process's standard handles rather than the CRT
+       streams reaches the same file. */
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout)));
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
+}
+
+void nk_platform_setup_standard_streams(const char *fallback_log_name) {
+    attach_standard_streams(fallback_log_name);
+    /* The Windows CRT has no line buffering: _IOLBF is full buffering, so a file or pipe got
+       nothing until 4 KiB had piled up or the program exited, and player-output.txt stayed
+       empty while the player ran (#1303). Unbuffered, each printf reaches it as one write. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+}
+
+#endif /* _WIN32 */

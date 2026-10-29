@@ -2152,6 +2152,139 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
 /* #1282, #1286, #1280: the cards say what happened in plain words. Codes and
    raw boundaries go to the details, the developer log and the copied report,
    never the badge or the headline. */
+/* One platform seam (docs/PLATFORM_PORTABILITY.md): what main.c and
+   player_state.c used to decide with #if now comes from nk_platform.h and
+   package_builder.h, and each host's words are reachable on every host. */
+static bool same_env_value(const char *a, const char *b) {
+    return (a == NULL && b == NULL) || (a != NULL && b != NULL && strcmp(a, b) == 0);
+}
+
+static void test_platform_seam_answers_for_this_host(void) {
+    NkHostKind host = nk_platform_host_kind();
+#if defined(_WIN32) || defined(_WIN64)
+    assert(host == NK_HOST_WINDOWS);
+    assert(nk_platform_is_path_separator('\\') && nk_platform_is_path_separator('/'));
+    assert(nk_platform_path_chars_equal('A', 'a'));
+    assert(nk_platform_path_chars_equal('/', '\\'));
+    assert(nk_platform_can_front_process_windows());
+    assert(package_builder_toolchain_download_available());
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "SDL3_ttf.dll") == 0);
+    assert(same_env_value(nk_platform_env_home_dir(), getenv("USERPROFILE")));
+    assert(same_env_value(nk_platform_env_user_name(), getenv("USERNAME")));
+#else
+#if defined(__ANDROID__)
+    assert(host == NK_HOST_ANDROID);
+#elif defined(__APPLE__)
+    assert(host == NK_HOST_MACOS);
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "libSDL3_ttf.0.dylib") == 0);
+#elif defined(__linux__)
+    assert(host == NK_HOST_LINUX);
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "libSDL3_ttf.so.0") == 0);
+#endif
+    assert(!nk_platform_is_path_separator('\\') && nk_platform_is_path_separator('/'));
+    assert(!nk_platform_path_chars_equal('A', 'a'));
+    assert(!nk_platform_path_chars_equal('/', '\\'));
+    assert(!nk_platform_can_front_process_windows());
+    assert(!package_builder_toolchain_download_available());
+    assert(same_env_value(nk_platform_env_home_dir(), getenv("HOME")));
+    assert(same_env_value(nk_platform_env_user_name(), getenv("USER")));
+    {
+        /* POSIX arguments are already UTF-8: main's array is kept. */
+        char arg0[] = "player";
+        char *args[] = { arg0, NULL };
+        char **argv = args;
+        int argc = 1;
+        assert(nk_platform_init_utf8_main(&argc, &argv));
+        assert(argc == 1 && argv == args);
+    }
+#endif
+    assert(nk_platform_path_chars_equal('x', 'x'));
+    assert(!nk_platform_path_chars_equal('x', 'y'));
+    assert(nk_platform_process_id() != 0ul);
+
+    /* The launcher's library candidates come from the same table. */
+    {
+        char candidates[4][MAX_PATH_LEN];
+        const char *const *names = nk_platform_sdl3_ttf_library_names();
+        int n = player_app_ttf_library_candidates(NULL, candidates, 4);
+        assert(n >= 1);
+        for (int i = 0; i < n; i++) assert(strcmp(candidates[i], names[i]) == 0);
+        assert(names[n] == NULL);
+    }
+
+    /* A failed rename reports the host's own error code. */
+    {
+        char missing[MAX_PATH_LEN];
+        snprintf(missing, sizeof(missing), "%s%cplatform-seam-missing-%lu",
+                 SR_SELFTEST_BUILD_ROOT, nk_platform_path_separator(),
+                 nk_platform_process_id());
+        assert(nk_rename_utf8(missing, SR_SELFTEST_BUILD_ROOT "/platform-seam-target") != 0);
+        assert(nk_platform_last_os_error() != 0);
+    }
+
+    /* A system font, when the backend finds one, is a file that opens. */
+    {
+        char font[MAX_PATH_LEN];
+        if (nk_platform_find_system_ui_font(font, sizeof(font))) {
+            FILE *f = nk_fopen_utf8(font, "rb");
+            assert(f != NULL);
+            fclose(f);
+        }
+        assert(!nk_platform_find_system_ui_font(NULL, 0));
+    }
+
+    /* Every host's card words, on every host. */
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS),
+                  "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. "
+                  "Set LOCALAPPDATA or APPDATA") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_MACOS),
+                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Set HOME") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_LINUX),
+                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Set XDG_DATA_HOME or HOME") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_ANDROID),
+                  player_data_dir_unavailable_text(NK_HOST_LINUX)) == 0);
+    assert(strcmp(player_folder_open_failure_hint(NK_HOST_WINDOWS),
+                  "Windows could not open it.") == 0);
+    assert(strstr(player_folder_open_failure_hint(NK_HOST_LINUX), "xdg-utils") != NULL);
+    {
+        char message[1024];
+        player_launcher_unavailable_message_for_host(NK_HOST_WINDOWS, "", false,
+                                                     message, sizeof(message));
+        assert(strstr(message, "Extract the ZIP again") != NULL);
+        assert(strstr(message, "nakagawa_player.exe") != NULL);
+        player_launcher_unavailable_message_for_host(NK_HOST_LINUX, "", false,
+                                                     message, sizeof(message));
+        assert(strstr(message, "ZIP") == NULL);
+        assert(strstr(message, "tools/stage_install.py") != NULL);
+        char here[1024];
+        player_launcher_unavailable_message("", false, here, sizeof(here));
+        player_launcher_unavailable_message_for_host(host, "", false, message, sizeof(message));
+        assert(strcmp(here, message) == 0);
+    }
+
+    /* The file:// URL a non-Windows host opens folders with (player_host.c). */
+    {
+        char url[64];
+        assert(player_file_url("/srv/a b/Saves-1_x.~:", url, sizeof(url)));
+        assert(strcmp(url, "file:///srv/a%20b/Saves-1_x.~:") == 0);
+        assert(player_file_url("/caf\xc3\xa9", url, sizeof(url)));
+        assert(strcmp(url, "file:///caf%C3%A9") == 0);
+        assert(player_file_url("/%", url, sizeof(url)));
+        assert(strcmp(url, "file:///%25") == 0);
+        assert(!player_file_url("relative/path", url, sizeof(url)));
+        assert(!player_file_url("\\\\server\\share", url, sizeof(url)));  /* UNC */
+        assert(!player_file_url(NULL, url, sizeof(url)));
+        assert(!player_file_url("/x", url, 7));       /* "file://" alone does not fit */
+        assert(!player_file_url("/ab", url, 10));     /* "file:///ab" needs 11 */
+        assert(player_file_url("/ab", url, 11));
+        assert(!player_file_url("/ ", url, 11));      /* "file:///%20" needs 12 */
+        assert(player_file_url("/ ", url, 12));
+    }
+    printf("[PLAYER_STATE_TEST] platform seam answers for this host PASS\n");
+}
+
 /* #306: a card names this platform's fix. A Linux build compiled without
    SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
    and a missing data root named Windows' LOCALAPPDATA. */
@@ -2178,8 +2311,8 @@ static void test_platform_cards_name_this_platform(void) {
     assert(strstr(message, "ZIP") == NULL);
     assert(strstr(message, "nakagawa_player.exe") == NULL);
     assert(strstr(message, "tools/stage_install.py") != NULL);
-    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "LOCALAPPDATA") == NULL);
-    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "Windows") == NULL);
+    assert(strstr(player_data_dir_unavailable_text(nk_platform_host_kind()), "LOCALAPPDATA") == NULL);
+    assert(strstr(player_data_dir_unavailable_text(nk_platform_host_kind()), "Windows") == NULL);
 
     /* The production card, with no data root to resolve. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -3816,6 +3949,7 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_platform_seam_answers_for_this_host();
     test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
     test_skipped_showcase_logs_its_reason();

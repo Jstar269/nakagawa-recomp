@@ -42,12 +42,7 @@
 
 #include "setup_staging.h"
 #include "nk_platform.h"
-
-#if defined(_WIN32) || defined(_WIN64)
-#include <windows.h>
-#include <shellapi.h>
-#include <io.h>
-#endif
+#include "player_host.h"
 
 static const char k_invalid_disc_message[] = "This file isn't a PSP disc image.";
 
@@ -283,13 +278,8 @@ static const char *player_picker_start(const PlayerApp *app) {
 }
 
 static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
-    static const SDL_DialogFileFilter filters[] = {
-        { "PSP Disc Images and PSN Packages (*.iso, *.cso, *.zso, *.chd, EBOOT.PBP)",
-          "iso;cso;zso;chd;pbp" },
-        { "All Files (*.*)", "*" }
-    };
-    SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2,
-                           player_picker_start(app), false);
+    player_host_show_picker(PLAYER_HOST_PICK_DISC, window, player_picker_start(app),
+                            on_file_dialog_callback, app);
 }
 
 /* The PSP fonts import. The picker shows the .pgf files themselves, which a
@@ -308,11 +298,8 @@ static void on_font_files_dialog_callback(void *userdata, const char *const *fil
 }
 
 static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
-    static const SDL_DialogFileFilter filters[] = {
-        { "PSP fonts (*.pgf)", "pgf" }
-    };
-    SDL_ShowOpenFileDialog(on_font_files_dialog_callback, app, window, filters, 1,
-                           player_picker_start(app), true);
+    player_host_show_picker(PLAYER_HOST_PICK_FONTS, window, player_picker_start(app),
+                            on_font_files_dialog_callback, app);
 }
 
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
@@ -424,35 +411,6 @@ static bool player_refit_to_actual_frame(SDL_Window *window,
     return player_apply_window_geometry(window, requested, usable_rect, frame,
                                         position_valid, fitted);
 }
-
-#if !defined(_WIN32) && !defined(_WIN64)
-/* The app icon (the N1 mark on its ink tile) as the window icon: 32 px, with
-   larger copies SDL picks for high-density displays. Windows needs no call: the
-   executable carries the icon (assets/brand/nakagawa.rc) and SDL gives every
-   window its sizes, where SDL_SetWindowIcon would stretch one bitmap to all. */
-static void player_set_window_icon(SDL_Window *window) {
-    static const int sizes[] = { 32, 48, 64, 128, 256 };
-    SDL_Surface *icon = NULL;
-    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
-        SDL_Surface *image = SDL_CreateSurface(sizes[i], sizes[i], SDL_PIXELFORMAT_RGBA32);
-        if (!image || !nk_ui_app_icon_rgba(sizes[i], (unsigned char *)image->pixels,
-                                           (size_t)image->pitch)) {
-            SDL_DestroySurface(image);
-            break;
-        }
-        if (!icon) {
-            icon = image;
-        } else {
-            SDL_AddSurfaceAlternateImage(icon, image);
-            SDL_DestroySurface(image);
-        }
-    }
-    if (!icon || !SDL_SetWindowIcon(window, icon)) {
-        fprintf(stderr, "The window icon was not set: %s\n", SDL_GetError());
-    }
-    SDL_DestroySurface(icon);
-}
-#endif
 
 static void player_capture_window_settings(PlayerApp *app, SDL_Window *window) {
     if (!app || !window) return;
@@ -934,35 +892,6 @@ static bool player_ui_save_folder_path(const GameRecord *game,
     return nk_platform_mkdir_p(out);
 }
 
-#if !defined(_WIN32) && !defined(_WIN64)
-static bool player_ui_file_url(const char *path, char *out, size_t out_size) {
-    static const char prefix[] = "file://";
-    size_t used = sizeof(prefix) - 1u;
-    if (path == NULL || path[0] != '/' || out == NULL ||
-        out_size <= used) {
-        return false;
-    }
-    memcpy(out, prefix, used);
-    for (const unsigned char *p = (const unsigned char *)path; *p; ++p) {
-        unsigned char c = *p;
-        bool safe = isalnum(c) || c == '/' || c == '-' || c == '_' ||
-                    c == '.' || c == '~' || c == ':';
-        if (safe) {
-            if (used + 1u >= out_size) return false;
-            out[used++] = (char)c;
-        } else {
-            if (used + 3u >= out_size) return false;
-            static const char hex[] = "0123456789ABCDEF";
-            out[used++] = '%';
-            out[used++] = hex[c >> 4];
-            out[used++] = hex[c & 15u];
-        }
-    }
-    out[used] = '\0';
-    return true;
-}
-#endif
-
 static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
     char path[NK_MAX_PATH];
     if (app == NULL || title_index >= (size_t)app->game_count ||
@@ -971,18 +900,11 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
         fprintf(stderr, "[PLAYER] The save folder could not be opened.\n");
         return;
     }
-#if defined(_WIN32) || defined(_WIN64)
-    (void)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL);
-#else
-    {
-        char url[NK_MAX_PATH * 3u];
-        if (!player_ui_file_url(path, url, sizeof(url)) || !SDL_OpenURL(url)) {
-            fprintf(stderr, "[PLAYER] The save folder could not be opened: %s\n",
-                    SDL_GetError());
-            player_app_set_folder_open_error(app, path, SDL_GetError());
-        }
+    if (!player_host_open_folder(path)) {
+        fprintf(stderr, "[PLAYER] The save folder could not be opened: %s\n",
+                SDL_GetError());
+        player_app_set_folder_open_error(app, path, SDL_GetError());
     }
-#endif
 }
 
 /* Saves the inspected title to the library and selects it, as the existing
@@ -3892,8 +3814,9 @@ static bool player_prerequisite_data_root(const PlayerApp *app,
     return nk_platform_get_app_data_dir(out, out_size);
 }
 
+/* Only Windows builds had an older profile location; the POSIX backend reports
+   none (nk_platform_get_legacy_app_data_dir), so this says nothing there. */
 static void player_report_legacy_data_root(void) {
-#if defined(_WIN32) || defined(_WIN64)
     static bool reported = false;
     if (reported) return;
     reported = true;
@@ -3911,7 +3834,6 @@ static void player_report_legacy_data_root(void) {
         "Move the old data manually; the player will not move or delete it.\n",
         legacy_root,
         has_data_root ? data_root : "unavailable; set LOCALAPPDATA or APPDATA");
-#endif
 }
 
 static const char *player_prerequisite_display_name(const PlayerApp *app,
@@ -3931,8 +3853,10 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
 
     char data_root[NK_MAX_PATH];
     if (!player_prerequisite_data_root(app, data_root, sizeof(data_root))) {
-        player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE",
-            PLAYER_DATA_DIR_UNAVAILABLE_TEXT " and retry.");
+        char unavailable[256];
+        snprintf(unavailable, sizeof(unavailable), "%s and retry.",
+                 player_data_dir_unavailable_text(nk_platform_host_kind()));
+        player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE", unavailable);
         return;
     }
 
@@ -4103,53 +4027,6 @@ static bool player_start_fresh_copy(void) {
     return true;
 }
 
-#if defined(_WIN32) || defined(_WIN64)
-/* The Windows player is a GUI-subsystem program (-mwindows, CMake WIN32_EXECUTABLE), so a
- * double-click starts with no console window. A process that already has standard handles, one
- * started from cmd, PowerShell or Git Bash, keeps them. Without handles, the streams go to the
- * parent terminal's console when there is one, and otherwise to player-output.txt in the logs
- * folder under the player's data folder. Call after the data root is applied. */
-static void player_setup_standard_streams(void) {
-    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (out != NULL && out != INVALID_HANDLE_VALUE) return;
-
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        SetConsoleOutputCP(CP_UTF8);
-        (void)freopen("CONOUT$", "w", stdout);
-        (void)freopen("CONOUT$", "w", stderr);
-        return;
-    }
-
-    char dir[NK_MAX_PATH];
-    char path[NK_MAX_PATH];
-    if (!nk_platform_get_path(NK_PATH_LOGS, dir, sizeof(dir)) || !nk_platform_mkdir_p(dir) ||
-        snprintf(path, sizeof(path), "%s%cplayer-output.txt", dir,
-                 nk_platform_path_separator()) >= (int)sizeof(path)) {
-        return;
-    }
-    /* The streams themselves are reopened on the file. A GUI process started
-       without standard handles has stdout and stderr bound to no descriptor
-       (_fileno returns -2), so pointing descriptors 1 and 2 at the file with
-       _dup2 left both streams writing nowhere and the file empty. Each run
-       starts the file afresh; both streams then append, so their lines
-       interleave in order instead of overwriting each other. */
-    WCHAR wpath[NK_MAX_PATH];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath,
-                            (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0) {
-        return;
-    }
-    FILE *fresh = _wfopen(wpath, L"wb");
-    if (!fresh) return;
-    fclose(fresh);
-    if (!_wfreopen(wpath, L"ab", stdout)) return;
-    if (!_wfreopen(wpath, L"ab", stderr)) return;
-    /* Code that writes to the process's standard handles rather than the CRT
-       streams reaches the same file. */
-    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout)));
-    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
-}
-#endif
-
 /* The game-found test views' checks: the real preflight for a disc with a
    readable PARAM.SFO and a plain or an encrypted EBOOT.BIN. */
 static void player_test_view_preflight(PlayerApp *app, bool encrypted) {
@@ -4166,31 +4043,15 @@ static void player_test_view_preflight(PlayerApp *app, bool encrypted) {
 }
 
 int main(int argc, char *argv[]) {
-#if defined(_WIN32) || defined(_WIN64)
-    SetConsoleOutputCP(CP_UTF8);
-    int wargc = 0;
-    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
-    char **u8_argv = (char **)malloc((size_t)wargc * sizeof(char *));
-    for (int i = 0; i < wargc; i++) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
-        u8_argv[i] = (char *)malloc((size_t)len);
-        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, u8_argv[i], len, NULL, NULL);
-    }
-    argc = wargc;
-    argv = u8_argv;
-#endif
+    /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
+    (void)nk_platform_init_utf8_main(&argc, &argv);
 
     if (!player_apply_user_data_root(argc, argv)) return 2;
     /* Compressed disc images: CHD is read through the vendored libchdr. */
     nk_disc_chd_register();
-#if defined(_WIN32) || defined(_WIN64)
-    player_setup_standard_streams();
-    /* The Windows CRT has no line buffering: _IOLBF is full buffering, so a file or pipe got
-       nothing until 4 KiB had piled up or the player exited, and player-output.txt stayed empty
-       while the player ran (#1303). Unbuffered, each printf reaches it as one write. */
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
-#endif
+    /* Windows (a GUI-subsystem program): the parent console, or player-output.txt in the
+       logs folder, unbuffered (#1303). Nothing to do elsewhere. */
+    nk_platform_setup_standard_streams("player-output.txt");
     player_report_legacy_data_root();
 
     /* Static storage: a full library (NK_MAX_GAMES titles) makes the app state
@@ -5221,9 +5082,7 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
-#if !defined(_WIN32) && !defined(_WIN64)
-    player_set_window_icon(window);
-#endif
+    player_host_set_window_icon(window);
     if (interactive_window && have_usable_bounds) {
         SDL_Rect usable = usable_bounds;
         player_apply_window_geometry(
@@ -5929,23 +5788,13 @@ int main(int argc, char *argv[]) {
         }
         if (app.request_open_folder) {
             app.request_open_folder = false;
-#if defined(_WIN32) || defined(_WIN64)
-            if (app.requested_open_path[0]) {
-                (void)ShellExecuteA(NULL, "open", app.requested_open_path,
-                                    NULL, NULL, SW_SHOWNORMAL);
+            if (app.requested_open_path[0] &&
+                !player_host_open_folder(app.requested_open_path)) {
+                fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
+                        SDL_GetError());
+                player_app_set_folder_open_error(&app, app.requested_open_path,
+                                                 SDL_GetError());
             }
-#else
-            if (app.requested_open_path[0]) {
-                char url[NK_MAX_PATH * 3u];
-                if (!player_ui_file_url(app.requested_open_path, url, sizeof(url)) ||
-                    !SDL_OpenURL(url)) {
-                    fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
-                            SDL_GetError());
-                    player_app_set_folder_open_error(&app, app.requested_open_path,
-                                                     SDL_GetError());
-                }
-            }
-#endif
         }
 
         /* Step 3 requests one worker; progress and completion return through
@@ -6142,18 +5991,14 @@ int main(int argc, char *argv[]) {
             launcher_handoff_attempted = true;
             bool fronted = nk_platform_bring_process_window_to_front(
                 &app.launch_session.process);
-#ifdef _WIN32
-            if (!fronted) {
+            /* No POSIX backend raises another process's window: X11 and Wayland
+               leave focus to the window manager, which gives the new game
+               window focus itself. The raise always reports false there, and
+               the stall path below minimizes instead of raising. */
+            if (!fronted && nk_platform_can_front_process_windows()) {
                 fprintf(stderr, "[PLAYER] The game window could not be brought to the front; "
                                 "it stays where Windows put it.\n");
             }
-#else
-            /* No POSIX backend raises another process's window: X11 and Wayland
-               leave focus to the window manager, which gives the new game
-               window focus itself. The raise always reports false here, and
-               the stall path below minimizes instead of raising. */
-            (void)fronted;
-#endif
         }
         /* A stalled game keeps running, so its window would otherwise cover
            the launcher and hide the only actionable notice. Raise the player

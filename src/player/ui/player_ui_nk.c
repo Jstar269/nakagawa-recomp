@@ -733,9 +733,8 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             model.update_notes = newest->notes;
             model.update_page_url = newest->page_url;
             model.update_has_zip = newest->has_zip;
-#if defined(_WIN32) || defined(_WIN64)
-            model.update_can_download = newest->has_zip && update->check.newer;
-#endif
+            model.update_can_download = nk_update_install_supported() &&
+                                        newest->has_zip && update->check.newer;
             model.update_zip_name = newest->zip_name;
             model.update_zip_bytes = newest->zip_size;
         }
@@ -1203,11 +1202,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    focuses CHECK FOR UPDATES. */
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
-                        focus = app->update.check.newest.has_zip
+                        focus = nk_update_install_supported() &&
+                                app->update.check.newest.has_zip
                             ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
-#if !defined(_WIN32) && !defined(_WIN64)
-                        focus = PLAYER_UI_ID_UPDATE_PAGE;
-#endif
                         break;
                     case PLAYER_UPDATE_DOWNLOADING: focus = PLAYER_UI_ID_UPDATE_CANCEL; break;
                     case PLAYER_UPDATE_DOWNLOADED: focus = PLAYER_UI_ID_UPDATE_INSTALL; break;

@@ -5,6 +5,7 @@
 #define NAKAGAWA_PLAYER_STATE_H
 
 #include "nk_types.h"
+#include "nk_platform.h"
 #include "nk_iso.h"
 #include "nk_disc_expand.h"
 #include "nk_library.h"
@@ -24,20 +25,6 @@
 #define MAX_PATH_LEN NK_MAX_PATH
 #define MAX_DISC_ID_LEN NK_MAX_DISC_ID_LEN
 #define MAX_SHOWCASE_GAMES 8
-
-/* The opening of every DATA_DIR_UNAVAILABLE card: what this platform could not
-   resolve and which environment variables fix it (nk_platform_get_app_data_dir).
-   Each card adds its own closing words. */
-#if defined(_WIN32) || defined(_WIN64)
-#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
-    "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA"
-#elif defined(__APPLE__)
-#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
-    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set HOME"
-#else
-#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
-    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set XDG_DATA_HOME or HOME"
-#endif
 
 typedef enum {
     VIEW_LIBRARY = 0,
@@ -709,6 +696,18 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
    elsewhere SDL3_ttf or the installed assets are absent. */
 void player_launcher_unavailable_message(const char *reason, bool built_without_launcher,
                                          char *out, size_t out_size);
+/* The same text for a named host (nk_platform_host_kind), so every host's words
+   can be tested on any host. */
+void player_launcher_unavailable_message_for_host(NkHostKind host, const char *reason,
+                                                  bool built_without_launcher,
+                                                  char *out, size_t out_size);
+/* The opening of every DATA_DIR_UNAVAILABLE card: what the host could not
+   resolve and which environment variables fix it (nk_platform_get_app_data_dir).
+   Each card adds its own closing words. */
+const char *player_data_dir_unavailable_text(NkHostKind host);
+/* The FOLDER_OPEN_FAILED card's sentence on how the host was asked to show a
+   folder: Windows' own shell, or xdg-open (through SDL) elsewhere. */
+const char *player_folder_open_failure_hint(NkHostKind host);
 /* FOLDER_OPEN_FAILED: the file manager could not be asked to show path (reason
    is the host's error, or empty). The card names the folder so the user can
    open it themselves, and returns to the view it was raised from. */
@@ -867,6 +866,11 @@ void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool 
 /* The folder holding `path` (either separator), with a root kept whole:
  * "<drive>:\x.iso" gives "<drive>:\", "/x.iso" gives "/". False for a bare name. */
 bool player_path_parent_folder(const char *path, char *out, size_t out_size);
+/* An absolute POSIX path as a file:// URL for SDL_OpenURL: bytes other than
+ * letters, digits and "/-_.~:" are percent-encoded. False for a path that does
+ * not start with "/" or a URL that does not fit. Pure, so it is tested on every
+ * host; only non-Windows hosts open folders this way (player_host.c). */
+bool player_file_url(const char *path, char *out, size_t out_size);
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);

@@ -133,8 +133,8 @@ path that does not exist.
    refused host readiness binding. No named test asserts the absence of a synthetic TTF
    substitution or of fake `psmf` return values, and none in this item covers the
    fail-closed firmware-font refusal.
-5. **PARTIAL** **File dialog:** `src/player/main.c` opens the native picker with
-   `SDL_ShowOpenFileDialog`, and `tests/native/test_player_state.c` asserts that the wizard
+5. **PARTIAL** **File dialog:** `src/player/main.c` opens the native picker through
+   `player_host_show_picker` (`src/player/player_host.c`, `SDL_ShowOpenFileDialog`), and `tests/native/test_player_state.c` asserts that the wizard
    requests the picker. No automated test checks that the picker opens without a terminal
    or console prompt.
 6. **PASS** **Error handling:** an actionable error card with a stable code and a recovery

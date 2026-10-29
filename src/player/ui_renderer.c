@@ -182,100 +182,10 @@ static float ui_font_pt_for_scale(float scale, float density) {
     return 11.0f * scale * density;
 }
 
-static bool ui_font_file_exists(const char *path) {
-    if (!path || !*path) return false;
-    FILE *f = nk_fopen_utf8(path, "rb");
-    if (!f) return false;
-    fclose(f);
-    return true;
-}
-
-/* System UI font candidates: narrow per-OS table (a platform backend, not
- * guest semantics). First existing file wins. */
+/* System UI font candidates: a narrow per-OS table in the platform backend
+ * (nk_platform_find_system_ui_font), not guest semantics. First existing file wins. */
 static bool ui_font_find_system_font(char *out_path, size_t out_len) {
-#if defined(_WIN32) || defined(_WIN64)
-    /* Check user-provided open-source fonts first (the fonts sibling of the
-     * canonical per-user data root), followed by Windows system fonts (%WINDIR%\Fonts\).
-     * Open-source font guidelines:
-     * - Native UI & Setup Wizard: Inter, Roboto Flex, Rubik (SIL OFL)
-     * - In-Game HUD: M PLUS Rounded 1c, Rubik, Nunito (SIL OFL)
-     * - Japanese Text: Kosugi Maru, Zen Maru Gothic (SIL OFL) */
-    static const char *kOpenSourceFiles[] = {
-        "Inter-Regular.ttf", "Inter.ttf",
-        "RobotoFlex-Regular.ttf", "Roboto-Regular.ttf",
-        "Rubik-Regular.ttf", "Rubik.ttf",
-        "MPLUSRounded1c-Regular.ttf", "Nunito-Regular.ttf",
-        "KosugiMaru-Regular.ttf",
-        NULL
-    };
-    char data_root[MAX_PATH_LEN];
-    char app_fonts_root[MAX_PATH_LEN];
-    bool have_app_fonts_root = false;
-    if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
-        /* Windows and macOS keep data under <vendor>/data, so fonts sit beside
-         * it in <vendor>/fonts; the XDG root is the vendor directory itself. */
-        char *leaf = strrchr(data_root, nk_platform_path_separator());
-        if (leaf && strcmp(leaf + 1, "data") == 0) *leaf = '\0';
-        int written = snprintf(app_fonts_root, sizeof(app_fonts_root),
-                               "%s%cfonts", data_root,
-                               nk_platform_path_separator());
-        have_app_fonts_root = written > 0 &&
-            (size_t)written < sizeof(app_fonts_root);
-    }
-    if (have_app_fonts_root) {
-        for (int i = 0; kOpenSourceFiles[i]; i++) {
-            snprintf(out_path, out_len, "%s%c%s", app_fonts_root,
-                     nk_platform_path_separator(), kOpenSourceFiles[i]);
-            if (ui_font_file_exists(out_path)) return true;
-        }
-    }
-
-    const char *windir = getenv("WINDIR");
-    char base[MAX_PATH_LEN];
-    if (windir && *windir) {
-        snprintf(base, sizeof(base), "%s", windir);
-    } else {
-        snprintf(base, sizeof(base), "C:\\Windows");
-    }
-    for (int i = 0; kOpenSourceFiles[i]; i++) {
-        snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kOpenSourceFiles[i]);
-        if (ui_font_file_exists(out_path)) return true;
-    }
-
-    static const char *kFiles[] = { "segoeui.ttf", "tahoma.ttf", "arial.ttf", NULL };
-    for (int i = 0; kFiles[i]; i++) {
-        snprintf(out_path, out_len, "%s\\Fonts\\%s", base, kFiles[i]);
-        if (ui_font_file_exists(out_path)) return true;
-    }
-#elif defined(__APPLE__)
-    static const char *kFiles[] = {
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial.ttf",
-        NULL
-    };
-    for (int i = 0; kFiles[i]; i++) {
-        if (ui_font_file_exists(kFiles[i])) {
-            snprintf(out_path, out_len, "%s", kFiles[i]);
-            return true;
-        }
-    }
-#else
-    static const char *kFiles[] = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        NULL
-    };
-    for (int i = 0; kFiles[i]; i++) {
-        if (ui_font_file_exists(kFiles[i])) {
-            snprintf(out_path, out_len, "%s", kFiles[i]);
-            return true;
-        }
-    }
-#endif
-    return false;
+    return nk_platform_find_system_ui_font(out_path, out_len);
 }
 
 static void *ui_font_sym(const char *name) {

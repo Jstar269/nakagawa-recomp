@@ -741,4 +741,95 @@ bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     return true;
 }
 
+/* ---- Host seam (nk_platform.h) ----------------------------------------------------------- */
+
+bool nk_platform_can_front_process_windows(void) {
+    /* X11 and Wayland leave focus to the window manager, which gives a new game window
+       focus itself; no POSIX backend raises another process's window. */
+    return false;
+}
+
+NkHostKind nk_platform_host_kind(void) {
+#if defined(__ANDROID__)   /* before __linux__, which Android also defines */
+    return NK_HOST_ANDROID;
+#elif defined(__APPLE__)
+    return NK_HOST_MACOS;
+#elif defined(__linux__)
+    return NK_HOST_LINUX;
+#else
+    return NK_HOST_OTHER_POSIX;
+#endif
+}
+
+bool nk_platform_is_path_separator(char c) {
+    return c == '/';
+}
+
+bool nk_platform_path_chars_equal(char a, char b) {
+    return a == b;
+}
+
+const char *nk_platform_env_home_dir(void) {
+    return getenv("HOME");
+}
+
+const char *nk_platform_env_user_name(void) {
+    return getenv("USER");
+}
+
+unsigned long nk_platform_process_id(void) {
+    return (unsigned long)getpid();
+}
+
+int nk_platform_last_os_error(void) {
+    return errno;
+}
+
+const char *const *nk_platform_sdl3_ttf_library_names(void) {
+#if defined(__APPLE__)
+    static const char *const names[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
+#else
+    static const char *const names[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
+#endif
+    return names;
+}
+
+bool nk_platform_find_system_ui_font(char *out_path, size_t out_len) {
+    if (!out_path || out_len == 0) return false;
+#if defined(__APPLE__)
+    static const char *kFiles[] = {
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial.ttf",
+        NULL
+    };
+#else
+    static const char *kFiles[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        NULL
+    };
+#endif
+    for (int i = 0; kFiles[i]; i++) {
+        FILE *f = fopen(kFiles[i], "rb");
+        if (!f) continue;
+        fclose(f);
+        snprintf(out_path, out_len, "%s", kFiles[i]);
+        return true;
+    }
+    return false;
+}
+
+bool nk_platform_init_utf8_main(int *argc, char ***argv) {
+    /* POSIX arguments are already UTF-8 bytes. */
+    return argc != NULL && argv != NULL;
+}
+
+void nk_platform_setup_standard_streams(const char *fallback_log_name) {
+    /* The streams already reach the terminal, or the log the launcher gave the child. */
+    (void)fallback_log_name;
+}
+
 #endif /* !_WIN32 */

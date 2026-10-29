@@ -53,6 +53,7 @@ class BuildSystemParityTests(unittest.TestCase):
         """Verify identical player UI sources in Makefile and CMakeLists.txt."""
         expected_player = [
             "src/player/main.c",
+            "src/player/player_host.c",
             "src/player/player_state.c",
             "src/player/input_settings.c",
             "src/player/iso_reader.c",

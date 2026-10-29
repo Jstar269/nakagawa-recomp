@@ -482,6 +482,7 @@ if(BUILD_PLAYER)
 
     set(PLAYER_SOURCES
         src/player/main.c
+        src/player/player_host.c
         src/player/player_state.c
         src/player/input_settings.c
         src/player/iso_reader.c
