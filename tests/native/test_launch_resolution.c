@@ -160,6 +160,7 @@ static int write_launch_environment_probe(void) {
     const char *disc_id = getenv("SR_DISC_ID");
     const char *ui_root = getenv("SR_UI_ROOT");
     const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
+    const char *developer_mode = getenv("SR_DEVELOPER_MODE");
     const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
@@ -179,6 +180,7 @@ static int write_launch_environment_probe(void) {
                      "SR_DISC_ID=%s\n"
                      "SR_UI_ROOT=%s\n"
                      "SR_EXPERIMENTAL_60HZ=%s\n"
+                     "SR_DEVELOPER_MODE=%s\n"
                      "SR_HOST_TIME_ZONE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
@@ -197,6 +199,7 @@ static int write_launch_environment_probe(void) {
                      disc_id ? disc_id : "<unset>",
                      ui_root ? ui_root : "<unset>",
                      experimental_60hz ? experimental_60hz : "<unset>",
+                     developer_mode ? developer_mode : "<unset>",
                      host_time_zone ? host_time_zone : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
@@ -366,6 +369,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_60hz;
     char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
     set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
+    /* Nor an inherited developer mode (#314): the launcher's setting decides. */
+    bool had_developer;
+    char *old_developer = capture_environment_value("SR_DEVELOPER_MODE", &had_developer);
+    set_environment_value("SR_DEVELOPER_MODE", "1");
     bool had_host_zone;
     char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
     set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
@@ -506,6 +513,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
+    assert(strstr(observed, "SR_DEVELOPER_MODE=0\n") != NULL);
     /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
        from the platform, never an inherited value. */
     {
@@ -523,6 +531,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
     session.config.experimental_60hz = true;
+    session.config.developer_mode = true;
     session.config.fps_cap = -1;
     /* A launcher that does not know its display exports an empty value, which
        still masks the inherited one; the child then uses the primary display. */
@@ -541,12 +550,16 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
+    assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
     assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
     assert(strstr(observed, "7,7,7,7") == NULL);
     session.config.experimental_60hz = false;
+    session.config.developer_mode = false;
 
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
     free(old_60hz);
+    restore_environment_value("SR_DEVELOPER_MODE", old_developer, had_developer);
+    free(old_developer);
     restore_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS", old_launcher_display,
                               had_launcher_display);
     free(old_launcher_display);

@@ -1445,6 +1445,9 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_volume;
     /* Always set, so an inherited value cannot opt a launch in. */
     envp[env_count++] = session->config.experimental_60hz ? "SR_EXPERIMENTAL_60HZ=1" : "SR_EXPERIMENTAL_60HZ=0";
+    /* Likewise developer mode (#314): the game's developer HUD and pause pages follow the
+       launcher's setting, never an inherited value. */
+    envp[env_count++] = session->config.developer_mode ? "SR_DEVELOPER_MODE=1" : "SR_DEVELOPER_MODE=0";
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
                  "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",
