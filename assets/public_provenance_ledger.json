@@ -3485,7 +3485,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a045cd34837fe20cdc5c104202ba621611b1c11392b3ae36c81451b669be220"
+      "sha256": "ac3b9b8aef8ee8fa227d77f338aa2bfcbe3cee6eeda7a5c5a8510ee88fb16f37"
     },
     {
       "path": "src/core/nk_platform_posix.c",
