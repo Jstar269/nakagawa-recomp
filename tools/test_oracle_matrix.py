@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sys
 import tempfile
 import time
 import unittest
@@ -272,6 +273,14 @@ class BuildTests(MatrixTestCase):
                                "host0_root": Path("C:/nk/wt/fixtures/psp_oracle/build/h")})
         self.assertIn("/mnt/c/nk/wt/fixtures/psp_oracle/build/h/delay_zero.prx",
                       om.build_script(wsl, "/mnt/c/nk/main/.git", [plan.cases[0]]))
+
+    def test_build_script_reaches_the_shell_with_lf_line_ends(self) -> None:
+        # Measured on Windows 2026-10-29: text-mode stdin turned every LF into CRLF and bash refused the script.
+        code, out, _err = om.run_command(
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.buffer.read().hex())"], 60,
+            "set -u\nbuild_case() {\n}\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(bytes.fromhex(out), b"set -u\nbuild_case() {\n}\n")
 
     def test_incomplete_or_failed_build_output_is_a_refusal(self) -> None:
         good = f"NK_MATRIX_BUILT a {'1' * 64}\nNK_MATRIX_BUILD_DONE\n"

@@ -578,17 +578,20 @@ CommandRunner = Callable[[list[str], float, "str | None"], tuple[int | None, str
 def run_command(argv: list[str], timeout: float, stdin: str | None = None) -> tuple[int | None, str, str]:
     """Run one bounded host command without a shell; ``None`` means it was stopped at its timeout."""
 
+    def text(value: bytes | None) -> str:
+        return (value or b"").decode("utf-8", "replace")
+
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
     try:
-        result = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=timeout, check=False, env=env)
+        # Bytes, not text mode: on Windows text mode would turn the script's LF line ends into CRLF, which
+        # bash then reads as part of each command.
+        result = subprocess.run(argv, input=None if stdin is None else stdin.encode("utf-8"),
+                                capture_output=True, timeout=timeout, check=False, env=env)
     except subprocess.TimeoutExpired as exc:
-        def text(value: object) -> str:
-            return value.decode("utf-8", "replace") if isinstance(value, bytes) else (value or "")  # type: ignore[return-value]
-        return None, text(exc.stdout), text(exc.stderr)
+        return None, text(exc.stdout), text(exc.stderr)  # type: ignore[arg-type]
     except OSError as exc:
         return 127, "", f"{type(exc).__name__}: {exc}"
-    return result.returncode, result.stdout, result.stderr
+    return result.returncode, text(result.stdout), text(result.stderr)
 
 
 class MatrixRunner:
@@ -630,7 +633,11 @@ class MatrixRunner:
         code, out, err = self.run(plan.commands["build_shell_argv"], BUILD_TIMEOUT_SECONDS, script)
         if code is None:
             raise MatrixError("build exceeded its time bound")
-        reported = parse_build_output(out, [case.case_id for case in to_build])
+        try:
+            reported = parse_build_output(out, [case.case_id for case in to_build])
+        except MatrixError as exc:
+            tail = " | ".join((out + err).strip().splitlines()[-6:])
+            raise MatrixError(f"{exc} (build shell exit {code}: {tail[-400:]})") from exc
         if code != 0:
             raise MatrixError(f"build shell exited {code}: {err.strip()[-200:]}")
         staged: dict[str, str] = {}
