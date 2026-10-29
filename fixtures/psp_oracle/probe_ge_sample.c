@@ -58,7 +58,7 @@ PSP_HEAP_SIZE_KB(64);
 #endif
 
 #define GE_CASE_SAMPLE 109
-#define GE_CASE_RASTER 118
+#define GE_CASE_RASTER 120
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"

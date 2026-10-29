@@ -1818,7 +1818,7 @@ _register_campaign_probe(
      for case in INSN_TRACE_CASES},
 )
 
-# ge-raster (118, probe_ge_sample.c): the #343 GE raster corpus. The cells are the gr_cells
+# ge-raster (120, probe_ge_sample.c): the #343 GE raster corpus. The cells are the gr_cells
 # table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order. Per
 # cell, one `-draw` record (9 words: the GE wait outcome, the list length and the window's
 # FNV-1a 64 digest, low word first) and one record per window row y 0..3 (16 pixels, x 16..31).

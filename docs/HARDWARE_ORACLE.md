@@ -872,7 +872,7 @@ One console is one data point; see §11. Nothing here closes issue #70
     exact. This rule reproduces every pixel of all 48 draws.
 
 - **PSP-3000 single-case runs of the `ge-raster` probe (2026-10-29)**: firmware 6.6.1, PSPLink 3.2.1,
-  operator-declared model PSP-3000, case 118 in `fixtures/psp_oracle/probe_ge_sample.c`, each launch after the
+  operator-declared model PSP-3000, case 120 in `fixtures/psp_oracle/probe_ge_sample.c` (built as case 118 at the measured commits; renumbered because #303's dma-timing probe also took 118), each launch after the
   `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). The cited run is boot 71 on commit `990748ec`:
   acceptance-eligible with 0 blockers, evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean
   committed tree, a strict golden sequence of 945 records and the done record (out0 945), all PASS; every one of

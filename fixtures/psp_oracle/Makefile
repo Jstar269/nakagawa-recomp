@@ -207,10 +207,10 @@ CASE_ID = 108
 # through-mode triangle pair and sprite show, nearest and bilinear.
 else ifeq ($(CASE),ge-sample)
 CASE_ID = 109
-# 118: the GE raster semantics corpus (probe_ge_sample.c, #343): blend, tests, texture
+# 120: the GE raster semantics corpus (probe_ge_sample.c, #343): blend, tests, texture
 # functions and formats, wrap, coverage, framebuffer formats, dither, masks, logic, clear, fog.
 else ifeq ($(CASE),ge-raster)
-CASE_ID = 118
+CASE_ID = 120
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -438,7 +438,7 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),ge-sample)
 TARGET = $(BUILD_DIR)/ge_sample
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
-# The GE raster corpus: the same source as the sample-point cells, case 118.
+# The GE raster corpus: the same source as the sample-point cells, case 120.
 else ifeq ($(CASE),ge-raster)
 TARGET = $(BUILD_DIR)/ge_raster
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o

@@ -2450,7 +2450,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 119, 120}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -7507,7 +7507,7 @@ class GeSampleProbeTests(unittest.TestCase):
 
 
 class GeRasterProbeTests(unittest.TestCase):
-    """CASE=ge-raster (118, PSP-GE-RASTER-001) in probe_ge_sample.c: the #343 GE raster
+    """CASE=ge-raster (120, PSP-GE-RASTER-001) in probe_ge_sample.c: the #343 GE raster
     corpus. The cell table and list builder are one block shared byte for byte with
     src/rt/hle_thread_selftest.c, which runs every cell through the software GE and compares
     the window digests the PSP produced; the stream matches the registry."""
@@ -7532,11 +7532,11 @@ class GeRasterProbeTests(unittest.TestCase):
         return text[start:text.index(cls.END, start) + len(cls.END)]
 
     def test_route_registration_and_log(self) -> None:
-        self.assertIn("else ifeq ($(CASE),ge-raster)\nCASE_ID = 118\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-raster)\nCASE_ID = 120\n", self.makefile)
         self.assertIn("else ifeq ($(CASE),ge-raster)\nTARGET = $(BUILD_DIR)/ge_raster\n"
                       "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
                       self.makefile)
-        self.assertIn("#define GE_CASE_RASTER 118\n", self.probe)
+        self.assertIn("#define GE_CASE_RASTER 120\n", self.probe)
         self.assertIn('#define HLE_CAMPAIGN_ID "ge-raster"\n#define HLE_TEST_ID "PSP-GE-RASTER-001"\n'
                       '#define HLE_LOG "host0:/ge_raster_log.txt"', self.probe)
         self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-raster").name,
