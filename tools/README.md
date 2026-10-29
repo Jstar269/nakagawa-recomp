@@ -331,6 +331,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_no_shadow_stubs.py` | Guard the removal of two code-shadowing custom stubs. |
 | `test_codegen_profile_isolation.py` | A profile-free run must inherit no title-specific behavior. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
+| `test_codegen_register_promotion.py` | Opt-in local register promotion (`--promote-registers`, #284): loads, write-backs at every boundary, and the line safety check. |
 | `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |
