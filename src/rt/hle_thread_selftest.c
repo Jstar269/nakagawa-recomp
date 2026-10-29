@@ -26757,6 +26757,7 @@ static void test_query_module_info_answers_main_module_record(void) {
     s_fixture_loaded_end = 0x08cf14ccu;
     sr_hle_init();
     sr_main_module_register(&rec);
+    (void)volatile_mem_current_thread(0x5151u, 32);   /* a thread is calling */
     expect(s_module_start_stack_size == 0x400u && s_module_start_priority == 0x20 &&
                s_module_start_attr == 0x80000000u && s_module_start_gp == 0x08c98d00u,
            "the record's module_start_thread_parameter reaches the module-start thread");
@@ -26801,6 +26802,12 @@ static void test_query_module_info_answers_main_module_record(void) {
            "before SDK 2.80 the size is not checked and only the V1 part is written");
     sr_hle_test_set_compiled_sdk_version(0x06060010u);
 
+    const int caller = s_cur;
+    s_cur = -1;
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x80020064u,
+           "interrupt context is refused before anything else");
+    s_cur = caller;
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_QUERY) == 0x800200d3u, "a null buffer is ILLEGAL_ADDR");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0x0c000000u - 64u;
