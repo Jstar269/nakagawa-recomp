@@ -46,7 +46,8 @@ FIXTURE_ID = "insn-trace"
 TEST_ID = "PSP-TRACE-001"
 EXIT_SYSCALL_WORD = 0x0008430C  # syscall 0x210c: the gate build's stop (tools/gate_stub.c)
 TRACED_GPRS = tuple(range(1, 26)) + (29, 30, 31)
-RECORD_WORDS = 2 + len(TRACED_GPRS) + 2 + 3   # pc, op, registers, hi, lo, store kind/addr/value
+RECORD_WORDS = 2 + len(TRACED_GPRS) + 2 + 2   # pc, op, registers, hi, lo, store address/value
+STORE_BITS = {0x28: 8, 0x29: 16, 0x2B: 32}     # sb, sh, sw: the store width follows from the op
 END_REACHED = 0
 
 
@@ -179,7 +180,8 @@ def psp_records(log_text: str, fixture: dict, consts: dict) -> tuple[list[str], 
         out = records[key][2]
         after = dict(zip(names, out[2:2 + len(names)], strict=True))
         tokens = _state_tokens(state, after)
-        kind, addr, value = out[-3:]
+        addr, value = out[-2:]
+        kind = STORE_BITS.get(out[1] >> 26, 0)
         if kind:
             width = {8: 2, 16: 4, 32: 8}[kind]
             tokens.append(f"m{kind}[0x{addr:08x}]=0x{value:0{width}x}")

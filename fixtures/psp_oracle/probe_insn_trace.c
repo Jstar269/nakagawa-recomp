@@ -360,12 +360,11 @@ static void nt_step_plain(const char *id, uint32_t step, uint32_t pc, uint32_t w
     else if (mkind == 16u) mval = *(volatile uint16_t *)(uintptr_t)maddr;
     else if (mkind == 32u) mval = *(volatile uint32_t *)(uintptr_t)maddr;
     static char name[48];
-    uint32_t out[35];
+    uint32_t out[34];
     out[0] = pc;
     out[1] = w;
     uint32_t n = 2u + nt_regs(out + 2);
-    out[n++] = mkind;
-    out[n++] = maddr;
+    out[n++] = maddr;   /* the store's width follows from the op word */
     out[n++] = mval;
     snprintf(name, sizeof(name), "%s-s%04u", id, (unsigned int)step);
     hle_record(name, "PASS", 0, out, n);
@@ -375,11 +374,10 @@ static void nt_step_plain(const char *id, uint32_t step, uint32_t pc, uint32_t w
 static void nt_record_control(const char *id, uint32_t step, uint32_t pc, uint32_t w)
 {
     static char name[48];
-    uint32_t out[35];
+    uint32_t out[34];
     out[0] = pc;
     out[1] = w;
     uint32_t n = 2u + nt_regs(out + 2);
-    out[n++] = 0u;
     out[n++] = 0u;
     out[n++] = 0u;
     snprintf(name, sizeof(name), "%s-s%04u", id, (unsigned int)step);

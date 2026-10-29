@@ -202,7 +202,7 @@ class ConversionTests(unittest.TestCase):
             + [state[n] for n in names])
         for i, (pc, op, changes, store) in enumerate(steps):
             state.update(changes)
-            rec(f"s{i:04d}", [pc, op] + [state[n] for n in names] + list(store))
+            rec(f"s{i:04d}", [pc, op] + [state[n] for n in names] + list(store[1:]))
         rec("end", [len(steps), 0, 0, 0])
         text = "\n".join(lines) + "\n"
         return (tamper(text) if tamper else text), data
@@ -211,13 +211,13 @@ class ConversionTests(unittest.TestCase):
         fixture = insn_trace.parse_fixtures()["fixtures"][0]
         steps = [(0x08900000, 0x24080005, {"r8": 5}, (0, 0, 0)),
                  (0x08900004, 0xAC8A0000, {}, (32, 0x09F00000, 0x12345678)),
-                 (0x08900008, 0x01690018, {"hi": 1, "lo": 2}, (8, 0x09F00004, 0x78))]
+                 (0x08900008, 0xA08B0004, {"hi": 1, "lo": 2}, (8, 0x09F00004, 0x78))]
         text, data = self._log(fixture, steps)
         lines, commit = insn_trace.psp_records(text, fixture, data["consts"])
         self.assertEqual(commit, "1" * 40)
         self.assertEqual(lines, ["0 pc=0x08900000 op=0x24080005 r8=0x00000005",
                                  "1 pc=0x08900004 op=0xac8a0000 m32[0x09f00000]=0x12345678",
-                                 "2 pc=0x08900008 op=0x01690018 hi=0x00000001 lo=0x00000002 "
+                                 "2 pc=0x08900008 op=0xa08b0004 hi=0x00000001 lo=0x00000002 "
                                  "m8[0x09f00004]=0x78"])
 
     def test_stale_or_foreign_runs_are_refused(self) -> None:
