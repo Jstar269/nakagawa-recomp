@@ -58,4 +58,10 @@ void nk_overlay_host_unbind(NkOverlayHost *host);
 NkUiPadFamily nk_overlay_host_pad_family(const NkOverlayHost *host);
 bool nk_overlay_host_pad_connected(const NkOverlayHost *host);
 
+/* The page that is up (NK_OVERLAY_SCREEN_MENU while closed) and the VRAM viewer's window,
+   which the presenter decodes when a frame returns NK_OVERLAY_ACT_VRAM_VIEW (#314). NULL
+   for a NULL host. */
+NkOverlayScreen nk_overlay_host_screen(const NkOverlayHost *host);
+const NkOverlayVramView *nk_overlay_host_vram_view(const NkOverlayHost *host);
+
 #endif /* NK_OVERLAY_HOST_H */

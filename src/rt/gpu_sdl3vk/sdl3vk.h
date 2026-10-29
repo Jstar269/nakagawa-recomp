@@ -83,6 +83,21 @@ Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int 
 /* In-game performance HUD control (F3 / SR_HUD=1) */
 int  sdl3vk_hud_is_enabled(void);
 void sdl3vk_hud_set_enabled(int enabled);
+
+/* Developer mode (#314): SR_DEVELOPER_MODE set and not 0, which the launcher exports from its
+ * developer-mode setting; read once when the window opens. It adds the profile HUD to F3 and
+ * the developer pages to the pause menu; without it neither exists. */
+int  sdl3vk_developer_mode(void);
+/* HUD modes. The profile HUD draws the nakagawa-perf-v1 live view (src/rt/perf.h). */
+enum {
+    SDL3VK_HUD_OFF = 0,
+    SDL3VK_HUD_PERF = 1,
+    SDL3VK_HUD_PROFILE = 2,   /* developer mode only */
+};
+int  sdl3vk_hud_mode(void);
+/* The mode F3 moves to from `mode` (pure): off, the performance HUD, then the profile HUD
+ * in developer mode, then off again. */
+int  sdl3vk_hud_next_mode(int mode, int developer);
 void sdl3vk_set_audio_active_cb(int (*cb)(void));
 
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
