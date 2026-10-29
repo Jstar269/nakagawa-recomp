@@ -821,6 +821,67 @@ static void dt_b5_cell(const char *case_id, uint32_t vram, uint32_t n)
     hle_record(case_id, setup ? "ERROR" : capped ? "TIMEOUT" : "PASS", last, out, 16);
 }
 
+/* ---- c4: which bytes a Try changes while another transfer is pending -------------------
+   One Try per trial, main RAM A + src_off to C + dst_off, n bytes; the destination region
+   [0, dst_off + n + 64) is reset to the sentinel first and read back after the first
+   transfer ended. out0 size, out1 src offset, out2 dst offset, out3 trials, out4 BUSY,
+   out5 results 0, out6 other results, out7 min changed bytes, out8 max changed bytes, out9
+   lowest changed offset relative to C + dst_off (0xffffffff when none; signed when below),
+   out10 highest changed offset, out11 changed bytes equal to the source byte for their
+   offset, out12 min us, out13 max us, out14 unjoined workers, out15 setup error. */
+static void dt_c4_cell(const char *case_id, uint32_t n, uint32_t src_off, uint32_t dst_off)
+{
+    uint32_t busy = 0, zero = 0, other = 0, ch_min = UINT32_MAX, ch_max = 0, matched = 0;
+    uint32_t lo_abs = UINT32_MAX, hi = 0, min_us = UINT32_MAX, max_us = 0, unjoined = 0, setup = 0;
+    uint32_t last = 0;
+    const uint32_t seed = 0x800u + n + src_off * 3u + dst_off * 5u;
+    const uint32_t extent = dt_round4(dst_off + n + DT_GUARD);
+    dt_fill(s_dt_a, src_off + n, seed);
+    for (uint32_t t = 0; t < DT_TRIALS; t++) {
+        dt_clear(s_dt_c, extent);
+        dt_flush(s_dt_a, src_off + n);
+        dt_flush(s_dt_c, extent);
+        const SceUID first = dt_first(DT_API_MEMCPY);
+        if (first < 0) {
+            setup = (uint32_t)first;
+            break;
+        }
+        const uint32_t t0 = sceKernelGetSystemTimeLow();
+        const uint32_t r = (uint32_t)dt_call(DT_API_TRY, s_dt_c + dst_off, s_dt_a + src_off, n);
+        const uint32_t us = sceKernelGetSystemTimeLow() - t0;
+        if (!dt_join(first)) unjoined++;
+        if (r == DT_BUSY) busy++; else if (r == 0u) zero++; else other++;
+        if (us < min_us) min_us = us;
+        if (us > max_us) max_us = us;
+        last = r;
+        volatile uint8_t *bytes = dt_u8(s_dt_c);
+        uint32_t changed = 0;
+        for (uint32_t j = 0; j < extent; j++) {
+            if (bytes[j] == DT_SENTINEL) {
+                continue;
+            }
+            changed++;
+            const uint32_t rel = j - dst_off;   /* wraps below dst_off: read as signed */
+            if (lo_abs == UINT32_MAX || j < lo_abs) lo_abs = j;
+            if (j >= dst_off && rel > hi) hi = rel;
+            if (j >= dst_off && rel < n && bytes[j] == dt_byte(seed, src_off + rel)) matched++;
+        }
+        if (changed < ch_min) ch_min = changed;
+        if (changed > ch_max) ch_max = changed;
+    }
+    const uint32_t lo = lo_abs == UINT32_MAX ? UINT32_MAX : lo_abs - dst_off;
+    const uint32_t out[16] = {n, src_off, dst_off, DT_TRIALS, busy, zero, other, ch_min, ch_max, lo,
+                              hi, matched, min_us, max_us, unjoined, setup};
+    hle_record(case_id, setup ? "ERROR" : "PASS", last, out, 16);
+}
+
+/* {size, src offset, dst offset} */
+static const uint32_t s_dt_c4[16][3] = {
+    {0x109u, 0, 0}, {0x10cu, 0, 0}, {0x10fu, 0, 0}, {0x1f1u, 0, 0}, {0x1f4u, 0, 0},
+    {0x1f8u, 0, 0}, {0x1fcu, 0, 0}, {0x1ffu, 0, 0}, {0x201u, 0, 0}, {0x20cu, 0, 0},
+    {0x10004u, 0, 0}, {0x200u, 1, 0}, {0x200u, 0, 1}, {0x200u, 4, 4}, {0x1fcu, 4, 4},
+    {0x108u, 0, 1}};
+
 static const uint32_t s_dt_c_sizes[13] = {0x10u, 0x20u, 0x40u, 0x80u, 0x100u, 0x200u, 0x400u,
                                           0x800u, 0x1000u, 0x2000u, 0x4000u, 0x8000u, 0x10000u};
 static const uint32_t s_dt_align2[6][2] = {{2, 0}, {0, 2}, {3, 0}, {8, 0}, {0, 8}, {12, 0}};
@@ -865,6 +926,12 @@ static void dt_followup_cells(void)
             snprintf(id, sizeof(id), "t2-%s-m-%06x", pair->name, (unsigned int)s_dt_t2_sizes[s]);
             dt_time_cell(id, src, dst, cap, DT_API_MEMCPY, s_dt_t2_sizes[s], 0u, 0u, 0x700u + p * 8u + s);
         }
+    }
+    hle_step("c4");
+    for (unsigned k = 0; k < 16u; k++) {
+        snprintf(id, sizeof(id), "c4-%06x-%02x-%02x", (unsigned int)s_dt_c4[k][0],
+                 (unsigned int)s_dt_c4[k][1], (unsigned int)s_dt_c4[k][2]);
+        dt_c4_cell(id, s_dt_c4[k][0], s_dt_c4[k][1], s_dt_c4[k][2]);
     }
     hle_step("a2-cells");
     for (unsigned k = 0; k < 6u; k++) {
