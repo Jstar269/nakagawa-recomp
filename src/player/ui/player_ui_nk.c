@@ -103,6 +103,10 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    /* The factory reset check's folders, looked up when the check opens. */
+    char reset_folders[PLAYER_UI_RESET_FOLDERS][NK_MAX_PATH];
+    size_t reset_folder_count;
+    bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
     char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
@@ -174,6 +178,15 @@ static void player_ui_read_disc_art(const char *iso_path, unsigned wanted,
 static void player_ui_set_error(char *out, size_t out_size, const char *message) {
     if (out == NULL || out_size == 0u) return;
     snprintf(out, out_size, "%s", message != NULL ? message : "UI initialization failed");
+}
+
+/* The launcher's display rule (the profile folder as "~"), applied to a
+   string the page will shorten itself; nk_ui applies it again when it draws. */
+static void player_ui_display_in_place(char *text, size_t size) {
+    char shown[NK_MAX_PATH];
+    if (text == NULL || size == 0u || strlen(text) >= sizeof(shown)) return;
+    (void)player_display_text(text, shown, sizeof(shown));
+    snprintf(text, size, "%s", shown);
 }
 
 static bool player_ui_file_exists(const char *path) {
@@ -293,6 +306,9 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &player->text;
+    /* The launcher's display rules, as the old renderer applied them to every
+       string it drew: the profile folder shows as "~". */
+    config.display_text = player_display_text;
     player->ui = nk_ui_create(&config);
     if (player->ui == NULL) {
         player_ui_set_error(error, error_size,
@@ -346,7 +362,8 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
+           view == VIEW_CONFIRM_FACTORY_RESET;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -615,6 +632,20 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
+        case VIEW_CONFIRM_FACTORY_RESET:
+            model.page = PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET;
+            if (!player->reset_folders_ready) {
+                player->reset_folder_count = player_app_factory_reset_folders(
+                    app, player->reset_folders, PLAYER_UI_RESET_FOLDERS);
+                for (size_t i = 0; i < player->reset_folder_count; ++i) {
+                    player_ui_display_in_place(player->reset_folders[i], NK_MAX_PATH);
+                }
+                player->reset_folders_ready = true;
+            }
+            for (size_t i = 0; i < player->reset_folder_count; ++i) {
+                model.reset_folders[model.reset_folder_count++] = player->reset_folders[i];
+            }
+            break;
         case VIEW_PSP_FONTS:
             model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
@@ -714,6 +745,9 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             snprintf(player->update_folder, sizeof(player->update_folder), "%.*s",
                      (int)(cut > 0u ? cut - 1u : 0u), update->zip_path);
         }
+        /* The page shortens a long folder from the middle; the profile folder
+           becomes "~" first, so a cut never keeps part of the user name. */
+        player_ui_display_in_place(player->update_folder, sizeof(player->update_folder));
         model.update_folder = player->update_folder;
         model.update_error_title = update->error.title;
         model.update_error_message = update->error.message;
@@ -1129,6 +1163,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
+                    : player->last_view == VIEW_CONFIRM_FACTORY_RESET
+                        ? PLAYER_UI_ID_SETTINGS_FACTORY_RESET
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -1173,7 +1209,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
-            case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+            case VIEW_CONFIRM_REMOVE_TOOLS:
+            /* The safe answer, Keep everything, has the focus. */
+            case VIEW_CONFIRM_FACTORY_RESET: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
             case VIEW_BUILD_CACHE:
                 /* Back from the removal check, focus the button that opened it. */
                 focus = player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
@@ -1183,6 +1221,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
         }
     }
     player->last_view = app->active_view;
+    if (app->active_view != VIEW_CONFIRM_FACTORY_RESET) player->reset_folders_ready = false;
     if (screen == player->flow_screen) return;
     if (player->flow_screen == 0u) {
         player->pre_flow_focus = nk_ui_focused(player->ui);
@@ -1841,6 +1880,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
             model.stalled_game_dark_picture = app->stalled_game_dark_picture;
+            model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {
