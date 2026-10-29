@@ -199,6 +199,16 @@ typedef enum SrPerfGpuReplayCounter {
     SR_PERF_GPU_UPLOAD_RING_WRAPS,
     SR_PERF_GPU_UPLOAD_RING_FALLBACKS,
     SR_PERF_GPU_SNAPSHOT_COPY_PX,          /* device pixels the snapshot copies moved */
+    SR_PERF_GPU_FALLBACK_PRIMS,            /* primitives drawn by the software fallback */
+    SR_PERF_GPU_FALLBACK_STENCIL,          /* fallbacks that read a GPU target back, by reason */
+    SR_PERF_GPU_FALLBACK_COLOR_TEST,
+    SR_PERF_GPU_FALLBACK_LOGIC_OP,
+    SR_PERF_GPU_FALLBACK_WRITE_MASK,
+    SR_PERF_GPU_FALLBACK_RAM_FB,
+    SR_PERF_GPU_FALLBACK_WIDE_STRIDE,
+    SR_PERF_GPU_FALLBACK_MIPS,
+    SR_PERF_GPU_FALLBACK_LINE,
+    SR_PERF_GPU_FALLBACK_POINT,
     SR_PERF_GPU_REPLAY_COUNT,
 } SrPerfGpuReplayCounter;
 

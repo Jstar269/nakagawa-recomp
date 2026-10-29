@@ -3153,25 +3153,35 @@ static int native_rgb_mask_exact(void) {
  * build_state). Only states the batch model cannot express at all remain on ge.c, the
  * behavioral arbiter: per-bit write masks, stencil, color test, and logic ops (all of
  * which read-modify-write destination bits per pixel). */
-static int gpu_state_supported(void) {
-    if (s_ge->stencil_enable||s_ge->color_test_enable||s_ge->logic_op_enable)
-        return 0;
-    if (!s_ge->clear&&!native_rgb_mask_exact()) return 0;
+static int gpu_state_unsupported_reason(void) {
+    if (s_ge->stencil_enable) return GEGPU_FALLBACK_STENCIL;
+    if (s_ge->color_test_enable) return GEGPU_FALLBACK_COLOR_TEST;
+    if (s_ge->logic_op_enable) return GEGPU_FALLBACK_LOGIC_OP;
+    if (!s_ge->clear&&!native_rgb_mask_exact()) return GEGPU_FALLBACK_WRITE_MASK;
     /* Framebuffer placements the persistent-target model cannot represent: color
      * buffers in main RAM, and strides wider than the target images. */
-    if (!is_vram(s_ge->fbp)) return 0;
-    if ((s_ge->fbw ? s_ge->fbw : 512u) > FB_W) return 0;
+    if (!is_vram(s_ge->fbp)) return GEGPU_FALLBACK_RAM_FB;
+    if ((s_ge->fbw ? s_ge->fbw : 512u) > FB_W) return GEGPU_FALLBACK_WIDE_STRIDE;
     /* Mip levels one Vulkan mip chain cannot hold (#1373). */
-    if (!tex_mip_chain_supported()) return 0;
-    return 1;
+    if (!tex_mip_chain_supported()) return GEGPU_FALLBACK_MIPS;
+    return -1;
 }
 
-static int software_fallback_begin(int force) {
-    if (!force&&gpu_state_supported()) return 0;
+static int gpu_state_supported(void) {
+    return gpu_state_unsupported_reason() < 0;
+}
+
+/* `forced` is the reason a primitive kind always falls back (lines, points), or -1 for one
+ * that falls back only under an unsupported state. */
+static int software_fallback_begin(int forced) {
+    const int reason = forced >= 0 ? forced : gpu_state_unsupported_reason();
+    if (reason < 0) return 0;
+    s_replay_stats.fallback_prims++;
     if (s_nbatch&&!submit_pending()) return 1;
 
     Target *t=is_vram(s_ge->fbp)?target_find_by_fba(vram_off(s_ge->fbp)):NULL;
     if (t&&t->gpu_valid) {
+        s_replay_stats.fallback_readbacks[reason]++;
         (void)target_readback(t);
         readback_discard_target(t);
         t->gpu_valid=0;
@@ -3216,7 +3226,7 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[3] = { A, B, C };
       if (!hook_finite(vv, 3)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
     static int nocull = -1;
     if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
     Batch b;
@@ -3245,7 +3255,7 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[2] = { p0, p1 };
       if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3296,7 +3306,7 @@ static int hook_line(const GeVtx *A, const GeVtx *B, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[2] = { A, B };
       if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(GEGPU_FALLBACK_LINE)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);              /* sprite semantics: no culling */
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3332,7 +3342,7 @@ static int hook_point(const GeVtx *A, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[1] = { A };
       if (!hook_finite(vv, 1)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(GEGPU_FALLBACK_POINT)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3603,6 +3613,9 @@ static void gpu_replay_snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {
     out[SR_PERF_GPU_UPLOAD_RING_WRAPS] = s.upload_ring_wraps;
     out[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = s.upload_ring_fallbacks;
     out[SR_PERF_GPU_SNAPSHOT_COPY_PX] = s.snapshot_copy_px;
+    out[SR_PERF_GPU_FALLBACK_PRIMS] = s.fallback_prims;
+    for (int i = 0; i < GEGPU_FALLBACK_REASONS; i++)
+        out[SR_PERF_GPU_FALLBACK_STENCIL + i] = s.fallback_readbacks[i];
 }
 
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out) {
@@ -6635,6 +6648,41 @@ static int coherence_run_native_bulk_copy(void) {
     return 1;
 }
 
+/* The fallback classifier names the first unsupported state, in the order
+ * gpu_state_supported() always tested them, and a supported state names none. */
+static int coherence_run_fallback_reasons(void) {
+    GeState saved = *s_ge;
+    int ok = 1;
+    struct { const char *what; int want; } cells[] = {
+        {"stencil", GEGPU_FALLBACK_STENCIL}, {"color test", GEGPU_FALLBACK_COLOR_TEST},
+        {"logic op", GEGPU_FALLBACK_LOGIC_OP}, {"ram fb", GEGPU_FALLBACK_RAM_FB},
+        {"wide stride", GEGPU_FALLBACK_WIDE_STRIDE},
+    };
+    s_ge->stencil_enable = s_ge->color_test_enable = s_ge->logic_op_enable = 0;
+    s_ge->clear = 1;                       /* clears ignore the write mask */
+    s_ge->fbp = 0x04000000u; s_ge->fbw = 512u;
+    s_ge->tex_enable = 0;
+    if (gpu_state_unsupported_reason() != -1) ok = 0;
+    for (unsigned i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        s_ge->stencil_enable = i == 0;
+        s_ge->color_test_enable = i == 1;
+        s_ge->logic_op_enable = i == 2;
+        s_ge->fbp = i == 3 ? 0x08800000u : 0x04000000u;
+        s_ge->fbw = i == 4 ? 1024u : 512u;
+        const int got = gpu_state_unsupported_reason();
+        if (got != cells[i].want) {
+            fprintf(stderr, "gpu coherence selftest [fallback-reasons]: %s gave %d, want %d\n",
+                    cells[i].what, got, cells[i].want);
+            ok = 0;
+        }
+    }
+    s_ge->stencil_enable = 1; s_ge->color_test_enable = 1;   /* stencil is tested first */
+    if (gpu_state_unsupported_reason() != GEGPU_FALLBACK_STENCIL) ok = 0;
+    *s_ge = saved;
+    if (ok) printf("gpu coherence selftest: PASS %-22s 6 cells\n", "fallback-reasons");
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -6678,6 +6726,7 @@ int gegpu_coherence_selftest(void) {
      * colour surface at 0x100000 here. */
     if (!coherence_run_scalar_vram_read(0x040A2000u)) ok = 0;
     if (!coherence_run_native_bulk_copy()) ok = 0;
+    if (!coherence_run_fallback_reasons()) ok = 0;
     /* Last: its chain-fallback case draws through the software fallback, which hands the
      * current depth surface to ge.c, and the fixtures above start from the depth state the
      * ones before them leave. */

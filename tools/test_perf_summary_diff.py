@@ -383,7 +383,10 @@ class PerfSummaryDiffTests(unittest.TestCase):
             self.skipTest("gcc is not available")
         names = ["queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
                  "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps",
-                 "upload_ring_fallbacks", "snapshot_copy_px"]
+                 "upload_ring_fallbacks", "snapshot_copy_px", "fallback_prims",
+                 "fallback_stencil", "fallback_color_test", "fallback_logic_op",
+                 "fallback_write_mask", "fallback_ram_fb", "fallback_wide_stride",
+                 "fallback_mips", "fallback_line", "fallback_point"]
         with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "gpu_replay_harness.c"
@@ -404,6 +407,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
                 "    counts[SR_PERF_GPU_DRAWS] = 3;\n"
                 "    counts[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = 2;\n"
                 "    counts[SR_PERF_GPU_SNAPSHOT_COPY_PX] = 4096;\n"
+                "    counts[SR_PERF_GPU_FALLBACK_COLOR_TEST] = 5;\n"
                 "    sr_perf_shutdown();\n"
                 "    return 0;\n"
                 "}\n",
@@ -430,7 +434,11 @@ class PerfSummaryDiffTests(unittest.TestCase):
             expected = {"queue_submits": 7, "batches": 0, "draws": 3, "snapshot_requests": 0,
                         "snapshot_copies": 0, "upload_ring_reservations": 0,
                         "upload_ring_bytes": 0, "upload_ring_wraps": 0,
-                        "upload_ring_fallbacks": 2, "snapshot_copy_px": 4096}
+                        "upload_ring_fallbacks": 2, "snapshot_copy_px": 4096,
+                        "fallback_prims": 0, "fallback_stencil": 0, "fallback_color_test": 5,
+                        "fallback_logic_op": 0, "fallback_write_mask": 0, "fallback_ram_fb": 0,
+                        "fallback_wide_stride": 0, "fallback_mips": 0, "fallback_line": 0,
+                        "fallback_point": 0}
             for name in names:
                 column = f"gpu_replay_{name}"
                 self.assertIn(column, header)

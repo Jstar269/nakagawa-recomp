@@ -178,6 +178,13 @@ typedef struct GeGpuCpuProfileStats {
     unsigned long long append_merges;
 } GeGpuCpuProfileStats;
 
+/* Why a primitive left the Vulkan batch model for ge.c's software rasterizer. */
+enum {
+    GEGPU_FALLBACK_STENCIL, GEGPU_FALLBACK_COLOR_TEST, GEGPU_FALLBACK_LOGIC_OP,
+    GEGPU_FALLBACK_WRITE_MASK, GEGPU_FALLBACK_RAM_FB, GEGPU_FALLBACK_WIDE_STRIDE,
+    GEGPU_FALLBACK_MIPS, GEGPU_FALLBACK_LINE, GEGPU_FALLBACK_POINT, GEGPU_FALLBACK_REASONS
+};
+
 typedef struct GeGpuReplayStats {
     unsigned long long queue_submits;
     unsigned long long render_submits;
@@ -186,6 +193,11 @@ typedef struct GeGpuReplayStats {
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
     unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
+    /* Primitives drawn by ge.c's software rasterizer inside the GPU path, and the
+     * fallbacks that took a GPU-valid colour target back to guest VRAM (a synchronous
+     * colour and depth readback each), by reason: GEGPU_FALLBACK_*. */
+    unsigned long long fallback_prims;
+    unsigned long long fallback_readbacks[9];
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;
