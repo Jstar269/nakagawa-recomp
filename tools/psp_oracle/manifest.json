@@ -1367,6 +1367,58 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-SAMPLE-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "tri-*",
+          "spr-*",
+          "ge-sample-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-28 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 58) of commit 86e55611, the commit that added this probe, case ge-sample after the transport-write preflight: 816 records and the done record (out0 816), all PASS, acceptance-eligible with 0 blockers; every draw reached GE idle. Cited: the raw pixels of every draw. Each pixel samples at its centre with texel i centred at i + 0.5; nearest takes floor(s), bilinear taps floor(s - 0.5) and the next texel with a weight truncated to 1/16, for triangles and sprites alike. Not cited: the framebuffer alpha byte and the wait timings. The raw stream stays in the private campaign directory.",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_sample.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE through-mode textured triangles",
+          "PSP GE through-mode textured sprites",
+          "PSP GE texture filter nearest and bilinear"
+        ],
+        "diagnostic_case_ids": [
+          "ge-sample"
+        ],
+        "case_ids": [
+          "tri-*",
+          "spr-*",
+          "ge-sample-done"
+        ],
+        "invariant": "#282: the raw 8888 pixels of a 16x16 window (x 3..18, y 3..18) after one through-mode draw of a 32x32 8888 texture whose texel (u, v) is R = 8u, G = 8v, A = 0xff and B = 0xff on odd columns (texture u) or odd rows (texture v), REPLACE/RGBA, clamp, no blending or tests, for a triangle pair and a sprite, nearest (TEXFILTER 0x000) and bilinear (0x101), over six mappings: 8x8 pixels to 8x8 texels from an integer origin, the same from a +0.5 texel origin, 8x8 pixels to 4x4 texels, 12x14 pixels to 20x14 texels, and the 1:1 and 20-to-12 mappings again with 16-bit vertex words; each draw also records the bounded GE wait outcome.",
+        "issues": [
+          282
+        ],
+        "risk": "low; raw display lists into an 8 KiB framebuffer block at VRAM offset 0x100000 that the CPU clears first; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-INTR-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
