@@ -467,7 +467,9 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
         case WIZARD_STEP_SELECT_GAME:
             model.has_iso = game->iso_path[0] != '\0';
             model.iso_selected = app->wizard.iso_selected;
-            model.iso_path = game->iso_path;
+            /* A compressed image shows the file the user picked. */
+            model.iso_path = game->source_image_path[0] ? game->source_image_path
+                                                        : game->iso_path;
             player_ui_format_size(size, sizeof(size), game->iso_size_bytes);
             snprintf(player->wizard_detail, sizeof(player->wizard_detail),
                      "Size: %s \xC2\xB7 Disc ID: %s", size,
@@ -573,7 +575,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
-    model.iso_path = game->iso_path;
+    model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
                  "%s Then open the disc again.", player_preflight_plain_message(blocking));

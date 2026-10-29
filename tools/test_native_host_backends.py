@@ -63,6 +63,7 @@ CORE_SOURCES = [
     "src/core/nk_psp_amctrl.c",
     "src/core/nk_psp_lzrc.c",
     "src/core/nk_psp_npumdimg.c",
+    "src/core/nk_disc_expand.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -127,6 +128,11 @@ def _build_and_run(
         build.returncode, 0,
         f"linking {test_source} failed:\n{build.stdout}\n{build.stderr}",
     )
+
+    # The binaries run from the repository root and write their reports and pid files
+    # under build/ (for example build/test_posix_grandchild.pid); a fresh checkout has no
+    # build/ until something creates it, so create it here rather than rely on test order.
+    (ROOT / "build").mkdir(exist_ok=True)
 
     # Each test isolates its own per-user roots, so it runs here against a decoy
     # profile that must stay free of application folders: anything that lands
