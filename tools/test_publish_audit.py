@@ -407,6 +407,19 @@ class TestPublishAudit(unittest.TestCase):
         )
         self.assertIsNone(publish_audit.FULL_SHA_ACTION.fullmatch("actions/checkout@v6"))
 
+    def test_action_pin_reads_only_uses_keys(self):
+        text = (
+            "    permissions:\n"
+            "      statuses: write\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v6\n"
+            "        uses: owner/action@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n"
+        )
+        self.assertEqual(
+            [match.group(1) for match in publish_audit.ACTION_USE.finditer(text)],
+            ["actions/checkout@v6", "owner/action@de0fac2e4500dabe0009e67214ff5f5447ce83dd"],
+        )
+
     def test_filename_collisions_case_and_unicode(self):
         paths = ["docs/README.md", "docs/readme.md"]
         findings = publish_audit.check_collisions(paths)

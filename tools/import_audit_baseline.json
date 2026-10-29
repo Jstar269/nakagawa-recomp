@@ -1047,6 +1047,12 @@
     "name": "sceMp3SetLoopNum",
     "status": "unreviewed"
   },
+  "0x3d6d25a9": {
+    "classification": "dedicated",
+    "handler": "h_PsmfSetPsmf",
+    "name": "scePsmfPlayerSetPsmf",
+    "status": "unreviewed"
+  },
   "0x3dfaeba9": {
     "classification": "dedicated",
     "handler": "h_OskShutdown",
@@ -2579,6 +2585,12 @@
     "classification": "dedicated",
     "handler": "h_SasCore",
     "name": "__sceSasCore",
+    "status": "unreviewed"
+  },
+  "0xa3d81169": {
+    "classification": "dedicated",
+    "handler": "h_PsmfChangePlayMode",
+    "name": "scePsmfPlayerChangePlayMode",
     "status": "unreviewed"
   },
   "0xa4fc06a4": {

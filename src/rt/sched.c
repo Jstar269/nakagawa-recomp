@@ -184,6 +184,7 @@ typedef struct {
                                   * must follow the RUNNING context, not the last one
                                   * to touch the global, or a blocking syscall's tag
                                   * would be blamed for the code that ran next */
+    int      exec_tier;          /* execution-share tier (perf.h SrExecTier) when suspended */
     int      is_cb_wait;         /* 1 when thread is in callback-aware wait */
     int      deleted;             /* kernel object has been removed; slot may be recycled */
     int      suspended;           /* sceKernelSuspendThread is in effect.  Orthogonal to `state`:
@@ -207,9 +208,25 @@ typedef struct {
     uint32_t stack_base;          /* user-visible stack range, excluding synthetic TLS */
     uint32_t stack_size;          /* aligned user-visible stack bytes */
     uint32_t stack_reservation;   /* user stack plus synthetic TLS reservation */
+    /* Flight-recorder thread snapshot (schema 6). import_active/import_nid hold this
+     * thread's sr_import_active/sr_import_nid while it is switched out, so a block records
+     * the import the thread itself is inside, never another thread's. */
+    int      import_active;
+    uint32_t import_nid;
+    int      has_block_nid;       /* the last block happened inside an import */
+    uint32_t block_nid;           /* NID of that import */
+    int      block_start_valid;   /* block_start_us is the start of the current wait */
+    uint64_t block_start_us;      /* virtual time the current wait began */
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
+
+/* The import the running guest thread is inside (recomp.h). sr_syscall sets the pair around
+ * its handler and restores the outer pair on return; sched_run swaps it per thread. */
+uint32_t sr_import_nid;
+int      sr_import_active;
+
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out);
 
 int (*sr_sched_stop_requested)(void) = NULL;
 const SrPauseHost *sr_sched_pause_host = NULL;
@@ -690,6 +707,7 @@ static void sched_transfer_reset(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
+    sr_flight_set_thread_source(sched_flight_thread_source);
     sr_aot_return_boundaries_reset();
     for (int i = 0; i < MAXTHREADS; i++)
         sr_aot_return_boundary_stack_destroy(&s_tcb[i].aot_return_boundary_stack);
@@ -1128,9 +1146,7 @@ void sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
 /* Run the game's VBLANK interrupt handler (a guest function) on a dedicated interrupt context.
  * It usually calls sceKernelWakeupThread, readying the game thread. Called by the scheduler
  * when no thread is runnable (i.e. once per simulated frame). */
-uint32_t sr_vblank_handler(void);
-uint32_t sr_vblank_arg(void);
-uint32_t sr_vblank_no(void);
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
 /* The deadline a thread carries when nothing but a signal can release it.
  * Named so the "infinite waits never expire" rule in
  * sched_promote_expired_waits() is checkable rather than a bare -1. */
@@ -1540,9 +1556,11 @@ static void vblank_pace(void) {
     uint64_t now = host_now_ns();
     if (s_vbl_next_ns > now) {
         uint64_t wait_started = sr_perf_now_ns();
+        uint64_t exec_wait_started = sr_exec_now_ns();
         sr_rt_phase = SR_RT_PHASE_HOST_WAIT;
         SDL_DelayPrecise(s_vbl_next_ns - now);
         sr_perf_guest_idle_wait(wait_started);
+        sr_exec_idle(exec_wait_started);
         sr_rt_phase = SR_RT_PHASE_SCHED;
         now = host_now_ns();
     }
@@ -1613,6 +1631,24 @@ int sr_vblank_quantum_due(void) {
 }
 static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 
+/* The host window's event pump runs on host time, at most one display period apart, from
+ * both the scheduler loop and sr_yield. Counting guest yields was not enough: a thread that
+ * waits in short delays (a title's GE-lock poll calls DelayThreadCB(50) in a loop) blocks
+ * before its slice ends, so sr_yield rarely ran, the window went unpumped for seconds and
+ * Windows marked it "Not responding" while the guest was stalled. */
+#define SCHED_HOST_PUMP_PERIOD_NS 16683333u
+static uint64_t s_host_pump_ns;
+static int s_host_pump_valid;
+static void sched_pump_host_window(void) {
+    extern void gui_pump(void);
+    if (!gui_on()) return;
+    uint64_t now = host_now_ns();
+    if (s_host_pump_valid && now - s_host_pump_ns < SCHED_HOST_PUMP_PERIOD_NS) return;
+    s_host_pump_ns = now;
+    s_host_pump_valid = 1;
+    gui_pump();
+}
+
 /* Microseconds of virtual time until the next vblank is due (0 when overdue). */
 static uint64_t vblank_due_us(void) {
     pace_setup();
@@ -1679,11 +1715,13 @@ static void deliver_vblank(void) {
      * one. Measured on the flagship title screen against PPSSPP: 55.16 vs 30.0 game
      * frames/s before (1.84x), 27.75 after. */
 
-    uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
     if (sched_vblog_on() && (++vb % 1) == 0) {
-        fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
+        uint32_t h0 = 0u, a0 = 0u;
+        int first = sr_vblank_subintr(0u, &h0, &a0);
+        fprintf(stderr, "vblank #%llu (handler0=0x%x) prims=%u\n", vb, first > 0 ? h0 : 0u,
+                g_frame_prims);
     }
     g_frame_prims = 0;
 
@@ -1708,41 +1746,49 @@ static void deliver_vblank(void) {
     }
     CpuState save;
     memcpy(&save, s_cpu, sizeof(CpuState));
-    /* An interrupt frame is a nested call on the interrupted register file,
-     * not a zeroed synthetic process. Set only the ABI fields owned by the
-     * handler and restore the complete frame after it returns. */
-    memcpy(s_cpu, &save, sizeof(CpuState));
-    s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
-    s_cpu->r[28] = s_gp;
-    /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
-     * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
-     * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
-     * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
-     * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
-    s_cpu->r[4] = sr_vblank_no();
-    s_cpu->r[5] = sr_vblank_arg();
-    s_cpu->r[31] = 0;
-    s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
-    s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && sched_cbsnap_on()) {
-        /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
-         * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
-        fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
-                h, s_cpu->r[4], save.pc, save.r[29]);
-        fprintf(stderr, "  insn[entry  ]=0x%08x insn[entry+4]=0x%08x insn[entry+8]=0x%08x\n",
-                MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
-        fflush(stderr);
-    }
     uint32_t interrupt_fatal_target = 0u;
-    int interrupt_fatal = h
-        ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
-                                         &interrupt_fatal_target)
-        : 0;
-    if (h && sched_cbsnap_on()) {
-        fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
-                h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
-        fflush(stderr);
+    int interrupt_fatal = 0;
+    /* Every registered and enabled VBLANK sub-interrupt handler runs on this VBLANK, in
+     * sub-interrupt number order (the order is UNMEASURED on the PSP). A title can keep
+     * several at once, for example its frame counter on 0 and a video player's on 1. */
+    for (uint32_t no = 0u; !interrupt_fatal; no++) {
+        uint32_t h = 0u, arg = 0u;
+        int sub = sr_vblank_subintr(no, &h, &arg);
+        if (sub < 0) break;
+        if (sub == 0) continue;
+        /* An interrupt frame is a nested call on the interrupted register file,
+         * not a zeroed synthetic process. Set only the ABI fields owned by the
+         * handler; the complete frame is restored after the last handler returns. */
+        memcpy(s_cpu, &save, sizeof(CpuState));
+        s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
+        s_cpu->r[28] = s_gp;
+        /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
+         * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
+         * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
+         * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
+         * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
+        s_cpu->r[4] = no;
+        s_cpu->r[5] = arg;
+        s_cpu->r[31] = 0;
+        s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
+        s_cpu->pc = h;
+        if (sched_cbsnap_on()) {
+            /* VBLANK sub-interrupt pre-snapshot. The entry here is an InterruptManager
+             * sub-interrupt handler (interrupt 30), not a s_callbacks[] slot. */
+            fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
+                    h, s_cpu->r[4], save.pc, save.r[29]);
+            fprintf(stderr, "  insn[entry  ]=0x%08x insn[entry+4]=0x%08x insn[entry+8]=0x%08x\n",
+                    MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
+            fflush(stderr);
+        }
+        interrupt_fatal = sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
+                                                         &interrupt_fatal_target);
+        if (sched_cbsnap_on()) {
+            fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
+                    h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
+            fflush(stderr);
+        }
     }
     extern int sr_vblank_dispatch_registered(void);
     /* Deliver every active callback slot in stable slot/registration order.  A callback
@@ -2196,6 +2242,8 @@ static void coro_body(void *param) {
              * boundaries. Drop this fiber's abandoned stack before it exits or
              * the thread is restarted. */
             sr_aot_return_boundaries_reset();
+            /* The discarded frames also held the tiers sr_exec_leave would have restored. */
+            sr_exec_tier_switch(SR_EXEC_TIER_NONE);
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
             if (reclaimed)
                 fprintf(stderr,
@@ -2586,6 +2634,12 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->join_result = 0;
     t->suspended = 0;
     t->rot_head = 0;
+    t->import_active = 0;
+    t->import_nid = 0;
+    t->has_block_nid = 0;
+    t->block_nid = 0;
+    t->block_start_valid = 0;
+    t->block_start_us = 0;
     t->state = TH_READY;
     return 0;
 }
@@ -3062,10 +3116,7 @@ void sr_yield(CpuState *s) {
     if ((s_tick & 0xff) == 0) vtime_refresh(); /* observation only; time already progressed above */
     t111_trace(s);
     /* Pump messages if we are spinning/loading and not calling gui_present. */
-    if (gui_on() && (s_tick & 0x7f) == 0) {
-        extern void gui_pump(void);
-        gui_pump();
-    }
+    sched_pump_host_window();
     /* The PSP VBLANK is an interrupt source: time crossing its deadline latches
      * the bit, and only the eligible-delivery phase runs the handler. */
     scheduler_latch_due_events();
@@ -3290,6 +3341,16 @@ static int sched_blocklog_on(void) {
     return sched_env_switch(&enabled, "SR_BLOCKLOG");
 }
 
+/* Every path that parks a thread in TH_WAIT_DELAY or TH_WAIT_OBJ notes the block here, for
+ * the flight recorder's thread snapshot: the import the thread is inside (none when it
+ * blocks outside any import, never a stale NID) and the virtual time its wait began. */
+static void sched_note_block(TCB *t) {
+    t->has_block_nid = sr_import_active != 0;
+    t->block_nid = sr_import_active ? sr_import_nid : 0u;
+    t->block_start_us = s_vtime_us;
+    t->block_start_valid = 1;
+}
+
 void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
@@ -3306,6 +3367,7 @@ void sched_delay_current(uint64_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, 0u, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_DELAY;
     /* Real microseconds of virtual time; any positive delay yields at least once. */
     t->wake = wake;
@@ -3319,6 +3381,7 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3338,6 +3401,7 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3853,6 +3917,7 @@ void sched_thread_sleep(void) {
     if (t->wakeups > 0) { t->wakeups--; return; }   /* pending wakeup: don't block */
     t->sleeping = 1;
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = t->uid;       /* sleep marker: woken only by sched_thread_wakeup(uid) */
     t->wake = SCHED_WAIT_FOREVER;
@@ -3890,6 +3955,7 @@ void sched_thread_sleep_cb(void) {
             continue;
         }
         memcpy(&t->saved, s_cpu, sizeof(CpuState));
+        sched_note_block(t);
         t->state = TH_WAIT_OBJ;
         t->wait_obj = t->uid;
         t->wake = SCHED_WAIT_FOREVER;
@@ -3967,6 +4033,66 @@ static uint32_t psp_wait_type(const TCB *t) {
      * time because the waited UID alone does not identify its type. */
     if (t->state == TH_WAIT_OBJ) return t->wait_kind ? (uint32_t)t->wait_kind : PSP_WAIT_OBJECT;
     return PSP_WAIT_NONE;
+}
+
+/* Flight-recorder thread source (registered by sched_init). The index-th thread that exists
+ * (deleted slots skipped) as scalars only: state, the wait reason sched_dump_threads()
+ * prints, the waitType ReferThreadStatus reports, the import the thread last blocked in, and
+ * how long its current wait has run in virtual time. A running thread reports the live CPU
+ * pc and ra; every other thread its saved ones. */
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out) {
+    uint32_t seen = 0u;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        if (seen++ != index) continue;
+        const int waiting = t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ;
+        const uint64_t now = s_vtime_us;
+        memset(out, 0, sizeof(*out));
+        out->uid = t->uid;
+        out->priority = (int32_t)t->priority;
+        switch (t->state) {
+            case TH_READY:      out->state = SR_FLIGHT_THREAD_READY; break;
+            case TH_RUNNING:    out->state = SR_FLIGHT_THREAD_RUNNING; break;
+            case TH_WAIT_DELAY: out->state = SR_FLIGHT_THREAD_WAIT_DELAY; break;
+            case TH_WAIT_OBJ:   out->state = SR_FLIGHT_THREAD_WAIT_OBJECT; break;
+            case TH_DORMANT:
+            default:            out->state = SR_FLIGHT_THREAD_DORMANT; break;
+        }
+        out->suspended = t->suspended ? 1u : 0u;
+        if (t->state == TH_WAIT_OBJ) {
+            if (t->join_waiting)                     out->why = SR_FLIGHT_WHY_THREAD_END;
+            else if (t->sleeping)                    out->why = SR_FLIGHT_WHY_SLEEP;
+            else if (t->wait_obj == CTRL_WAIT_OBJ)   out->why = SR_FLIGHT_WHY_CTRL;
+            else if (t->wait_obj == VBLANK_WAIT_OBJ) out->why = SR_FLIGHT_WHY_VBLANK;
+            else                                     out->why = SR_FLIGHT_WHY_OBJECT;
+            out->wait_object = t->wait_obj;
+        } else if (t->state == TH_WAIT_DELAY) {
+            out->why = SR_FLIGHT_WHY_DELAY;
+        } else {
+            out->why = SR_FLIGHT_WHY_NONE;
+        }
+        out->wait_type = psp_wait_type(t);
+        out->has_block_nid = t->has_block_nid ? 1u : 0u;
+        out->block_nid = t->has_block_nid ? t->block_nid : 0u;
+        if (i == s_cur && t->state == TH_RUNNING && s_cpu) {
+            out->pc = s_cpu->pc;
+            out->ra = s_cpu->r[31];
+        } else {
+            out->pc = t->saved.pc;
+            out->ra = t->saved.r[31];
+        }
+        if (waiting && t->block_start_valid && now >= t->block_start_us) {
+            out->has_waited = 1u;
+            out->waited_us = now - t->block_start_us;
+        }
+        if (waiting && t->wake != SCHED_WAIT_FOREVER) {
+            out->has_deadline = 1u;
+            out->deadline_us = t->wake > now ? t->wake - now : 0u;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 /* Latch the PSP waitType for the current thread's next object block; the
@@ -4818,6 +4944,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
+        sched_pump_host_window();   /* every pass, so a guest that only waits still pumps */
         if (sched_dump && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
@@ -4937,17 +5064,25 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
         sr_rt_phase = t->rt_phase;
+        sr_import_active = t->import_active;
+        sr_import_nid = t->import_nid;
         if (sr_perf_enabled) {
             sr_perf_sched_state(SR_PERF_SCHED_RUNNING, t->uid);
             sr_perf_sched_switch(previous_uid, t->uid);
             sr_perf_guest_begin();
         }
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
+        sr_exec_slice_begin(t->exec_tier);
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
+        t->exec_tier = sr_exec_slice_end();
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         t->rt_phase = sr_rt_phase;
+        t->import_active = sr_import_active;
+        t->import_nid = sr_import_nid;
+        sr_import_active = 0;
+        sr_import_nid = 0;
         g_hle_depth = 0;
         /* A coroutine cannot destroy itself from inside sched_exit_current;
          * reap it as soon as control is back on the scheduler coroutine. This

@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **638** (dedicated **531**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **510** handlers across **25** API families, covering **537** handler-associated NID registrations.
+Registered NIDs: **640** (dedicated **533**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **510** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 322 | 334 |
+| `unreviewed` | 324 | 336 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -77,14 +77,14 @@ Semantic handler census: **510** handlers across **25** API families, covering *
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
-| `scePsmf` | 0 | 3 | 0 | 0 | 12 | 15 | 15 |
+| `scePsmf` | 0 | 3 | 0 | 0 | 14 | 17 | 17 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **322** | **510** | **537** |
+| **Total** | **13** | **172** | **1** | **2** | **324** | **512** | **539** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -720,7 +720,7 @@ Title Configuration Overrides (src/rt/title_config.c):
 #### 1. `libfont.prx` Startup Refusal Boundary
 
 - **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
-- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated or refused image, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and stops the run at the named semantic boundary `libfont-startup-unavailable`, which the player shows as a stopped-early card. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
+- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched and resolves a relative path against the calling thread's current directory before it looks up the manifest's declared module, so a title that changes into its data directory and loads `libfont.prx` by a relative path gets the translated module, not an undeclared host-served record with no start entry. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated or refused image, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and stops the run at the named semantic boundary `libfont-startup-unavailable`, which the player shows as a stopped-early card. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
 - **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
 - **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 

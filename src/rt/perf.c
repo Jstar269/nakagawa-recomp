@@ -174,6 +174,9 @@ typedef struct SrPerfState {
 } SrPerfState;
 
 static SrPerfState s_perf;
+/* The closed intervals the live view reads (#314). Outside s_perf so a fresh init starts it
+ * empty on its own terms (sr_perf_history_reset), and filled only where the PERF line is. */
+static SrPerfHistory s_history;
 /* Contract: written only by sr_perf_set_gpu_replay_source() (called from gegpu_init); NULL
  * means no GPU backend, so the gpu_replay_* columns stay 0. Kept outside s_perf so init's
  * memset does not clear it. */
@@ -187,6 +190,7 @@ static const char *const s_ge_frontend_stage_names[SR_PERF_GE_FRONTEND_STAGE_COU
 static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
     "queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
     "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps", "upload_ring_fallbacks",
+    "snapshot_copy_px",
 };
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. */
@@ -522,6 +526,115 @@ static void json_top_pcs(FILE *json, unsigned direction) {
     fputc(']', json);
 }
 
+/* ---- native AOT VFPU time (census builds: PERF_AOT_INSTRUCTIONS=1) -----------------------
+ * Generated code runs VFPU instructions inline, so there is no call to time. In a census build
+ * every AOT instruction passes sr_perf_aot_instruction(pc, opcode) as it starts. That gives an
+ * exact count per family and, by sampling, a time per family: one VFPU instruction in
+ * AOT_VFPU_STRIDE is timed from its start to the start of the next instruction, and one scalar
+ * instruction in AOT_VFPU_BASELINE_STRIDE is timed the same way as the baseline (the hook plus an
+ * ordinary instruction). A sample counts only when the next instruction is at pc + 4, so a branch,
+ * call, return or dispatch never lands in it. The estimate for a family is
+ * count * max(0, mean sample - mean baseline): the VFPU instruction's cost above an ordinary
+ * one. It is an estimate from samples, labelled so in the summary. */
+#define AOT_VFPU_STRIDE 64u
+#define AOT_VFPU_BASELINE_STRIDE 1024u
+
+typedef enum AotVfpuFamily {
+    AOT_VFPU_LOAD = 0,      /* lv.s, lv.q, lvl.q/lvr.q */
+    AOT_VFPU_STORE,         /* sv.s, sv.q, svl.q/svr.q */
+    AOT_VFPU_VFPU0,         /* opcode 0x18: vadd, vsub, vsbn, vdiv */
+    AOT_VFPU_VFPU1,         /* opcode 0x19: vmul, vdot, vscl, vhdp, vcrs, vdet */
+    AOT_VFPU_VFPU3,         /* opcode 0x1b: vcmp, vmin, vmax, vscmp, vsge, vslt */
+    AOT_VFPU_VFPU4,         /* opcode 0x34: unary, conversion and transcendental forms */
+    AOT_VFPU_MATRIX,        /* opcode 0x3c: vmmul, vtfm, vhtfm, vmscl, vqmul, matrix moves */
+    AOT_VFPU_PREFIX_IMM,    /* opcode 0x37: prefixes, viim, vfim */
+    AOT_VFPU_MOVE_CONTROL,  /* opcode 0x12 (mfv, mtv, bvf) and 0x3f (vflush) */
+    AOT_VFPU_FAMILY_COUNT,
+    AOT_VFPU_NOT_VFPU = -1,
+} AotVfpuFamily;
+
+static const char *const s_aot_vfpu_family_names[AOT_VFPU_FAMILY_COUNT] = {
+    "load", "store", "vfpu0", "vfpu1", "vfpu3", "vfpu4", "matrix", "prefix_imm", "move_control",
+};
+
+static struct {
+    uint64_t count[AOT_VFPU_FAMILY_COUNT];
+    uint64_t sample_ns[AOT_VFPU_FAMILY_COUNT];
+    uint64_t samples[AOT_VFPU_FAMILY_COUNT];
+    uint64_t baseline_ns, baseline_samples;
+    uint64_t vfpu_seen, scalar_seen;
+    int pending;            /* a sample is open: -1 baseline, else 1 + family */
+    uint32_t pending_pc;
+    uint64_t pending_start_ns;
+} s_aot_vfpu;
+
+static int aot_vfpu_family(uint32_t opcode) {
+    switch ((opcode >> 26) & 0x3fu) {
+    case 0x32u: case 0x35u: case 0x36u: return AOT_VFPU_LOAD;
+    case 0x3au: case 0x3du: case 0x3eu: return AOT_VFPU_STORE;
+    case 0x18u: return AOT_VFPU_VFPU0;
+    case 0x19u: return AOT_VFPU_VFPU1;
+    case 0x1bu: return AOT_VFPU_VFPU3;
+    case 0x34u: return AOT_VFPU_VFPU4;
+    case 0x3cu: return AOT_VFPU_MATRIX;
+    case 0x37u: return AOT_VFPU_PREFIX_IMM;
+    case 0x12u: case 0x3fu: return AOT_VFPU_MOVE_CONTROL;
+    default: return AOT_VFPU_NOT_VFPU;
+    }
+}
+
+/* Called for each AOT instruction start in a census build, with the AOT tier current. */
+static void aot_vfpu_observe(uint32_t pc, uint32_t opcode) {
+    if (s_aot_vfpu.pending) {
+        uint64_t now = raw_now_ns();
+        /* A zero-length sample is a measurement too: the clock's tick can exceed one instruction. */
+        if (pc == s_aot_vfpu.pending_pc + 4u && now >= s_aot_vfpu.pending_start_ns) {
+            uint64_t elapsed = now - s_aot_vfpu.pending_start_ns;
+            if (s_aot_vfpu.pending < 0) {
+                s_aot_vfpu.baseline_ns += elapsed;
+                s_aot_vfpu.baseline_samples++;
+            } else {
+                unsigned family = (unsigned)(s_aot_vfpu.pending - 1);
+                s_aot_vfpu.sample_ns[family] += elapsed;
+                s_aot_vfpu.samples[family]++;
+            }
+        }
+        s_aot_vfpu.pending = 0;
+    }
+    int family = aot_vfpu_family(opcode);
+    if (family >= 0) {
+        s_aot_vfpu.count[family]++;
+        if (++s_aot_vfpu.vfpu_seen % AOT_VFPU_STRIDE != 0u) return;
+        s_aot_vfpu.pending = 1 + family;
+    } else {
+        if (++s_aot_vfpu.scalar_seen % AOT_VFPU_BASELINE_STRIDE != 0u) return;
+        s_aot_vfpu.pending = -1;
+    }
+    s_aot_vfpu.pending_pc = pc;
+    s_aot_vfpu.pending_start_ns = raw_now_ns();
+}
+
+/* The "aot_families" member of the summary's "vfpu" object. */
+static void json_aot_vfpu(FILE *json) {
+    double baseline = s_aot_vfpu.baseline_samples
+        ? (double)s_aot_vfpu.baseline_ns / (double)s_aot_vfpu.baseline_samples : 0.0;
+    fprintf(json, "\"aot_families\":{\"status\":\"%s\",\"stride\":%u,\"baseline_stride\":%u,"
+            "\"baseline_samples\":%llu,\"baseline_mean_ns\":%.3f,\"families\":{",
+            PERF_AOT_INSTRUCTIONS ? "sampled" : "not_compiled", AOT_VFPU_STRIDE,
+            AOT_VFPU_BASELINE_STRIDE, (unsigned long long)s_aot_vfpu.baseline_samples, baseline);
+    for (unsigned i = 0; i < AOT_VFPU_FAMILY_COUNT; i++) {
+        double mean = s_aot_vfpu.samples[i]
+            ? (double)s_aot_vfpu.sample_ns[i] / (double)s_aot_vfpu.samples[i] : 0.0;
+        double above = s_aot_vfpu.samples[i] && mean > baseline ? mean - baseline : 0.0;
+        fprintf(json, "%s\"%s\":{\"count\":%llu,\"samples\":%llu,\"mean_ns\":%.3f,"
+                "\"estimated_ns\":%.0f}",
+                i ? "," : "", s_aot_vfpu_family_names[i],
+                (unsigned long long)s_aot_vfpu.count[i], (unsigned long long)s_aot_vfpu.samples[i],
+                mean, above * (double)s_aot_vfpu.count[i]);
+    }
+    fputs("}}", json);
+}
+
 static void write_summary(const char *path, uint64_t wall_ns) {
     FILE *json = fopen(path, "w");
     if (!json) {
@@ -561,7 +674,7 @@ static void write_summary(const char *path, uint64_t wall_ns) {
             (unsigned long long)m->sched_ns[SR_PERF_SCHED_IDLE],
             (unsigned long long)m->sched_switches, (unsigned long long)m->sched_blocked,
             (unsigned long long)m->sched_wakes);
-    fprintf(json, "  \"vfpu\":{\"ns\":%llu,\"count\":%llu,\"interpreter_count\":%llu,\"aot_instruction_count\":%llu,\"interpreter_ns\":%llu,\"aot_ns\":%llu,\"errors\":%llu,\"families\":{\"load\":%llu,\"store\":%llu,\"arithmetic\":%llu,\"prefix\":%llu,\"other\":%llu}},\n",
+    fprintf(json, "  \"vfpu\":{\"ns\":%llu,\"count\":%llu,\"interpreter_count\":%llu,\"aot_instruction_count\":%llu,\"interpreter_ns\":%llu,\"aot_ns\":%llu,\"errors\":%llu,\"families\":{\"load\":%llu,\"store\":%llu,\"arithmetic\":%llu,\"prefix\":%llu,\"other\":%llu},",
             (unsigned long long)m->vfpu_ns, (unsigned long long)m->vfpu_count,
             (unsigned long long)m->vfpu_interp_count,
             (unsigned long long)m->vfpu_aot_count,
@@ -572,6 +685,8 @@ static void write_summary(const char *path, uint64_t wall_ns) {
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_ARITHMETIC],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_PREFIX],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_OTHER]);
+    json_aot_vfpu(json);
+    fputs("},\n", json);
     fprintf(json, "  \"ge\":{\"cpu_ns\":%llu,\"cpu_calls\":%llu,\"transform_sample_ns\":%llu,\"primitive_ns\":%llu,\"submits\":%llu,\"waits\":%llu,\"wait_ns\":%llu,\"present_submits\":%llu,\"present_waits\":%llu,\"present_wait_ns\":%llu,\"frontend_profile\":{\"enabled\":%s,\"stride\":%llu,\"calibration_enabled\":%s,\"stages\":{",
             (unsigned long long)m->ge_cpu_ns, (unsigned long long)m->ge_cpu_calls,
             (unsigned long long)m->ge_transform_sample_ns,
@@ -628,7 +743,10 @@ static void write_summary(const char *path, uint64_t wall_ns) {
     fputs("  \"boundaries\":[", json);
     fputs("{\"metric\":\"aot_instruction_count\",\"status\":", json);
     fputs(PERF_AOT_INSTRUCTIONS ? "\"compiled\"" : "\"not_compiled\"", json);
-    fputs("},{\"metric\":\"aot_vfpu_time\",\"status\":\"partial\"},{\"metric\":\"ge_primitive_phase\",\"status\":\"sampled\"}]\n", json);
+    fputs("},{\"metric\":\"aot_vfpu_time\",\"status\":\"",
+          json);
+    fputs(PERF_AOT_INSTRUCTIONS ? "sampled" : "partial", json);
+    fputs("\"},{\"metric\":\"ge_primitive_phase\",\"status\":\"sampled\"}]\n", json);
     fputs("}\n", json);
     fclose(json);
 }
@@ -760,6 +878,32 @@ static void report_if_due(uint64_t now) {
     s_hud_game_fps = seconds > 0.0 ? (double)m.new_frames / seconds : 0.0;
     s_hud_vblanks_per_frame = m.new_frame_intervals
         ? (double)m.new_frame_vblanks / (double)m.new_frame_intervals : 0.0;
+    {
+        SrPerfLiveInterval live;
+        memset(&live, 0, sizeof(live));
+        live.wall_ns = wall_ns;
+        live.cpu_ns = cpu_ns;
+        live.ge_wait_ns = m.ge_wait_ns;
+        live.present_ns = m.present_ns;
+        live.idle_ns = idle_ns;
+        live.presents = m.presents;
+        live.new_frames = m.new_frames;
+        live.vblanks = m.vblanks;
+        live.aot_ns = m.aot_ns;
+        live.interp_ns = m.interp_ns;
+        live.aot_to_interp = m.aot_to_interp;
+        live.interp_to_aot = m.interp_to_aot;
+        memcpy(live.sched_ns, m.sched_ns, sizeof(live.sched_ns));
+        live.ge_cpu_ns = m.ge_cpu_ns;
+        live.gpu_draws = m.gpu_replay[SR_PERF_GPU_DRAWS];
+        live.vk_submit_ns = m.vk_submit_ns;
+        live.vk_wait_ns = m.vk_wait_ns;
+        live.vk_pipeline_ns = m.vk_pipeline_ns;
+        live.vk_readback_ns = m.vk_readback_ns;
+        for (int ch = 0; ch < SR_PERF_AUDIO_CHANNELS; ch++)
+            live.audio_underruns += m.audio_queue_underruns[ch];
+        sr_perf_history_push(&s_history, &live);
+    }
     if (s_perf_stderr_enabled) {
     perf_emit_format(
             "PERF vblank_total=%llu wall_ms=%.3f fps=%.3f frame_ms=%.3f vblank_hz=%.3f "
@@ -809,6 +953,157 @@ void sr_perf_test_force_report(void) {
 }
 #endif
 
+/* ---- execution share (perf.h) -------------------------------------------------------
+ * Always on and independent of s_perf, so the share is known without SR_PERF. The hot
+ * paths are sr_exec_enter/leave (inline, a compare when the tier is unchanged) and the
+ * interpreter's instruction counter; the clock is read only when the running tier changes
+ * and at slice edges. */
+#define SR_EXEC_ENTRY_POINT_SLOTS 4096u
+
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+
+static struct {
+    uint64_t tier_start_ns;
+    uint64_t tier_ns[SR_EXEC_TIER_COUNT];
+    uint64_t entries[SR_PERF_INTERP_REASON_COUNT];   /* why the interpreter was entered */
+    uint64_t exits_aot_handoff, exits_call_return, exits_other;
+    uint64_t idle_ns;
+    uint32_t point_pc[SR_EXEC_ENTRY_POINT_SLOTS];     /* distinct entry PCs, open addressing */
+    uint8_t point_used[SR_EXEC_ENTRY_POINT_SLOTS];
+    uint8_t point_miss[SR_EXEC_ENTRY_POINT_SLOTS];
+    unsigned points, miss_points;
+    uint64_t points_overflow;                        /* entries whose PC did not fit the set */
+    int pending_reason;
+    int armed, reported;
+} s_exec;
+
+uint64_t sr_exec_now_ns(void) { return raw_now_ns(); }
+
+static void exec_accrue(uint64_t now) {
+    if (sr_exec_tier != SR_EXEC_TIER_NONE && now > s_exec.tier_start_ns)
+        s_exec.tier_ns[sr_exec_tier] += now - s_exec.tier_start_ns;
+    s_exec.tier_start_ns = now;
+}
+
+void sr_exec_tier_switch(int tier) {
+    if (tier < SR_EXEC_TIER_NONE || tier >= SR_EXEC_TIER_COUNT) return;
+    exec_accrue(raw_now_ns());
+    sr_exec_tier = tier;
+}
+
+void sr_exec_slice_begin(int tier) {
+    sr_exec_tier = tier >= SR_EXEC_TIER_NONE && tier < SR_EXEC_TIER_COUNT ? tier : SR_EXEC_TIER_NONE;
+    s_exec.tier_start_ns = sr_exec_tier != SR_EXEC_TIER_NONE ? raw_now_ns() : 0u;
+}
+
+int sr_exec_slice_end(void) {
+    int tier = sr_exec_tier;
+    if (tier != SR_EXEC_TIER_NONE) exec_accrue(raw_now_ns());
+    sr_exec_tier = SR_EXEC_TIER_NONE;
+    return tier;
+}
+
+void sr_exec_idle(uint64_t started_ns) {
+    if (!started_ns) return;
+    uint64_t now = raw_now_ns();
+    if (now <= started_ns) return;
+    s_exec.idle_ns += now - started_ns;
+    /* The wait is not the running tier's work: move its start past the wait. */
+    if (sr_exec_tier != SR_EXEC_TIER_NONE) {
+        if (s_exec.tier_start_ns < started_ns) exec_accrue(started_ns);
+        s_exec.tier_start_ns = now;
+    }
+}
+
+void sr_exec_interp_entry(uint32_t entry_pc) {
+    int reason = s_exec.pending_reason;
+    s_exec.pending_reason = SR_PERF_INTERP_DISPATCH_MISS;
+    s_exec.entries[reason]++;
+    uint32_t slot = (entry_pc * 2654435761u) & (SR_EXEC_ENTRY_POINT_SLOTS - 1u);
+    for (unsigned probe = 0; probe < 32u; probe++) {
+        uint32_t i = (slot + probe) & (SR_EXEC_ENTRY_POINT_SLOTS - 1u);
+        if (!s_exec.point_used[i]) {
+            if (s_exec.points >= SR_EXEC_ENTRY_POINT_SLOTS / 2u) break;   /* keep probes short */
+            s_exec.point_used[i] = 1u;
+            s_exec.point_pc[i] = entry_pc;
+            s_exec.points++;
+        } else if (s_exec.point_pc[i] != entry_pc) {
+            continue;
+        }
+        if (reason == SR_PERF_INTERP_DISPATCH_MISS && !s_exec.point_miss[i]) {
+            s_exec.point_miss[i] = 1u;
+            s_exec.miss_points++;
+        }
+        return;
+    }
+    s_exec.points_overflow++;
+}
+
+void sr_exec_interp_exit(int returned_to_aot, int call_return) {
+    if (!returned_to_aot) s_exec.exits_other++;
+    else if (call_return) s_exec.exits_call_return++;
+    else s_exec.exits_aot_handoff++;
+}
+
+void sr_exec_share_arm(void) { s_exec.armed = 1; }
+
+void sr_exec_share_report(void) {
+    if (!s_exec.armed || s_exec.reported) return;
+    s_exec.reported = 1;
+    exec_accrue(raw_now_ns());
+    uint64_t aot_ns = s_exec.tier_ns[SR_EXEC_TIER_AOT];
+    uint64_t interp_ns = s_exec.tier_ns[SR_EXEC_TIER_INTERP];
+    uint64_t guest_ns = aot_ns + interp_ns;
+    uint64_t entries = 0;
+    for (unsigned i = 0; i < SR_PERF_INTERP_REASON_COUNT; i++) entries += s_exec.entries[i];
+    char share[32];
+    if (guest_ns) snprintf(share, sizeof share, "%.6f", (double)interp_ns / (double)guest_ns);
+    else snprintf(share, sizeof share, "none");
+    fprintf(stderr,
+            "EXEC_SHARE interp_time_share=%s aot_ms=%.3f interp_ms=%.3f idle_ms=%.3f "
+            "interp_entries=%llu entries_dispatch_miss=%llu "
+            "entries_stale_block=%llu exits_aot_handoff=%llu exits_call_return=%llu "
+            "exits_other=%llu interp_instructions=%llu interp_entry_points=%u "
+            "miss_targets=%u entry_points_overflow=%llu\n",
+            share, ms(aot_ns), ms(interp_ns), ms(s_exec.idle_ns),
+            (unsigned long long)entries,
+            (unsigned long long)s_exec.entries[SR_PERF_INTERP_DISPATCH_MISS],
+            (unsigned long long)s_exec.entries[SR_PERF_INTERP_STALE_BLOCK],
+            (unsigned long long)s_exec.exits_aot_handoff,
+            (unsigned long long)s_exec.exits_call_return,
+            (unsigned long long)s_exec.exits_other,
+            (unsigned long long)sr_exec_interp_instructions, s_exec.points,
+            s_exec.miss_points, (unsigned long long)s_exec.points_overflow);
+    fflush(stderr);
+    const char *path = getenv("SR_EXEC_SHARE_JSON");
+    if (!path || !path[0]) return;
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        fprintf(stderr, "EXEC_SHARE: cannot open SR_EXEC_SHARE_JSON output\n");
+        return;
+    }
+    fprintf(out,
+            "{\n  \"schema\": \"nakagawa-exec-share-v1\",\n"
+            "  \"interp_time_share\": %s,\n  \"aot_ns\": %llu,\n  \"interp_ns\": %llu,\n"
+            "  \"idle_ns\": %llu,\n  \"interp_entries\": %llu,\n"
+            "  \"entries_by_reason\": {\"dispatch_miss\": %llu, \"stale_block\": %llu},\n"
+            "  \"exits\": {\"aot_handoff\": %llu, \"call_return\": %llu, \"other\": %llu},\n"
+            "  \"interp_instructions\": %llu,\n  \"interp_entry_points\": %u,\n"
+            "  \"miss_targets\": %u,\n  \"entry_points_overflow\": %llu\n}\n",
+            guest_ns ? share : "null", (unsigned long long)aot_ns,
+            (unsigned long long)interp_ns, (unsigned long long)s_exec.idle_ns,
+            (unsigned long long)entries,
+            (unsigned long long)s_exec.entries[SR_PERF_INTERP_DISPATCH_MISS],
+            (unsigned long long)s_exec.entries[SR_PERF_INTERP_STALE_BLOCK],
+            (unsigned long long)s_exec.exits_aot_handoff,
+            (unsigned long long)s_exec.exits_call_return,
+            (unsigned long long)s_exec.exits_other,
+            (unsigned long long)sr_exec_interp_instructions, s_exec.points,
+            s_exec.miss_points, (unsigned long long)s_exec.points_overflow);
+    fclose(out);
+}
+
 static void make_summary_path(const char *csv_path, char *out, size_t out_size) {
     const char *slash = strrchr(csv_path, '/');
     const char *dot = strrchr(csv_path, '.');
@@ -828,6 +1123,7 @@ static void make_summary_path(const char *csv_path, char *out, size_t out_size) 
 }
 
 void sr_perf_shutdown(void) {
+    sr_exec_share_report();
     if (!s_perf.enabled || !s_perf.initialized || s_perf.shutdown) return;
     s_perf.shutdown = 1;
     sr_perf_enabled = 0;
@@ -856,6 +1152,8 @@ static void perf_exit(void) {
 void sr_perf_init(void) {
     if (s_perf.initialized) return;
     memset(&s_perf, 0, sizeof(s_perf));
+    memset(&s_aot_vfpu, 0, sizeof(s_aot_vfpu));
+    sr_perf_history_reset(&s_history);
     s_perf.initialized = 1;
     s_perf_stderr_enabled = env_on("SR_PERF");
     s_perf.enabled = s_perf_stderr_enabled || env_on("SR_HUD");
@@ -1210,12 +1508,12 @@ void sr_perf_aot_instruction(uint32_t pc, uint32_t opcode) {
     if (!s_perf.enabled || s_perf.shutdown ||
         s_perf.current_tier != SR_PERF_TIER_AOT)
         return;
-    (void)pc;
-    (void)opcode;
     ADD(aot_instructions, 1);
+    aot_vfpu_observe(pc, opcode);
 }
 
 void sr_perf_interp_set_reason(SrPerfInterpReason reason) {
+    if ((unsigned)reason < SR_PERF_INTERP_REASON_COUNT) s_exec.pending_reason = (int)reason;
     if (s_perf.enabled && !s_perf.shutdown &&
         (unsigned)reason < SR_PERF_INTERP_REASON_COUNT)
         s_perf.pending_interp_reason = reason;
@@ -1494,4 +1792,91 @@ void sr_perf_get_hud_frames(double *out_game_fps, double *out_vblanks_per_frame)
     }
     if (out_game_fps) *out_game_fps = game_fps;
     if (out_vblanks_per_frame) *out_vblanks_per_frame = vblanks_per_frame;
+}
+
+/* ---- live profile view (#314) -------------------------------------------------------- */
+
+void sr_perf_history_reset(SrPerfHistory *history) {
+    if (history) memset(history, 0, sizeof(*history));
+}
+
+void sr_perf_history_push(SrPerfHistory *history, const SrPerfLiveInterval *interval) {
+    if (!history || !interval || history->head >= SR_PERF_HISTORY_LEN) return;
+    history->slot[history->head] = *interval;
+    history->head = (history->head + 1u) % SR_PERF_HISTORY_LEN;
+    if (history->count < SR_PERF_HISTORY_LEN) history->count++;
+}
+
+const SrPerfLiveInterval *sr_perf_history_at(const SrPerfHistory *history, unsigned age) {
+    if (!history || age >= history->count || history->count > SR_PERF_HISTORY_LEN ||
+        history->head >= SR_PERF_HISTORY_LEN)
+        return NULL;
+    return &history->slot[(history->head + SR_PERF_HISTORY_LEN - 1u - age) % SR_PERF_HISTORY_LEN];
+}
+
+const SrPerfHistory *sr_perf_history(void) {
+    return &s_history;
+}
+
+unsigned sr_perf_top_transitions(unsigned direction, SrPerfTopPc *out, unsigned max) {
+    SrPerfTransitionEntry entries[SR_PERF_TOP_N];
+    unsigned count = 0;
+    if (direction > 1u || !out) return 0;
+    for (unsigned i = 0; i < SR_PERF_TOP_N; i++)
+        if (s_perf.transitions[direction][i].count)
+            entries[count++] = s_perf.transitions[direction][i];
+    qsort(entries, count, sizeof(entries[0]), transition_compare);
+    if (count > max) count = max;
+    for (unsigned i = 0; i < count; i++) {
+        out[i].pc = entries[i].pc;
+        out[i].count = entries[i].count;
+        out[i].reason = interp_reason_name(entries[i].reason);
+    }
+    return count;
+}
+
+static unsigned live_pct(uint64_t part, uint64_t whole) {
+    if (!whole) return 0;
+    double p = (double)part * 100.0 / (double)whole + 0.5;
+    return p >= 999.0 ? 999u : (unsigned)p;
+}
+
+static void live_row(SrPerfLiveRow *row, const char *label, const char *fmt, ...) {
+    va_list ap;
+    snprintf(row->label, sizeof row->label, "%s", label);
+    va_start(ap, fmt);
+    vsnprintf(row->value, sizeof row->value, fmt, ap);
+    va_end(ap);
+}
+
+unsigned sr_perf_live_rows(const SrPerfLiveInterval *iv, SrPerfLiveRow *rows, unsigned max) {
+    if (!iv || !rows || max < SR_PERF_LIVE_ROWS || !iv->wall_ns) return 0;
+    double seconds = (double)iv->wall_ns / 1000000000.0;
+    uint64_t sched_total = 0;
+    for (unsigned i = 0; i < SR_PERF_SCHED_STATE_COUNT; i++) sched_total += iv->sched_ns[i];
+    live_row(&rows[0], "Frame", "%.1f game fps  %.1f ms per present",
+             (double)iv->new_frames / seconds,
+             iv->presents ? ms(iv->wall_ns) / (double)iv->presents : 0.0);
+    live_row(&rows[1], "Guest/host", "cpu %u%%  ge wait %u%%  present %u%%  idle %u%%",
+             live_pct(iv->cpu_ns, iv->wall_ns), live_pct(iv->ge_wait_ns, iv->wall_ns),
+             live_pct(iv->present_ns, iv->wall_ns), live_pct(iv->idle_ns, iv->wall_ns));
+    live_row(&rows[2], "Residency", "aot %u%%  interpreter %u%%",
+             live_pct(iv->aot_ns, iv->wall_ns), live_pct(iv->interp_ns, iv->wall_ns));
+    live_row(&rows[3], "Transitions", "%llu to interpreter  %llu to aot",
+             (unsigned long long)iv->aot_to_interp, (unsigned long long)iv->interp_to_aot);
+    if (sched_total)
+        live_row(&rows[4], "Scheduler", "run %u%%  ready %u%%  blocked %u%%  idle %u%%",
+                 live_pct(iv->sched_ns[SR_PERF_SCHED_RUNNING], sched_total),
+                 live_pct(iv->sched_ns[SR_PERF_SCHED_RUNNABLE], sched_total),
+                 live_pct(iv->sched_ns[SR_PERF_SCHED_BLOCKED], sched_total),
+                 live_pct(iv->sched_ns[SR_PERF_SCHED_IDLE], sched_total));
+    else
+        live_row(&rows[4], "Scheduler", "no thread states recorded");
+    live_row(&rows[5], "GE CPU", "%.1f ms  %llu gpu draws", ms(iv->ge_cpu_ns),
+             (unsigned long long)iv->gpu_draws);
+    live_row(&rows[6], "Vulkan", "submit %.1f wait %.1f pipeline %.1f readback %.1f ms",
+             ms(iv->vk_submit_ns), ms(iv->vk_wait_ns), ms(iv->vk_pipeline_ns),
+             ms(iv->vk_readback_ns));
+    live_row(&rows[7], "Audio", "%llu underruns", (unsigned long long)iv->audio_underruns);
+    return SR_PERF_LIVE_ROWS;
 }

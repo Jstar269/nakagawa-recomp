@@ -15,6 +15,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,6 +104,10 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    /* The factory reset check's folders, looked up when the check opens. */
+    char reset_folders[PLAYER_UI_RESET_FOLDERS][NK_MAX_PATH];
+    size_t reset_folder_count;
+    bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
     char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
@@ -113,6 +118,7 @@ struct PlayerUiNk {
     char pad_trigger[48];
     char pad_live[PLAYER_UI_CONTROLLER_LIVE_LINES][96];
     PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
+    unsigned press_screen;  /* the screen a pointer press can still finish on */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
     int pre_flow_game_count; /* titles in the library when the flow opened */
@@ -143,6 +149,9 @@ struct PlayerUiNk {
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
+    /* The titles this frame shows (player_ui_nk_shown_titles). */
+    int shown_titles[PLAYER_UI_SHOWN_TITLES_MAX];
+    size_t shown_count;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
     char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
@@ -173,6 +182,15 @@ static void player_ui_read_disc_art(const char *iso_path, unsigned wanted,
 static void player_ui_set_error(char *out, size_t out_size, const char *message) {
     if (out == NULL || out_size == 0u) return;
     snprintf(out, out_size, "%s", message != NULL ? message : "UI initialization failed");
+}
+
+/* The launcher's display rule (the profile folder as "~"), applied to a
+   string the page will shorten itself; nk_ui applies it again when it draws. */
+static void player_ui_display_in_place(char *text, size_t size) {
+    char shown[NK_MAX_PATH];
+    if (text == NULL || size == 0u || strlen(text) >= sizeof(shown)) return;
+    (void)player_display_text(text, shown, sizeof(shown));
+    snprintf(text, size, "%s", shown);
 }
 
 static bool player_ui_file_exists(const char *path) {
@@ -248,6 +266,10 @@ static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
     return true;
 }
 
+bool player_ui_nk_built_with_launcher(void) {
+    return nk_ui_sdlr_available() && nk_ui_ttf_available();
+}
+
 PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
                                 char *error, size_t error_size) {
     PlayerUiNk *player;
@@ -292,6 +314,9 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &player->text;
+    /* The launcher's display rules, as the old renderer applied them to every
+       string it drew: the profile folder shows as "~". */
+    config.display_text = player_display_text;
     player->ui = nk_ui_create(&config);
     if (player->ui == NULL) {
         player_ui_set_error(error, error_size,
@@ -345,7 +370,8 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
+           view == VIEW_CONFIRM_FACTORY_RESET;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -441,7 +467,9 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
         case WIZARD_STEP_SELECT_GAME:
             model.has_iso = game->iso_path[0] != '\0';
             model.iso_selected = app->wizard.iso_selected;
-            model.iso_path = game->iso_path;
+            /* A compressed image shows the file the user picked. */
+            model.iso_path = game->source_image_path[0] ? game->source_image_path
+                                                        : game->iso_path;
             player_ui_format_size(size, sizeof(size), game->iso_size_bytes);
             snprintf(player->wizard_detail, sizeof(player->wizard_detail),
                      "Size: %s \xC2\xB7 Disc ID: %s", size,
@@ -547,7 +575,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
-    model.iso_path = game->iso_path;
+    model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
                  "%s Then open the disc again.", player_preflight_plain_message(blocking));
@@ -614,6 +642,20 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
+        case VIEW_CONFIRM_FACTORY_RESET:
+            model.page = PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET;
+            if (!player->reset_folders_ready) {
+                player->reset_folder_count = player_app_factory_reset_folders(
+                    app, player->reset_folders, PLAYER_UI_RESET_FOLDERS);
+                for (size_t i = 0; i < player->reset_folder_count; ++i) {
+                    player_ui_display_in_place(player->reset_folders[i], NK_MAX_PATH);
+                }
+                player->reset_folders_ready = true;
+            }
+            for (size_t i = 0; i < player->reset_folder_count; ++i) {
+                model.reset_folders[model.reset_folder_count++] = player->reset_folders[i];
+            }
+            break;
         case VIEW_PSP_FONTS:
             model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
@@ -713,6 +755,9 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             snprintf(player->update_folder, sizeof(player->update_folder), "%.*s",
                      (int)(cut > 0u ? cut - 1u : 0u), update->zip_path);
         }
+        /* The page shortens a long folder from the middle; the profile folder
+           becomes "~" first, so a cut never keeps part of the user name. */
+        player_ui_display_in_place(player->update_folder, sizeof(player->update_folder));
         model.update_folder = player->update_folder;
         model.update_error_title = update->error.title;
         model.update_error_message = update->error.message;
@@ -1068,14 +1113,37 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
    the frame that asked for it, so without this the first frame of a new screen
    would still focus the control that opened it, and a press on that frame would
    be lost. Leaving the flow gives the library back the focus it had. */
+/* The flow screen the app is on: its view, plus the sub-screen some views
+   step through (the wizard's step and copy, a finished build, a calibration
+   step, an update step). 0 off the flow views. */
+static unsigned player_ui_flow_screen(const PlayerApp *app) {
+    unsigned screen;
+    if (!player_ui_nk_flow_view(app->active_view)) return 0u;
+    screen = (unsigned)app->active_view * 64u + 1u;
+    switch (app->active_view) {
+        case VIEW_SETUP_WIZARD:
+            screen += (unsigned)app->wizard.step * 2u + (app->wizard.is_extracting ? 1u : 0u);
+            break;
+        case VIEW_BUILDING_PACKAGE:
+            if (app->build_session.is_complete && !app->build_session.is_failed) screen += 1u;
+            break;
+        case VIEW_CONTROLLER_SETTINGS:
+            screen += (unsigned)(input_settings_is_calibrating(&app->input_settings)
+                                     ? input_settings_get_calibration_stage(&app->input_settings)
+                                     : CALIBRATION_STAGE_INACTIVE);
+            break;
+        case VIEW_UPDATES: screen += (unsigned)app->update.phase; break;
+        default: break;
+    }
+    return screen;
+}
+
 static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
-    unsigned screen = 0u;
+    unsigned screen = player_ui_flow_screen(app);
     NkUiId focus = 0u;
     if (player_ui_nk_flow_view(app->active_view)) {
-        screen = (unsigned)app->active_view * 64u + 1u;
         switch (app->active_view) {
             case VIEW_SETUP_WIZARD:
-                screen += (unsigned)app->wizard.step * 2u + (app->wizard.is_extracting ? 1u : 0u);
                 focus = app->wizard.step == WIZARD_STEP_INSPECT_VERIFY &&
                         app->wizard.is_extracting
                     ? PLAYER_UI_ID_WIZARD_CANCEL : PLAYER_UI_ID_WIZARD_PRIMARY;
@@ -1085,7 +1153,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    South cannot stop a build; a move reaches it. A finished
                    build focuses BACK TO LIBRARY. */
                 if (app->build_session.is_complete && !app->build_session.is_failed) {
-                    screen += 1u;
                     focus = PLAYER_UI_ID_BUILD_ACTION;
                 }
                 break;
@@ -1106,6 +1173,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
+                    : player->last_view == VIEW_CONFIRM_FACTORY_RESET
+                        ? PLAYER_UI_ID_SETTINGS_FACTORY_RESET
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -1117,7 +1186,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     input_settings_is_calibrating(&app->input_settings)
                         ? input_settings_get_calibration_stage(&app->input_settings)
                         : CALIBRATION_STAGE_INACTIVE;
-                screen += (unsigned)stage;
                 focus = stage == CALIBRATION_STAGE_REST ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL
                     : stage != CALIBRATION_STAGE_INACTIVE
                         ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY
@@ -1133,7 +1201,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    next. CANCEL is the download's only control; a finished check
                    with nothing newer, a failure or a release without a Windows ZIP
                    focuses CHECK FOR UPDATES. */
-                screen += (unsigned)app->update.phase;
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
                         focus = app->update.check.newest.has_zip
@@ -1152,7 +1219,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
-            case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+            case VIEW_CONFIRM_REMOVE_TOOLS:
+            /* The safe answer, Keep everything, has the focus. */
+            case VIEW_CONFIRM_FACTORY_RESET: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
             case VIEW_BUILD_CACHE:
                 /* Back from the removal check, focus the button that opened it. */
                 focus = player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
@@ -1162,6 +1231,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
         }
     }
     player->last_view = app->active_view;
+    if (app->active_view != VIEW_CONFIRM_FACTORY_RESET) player->reset_folders_ready = false;
     if (screen == player->flow_screen) return;
     if (player->flow_screen == 0u) {
         player->pre_flow_focus = nk_ui_focused(player->ui);
@@ -1225,6 +1295,14 @@ bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
            nk_ui_router_depth(player->router) == 1u;
+}
+
+size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap) {
+    size_t count;
+    if (player == NULL || out == NULL) return 0u;
+    count = player->shown_count < cap ? player->shown_count : cap;
+    memcpy(out, player->shown_titles, count * sizeof(out[0]));
+    return count;
 }
 
 bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
@@ -1504,22 +1582,16 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->is_demo = game->is_showcase_package;
     out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
                : game->is_sample ? "Test program" : "Your disc";
+    /* Disc art is asked for by the screen that shows it
+       (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
     out->picture = NULL;
-    if (out->art_kind == NK_UI_ART_NONE) {
-        player_ui_art_get(player->art, game->iso_path, false, &out->icon, NULL);
-    }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (strcmp(player->status_reported[index], out->library_status) != 0) {
         snprintf(player->status_reported[index], sizeof(player->status_reported[index]), "%s",
                  out->library_status);
         printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
                out->library_status);
-    }
-    if (out->icon != NULL && !player->icon_reported[index]) {
-        player->icon_reported[index] = true;
-        printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%d width=%u height=%u\n", index,
-               (unsigned)out->icon->width, (unsigned)out->icon->height);
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
@@ -1577,12 +1649,96 @@ static void player_ui_fill_titles(PlayerUiNk *player, const PlayerApp *app,
     }
 }
 
+/* Asks the art cache for one title's disc icon (and its picture, for the
+   title page). Only titles on screen ask: the cache holds PLAYER_UI_ART_SLOTS
+   discs, and a library that asked for every title on every frame filled it
+   with the first ones, so later pages never showed their art. */
+static void player_ui_note_shown(PlayerUiNk *player, size_t index) {
+    if (player->shown_count < PLAYER_UI_SHOWN_TITLES_MAX && index <= (size_t)INT_MAX) {
+        player->shown_titles[player->shown_count++] = (int)index;
+    }
+}
+
+static void player_ui_title_art(PlayerUiNk *player, const PlayerApp *app, size_t index,
+                                bool want_picture) {
+    PlayerUiTitle *title = &player->titles[index];
+    player_ui_note_shown(player, index);
+    if (title->art_kind != NK_UI_ART_NONE) return;
+    player_ui_art_get(player->art, app->games[index].iso_path, want_picture,
+                      &title->icon, want_picture ? &title->picture : NULL);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (title->icon != NULL && !player->icon_reported[index]) {
+        player->icon_reported[index] = true;
+        printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%zu width=%u height=%u\n", index,
+               (unsigned)title->icon->width, (unsigned)title->icon->height);
+    }
+#endif
+}
+
+/* The title at grid position `position` (counting titles that are not demos),
+   or `count` when the position holds no title. */
+static size_t player_ui_library_title_at(const PlayerUiTitle *titles, size_t count,
+                                         size_t position) {
+    for (size_t i = 0u; i < count; ++i) {
+        if (titles[i].is_demo) continue;
+        if (position == 0u) return i;
+        --position;
+    }
+    return count;
+}
+
+/* The disc art of the games on the library page shown: grid positions
+   [page * page_size, (page + 1) * page_size), counting the titles that are not
+   demos, as the library screen lays them out. */
+static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
+                                       size_t count, size_t page, size_t page_size) {
+    size_t first;
+    size_t position = 0u;
+    if (page_size == 0u || page > SIZE_MAX / page_size) return;
+    first = page * page_size;
+    for (size_t i = 0u; i < count; ++i) {
+        if (player->titles[i].is_demo) {
+            player_ui_note_shown(player, i);  /* every page shows the demos */
+            continue;
+        }
+        if (position >= first && position < first + page_size) {
+            player_ui_title_art(player, app, i, false);
+        }
+        ++position;
+    }
+}
+
 
 static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
     uint32_t value = focused;
     if (value < PLAYER_UI_ID_LIBRARY_ITEM_BASE) return count;
     value -= PLAYER_UI_ID_LIBRARY_ITEM_BASE;
     return value < count ? (size_t)value : count;
+}
+
+/* Shows library page `page`. A card with focus hands it to the card in the
+   same place on the new page (the last one when the page is shorter), since
+   the page shown follows the focused card. */
+static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t page_size,
+                                        size_t slots, size_t page) {
+    NkUiId focused = nk_ui_focused(player->ui);
+    size_t index = player_ui_focused_title_index(focused, count);
+    size_t slot = SIZE_MAX;
+    if (index < count) {
+        size_t position = player_ui_library_grid_position(player->titles, count, index);
+        if (position < count) slot = position % page_size;
+    } else if (focused == PLAYER_UI_ID_LIBRARY_ADD) {
+        slot = (slots - 1u) % page_size;
+    }
+    player->library_page = page;
+    if (slot != SIZE_MAX) {
+        size_t position = page * page_size + slot;
+        if (position >= slots) position = slots - 1u;
+        index = position + 1u < slots
+            ? player_ui_library_title_at(player->titles, count, position) : count;
+        nk_ui_focus(player->ui, index < count ? PLAYER_UI_ID_LIBRARY_ITEM(index)
+                                              : PLAYER_UI_ID_LIBRARY_ADD);
+    }
 }
 
 bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
@@ -1652,7 +1808,20 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
        audio is left alone. */
     player_ui_sounds_set_enabled(player->sounds,
                                  app->settings.ui_sounds && !app->is_game_running);
+    {
+        /* The owner's first run: one click on COPY FILES AND CONTINUE swapped
+           in the copy screen, whose CANCEL sits where the button was, and the
+           rest of the click cancelled the copy. A click that began on another
+           screen activates nothing on this one. */
+        unsigned screen = player_ui_flow_screen(app) * 16u +
+                          (unsigned)nk_ui_router_current(player->router);
+        if (screen != player->press_screen) {
+            nk_ui_cancel_press(player->ui);
+            player->press_screen = screen;
+        }
+    }
     nk_ui_begin(player->ui, now_s);
+    player->shown_count = 0u;
     {
         NkUiId restore = nk_ui_router_take_focus_restore(player->router);
         if (restore != 0u) nk_ui_focus(player->ui, restore);
@@ -1737,6 +1906,26 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         else if (player->library_page > (slots - 1u) / page_size) {
             player->library_page = (slots - 1u) / page_size;
         }
+        if (slots > page_size) {
+            /* Page Down and Page Up, the pad's triggers and the mouse wheel turn
+               the page, so a library of hundreds of games is not a hundred
+               presses of NEXT. */
+            NkUiNavDir dir = NK_UI_DIR_NONE;
+            size_t last_page = (slots - 1u) / page_size;
+            while (nk_ui_take_event(player->ui, NK_UI_EV_PAGE, &dir) ||
+                   nk_ui_take_event(player->ui, NK_UI_EV_WHEEL, &dir)) {
+                size_t page = player->library_page;
+                if ((dir == NK_UI_DIR_RIGHT || dir == NK_UI_DIR_DOWN) && page < last_page) {
+                    ++page;
+                } else if ((dir == NK_UI_DIR_LEFT || dir == NK_UI_DIR_UP) && page > 0u) {
+                    --page;
+                } else {
+                    continue;
+                }
+                player_ui_library_turn_page(player, count, page_size, slots, page);
+            }
+        }
+        player_ui_library_page_art(player, app, count, player->library_page, page_size);
         PlayerUiLibraryModel model;
         memset(&model, 0, sizeof(model));
         model.titles = player->titles;
@@ -1796,11 +1985,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);
-            if (player->titles[index].art_kind == NK_UI_ART_NONE) {
-                player_ui_art_get(player->art, app->games[index].iso_path, true,
-                                  &player->titles[index].icon,
-                                  &player->titles[index].picture);
-            }
+            player_ui_title_art(player, app, (size_t)index, true);
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
@@ -1808,6 +1993,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
             model.stalled_game_dark_picture = app->stalled_game_dark_picture;
+            model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {

@@ -3,8 +3,9 @@
 
 /* The pause menu and its controls page. The menu is one card: GAME PAUSED, the
    game's name, then RESUME (the default) over SETTINGS, CONTROLS and QUIT TO
-   LIBRARY. Back resumes. The controls page lists what drives each PSP control,
-   read from the bindings the game is using. */
+   LIBRARY, with VRAM VIEWER and PROFILE before QUIT in developer mode. Back resumes.
+   The controls page lists what drives each PSP control, read from the bindings the game
+   is using. */
 
 #include "nk_overlay.h"
 #include "nk_ui_widgets.h"
@@ -73,6 +74,14 @@ NkOverlayAction nk_overlay_page_menu(NkUi *ui, NkOverlayState *state, const NkOv
             }
             if (nk_ui_button(ui, NK_OVERLAY_ID_CONTROLS, "Controls", NK_UI_BUTTON_GROW)) {
                 nk_overlay_go(state, NK_OVERLAY_SCREEN_CONTROLS, 0u);
+            }
+            if (model->developer &&
+                nk_ui_button(ui, NK_OVERLAY_ID_VRAM, "VRAM viewer", NK_UI_BUTTON_GROW)) {
+                nk_overlay_go(state, NK_OVERLAY_SCREEN_VRAM, 0u);
+            }
+            if (model->developer &&
+                nk_ui_button(ui, NK_OVERLAY_ID_PROFILE, "Profile", NK_UI_BUTTON_GROW)) {
+                nk_overlay_go(state, NK_OVERLAY_SCREEN_PROFILE, 0u);
             }
             if (nk_ui_button(ui, NK_OVERLAY_ID_QUIT, "Quit to library", NK_UI_BUTTON_GROW)) {
                 nk_overlay_go(state, NK_OVERLAY_SCREEN_QUIT, 0u);

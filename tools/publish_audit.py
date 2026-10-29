@@ -203,7 +203,8 @@ POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
     "tools/vulkan_sdk.ps1": 1,
 }
 
-ACTION_USE = re.compile(r"uses:\s*([^\s#]+)")
+# A `uses:` key, not the tail of another key such as `statuses: write`.
+ACTION_USE = re.compile(r"(?<![\w-])uses:\s*([^\s#]+)")
 FULL_SHA_ACTION = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*@[0-9a-fA-F]{40}$")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -1269,6 +1270,9 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     "src/rt/h264_ffmpeg_sub/libavcodec/",
     "src/rt/h264_ffmpeg_sub/libavutil/",
     "src/rt/h264_ffmpeg_sub/compat/",
+    # libchdr and the codecs it carries, kept as upstream wrote them (CRLF normalised to LF only;
+    # third_party/libchdr/PROVENANCE.md records every upstream blob).
+    "third_party/libchdr/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({

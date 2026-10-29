@@ -95,9 +95,24 @@ The summary fields mean:
 - `aot_to_interpreter_count` and `interpreter_to_aot_count` count completed tier hand-offs. Each
   direction retains a deterministic, bounded top-16 table keyed by guest PC and reason. The table
   is an aggregate heavy-hitter sample, not a per-transition log; the total counts remain exact.
-- `vfpu` counts fallback operations, family classification, fallback time, and failures. Native AOT
-  VFPU execution has no separate per-instruction timer yet, so AOT VFPU time is not inferred from
-  total guest time; this boundary is in the works (#282).
+- `vfpu` counts fallback operations, family classification, fallback time, and failures.
+  `vfpu.aot_families` covers native AOT VFPU code, which runs inline, so there is no call to time.
+  It is filled only in a `PERF_AOT_INSTRUCTIONS=1` census build; otherwise its status is
+  `not_compiled` and the `aot_vfpu_time` boundary stays `partial`.
+  - Families are by primary opcode: `load`, `store`, `vfpu0` (0x18), `vfpu1` (0x19), `vfpu3`
+    (0x1b), `vfpu4` (0x34), `matrix` (0x3c), `prefix_imm` (0x37), and `move_control` (0x12, 0x3f).
+  - `count` per family is exact.
+  - Time is sampled. One VFPU instruction in `stride` (64) is timed from its start to the next
+    instruction's start. One scalar instruction in `baseline_stride` (1024) is timed the same
+    way, as the baseline: the hook plus an ordinary instruction.
+  - A sample counts only when the next instruction is at `pc + 4`, so no branch, call, return or
+    dispatch lands in it.
+  - `estimated_ns` is `count * max(0, mean_ns - baseline_mean_ns)`: the family's cost above an
+    ordinary instruction. It is an estimate from samples. The host clock's tick (100 ns for QPC
+    on Windows) is longer than most instructions, so individual samples are quantized and only
+    the means over many samples carry the figure.
+  - The census build's own hook slows every instruction, so compare families with each other and
+    with the same build's `aot_ns`, not with a default build.
 - `scheduler` is global execution residency: running, runnable, blocked, and idle intervals, plus
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
@@ -205,10 +220,39 @@ inspected its counted guest region was about 5 to 6 ms, and the runtime's own `w
 inside a 178 ms harness run. Its GE, Vulkan and texture counters are all zero. A null result here bounds
 the counter cost only for a workload this small. The platform-ladder fixtures delete every ambient `SR_*`
 variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), so their `SR_PERF=1` runs
-stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
-them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
+stay counter-off. Of 60 such runs, none printed `PERF enabled`. The benchmark runner
+(`tools/run_perf_benchmarks.py`) therefore times the three ladder workloads without expecting a summary,
+and records a `note` saying so, instead of failing them. `cosim-selftest` builds with `TRACE=1`, which measures a
 different instrumentation. So the cost of the counters on a workload with substantial guest work is not
-measured here.
+measured here; the real-workload measurement follows.
+
+**Real workload (2026-10-29).** The workload is a private Hot Shots Tennis route (boot, menus, then the
+exhibition match): 14,000 vblanks with the window hidden, dummy audio, and vblank pacing off, so the route's
+guest work sets the wall time. It runs about 0.93 billion AOT instructions and no interpreter instructions.
+No route, capture or title data is in the repository.
+
+Three arms ran round-robin with the start arm rotated: 15 rounds, 45 runs, no failures.
+
+- `base-p0`: main `c0e6056e`, `SR_PERF=0`.
+- `base-p1`: the same build, `SR_PERF=1`.
+- `p2-p0`: the same main plus the always-on execution share (#1632), `SR_PERF=0`.
+
+The decision rule is the one above. The host ran the private regression gate's title runs at the same time,
+so process CPU time (which includes GPU driver threads) is far noisier than wall time. Both are reported.
+
+| Arm | Wall median, IQR (s) | CPU median, IQR (s) |
+| --- | --- | --- |
+| `base-p0` | 52.43, 2.44 | 62.25, 15.80 |
+| `base-p1` | 53.81, 5.20 | 58.69, 10.98 |
+| `p2-p0` | 53.99, 3.31 | 68.05, 17.23 |
+
+| Comparison | Wall 95% interval (s) | CPU 95% interval (s) | Result |
+| --- | --- | --- | --- |
+| `SR_PERF` on minus off | [-1.66, +2.91] | [-12.16, +9.09] | not distinguishable from noise at 15 runs |
+| execution share in minus out | [-0.65, +2.71] | [-10.86, +13.97] | not distinguishable from noise at 15 runs |
+
+Both costs are therefore bounded at about +5% of this route's wall time, at 95%. Neither is shown to be
+zero. Tightening the bound needs a quiet host or more rounds.
 
 Historical environment for the recorded base commit `788465b2`. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
 other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
@@ -235,6 +279,57 @@ prefix. Before, the smoke build landed in `build/production-smoke-gap`, while th
 disabled and enabled runs (A B A B), where it used to run all disabled runs before all enabled runs.
 The JSON `ratio` is a bare median ratio with no spread. Judge it with the per-run durations and the
 rule above.
+
+## Execution share and static coverage
+
+Two numbers are default outputs, with no switch: how much of a title the build translated, and
+how much of a run's guest work ran natively rather than in the interpreter floor (#118).
+
+**Static coverage (build time).** `tools/codegen.py` writes `<game>_recomp_coverage.json` next to
+`<game>_recomp_stubs.txt` and prints one `CODEGEN_COVERAGE` line. The counts come from
+`analyze.static_coverage`, which walks the canonical CFG over the same entries and executable spans
+that code emission used. Per image and in total, it gives:
+
+- executable, owned and unowned words and bytes, padding, and owner-conflict and interior-entry words;
+- translated words: owned words where at least one owning function was emitted as C;
+- interpreter words: owned words where every owner was left to the floor (unsupported or `--omit-aot`);
+- other owned words (import stubs, say), so the three add up to the owned words;
+- functions: total, translated and interpreter;
+- jump-table candidates and unresolved indirect edges.
+
+`translated_share` is translated words over owned words. The package planner copies the `total` into
+`build-report.json` as `coverage.static`. Unowned words are code the analyzer could not attribute to a
+function: the dispatcher reaches them only as a miss, which stops the run.
+
+**Execution share (run time).** At every exit, the runtime prints one `EXEC_SHARE` line on stderr. When
+`SR_EXEC_SHARE_JSON` names a file, it also writes the same numbers there (schema
+`nakagawa-exec-share-v1`). The fields:
+
+- `interp_time_share`: interpreter time over AOT plus interpreter time;
+- `aot_ms`, `interp_ms`, and `idle_ms` (host waits excluded from both);
+- interpreter entries by reason (`dispatch_miss`, `stale_block`) and exits (`aot_handoff`,
+  `call_return`, `other`);
+- interpreter instructions, distinct interpreter entry points, distinct miss targets, and entries
+  whose PC did not fit the 2048-entry set (`entry_points_overflow`).
+
+The share is a time share. It overstates the interpreter's share of instructions, because the
+interpreter is slower per instruction. The exact instruction share still needs a
+`PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A
+dispatch reads the clock only when the tier changes, and a guest thread's tier is saved across
+scheduler switches. HLE work called from AOT code counts as AOT time.
+
+The counters only count: no guest state, return value or control flow depends on them. Cost,
+measured with a micro-benchmark linked against `perf.c` at the default `-O0` (Ryzen 9 5900X, 5 runs):
+
+| Operation | Added cost |
+| --- | --- |
+| AOT dispatch, tier unchanged | 1.5 to 2.0 ns |
+| interpreter entry plus exit (two tier switches, entry-point set) | 74 to 80 ns |
+| scheduler slice begin plus end | 66 to 70 ns |
+
+A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). On a
+full title route, measured with the #282 method, the cost is not distinguishable from noise at 15 runs
+(wall-time 95% interval [-0.65, +2.71] s on a 52 s route; see "Measured overhead of the perf counters").
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
@@ -1093,6 +1188,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
 | `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
+| `SR_DEVELOPER_MODE=0\|1` | Developer mode (the launcher exports its setting): `F3`'s profile HUD and the pause menu's VRAM viewer and Profile page |
 | `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or
@@ -1114,10 +1210,11 @@ committed.
 | `SR_SYSLOG=1` | Log system calls |
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
-| `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module. For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, does not write readiness, writes the semantic boundary `libfont-startup-unavailable` (issue 299) to `SR_BOOT_EVENT_FILE` and stops the run with exit status 11. Any other value is refused with one diagnostic and the default is used. Tracked runtime-placed module records use real stop/unload transitions; stop invokes `module_stop` only if the start entry ran and its translation is available. Unknown IDs keep trace behavior when the gate is disabled. |
+| `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` and for guest-placed modules whose exports host HLE does not serve, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `sceKernelLoadModule` resolves a relative path against the calling thread's `sceIoChdir` directory, as `sceIoOpen` does, so a title that loads `Target/libfont.prx` from its data directory gets the translated module its manifest declares; `0` is the environmental kill switch and runs no `module_start` for any module. For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, does not write readiness, writes the semantic boundary `libfont-startup-unavailable` (issue 299) to `SR_BOOT_EVENT_FILE` and stops the run with exit status 11. Any other value is refused with one diagnostic and the default is used. Tracked runtime-placed module records use real stop/unload transitions; stop invokes `module_stop` only if the start entry ran and its translation is available. Unknown IDs keep trace behavior when the gate is disabled. |
 | `SR_USER_DATA_ROOT=ABSOLUTE_PATH` | The per-user data directory, which is the one font root: the runtime reads the imported font cache at `<this>/fonts/v2` for the `flash0:` font device and the HLE `sceFont` shim. The launcher sets it for the child, overriding any inherited value. Unset uses the platform per-user directory; a runtime root does not move it. A relative or empty value is named once on stderr (`flash0: SR_USER_DATA_ROOT ...`) and skips the user-imported source, so the project font is served; it never falls back to another root. "Unreadable" means the environment read itself failed (the process could not read its own environment); that is named the same way, and skips the source too. Only an absent variable takes the platform directory. |
 | `SR_GAME_TITLE=NAME`, `SR_DISC_ID=ID` | The game's name (its PARAM.SFO TITLE) for the window caption and the pause overlay, and the disc ID the pause overlay shows ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)). The runtime drops control characters and malformed UTF-8 from the name. The launcher sets both for the child, empty when it has none, so an inherited value never names another game. Unset or empty captions the window "Nakagawa Recomp" alone, and the pause shows "Paused" and no disc ID. |
 | `SR_UI_ROOT=PATH` | The player's folder, where the pause overlay finds the UI fonts (`assets/fonts/ui`) and, if one was put there, the SDL3_ttf library. The launcher sets it for the child. Unset or empty tries the runtime's own folder and the working directory; when neither has them the pause shows the frozen frame without its pages and says why once (`SR_PAUSE: the overlay pages are unavailable ...`). |
+| `SR_LAUNCHER_DISPLAY_BOUNDS=X,Y,W,H` | Desktop bounds of the display that holds the launcher window, set by the launcher (SDL display IDs are per process, so it passes bounds). The game window, windowed or fullscreen, opens centred on the display that contains the centre of that rectangle. Empty uses the primary display; a malformed value, or one no display contains, also uses the primary and says so on stderr (`sdl3vk: ... opening on the primary display`). |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
@@ -1298,6 +1395,33 @@ refused NIDs in first-seen order with a count each (up to 32; further NIDs are c
 they cannot show what ran after it. The private triage tooling reports those as frozen at
 a refusal; that grouping is not part of this repository.
 
+The event ring keeps only the newest events. A thread that blocked minutes ago, while other
+threads kept producing GE or audio events, has fallen out of it. So every schema 6 bundle, the
+provisional `running` ones included, also has a `threads` block: one entry per guest thread
+that exists when the bundle is written (deleted threads are left out, at most 128). It is the
+state at the cut. It needs no event class of its own and costs nothing until a bundle is
+written. A runtime with no
+scheduler writes an empty list. Every value is a number or a fixed word; nothing comes from guest
+memory.
+
+| Field | Meaning |
+| --- | --- |
+| `uid`, `priority` | The thread and its current priority. |
+| `state` | `dormant`, `ready`, `running`, `wait-delay` or `wait-object`. |
+| `suspended` | `true` while `sceKernelSuspendThread` is in effect. |
+| `why` | Why a waiting thread is parked, as `sched_dump_threads` names it: `sleep`, `delay`, `vblank`, `ctrl`, `thread-end` or `object`. `none` when it is not waiting. |
+| `wait_type` | The PSP waitType `sceKernelReferThreadStatus` reports (for example 3 semaphore, 4 event flag). 0 when not waiting. |
+| `wait_object` | The UID the thread waits on. 0 outside an object wait. |
+| `block_nid` | The import the thread last blocked in. `null` if it never blocked, or if its last block happened outside any import. |
+| `pc`, `ra` | The saved `pc` and `$ra`. The running thread reports the live ones. |
+| `waited_us` | Guest microseconds since the current wait began. `null` when not waiting. |
+| `deadline_us` | Guest microseconds left on a timed wait. `null` for an untimed wait or no wait. |
+
+`tools/flight_diff.py` prints each side's waiting threads after its verdict, also when the pair
+is incomparable because a window slid. A thread stuck in an allocation, for example, reads as
+`uid=0x110 why=object wait_object=0x... block_nid=0x... waited_us=...`. The block is reported,
+never compared.
+
 ### Disabled-recorder overhead (#320)
 
 Switches. `SR_FLIGHT_RECORDER_LINKED` is a compile-time define that the Makefile adds to the runtime, generated-code
@@ -1449,7 +1573,8 @@ VIDEO: present fb=0x04000000 fmt=3 stride=512
 The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance overlay (HUD) that can be toggled at runtime or enabled at process start:
 
 - **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
-- **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off. (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
+- **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off; in developer mode
+  it steps through the profile HUD as well (below). (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
 - **Telemetry Displayed**:
   - **Game FPS**: New game frames per second. A new frame is a present whose guest framebuffer differs from the
     previous present's, the flip that `tools/perf_attribution.py` counts. This is the frame rate a player sees.
@@ -1466,6 +1591,30 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
   - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.
   - When enabled, host-side drawing renders text onto an SDL3 surface after the guest frame is composed and copies it directly into the swapchain staging buffer, guaranteeing zero impact on guest-visible timing or emulation clocks.
   - Snapshot captures (`SR_FBSNAP` / visual evidence capture) capture the pristine guest framebuffer before the presentation blit, keeping automated tests and snapshots free of HUD artifacts.
+
+### Developer mode: profile HUD, VRAM viewer and Profile page
+
+Developer mode in the player's settings reaches the game as `SR_DEVELOPER_MODE=1`; the launcher
+always exports it, as `0` when the setting is off, so an inherited value never turns it on. A run started by hand
+is a developer run when `SR_DEVELOPER_MODE` is set and not `0`. Without it none of the following exists, and the
+player and game behave as they do for everyone ([#314](https://github.com/Jstar269/nakagawa-recomp/issues/314)).
+
+- **Profile HUD.** `F3` steps off, the HUD above, then the profile HUD, then off. The profile HUD shows the
+  `nakagawa-perf-v1` counters for the last closed one-second interval, with the definitions of the `PERF` and
+  `PERF_ATTRIB` lines: frame rate, the cpu, GE wait, present and idle split of wall time, AOT and interpreter
+  residency and transitions, scheduler residency, GE CPU time and GPU draws, Vulkan submit, wait, pipeline and
+  readback time, audio underruns, the hottest AOT-to-interpreter PC of the run, and one bar per second. It reads
+  the same counters as `SR_PERF` (`src/rt/perf.h`); it adds none. A window smaller than 560 x 232 pixels shows the
+  HUD instead.
+- **VRAM viewer.** The pause menu's `VRAM viewer` shows the displayed framebuffer, the GE's draw framebuffer and
+  depth buffer, or the texture the last draw bound, as the GE state names them while the game is paused. Left and
+  right on `Source`, `Address`, `Stride` and `Format` (5650, 5551, 4444, 8888, DEPTH16) move the window; it stays
+  inside the 2 MiB at `0x04000000`. The viewer only reads: colour formats expand as the texture decoder expands
+  them, DEPTH16 is shown as `SR_VRAMDUMP`'s decoder shows it, and the bound texture goes through the texture
+  decoder with the GE state untouched. Like any CPU read, a surface the GPU rasterizer still owns is first brought
+  back to guest memory. Alpha is shown opaque. The texture is refused while a GE capture runs.
+- **Profile page.** The pause menu's `Profile` shows the profile HUD's rows, both directions' hottest transition PC
+  and up to 60 bars. Opening it turns the counters on if nothing had; they then collect while the game runs.
 
 ## Quick recipes
 

@@ -958,18 +958,21 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         fclose(f);
         return pbp_result;
     }
-    /* A compressed disc image (CISO, written as .cso, or its LZ4 form ZISO, .zso)
-       starts with its own magic instead of the ISO9660 layout. Name it, so the
-       user is not told the file is no disc image at all. */
-    if (pbp_header_len >= 4u &&
-        (memcmp(pbp_header, "CISO", 4) == 0 || memcmp(pbp_header, "ZISO", 4) == 0)) {
-        const char *extension = pbp_header[0] == 'C' ? ".cso" : ".zso";
+    /* A compressed disc image (CISO, written as .cso; its LZ4 form ZISO, .zso;
+       or a CHD) starts with its own magic instead of the ISO9660 layout. It is
+       expanded once into a plain .iso when it is added (nk_disc_expand.c), and
+       only that .iso is inspected; name the compressed file here instead of
+       reading it as a broken ISO. */
+    if ((pbp_header_len >= 4u &&
+         (memcmp(pbp_header, "CISO", 4) == 0 || memcmp(pbp_header, "ZISO", 4) == 0)) ||
+        (pbp_header_len >= 8u && memcmp(pbp_header, "MComprHD", 8) == 0)) {
+        const char *extension = pbp_header[0] == 'C' ? ".cso"
+                              : pbp_header[0] == 'Z' ? ".zso" : ".chd";
         snprintf(out_meta->boundary_code, sizeof(out_meta->boundary_code),
-                 "DISC_IMAGE_COMPRESSED");
+                 "DISC_IMAGE_NOT_EXPANDED");
         snprintf(out_meta->error_message, sizeof(out_meta->error_message),
-                 "This is a compressed disc image (%s). Nakagawa reads plain .iso disc "
-                 "images only. Turn it back into an .iso with the tool that compressed it, "
-                 "or copy your disc again as an .iso.", extension);
+                 "This is a compressed disc image (%s). Nakagawa expands it into a plain "
+                 ".iso when you add it to the library; add it there.", extension);
         fclose(f);
         return NK_ERROR_INVALID_ISO;
     }

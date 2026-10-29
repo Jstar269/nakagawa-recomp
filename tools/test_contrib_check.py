@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -71,6 +72,12 @@ class TestGateStatusVocabulary(unittest.TestCase):
         self.assertEqual(contrib_check.c_gate(["docs/a.md"]).status, contrib_check.NOT_RUN)
         self.assertEqual(contrib_check.markdown_gate(["tools/a.py"]).status, contrib_check.NOT_RUN)
         self.assertEqual(contrib_check.ruff_gate([]).status, contrib_check.NOT_RUN)
+        self.assertEqual(contrib_check.purity_gate(["docs/a.md"]).status, contrib_check.NOT_RUN)
+
+    def test_a_runtime_change_runs_the_core_purity_gate(self) -> None:
+        gate = contrib_check.purity_gate(["src/rt/hle.c"])
+        self.assertEqual(gate.name, "core-purity")
+        self.assertEqual(gate.status, contrib_check.PASS, gate.detail)
 
     def test_a_missing_tool_is_skipped_rather_than_passed(self) -> None:
         with mock.patch.object(contrib_check.shutil, "which", return_value=None):
@@ -165,6 +172,240 @@ class TestStrictCompileIncludePath(unittest.TestCase):
                 for name in self._unit_player_includes(relative):
                     self.assertNotIn(f"{name}: No such file or directory",
                                      gate.detail)
+
+
+def _makefile_text() -> str:
+    """The Makefile and the fragments it includes, continuation lines joined."""
+    parts = [(ROOT / "Makefile").read_text(encoding="utf-8")]
+    parts.extend(path.read_text(encoding="utf-8") for path in sorted((ROOT / "mk").glob("*.mk")))
+    return re.sub(r"\\\n[ \t]*", " ", "\n".join(parts))
+
+
+def _assignments(text: str) -> dict[str, list[str]]:
+    """Every value assigned to each variable, across all conditional branches.
+
+    The drift checks ask whether a flag is on a recipe at all, so the union of
+    the alternatives is the right reading: a flag present in any branch counts.
+    """
+    found: dict[str, list[str]] = {}
+    pattern = re.compile(r"^(?:override\s+)?([A-Za-z0-9_.-]+)\s*(?::=|\?=|\+=|=)\s*(.*)$", re.M)
+    for name, value in pattern.findall(text):
+        found.setdefault(name, []).append(value)
+    return found
+
+
+def _expand(text: str, assignments: dict[str, list[str]], depth: int = 0) -> str:
+    if depth > 10:
+        return text
+    return re.sub(
+        r"\$\(([A-Za-z0-9_.-]+)\)",
+        lambda match: _expand(" ".join(assignments.get(match.group(1), [])), assignments, depth + 1),
+        text,
+    )
+
+
+def _rule_blocks(text: str, target: str) -> list[str]:
+    """Header plus recipe of every rule whose target is exactly *target*."""
+    lines = text.splitlines()
+    blocks: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.startswith(target + ":") or line.startswith(target + ":="):
+            continue
+        recipe = [line]
+        for following in lines[index + 1:]:
+            if not following.startswith("\t"):
+                break
+            recipe.append(following)
+        blocks.append("\n".join(recipe))
+    return blocks
+
+
+def _has_flag(text: str, flag: str) -> bool:
+    return re.search(re.escape(flag) + r"(?![A-Za-z0-9_./-])", text) is not None
+
+
+class TestStrictCompileFlagsMirrorTheMakefile(unittest.TestCase):
+    """Each source is compiled with the flags the build compiles it with.
+
+    The gate compiled every changed source with one fixed line, so a selftest
+    whose hooks are declared under its own define (`SR_HLE_THREAD_SELFTEST`,
+    `SR_SCHED_LIVENESS_TEST`), a player screen that includes `nk_ui.h`, and the
+    Vulkan backend all failed on unchanged `origin/main`, for every contributor
+    who touched them.  The per-source table must stay the Makefile's own flags.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.makefile = _makefile_text()
+        cls.assignments = _assignments(cls.makefile)
+
+    def test_every_listed_flag_is_on_the_recipe_that_builds_the_source(self) -> None:
+        for source, unit in contrib_check.STRICT_C_UNITS.items():
+            with self.subTest(source=source):
+                self.assertTrue((ROOT / source).is_file(), f"{source} is not in the tree")
+                self.assertTrue(unit.recipes, f"{source} names no Makefile recipe")
+                building: list[str] = []
+                raw: list[str] = []
+                for target in unit.recipes:
+                    blocks = _rule_blocks(self.makefile, target)
+                    self.assertTrue(blocks, f"no Makefile rule `{target}:` (named for {source})")
+                    for block in blocks:
+                        expanded = _expand(block, self.assignments)
+                        if source in expanded:
+                            building.append(expanded)
+                            raw.append(block)
+                self.assertTrue(
+                    building, f"none of {unit.recipes} compiles {source}; the table names the wrong rule",
+                )
+                recipe = "\n".join(building)
+                for define in unit.defines:
+                    self.assertTrue(
+                        _has_flag(recipe, f"-D{define}"),
+                        f"-D{define} is listed for {source} but is not on {unit.recipes}",
+                    )
+                for include in unit.includes:
+                    self.assertTrue(
+                        _has_flag(recipe, f"-I{include}"),
+                        f"-I{include} is listed for {source} but is not on {unit.recipes}",
+                    )
+                for warning in unit.warnings:
+                    self.assertTrue(
+                        _has_flag(recipe, warning),
+                        f"{warning} is listed for {source} but is not on {unit.recipes}",
+                    )
+                for header in unit.generated:
+                    self.assertTrue(
+                        any(header.include in block for block in raw),
+                        f"{header.include} ({header.name}) is not on {unit.recipes}",
+                    )
+
+    def test_every_common_include_directory_is_one_the_makefile_uses(self) -> None:
+        for flag in contrib_check.STRICT_C_FLAGS:
+            if not flag.startswith("-I"):
+                continue
+            with self.subTest(flag=flag):
+                self.assertTrue((ROOT / flag[2:]).is_dir(), f"{flag} names no directory")
+                self.assertTrue(_has_flag(self.makefile, flag), f"the Makefile never passes {flag}")
+
+    def test_the_drift_check_catches_a_define_the_recipe_does_not_set(self) -> None:
+        """Guard the guard: an invented define must not be found on the recipe."""
+        blocks = _rule_blocks(self.makefile, "sched-selftest-one")
+        recipe = "\n".join(_expand(block, self.assignments) for block in blocks)
+        self.assertTrue(_has_flag(recipe, "-DSR_SCHED_LIVENESS_TEST"))
+        self.assertFalse(_has_flag(recipe, "-DSR_SCHED_LIVENESS"))
+        self.assertFalse(_has_flag(recipe, "-DSR_HLE_THREAD_SELFTEST"))
+
+    def test_a_selftest_is_compiled_with_its_own_defines(self) -> None:
+        command, reason = contrib_check.strict_compile_command("cc", "src/rt/hle_thread_selftest.c", [])
+        self.assertEqual(reason, "")
+        for define in ("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST"):
+            self.assertIn(f"-D{define}", command)
+        self.assertEqual(command[-1], "src/rt/hle_thread_selftest.c")
+        plain, _ = contrib_check.strict_compile_command("cc", "src/rt/hle.c", [])
+        self.assertFalse([flag for flag in plain if flag.startswith("-D")])
+
+
+class TestStrictCompileUnavailableInputs(unittest.TestCase):
+    def _fail_if_compiled(self, *args, **kwargs):
+        raise AssertionError("the compiler must not run for a file that cannot be compiled here")
+
+    def test_a_missing_generated_header_is_not_run_rather_than_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as empty, \
+                mock.patch.dict(contrib_check.os.environ, {"BUILD_ROOT": empty, "CC": "cc"}), \
+                mock.patch.object(contrib_check, "vulkan_include_flags", return_value=([], "")), \
+                mock.patch.object(contrib_check.subprocess, "run", side_effect=self._fail_if_compiled):
+            gate = contrib_check.c_gate(["fixtures/cosim/cosim_selftest.c"])
+        self.assertEqual(gate.status, contrib_check.NOT_RUN)
+        self.assertIn("cosim_recomp_funcs.h", gate.detail)
+        self.assertIn("make cosim-selftest", gate.detail)
+
+    def test_a_present_generated_header_is_put_on_the_include_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            fixture = Path(root) / "cosim" / "fixture"
+            fixture.mkdir(parents=True)
+            (Path(root) / "cosim" / "cosim_recomp_funcs.h").write_text("", encoding="ascii")
+            for name in ("cosim_cells.h", "cosim_fpu_corpus.h"):
+                (fixture / name).write_text("", encoding="ascii")
+            with mock.patch.dict(contrib_check.os.environ, {"BUILD_ROOT": root}):
+                command, reason = contrib_check.strict_compile_command(
+                    "cc", "fixtures/cosim/cosim_selftest.c", [],
+                )
+        self.assertEqual(reason, "")
+        self.assertIn(f"-I{root}/cosim", command)
+        self.assertIn(f"-I{root}/cosim/fixture", command)
+        self.assertEqual(command.count(f"-I{root}/cosim/fixture"), 1)
+        self.assertIn("-DSR_INSTRUCTION_TRACE", command)
+
+    def test_a_missing_vulkan_sdk_is_a_skip_with_its_reason_never_a_pass(self) -> None:
+        missing = _Completed(
+            1, "", "src/rt/gpu_sdl3vk/ge_gpu.c:82:10: fatal error: vulkan/vulkan.h: "
+            "No such file or directory\ncompilation terminated.",
+        )
+        with mock.patch.dict(contrib_check.os.environ, {"CC": "cc"}), \
+                mock.patch.object(contrib_check, "discover_vulkan_sdk",
+                                  side_effect=contrib_check.VulkanSdkError("No usable Vulkan SDK found.")), \
+                mock.patch.object(contrib_check.subprocess, "run", return_value=missing):
+            gate = contrib_check.c_gate(["src/rt/gpu_sdl3vk/ge_gpu.c"])
+        self.assertEqual(gate.status, contrib_check.SKIP)
+        self.assertIn("Vulkan SDK", gate.detail)
+        self.assertIn("No usable Vulkan SDK found.", gate.detail)
+
+    def test_a_discovered_vulkan_sdk_is_on_the_include_path(self) -> None:
+        sdk = Path(tempfile.gettempdir()) / "VulkanSDK" / "1.4.0"
+        with mock.patch.object(contrib_check, "discover_vulkan_sdk", return_value=sdk):
+            flags, reason = contrib_check.vulkan_include_flags()
+        self.assertEqual(reason, "")
+        self.assertIn(f"-I{sdk.as_posix()}/include", flags)
+
+    def test_a_real_failure_outranks_a_skip_and_a_not_run(self) -> None:
+        def fake_run(command, **kwargs):
+            if command[-1].endswith("ge_gpu.c"):
+                return _Completed(1, "", "fatal error: vulkan/vulkan.h: No such file or directory")
+            return _Completed(1, "", "src/rt/hle.c:1:1: error: boom")
+
+        with tempfile.TemporaryDirectory() as empty, \
+                mock.patch.dict(contrib_check.os.environ, {"BUILD_ROOT": empty, "CC": "cc"}), \
+                mock.patch.object(contrib_check, "vulkan_include_flags", return_value=([], "none")), \
+                mock.patch.object(contrib_check.subprocess, "run", side_effect=fake_run):
+            gate = contrib_check.c_gate([
+                "src/rt/gpu_sdl3vk/ge_gpu.c", "fixtures/cosim/cosim_selftest.c", "src/rt/hle.c",
+            ])
+        self.assertEqual(gate.status, contrib_check.FAIL)
+        self.assertIn("src/rt/hle.c: ", gate.detail)
+        self.assertIn("SKIP src/rt/gpu_sdl3vk/ge_gpu.c", gate.detail)
+        self.assertIn("NOT_RUN fixtures/cosim/cosim_selftest.c", gate.detail)
+
+    def test_a_deleted_source_is_not_compiled(self) -> None:
+        with mock.patch.object(contrib_check.subprocess, "run", side_effect=self._fail_if_compiled):
+            gate = contrib_check.c_gate(["src/rt/no_such_file_any_more.c"])
+        self.assertEqual(gate.status, contrib_check.NOT_RUN)
+
+
+class TestStrictCompileOnUnchangedMain(unittest.TestCase):
+    """The sources that failed the gate on unchanged `origin/main` no longer do.
+
+    Each one either compiles, or reports why it could not be compiled here
+    (`SKIP` for an absent SDK, `NOT_RUN` for an absent generated header).
+    """
+
+    SOURCES = (
+        "src/rt/hle_thread_selftest.c",
+        "src/rt/sched_selftest.c",
+        "src/player/ui/player_ui_nk.c",
+        "src/player/ui/scr_title.c",
+        "tests/native/test_player_screens.c",
+        "src/rt/gpu_sdl3vk/ge_gpu.c",
+        "fixtures/cosim/cosim_selftest.c",
+    )
+
+    def test_no_unchanged_source_fails_the_strict_compile(self) -> None:
+        if not (contrib_check.os.environ.get("CC") or contrib_check.find_tool("gcc")
+                or contrib_check.find_tool("cc")):
+            self.skipTest("no C compiler on PATH")
+        for source in self.SOURCES:
+            with self.subTest(source=source):
+                gate = contrib_check.c_gate([source])
+                self.assertNotEqual(gate.status, contrib_check.FAIL, gate.detail)
 
 
 class TestPublicationGateSplit(unittest.TestCase):

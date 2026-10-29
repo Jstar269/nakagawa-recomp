@@ -37,6 +37,7 @@
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
 #include "overlay/overlay_host.h" /* the pause overlay's pages (C9c) */
+#include "ge_shared.h"           /* the developer VRAM viewer's decoders (#314) */
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_render.h>
 #endif
@@ -455,8 +456,35 @@ void gui_init(const char *title) {
     RegisterClassA(&wc);
     RECT r = {0, 0, PSP_W * 2, PSP_H * 2};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    /* Centred on the monitor that holds the launcher window, as the SDL presenter does
+     * (SR_LAUNCHER_DISPLAY_BOUNDS, recomp.h); without a usable value Windows places it. */
+    int win_x = CW_USEDEFAULT, win_y = CW_USEDEFAULT;
+    {
+        const char *value = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
+        int b[4];
+        if (value && value[0] && !sr_parse_display_bounds(value, b)) {
+            fprintf(stderr, "gui_init: SR_LAUNCHER_DISPLAY_BOUNDS=%s is not x,y,w,h; "
+                            "opening on the primary display\n", value);
+        } else if (value && value[0]) {
+            POINT centre = { b[0] + b[2] / 2, b[1] + b[3] / 2 };
+            HMONITOR mon = MonitorFromPoint(centre, MONITOR_DEFAULTTONULL);
+            MONITORINFO mi;
+            mi.cbSize = sizeof(mi);
+            if (!mon) {
+                fprintf(stderr, "gui_init: no monitor contains the launcher's display %s; "
+                                "opening on the primary display\n", value);
+                mon = MonitorFromPoint(centre, MONITOR_DEFAULTTOPRIMARY);
+            }
+            if (GetMonitorInfoA(mon, &mi)) {
+                win_x = mi.rcWork.left +
+                        ((mi.rcWork.right - mi.rcWork.left) - (r.right - r.left)) / 2;
+                win_y = mi.rcWork.top +
+                        ((mi.rcWork.bottom - mi.rcWork.top) - (r.bottom - r.top)) / 2;
+            }
+        }
+    }
     s_hwnd = CreateWindowA("psp_recomp", title ? title : SR_APP_TITLE,
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, win_x, win_y,
         r.right - r.left, r.bottom - r.top, 0, 0, GetModuleHandleA(0), 0);
     s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
     s_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -837,6 +865,13 @@ static SDL_Renderer *s_pause_ren;        /* draws the pages into s_pause_surface
 static NkOverlayHost *s_pause_host;      /* the pages; NULL shows the base alone (no SDL3_ttf or fonts) */
 static int          s_pause_host_tried;
 static NkOverlayControls s_pause_controls;
+/* The developer pages (#314), filled only in developer mode. */
+static NkOverlayVram s_pause_vram;
+static NkUiImage     s_pause_vram_image;
+static uint32_t     *s_pause_vram_px;    /* the decoded window, GE_VRAM_VIEW_MAX_* words */
+static NkOverlayProfile s_pause_profile;
+static SrPerfLiveRow s_pause_profile_rows[SR_PERF_LIVE_ROWS];
+static char          s_pause_profile_top[2][64];
 
 int sr_savedata_pause_busy(void);   /* hle.c: a save is in progress, so quitting is refused */
 
@@ -924,6 +959,133 @@ static void gui_pause_describe_controls(void) {
                                  nk_overlay_host_pad_family(s_pause_host));
 }
 
+/* A GE-local framebuffer offset, or any view of VRAM, as its 0x04000000 address, the fold
+ * ge_framebuffer() applies to the draw target; any other address is left as it is. */
+static uint32_t gui_vram_fold(uint32_t addr) {
+    if (addr < 0x00200000u || (addr & 0x0F000000u) == 0x04000000u)
+        return 0x04000000u | (addr & 0x001FFFFFu);
+    return addr;
+}
+
+/* The surfaces the GE state names while the game is paused, as the VRAMDUMP sidecar names
+ * them: the displayed framebuffer, the draw target, the depth buffer and the bound texture. */
+static void gui_pause_describe_vram(void) {
+    const GeState *ge = ge_state_ptr();
+    NkOverlayVram *v = &s_pause_vram;
+    memset(v->sources, 0, sizeof(v->sources));
+    memset(v->present, 0, sizeof(v->present));
+    if (s_shown_fb.valid) {
+        NkOverlayVramSurface s = { s_shown_fb.addr, s_shown_fb.stride, PSP_W, PSP_H,
+                                   (uint32_t)s_shown_fb.fmt & 3u };
+        v->sources[NK_OVERLAY_VRAM_DISPLAY] = s;
+        v->present[NK_OVERLAY_VRAM_DISPLAY] = 1;
+    }
+    if (!ge) return;
+    if (ge->fbw) {
+        NkOverlayVramSurface s = { ge_framebuffer(), ge->fbw, PSP_W, PSP_H, ge->fbfmt & 3u };
+        v->sources[NK_OVERLAY_VRAM_DRAW] = s;
+        v->present[NK_OVERLAY_VRAM_DRAW] = 1;
+    }
+    if (ge->zbp) {
+        NkOverlayVramSurface s = { gui_vram_fold(ge->zbp), ge->zbw ? ge->zbw : (ge->fbw ? ge->fbw : 512u),
+                                   PSP_W, PSP_H, NK_OVERLAY_VRAM_DEPTH16 };
+        v->sources[NK_OVERLAY_VRAM_DEPTH] = s;
+        v->present[NK_OVERLAY_VRAM_DEPTH] = 1;
+    }
+    if (ge->tex_addr && ge->tex_w > 0 && ge->tex_h > 0) {
+        NkOverlayVramSurface s = { ge->tex_addr, ge->tex_bufw ? ge->tex_bufw : (uint32_t)ge->tex_w,
+                                   (uint32_t)ge->tex_w, (uint32_t)ge->tex_h, ge->tex_fmt };
+        v->sources[NK_OVERLAY_VRAM_TEXTURE] = s;
+        v->present[NK_OVERLAY_VRAM_TEXTURE] = 1;
+        v->texture_swizzled = ge->tex_swizzle != 0;
+    }
+}
+
+/* Decodes the viewer's window into the page's image. Reads only: the surface decoder copies
+ * guest bytes as stored, and the bound texture goes through the texture decoder with the GE
+ * state left as it is (ge_shared.h). Alpha is shown opaque, as the PSP display shows a
+ * framebuffer. */
+static void gui_pause_decode_vram(void) {
+    const NkOverlayVramView *view = nk_overlay_host_vram_view(s_pause_host);
+    const size_t capacity = (size_t)GE_VRAM_VIEW_MAX_WIDTH * GE_VRAM_VIEW_MAX_HEIGHT;
+    uint32_t width, height;
+    int ok;
+    s_pause_vram.image = NULL;
+    s_pause_vram.note = NULL;
+    if (!view || !view->chosen) return;
+    if (!s_pause_vram_px) s_pause_vram_px = (uint32_t *)malloc(capacity * sizeof(uint32_t));
+    if (!s_pause_vram_px) {
+        s_pause_vram.note = "Out of memory for the decoded window.";
+        return;
+    }
+    if (view->source == NK_OVERLAY_VRAM_TEXTURE) {
+        const GeState *ge = ge_state_ptr();
+        ok = ge && ge_vram_decode_bound_texture(s_pause_vram_px, capacity);
+        width = ok ? (uint32_t)ge->tex_w : 0u;
+        height = ok ? (uint32_t)ge->tex_h : 0u;
+        if (!ok)
+            s_pause_vram.note = "The bound texture cannot be read now: it is outside guest memory, "
+                                "larger than 512 pixels, or a GE capture is running.";
+    } else {
+        const NkOverlayVramSurface *w = &view->view;
+        ok = ge_vram_decode_surface(w->addr, w->width, w->height, w->stride, w->format,
+                                    s_pause_vram_px);
+        width = w->width;
+        height = w->height;
+        if (!ok) s_pause_vram.note = "This window cannot be read now.";
+    }
+    if (!ok) return;
+    for (size_t i = 0; i < (size_t)width * height; i++) s_pause_vram_px[i] |= 0xFF000000u;
+    s_pause_vram_image.width = width;
+    s_pause_vram_image.height = height;
+    s_pause_vram_image.rgba_pm = (uint8_t *)s_pause_vram_px;
+    s_pause_vram_image.serial = nk_ui_image_new_serial();
+    s_pause_vram.image = &s_pause_vram_image;
+}
+
+/* The Profile page's rows and bars from the nakagawa-perf-v1 counters (perf.h). Opening the
+ * page turns the counters on when nothing else had: they collect from then on. */
+static void gui_pause_describe_profile(void) {
+    NkOverlayProfile *p = &s_pause_profile;
+    const SrPerfHistory *history = sr_perf_history();
+    int was_on = sr_perf_enabled;
+    unsigned rows;
+    size_t bars;
+    memset(p, 0, sizeof(*p));
+    if (!was_on) sr_perf_enable_counters();
+    rows = sr_perf_live_rows(sr_perf_history_at(history, 0), s_pause_profile_rows,
+                             SR_PERF_LIVE_ROWS);
+    for (unsigned i = 0; i < rows; i++) {
+        p->rows[p->row_count].label = s_pause_profile_rows[i].label;
+        p->rows[p->row_count].value = s_pause_profile_rows[i].value;
+        p->row_count++;
+    }
+    for (unsigned direction = 0; rows && direction < 2u; direction++) {
+        SrPerfTopPc top;
+        if (!sr_perf_top_transitions(direction, &top, 1)) continue;
+        snprintf(s_pause_profile_top[direction], sizeof(s_pause_profile_top[direction]),
+                 "0x%08X x%llu %s", (unsigned)top.pc, (unsigned long long)top.count, top.reason);
+        p->rows[p->row_count].label = direction ? "Back to AOT" : "To interpreter";
+        p->rows[p->row_count].value = s_pause_profile_top[direction];
+        p->row_count++;
+    }
+    bars = history->count < NK_OVERLAY_PROFILE_BARS ? history->count : NK_OVERLAY_PROFILE_BARS;
+    for (size_t i = 0; i < bars; i++) {
+        const SrPerfLiveInterval *iv = sr_perf_history_at(history, (unsigned)(bars - 1u - i));
+        double wall = iv && iv->wall_ns ? (double)iv->wall_ns : 0.0;
+        if (!wall) continue;
+        p->bars[p->bar_count][NK_OVERLAY_PROFILE_CPU] = (float)((double)iv->cpu_ns / wall);
+        p->bars[p->bar_count][NK_OVERLAY_PROFILE_GE_WAIT] = (float)((double)iv->ge_wait_ns / wall);
+        p->bars[p->bar_count][NK_OVERLAY_PROFILE_PRESENT] = (float)((double)iv->present_ns / wall);
+        p->bars[p->bar_count][NK_OVERLAY_PROFILE_IDLE] = (float)((double)iv->idle_ns / wall);
+        p->bar_count++;
+    }
+    p->note = rows ? "The last closed second; the transition PCs cover the whole run. In "
+                     "developer mode F3 shows these rows live."
+          : was_on ? "Resume for a second: the counters close an interval each second."
+                   : "The counters start now. Resume the game, then pause again.";
+}
+
 /* Carries out what the person chose on a page. */
 static void gui_pause_act(NkOverlayAction action) {
     switch (action.kind) {
@@ -944,6 +1106,10 @@ static void gui_pause_act(NkOverlayAction action) {
         break;
     case NK_OVERLAY_ACT_SET_HUD:
         sdl3vk_hud_set_enabled(action.value != 0);
+        s_pause_dirty = 1;
+        break;
+    case NK_OVERLAY_ACT_VRAM_VIEW:
+        if (sdl3vk_developer_mode()) gui_pause_decode_vram();
         s_pause_dirty = 1;
         break;
     default:
@@ -988,6 +1154,17 @@ static int gui_pause_compose(int w, int h, int rgba) {
         model.saving = sr_savedata_pause_busy() != 0;
         model.controls = s_pause_controls.rows;
         model.control_count = s_pause_controls.count;
+        /* The developer pages exist only in developer mode (#314); the model carries them
+         * nothing otherwise, and the pages refuse to draw without the flag. */
+        model.developer = sdl3vk_developer_mode() != 0;
+        if (model.developer) {
+            gui_pause_describe_vram();
+            model.vram = &s_pause_vram;
+            if (nk_overlay_host_screen(s_pause_host) == NK_OVERLAY_SCREEN_PROFILE) {
+                gui_pause_describe_profile();
+                model.profile = &s_pause_profile;
+            }
+        }
         if (!nk_overlay_host_draw(s_pause_host, s_pause_ren, display_scale, pixels_per_point,
                                   &model, &action))
             return 0;
@@ -1074,6 +1251,9 @@ void gui_pause_enter(void) {
     s_lx = 128;
     s_ly = 128;
     s_pause_have_frame = gui_pause_freeze();
+    /* A new pause starts the viewer afresh (nk_overlay_open): nothing decoded is kept. */
+    s_pause_vram.image = NULL;
+    s_pause_vram.note = NULL;
     /* The pages load once, on the first pause: SDL3_ttf and the fonts come from the player's
      * folder. Without them the pause shows the frozen frame alone, and says why once. */
     if (!s_pause_host && !s_pause_host_tried) {
@@ -1170,6 +1350,9 @@ static void gui_release_presenter(void) {
         if (s_pause_open) sdl3vk_set_input_claim(NULL, NULL);
         s_pause_open = 0;
         gui_pause_free_canvas();
+        s_pause_vram.image = NULL;
+        free(s_pause_vram_px);
+        s_pause_vram_px = NULL;
         gegpu_shutdown();
         sdl3vk_shutdown();
         s_sdl3 = 0;

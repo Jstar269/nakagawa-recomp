@@ -59,6 +59,7 @@
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
@@ -174,6 +175,8 @@ typedef struct {
     uint32_t unsupported_error;
     atomic_uint unimplemented_error;
     atomic_uint unsupported_state;
+    unsigned char unverified;      /* 1 when docs/HLE_COVERAGE.md classes the NID unverified */
+    atomic_uint unverified_noted;  /* set by the first call's log line */
 } HleEntry;
 typedef struct HleDevctlRefusal {
     struct HleDevctlRefusal *next;
@@ -237,6 +240,25 @@ static void hle_note_unsupported(HleEntry *e) {
     hle_register_unsupported_summary();
     fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)\n",
             e->name, e->nid, e->unsupported_error);
+}
+
+/* One stderr line the first time a NID with no recorded evidence runs its handler. Diagnostic
+ * only: it changes no result or state. The class comes from the generated hle_evidence.h. */
+static int hle_nid_unverified(uint32_t nid) {
+    size_t lo = 0u, hi = SR_HLE_UNVERIFIED_NID_COUNT;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        if (sr_hle_unverified_nids[mid] < nid) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < SR_HLE_UNVERIFIED_NID_COUNT && sr_hle_unverified_nids[lo] == nid;
+}
+
+static void hle_note_unverified(HleEntry *e) {
+    if (!e->unverified || atomic_exchange_explicit(&e->unverified_noted, 1u, memory_order_acq_rel))
+        return;
+    fprintf(stderr, "HLE: unverified: %s (NID 0x%08x) has no recorded evidence (docs/HLE_COVERAGE.md)\n",
+            e->name, e->nid);
 }
 
 static void hle_note_success_exception(HleEntry *e) {
@@ -428,6 +450,8 @@ static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
         atomic_store_explicit(&e->unimplemented_error, unsupported_error,
                               memory_order_release);
         atomic_store_explicit(&e->unsupported_state, 0u, memory_order_release);
+        e->unverified = (unsigned char)hle_nid_unverified(nid);
+        atomic_store_explicit(&e->unverified_noted, 0u, memory_order_release);
     }
     hle_unlock();
 }
@@ -5871,6 +5895,8 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 #define PSMF_ERR_PRIV_REQUIRED 0x80000023u
 /* scePsmfPlayerStart playMode values (PSMF_PLAYER_MODE_*). */
 #define PSMF_PLAY_MODE_PAUSE 3u
+#define PSMF_PLAY_MODE_FORWARD 4
+#define PSMF_PLAY_MODE_REWIND 5
 /* Pictures the reference player always reports as "not yet" before the first frame.  Guest
  * middleware is written against this: several titles depend on the first calls failing. */
 #define PSMF_WARMUP_FRAMES 3
@@ -6931,11 +6957,37 @@ static uint32_t h_PsmfCreate(CpuState *s) {
 }
 static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_player_release(p);psmf_av_final("player_delete");MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
-static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
+/* scePsmfPlayerSetPsmf and scePsmfPlayerSetPsmfCB open the same file the same way and differ only in
+ * whether the caller's callbacks may run during the call (PPSSPP Core/HLE/scePsmf.cpp 3f40ddc8,
+ * _PsmfPlayerSetPsmfOffset).  Neither services callbacks here yet: the 3,100 us wait is a plain delay
+ * for both. */
+static uint32_t psmf_set_psmf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
+static uint32_t h_PsmfSetPsmf(CpuState *s){return psmf_set_psmf(s);}
+static uint32_t h_PsmfSetPsmfCB(CpuState *s){return psmf_set_psmf(s);}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
 /* scePsmfPlayerStart(player, PsmfPlayerData *data, int initPts): initPts is the third
  * argument (a2). t0 is the fifth EABI argument, which this call never sets. */
 static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)A2;if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams?(as>=p->audioStreams):(as>0&&as!=(uint32_t)-1)))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(!p->audioStreams&&ac!=0)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer){if(!sr_psmf_producer_select_streams(p->producer,vs,p->audioStreams?as:SR_PSMF_STREAM_NONE))return PSMF_ERR_CONFIG;}psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+/* scePsmfPlayerChangePlayMode(player, playMode, playSpeed): checks and their order follow PPSSPP
+ * Core/HLE/scePsmf.cpp (3f40ddc8).  A player that is not playing yet answers INVALID_STATUS, a mode outside
+ * PLAY..REWIND (0..5) INVALID_CONFIG, and FORWARD or REWIND on a PSMF without entry points (BASIC player)
+ * INVALID_STREAM; only FORWARD and REWIND take the new speed.  The mode itself is what the getters read:
+ * PAUSE stops the audio getter, as scePsmfPlayerStart's mode does. */
+static uint32_t h_PsmfChangePlayMode(CpuState *s){
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
+    int32_t mode = (int32_t)A1;
+    if (mode < 0 || mode > 5) return PSMF_ERR_CONFIG;
+    if (mode == PSMF_PLAY_MODE_FORWARD || mode == PSMF_PLAY_MODE_REWIND) {
+        if (p->playerVersion == 1u) return PSMF_ERR_STREAM;
+        p->playSpeed = A2;
+    }
+    if (psmf_log_on())
+        fprintf(stderr, "PSMF_PLAY_MODE: player=0x%08x mode %u -> %d speed=%d\n", A0, p->playMode, mode,
+                (int32_t)A2);
+    p->playMode = (uint32_t)mode;
+    return 0;
+}
 static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);sched_delay_current(3000);return 0;}
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
@@ -12991,12 +13043,24 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
-/* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
- * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
-static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
-/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
- * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
-static int g_vbl_registered = 0;
+/* VBLANK (PSP_VBLANK_INT = 30) sub-interrupt handlers the game registers; the scheduler
+ * delivers every enabled one once per frame (they typically wake a sleeping game thread).
+ * The interrupt has its own handler, arg and enable state per sub-interrupt number 0..15
+ * (PSPSDK pspintrman.h). A title may use several at once: a game registers its frame
+ * counter on sub-interrupt 0 and its video player another on 1, then releases 1 when the
+ * video closes; with a single shared slot that registration replaced the game's handler
+ * and the release removed it, so the frame counter stopped and the game waited for it
+ * forever. `registered` holds a Register that Release has not cleared; a handler word of 0
+ * is still a registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+#define SR_VBLANK_SUBINTR_COUNT 16u
+/* PSPSDK pspkerror.h SCE_KERNEL_ERROR_ILLEGAL_INTRCODE, for a sub-interrupt number past 15;
+ * the PSP's own answer for these calls is UNMEASURED. */
+#define SCE_KERNEL_ERROR_ILLEGAL_INTRCODE 0x80020065u
+typedef struct VblankSubIntr {
+    uint32_t handler, arg;
+    int registered, enabled;
+} VblankSubIntr;
+static VblankSubIntr g_vbl[SR_VBLANK_SUBINTR_COUNT];
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -13359,41 +13423,58 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        VblankSubIntr *v = &g_vbl[A1];
         /* Titles re-register the same handler before almost every frame (#1287), so the line
          * is written only when a registration changes the slot, or always under SR_HLELOG.
          * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
-        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
-                      g_vbl_arg != A3;
+        int changed = !v->registered || v->handler != A2 || v->arg != A3;
         if (changed || hle_log_on())
             fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
+        v->handler = A2; v->arg = A3; v->registered = 1;
     }
     return 0;
 }
-static uint32_t h_EnableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 1; return 0; }
-/* sceKernelDisableSubIntr(intno, no): stop delivery of the VBLANK (intno 30)
- * sub-interrupt without unregistering its handler, so a later Enable resumes
- * the same handler. Public behaviour reference: the PSPSDK interrupt manager
- * (pspinterrupt.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
- * retained delivery state here (g_vbl_handler/g_vbl_on, owned by
- * h_RegisterSubIntr/h_EnableSubIntr above); other lines have no delivery
- * state, so like the neighbouring Enable they answer success without effect
- * (UNMEASURED). */
-static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; return 0; }
-/* sceKernelReleaseSubIntrHandler(intno, no): unregister the VBLANK handler and
- * stop its delivery. Same public references as Disable above; the handler word
- * itself is cleared, so Enable after Release delivers nothing until a fresh
- * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
- * with Enable/Disable. */
+/* sceKernelEnableSubIntr(intno, no) and sceKernelDisableSubIntr(intno, no): start or stop
+ * delivery of one VBLANK (intno 30) sub-interrupt without unregistering its handler, so a
+ * later Enable resumes the same handler. Public behaviour reference: the PSPSDK interrupt
+ * manager (pspintrman.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
+ * retained delivery state here (g_vbl, owned by h_RegisterSubIntr); other lines have no
+ * delivery state, so they answer success without effect (UNMEASURED). */
+static uint32_t h_EnableSubIntr(CpuState *s) {
+    if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        g_vbl[A1].enabled = 1;
+    }
+    return 0;
+}
+static uint32_t h_DisableSubIntr(CpuState *s) {
+    if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        g_vbl[A1].enabled = 0;
+    }
+    return 0;
+}
+/* sceKernelReleaseSubIntrHandler(intno, no): unregister one VBLANK sub-interrupt handler and
+ * stop its delivery; the others keep running. The handler word itself is cleared, so
+ * Enable after Release delivers nothing until a fresh Register. Non-VBLANK lines answer
+ * success without effect (UNMEASURED), as with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
     if (A0 == 30) {
-        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        memset(&g_vbl[A1], 0, sizeof(g_vbl[A1]));
     }
     return 0;
 }
-uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
-uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
-uint32_t sr_vblank_no(void) { return g_vbl_no; }
+/* The scheduler's view of VBLANK sub-interrupt `no`: 1 with its handler and arg when it is
+ * registered and enabled, 0 when it is not, -1 past the last sub-interrupt number. */
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) {
+    if (no >= SR_VBLANK_SUBINTR_COUNT) return -1;
+    if (!g_vbl[no].enabled || !g_vbl[no].handler) return 0;
+    *handler = g_vbl[no].handler;
+    *arg = g_vbl[no].arg;
+    return 1;
+}
 
 static uint32_t s_vcount_fwd;  /* mirror of s_vcount for clock/input timing (set in sr_display_advance_vcount) */
 uint32_t sr_audio_vbl(void) { return s_vcount_fwd; }
@@ -14274,12 +14355,21 @@ extern void f_32200000(CpuState *s);
 extern void f_32280000(CpuState *s);
 extern void f_322f8868(CpuState *s);
 
-/* sceKernelLoadModule(path, flags, option). */
+static uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity);
+
+/* sceKernelLoadModule(path, flags, option). The PSP's module manager opens the path with
+ * sceIoOpen in the caller's context (uofw src/kd/modulemgr/loadModule.c), so a relative
+ * path names the file under the calling thread's current directory, as every file-manager
+ * path does. The module is then the one the manifest declares by that full path: a title
+ * that changes into its data directory and loads "Target/libfont.prx" loads the declared,
+ * translated libfont, not an undeclared host-served record with no start entry (#299). */
 static uint32_t h_LoadModule(CpuState *s) {
-    char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
-        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    return load_module_by_guest_path(path, A2);
+    char resolved[512];
+    uint32_t rc = io_guest_path(A0, resolved, sizeof(resolved));
+    /* An unreadable path string is the module manager's illegal address, not an I/O error. */
+    if (rc == 0x80010016u) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (rc != 0u) return rc;
+    return load_module_by_guest_path(resolved, A2);
 }
 
 static const char *hle_fd_guest_path(uint32_t fd);
@@ -17999,6 +18089,37 @@ static int io_memstick_capacity(uint32_t info[5]) {
     return 1;
 }
 #endif /* _WIN32 */
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-only seam: mode 0 measures the host volume, mode 1 reports `bytes`,
+ * any other mode makes the query fail, so savedata's shortfall and
+ * host-failure paths can be driven without filling a real volume. */
+static int s_test_memstick_free_mode;
+static uint64_t s_test_memstick_free_bytes;
+void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes) {
+    s_test_memstick_free_mode = mode;
+    s_test_memstick_free_bytes = bytes;
+}
+#endif
+
+/* Free bytes of the host-backed Memory Stick, from the same measurement and
+ * 32-bit clamp as the capacity devctl above, so the value never exceeds
+ * UINT32_MAX. Savedata SIZES/GETSIZE re-express it in their own 32 KiB
+ * sectors. Returns 0 when the host volume cannot be queried. */
+int sr_hle_memstick_free_bytes(uint64_t *free_bytes) {
+    if (!free_bytes) return 0;
+#ifdef SR_HLE_THREAD_SELFTEST
+    if (s_test_memstick_free_mode == 1) {
+        *free_bytes = s_test_memstick_free_bytes;
+        return 1;
+    }
+    if (s_test_memstick_free_mode != 0) return 0;
+#endif
+    uint32_t info[5];
+    if (!io_memstick_capacity(info)) return 0;
+    *free_bytes = (uint64_t)info[1] * info[3] * info[4];
+    return 1;
+}
 
 static uint32_t h_IoDevctl(CpuState *s) {
     enum {
@@ -22692,8 +22813,15 @@ unsigned sr_hle_test_ge_finish_reports(int reset) {
 #endif
 
 /* Run the guest's registered finish callback for a completed display list, or log why
- * none ran. The runtime advances no title counter of its own here. */
-static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
+ * none ran. The runtime advances no title counter of its own here.
+ *
+ * The callback is called as finish_func(id, arg) (PSPSDK pspge.h PspGeCallback), where id is
+ * the 16-bit argument of the list's FINISH command, not the queue ID: libpspgu's callbackFin
+ * passes id & 0xffff on as sceGuFinishId's id. The PSP hands a SIGNAL's argument to the signal
+ * callback the same way (PSP-GE-TIMING-001 c4, measured on a PSP-3000); the FINISH id itself
+ * is UNMEASURED. A title that marks one kind of frame with its own FINISH id waited forever
+ * for a callback that, given the queue ID, never saw it. */
+static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t finish_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
     /* sceGeListEnQueue's callback ID is a signed int, and a negative one (the SDK's -1) is a
      * list enqueued with no callback, so there is nothing to run and nothing to report. */
@@ -22713,9 +22841,9 @@ static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uin
         return;
     }
     if (ge_log_on())
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u list=0x%08x fn=0x%08x arg=0x%08x\n",
-                cbid, list_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
-    ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u id=0x%04x fn=0x%08x arg=0x%08x\n",
+                cbid, finish_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
+    ge_call_guest(s, cb->finish_func, finish_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: callback fn=0x%08x returned\n", cb->finish_func);
 }
@@ -22783,6 +22911,7 @@ typedef struct {
     uint32_t cbarg;
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
+    uint32_t finish_id; // the 16-bit argument of the FINISH that ended it: the callback's id
     uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
     uint64_t finish_seq; // GE_LIST_DRAWING: completion order between equal times
 } GeListInfo;
@@ -22864,6 +22993,7 @@ static void ge_timing_charge_run(void) {
 static void ge_list_reached_end(CpuState *s, int slot) {
     GeListInfo *l = &s_ge_lists[slot];
     l->executed = 1;
+    l->finish_id = ge_last_finish_id();
     if (ge_timing_on()) {
         l->status = GE_LIST_DRAWING;
         l->done_us = (s_ge_busy_until_ns + 999u) / 1000u;
@@ -22875,7 +23005,7 @@ static void ge_list_reached_end(CpuState *s, int slot) {
         return;
     }
     l->status = GE_LIST_COMPLETED;
-    ge_finish_callback(s, l->cbid, l->uid, l->cbarg);
+    ge_finish_callback(s, l->cbid, l->finish_id, l->cbarg);
 }
 
 /* Scheduler hook: the earliest completion time of a drawing list, else UINT64_MAX. */
@@ -22908,7 +23038,7 @@ static void ge_timing_service_due(void) {
         if (ge_log_on())
             fprintf(stderr, "GE_TIMING: list_id=0x%08x completed at %llu us (modelled %llu us)\n",
                     l->uid, (unsigned long long)now, (unsigned long long)l->done_us);
-        ge_finish_callback(s_cpu, l->cbid, l->uid, l->cbarg);
+        ge_finish_callback(s_cpu, l->cbid, l->finish_id, l->cbarg);
     }
 }
 
@@ -23476,7 +23606,6 @@ static uint32_t h_GeSetCallback(CpuState *s) {
 #define SAS_ERROR_FX_DELAY      0x80420022u
 #define SAS_ERROR_FX_VOLUME_VAL 0x80420023u
 #define SAS_ERROR_NOTINIT       0x80420100u
-#define SAS_ERROR_ALRDYINIT     0x80420101u
 
 typedef enum {
     SAS_VOICE_OFF = 0,
@@ -23848,12 +23977,16 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
     if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
+/* An init on a core that is already initialized is a fresh init (measured on PSP-3000, firmware 6.61,
+ * PSP-SAS-001, #1595): it returns 0, the new grain and output mode take effect, and every voice reads as
+ * ended again. sceSasCore exports no exit call, so a game that stops its mixer for a movie re-inits the same
+ * core this way. Initializing a second core leaves the first one's state alone on the PSP; this model keeps
+ * one core, so the newest init is the live one. */
 static uint32_t h_SasInit(CpuState *s) {
     uint32_t e = sas_core_address_ok(A0);
     int32_t grain = (int32_t)A1, max_voices = (int32_t)A2;
     int32_t output_mode = (int32_t)A3, sample_rate = (int32_t)stack_arg(s, 0);
     if (e) return e;
-    if (s_sas_core.initialized) return SAS_ERROR_ALRDYINIT;
     if (!sas_grain_valid(grain)) return SAS_ERROR_ADPCM_SIZE;
     if (max_voices < 1 || max_voices > SAS_VOICES) return SAS_ERROR_VOICE_INDEX;
     if (output_mode != 0 && output_mode != 1) return SAS_ERROR_INVALID_STATE;
@@ -27627,7 +27760,9 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
     sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
     sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x3d6d25a9, "scePsmfPlayerSetPsmf", h_PsmfSetPsmf);
     sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0xa3d81169, "scePsmfPlayerChangePlayMode", h_PsmfChangePlayMode);
     sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
     sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
     sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
@@ -28146,7 +28281,9 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
@@ -28197,6 +28334,10 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     const int rt_phase_saved = sr_rt_phase;
     sr_rt_phase = SR_RT_PHASE_SYSCALL;
     sr_rt_nid = nid;
+    const int import_active_saved = sr_import_active;
+    const uint32_t import_nid_saved = sr_import_nid;
+    sr_import_active = 1;
+    sr_import_nid = nid;
     /* One store per import, and only while a route is waiting on one: this is what lets a
      * route gate on a guest-visible event instead of on a screen signature. */
     if (s_route_watch_nid) route_note_nid(nid);
@@ -28216,6 +28357,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
         sr_rt_phase = rt_phase_saved;
+        sr_import_active = import_active_saved;
+        sr_import_nid = import_nid_saved;
         return ret;
     }
     HleEntry *e = hle_find(nid);
@@ -28264,6 +28407,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         hle_note_unsupported(e);
         ret = e->unsupported_error;
     } else {
+        hle_note_unverified(e);
         ret = e->fn(s);
         hle_note_success_exception(e);
     }
@@ -28285,6 +28429,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
     sr_rt_phase = rt_phase_saved;
+    sr_import_active = import_active_saved;
+    sr_import_nid = import_nid_saved;
     return ret;
 }
 

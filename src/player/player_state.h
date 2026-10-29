@@ -6,6 +6,7 @@
 
 #include "nk_types.h"
 #include "nk_iso.h"
+#include "nk_disc_expand.h"
 #include "nk_library.h"
 #include "nk_launch.h"
 #include "nk_font.h"
@@ -23,6 +24,20 @@
 #define MAX_PATH_LEN NK_MAX_PATH
 #define MAX_DISC_ID_LEN NK_MAX_DISC_ID_LEN
 #define MAX_SHOWCASE_GAMES 8
+
+/* The opening of every DATA_DIR_UNAVAILABLE card: what this platform could not
+   resolve and which environment variables fix it (nk_platform_get_app_data_dir).
+   Each card adds its own closing words. */
+#if defined(_WIN32) || defined(_WIN64)
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA"
+#elif defined(__APPLE__)
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set HOME"
+#else
+#define PLAYER_DATA_DIR_UNAVAILABLE_TEXT \
+    "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. Set XDG_DATA_HOME or HOME"
+#endif
 
 typedef enum {
     VIEW_LIBRARY = 0,
@@ -48,7 +63,8 @@ typedef enum {
     VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
     VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
-    VIEW_UPDATES            /* Settings > Updates: check for and fetch a newer version; the last value */
+    VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
+    VIEW_CONFIRM_FACTORY_RESET /* Settings > Factory reset: what moves aside; the last value */
 } PlayerView;
 
 typedef enum {
@@ -195,6 +211,10 @@ typedef struct {
     /* Ask GitHub for a newer version once each time the player starts. Off until
        the user turns it on (AGENTS.md section 5; the button needs no switch). */
     bool check_updates_at_start;
+    /* The folder the last file picker picked from (Add disc, PSP fonts), where
+       the next one opens. Empty on a first run: the pickers then open at the
+       Desktop (player_app_picker_start_folder). */
+    char picker_folder[MAX_PATH_LEN];
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -409,17 +429,23 @@ typedef struct {
     PlayerNoteKind font_message_kind; /* what font_message says: done, a warning, ... */
 } SetupWizardState;
 
-/* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
- * image, #295 phase 2). The player converts it once into a private ISO under
- * the per-user data root, <data>/discs/<DISC_ID>/<DISC_ID>.iso, and then
- * imports that ISO exactly as a picked disc image. */
+/* A file the player turns into a private ISO once, on its conversion worker,
+ * and then imports exactly as a picked disc image:
+ *  - a PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
+ *    image, #295 phase 2), converted into <data>/discs/<DISC_ID>/<DISC_ID>.iso;
+ *  - a compressed disc image (.cso, .zso, .chd; disc_format names which),
+ *    expanded into <data>/discs/<DISC_ID>/<DISC_ID>.<ext>.iso by
+ *    nk_disc_import (src/core/nk_disc_expand.h). */
 typedef struct {
-    char pbp_path[MAX_PATH_LEN];
+    char pbp_path[MAX_PATH_LEN]; /* the picked file: the package or the compressed image */
     char iso_path[MAX_PATH_LEN];
     char disc_id[MAX_DISC_ID_LEN];
     char title[MAX_TITLE_LEN];
     /* A checked conversion is already at iso_path. */
     bool iso_ready;
+    /* NK_DISC_FORMAT_NONE for a PSN package; otherwise the compressed image's
+       format, and iso_path and disc_id are known once it is expanded. */
+    NkDiscFormat disc_format;
 } PlayerPsnPackage;
 
 typedef struct {
@@ -499,6 +525,10 @@ typedef struct PlayerApp {
     bool launch_headless;
     uint32_t headless_accept_presented_frames;
     uint32_t headless_launch_timeout_ms;
+    /* Desktop bounds (x, y, w, h) of the display that holds the launcher window,
+       refreshed by main.c before each launch so the game window opens there.
+       A width of 0 means unknown (no window yet): the game uses the primary display. */
+    int launcher_display_bounds[4];
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -515,6 +545,12 @@ typedef struct PlayerApp {
        this instead of starting the game from draw code. */
     bool request_launch;
     int request_launch_index;
+    /* Factory reset's Reset button asked for the reset. The event loop runs
+       it, because only it knows which background jobs are still working. */
+    bool request_factory_reset;
+    /* The reset moved the user data aside: the player quits without saving
+       anything and starts a fresh copy of itself, which opens on a first run. */
+    bool factory_reset_done;
     /* A launch is checking the package or starting the process on that
        worker; `launch_pending_disc_id` names the game. The UI keeps drawing
        and shows the game as starting until the worker hands back. */
@@ -665,6 +701,18 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
 void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view);
+/* The LAUNCHER_UNAVAILABLE text when the launcher cannot start (reason is the
+   launcher's own error). built_without_launcher is true when this build was
+   compiled without the SDL_Renderer or SDL3_ttf support the launcher needs, so
+   the fix is to build again with them, not to reinstall. Otherwise a file is
+   missing at run time: on Windows the release ZIP was extracted incompletely,
+   elsewhere SDL3_ttf or the installed assets are absent. */
+void player_launcher_unavailable_message(const char *reason, bool built_without_launcher,
+                                         char *out, size_t out_size);
+/* FOLDER_OPEN_FAILED: the file manager could not be asked to show path (reason
+   is the host's error, or empty). The card names the folder so the user can
+   open it themselves, and returns to the view it was raised from. */
+void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason);
 /* The error card's words, shared by both launchers. The badge is a plain word
    for the kind of problem; an unknown code gets "Problem", never the code. */
 const char *player_error_badge(const ErrorState *error);
@@ -806,6 +854,19 @@ uint64_t player_app_ui_test_validation_calls(void);
 void player_app_settings_init_default(PlayerSettings *settings);
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path);
 NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
+
+/* The file pickers (Add disc, PSP fonts) open in the folder the user last
+ * picked from (settings.picker_folder). With none kept, or when it is gone,
+ * they open at the user's Desktop, so a first run, or one after a Factory
+ * reset, does not show the folder Windows last remembered for this program.
+ * False when there is neither; the picker then opens where the system picks. */
+bool player_app_picker_start_folder(const PlayerApp *app, char *out, size_t out_size);
+/* Keeps the folder of a picked file (or a picked folder) for the next picker
+ * and saves the settings. */
+void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool is_folder);
+/* The folder holding `path` (either separator), with a root kept whole:
+ * "<drive>:\x.iso" gives "<drive>:\", "/x.iso" gives "/". False for a bare name. */
+bool player_path_parent_folder(const char *path, char *out, size_t out_size);
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
@@ -962,6 +1023,7 @@ typedef struct {
     char boot_event_file_path[MAX_PATH_LEN];
     char input_profile_path[NK_MAX_PATH];
     char ui_root[MAX_PATH_LEN];
+    int launcher_display_bounds[4];
     /* Results, written by player_launch_work_run. */
     PlayerLaunchStep failed_step;
     NkResult result;
@@ -1082,6 +1144,22 @@ void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
                                         uint64_t total_bytes);
 void player_app_psn_conversion_finish(PlayerApp *app);
 
+/* Compressed disc images (.cso, .zso, .chd), expanded once at import. */
+/* Check a picked compressed image and fingerprint it. iso_ready is true when
+ * the same unchanged file was expanded before; otherwise the image goes to the
+ * conversion worker (player_app_psn_conversion_begin). False with a named
+ * DISC_IMAGE_* code and a plain sentence for an image the player refuses. */
+bool player_disc_image_inspect(const char *image_path, PlayerPsnPackage *package,
+                               char *code, size_t code_size,
+                               char *message, size_t message_size);
+/* Expand the image into its per-title folder (nk_disc_import) and fill in
+ * package->iso_path and package->disc_id. A failure or a cancel keeps nothing
+ * (code CANCELLED for a cancel). */
+bool player_disc_image_expand(PlayerPsnPackage *package,
+                              const PlayerPsnConvertCallbacks *callbacks,
+                              char *code, size_t code_size,
+                              char *message, size_t message_size);
+
 /* Setup Wizard API */
 void player_app_start_setup_wizard(PlayerApp *app);
 void player_app_wizard_next(PlayerApp *app);
@@ -1157,6 +1235,26 @@ bool player_app_open_prerequisite_about(PlayerApp *app);
 bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
+
+/* Factory reset (owner, 2026-10-29): the player goes back to a first run by
+ * moving its user data aside, never by deleting it. The folders that move are
+ * the config, data, cache and saves folders (library, settings, saves,
+ * imported PSP fonts, keys, built games and downloaded build tools), and the
+ * runtime root when one is set; a folder inside another one moves with it.
+ * Each is renamed in place to
+ * "<folder>-backup-<stamp>", so the move is a rename on the same disk and the
+ * user can move it back. Logs stay: the player is writing to them.
+ *
+ * player_factory_reset_folders lists the folders that would move (at most
+ * `cap`). player_app_factory_reset refuses while a game, a launch, a build or
+ * a tool download runs; otherwise it renames each folder, and when one rename
+ * fails it moves the earlier ones back and raises FACTORY_RESET_FAILED naming
+ * the folder. On success it sets factory_reset_done and should_quit. `stamp`
+ * is the backup suffix (YYYYMMDD-HHMMSS). */
+#define PLAYER_FACTORY_RESET_FOLDERS 5
+size_t player_app_factory_reset_folders(const PlayerApp *app, char out[][NK_MAX_PATH],
+                                        size_t cap);
+bool player_app_factory_reset(PlayerApp *app, const char *stamp);
 /* Settings > Build tools and cache: delete the shared library cache and say so. */
 void player_app_clear_shared_library_cache(PlayerApp *app);
 void player_app_set_build_error(

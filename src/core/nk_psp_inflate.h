@@ -45,6 +45,16 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen,
                    size_t expect, size_t cap,
                    char *err, size_t err_len);
 
+/*
+ * The same contract for a raw DEFLATE stream with no zlib or gzip wrapper,
+ * which a CSO disc-image block is: the wrapper is never guessed from the
+ * leading bytes. Bytes after the final block (alignment padding) are ignored.
+ */
+int nk_psp_inflate_raw(const uint8_t *src, size_t srclen,
+                       uint8_t **out, size_t *outlen,
+                       size_t expect, size_t cap,
+                       char *err, size_t err_len);
+
 #ifdef __cplusplus
 }
 #endif

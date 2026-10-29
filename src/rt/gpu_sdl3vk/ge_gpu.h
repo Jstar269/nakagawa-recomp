@@ -185,6 +185,7 @@ typedef struct GeGpuReplayStats {
     unsigned long long render_wait_ns;
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
+    unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;

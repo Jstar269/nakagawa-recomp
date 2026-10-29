@@ -118,7 +118,11 @@ current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit
 stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
 names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
-scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+scan in git mode and the synthetic canary gate. It also runs the core purity gate,
+[`tools/purity_gate.py`](../tools/purity_gate.py): a hexadecimal literal in PSP user RAM
+(`0x08800000`-`0x09ffffff`) in `src/rt/` code fails it, outside title-config files, native
+self-tests, registered NIDs and the reviewed allowlist in that file (one entry per literal,
+with its reason). A fix for one game goes in its title config, not the core. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
@@ -169,6 +173,8 @@ host runs its own arms of `hle.c`'s file, directory and host-data seams. A few c
 Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
 `CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
 plants a symbolic link in its place).
+The Linux job also runs `hle-title-selftest`, the same harness built under the generic and both
+fixture title configurations.
 
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
@@ -653,6 +659,11 @@ Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
 
+The four GitHub Actions contexts in that list come from `pull_request` workflows, whose
+definitions the pull request itself controls. The trusted gate that judges them is
+[Trusted CI verdict](#trusted-ci-verdict); once the owner applies its ruleset step, a
+required context means one produced by that gate.
+
 The required `CodeQL` check is the code-scanning result GitHub reports after it
 processes the SARIF that `.github/workflows/codeql.yml` ("Trusted CodeQL")
 uploads; no upload means no check. GitHub runs that workflow from the default
@@ -751,6 +762,99 @@ default branch, because a group's parent may be an earlier group that never land
 is observation only and not a required check; the hosted `Trusted provenance
 attestation` remains the pull-request gate.
 
+## Trusted CI verdict
+
+`.github/workflows/ci-trust-verdict.yml` and `tools/ci_trust_verdict.py` (#373, which also
+carries #364) post one commit status, `Trusted CI verdict`, on a pull request's exact head.
+
+**The problem.** `CI required`, `Hygiene and security`, `OSV Vulnerability Scan` and
+`dependency-review` come from `pull_request` workflows. GitHub reads those definitions from
+the pull request's merge commit, so a candidate can keep a job's name and make it `exit 0`,
+or add a workflow with a job of the same name. GitHub matches a required check by name and
+integration, and every Actions job is integration 15368. A name alone cannot tell the
+intended job from a candidate's.
+
+**The gate.** The workflow runs only the default branch's copy: `pull_request_target`
+(opened, synchronize, reopened, ready for review, labeled, unlabeled), a `workflow_run` when
+`CI`, `OSV-Scanner` or `Dependency Review` completes, and a manual `workflow_dispatch`
+naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
+objects only, and never checks out or runs candidate files. The verdict job has `actions`,
+`checks`, `contents`, `issues` and `pull-requests` read, and `statuses: write`; a separate
+job with only `pull-requests: write` withdraws the approval label on a new head. The verifier
+reads the head's workflow runs, latest-attempt jobs, check runs, statuses and label events
+from GitHub's API and posts `success`, `pending` or `failure` (or `error` if it cannot judge
+the head, which replaces an older success).
+
+| Code | Fails when |
+| --- | --- |
+| `CI_CHANGE_UNAPPROVED` | the head changes `.github/workflows/**`, `.github/actions/**`, `.pre-commit-config.yaml`, a CI tool (`tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py`, `tools/ci_test_weights.json`, `tools/requirements-lock.txt`, `tools/ci_trust_verdict.py`) or any `tools/` file a default-branch workflow runs, without a current `ci-change-approved` label |
+| `CI_DEFINITION_BEHIND` | `main` changed one of those files after the branch point; merge `main` (no label waives it) |
+| `CI_CONTEXT_COLLISION` | another workflow names `Trusted CI verdict`, or a check run uses that name |
+| `FOREIGN_PRODUCER` | a check run or status under an intended context is not from the intended workflow path and event at this head |
+| `JOB_MISSING`, `JOB_FAILED`, `JOB_CANCELLED`, `DUPLICATE_CONTEXT` | the latest non-cancelled intended run lacks the job, the job did not succeed, every run was cancelled, or two jobs share the name |
+| `STALE_HEAD`, `RUN_HEAD_MISMATCH` | the head is no longer the pull request's head, or a result names another SHA |
+| `RUN_FOR_OTHER_PR`, `AMBIGUOUS_HEAD` | the intended run belongs to another pull request, or another open pull request has the same head |
+| `PR_NOT_OPEN`, `BASE_NOT_DEFAULT` | nothing to judge for a merge into `main` |
+
+The intended producers are `CI required` and `Hygiene and security` from `ci.yml`, `OSV
+Vulnerability Scan` from `osv-scanner.yml`, `dependency-review` from `dependency-review.yml`
+(all `pull_request`), and the provenance attestation from `provenance-attestation.yml`
+(`pull_request_target`). A run still in progress gives `pending`. The protected `tools/`
+list is derived on each run from the default branch's workflows (a path named outside a
+comment line), so it follows the workflows as they change.
+
+**Approving a CI change.** A maintainer reviews the change and applies the
+`ci-change-approved` label. The label counts only when its latest event is `labeled`, the
+user who applied it has write, maintain or admin permission, and it was applied after the
+head's first pull-request run. A push or reopen removes the label, so it approves exactly
+one reviewed head. The label waives only `CI_CHANGE_UNAPPROVED`: an approved change still
+needs every intended job, once, green, from its intended workflow.
+
+**Re-running.** Every run reads GitHub's state afresh. The provenance workflow is not a
+`workflow_run` trigger, because its verifier refuses any other workflow that names its
+context. When the provenance attestation finishes after the other three workflows (for
+example a re-run after an admission), run:
+
+```bash
+gh workflow run ci-trust-verdict.yml -f pull_request_number=<n>
+```
+
+**What stays outside it.** Candidate tests and build files are still candidate code: the
+gate proves the intended jobs ran from trusted definitions, not that the tests are honest.
+A workflow on a same-repository branch could post a commit status under `Trusted CI
+verdict` with its own token; fork pull requests get a read-only token and cannot. A GitHub
+App that posts the status, pinned by `integration_id` in the ruleset, would close that (see
+[`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md#required-check-identity-what-github-can-and-cannot-enforce-here)).
+A closed pull request with the same head and an older base branch could leave a later run
+behind; the open-pull-request check catches it only while that pull request is open. Merge
+groups get no verdict yet, so enabling a merge queue together with this gate needs a
+`merge_group` route first.
+
+**The owner's ruleset step.** No repository setting changes in this repository's code. To
+make the gate enforcing, the owner edits the `main-minimal` ruleset's required status checks
+to `Trusted CI verdict` (integration 15368, GitHub Actions) and `CodeQL` (integration 57789),
+keeps `strict_required_status_checks_policy` on, and creates the `ci-change-approved` label.
+Pull requests opened before the change get a status on their next event or by the dispatch
+command above. Then refresh the ruleset snapshot in `tools/test_public_ci_wiring.py` and the
+lists in this file and in `PROVENANCE_MERGE_GATE.md`.
+
+**Live canary, after the ruleset step.** Use a fork or a second account, and keep every pull
+request a draft that is closed unmerged:
+
+1. Open a draft pull request that breaks a Python test, adds `.github/workflows/canary.yml`
+   with a job named `CI required` and a job named `Trusted CI verdict`, each `sleep 300` then
+   `exit 0`. Expect `Trusted CI verdict` to fail with `CI_CHANGE_UNAPPROVED`,
+   `FOREIGN_PRODUCER` and `CI_CONTEXT_COLLISION`, and the merge box to stay blocked after
+   the canary jobs finish. This also confirms the GitHub rule the design relies on: when a
+   check run and a status share a required name, both must pass.
+2. Delete `canary.yml` and change `ci.yml` so `CI required` runs `exit 0`. Expect
+   `CI_CHANGE_UNAPPROVED`. Do not label it: the label is the human approval that such a
+   change is wanted.
+3. Revert `ci.yml`, apply the label to an earlier head first, then push. Expect the label
+   removed and `CI_CHANGE_UNAPPROVED` or `JOB_FAILED` for the new head.
+
+Record the run links in #373.
+
 ## Windows hosted runner policy
 
 The Windows job intentionally remains on `windows-2022`. Hosted execution is
@@ -806,8 +910,8 @@ can actually vouch for each other. The CLI verdicts map to exit codes
   on either side (the ring slides, so a divergence inside the dropped window
   is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
-  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5,
-  the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
+  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5
+  and 6, the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
   retained events with a different terminal outcome or refusal block is a
   divergence, not a MATCH. A terminal difference is never an incomparability: a
   `running` terminal is a mid-run cut rather than a ring overflow, so over a
@@ -820,13 +924,17 @@ can actually vouch for each other. The CLI verdicts map to exit codes
 MATCH is a statement about the capture, never about the whole program. It
 certifies exactly these things: that the two runs agree on every event retained
 for the enabled classes over a complete window that dropped nothing, that both
-reached the same terminal outcome, and, for schema 5, that both recorded the
-same refusal block. It does not certify behaviour outside
+reached the same terminal outcome, and, for schema 5 and 6, that both recorded
+the same refusal block. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
 recorder was not looking, so the CLI prints the enabled class list that bounds
 the verdict next to the two identity lines.
+
+A schema 6 `threads` block is the thread state at the cut. It is validated and
+never compared. The CLI prints each side's waiting threads after every verdict,
+INCOMPARABLE included, so a stall comparison shows what each side waits on.
 
 A bundle that records any dropped event can never produce a MATCH against any
 other bundle; re-capture with a larger limit when a comparison is the goal.

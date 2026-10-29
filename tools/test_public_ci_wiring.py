@@ -237,6 +237,22 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
         self.assertNotIn("--no-insert-timestamp", recipe)
 
+    def test_hle_title_selftest_runs_on_linux(self) -> None:
+        """The title-configured production-HLE harness passes on Linux and ran on no hosted job (#306)."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step_name = "Run Linux title-configured HLE selftests"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must run hle-title-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-title-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
+
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
         native_tools = _ci_job_blocks()["native_tools"]
@@ -1004,6 +1020,7 @@ class PublicExportJobTests(unittest.TestCase):
         "Install pre-commit",
         "Run shared all-files checks",
         "Enforce tracked-tree reference ratchet",
+        "Enforce core runtime purity (no game addresses in src/rt)",
         "Locate the pinned Betterleaks binary",
         "Scan reachable sanitized Git history with Betterleaks",
         "Run Betterleaks synthetic canaries",
@@ -1743,6 +1760,71 @@ class MainRulesetClaimsTests(unittest.TestCase):
         }
         self.assertEqual(set(wired), read)
         self.assertEqual({wired[key] for key in read}, needed)
+
+
+class BetterleaksAllowlistTests(unittest.TestCase):
+    """Every Betterleaks exception names one file, one rule and one exact value, so a different
+    secret-shaped value in the same file, or the same value elsewhere, still fails Hygiene."""
+
+    # Built from pieces so this file itself holds no scanner-shaped literal.
+    ALLOWED = "libadler." + "1951" + "c218" + ".prx"
+
+    CLAUSE = re.compile(
+        r'\(attributes\["path"\] == "(?P<path>[^"]+)" &&\s*'
+        r'finding\["rule_id"\] == "(?P<rule>[^"]+)" &&\s*'
+        r'finding\["secret"\] == (?P<secret>"[^"]+"|\("[^"]+" \+ "[^"]+"\))\)'
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = (ROOT / ".betterleaks.toml").read_text(encoding="utf-8")
+        fence = "'" * 3
+        match = re.search(r"^filter = " + fence + r"\n(?P<body>.*?)\n" + fence + r"$", text, re.S | re.M)
+        if match is None:
+            raise AssertionError(".betterleaks.toml has no filter block")
+        cls.filter_body = match.group("body")
+
+    def test_every_exception_is_exact_path_rule_and_value(self) -> None:
+        clauses = [c.strip() for c in self.filter_body.split("||")]
+        self.assertTrue(clauses)
+        for clause in clauses:
+            with self.subTest(clause=clause[:60]):
+                self.assertRegex(clause, r"^" + self.CLAUSE.pattern + r"$")
+
+    def test_player_state_exception_is_the_one_module_name(self) -> None:
+        found = [m.groupdict() for m in self.CLAUSE.finditer(self.filter_body)
+                 if m.group("path") == "tests/native/test_player_state.c"]
+        self.assertEqual(found, [{"path": "tests/native/test_player_state.c",
+                                  "rule": "generic-api-key",
+                                  "secret": '"' + self.ALLOWED + '"'}])
+
+    @staticmethod
+    def _betterleaks() -> str | None:
+        home = Path(os.environ.get("PRE_COMMIT_HOME", Path.home() / ".cache" / "pre-commit"))
+        for name in ("betterleaks", "betterleaks.exe"):
+            for path in home.glob(f"*/golangenv-*/bin/{name}"):
+                return str(path)
+        return None
+
+    def test_scanner_allows_the_value_and_still_catches_another(self) -> None:
+        scanner = self._betterleaks()
+        if scanner is None:
+            self.skipTest("the pinned Betterleaks binary is not installed (pre-commit has not run here)")
+        line = '    assert(strcmp(key, "{}") == 0);\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "tests" / "native" / "test_player_state.c"
+            target.parent.mkdir(parents=True)
+            config = Path(tmp) / ".betterleaks.toml"
+            config.write_text((ROOT / ".betterleaks.toml").read_text(encoding="utf-8"), encoding="utf-8")
+
+            def scan(value: str) -> int:
+                target.write_text(line.format(value), encoding="utf-8")
+                return subprocess.run([scanner, "dir", ".", "--config", str(config), "--no-color"],
+                                      cwd=tmp, capture_output=True, text=True, timeout=120).returncode
+
+            self.assertEqual(scan(self.ALLOWED), 0, "the allowed value must pass")
+            self.assertNotEqual(scan("libadler." + "7e3a" + "90d4" + ".prx"), 0,
+                                "a different value at the same path must still be caught")
 
 
 if __name__ == "__main__":

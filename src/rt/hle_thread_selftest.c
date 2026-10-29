@@ -274,9 +274,16 @@ extern void sr_hle_test_umd_reset(void);
 extern uint32_t sr_hle_test_guest_fault_count(void);
 extern uint32_t sr_hle_test_guest_fault_addr(void);
 extern void sr_hle_test_guest_fault_reset(void);
-extern uint32_t sr_vblank_handler(void);
-uint32_t sr_vblank_no(void);
-uint32_t sr_vblank_arg(void);
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
+
+/* The handler the scheduler would deliver for VBLANK sub-interrupt `no` (0 when none), and its
+ * arg through *arg when one is delivered. */
+static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
+    uint32_t handler = 0u, a = 0u;
+    if (sr_vblank_subintr(no, &handler, &a) != 1) return 0u;
+    if (arg) *arg = a;
+    return handler;
+}
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -651,6 +658,18 @@ void sr_perf_vblank_coalesced(void) {}
 void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 void sr_perf_shutdown(void) {}
+/* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+void sr_exec_tier_switch(int tier) { sr_exec_tier = tier; }
+void sr_exec_interp_entry(uint32_t entry_pc) { (void)entry_pc; }
+void sr_exec_interp_exit(int returned_to_aot, int call_return) { (void)returned_to_aot; (void)call_return; }
+void sr_exec_slice_begin(int tier) { sr_exec_tier = tier; }
+int sr_exec_slice_end(void) { int tier = sr_exec_tier; sr_exec_tier = 0; return tier; }
+uint64_t sr_exec_now_ns(void) { return 0; }
+void sr_exec_idle(uint64_t started_ns) { (void)started_ns; }
+void sr_exec_share_arm(void) {}
+void sr_exec_share_report(void) {}
 int sr_rt_phase;
 uint32_t sr_rt_nid;
 uint32_t (*sr_rt_pc_fn)(void);
@@ -2238,6 +2257,40 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
+
+        /* sceKernelLoadModule opens its path through the file manager in the caller's
+         * context, so a relative path resolves against the calling thread's current
+         * directory exactly as sceIoOpen's does. A title that changes into its data
+         * directory and loads "Target/libfont.prx" names the module the manifest
+         * declares by its full path; matching the bare relative string instead missed
+         * the declaration, recorded a host-served stub with no start entry, and stopped
+         * guest libfont startup (#299). */
+        static const char cwd_guest[] = "ms0:/NKRT";
+        static const char cwd_relative[] = "RT_ALPHA.PRX";
+        title_hle_write_cstr(RT_PATH_ADDR, cwd_guest);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        expect(sr_hle_test_io_chdir(&cpu) == 0u,
+               "runtime placement: sceIoChdir selects the module directory");
+        s_rt_start_calls = 0;
+        uid = rt_load(cwd_relative, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_alpha_code, &base) && base == predicted,
+               "runtime placement: a cwd-relative LoadModule path places the declared module");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_start_calls == 1u,
+               "runtime placement: the cwd-relative module runs its translated module_start");
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   !sr_module_code_is_bound(&s_rt_alpha_code, NULL),
+               "runtime placement: the cwd-relative module stops and unloads");
+        s_rt_start_calls = 0;
+        s_rt_stop_calls = 0;
+        title_hle_write_cstr(RT_PATH_ADDR, "ms0:/");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        expect(sr_hle_test_io_chdir(&cpu) == 0u,
+               "runtime placement: sceIoChdir returns to the Memory Stick root");
         hle_test_setenv("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
     }
 
@@ -7070,6 +7123,240 @@ static void test_io_devctl_memory_stick(void) {
                sr_hle_test_io_devctl_refusal_log_count() == logs_before + 2u,
            "sceIoDevctl refuses an unknown command and logs each device/command pair once");
 
+    hle_test_setenv("SR_MEMSTICK", old_root);
+    free(old_root);
+}
+
+/* ---- savedata GETSIZE / SIZES free space (#308) ---------------------------------------------
+ * GETSIZE reports a shortfall, never the size of the data. On a PSP (pspautotests
+ * tests/utility/savedata/getsize.expected, revision 2ed7c9c5) a zero-filled sizeInfo with no
+ * entries for a save that does not exist changes only sectorSize (0x8000), freeSectors,
+ * freeKB and freeString, and the result is 0. Free space is the host-backed Memory Stick the
+ * capacity devctl measures, in 32 KiB sectors; the shortfall arithmetic for listed entries
+ * follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
+extern void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes);
+
+enum {
+    GETSIZE_PARAM_ADDR   = 0x08800000u,
+    GETSIZE_INFO_ADDR    = 0x08800800u, /* SceUtilitySavedataSizeInfo, 60 bytes */
+    GETSIZE_SECURE_ADDR  = 0x08800900u, /* size entries: u64 size, char name[16] */
+    GETSIZE_NORMAL_ADDR  = 0x08800980u,
+    GETSIZE_MSFREE_ADDR  = 0x08800a00u, /* SIZES msFree: sectorSize, sectors, KB, char[8] */
+    GETSIZE_DEVICE_ADDR  = 0x09020000u,
+    GETSIZE_INDATA_ADDR  = 0x09020100u,
+    GETSIZE_DEVINF_ADDR  = 0x09020200u
+};
+
+/* Free bytes as the capacity devctl reports them: free clusters * sector size * sectors. */
+static int getsize_devctl_free_bytes(uint64_t *bytes) {
+    CpuState cpu;
+    fd_guest_copy(GETSIZE_DEVICE_ADDR, "ms0:", sizeof("ms0:"));
+    MEM_W32(GETSIZE_INDATA_ADDR, GETSIZE_DEVINF_ADDR);
+    if (io_devctl_call(&cpu, GETSIZE_DEVICE_ADDR, 0x02425818u, GETSIZE_INDATA_ADDR, 4u, 0u, 0u) != 0u)
+        return 0;
+    *bytes = (uint64_t)MEM_R32(GETSIZE_DEVINF_ADDR + 4u) * MEM_R32(GETSIZE_DEVINF_ADDR + 12u) *
+             MEM_R32(GETSIZE_DEVINF_ADDR + 16u);
+    return 1;
+}
+
+/* The utility's size text, written out independently of savedata.c. */
+static void getsize_expected_text(uint64_t bytes, int round_up, char out[8]) {
+    static const char *const units[] = { "B", "KB", "MB", "GB" };
+    char text[24];
+    size_t i = 0;
+    while (i < 4u && bytes >= 1024u) {
+        bytes = round_up ? (bytes + 1023u) / 1024u : bytes / 1024u;
+        i++;
+    }
+    snprintf(text, sizeof(text), "%" PRIu64 " %s", bytes, i < 4u ? units[i] : "TB");
+    memset(out, 0, 8);
+    memcpy(out, text, strlen(text) < 8u ? strlen(text) : 8u);
+}
+
+static int getsize_guest_bytes_are(uint32_t addr, const char expected[8]) {
+    for (uint32_t i = 0; i < 8u; i++)
+        if (MEM_R8(addr + i) != (uint8_t)expected[i]) return 0;
+    return 1;
+}
+
+static void getsize_param(uint32_t mode, const char *save) {
+    memset(g_mem_base + GETSIZE_PARAM_ADDR, 0, 0x600u);
+    memset(g_mem_base + GETSIZE_INFO_ADDR, 0, 0x300u);
+    fd_guest_copy(GETSIZE_PARAM_ADDR + 0x3cu, "NKGETSIZE", sizeof("NKGETSIZE"));
+    fd_guest_copy(GETSIZE_PARAM_ADDR + 0x4cu, save, strlen(save) + 1u);
+    MEM_W32(GETSIZE_PARAM_ADDR + 0x30u, mode);
+    if (mode == 22u) MEM_W32(GETSIZE_PARAM_ADDR + 0x5fcu, GETSIZE_INFO_ADDR);
+    if (mode == 8u) MEM_W32(GETSIZE_PARAM_ADDR + 0x5d0u, GETSIZE_MSFREE_ADDR);
+}
+
+static void getsize_entry(uint32_t addr, uint64_t size, const char *name) {
+    MEM_W32(addr, (uint32_t)size);
+    MEM_W32(addr + 4u, (uint32_t)(size >> 32));
+    fd_guest_copy(addr + 8u, name, strlen(name) + 1u);
+}
+
+static int getsize_write_host_file(const char *path, size_t bytes) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    for (size_t i = 0; i < bytes; i++) fputc(0x5a, f);
+    return fclose(f) == 0;
+}
+
+static void test_savedata_getsize_free_space(void) {
+    static const char ms_root[] = HLE_BUILD_ROOT "/hle_savedata_getsize";
+    static const char zero8[8] = { 0 };
+    const char *old_root_value = getenv("SR_MEMSTICK");
+    char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
+    char text[8], save_host[512], file_host[600];
+    if (old_root) memcpy(old_root, old_root_value, strlen(old_root_value) + 1u);
+    if (old_root_value && !old_root) {
+        expect(0, "savedata GETSIZE test can preserve the configured SR_MEMSTICK");
+        return;
+    }
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_mkdir_p(ms_root);
+    expect(hle_test_setenv("SR_MEMSTICK", ms_root),
+           "savedata GETSIZE test selects a synthetic Memory Stick root");
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+
+    /* 1. The hardware case: zero-filled sizeInfo, no entries, save missing. */
+    {
+        uint64_t before = 0, after = 0;
+        getsize_param(22u, "_GameData0");
+        int measured = getsize_devctl_free_bytes(&before);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        measured = measured && getsize_devctl_free_bytes(&after);
+        uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
+        uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
+        expect(measured, "the capacity devctl measures the synthetic Memory Stick's host volume");
+        expect(rc == 0u, "GETSIZE for a save that does not exist returns 0, as on a PSP");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 0u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 4u) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 8u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 12u) == 0u,
+               "GETSIZE leaves the entry counts and pointers alone");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 16u) == 0x8000u,
+               "GETSIZE reports the PSP's 32 KiB savedata sector size");
+        expect(sectors >= lo / 0x8000u && sectors <= hi / 0x8000u,
+               "GETSIZE freeSectors * 0x8000 is the host-backed free space the devctl reports");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 24u) == sectors * 32u,
+               "GETSIZE freeKB agrees with freeSectors");
+        getsize_expected_text((uint64_t)sectors * 0x8000u, 0, text);
+        expect(getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 28u, text),
+               "GETSIZE freeString is the free space in the utility's rounded-down text");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u,
+               "GETSIZE with no entries needs nothing: neededKB and overwriteKB stay 0");
+        expect(getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
+               "GETSIZE with no entries leaves neededString and overwriteString untouched");
+    }
+
+    /* 2. One secure entry of a few KB on a missing save fits: nothing needed. */
+    {
+        getsize_param(22u, "_GameData0");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x2000u, "DATA.BIN");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
+               "GETSIZE for one small secure file on a missing save reports neededKB 0, overwriteKB 0");
+    }
+
+    /* 3. A shortfall: 64 KiB free (plus a partial sector), more data than that. */
+    snprintf(save_host, sizeof(save_host), "%s/PSP/SAVEDATA/NKGETSIZE_GameData1", ms_root);
+    nk_platform_mkdir_p(save_host);
+    snprintf(file_host, sizeof(file_host), "%s/ICON0.PNG", save_host);
+    expect(getsize_write_host_file(file_host, 0x1800u), "an existing save file can be planted");
+    sr_hle_test_set_memstick_free_bytes(1, 0x10000u + 0x1234u);
+    {
+        getsize_param(22u, "_GameData1");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x20000u, "DATA.BIN");
+        getsize_entry(GETSIZE_NORMAL_ADDR, 0x3000u, "ICON0.PNG");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 4u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        MEM_W32(GETSIZE_INFO_ADDR + 12u, GETSIZE_NORMAL_ADDR);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        /* write = 0x20000 + 0x10 + 0x3000 = 0x23010; free = 0x10000; existing = 0x1800.
+         * needed = 0x13010 bytes (77 KB rounded up); overwrite = 0x11810 bytes (71 KB). */
+        expect(rc == 0u && MEM_R32(GETSIZE_INFO_ADDR + 20u) == 2u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 24u) == 64u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 28u, "64 KB\0\0"),
+               "GETSIZE free figures count whole 32 KiB sectors of the reported free bytes");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 36u) == 77u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, "77 KB\0\0"),
+               "GETSIZE neededKB and neededString are the rounded-up bytes beyond free space");
+        expect(MEM_R32(GETSIZE_INFO_ADDR + 48u) == 71u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, "71 KB\0\0"),
+               "GETSIZE overwriteKB and overwriteString discount the files the save already holds");
+    }
+    /* Existing data the write replaces can make it fit again. */
+    snprintf(file_host, sizeof(file_host), "%s/DATA.BIN", save_host);
+    expect(getsize_write_host_file(file_host, 0x20000u), "an existing secure file can be planted");
+    {
+        getsize_param(22u, "_GameData1");
+        getsize_entry(GETSIZE_SECURE_ADDR, 0x20000u, "DATA.BIN");
+        MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
+        MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
+                   getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8),
+               "GETSIZE needs nothing when the files it replaces free enough space");
+    }
+
+    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record. */
+    sr_hle_test_set_memstick_free_bytes(1, 0x40000000u + 0x7fffu);
+    {
+        getsize_param(22u, "_GameData0");
+        uint32_t getsize_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        uint32_t sector_size = MEM_R32(GETSIZE_INFO_ADDR + 16u);
+        uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
+        uint32_t kb = MEM_R32(GETSIZE_INFO_ADDR + 24u);
+        char free_text[8];
+        for (uint32_t i = 0; i < 8u; i++) free_text[i] = (char)MEM_R8(GETSIZE_INFO_ADDR + 28u + i);
+        expect(getsize_rc == 0u && sector_size == 0x8000u && sectors == 0x8000u &&
+                   kb == 0x100000u && memcmp(free_text, "1 GB\0\0\0\0", 8u) == 0,
+               "GETSIZE on 1 GiB free reports 0x8000 sectors, 0x100000 KB and \"1 GB\" as the PSP did");
+        getsize_param(8u, "_GameData0");
+        memset(g_mem_base + GETSIZE_MSFREE_ADDR, 0, 20u);
+        uint32_t sizes_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        expect(sizes_rc == 0u && MEM_R32(GETSIZE_MSFREE_ADDR + 0u) == sector_size &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 4u) == sectors &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 8u) == kb &&
+                   getsize_guest_bytes_are(GETSIZE_MSFREE_ADDR + 12u, free_text),
+               "SIZES msFree reports the same free figures as GETSIZE");
+    }
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+    {
+        uint64_t before = 0, after = 0;
+        getsize_param(8u, "_GameData0");
+        int measured = getsize_devctl_free_bytes(&before);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        measured = measured && getsize_devctl_free_bytes(&after);
+        uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
+        uint32_t sectors = MEM_R32(GETSIZE_MSFREE_ADDR + 4u);
+        expect(measured && rc == 0u && sectors >= lo / 0x8000u && sectors <= hi / 0x8000u &&
+                   MEM_R32(GETSIZE_MSFREE_ADDR + 8u) == sectors * 32u,
+               "SIZES msFree is the host-backed free space, not a fixed figure");
+    }
+
+    /* 5. A host volume that cannot be measured is an error, not an invented figure. */
+    sr_hle_test_set_memstick_free_bytes(2, 0u);
+    {
+        getsize_param(22u, "_GameData0");
+        for (uint32_t i = 16u; i < 60u; i++) MEM_W8(GETSIZE_INFO_ADDR + i, 0xeeu);
+        uint32_t rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
+        expect(rc == 0x80110321u && MEM_R32(GETSIZE_INFO_ADDR + 20u) == 0xeeeeeeeeu,
+               "GETSIZE without a host free-space answer fails and writes no free figures");
+        getsize_param(8u, "_GameData0");
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0x801103C5u,
+               "SIZES without a host free-space answer fails");
+    }
+    sr_hle_test_set_memstick_free_bytes(0, 0u);
+
+    nk_platform_remove_tree(ms_root, NULL);
     hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
 }
@@ -14620,7 +14907,7 @@ static void test_atrac_context_abi(void) {
  * through sr_syscall -- the same path a generated import stub takes -- and
  * pins behaviour the old h_ok routing could not produce: per-channel volume
  * retention with the neighbouring audio error codes, VBLANK disable/release
- * delivery transitions observed through sr_vblank_handler(), retained power
+ * delivery transitions observed through sr_vblank_subintr(), retained power
  * clocks reflected by the Get handlers, and the decoder's own frame size from
  * sceAtracGetMaxSample. HOST_TESTED, not PSP_HARDWARE evidence; anything the
  * runtime does not measure is marked UNMEASURED in the handler comments. */
@@ -14683,36 +14970,70 @@ static void test_td24b_cheap_hle_batch(void) {
     /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
     reset_fixture();
     sr_hle_init();
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
-           "sub-interrupt fixture starts from a released VBLANK line");
-    expect(sr_vblank_handler() == 0u, "VBLANK delivery starts clear");
+    for (uint32_t no = 0u; no < 16u; no++)
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u) == 0u,
+               "sub-interrupt fixture starts from released VBLANK sub-interrupts");
+    expect(vblank_delivered(5u, NULL) == 0u, "VBLANK delivery starts clear");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
-    expect(sr_vblank_no() == 5u && sr_vblank_arg() == 0x1234u,
-           "RegisterSubIntrHandler keeps the sub-interrupt number and arg the handler is called with");
-    expect(sr_vblank_handler() == 0u, "a registered-but-disabled handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a registered-but-disabled handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 4u, 0u, 0u) == 0u,
+           "EnableSubIntr on another sub-interrupt answers success");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "enabling sub-interrupt 4 does not enable the handler registered on 5");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success");
-    expect(sr_vblank_handler() == 0x08001000u, "an enabled VBLANK handler is delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    uint32_t arg = 0u;
+    expect(vblank_delivered(5u, &arg) == 0x08001000u && arg == 0x1234u,
+           "an enabled VBLANK handler is delivered with the arg it registered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "DisableSubIntr answers success");
-    expect(sr_vblank_handler() == 0u, "a disabled VBLANK handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a disabled VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success a second time");
-    expect(sr_vblank_handler() == 0x08001000u, "Disable keeps the registration: Enable resumes it");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0x08001000u,
+           "Disable keeps the registration: Enable resumes it");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler answers success");
-    expect(sr_vblank_handler() == 0u, "a released VBLANK handler is not delivered");
-    expect(sr_vblank_no() == 0u && sr_vblank_arg() == 0u,
-           "ReleaseSubIntrHandler clears the sub-interrupt number and arg");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a released VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr after release still answers success");
-    expect(sr_vblank_handler() == 0u, "Release clears the handler word: Enable delivers nothing");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "Release clears the handler word: Enable delivers nothing");
     expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "DisableSubIntr on a non-VBLANK line answers success without effect");
     expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
-    expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 16u, 0x08001000u, 0u) ==
+               0x80020065u,
+           "a VBLANK sub-interrupt number past 15 is refused (ILLEGAL_INTRCODE)");
+    uint32_t h = 0u, a = 0u;
+    expect(sr_vblank_subintr(16u, &h, &a) == -1, "the scheduler's walk ends after sub-interrupt 15");
+
+    /* Two VBLANK sub-interrupts at once: a title's frame counter on 0 and a video player's
+     * handler on 1, the second released when its video closes. Each number keeps its own
+     * handler, arg and enable state, so the release leaves the frame counter running. With
+     * one shared slot the second registration replaced the first handler and the release
+     * removed it: the game's counter stopped and a wait on it never ended. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 0u, 0x08003000u, 0x30u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the frame-counter handler is registered and enabled on sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08004000u, 0x40u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is registered and enabled on sub-interrupt 1");
+    arg = 0u;
+    expect(vblank_delivered(0u, &arg) == 0x08003000u && arg == 0x30u,
+           "registering sub-interrupt 1 leaves sub-interrupt 0's handler and arg in place");
+    arg = 0u;
+    expect(vblank_delivered(1u, &arg) == 0x08004000u && arg == 0x40u,
+           "both handlers are delivered on the same VBLANK");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is released");
+    expect(vblank_delivered(1u, NULL) == 0u, "the released sub-interrupt is no longer delivered");
+    expect(vblank_delivered(0u, NULL) == 0x08003000u,
+           "releasing sub-interrupt 1 keeps delivering sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the two-handler fixture leaves the VBLANK line released");
 
     /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
      * registration line once, not once per frame. A changed registration and a register after
@@ -14741,7 +15062,9 @@ static void test_td24b_cheap_hle_batch(void) {
         expect(count_occurrences(err,
                    "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
                "a changed arg and a register after Release each write the registration line");
-        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+        uint32_t quiet_arg = 0u;
+        expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
+                   vblank_delivered(1u, &quiet_arg) == 0x08002000u && quiet_arg == 0x10u,
                "the quiet path still records the latest registration");
         expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
                "the log fixture leaves the VBLANK line released");
@@ -19361,6 +19684,13 @@ static void test_ge_guest_sentinel(void) {
            "Region 3 textured texel (0,0) center matches source texture");
     expect(fb[(20 + 7 * 8 + 2) * fb_stride + (380 + 7 * 8 + 2)] == tex[7 * 8 + 7],
            "Region 3 textured texel (7,7) center matches source texture");
+    /* Each of the 8x8 texels covers exactly 8x8 pixels from (380,20): the pixel samples its
+     * centre and nearest takes floor(s) (PSP-GE-SAMPLE-001). */
+    int r3_texels_exact = 1;
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++)
+            if (fb[(20 + y) * fb_stride + (380 + x)] != tex[(y / 8) * 8 + x / 8]) r3_texels_exact = 0;
+    expect(r3_texels_exact, "Region 3 shows each texel over exactly its own 8x8 pixels (PSP-GE-SAMPLE-001)");
     expect(fb[20 * fb_stride + 379] == bg_color, "Region 3 left edge is bounded (background)");
     expect(fb[20 * fb_stride + 444] == bg_color, "Region 3 right edge is bounded (background)");
 
@@ -19389,12 +19719,12 @@ static void test_ge_guest_sentinel(void) {
            "Region 1 matches canonical 64-bit FNV-1a hash (0x0eb6697557c1d045)");
     expect(r2_hash == 0xbf1aca308f0c0a25ULL,
            "Region 2 matches canonical 64-bit FNV-1a hash (0xbf1aca308f0c0a25)");
-    expect(r3_hash == 0x2158c050396fe725ULL,
-           "Region 3 matches canonical 64-bit FNV-1a hash (0x2158c050396fe725)");
+    expect(r3_hash == 0x9923d5b929b08725ULL,
+           "Region 3 matches canonical 64-bit FNV-1a hash (0x9923d5b929b08725)");
     expect(r4_hash == 0x04cfd0712d0f88e5ULL,
            "Region 4 triangle matches canonical 64-bit FNV-1a hash (0x04cfd0712d0f88e5)");
-    expect(fb_hash == 0x6b749d6fd93580c5ULL,
-           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0x6b749d6fd93580c5)");
+    expect(fb_hash == 0xe515d6080beff4c5ULL,
+           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0xe515d6080beff4c5)");
 
     /* 7. Callback registration lifecycle */
     const uint32_t cb_struct = 0x08920000u;
@@ -19905,7 +20235,7 @@ enum {
 };
 static unsigned s_ge_tim_calls;
 static uint64_t s_ge_tim_fired_at[4];
-static uint32_t s_ge_tim_list[4];
+static uint32_t s_ge_tim_id[4];   /* the callback's id (a0): the list's FINISH argument */
 static uint32_t s_ge_tim_arg;
 static int s_ge_tim_intr_ctx;
 static uint32_t s_ge_tim_cbid;
@@ -19913,7 +20243,7 @@ static uint32_t s_ge_tim_cbid;
 static void ge_tim_finish_fn(CpuState *cpu) {
     if (s_ge_tim_calls < 4u) {
         s_ge_tim_fired_at[s_ge_tim_calls] = s_vtime_us;
-        s_ge_tim_list[s_ge_tim_calls] = cpu->r[4];
+        s_ge_tim_id[s_ge_tim_calls] = cpu->r[4];
     }
     s_ge_tim_calls++;
     s_ge_tim_arg = cpu->r[5];
@@ -19921,9 +20251,13 @@ static void ge_tim_finish_fn(CpuState *cpu) {
     cpu->r[2] = 0u;
 }
 
+/* Each test list ends in a FINISH whose id names the list's address, so a callback says which
+ * list it completed. */
+static uint32_t ge_tim_finish_id(uint32_t base) { return (base >> 8) & 0xffffu; }
+
 static void ge_tim_write_list(uint32_t base, unsigned nops) {
     for (unsigned i = 0; i < nops; i++) MEM_W32(base + 4u * i, 0x00000000u); /* NOP */
-    MEM_W32(base + 4u * nops, 0x0f000000u);       /* FINISH */
+    MEM_W32(base + 4u * nops, 0x0f000000u | ge_tim_finish_id(base));  /* FINISH id */
     MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
 }
 
@@ -19968,7 +20302,7 @@ static void ge_tim_setup(void) {
     sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
     s_ge_tim_calls = 0;
     memset(s_ge_tim_fired_at, 0, sizeof(s_ge_tim_fired_at));
-    memset(s_ge_tim_list, 0, sizeof(s_ge_tim_list));
+    memset(s_ge_tim_id, 0, sizeof(s_ge_tim_id));
     s_ge_tim_arg = 0;
     s_ge_tim_intr_ctx = 0;
     MEM_W32(GE_TIM_INFO + 0u, 0u);                 /* signal func */
@@ -19991,6 +20325,9 @@ static void ge_tim_teardown(void) {
     sr_test_guest_fn_reset();
 }
 
+/* The FINISH id of the list the GE ran last, read back from ge.c. */
+static uint32_t ge_tim_last_finish_id(void) { return ge_last_finish_id(); }
+
 /* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
  * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
 static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
@@ -20009,7 +20346,8 @@ static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, 
     scheduler_service_pending();
     snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
              (unsigned long long)(due - enq));
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due &&
+           s_ge_tim_id[0] == ge_tim_last_finish_id(), msg);
 }
 
 /* A display-list builder for the measured-cell lists. */
@@ -20126,8 +20464,25 @@ static void test_ge_completion_timing(void) {
     ge_tim_write_list(GE_TIM_DL, 0u);
     memset(&cpu, 0, sizeof(cpu));
     uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing off: the finish callback runs inside sceGeListEnQueue");
+    /* finish_func(id, arg): id is the FINISH command's 16-bit argument, as libpspgu's
+     * sceGuFinishId(0xffff) sets it, never the queue ID. Bits 16..23 of the payload are not
+     * part of it. A title that marks a skipped frame this way waits on that id. */
+    MEM_W32(GE_TIM_DL2, 0x0f12ffffu);              /* FINISH, payload 0x12ffff */
+    MEM_W32(GE_TIM_DL2 + 4u, 0x0c000000u);         /* END */
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    uint32_t qid_ff = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0xffffu && qid_ff != 0xffffu,
+           "GE finish: the callback's id is the FINISH argument's low 16 bits, not the queue ID");
+    expect(s_ge_tim_arg == GE_TIM_FINISH_ARG,
+           "GE finish: the callback's second argument is its registered argument");
+    MEM_W32(GE_TIM_DL2, 0x0c000000u);              /* END with no FINISH */
+    s_ge_tim_calls = 0;
+    (void)ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0u,
+           "GE finish: a list that ran no FINISH does not inherit the previous list's id");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
            "GE timing off: the syncs read the list as complete at once");
@@ -20156,7 +20511,8 @@ static void test_ge_completion_timing(void) {
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
            "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u &&
+           s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the empty list's finish callback runs at 15 us");
     expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
            "GE timing: the callback runs in interrupt context with its registered argument");
@@ -20170,11 +20526,13 @@ static void test_ge_completion_timing(void) {
     /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
     s_ge_tim_calls = 0;
     s_vtime_us = 60000u;
+    ge_tim_write_list(GE_TIM_DL2, 0u);
     uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    (void)qa;
     s_vtime_us = 60015u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the first list completes after its own 15 us");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
            "GE timing: the second list is still drawing behind it");
@@ -20183,7 +20541,8 @@ static void test_ge_completion_timing(void) {
     expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
     s_vtime_us = 60030u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+    expect(s_ge_tim_calls == 2u && s_ge_tim_id[1] == ge_tim_finish_id(GE_TIM_DL2) &&
+           s_ge_tim_fired_at[1] == 60030u,
            "GE timing: the second list completes 15 us after the first");
 
     /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
@@ -23381,6 +23740,49 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
     cpu.r[4] = CORE;
     expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
            "__sceSasCoreWithMix refreshes the end flags as a cycle does");
+}
+
+/* #1595: a second __sceSasInit on an initialized core, as the PSP answers it (PSP-SAS-001, PSP-3000 6.6.1):
+ * 0, the new grain and output mode take effect, and a playing voice reads as ended again. A misaligned core
+ * is still refused with the address error after an init. */
+#define NID_SAS_GET_GRAIN      0xbd11b7c2u
+#define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+static void test_sas_reinit_is_a_fresh_init(void) {
+    CpuState cpu;
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 64u, 1u);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = VAG; cpu.r[7] = 64u * 16u; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xfffffffeu, "before the re-init only voice 0 is playing");
+
+    cpu.r[4] = CORE; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "__sceSasInit on an initialized core returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the re-init leaves every voice ended");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "the re-initialized core mixes");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the voice stays ended after the next cycle");
+
+    cpu.r[4] = CORE; cpu.r[5] = 512; cpu.r[6] = 16; cpu.r[7] = 1; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "a re-init with other parameters returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_GRAIN) == 512u, "the re-init's grain takes effect");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_OUTPUTMODE) == 1u, "the re-init's output mode takes effect");
+
+    cpu.r[4] = CORE + 4u; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == SAS_ERROR_ADDRESS,
+           "a misaligned core is refused with the address error after an init");
 }
 
 static void test_msgpipe_safety(void) {
@@ -28792,7 +29194,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -28806,6 +29208,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 callback-wakeup delay body "
                  "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ 3 event-flag set/cancel waiters "
+                 "+ 3 flight thread-snapshot waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
                  "= %d, observed %lu)",
@@ -33142,6 +33545,84 @@ static void test_psmf_start_reads_init_pts_from_the_third_argument(void) {
     s_psmf_synthetic_enabled = 0;
 }
 
+/* scePsmfPlayerSetPsmf (the variant without callbacks) opens a stream exactly as SetPsmfCB does, and
+ * scePsmfPlayerChangePlayMode follows the reference player's checks (PPSSPP Core/HLE/scePsmf.cpp
+ * 3f40ddc8): not playing yet is INVALID_STATUS, a mode outside 0..5 INVALID_CONFIG, and FORWARD on a
+ * stream without entry points INVALID_STREAM.  LocoRoco 2 imports both; neither had a handler, and the
+ * first SetPsmf stopped the title as an unimplemented import.
+ *
+ * MUTANT: drop the 0x3d6d25a9 registration -- the first SetPsmf stops the selftest at the unsupported
+ *   import.  MUTANT: drop the playing-status check in ChangePlayMode -- the standby cell fails. */
+#define NID_SCE_PSMF_PLAYER_SET_PSMF         0x3d6d25a9u
+#define NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE 0xa3d81169u
+#define PSMF_STATUS_STANDBY                  0x00000002u
+#define PSMF_ERR_STATUS_SELFTEST             0x80616001u
+#define PSMF_ERR_STREAM_SELFTEST             0x80616003u
+#define PSMF_ERR_CONFIG_SELFTEST             0x80616006u
+
+static uint32_t psmf_change_play_mode(CpuState *cpu, int32_t mode, int32_t speed) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = PSMF_SELFTEST_PLAYER;
+    cpu->r[5] = (uint32_t)mode;
+    cpu->r[6] = (uint32_t)speed;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_CHANGE_PLAY_MODE);
+}
+
+static void psmf_play_mode_cells(int basic) {
+    CpuState cpu;
+    const char *what = basic ? "psmf play mode (basic)" : "psmf play mode (full)";
+    char msg[160];
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    if (basic) memset(s_psmf_synthetic + 0x82 + 4, 0, 4);   /* no entry points: a BASIC player */
+    s_psmf_synthetic_enabled = 1;
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode PLAY */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 1u);             /* play speed */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf play mode: the player is created");
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode before SetPsmf is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf without callbacks opens the stream", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: SetPsmf leaves the player in STANDBY", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_STANDBY, msg);
+    snprintf(msg, sizeof msg, "%s: a second SetPsmf on a set player is INVALID_STATUS", what);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == PSMF_ERR_STATUS_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: ChangePlayMode in STANDBY is INVALID_STATUS", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == PSMF_ERR_STATUS_SELFTEST, msg);
+    expect(psmf_start_call(&cpu, 0u, 0u) == 0u, "psmf play mode: playback starts");
+    snprintf(msg, sizeof msg, "%s: modes outside PLAY..REWIND are INVALID_CONFIG", what);
+    expect(psmf_change_play_mode(&cpu, 6, 1) == PSMF_ERR_CONFIG_SELFTEST &&
+               psmf_change_play_mode(&cpu, -1, 1) == PSMF_ERR_CONFIG_SELFTEST, msg);
+    snprintf(msg, sizeof msg, "%s: PAUSE and PLAY are accepted while playing", what);
+    expect(psmf_change_play_mode(&cpu, 3, 1) == 0u && psmf_change_play_mode(&cpu, 0, 1) == 0u, msg);
+    snprintf(msg, sizeof msg, "%s: FORWARD %s", what,
+             basic ? "is INVALID_STREAM without entry points" : "is accepted with entry points");
+    expect(psmf_change_play_mode(&cpu, 4, 2) == (basic ? PSMF_ERR_STREAM_SELFTEST : 0u), msg);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf play mode: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
+}
+
+static void test_psmf_set_psmf_and_change_play_mode(void) {
+    psmf_play_mode_cells(0);
+    psmf_play_mode_cells(1);
+}
+
 static void test_flight_recorder_trace(void) {
     const char *output = "flight_recorder_hle_selftest.json";
     char bundle[16384];
@@ -33209,7 +33690,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 5") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -33403,6 +33884,176 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_disable();
     hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+}
+
+/* Schema 6 terminal thread snapshot (#320). A thread blocked long before the retained event
+ * window must still say what it waits on and in which import it blocked. Real threads park
+ * through production imports (sceKernelWaitSema, sceKernelDelayThread) and through a block
+ * outside any import that happens after other imports ran; the bundle written at exit lists
+ * each with its reason, object, import NID (null for the outside block, never the stale last
+ * NID) and the virtual time waited. */
+#define FTS_PLAIN_OBJ      0x46545301u
+#define FTS_PLAIN_PC       0x08904104u
+#define FTS_PLAIN_RA       0x08904208u
+#define FTS_SEMA_PC        0x08904304u
+#define FTS_SEMA_RA        0x08904408u
+#define FTS_DELAY_PC       0x08904504u
+#define FTS_DELAY_RA       0x08904608u
+#define FTS_LIVE_PC        0x08904704u
+#define FTS_LIVE_RA        0x08904808u
+
+static uint32_t s_fts_sema;
+static int s_fts_plain_done, s_fts_sema_done, s_fts_delay_done;
+
+static void fts_plain_body(void *arg) {
+    (void)arg;
+    sched_block_on(FTS_PLAIN_OBJ);
+    s_fts_plain_done = 1;
+    selftest_park_on_scheduler();
+}
+
+static void fts_sema_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_fts_sema; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    s_fts_sema_done = sr_syscall(&cpu, NID_CNW_WAIT_SEMA) == 0u;
+    selftest_park_on_scheduler();
+}
+
+static void fts_delay_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 2000u;
+    s_fts_delay_done = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD) == 0u;
+    selftest_park_on_scheduler();
+}
+
+/* Switch to a fixture thread's coroutine as the scheduler would, with its pc and ra on the CPU. */
+static void fts_run(TCB *t, uint32_t pc, uint32_t ra) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    s_cpu->pc = pc;
+    s_cpu->r[31] = ra;
+    sr_coro_switch(t->coro);
+}
+
+static TCB *fts_thread(uint32_t uid, int priority, void (*body)(void *)) {
+    TCB *t = fixture_thread(uid, TH_READY, priority);
+    t->started = 1;
+    t->coro = sr_coro_create(body, NULL, (size_t)4 << 20);
+    expect(t->coro != NULL, "thread snapshot: fixture coroutine created");
+    return t;
+}
+
+static void test_flight_recorder_thread_snapshot(void) {
+    const char *output = "flight_recorder_threads_selftest.json";
+    static char bundle[16384];
+    char needle[512];
+    CpuState cpu;
+    size_t bundle_size;
+
+    remove(output);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", "flight_recorder_threads_selftest.json");
+    TCB *main_t = wsv_begin();
+    s_pace_on = 0;
+    /* Between threads the scheduler holds no import (sched_run clears the pair on every
+     * switch out); this harness switches coroutines directly, so it starts from that state. */
+    sr_import_active = 0;
+    sr_import_nid = 0u;
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_SCHED, 64u);
+    s_fts_sema = wsv_create(0, 1);
+    expect((int32_t)s_fts_sema > 0, "thread snapshot: the semaphore is created");
+    expect(sr_last_nid == NID_CNW_CREATE_SEMA, "thread snapshot: an import ran before the plain block");
+    s_fts_plain_done = s_fts_sema_done = s_fts_delay_done = 0;
+
+    TCB *plain = fts_thread(0x1e3u, 18, fts_plain_body);
+    TCB *waiter = fts_thread(0x1e4u, 16, fts_sema_body);
+    TCB *delayer = fts_thread(0x1e5u, 24, fts_delay_body);
+    if (!plain->coro || !waiter->coro || !delayer->coro) return;
+    s_vtime_us = 1000u;
+    fts_run(plain, FTS_PLAIN_PC, FTS_PLAIN_RA);
+    s_vtime_us = 2000u;
+    fts_run(waiter, FTS_SEMA_PC, FTS_SEMA_RA);
+    s_vtime_us = 3000u;
+    fts_run(delayer, FTS_DELAY_PC, FTS_DELAY_RA);
+    expect(plain->state == TH_WAIT_OBJ && waiter->state == TH_WAIT_OBJ &&
+               delayer->state == TH_WAIT_DELAY,
+           "thread snapshot: two object waits and one delay are parked");
+
+    s_vtime_us = 3500u;
+    s_cur = (int)(main_t - s_tcb);
+    main_t->state = TH_RUNNING;
+    s_cpu->pc = FTS_LIVE_PC;
+    s_cpu->r[31] = FTS_LIVE_RA;
+    sr_flight_exit(0u);
+
+    FILE *bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL &&
+               strstr(bundle, "\"threads\": [") != NULL,
+           "thread snapshot: the exit bundle is schema 6 with a threads block");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 18, \"state\": \"wait-object\", \"suspended\": false, "
+             "\"why\": \"object\", \"wait_type\": 3, \"wait_object\": %" PRIu32 ", \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 2500, \"deadline_us\": null}",
+             plain->uid, (uint32_t)FTS_PLAIN_OBJ, (uint32_t)FTS_PLAIN_PC, (uint32_t)FTS_PLAIN_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: a block outside any import records a null NID, not the last import");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 16, \"state\": \"wait-object\", \"suspended\": false, "
+             "\"why\": \"object\", \"wait_type\": 3, \"wait_object\": %" PRIu32 ", \"block_nid\": %" PRIu32 ", "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 1500, \"deadline_us\": null}",
+             waiter->uid, s_fts_sema, (uint32_t)NID_CNW_WAIT_SEMA, (uint32_t)FTS_SEMA_PC,
+             (uint32_t)FTS_SEMA_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the semaphore waiter names its semaphore, sceKernelWaitSema and 1500 us");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 24, \"state\": \"wait-delay\", \"suspended\": false, "
+             "\"why\": \"delay\", \"wait_type\": 2, \"wait_object\": 0, \"block_nid\": %" PRIu32 ", "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 500, \"deadline_us\": 1500}",
+             delayer->uid, (uint32_t)NID_SCE_KERNEL_DELAY_THREAD, (uint32_t)FTS_DELAY_PC,
+             (uint32_t)FTS_DELAY_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the delayed thread names sceKernelDelayThread, 500 us waited, 1500 us left");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 32, \"state\": \"running\", \"suspended\": false, "
+             "\"why\": \"none\", \"wait_type\": 0, \"wait_object\": 0, \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": null, \"deadline_us\": null}",
+             main_t->uid, (uint32_t)FTS_LIVE_PC, (uint32_t)FTS_LIVE_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the running thread reports its live pc and ra and no wait");
+    expect(strstr(bundle, "\"guest") == NULL && strstr(bundle, "\"path") == NULL,
+           "thread snapshot: the bundle carries no guest-derived string or path field");
+    remove(output);
+    sr_flight_test_disable();
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+
+    /* Release every parked thread through the production wake paths and let it return. */
+    sched_wake(FTS_PLAIN_OBJ);
+    fts_run(plain, 0u, 0u);
+    s_cur = (int)(main_t - s_tcb);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_fts_sema; cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "thread snapshot: the semaphore is signalled");
+    fts_run(waiter, 0u, 0u);
+    s_vtime_us = 5000u;
+    s_cur = -1;
+    (void)pick_next();
+    expect(delayer->state == TH_READY || delayer->state == TH_RUNNING,
+           "thread snapshot: the expired delay is promoted");
+    fts_run(delayer, 0u, 0u);
+    expect(s_fts_plain_done && s_fts_sema_done && s_fts_delay_done,
+           "thread snapshot: every parked thread resumed and returned");
+    sr_coro_destroy(plain->coro); plain->coro = NULL;
+    sr_coro_destroy(waiter->coro); waiter->coro = NULL;
+    sr_coro_destroy(delayer->coro); delayer->coro = NULL;
+    s_cur = (int)(main_t - s_tcb);
+    wsv_delete(s_fts_sema);
+    s_cur = -1;
 }
 
 static void test_flight_recorder_fault_trigger(void) {
@@ -36692,6 +37343,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();
     test_io_devctl_memory_stick();
+    test_savedata_getsize_free_space();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
@@ -36858,6 +37510,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_sas_reinit_is_a_fresh_init();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
@@ -36904,10 +37557,12 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
+    test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
     test_flight_recorder_refusals_are_events_not_terminals();
+    test_flight_recorder_thread_snapshot();
     test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real

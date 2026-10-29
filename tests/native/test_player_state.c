@@ -208,6 +208,7 @@ static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
 
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
+    if (!file) fprintf(stderr, "write_text_file: cannot create %s: %s\n", path, strerror(errno));
     assert(file != NULL);
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
@@ -1620,6 +1621,21 @@ static int repeat_launch_child_mode(void) {
     fflush(stderr);
     const char *stop_reason = getenv("NK_REPEAT_LAUNCH_STOP_REASON");
     const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
+    /* A run's own boot event, after as many lines of output as a real runtime
+       writes before it. */
+    const char *output_lines = getenv("NK_REPEAT_LAUNCH_OUTPUT_LINES");
+    for (int i = output_lines ? atoi(output_lines) : 0; i > 0; i--) {
+        printf("synthetic runtime output line %d\n", i);
+    }
+    fflush(stdout);
+    const char *boot_entry = getenv("NK_REPEAT_LAUNCH_BOOT_ENTRY");
+    if (boot_entry && *boot_entry && boot_event_path && *boot_event_path) {
+        FILE *events = fopen(boot_event_path, "ab");
+        if (!events) return 6;
+        ok = fprintf(events, "BOOT_EVENT phase=boot reason=entry entry=%s\n", boot_entry) >= 0;
+        if (fclose(events) != 0) ok = 0;
+        if (!ok) return 6;
+    }
     if (stop_reason && strcmp(stop_reason, "hold-without-boot-event") == 0) {
         /* A child that runs but never reaches the runtime's first boot event
            (#1290): it writes none and stays alive until the player stops it.
@@ -2033,7 +2049,7 @@ static void test_sample_entries_never_reach_library_json(void) {
     seed_entry(&user, "TEST00041", "Synthetic User Title");
     assert(player_app_add_game(app, &user));
 
-    NkLibrary loaded;
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&loaded);
     assert(nk_library_load(&loaded, path) == NK_OK);
     assert(nk_library_count(&loaded) == 1);
@@ -2136,6 +2152,76 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
 /* #1282, #1286, #1280: the cards say what happened in plain words. Codes and
    raw boundaries go to the details, the developer log and the copied report,
    never the badge or the headline. */
+/* #306: a card names this platform's fix. A Linux build compiled without
+   SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
+   and a missing data root named Windows' LOCALAPPDATA. */
+static void test_platform_cards_name_this_platform(void) {
+    char message[1024];
+    player_launcher_unavailable_message(
+        "The next UI needs the SDL_Renderer and SDL3_ttf build dependencies.", true,
+        message, sizeof(message));
+    assert(strstr(message, "can't open its launcher: The next UI needs") != NULL);
+    assert(strstr(message, "dependencies..") == NULL);
+    assert(strstr(message, "compiled without the SDL_Renderer and SDL3_ttf support") != NULL);
+    assert(strstr(message, "build the player again") != NULL);
+    assert(strstr(message, "ZIP") == NULL);
+    assert(strstr(message, "nakagawa_player.exe") == NULL);
+
+    player_launcher_unavailable_message("", false, message, sizeof(message));
+    assert(strstr(message, "can't open its launcher: it could not initialize.") != NULL);
+    assert(strstr(message, "compiled without") == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    /* Windows keeps the release ZIP's words. */
+    assert(strstr(message, "Extract the ZIP again") != NULL);
+    assert(strstr(message, "nakagawa_player.exe") != NULL);
+#else
+    assert(strstr(message, "ZIP") == NULL);
+    assert(strstr(message, "nakagawa_player.exe") == NULL);
+    assert(strstr(message, "tools/stage_install.py") != NULL);
+    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "LOCALAPPDATA") == NULL);
+    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "Windows") == NULL);
+
+    /* The production card, with no data root to resolve. */
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    bool had_xdg = false;
+    bool had_home = false;
+    char *saved_xdg = capture_environment_value("XDG_DATA_HOME", &had_xdg);
+    char *saved_home = capture_environment_value("HOME", &had_home);
+    assert(app != NULL);
+    nk_ps_set_env("XDG_DATA_HOME", NULL);
+    nk_ps_set_env("HOME", NULL);
+    assert(!player_app_open_prerequisite_about(app));
+    assert(strcmp(app->last_error.error_code, "DATA_DIR_UNAVAILABLE") == 0);
+    assert(strstr(app->last_error.message, "XDG_DATA_HOME or HOME") != NULL);
+    assert(strstr(app->last_error.message, "LOCALAPPDATA") == NULL);
+    restore_environment_value("XDG_DATA_HOME", saved_xdg, had_xdg);
+    restore_environment_value("HOME", saved_home, had_home);
+    free(saved_xdg);
+    free(saved_home);
+    free(app);
+#endif
+    /* A folder the file manager could not show is a card naming the folder,
+       not only a console line (main.c raises it when SDL_OpenURL fails). */
+    {
+        PlayerApp *folder_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(folder_app != NULL);
+        folder_app->active_view = VIEW_SETTINGS;
+        player_app_set_folder_open_error(folder_app, "/synthetic/saves/TEST00001",
+                                         "xdg-open failed");
+        assert(folder_app->active_view == VIEW_ERROR);
+        assert(strcmp(folder_app->last_error.error_code, "FOLDER_OPEN_FAILED") == 0);
+        assert(folder_app->last_error.return_view == VIEW_SETTINGS);
+        assert(strstr(folder_app->last_error.message, "Open it yourself") != NULL);
+        assert(strcmp(folder_app->last_error.details,
+                      "/synthetic/saves/TEST00001 (xdg-open failed)") == 0);
+#if !defined(_WIN32) && !defined(_WIN64)
+        assert(strstr(folder_app->last_error.message, "xdg-utils") != NULL);
+#endif
+        free(folder_app);
+    }
+    printf("[PLAYER_STATE_TEST] platform cards name this platform's fix PASS\n");
+}
+
 static void test_error_cards_are_plain(void) {
     /* The reason table, one place for every stop boundary. */
     assert(strcmp(player_runtime_stop_feature("unsupported-import-scenetadhocinit"),
@@ -2183,15 +2269,19 @@ static void test_error_cards_are_plain(void) {
     assert(player_error_retry_label(&app->last_error) == NULL);
     assert(!player_app_retry_from_error(app));
 
-    /* The stop card and Copy details. */
+    /* The stop card and Copy details. The developer log holds an earlier
+       run's boot events; the report lists only the ones in this run's log. */
     player_dev_log_add(app, "runtime",
-                       "BOOT_EVENT phase=boot reason=entry");
-    player_dev_log_add(app, "runtime",
-                       "BOOT_EVENT phase=stop reason=semantic-boundary "
-                       "boundary=unsupported-import-scenetadhocinit issue=308");
+                       "BOOT_EVENT phase=boot reason=entry entry=0x08a9c92c");
+    const char *report_run_log = SR_SELFTEST_BUILD_ROOT "/player_state_report_TEST00042-last.txt";
+    write_text_file(report_run_log,
+                    "synthetic runtime output\n"
+                    "BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
+                    "BOOT_EVENT phase=stop reason=semantic-boundary "
+                    "boundary=unsupported-import-scenetadhocinit issue=308\n");
     player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
                                    "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
-                                   "TEST00042", "C:/logs/boot_TEST00042.log");
+                                   "TEST00042", report_run_log);
     assert(strcmp(app->last_error.title, "Game Stopped Early") == 0);
     assert(strcmp(player_error_badge(&app->last_error), "Game stopped") == 0);
     assert(strstr(app->last_error.message, "ad hoc wireless play") != NULL);
@@ -2207,15 +2297,19 @@ static void test_error_cards_are_plain(void) {
     assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
     assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
     assert(strstr(report, "Reason: Stopped at unsupported-import-scenetadhocinit") != NULL);
-    assert(strstr(report, "Log file: C:/logs/boot_TEST00042.log\n") != NULL);
-    assert(strstr(report, "Last boot events:\n  BOOT_EVENT phase=boot reason=entry\n"
+    assert(strstr(report, "Log file: " SR_SELFTEST_BUILD_ROOT "/player_state_report_TEST00042-last.txt\n") != NULL);
+    assert(strstr(report, "Last boot events:\n"
+                          "  BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
                           "  BOOT_EVENT phase=stop") != NULL);
+    assert(strstr(report, "0x08a9c92c") == NULL);
+    assert(strstr(report, "synthetic runtime output") == NULL);
     /* Only the user's own log location: no other path, no profile folder. */
     assert(strchr(report, '\\') == NULL);
-    assert(strstr(report, "C:/") == strstr(report, "Log file: C:/") + 10);
+    assert(strstr(report, ":/") == NULL);
     const char *profile = getenv("USERPROFILE");
     if (!profile || !profile[0]) profile = getenv("HOME");
     if (profile && strlen(profile) > 3) assert(strstr(report, profile) == NULL);
+    remove(report_run_log);
 
     /* Restart game asks the main loop to relaunch the same game off the UI
        thread (#1298); here its package is missing, so the launch says so. */
@@ -2585,13 +2679,27 @@ static void test_package_build_lifecycle(const char *self_executable) {
     snprintf(tool_path, sizeof(tool_path), "%s%cgcc.exe", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
     snprintf(tool_path, sizeof(tool_path), "%s%cmingw32-make.exe", prereq_bin, sep);
+    write_text_file(tool_path, "fixture\n");
 #else
+    /* Off Windows nothing is downloaded: the build runs the system's gcc and
+       make from PATH (#306). A tool in the per-user prerequisites folder does
+       not count, since the build child never gets that folder on PATH; the
+       planted mingw32-make there must not satisfy the preflight either. */
+    char host_tools[NATIVE_TEST_PATH_MAX + 128];
+    bool had_path = false;
+    char *saved_path = capture_environment_value("PATH", &had_path);
+    snprintf(host_tools, sizeof(host_tools), "%s%chost-tools", rebuild_root, sep);
+    assert(nk_platform_mkdir_p(host_tools));
     snprintf(tool_path, sizeof(tool_path), "%s%cgcc", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
-    snprintf(tool_path, sizeof(tool_path), "%s%c%s", prereq_bin, sep,
-             "mingw32-make");
-#endif
+    snprintf(tool_path, sizeof(tool_path), "%s%cmake", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
+    snprintf(tool_path, sizeof(tool_path), "%s%cgcc", host_tools, sep);
+    write_text_file(tool_path, "fixture\n");
+    /* PATH names only the fixture folder, so the host's own tools cannot
+       satisfy (or hide) the preflight. */
+    nk_ps_set_env("PATH", host_tools);
+#endif
 
     PlayerApp *rebuild_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(rebuild_app != NULL);
@@ -2674,6 +2782,24 @@ static void test_package_build_lifecycle(const char *self_executable) {
     }
     assert(rebuild_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
     nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+#if !defined(_WIN32) && !defined(_WIN64)
+    /* gcc alone: the card names make and the package that provides it, and says
+       nothing is downloaded here. It used to say only that Linux build-tool
+       installation was in the works, even with every tool installed. */
+    assert(!player_app_rebuild_package(rebuild_app, 0));
+    assert(rebuild_app->active_view == VIEW_ERROR);
+    assert(strcmp(rebuild_app->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
+    assert(strstr(rebuild_app->last_error.message, "make was not found on PATH") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "build-essential") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "downloads build tools only on Windows") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "in the works") == NULL);
+    assert(!rebuild_app->build_session.is_building);
+    snprintf(tool_path, sizeof(tool_path), "%s%cmake", host_tools, sep);
+    write_text_file(tool_path, "fixture\n");
+    rebuild_app->last_error.error_code[0] = '\0';
+    rebuild_app->active_view = VIEW_LIBRARY;
+    printf("[PLAYER_STATE_TEST] Linux build tools: a missing make is named, nothing downloads PASS\n");
+#endif
     bool rebuild_started = player_app_rebuild_package(rebuild_app, 0);
     if (!rebuild_started) {
         fprintf(stderr, "rebuild action refused: %s: %s\n",
@@ -2865,6 +2991,10 @@ static void test_package_build_lifecycle(const char *self_executable) {
                               saved_source_media, had_source_media);
     restore_environment_value("NK_INSTALL_ROOT", saved_install_override,
                               had_install_override);
+#if !defined(_WIN32) && !defined(_WIN64)
+    restore_environment_value("PATH", saved_path, had_path);
+    free(saved_path);
+#endif
     free(saved_python);
     free(saved_build_mode);
     free(saved_title_id);
@@ -3633,6 +3763,15 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+    /* Copies of this binary stand in for the bundled python and child modes above. Any other
+     * arguments are a mode this binary does not have: name them and stop, instead of running
+     * the whole suite again inside a child (which would start its own children). */
+    if (argc > 1) {
+        fprintf(stderr, "test_player_state: no mode takes these arguments:");
+        for (int i = 1; i < argc; i++) fprintf(stderr, " [%s]", argv[i]);
+        fprintf(stderr, "\n");
+        return 97;
+    }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
     test_source_iso_member_path_validation();
@@ -3677,6 +3816,7 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
     test_skipped_showcase_logs_its_reason();
     test_build_outcome_is_shown_once_per_session();
@@ -4043,6 +4183,7 @@ int main(int argc, char **argv) {
         applied.fullscreen = true;
         applied.master_volume = 55;
         applied.reduce_motion = true;
+        applied.developer_mode = true;
 
         NkRuntimeConfig cfg;
         memset(&cfg, 0, sizeof(cfg));
@@ -4054,6 +4195,7 @@ int main(int argc, char **argv) {
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
+        assert(cfg.developer_mode == true);   /* the runtime's developer pages follow it (#314) */
         assert(cfg.gui_mode == true);   /* untouched by the mapping */
         /* NULL arguments are safe no-ops. */
         player_app_apply_settings_to_session(NULL, &cfg);
@@ -4388,7 +4530,7 @@ int main(int argc, char **argv) {
         assert(player_app_find_game_by_disc_id(wiz, "UCUS98701") == 0);
         assert(wiz->games[0].extracted_asset_count == 4);
         assert(wiz->active_view == PLAYER_VIEW_READY_LIBRARY);
-        NkLibrary persisted;
+        static NkLibrary persisted;  /* too large for the stack (NK_MAX_GAMES) */
         assert(nk_library_load(&persisted, staged_library_path) == NK_OK);
         const NkGameEntry *persisted_game = nk_library_find_by_disc_id(&persisted, "UCUS98701");
         assert(persisted_game != NULL);
@@ -4620,7 +4762,7 @@ int main(int argc, char **argv) {
                                                   sizeof(refusal_report)) == 0);
         assert(strstr(refusal_report, "(disc TEST00001)") != NULL);
         assert(strstr(refusal_report, "(disc TEST00002)") != NULL);
-        PlayerApp refusal_app;
+        static PlayerApp refusal_app;  /* too large for the stack (NK_MAX_GAMES) */
         memset(&refusal_app, 0, sizeof(refusal_app));
         snprintf(refusal_app.title_manifest_report,
                  sizeof(refusal_app.title_manifest_report), "%s", refusal_report);
@@ -7774,9 +7916,80 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
 
+        /* Two titles in a row. The owner's ModNation Racers report listed
+           LocoRoco 2's boot events: the report read them from the developer
+           log, which spans every launch and keeps only each run's first 48
+           lines. The first title's run ends cleanly with its boot event in the
+           developer log; the second title's event follows 60 lines of output,
+           then it stops. Its report lists its own run's events only. */
+        char disc2[MAX_DISC_ID_LEN];
+        char memstick2[NK_MAX_PATH];
+        char run_log2[NK_MAX_PATH + 64];
+        snprintf(disc2, sizeof(disc2), "%s", "TEST00002");
+        snprintf(run_log2, sizeof(run_log2), "%s%cgame-%s-last.txt", logs_dir, sep, disc2);
+        remove(run_log2);
+        write_runtime_package_fixture_with_source_media(
+            user_root, disc2, "synthetic-title2-v1", SR_CPUSTATE_ABI_VERSION,
+            "synthetic-title2-v1.exe", FIXTURE_SHA256, self_path,
+            source_media_json);
+        {
+            NkGameEntry second;
+            memset(&second, 0, sizeof(second));
+            snprintf(second.disc_id, sizeof(second.disc_id), "%s", disc2);
+            snprintf(second.title_id, sizeof(second.title_id), "synthetic-title2-v1");
+            snprintf(second.title_name, sizeof(second.title_name), "Second Title Fixture");
+            snprintf(second.selected_executable, sizeof(second.selected_executable),
+                     "EBOOT.BIN");
+            snprintf(second.iso_path, sizeof(second.iso_path), "%s", iso_path);
+            second.status = NK_STATUS_IDENTIFIED;
+            assert(nk_library_add_or_update(&rep->library, &second) == NK_OK);
+            player_app_sync_library(rep);
+            assert(rep->game_count == 2);
+        }
+        int first_index = player_app_find_game_by_disc_id(rep, disc_id);
+        int second_index = player_app_find_game_by_disc_id(rep, disc2);
+        assert(first_index >= 0 && second_index >= 0 && first_index != second_index);
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "0x08a9c92c");
+        repeat_launch_and_settle(rep, first_index, 41000, 42000, memstick1);
+        assert(dev_log_contains(rep, "entry=0x08a9c92c"));
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "0x08804000");
+        set_environment_value("NK_REPEAT_LAUNCH_OUTPUT_LINES", "60");
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "semantic-boundary");
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "9");
+        if (!player_app_launch_game(rep, second_index)) {
+            fprintf(stderr, "second title launch refused: %s: %s | %s\n",
+                    rep->last_error.error_code, rep->last_error.message,
+                    rep->last_error.boundary_text);
+            assert(false);
+        }
+        snprintf(memstick2, sizeof(memstick2), "%s", rep->launch_session.memstick_root);
+        rep->launch_time_ms = 43000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
+        assert(player_app_monitor_game_session(rep, 44000));
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
+        assert(strcmp(rep->last_error.subject_disc_id, disc2) == 0);
+        assert(strcmp(rep->last_error.log_file_path, run_log2) == 0);
+        /* The second run's event is past the developer log's 48-line copy. */
+        assert(!dev_log_contains(rep, "entry=0x08804000"));
+        {
+            char report_text[PLAYER_ERROR_DETAILS_MAX + 4096];
+            assert(player_app_format_error_report(rep, "test", report_text,
+                                                  sizeof(report_text)) > 0);
+            assert(strstr(report_text, "Game: Second Title Fixture\n") != NULL);
+            assert(strstr(report_text, "Last boot events:\n"
+                                       "  BOOT_EVENT phase=boot reason=entry "
+                                       "entry=0x08804000\n"
+                                       "  BOOT_EVENT phase=stop reason=semantic-boundary") != NULL);
+            assert(strstr(report_text, "0x08a9c92c") == NULL);
+        }
+        set_environment_value("NK_REPEAT_LAUNCH_BOOT_ENTRY", "");
+        set_environment_value("NK_REPEAT_LAUNCH_OUTPUT_LINES", "");
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+
         /* Final recovery launch: the session is never stuck. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
-        repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
+        repeat_launch_and_settle(rep, first_index, 11000, 12000, memstick1);
 
         /* #1289: a live synthetic runtime presents, then stops presenting.
            Its watchdog event must surface a notice at 30 seconds, clear on a
@@ -8003,6 +8216,30 @@ int main(int argc, char **argv) {
         /* Only removed when this test created it and it is now empty; a
            pre-existing per-disc save slot is left alone. */
         test_rmdir(memstick1);
+        snprintf(marker_path, sizeof(marker_path), "%s%cf511_repeat.marker",
+                 memstick2, sep);
+        remove(marker_path);
+        test_rmdir(memstick2);
+        remove(run_log2);
+        {
+            /* The second title's package, as the fixture wrote it. */
+            static const char *const files[] = {
+                "package.json", "build-report.json", "completion-manifest.json",
+                "synthetic-title2-v1_image.bin", "synthetic-title2-v1.exe"};
+            char dir2[1100];
+            char file2[1300];
+            snprintf(dir2, sizeof(dir2), "%s%cpackages%c%s", user_root, sep, sep, disc2);
+            for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
+                snprintf(file2, sizeof(file2), "%s%c%s", dir2, sep, files[i]);
+                remove(file2);
+            }
+            test_rmdir(dir2);
+            snprintf(dir2, sizeof(dir2), "%s%ctitle-input-identities%c%s", user_root, sep,
+                     sep, disc2);
+            snprintf(file2, sizeof(file2), "%s%ctitle-input-identity.json", dir2, sep);
+            remove(file2);
+            test_rmdir(dir2);
+        }
         remove(report_path);
         remove(run_log_last);
         remove(run_log_prev);
@@ -8183,10 +8420,15 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
         assert(capp->active_view == VIEW_LIBRARY);
 #else
-        /* Automatic installation is Windows x64 only for now: other hosts are
-           refused with a clear message, and nothing is downloaded. */
+        /* Only Windows has a pinned download: other hosts use the system's own
+           tools, so the card names the first missing one and its package, and
+           nothing is downloaded (#306). Which tool is first depends on whether
+           this host has a 3.14 or 3.15 interpreter in a standard location. */
         assert(!player_app_start_package_build(capp, 0));
-        assert(strstr(capp->last_error.message, "in the works") != NULL);
+        assert(strcmp(capp->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
+        assert(strstr(capp->last_error.message, "was not found on PATH") != NULL);
+        assert(strstr(capp->last_error.message, "downloads build tools only on Windows") != NULL);
+        assert(strstr(capp->last_error.message, "in the works") == NULL);
         assert(strstr(capp->last_error.message, "#") == NULL);
         assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
 #endif
@@ -8498,6 +8740,176 @@ int main(int argc, char **argv) {
         assert(player_app_find_game_by_disc_id(probe, "TEST90022") >= 0);
         free(probe);
         printf("[PLAYER_STATE_TEST] ADD TO LIBRARY staging decision PASSED\n");
+    }
+
+    /* 24. Factory reset (owner, 2026-10-29) moves the user data aside, never
+       deletes it, and puts everything back when one folder cannot move. The
+       folders are this test's isolated ones (native_test_isolation). */
+    printf("[PLAYER_STATE_TEST] Subtest 24: factory reset moves the user data aside\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        static const NkPathType types[] = {
+            NK_PATH_CONFIG, NK_PATH_DATA, NK_PATH_CACHE, NK_PATH_SAVES
+        };
+        char dirs[4][NK_MAX_PATH];
+        char marks[4][NK_MAX_PATH + 32];
+        for (size_t i = 0; i < 4u; ++i) {
+            assert(nk_platform_get_path(types[i], dirs[i], sizeof(dirs[i])));
+            snprintf(marks[i], sizeof(marks[i]), "%s%creset-mark.txt", dirs[i], sep);
+            write_text_file(marks[i], "user data\n");
+        }
+        char logs_dir[NK_MAX_PATH];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+
+        PlayerApp *reset = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(reset != NULL);
+        nk_library_init(&reset->library);
+        char folders[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH];
+        size_t folder_count =
+            player_app_factory_reset_folders(reset, folders, PLAYER_FACTORY_RESET_FOLDERS);
+        assert(folder_count >= 1u && folder_count <= 4u);
+        for (size_t i = 0; i < folder_count; ++i) {
+            for (size_t j = 0; j < folder_count; ++j) {
+                if (i != j) assert(strncmp(folders[i], folders[j], strlen(folders[j])) != 0 ||
+                                   folders[i][strlen(folders[j])] != sep);
+            }
+        }
+
+        /* A running game: nothing moves. */
+        reset->is_game_running = true;
+        assert(!player_app_factory_reset(reset, "20261029-010203"));
+        assert(strcmp(reset->last_error.error_code, "FACTORY_RESET_BUSY") == 0);
+        assert(!reset->factory_reset_done && !reset->should_quit);
+        for (size_t i = 0; i < 4u; ++i) assert(nk_platform_file_exists(marks[i]));
+        reset->is_game_running = false;
+
+#if defined(_WIN32) || defined(_WIN64)
+        /* A file held open in the cache folder: that folder cannot move, and
+           the folders moved before it are put back. */
+        {
+            FILE *held = nk_fopen_utf8(marks[2], "rb");
+            assert(held != NULL);
+            assert(!player_app_factory_reset(reset, "20261029-010204"));
+            fclose(held);
+            assert(strcmp(reset->last_error.error_code, "FACTORY_RESET_FAILED") == 0);
+            assert(strstr(reset->last_error.message, "Nothing was moved.") != NULL);
+            assert(!reset->factory_reset_done && !reset->should_quit);
+            for (size_t i = 0; i < 4u; ++i) assert(nk_platform_file_exists(marks[i]));
+            assert(dev_log_contains(reset, "factory reset stopped at "));
+        }
+#endif
+
+        /* The reset: every folder is renamed with the stamp; logs stay. */
+        assert(player_app_factory_reset(reset, "20261029-010205"));
+        assert(reset->factory_reset_done && reset->should_quit);
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205", folders[i]);
+            assert(!nk_platform_dir_exists(folders[i]));
+            assert(nk_platform_dir_exists(moved));
+        }
+        for (size_t i = 0; i < 4u; ++i) {
+            char moved_mark[NK_MAX_PATH + 96];
+            const char *name = strrchr(marks[i], sep) + 1;
+            assert(!nk_platform_file_exists(marks[i]));
+            /* The mark is in the backup of the outermost folder holding it. */
+            bool found = false;
+            for (size_t j = 0; j < folder_count && !found; ++j) {
+                size_t n = strlen(folders[j]);
+                if (strncmp(dirs[i], folders[j], n) != 0) continue;
+                snprintf(moved_mark, sizeof(moved_mark), "%s-backup-20261029-010205%s%c%s",
+                         folders[j], dirs[i] + n, sep, name);
+                found = nk_platform_file_exists(moved_mark);
+            }
+            assert(found);
+        }
+        assert(nk_platform_dir_exists(logs_dir));
+
+        /* A second reset in the same second keeps the first backup's name. */
+        reset->factory_reset_done = false;
+        reset->should_quit = false;
+        for (size_t i = 0; i < folder_count; ++i) assert(nk_platform_mkdir_p(folders[i]));
+        assert(player_app_factory_reset(reset, "20261029-010205"));
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205-2", folders[i]);
+            assert(nk_platform_dir_exists(moved));
+            assert(test_rmdir(moved) == 0);
+        }
+
+        /* Put this test's data back for anything that runs after it. */
+        for (size_t i = 0; i < folder_count; ++i) {
+            char moved[NK_MAX_PATH + 64];
+            snprintf(moved, sizeof(moved), "%s-backup-20261029-010205", folders[i]);
+            assert(nk_rename_utf8(moved, folders[i]) == 0);
+        }
+        for (size_t i = 0; i < 4u; ++i) remove(marks[i]);
+        free(reset);
+        printf("[PLAYER_STATE_TEST] factory reset PASSED\n");
+    }
+
+    /* 25. The file pickers (owner, 2026-10-29): a first run opens them at the
+       Desktop, not at the folder Windows last remembered for this program (on
+       the owner's PC, the whole ISO collection on camera); after a pick they
+       open where the user picked from, across restarts. */
+    printf("[PLAYER_STATE_TEST] Subtest 25: file pickers open at the Desktop, then the last folder\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        char parent[NK_MAX_PATH];
+        assert(player_path_parent_folder("C:\\Games\\PSP\\disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "C:\\Games\\PSP") == 0);
+        assert(player_path_parent_folder("D:/PSP/disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "D:/PSP") == 0);
+        assert(player_path_parent_folder("C:\\disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "C:\\") == 0);
+        assert(player_path_parent_folder("/disc.iso", parent, sizeof(parent)));
+        assert(strcmp(parent, "/") == 0);
+        assert(!player_path_parent_folder("disc.iso", parent, sizeof(parent)));
+
+        PlayerApp *picker = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(picker != NULL);
+        player_app_settings_init_default(&picker->settings);
+        char desktop[NK_MAX_PATH];
+        char start[NK_MAX_PATH];
+        bool have_desktop = nk_platform_get_desktop_dir(desktop, sizeof(desktop));
+        /* No folder kept: the Desktop. */
+        assert(picker->settings.picker_folder[0] == '\0');
+        assert(player_app_picker_start_folder(picker, start, sizeof(start)) == have_desktop);
+        if (have_desktop) assert(strcmp(start, desktop) == 0);
+
+        /* A pick keeps its folder, and the settings file brings it back. */
+        char cache_dir[NK_MAX_PATH];
+        char games[NK_MAX_PATH + 32];
+        char picked[NK_MAX_PATH + 64];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(games, sizeof(games), "%s%cpicker games (1)", cache_dir, sep);
+        assert(nk_platform_mkdir_p(games));
+        snprintf(picked, sizeof(picked), "%s%cdisc.iso", games, sep);
+        player_app_remember_picker_folder(picker, picked, false);
+        assert(strcmp(picker->settings.picker_folder, games) == 0);
+        assert(player_app_picker_start_folder(picker, start, sizeof(start)));
+        assert(strcmp(start, games) == 0);
+        PlayerApp *reloaded = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(reloaded != NULL);
+        player_app_settings_init_default(&reloaded->settings);
+        assert(player_app_load_settings(reloaded, NULL) == NK_OK);
+        assert(strcmp(reloaded->settings.picker_folder, games) == 0);
+
+        /* A folder that is gone sends the picker back to the Desktop. */
+        assert(test_rmdir(games) == 0);
+        assert(player_app_picker_start_folder(reloaded, start, sizeof(start)) == have_desktop);
+        if (have_desktop) assert(strcmp(start, desktop) == 0);
+
+        /* A picked folder (the fonts picker's file's folder) is kept as it is. */
+        player_app_remember_picker_folder(reloaded, cache_dir, true);
+        assert(strcmp(reloaded->settings.picker_folder, cache_dir) == 0);
+        reloaded->settings.picker_folder[0] = '\0';
+        assert(player_app_save_settings(reloaded, NULL) == NK_OK);
+        free(reloaded);
+        free(picker);
+        printf("[PLAYER_STATE_TEST] file pickers PASSED\n");
     }
 
     free(app);

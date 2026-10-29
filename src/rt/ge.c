@@ -2008,50 +2008,45 @@ static float tex_lod(float rho2) {
     return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
 }
 
-/* Filter one level at level-0 texel coordinates. Every level spans the same normalised
- * texture, and an integer texel coordinate names a texel's centre at every level (the
- * convention below), so the level-0 coordinate fu sits at normalised (fu + 0.5) / w0 and
- * at (fu + 0.5) * wL / w0 - 0.5 in level L. This is the GL/Vulkan normalised-coordinate
- * rule the Vulkan backend samples its mip chain with; plain scaling (fu * wL / w0) put
- * level 1 a quarter texel off. Unmeasured on a PSP, including for through-mode UV, which
- * the PSP gives in level-0 texels. */
+/* Filter one level at level-0 texel coordinates. The rule is measured on a PSP-3000
+ * (PSP-GE-SAMPLE-001, issue #282; docs/HARDWARE_ORACLE.md) for through-mode triangles and
+ * sprites at level 0: a pixel samples the coordinate interpolated at its centre, texel i
+ * covers [i, i + 1) so its centre is i + 0.5, nearest returns texel floor(s), and bilinear
+ * takes taps floor(s - 0.5) and the next texel with the second tap's weight frac(s - 0.5)
+ * truncated to 1/16; each channel is the 16x16-weighted sum divided by 256, truncated.
+ * Callers pass the coordinate at the pixel centre.
+ *
+ * Every level spans the same normalised texture, so with that rule the level-0 coordinate
+ * fu is fu * wL / w0 in level L (the GL/Vulkan normalised-coordinate rule the Vulkan
+ * backend samples its mip chain with). Levels above 0 are unmeasured on a PSP. */
 static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_linear,
                            int *r, int *g, int *b, int *a) {
     TexLevel t = tex_level(level);
     if (level != 0u && ge.tex_w > 0 && ge.tex_h > 0) {
-        fu = (fu + 0.5f) * ((float)t.w / (float)ge.tex_w) - 0.5f;
-        fv_coord = (fv_coord + 0.5f) * ((float)t.h / (float)ge.tex_h) - 0.5f;
+        fu *= (float)t.w / (float)ge.tex_w;
+        fv_coord *= (float)t.h / (float)ge.tex_h;
     }
     if (!use_linear) {
-        sample_tex_level(&t, (int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a);
+        sample_tex_level(&t, (int)floorf(fu), (int)floorf(fv_coord), r, g, b, a);
         return;
     }
-    /* An integer texel coordinate names that texel's CENTRE -- that is the convention the
-     * nearest branch above implements by rounding. The filter window is centred on the
-     * same texel: taps are floor(fu) and floor(fu)+1, so a 1:1 sprite reproduces its
-     * texels exactly and nothing outside its region can reach the result.
-     *
-     * The previous half-texel shift centred the window half a texel EARLIER, so at every
-     * integer coordinate it blended the previous texel 50/50 into the result. For a
-     * region-relative sprite the previous texel row is OUTSIDE the sampled region, which
-     * drew a one-pixel line along the sprite's top edge from texture the draw never
-     * addressed, and it contradicted the nearest branch in the same function. */
-    int u0 = (int)floorf(fu), v0 = (int)floorf(fv_coord);
-    int fx = (int)((fu - u0) * 256.0f), fy = (int)((fv_coord - v0) * 256.0f);
+    float su = fu - 0.5f, sv = fv_coord - 0.5f;
+    int u0 = (int)floorf(su), v0 = (int)floorf(sv);
+    int fx = (int)((su - (float)u0) * 16.0f), fy = (int)((sv - (float)v0) * 16.0f);
     if (fx < 0) fx = 0;
-    if (fx > 256) fx = 256;
+    if (fx > 15) fx = 15;
     if (fy < 0) fy = 0;
-    if (fy > 256) fy = 256;
+    if (fy > 15) fy = 15;
     int r0,g0,b0,a0, r1,g1,b1,a1, r2,g2,b2,a2, r3,g3,b3,a3;
     sample_tex_level(&t, u0,   v0,   &r0,&g0,&b0,&a0);
     sample_tex_level(&t, u0+1, v0,   &r1,&g1,&b1,&a1);
     sample_tex_level(&t, u0,   v0+1, &r2,&g2,&b2,&a2);
     sample_tex_level(&t, u0+1, v0+1, &r3,&g3,&b3,&a3);
-#define LERP1(c0,c1,f) ((c0) + (((c1)-(c0))*(f)>>8))
-    int tr=LERP1(r0,r1,fx), tg=LERP1(g0,g1,fx), tb=LERP1(b0,b1,fx), ta=LERP1(a0,a1,fx);
-    int br=LERP1(r2,r3,fx), bg=LERP1(g2,g3,fx), bb=LERP1(b2,b3,fx), ba=LERP1(a2,a3,fx);
-    *r=LERP1(tr,br,fy); *g=LERP1(tg,bg,fy); *b=LERP1(tb,bb,fy); *a=LERP1(ta,ba,fy);
-#undef LERP1
+    int w0 = (16 - fx) * (16 - fy), w1 = fx * (16 - fy), w2 = (16 - fx) * fy, w3 = fx * fy;
+    *r = (r0 * w0 + r1 * w1 + r2 * w2 + r3 * w3) >> 8;
+    *g = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3) >> 8;
+    *b = (b0 * w0 + b1 * w1 + b2 * w2 + b3 * w3) >> 8;
+    *a = (a0 * w0 + a1 * w1 + a2 * w2 + a3 * w3) >> 8;
 }
 
 /* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
@@ -2126,6 +2121,56 @@ static void texdump_maybe(void) {
             s_ge_frame, path, ge.clut_addr, ge.clut_fmt, ge.tex_swizzle, ge.tex_bufw, ge.tex_filter);
 }
 
+/* One texel of a linear direct-colour row (PSM 0-3) as r|g<<8|b<<16|a<<24, by the same
+ * unpack_color expansion the sampler uses. `row` holds the row's bytes as stored. */
+static uint32_t ge_direct_texel(const uint8_t *row, uint32_t x, uint32_t psm) {
+    int r, g, b, a;
+    if (psm == 3) {
+        uint32_t texel;
+        memcpy(&texel, row + (size_t)x * 4u, 4u);
+        return texel;
+    }
+    uint16_t texel;
+    memcpy(&texel, row + (size_t)x * 2u, 2u);
+    unpack_color(texel, (int)psm, &r, &g, &b, &a);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+}
+
+/* A DEPTH16 value as the VRAMDUMP decoder shows it: its high byte as opaque grey. */
+static uint32_t ge_depth16_gray(uint16_t z) {
+    uint32_t gray = (uint32_t)(z >> 8);
+    return gray | (gray << 8) | (gray << 16) | 0xFF000000u;
+}
+
+int ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height, uint32_t stride,
+                           uint32_t format, uint32_t *out) {
+    uint8_t row[GE_VRAM_VIEW_MAX_WIDTH * 4u];
+    SrGuestRectSpan source;
+    uint32_t bpp = format == 3u ? 4u : 2u;
+    if (!out || !width || !height || width > GE_VRAM_VIEW_MAX_WIDTH ||
+        height > GE_VRAM_VIEW_MAX_HEIGHT || stride < width || (format > 3u && format != 11u))
+        return 0;
+    /* The whole rectangle first: nothing is read unless every row is readable now. */
+    if (!sr_guest_rect_readable(addr, 0u, 0u, stride, width, height, bpp, &source) ||
+        !sr_guest_span_readable_current(source.first, source.total_bytes))
+        return 0;
+    for (uint32_t y = 0; y < height; y++) {
+        uint32_t *dst = out + (size_t)y * width;
+        if (!sr_guest_copy_in(row, source.first + y * source.row_pitch, source.row_bytes))
+            return 0;
+        for (uint32_t x = 0; x < width; x++) {
+            if (format == 11u) {
+                uint16_t z;
+                memcpy(&z, row + (size_t)x * 2u, 2u);
+                dst[x] = ge_depth16_gray(z);
+            } else {
+                dst[x] = ge_direct_texel(row, x, format);
+            }
+        }
+    }
+    return 1;
+}
+
 /* GPU backend texture decode: current texture, through the exact sampler path above.
  * Linear (non-swizzled) direct-color formats take a row-wise fast path with the same
  * unpack_color expansion — render-to-texture sources are re-decoded every frame and the
@@ -2152,14 +2197,8 @@ void ge_decode_tex_rgba(uint32_t *out) {
                 if (ge.tex_fmt == 3) {
                     memcpy(dst, row, (size_t)ge.tex_w * 4);
                 } else {
-                    for (int u = 0; u < ge.tex_w; u++) {
-                        uint16_t texel;
-                        int r, g, b, a;
-                        memcpy(&texel, row + (size_t)u * 2u, 2u);
-                        unpack_color(texel, (int)ge.tex_fmt, &r, &g, &b, &a);
-                        dst[u] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) |
-                                 ((uint32_t)a << 24);
-                    }
+                    for (int u = 0; u < ge.tex_w; u++)
+                        dst[u] = ge_direct_texel(row, (uint32_t)u, ge.tex_fmt);
                 }
             }
             return;
@@ -2180,13 +2219,10 @@ void ge_decode_tex_rgba(uint32_t *out) {
                     source.first + (uint32_t)v * source.row_pitch);
                 memcpy(dst, src, (size_t)ge.tex_w * 4);
             } else {
-                const uint16_t *src = (const uint16_t *)SR_HOST(
+                const uint8_t *src = (const uint8_t *)SR_HOST(
                     source.first + (uint32_t)v * source.row_pitch);
-                for (int u = 0; u < ge.tex_w; u++) {
-                    int r, g, b, a;
-                    unpack_color(src[u], (int)ge.tex_fmt, &r, &g, &b, &a);
-                    dst[u] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
-                }
+                for (int u = 0; u < ge.tex_w; u++)
+                    dst[u] = ge_direct_texel(src, (uint32_t)u, ge.tex_fmt);
             }
         }
         return;
@@ -3996,17 +4032,18 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     int fog = (persp && ge.fog_enable) ? (int)(clampf01(p1->fog)*256.0f) : 256;
     s_in3d = persp;
     if (persp) s_stat.spr3d++; else s_stat.spr2d++;
-    float step_u = (xb > xa) ? (u1 - u0) / (float)(xb - xa) : 0.0f;
-    float step_v = (yb > ya) ? (v1 - v0) / (float)(yb - ya) : 0.0f;
-    /* Sprite endpoints describe opposite rectangle corners.  When screen order is
-     * reversed, the second endpoint is the exclusive left/top texture edge, so the
-     * first covered pixel starts one texel step back.  Use the same floored rectangle
-     * span as the GPU hook; carrying the discarded subpixel fraction into UV would make
-     * the software and Vulkan paths disagree for otherwise identical sprites. */
-    float u_start = (p0->x <= p1->x) ? u0 : u1 - step_u;
-    float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
-    float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
-    float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
+    /* The texture coordinate is linear across the rectangle and each pixel samples it at
+     * its centre (PSP-GE-SAMPLE-001, the rule sample_level_f documents): u runs from the
+     * u of the vertex on the left edge to the u of the vertex on the right edge, whichever
+     * endpoint each is, and likewise v. Use the same floored rectangle span as the GPU hook;
+     * carrying the discarded subpixel fraction into UV would make the software and Vulkan
+     * paths disagree for otherwise identical sprites. */
+    float u_left = (p0->x <= p1->x) ? u0 : u1, u_right = (p0->x <= p1->x) ? u1 : u0;
+    float v_top = (p0->y <= p1->y) ? v0 : v1, v_bottom = (p0->y <= p1->y) ? v1 : v0;
+    float u_dir = (xb > xa) ? (u_right - u_left) / (float)(xb - xa) : 0.0f;
+    float v_dir = (yb > ya) ? (v_bottom - v_top) / (float)(yb - ya) : 0.0f;
+    float u_start = u_left + 0.5f * u_dir;
+    float v_start = v_top + 0.5f * v_dir;
     float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
@@ -4901,6 +4938,11 @@ static void ge_note_unhandled_cmd(uint32_t cmd, uint32_t op) {
 }
 
 unsigned long g_ge_list_sig=0, g_ge_prim_count=0;
+/* The 16-bit argument of the FINISH command the last list ran (sceGuFinishId's id). The GE
+ * hands it to the finish callback as that callback's id, as it hands a SIGNAL's to the signal
+ * callback (PSP-GE-TIMING-001 c4: id 0x5a5 for SIGNAL 0x5a5). 0 when no FINISH ran. */
+static uint32_t s_ge_finish_id;
+uint32_t ge_last_finish_id(void) { return s_ge_finish_id; }
 /* Per-list write accounting for SR_GEWATCH: shows whether a list that cleared a buffer
  * also drew non-black content into it, and which buffer it targeted. */
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
@@ -4908,6 +4950,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume);
 
 uint32_t ge_run_list(uint32_t addr, int resume) {
     uint64_t perf_started = sr_perf_now_ns();
+    if (!resume) s_ge_finish_id = 0u;   /* a new list has run no FINISH yet */
     ge_cpu_profile_configure();
 #ifdef SR_GE_FRONTEND_PROFILE
     int frontend_profile_active = sr_perf_enabled && s_cpu_profile;
@@ -5496,6 +5539,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 pending_signal=1; pending_signal_op=op; break;
             case GE_FINISH:
                 s_ge_run_tail_words++;   /* FINISH and the END after it are part of T0 */
+                s_ge_finish_id = data & 0xFFFFu;
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
                                      list_addr, addr - 4u, data, 0u);
@@ -5567,6 +5611,27 @@ static uint64_t ge_vramdump_surface_size(uint32_t width, uint32_t height,
         case 9: case 10: return ((row + 3u) / 4u) * ((rows + 3u) / 4u) * 16u;
         default: return 0;
     }
+}
+
+int ge_vram_decode_bound_texture(uint32_t *out, size_t capacity) {
+    uint64_t bytes;
+    if (!out || ge.tex_w <= 0 || ge.tex_h <= 0 || ge.tex_w > (int)GE_VRAM_VIEW_MAX_WIDTH ||
+        ge.tex_h > (int)GE_VRAM_VIEW_MAX_HEIGHT ||
+        (size_t)ge.tex_w * (size_t)ge.tex_h > capacity || ge.tex_fmt > 10u)
+        return 0;
+    /* A running GE capture would record these reads, and its replay mode reads captured
+     * memory instead of the guest's: the viewer stays out of both. */
+#ifndef SR_GE_VRAM_DECODER_CLI
+    if (g_ge_capture_active) return 0;
+#endif
+    bytes = ge_vramdump_surface_size((uint32_t)ge.tex_w, (uint32_t)ge.tex_h,
+                                     ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w,
+                                     ge.tex_fmt);
+    if (!bytes || bytes > 0x00400000u ||
+        !sr_guest_span_readable_current(ge.tex_addr, (uint32_t)bytes))
+        return 0;
+    ge_decode_tex_rgba(out);
+    return 1;
 }
 
 static void ge_vramdump_surface(FILE *file, int *first, const char *name,
@@ -5854,9 +5919,7 @@ int main(int argc, char **argv) {
     if (format == 11u) {
         for (uint32_t y = 0; y < height; y++) {
             for (uint32_t x = 0; x < width; x++) {
-                uint8_t gray = (uint8_t)(MEM_R16(addr + (y * stride + x) * 2u) >> 8);
-                pixels[y * width + x] = (uint32_t)gray | ((uint32_t)gray << 8) |
-                                        ((uint32_t)gray << 16) | 0xFF000000u;
+                pixels[y * width + x] = ge_depth16_gray(MEM_R16(addr + (y * stride + x) * 2u));
             }
         }
     } else {
