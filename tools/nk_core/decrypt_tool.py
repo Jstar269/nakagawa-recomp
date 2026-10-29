@@ -18,7 +18,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Optional, Union
+import tempfile
+from typing import Callable, Optional, Union
 
 SOURCES = (
     "src/core/nk_json.c",
@@ -76,3 +77,77 @@ def find_or_build_tool(root: Union[Path, str]) -> Path:
         )
     stamp.write_text(key, encoding="utf-8")
     return out
+
+
+def _run_tool(tool: Path, encrypted: Path, destination: Path) -> tuple[int, str]:
+    proc = subprocess.run(
+        [str(tool), "decrypt", "--in", str(encrypted), "--out", str(destination)],
+        capture_output=True, text=True,
+    )
+    lines = (proc.stdout + proc.stderr).strip().splitlines()
+    return proc.returncode, lines[-1][-300:] if lines else ""
+
+
+def decrypt_disc(iso_path: Union[Path, str], user_data_root: Union[Path, str], disc_id: str,
+                 tool: Union[Path, str, None] = None, *,
+                 runner: Optional[Callable[[Path, Path], tuple[int, str]]] = None) -> list[dict]:
+    """Decrypt a disc's encrypted executable and guest modules into its per-title folder.
+
+    This is the player's disc check run from the tools, with the same engine: an encrypted
+    ``EBOOT.BIN`` becomes ``titles/<disc>/decrypted/EBOOT.elf`` and each encrypted guest module
+    keeps its own name there, where ``inspect_compatibility_preflight`` and the bring-up look
+    for them. A decrypted copy already there is kept. Returns one row per encrypted file: the
+    disc member, the name written, the engine's exit status (0 for a kept copy) and its last
+    message line. A file the engine refuses (firmware is refused by name) stays encrypted and
+    the bring-up names that boundary.
+    """
+    from . import iso_inspect as ii
+
+    iso = Path(iso_path)
+    out_dir = ii.decrypted_module_dir(user_data_root, disc_id)
+    if out_dir is None:
+        raise ValueError(f"{disc_id!r} is not a disc ID")
+    if runner is None:
+        if tool is None:
+            raise ValueError("decrypt_disc needs the nk_decrypt tool or a runner")
+        tool_path = Path(tool)
+
+        def runner(encrypted: Path, destination: Path) -> tuple[int, str]:
+            return _run_tool(tool_path, encrypted, destination)
+
+    size = iso.stat().st_size
+    items: list[tuple[tuple[str, ...], str]] = []
+    with iso.open("rb") as stream:
+        extent = ii._lookup_iso_file(stream, size, ("PSP_GAME", "SYSDIR", "EBOOT.BIN"))
+        if extent and extent[1] >= 4 and \
+                ii._read_iso_extent(stream, size, extent[0], extent[1], 0, 4) in (b"~PSP", b"~SCE"):
+            items.append((("PSP_GAME", "SYSDIR", "EBOOT.BIN"), "EBOOT.elf"))
+    rows: list[dict] = []
+    try:
+        items += [(tuple(candidate["members"][0]), candidate["name"])
+                  for candidate in ii.list_disc_module_candidates(iso)
+                  if candidate["kind"] == "encrypted"]
+    except ii.IsoInspectionError as exc:
+        # A module set the intake refuses (two modules of one name, say) keeps its own named
+        # boundary; the executable is still decrypted, so the bring-up reaches that boundary.
+        rows.append({"member": None, "name": "(guest modules)", "status": -1,
+                     "message": str(exc)[:300]})
+    if not items:
+        return rows
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="nk-decrypt-") as staging:
+        for members, name in items:
+            destination = out_dir / name
+            row = {"member": "/".join(members), "name": name}
+            if destination.is_file() and destination.stat().st_size > 0:
+                rows.append({**row, "status": 0, "message": "kept the decrypted copy already there"})
+                continue
+            with iso.open("rb") as stream:
+                lba, count = ii._lookup_iso_file(stream, size, members)
+                blob = ii._read_iso_extent(stream, size, lba, count, 0, count)
+            encrypted = Path(staging) / (name + ".enc")
+            encrypted.write_bytes(blob)
+            status, message = runner(encrypted, destination)
+            encrypted.unlink(missing_ok=True)
+            rows.append({**row, "status": status, "message": message})
+    return rows

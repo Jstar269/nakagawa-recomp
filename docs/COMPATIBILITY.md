@@ -88,6 +88,27 @@ Writes need a mode-2 handle. A game can create keys and categories, and remove e
 
 Starting a module that is already started returns `SCE_KERNEL_ERROR_ALREADY_STARTED` (`0x80020133`), matching the public [PSP kernel error table](https://github.com/pspdev/prxtool/blob/master/pspkerror.C). This value comes from that source, and it and the rule for restarting a stopped module haven't been checked on real hardware; whether a stopped module can restart is an inference.
 
+## Building a whole collection
+
+`tools/library_build.py <disc folder> --user-data-root <data folder> --work-dir <work folder>` builds every disc
+image in a folder into one player data folder, so `nakagawa_player.exe --user-data-root=<data folder>` then lists
+every title that built and shows, for each, how far its first launch went. Each disc first gets the player's disc
+check (its encrypted executable and modules decrypted from your own disc into the title's folder, with the same
+engine), then runs `nk_cli.py bringup --user-data-root`, the same route as a single bring-up; several bring-ups share
+the data folder safely, because the library is written under a lock.
+
+The run never stops on one title. After each title it rewrites `library-build.json` and `library-build.md` in the
+data folder (and in each `--manifest-dir`): the disc ID and title, and either the package built (its size, the
+unsupported imports found while building, how the first launch ended) or the exact stage and failure class it
+stopped at. Run the same command again to resume: titles that ended are kept, and a title cut off mid-build runs
+again. `--retry-failed` builds the failures again. Only `.iso` files are discs; other files are counted by kind,
+and a disc ID seen before is recorded as a duplicate of the first file with it.
+
+Builds run below normal priority with no window, `--jobs` at a time (default one per eight logical CPUs, at most
+four). A title over `--title-timeout` (2,400 s by default) is stopped and recorded. A `PAUSE` file in the work folder
+holds new titles until it is removed, and a `STOP` file ends the run once the titles already started finish. The
+manifest names your own discs and files, so keep it private.
+
 ## Library sweep scoreboard
 
 This section is for contributors who run `tools/library_sweep.py` over a library of discs.

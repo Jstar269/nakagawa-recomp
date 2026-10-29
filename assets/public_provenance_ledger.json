@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3a0ba9a89a4f7d305b37218d7ecfa82dd9ea6125b5424ab3a822db9f329cf3f8"
+      "sha256": "9f87c59f1851fa180916519a533b9b2b92cd36b1bf5d444a1abf7b4a102b3278"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1e92dedaa40d11ebee2dc2bebd027e5c730df78c44d6c1c8a34b71362aefb54c"
+      "sha256": "d39826d57aba58966040a26cafde7afbc49fe7e3f0cdc9ca31466d686a288741"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -11677,7 +11677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c05405dfaf73cd0129c60c74cde1f5f2361b3fc0dd7ae71c2702875b68d5c383"
+      "sha256": "3bd6dc62e85dac6113fc071be4b140006df7655ae1422c8f7947d11a7134607b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -12395,6 +12395,18 @@
       "sha256": "1c8c9fd1b5e210ec9af01716f32ab8dc183385dcfcfc5706a13d54355c94a5d3"
     },
     {
+      "path": "tools/library_build.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "all-games-library-build-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "89f4f2b8a904a3850cda2cc7af3b1e34b37caab4bb03be5efd8826835c0563d3"
+    },
+    {
       "path": "tools/library_sweep.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12550,7 +12562,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc3f020b72ff32fe4fd690a6c81b37273955a5cb0b14ec6e448255e1f6bd783c"
+      "sha256": "a539ce499be8e33527deab3f23635626c9dad7c740879ab93aed26f284d17f4f"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -12574,7 +12586,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7179f5e5e4a844d0421ebd6752054d1d14c965d592d00ed0be1aaa583bbc9087"
+      "sha256": "5cad3b39f6cf17879e52e918c614173b69316a3e9a0b7898d7dc44fa4efe2ecd"
     },
     {
       "path": "tools/nk_core/fonts.py",
@@ -14538,6 +14550,18 @@
       "sha256": "a61fbd562708f80dfdcd86a5d542883f1d7d3efa4e49ceaca251115d0999cbe3"
     },
     {
+      "path": "tools/test_library_build.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "all-games-library-build-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3886bd269c22e95baa2aa51adab95ab4832f204a0298762d018775bed37c8cfe"
+    },
+    {
       "path": "tools/test_library_sweep.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -14775,7 +14799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d3cf9ab9b16fceeee78cd9bb488bc43d7cdf2c30af06e034f7046bd74913ddbd"
+      "sha256": "4b48626efef099cde82b2c0ee8fa2314925072ea8d54ed3344c958fa0fffc947"
     },
     {
       "path": "tools/test_package_cache.py",
