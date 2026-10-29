@@ -168,6 +168,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
+               FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -269,6 +270,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
+        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED
+            ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
     settings.pacing = "PSP timing";
@@ -282,6 +285,29 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.share_system_libraries = true;
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
+    }
+    settings.current_version = "0.0.2-dev";
+    if (which == FLOW_SETTINGS_UPDATES) {
+        /* A newer pre-release with its Windows ZIP, as the check found it. */
+        settings.update_step = PLAYER_UI_UPDATE_AVAILABLE;
+        settings.update_version = "0.0.3";
+        settings.update_prerelease = true;
+        settings.update_published = "2026-11-04";
+        settings.update_notes = "Second preview. Faster builds and fewer black screens.";
+        settings.update_page_url =
+            "https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3";
+        settings.update_has_zip = true;
+        settings.update_can_download = true;
+        settings.update_zip_name = "nakagawa-recomp-0.0.3-windows-x64.zip";
+        settings.update_zip_bytes = 284758051ull;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_FAILED) {
+        settings.update_step = PLAYER_UI_UPDATE_FAILED;
+        settings.update_failed_step = PLAYER_UI_UPDATE_CHECKING;
+        settings.update_error_title = "Couldn't Reach GitHub";
+        settings.update_error_message =
+            "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
+            "later. Nothing was changed.";
     }
     if (which == FLOW_SETTINGS_FONTS) {
         for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
@@ -1789,6 +1815,18 @@ static void test_settings_pages(void) {
          "Controller settings opens the controller screen"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_DONE, PLAYER_UI_SETTINGS_DONE,
          "Done saves and closes Settings"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_CHECK_UPDATES,
+         "Check for updates opens Updates and asks GitHub"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_DOWNLOAD, PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE,
+         "Download fetches the newer version only when pressed"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_PAGE, PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "Open release page opens it"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_AT_START,
+         PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START, "the check-at-start switch toggles it"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Back leaves Updates"},
+        {FLOW_SETTINGS_UPDATE_FAILED, PLAYER_UI_ID_UPDATE_CHECK, PLAYER_UI_SETTINGS_CHECK_UPDATES,
+         "Check again asks GitHub again, only when pressed"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ONLINE, PLAYER_UI_SETTINGS_OPEN_ONLINE,
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
@@ -1805,8 +1843,6 @@ static void test_settings_pages(void) {
          "Back returns to Settings from build tools and cache"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
          "the online switch toggles online mode"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
-         "the update check switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_NEWS, PLAYER_UI_SETTINGS_TOGGLE_NEWS,
          "the news switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_REPORTS, PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
@@ -1827,7 +1863,8 @@ static void test_settings_pages(void) {
          "Keep them leaves the tools alone and returns to build tools and cache"}
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-                                     FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE};
+                                     FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
+                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -1859,6 +1896,22 @@ static void test_settings_pages(void) {
               strstr(dump, "\"REMOVE BUILD TOOLS\"") != NULL &&
               strstr(dump, "Shared library cache cleared.") != NULL,
           "build tools and cache shows the switch, tool removal and the clear notice");
+    CHECK(flow_case_fits(FLOW_SETTINGS, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"CHECK FOR UPDATES\"") != NULL,
+          "Settings has CHECK FOR UPDATES at 960 x 540");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATES, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Version 0.0.3 is out.") != NULL &&
+              strstr(dump, "0.0.3 (pre-release, 2026-11-04)") != NULL &&
+              strstr(dump, "releases/tag/v0.0.3") != NULL &&
+              strstr(dump, "Second preview.") != NULL &&
+              strstr(dump, "271.6 MB") != NULL &&
+              strstr(dump, "\"CHECK AT START: OFF\"") != NULL &&
+              strstr(dump, "\"DOWNLOAD\"") != NULL,
+          "Updates shows this and the newest version, the notes, the link and the size");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Couldn't Reach GitHub") != NULL &&
+              strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
+          "offline, Updates says it couldn't reach GitHub and offers only Check again");
 }
 
 /* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
@@ -2773,6 +2826,8 @@ static int capture_screens(const char *directory) {
             {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_BUILD_CACHE, "settings-build-cache",
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
+            {FLOW_SETTINGS_UPDATES, "settings-updates", PLAYER_UI_ID_UPDATE_DOWNLOAD},
+            {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},

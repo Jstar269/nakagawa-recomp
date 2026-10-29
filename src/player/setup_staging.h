@@ -41,10 +41,10 @@ typedef struct {
  * supplies the exact `.staging_<disc_id>` destination; this function refuses
  * to reuse an existing tree, extracts EBOOT.BIN and the title's configured
  * loose-content roots, and invokes the native XB decoder for every copied
- * .xb/.xbN archive. If the user's
- * standard PPSSPP dump locations contain the three known already-decrypted
- * support PRXs, they are copied into `EXTRACTED/decrypted/` as an optional
- * local bridge; no decryption is performed. */
+ * .xb/.xbN archive. If the user's standard PPSSPP dump locations contain the
+ * three known already-decrypted support PRXs, they are copied into
+ * `EXTRACTED/decrypted/` as an optional local bridge; no decryption is
+ * performed. */
 NkResult player_stage_game(const char *iso_path, const char *staging_root,
                            const char *const *loose_content_roots,
                            size_t loose_content_root_count,
