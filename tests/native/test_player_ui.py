@@ -835,6 +835,7 @@ class NativePlayerUiTests(unittest.TestCase):
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
+        dedicated_data_root: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1091,6 +1092,9 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
                 (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
+            dedicated = scratch / "dedicated-data-root"
+            if dedicated_data_root:
+                args.append(f"--user-data-root={dedicated}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
 
@@ -1130,6 +1134,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 if isinstance(candidate, dict) and "fps_cap" in candidate:
                     persisted_settings = candidate
                     break
+
+            def files_under(folder: Path) -> list[str]:
+                return sorted(path.relative_to(folder).as_posix()
+                              for path in folder.rglob("*") if path.is_file())
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -1141,6 +1149,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
                 "settings": persisted_settings,
+                "default_profile_files": files_under(localappdata / "Nakagawa"),
+                "dedicated_files": files_under(dedicated),
                 "downloaded_tool_marker_exists": (
                     tool_marker.is_file() if tool_marker is not None else None
                 ),
@@ -1631,6 +1641,23 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
+
+    def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
+        """--user-data-root=<folder> opens the player on a second profile, for example a
+        whole collection under test: a settings change lands in <folder>/config, and
+        nothing is written under the default profile. Before, only the library moved;
+        settings, logs, the cache and saves still went to the default profile."""
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+            dedicated_data_root=True,
+        )
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("resolution_scale"), 2, "the change was saved")
+        self.assertIn("config/settings.json", run["dedicated_files"])
+        self.assertEqual(run["default_profile_files"], [],
+                         "nothing is written under the default profile")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are
