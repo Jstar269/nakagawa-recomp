@@ -1470,6 +1470,53 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-MODULE-START-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_module_start.c as module_start.prx and runs as a single launch, not in the campaign queue. The PRX has no main thread: its own module_start (linked with --wrap=module_start so it replaces crt0's) records the thread that runs it and creates a helper thread, which reads that thread's state after module_start has returned. Its stream is fixed-shape and strictly parsed (8 records and the done record); every cell is an unconditional observation of raw words recorded PASS, and no returned value is compared with an expected PSP value.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_module_start.c",
+        "prx": "module_start.prx",
+        "apis": [
+          "module_start",
+          "sceKernelGetThreadId",
+          "sceKernelReferThreadStatus",
+          "sceKernelTotalFreeMemSize",
+          "sceKernelMaxFreeMemSize",
+          "sceKernelCreateThread",
+          "sceKernelStartThread",
+          "sceKernelDelayThread",
+          "sceKernelGetThreadmanIdList",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread"
+        ],
+        "diagnostic_case_ids": [
+          "module-start"
+        ],
+        "case_ids": [
+          "ms-self",
+          "ms-mem-pre",
+          "ms-helper-create",
+          "ms-mem-created",
+          "ms-refer-after",
+          "ms-mem-after",
+          "ms-idlist",
+          "ms-helper-self",
+          "module-start-done"
+        ],
+        "invariant": "Whether the kernel deletes the thread that ran a module's module_start once it returns, and whether that frees the thread's stack in the user partition. module_start records its own sceKernelGetThreadId, the 26 raw words of its sceKernelReferThreadStatus (size, name, attr, status, entry, stack, stack size, gp, priorities, wait and run counters), sceKernelTotalFreeMemSize and sceKernelMaxFreeMemSize, creates and starts a lower-priority helper thread (stack 0x4000) and returns 0. After sceKernelDelayThread(50000) the helper records sceKernelReferThreadStatus of that thread id (return code and raw words), the two free sizes again, sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread) as count, stored count and whether each thread id is listed, and its own refer-status. Raw words only: no value is interpreted.",
+        "issues": [],
+        "risk": "low; two threads and stack-only memory, one 0x4000-byte helper stack, no device state; the helper is the one thread left at teardown and module_stop wakes, waits for and deletes it",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-INTR-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",

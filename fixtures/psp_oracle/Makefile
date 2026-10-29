@@ -242,6 +242,10 @@ CASE_ID = 117
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
+# 124: the module_start thread cell (probe_module_start.c): does the kernel delete the thread
+# that ran module_start, and free its stack, once module_start returns.
+else ifeq ($(CASE),module-start)
+CASE_ID = 124
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -440,6 +444,15 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),insn-trace)
 TARGET = $(BUILD_DIR)/insn_trace
 OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
+# The module_start thread cell: no main thread. Its own module_start replaces crt0's: the
+# source gives it the assembler name __wrap_module_start, --wrap=module_start points the export
+# table's reference there, and -e makes it the ELF entry point (the linker script's
+# ENTRY(module_start) would name crt0's). Same writer and ThreadManForUser block as the HLE
+# issue cells; the helper thread stands in for the main thread at teardown.
+else ifeq ($(CASE),module-start)
+TARGET = $(BUILD_DIR)/module_start
+OBJS = $(BUILD_DIR)/probe_module_start.o $(BUILD_DIR)/threadman_user_imports.o
+LDFLAGS += -Wl,--wrap=module_start -Wl,-e,__wrap_module_start
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -581,6 +594,10 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_insn_trace.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the module_start thread cell (probe_module_start.c), which defines its own module_stop.
+ifneq ($(filter $(BUILD_DIR)/probe_module_start.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -652,6 +669,9 @@ $(BUILD_DIR)/probe_ge_sample.o: probe_ge_sample.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_module_start.o: probe_module_start.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

@@ -1818,6 +1818,25 @@ _register_campaign_probe(
      for case in INSN_TRACE_CASES},
 )
 
+# module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
+# stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
+# 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper
+# thread is created, the helper's creation, the helper's later refer-status of module_start's
+# thread id, the free sizes after a 50 ms sleep, the sceKernelGetThreadmanIdList thread list
+# summary (count, stored, old thread in list, helper in list, both thread ids) and the
+# helper's own refer-status.
+MODULE_START_CASES = (
+    "ms-self", "ms-mem-pre", "ms-helper-create", "ms-mem-created",
+    "ms-refer-after", "ms-mem-after", "ms-idlist", "ms-helper-self",
+)
+MODULE_START_OUT_COUNTS = {
+    "ms-self": 27, "ms-mem-pre": 2, "ms-helper-create": 3, "ms-mem-created": 2,
+    "ms-refer-after": 27, "ms-mem-after": 2, "ms-idlist": 6, "ms-helper-self": 27,
+}
+_register_campaign_probe(
+    "module-start", "PSP-MODULE-START-001", MODULE_START_CASES, MODULE_START_OUT_COUNTS,
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",
