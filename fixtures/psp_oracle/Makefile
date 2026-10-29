@@ -194,12 +194,19 @@ else ifeq ($(CASE),hle-audio-src)
 CASE_ID = 102
 else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
-# 106-107: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
-# #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells.
+# 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
+# #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
+# #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
 else ifeq ($(CASE),hle-issues-batch)
 CASE_ID = 106
 else ifeq ($(CASE),hle-intr-cells)
 CASE_ID = 107
+else ifeq ($(CASE),vfpu-forms)
+CASE_ID = 108
+# 109: the GE texture sample-point cells (probe_ge_sample.c, #282): which texel a
+# through-mode triangle pair and sprite show, nearest and bilinear.
+else ifeq ($(CASE),ge-sample)
+CASE_ID = 109
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -228,6 +235,13 @@ else ifeq ($(CASE),ge-timing)
 CASE_ID = 114
 else ifeq ($(CASE),cpu-timing)
 CASE_ID = 115
+else ifeq ($(CASE),thread-k0-block)
+CASE_ID = 116
+else ifeq ($(CASE),sas-init)
+CASE_ID = 117
+# 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
+else ifeq ($(CASE),insn-trace)
+CASE_ID = 119
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -412,6 +426,20 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-intr-cells)
 TARGET = $(BUILD_DIR)/hle_intr_cells
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-forms)
+TARGET = $(BUILD_DIR)/vfpu_forms
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
+# same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.
+else ifeq ($(CASE),ge-sample)
+TARGET = $(BUILD_DIR)/ge_sample
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The instruction trace: its own source, the single-step trampoline and the fixtures
+# header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
+# issue cells.
+else ifeq ($(CASE),insn-trace)
+TARGET = $(BUILD_DIR)/insn_trace
+OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -434,6 +462,10 @@ endif
 # #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
 ifeq ($(CASE),at3-decode)
 LIBS += -lpspatrac3 -lpsputility
+endif
+# #1595: the SAS re-init probe links the user-mode sceSasCore and utility stubs it calls.
+ifeq ($(CASE),sas-init)
+LIBS += -lpspsascore -lpsputility
 endif
 # Fake-success audit: the OSK calls live in libpsputility; the volatile-memory calls are in SuspendForUser.
 ifeq ($(CASE),fake-success)
@@ -541,6 +573,14 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_hle_issues.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# So do the GE sample-point cells (probe_ge_sample.c).
+ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+# And the instruction trace (probe_insn_trace.c).
+ifneq ($(filter $(BUILD_DIR)/probe_insn_trace.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -607,6 +647,15 @@ $(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
 
 $(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_ge_sample.o: probe_ge_sample.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/hle_power_imports.o: hle_power_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@

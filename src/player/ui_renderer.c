@@ -2290,7 +2290,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 34.0f,
                                  save_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_MUTED);
         }
-        draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 56.0f, game->iso_path[0] ? game->iso_path : "No source path recorded",
+        draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 56.0f,
+                             game->source_image_path[0] ? game->source_image_path
+                             : game->iso_path[0] ? game->iso_path : "No source path recorded",
                              0.9f, hero_w - 96.0f, COLOR_TEXT_DIM);
     }
     } /* end specs rail (skipped on compact heroes) */
@@ -2581,7 +2583,10 @@ static void render_inspecting(SDL_Renderer *ren, PlayerApp *app, const UiInput *
         char size_str[48];
         format_size(size_str, sizeof(size_str), app->inspecting_game.iso_size_bytes);
         float after = draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
-                                        app->inspecting_game.iso_path, 1.1f, COLOR_TEXT_MUTED, 2);
+                                        app->inspecting_game.source_image_path[0]
+                                            ? app->inspecting_game.source_image_path
+                                            : app->inspecting_game.iso_path,
+                                        1.1f, COLOR_TEXT_MUTED, 2);
         char size_line[64];
         snprintf(size_line, sizeof(size_line), "Size: %s", size_str);
         draw_text(ren, card_x + 32.0f, after + 2.0f, size_line, 1.0f, COLOR_TEXT_DIM);
@@ -4310,13 +4315,13 @@ static void render_build_cache(SDL_Renderer *ren, PlayerApp *app, const UiInput 
 /* The one sentence each switch carries (docs/ONLINE_FEATURES.md), and the plain
    fact that this build has no online feature yet. */
 static const char k_online_sentence[] =
-    "Check nakagawa.jaycast.net for updates and news, and let you send reports. "
-    "Nothing is sent without you.";
+    "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent "
+    "without you.";
 static const char k_developer_sentence[] =
     "Show a developer log on screen to help track down problems. Stays on this PC.";
 static const char k_online_not_yet[] =
-    "This version has no online features yet and makes no connection. Your choice is "
-    "kept for when they arrive.";
+    "News and reports aren't built yet, so online mode makes no connection. Your choice "
+    "is kept for when they arrive.";
 
 /* Draws the two option switches and their sentences from y; returns the y below
    them. focus is advanced past each switch drawn. */
@@ -4333,11 +4338,10 @@ static float render_option_switches(SDL_Renderer *ren, PlayerApp *app, const UiI
     }
     y = draw_text_wrapped(ren, x, y + 44.0f, width, k_online_sentence, 0.95f, COLOR_TEXT_MUTED, 2);
     if (with_parts && app->settings.online_mode) {
-        static const char *const names[3] = {"Update check", "News", "Reports"};
-        const bool values[3] = {app->settings.online_updates, app->settings.online_news,
-                                app->settings.online_reports};
+        static const char *const names[2] = {"News", "Reports"};
+        const bool values[2] = {app->settings.online_news, app->settings.online_reports};
         float bx = x;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 2; ++i) {
             snprintf(label, sizeof(label), "%s: %s", names[i], values[i] ? "ON" : "OFF");
             focused = app->focus_index == (*focus)++;
             if (draw_button_focused(ren, bx, y + 8.0f, 180.0f, 34.0f, label, values[i], in,
@@ -4609,7 +4613,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
-                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
+                strncmp(app->last_error.error_code, "DISC_IMAGE_", 11) == 0 ||
+                strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }
         }

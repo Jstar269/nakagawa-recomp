@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -485,9 +486,10 @@ int main(int argc, char **argv) {
 #endif
         }
     }
-    /* With the player attaching stdout to the per-session log, keep each
-       diagnostic line durable even if the player later stops the child. */
-    (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    /* With the player attaching stdout and stderr to the per-session log, keep each
+       diagnostic line durable even if the player later stops the child, without a
+       system call per byte on the thread that prints it (#1296). */
+    (void)sr_debug_streams_init();
 
     /* Initialize debug framework from SR_DEBUG env var (or legacy SR_* vars) */
     g_sr_debug = sr_debug_init();
@@ -496,6 +498,9 @@ int main(int argc, char **argv) {
     sr_profile_init();
     /* Fired-patch report (#1274) at an ordinary exit; the _Exit paths call it directly. */
     (void)atexit(sr_compat_report);
+    /* Execution share at every exit: the _Exit paths reach it through sr_perf_shutdown. */
+    sr_exec_share_arm();
+    (void)atexit(sr_exec_share_report);
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;
@@ -651,6 +656,7 @@ have_image:;
          * the declared project program from the same runtime module package. sched_init
          * is process-start-only; LoadExec uses the explicit teardown/rebind seam below. */
         sched_init(&s);
+        sched_preempt_timer_start();
         for (;;) {
             sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
             sched_run(entry, s.r[4], s.r[5]);
@@ -699,7 +705,9 @@ have_image:;
         }
         if (sr_perf_enabled) sr_perf_guest_begin();
         if (sr_perf_enabled) sr_perf_aot_begin(entry);
+        int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
         sr_call_body(fn, &s);
+        sr_exec_leave(exec_previous);
         if (sr_perf_enabled) sr_perf_aot_end();
         if (sr_perf_enabled) sr_perf_guest_end();
     }

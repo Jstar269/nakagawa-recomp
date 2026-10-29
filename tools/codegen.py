@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
@@ -31,6 +32,8 @@ import build_profile
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
+    code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
+    static_coverage,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
@@ -1189,10 +1192,22 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         fn = funct(w)
         a, b, d, sh = rs(w), rt(w), rd(w), sa(w)
         if fn == 0x00: return wr(d, f"({R(b)} << {sh})"), None, 0           # sll
-        if fn == 0x02: return wr(d, f"({R(b)} >> {sh})"), None, 0           # srl
+        if fn == 0x02:
+            # Allegrex: rs=1 makes SRL the rotate ROTR; any other rs value is reserved.
+            rs_field = rs(w)
+            if rs_field == 1:
+                if sh == 0: return wr(d, R(b)), None, 0                     # rotr by 0
+                return wr(d, f"(({R(b)} >> {sh}) | ({R(b)} << {32 - sh}))"), None, 0  # rotr
+            if rs_field != 0: raise Unsupported(f"SRL reserved rs field {rs_field} at 0x{addr:08x}")
+            return wr(d, f"({R(b)} >> {sh})"), None, 0                      # srl
         if fn == 0x03: return wr(d, f"((uint32_t)((int32_t){R(b)} >> {sh}))"), None, 0  # sra
         if fn == 0x04: return wr(d, f"({R(b)} << ({R(a)} & 31))"), None, 0  # sllv
-        if fn == 0x06: return wr(d, f"({R(b)} >> ({R(a)} & 31))"), None, 0  # srlv
+        if fn == 0x06:
+            # Allegrex: sa=1 makes SRLV the rotate ROTRV; any other sa value is reserved.
+            if sh == 1:
+                return wr(d, f"(({R(b)} >> ({R(a)} & 31)) | ({R(b)} << ((32u - ({R(a)} & 31)) & 31)))"), None, 0  # rotrv
+            if sh != 0: raise Unsupported(f"SRLV reserved sa field {sh} at 0x{addr:08x}")
+            return wr(d, f"({R(b)} >> ({R(a)} & 31))"), None, 0             # srlv
         if fn == 0x07: return wr(d, f"((uint32_t)((int32_t){R(b)} >> ({R(a)} & 31)))"), None, 0  # srav
         if fn == 0x0A: return f"if ({R(b)} == 0) {wr(d, R(a))}", None, 0    # movz
         if fn == 0x0B: return f"if ({R(b)} != 0) {wr(d, R(a))}", None, 0    # movn
@@ -1381,8 +1396,8 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",
-    (0x01, 0x03): "vrndf2",
+    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
+    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
 }
 
 
@@ -1400,6 +1415,52 @@ def _vrndi_single_stmt(addr, w):
             f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
             "sr_end(s, 0u, 0); return; } "
             f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
+
+def _vfpu_forms_stmt(addr, w, what, body):
+    """A PSP-VFPU-FORMS-001 form (issue #326) under identity prefixes.
+
+    vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s were measured on a
+    PSP-3000 (2026-10-28) under identity S/T/D prefixes only; the rules are the recomp.h
+    helpers sr_vfpu_interp also calls. A pending prefix is unmeasured, so it stops the run
+    with no state change, as sr_vfpu_interp refuses it. None of these forms writes VFPU_CC.
+    """
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU {what} under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } " + body + " }")
+
+
+def _vfpu_forms_effect(addr, w, jump, sel, n):
+    """The PSP-VFPU-FORMS-001 forms at their measured widths, or None."""
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
+    if jump >= 24 and n == 1:  # vwbn.s, exponent imm8 in bits 16-23
+        d0, s0 = vreg_indices(vd, 1)[0], vreg_indices(vs, 1)[0]
+        return _vfpu_forms_stmt(addr, w, "vwbn.s",
+                                f"s->vi[{d0}]=sr_vfpu_wbn(s->vi[{s0}],{(w >> 16) & 0xFF}u);")
+    if jump == 1 and sel in (2, 3) and n == 1:  # vrndf1.s / vrndf2.s
+        d0 = vreg_indices(vd, 1)[0]
+        return _vfpu_forms_stmt(addr, w, f"vrndf{sel - 1}.s",
+                                f"s->vi[{d0}]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],{sel - 2});")
+    if jump == 1 and sel == 19 and n <= 2:  # vh2f.s/.p: low then high half, double width
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"uint32_t _s{i}=s->vi[{si[i]}];" for i in range(n))
+        writes = " ".join(f"s->vi[{di[2 * i]}]=sr_vfpu_h2f(_s{i}&0xFFFFu); "
+                          f"s->vi[{di[2 * i + 1]}]=sr_vfpu_h2f(_s{i}>>16);" for i in range(n))
+        return _vfpu_forms_stmt(addr, w, f"vh2f.{'sp'[n - 1]}", f"{reads} {writes}")
+    if jump == 1 and sel == 24 and n == 1:  # vuc2i.s: four bytes, low first, to a quad
+        s0, di = vreg_indices(vs, 1)[0], vreg_indices(vd, 4)
+        writes = " ".join(f"s->vi[{di[i]}]=sr_vfpu_uc2i(_s>>{8 * i});" for i in range(4))
+        return _vfpu_forms_stmt(addr, w, "vuc2i.s", f"uint32_t _s=s->vi[{s0}]; {writes}")
+    if jump == 2 and sel == 5 and n <= 2:  # vsocp.s/.p: x -> (sat0(1 - x), sat0(x))
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"_x[{i}]=s->vi[{si[i]}];" for i in range(n))
+        calc = " ".join(f"sr_vfpu_socp(_x[{i}],&_d[{2 * i}]);" for i in range(n))
+        writes = " ".join(f"s->vi[{di[i]}]=_d[{i}];" for i in range(2 * n))
+        return _vfpu_forms_stmt(addr, w, f"vsocp.{'sp'[n - 1]}",
+                                f"uint32_t _x[2],_d[4]; {reads} {calc} {writes}")
+    return None
+
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1445,6 +1506,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         rt_selector = (w >> 16) & 0x1F
         if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
             return _vrndi_single_stmt(addr, w), None, 0
+        forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
+        if forms is not None:
+            return forms, None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(
@@ -2503,10 +2567,17 @@ def _sv_step(w, regs, written):
                 regs[i] = None
             return
         if fn == 0x00: W(d, regs[b] << sh if regs[b] is not None else None); return           # sll
-        if fn == 0x02: W(d, regs[b] >> sh if regs[b] is not None else None); return           # srl
+        if fn == 0x02:                                                                       # srl / rotr
+            if a > 1 or regs[b] is None: W(d, None); return
+            W(d, ((regs[b] >> sh) | (regs[b] << ((32 - sh) & 31))) & 0xFFFFFFFF if a == 1 else regs[b] >> sh); return
         if fn == 0x03: W(d, (_sv_s32(regs[b]) >> sh) if regs[b] is not None else None); return  # sra
         if fn == 0x04: bin2(d, regs[b], regs[a], lambda x, y: x << (y & 31)); return          # sllv
-        if fn == 0x06: bin2(d, regs[b], regs[a], lambda x, y: x >> (y & 31)); return          # srlv
+        if fn == 0x06:                                                                       # srlv / rotrv
+            if sh > 1: W(d, None); return
+            if sh == 1:
+                bin2(d, regs[b], regs[a],
+                     lambda x, y: ((x >> (y & 31)) | (x << ((32 - (y & 31)) & 31))) & 0xFFFFFFFF); return
+            bin2(d, regs[b], regs[a], lambda x, y: x >> (y & 31)); return
         if fn == 0x07: bin2(d, regs[b], regs[a], lambda x, y: _sv_s32(x) >> (y & 31)); return # srav
         if fn == 0x0A:  # movz
             if regs[b] == 0: W(d, regs[a])
@@ -3174,6 +3245,12 @@ class RuntimeModuleTranslation:
     functions: list = None        # (link address, nwords)
     spans: list = None            # (start, end) link space
     stubbed: list = None          # (link address, reason)
+    # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
+    # leading bytes of the file (its header and text), not when the game loads a module.
+    overlay_check_len: int = 0
+    # analyze.static_coverage of the module's own link space (None when untranslatable).
+    coverage: dict | None = None
+    overlay_check_fnv1a64: int = 0
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
     shared: bool = False
@@ -3212,7 +3289,8 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
-def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False):
+def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
+                             entry_hints=None):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
@@ -3230,6 +3308,17 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
+    if is_code_overlay(data):
+        # The analysis reads a code overlay through its fixed-address ELF image; the
+        # descriptor keeps the file's own identity and the bytes that identify it in memory.
+        try:
+            layout = code_overlay_layout(data)
+        except ValueError as exc:
+            module.unsupported_reason = f"code overlay cannot be translated: {exc}"
+            return module
+        module.overlay_check_len = layout.check_bytes
+        module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
+        data = code_overlay_elf(data)
     try:
         relocations = prx_reloc_model.model_relocations(data, name)
     except prx_reloc_model.RelocationModelError as exc:
@@ -3251,7 +3340,9 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         return module
     ranges = exec_ranges(elf)
     try:
-        analyzed, _ = analyze(elf, cfg_gate=cfg_gate)
+        # A code overlay's entry points are held by the executable (entry_hints).
+        analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
+                              entry_hints=entry_hints if module.overlay_check_len else None)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3311,7 +3402,47 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     finally:
         ADDRESS_SPACE = previous_space
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
+    module_stubbed = {a for a, _ in module.stubbed}
+    module.coverage = static_coverage(
+        elf, ranges, known,
+        translated={a for a, _ in module.functions} - module_stubbed,
+        interpreted=module_stubbed)
     return module
+
+
+COVERAGE_TOTAL_FIELDS = (
+    "executable_words", "owned_words", "unowned_words", "translated_words",
+    "interpreter_words", "other_owned_words", "functions", "functions_translated",
+    "functions_interpreter", "jump_table_candidates", "unresolved_indirect_edges",
+)
+
+
+def write_coverage_report(path, images, module_translations):
+    """Write what this run translated, per image and in total (``<game>_recomp_coverage.json``).
+
+    The numbers come from analyze.static_coverage over the same entries and executable
+    spans code emission used; ``translated_share`` is translated words over owned words.
+    A runtime module that could not be translated at all is listed with its reason.
+    """
+    import json
+    rows = list(images)
+    for module in module_translations:
+        if module.coverage is not None:
+            rows.append({"image": module.name, "runtime_module": True, **module.coverage})
+        else:
+            rows.append({"image": module.name, "runtime_module": True,
+                         "unsupported_reason": module.unsupported_reason})
+    total = {field: sum(row.get(field, 0) for row in rows) for field in COVERAGE_TOTAL_FIELDS}
+    owned = total["owned_words"]
+    total["translated_share"] = round(total["translated_words"] / owned, 6) if owned else None
+    report = {"schema_version": 1, "total": total, "images": rows}
+    with open(path, "w", encoding="ascii", newline="\n") as output:
+        output.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    print("CODEGEN_COVERAGE " + " ".join(
+        f"{field}={total[field]}" for field in
+        ("owned_words", "unowned_words", "translated_words", "interpreter_words",
+         "functions", "functions_interpreter"))
+          + f" translated_share={total['translated_share']}")
 
 
 SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
@@ -3395,7 +3526,8 @@ def runtime_module_descriptor_lines(module):
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
-        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u",
+        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
+        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull",
         "};",
         "",
     ]
@@ -3785,7 +3917,7 @@ def main(argv):
 
         if hst_profile and a == 0x0000f538:
             text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
-     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment and ISSUES.md P0. */
+     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment. */
     uint32_t owner_ra = s->r[31] == 0x00010500u
         ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
     if (owner_ra == 0x00000a14u)
@@ -3876,7 +4008,7 @@ def main(argv):
             func_texts.append(text); emitted.append(a); continue
 
         # 0x0001a5f8 and 0x0001c008 had constant-return custom stubs here until
-        # 2026-07-18. Ghidra-assisted review (ISSUES.md) showed both shadow real,
+        # 2026-07-18. A Ghidra-assisted review showed both shadow real,
         # fully-translatable code: 0x1c008 is `jr ra; sw a1,0x4028(a0)` (the stub
         # dropped the delay-slot store) and 0x1a5f8 is a computed-goto resume
         # point reached via .data pointer tables. Both are discovered entries and
@@ -3972,6 +4104,13 @@ def main(argv):
             sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
 
     primary_emitted = tuple(sorted(set(emitted)))
+    primary_stubbed = {a for a, _ in stubbed}
+    coverage_images = [{
+        "image": "executable",
+        **static_coverage(elf, ranges, analyzed,
+                          translated=set(primary_emitted) - primary_stubbed,
+                          interpreted=primary_stubbed | omit_aot.addrs),
+    }]
 
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
@@ -4061,6 +4200,12 @@ def main(argv):
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+        extra_stubbed = {a for a, _ in stubbed} & extra_known
+        coverage_images.append({
+            "image": os.path.basename(extra_elf_path),
+            **static_coverage(extra_elf, extra_ranges, extra_known,
+                              translated=extra_known - extra_stubbed, interpreted=extra_stubbed),
+        })
 
     # Runtime-placed modules: translated in their own link spaces, registered
     # only as descriptors, and bound by the module loader at the base the guest
@@ -4073,10 +4218,12 @@ def main(argv):
         with open(module_path, "rb") as source:
             module_hashes.append(fnv1a64(source.read()))
     module_translations = []
+    main_data_words = data_section_words(elf) if runtime_modules else set()
     for index, module_path in enumerate(runtime_modules):
         shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
-                                              cfg_gate=cfg_gate, shared=shared)
+                                              cfg_gate=cfg_gate, shared=shared,
+                                              entry_hints=main_data_words)
         if isinstance(translated, int):
             return translated
         module_translations.append(translated)
@@ -4185,6 +4332,8 @@ def main(argv):
         for module in module_translations:
             for a, r in sorted(module.stubbed):
                 f.write(f"{module.name}@0x{a:08x} {r}\n")
+
+    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations)
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Regression checks for public/clean-checkout CI wiring."""
 
@@ -236,6 +236,22 @@ class PublicCiWiringTests(unittest.TestCase):
         recipe = makefile[start:makefile.index("\nhle-thread-selftest:", start)]
         self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
         self.assertNotIn("--no-insert-timestamp", recipe)
+
+    def test_hle_title_selftest_runs_on_linux(self) -> None:
+        """The title-configured production-HLE harness passes on Linux and ran on no hosted job (#306)."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step_name = "Run Linux title-configured HLE selftests"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must run hle-title-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-title-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
 
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
@@ -1004,6 +1020,7 @@ class PublicExportJobTests(unittest.TestCase):
         "Install pre-commit",
         "Run shared all-files checks",
         "Enforce tracked-tree reference ratchet",
+        "Enforce core runtime purity (no game addresses in src/rt)",
         "Locate the pinned Betterleaks binary",
         "Scan reachable sanitized Git history with Betterleaks",
         "Run Betterleaks synthetic canaries",
@@ -1173,7 +1190,7 @@ class CoverageWiringTests(unittest.TestCase):
 
     The measurement may not weaken a gate: the Python shards run the exact module
     list they always ran under unittest, the unprofiled native core gate keeps its
-    command, and both uploads are informational (``codecov.yml``,
+    command, and both uploads are informational (``.github/codecov.yml``,
     ``fail_ci_if_error: false``), so a Codecov outage cannot fail a required job.
     """
 
@@ -1302,7 +1319,7 @@ class CoverageWiringTests(unittest.TestCase):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(project["tool"]["coverage"]["run"]["omit"], ["tools/test_*.py"])
 
-        codecov = (ROOT / "codecov.yml").read_text(encoding="utf-8")
+        codecov = (ROOT / ".github" / "codecov.yml").read_text(encoding="utf-8")
         # Project and patch status may inform but never block a merge.
         self.assertRegex(
             codecov,
@@ -1322,7 +1339,7 @@ class CoverageWiringTests(unittest.TestCase):
         blocks = _markdown_blocks(coverage)
         for terms in (
             ("python_tools", "coverage-python.xml", "unittest"),
-            ("codecov.yml", "informational"),
+            (".github/codecov.yml", "informational"),
             ("native_tools", "native-core-tests"),
         ):
             with self.subTest(terms=terms):

@@ -1,5 +1,9 @@
 # Native Player Implementation Progress & Working-State Verification
 
+This page records how the native player was built, with dated sections. The launcher, Settings and the setup
+wizard now draw with the nk_ui library in `src/ui/` ([`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md)); the
+`ui_renderer.c` described below is the legacy renderer, due to be removed.
+
 ## 1. Executive Summary
 
 Nakagawa Recomp has integrated a native SDL3 player; it is the only UI in the public repository.
@@ -19,13 +23,13 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
    - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. The player decrypts a disc's encrypted executable and modules into the per-title folder (#295); one it can't decrypt and with no user-supplied plain copy there fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result
      ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
-   - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
+   - `ui_renderer.c` / `ui_renderer.h`: the first SDL3 renderer (Dark Court palette, card layouts, scaled text, offscreen screenshots), now legacy.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
    - `nk_iso_extract_game`: ISO directory-record walk that stages `EBOOT.BIN` and `USRDIR/xbdata` without shelling out or requiring Python.
 3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling alongside runtime objects without MSVC dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
-5. **Continuous Working-State Preservation**: Existing playable HST route, test suites (`test_nk_core.py`, `test_build_truth.py`, and full tools test suite) remain 100% green.
+5. **Working state kept**: the playable HST route and the test suites (`test_nk_core.py`, `test_build_truth.py` and the full tools suite) stayed green through this work.
 
 ### Runtime/setup progression (2026-09-13)
 
@@ -49,7 +53,9 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   it through the player for discs whose data ships in archives. A repeat run
   reuses a complete staged tree, and an interrupted run is cleaned up and redone.
 - `--user-data-root=<folder>` makes the player keep its library, title manifests,
-  packages, and staged games in that folder, matching `nk_cli --user-data-root`.
+  packages, and staged games in that folder, matching `nk_cli --user-data-root`, and its
+  settings, cache, logs and saves in that folder's `config`, `cache`, `logs` and `saves`
+  folders, so a second profile never reads or writes the default one.
   With `--headless-launch`, `--launch-now` waits for the game the same bounded way
   `--launch-index` does.
 - `nk_launch.c` resolves staged `EBOOT.BIN`, prefers the promoted `xbdata`

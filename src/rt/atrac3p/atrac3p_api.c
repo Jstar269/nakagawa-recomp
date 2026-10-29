@@ -305,6 +305,15 @@ fail:
     return ret;
 }
 
+/* One plain-AT3 output sample. FFmpeg's ATRAC3 core produces the PSP decoder's waveform with
+ * the opposite sign: MEASURED on a PSP-3000 (firmware 6.61, #1096, probe `at3-decode`), 142 of
+ * the 144 probe samples of decode calls 2-25 equal the negated host sample within 8 steps, and
+ * none equals it unnegated. So the core's float is negated, then scaled like ATRAC3+ above. */
+int16_t atrac3_pcm_sample(float v)
+{
+    return av_clip_int16(lrintf(-v * 32768.0f));
+}
+
 int atrac3_decode(Atrac3Handle *h, const uint8_t *frame, int frame_size,
                   int16_t *pcm_out, int *samples_out)
 {
@@ -334,8 +343,7 @@ int atrac3_decode(Atrac3Handle *h, const uint8_t *frame, int frame_size,
     for (ch = 0; ch < h->avctx.channels; ch++) {
         const float *p = h->planes[ch];
         for (i = 0; i < ATRAC3_FRAME_SAMPLES; i++)
-            pcm_out[(size_t)i * h->avctx.channels + ch] =
-                av_clip_int16(lrintf(p[i] * 32768.0f));
+            pcm_out[(size_t)i * h->avctx.channels + ch] = atrac3_pcm_sample(p[i]);
     }
     *samples_out = samples;
     return ret;

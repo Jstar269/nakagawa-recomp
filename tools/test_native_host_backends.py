@@ -63,6 +63,7 @@ CORE_SOURCES = [
     "src/core/nk_psp_amctrl.c",
     "src/core/nk_psp_lzrc.c",
     "src/core/nk_psp_npumdimg.c",
+    "src/core/nk_disc_expand.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -128,6 +129,11 @@ def _build_and_run(
         f"linking {test_source} failed:\n{build.stdout}\n{build.stderr}",
     )
 
+    # The binaries run from the repository root and write their reports and pid files
+    # under build/ (for example build/test_posix_grandchild.pid); a fresh checkout has no
+    # build/ until something creates it, so create it here rather than rely on test order.
+    (ROOT / "build").mkdir(exist_ok=True)
+
     # Each test isolates its own per-user roots, so it runs here against a decoy
     # profile that must stay free of application folders: anything that lands
     # in it would have landed in the developer's real profile.
@@ -183,6 +189,13 @@ class NativeHostBackendTests(unittest.TestCase):
                 "gcc is unavailable, so the native host-backend test cannot be built; "
                 "reporting SKIP rather than passing without having run it"
             )
+
+        # The harnesses write their scratch files under SR_SELFTEST_BUILD_ROOT, the
+        # checkout's build/ by default. A fresh checkout has no build/ until something
+        # makes it, so these failed whenever their CI shard ran no earlier test that did.
+        # A temporary root would not do: the error report redacts the user's profile,
+        # and the temp directory sits inside it.
+        (ROOT / "build").mkdir(exist_ok=True)
 
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
         cls._objects: dict[str, Path] = {}
@@ -469,6 +482,12 @@ class NativeHostBackendTests(unittest.TestCase):
                            "the presenter must be released after the perf summary is written")
         self.assertLess(release, helper.index("    exit(0);"),
                         "the presenter must be released before the process exits")
+        self.assertIn("atexit(gui_exit_cleanup)", gui,
+                      "guest process exit must release the presenter too")
+        cleanup = gui[gui.index("static void gui_exit_cleanup(void) {"):]
+        cleanup = cleanup[:cleanup.index("\n}")]
+        self.assertLess(cleanup.index("sr_perf_shutdown();"),
+                        cleanup.index("gui_release_presenter();"))
         release_start = gui.index("static void gui_release_presenter(void) {")
         release_body = gui[release_start:gui.index("\n}\n", release_start)]
         order = [release_body.find(call) for call in

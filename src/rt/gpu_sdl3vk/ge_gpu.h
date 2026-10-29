@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -184,6 +185,7 @@ typedef struct GeGpuReplayStats {
     unsigned long long render_wait_ns;
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
+    unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;

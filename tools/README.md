@@ -119,7 +119,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle, runners and `verify_vfpu_addr.py`. |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -225,6 +225,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
 | `record_toolchain.py` | Record observed live toolchain identities using the doctor's detection functions. |
 | `vulkan_sdk.py` | Vulkan SDK validation and discovery shared by the workspace doctor. |
+| `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest. |
 | `library_sweep.py` | Run the production ISO bring-up route across a library and aggregate blockers. |
 | `progress_tracker.py` | Run concrete gating checks against real outputs and emit a structured progress record. |
 
@@ -269,6 +270,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ci_test_shards.py` | Deterministic cost-weighted partition of the Python test modules into CI shards; weights in `tools/ci_test_weights.json`. |
 | `portability_inventory.py` | Public-safe portability inventory of the native runtime and build. |
 | `tree_lint.py` | Report tracked files that no other tracked file names; `--check` enforces the reference ratchet. |
+| `purity_gate.py` | Fail on PSP user-RAM address literals in `src/rt/` outside title config, self-tests, NIDs and its reviewed allowlist. |
 
 ### Performance, frames and runtime diagnostics
 
@@ -324,6 +326,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_analyzer_span_scope.py` | Regression tests for analyzer executable-span ownership. |
 | `test_codegen_continuations.py` | Linked transfers carry a resume boundary; unlinked ones stay tail dispatches. |
 | `test_codegen_entry_semantics.py` | End-to-end regressions for callable versus resume-entry codegen semantics. |
+| `test_static_coverage.py` | Static coverage: `analyze.static_coverage`, codegen's coverage report and the build-report reader. |
 | `test_codegen_fp_convert.py` | Execute generated COP1 conversions against independent fixed vectors. |
 | `test_codegen_gate_b_encoding.py` | Regression tests for gate ISA purity: every instruction under test stays pure. |
 | `test_codegen_madd_msub.py` | Regression tests for Allegrex madd/maddu/msub/msubu decoding and emission. |
@@ -474,6 +477,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_hardware_runner_protocol.py` | Executable conformance suite for the hardware runner autonomy design. |
 | `test_incident_regression_private.py` | Exact-incident regression against preserved private evidence. |
 | `test_intr_waits_matrix.py` | Guards for the interrupt and dispatch-context conformance matrix. |
+| `test_library_build.py` | Regressions for the resumable whole-folder library build and its disc check. |
 | `test_library_sweep.py` | Regressions for the private, resumable library compatibility sweep. |
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
@@ -491,6 +495,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
 | `test_psp_issue_matrix.py` | Issue classification matrix: manifest-backed classes and fixture coverage. |
 | `test_psp_leaf_parsers.py` | Fail-closed tests for the PSP-IO, PSP-AUDIO and PSP-CACHE parsers. |
+| `test_insn_trace.py` | Real-PSP instruction-trace differential: fixture words, probe layout, log conversion, Nakagawa traces and a codegen mutation caught at its first step. |
 | `test_psp_oracle.py` | Oracle protocol, DMAC records, acceptance gate and runner tests. |
 | `test_psp_parsers.py` | Golden parsers, partial streams never passing, dual-channel reconciliation. |
 | `test_psp_readiness.py` | Readiness reporting: tool presence is never a reachable device. |
@@ -545,6 +550,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
+| `test_disc_expand.py` | Compressed disc images (.cso, .zso, .chd) reach `iso_inspect` and `nk_cli.py bringup` through the `nk_disc_expand` C wrapper (`nk_core/disc_expand_tool.py`), expanded once into the per-title folder; refusals keep their named codes. |
 | `test_format_portability_check.py` | The format portability checker fails a synthetic `%u`/`%d` on a fixed-width value and passes PRI macros and casts, through the API and the CLI. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |
@@ -561,6 +567,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_site_mobile.py` | The project website, rendered headless at phone and desktop widths in every theme: no sideways overflow, one theme top to bottom, AA contrast, 44 px tap targets, the theme picker, and every reference resolving. SKIP without Playwright. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
+| `test_purity_gate.py` | Tests for `tools/purity_gate.py`, including the gate on this checkout. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |
 | `test_vulkan_sdk.py` | Vulkan SDK discovery precedence and Makefile wiring. |
 | `test_workspace_paths.py` | Workspace path handling with spaces, Unicode and long paths. |

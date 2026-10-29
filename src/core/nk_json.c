@@ -388,6 +388,8 @@ static NkJsonNode *parse_array(JsonParser *p, int depth) {
     }
     node->type = NK_JSON_ARRAY;
 
+    /* As in parse_object: a comma separates items, so ']' right after one is a
+       trailing comma and is refused. */
     bool after_comma = false;
 
     while (true) {
@@ -524,20 +526,23 @@ static NkJsonNode *parse_value(JsonParser *p, int depth) {
             while (p->pos < p->len && isdigit((unsigned char)p->src[p->pos])) p->pos++;
         }
 
-        char num_buf[64];
-        size_t nlen = p->pos - start;
-        if (nlen >= sizeof(num_buf)) nlen = sizeof(num_buf) - 1;
-        memcpy(num_buf, &p->src[start], nlen);
-        num_buf[nlen] = '\0';
+        /* The scan above already validated the grammar; copy the token out so
+         * strtod/strtoll see a NUL-terminated string (src is not guaranteed to
+         * be). A token longer than the buffer is cut short. */
+        char number_text[64];
+        size_t number_len = p->pos - start;
+        if (number_len >= sizeof(number_text)) number_len = sizeof(number_text) - 1;
+        memcpy(number_text, &p->src[start], number_len);
+        number_text[number_len] = '\0';
 
         NkJsonNode *node = (NkJsonNode *)calloc(1, sizeof(NkJsonNode));
         if (!node) { set_error(p, "Out of memory"); return NULL; }
         node->type = NK_JSON_NUMBER;
-        node->u.num.num_val = strtod(num_buf, NULL);
+        node->u.num.num_val = strtod(number_text, NULL);
         node->u.num.is_integer = !has_frac_or_exp;
         if (node->u.num.is_integer) {
             char *endptr = NULL;
-            node->u.num.int_val = (int64_t)strtoll(num_buf, &endptr, 10);
+            node->u.num.int_val = (int64_t)strtoll(number_text, &endptr, 10);
         } else {
             node->u.num.int_val = 0;
         }
@@ -593,6 +598,7 @@ NkJsonNode *nk_json_obj_get(const NkJsonNode *obj, const char *key) {
     return NULL;
 }
 
+/* The same lookup as nk_json_obj_get, under its longer name. */
 NkJsonNode *nk_json_object_get(const NkJsonNode *obj, const char *key) {
     return nk_json_obj_get(obj, key);
 }

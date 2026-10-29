@@ -1271,7 +1271,10 @@ def _make_input_images(
             analysis_summary["executable_regions"] += len(ranges)
 
             try:
-                stubs, findings = _import_model(elf)
+                with source["path"].open("rb") as stream:
+                    overlay = analyze.is_code_overlay(stream.read(4))
+                # A code overlay has no import table: it calls the executable's stubs.
+                stubs, findings = ({}, []) if overlay else _import_model(elf)
             except ImportTableError as exc:
                 raise PackageRouteError(
                     exc.code, f"{source['name']}: {exc}"
@@ -1547,13 +1550,32 @@ def _aot_required_outputs(game_name: str) -> set[str]:
     }
 
 
+def _read_static_coverage(path: Path) -> dict[str, Any] | None:
+    """The ``total`` of codegen's coverage report (tools/codegen.py write_coverage_report).
+
+    A generation stage from before the report existed has no file; its build report then
+    says so with None rather than a guess.
+    """
+    if not path.is_file():
+        return None
+    from nk_core import package_cache
+    try:
+        report = package_cache.read_build_report_json(path)
+    except package_cache.BoundedJsonError as exc:
+        raise PackageRouteError("PACKAGE_INVALID_CODEGEN_REPORT", f"coverage report: {exc}") from exc
+    total = report.get("total") if isinstance(report, dict) else None
+    if not isinstance(total, dict):
+        raise PackageRouteError("PACKAGE_INVALID_CODEGEN_REPORT", "coverage report has no total")
+    return total
+
+
 def _is_aot_output(name: str, game_name: str) -> bool:
     """Whether ``name`` is generation-phase output: a required output, a C chunk, or a
     system library's own translation unit (``nk_lib_*.c``, named apart from the game
     so that another game's build compiles the identical file)."""
     return name in _aot_required_outputs(game_name) or (
         name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h"}
-    ) or bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
+    ) or name == f"{game_name}_recomp_coverage.json" or bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
@@ -2256,6 +2278,7 @@ def build_package(
             "unsupported_import_count": len(unsupported_imports),
             "unsupported_instruction_count": len(unsupported_instructions),
             "unsupported_region_count": len(unsupported_regions),
+            "static": _read_static_coverage(build_workspace / f"{selected_name}_recomp_coverage.json"),
         }
         cache_options = _cache_codegen_options(
             plan,

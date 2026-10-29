@@ -118,7 +118,11 @@ current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit
 stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
 names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
-scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+scan in git mode and the synthetic canary gate. It also runs the core purity gate,
+[`tools/purity_gate.py`](../tools/purity_gate.py): a hexadecimal literal in PSP user RAM
+(`0x08800000`-`0x09ffffff`) in `src/rt/` code fails it, outside title-config files, native
+self-tests, registered NIDs and the reviewed allowlist in that file (one entry per literal,
+with its reason). A fix for one game goes in its title config, not the core. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
@@ -169,6 +173,8 @@ host runs its own arms of `hle.c`'s file, directory and host-data seams. A few c
 Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
 `CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
 plants a symbolic link in its place).
+The Linux job also runs `hle-title-selftest`, the same harness built under the generic and both
+fixture title configurations.
 
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
@@ -543,7 +549,7 @@ under `flags: python` and `flags: c`, authenticated with the job's OIDC identity
 `id-token: write` beside `contents: read`). `fail_ci_if_error: false` keeps an
 upload or Codecov outage from failing the job.
 
-**The numbers are informational.** [`codecov.yml`](../codecov.yml) marks the
+**The numbers are informational.** [`.github/codecov.yml`](../.github/codecov.yml) marks the
 project and patch status checks `informational: true`, so neither can block a
 merge, and sets `carryforward: true` for both flags, so a run that measures only
 one surface keeps the other flag's last report. The OpenSSF Best Practices
@@ -551,7 +557,7 @@ Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
 check is a separate maintainer decision. Python's `coverage` package is installed
 from `tools/requirements-lock.txt` with `--require-hashes`; the C reports come
-from the runner's own `gcov` and add no Python dependency. A change to `codecov.yml` matches no classifier
+from the runner's own `gcov` and add no Python dependency. A change to `.github/codecov.yml` matches no classifier
 predicate, so it fails closed to the full matrix like any other unknown path.
 
 ## Classifier invariants
@@ -806,8 +812,8 @@ can actually vouch for each other. The CLI verdicts map to exit codes
   on either side (the ring slides, so a divergence inside the dropped window
   is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
-  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5,
-  the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
+  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5
+  and 6, the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
   retained events with a different terminal outcome or refusal block is a
   divergence, not a MATCH. A terminal difference is never an incomparability: a
   `running` terminal is a mid-run cut rather than a ring overflow, so over a
@@ -820,13 +826,17 @@ can actually vouch for each other. The CLI verdicts map to exit codes
 MATCH is a statement about the capture, never about the whole program. It
 certifies exactly these things: that the two runs agree on every event retained
 for the enabled classes over a complete window that dropped nothing, that both
-reached the same terminal outcome, and, for schema 5, that both recorded the
-same refusal block. It does not certify behaviour outside
+reached the same terminal outcome, and, for schema 5 and 6, that both recorded
+the same refusal block. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
 recorder was not looking, so the CLI prints the enabled class list that bounds
 the verdict next to the two identity lines.
+
+A schema 6 `threads` block is the thread state at the cut. It is validated and
+never compared. The CLI prints each side's waiting threads after every verdict,
+INCOMPARABLE included, so a stall comparison shows what each side waits on.
 
 A bundle that records any dropped event can never produce a MATCH against any
 other bundle; re-capture with a larger limit when a comparison is the goal.

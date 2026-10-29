@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -2087,6 +2088,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         }
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
      * inside this span, and before dispatch_after_aot looks for
@@ -2098,6 +2100,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         else sr_tail_drain_segment(s);
     }
     if (owns_return_boundary) (void)sr_aot_return_boundary_end(s);
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
 }
 

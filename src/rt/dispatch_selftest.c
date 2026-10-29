@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // Host-neutral regression for the guest code-address dispatch table (issue #45).
 // Exercises the REAL production primitives from dispatch_table.h (the same code recomp.c

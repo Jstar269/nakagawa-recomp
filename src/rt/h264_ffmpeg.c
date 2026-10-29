@@ -228,7 +228,10 @@ static SrH264PixelFormat ff_guest_format(int mode) {
 }
 
 /* Write the picture into a guest video buffer (stride frame_width pixels). Every destination
- * row is checked before the first write, so a refused conversion leaves guest memory intact. */
+ * row is checked before the first write, so a refused conversion leaves guest memory intact.
+ * Each row is converted in a host scratch row and written with sr_guest_copy_out(), so the
+ * buffer may sit behind a swizzled VRAM mirror view (#1049); the write helper translates the
+ * row piece by piece and prepares and commits the VRAM span of every piece it writes. */
 static int ff_to_guest(const NkH264Picture *f, const FfPlanes *pl, const SrH264FrameTarget *t,
                        SrH264FrameInfo *info) {
     int w = f->width < t->frame_width ? f->width : t->frame_width;
@@ -243,14 +246,11 @@ static int ff_to_guest(const NkH264Picture *f, const FfPlanes *pl, const SrH264F
     for (int y = 0; y < h; y++) {
         uint64_t addr = (uint64_t)t->guest_buffer + (uint64_t)(uint32_t)y * pitch;
         if (addr + row_bytes > UINT64_C(0x100000000) ||
-            !sr_guest_span_writable((uint32_t)addr, (uint32_t)row_bytes)) return 0;
+            !sr_guest_span_writable_any_view((uint32_t)addr, (uint32_t)row_bytes)) return 0;
     }
-    /* Preserve pending GE color/depth data before the CPU writes, then publish the exact
-     * committed span after conversion. sr_gpu_vram_dirty is only the post-write notification. */
-    sr_guest_vram_write_prepare_bytes(t->guest_buffer, (uint32_t)total_bytes);
-    uint8_t *base = (uint8_t *)SR_HOST(t->guest_buffer);
+    uint8_t *row = (uint8_t *)malloc((size_t)row_bytes);
+    if (!row) return 0;
     for (int y = 0; y < h; y++) {
-        uint8_t *row = base + (size_t)y * (size_t)pitch;
         for (int x = 0; x < w; x++) {
             uint8_t r, g, b;
             ff_pixel(pl, x, y, &r, &g, &b);
@@ -268,16 +268,10 @@ static int ff_to_guest(const NkH264Picture *f, const FfPlanes *pl, const SrH264F
             }
             memcpy(row + (size_t)x * 2u, &px16, sizeof px16);
         }
+        sr_guest_copy_out(t->guest_buffer + (uint32_t)((uint64_t)(uint32_t)y * pitch),
+                          row, (uint32_t)row_bytes);
     }
-    uint64_t full_bytes = (uint64_t)(uint32_t)h * pitch;
-    if (w == t->frame_width && full_bytes <= UINT32_MAX) {
-        sr_guest_vram_write_commit_bytes(t->guest_buffer, (uint32_t)full_bytes);
-    } else {
-        for (int y = 0; y < h; y++)
-            sr_guest_vram_write_commit_bytes(
-                t->guest_buffer + (uint32_t)((uint64_t)(uint32_t)y * pitch),
-                (uint32_t)row_bytes);
-    }
+    free(row);
     if (info) {
         info->width = w;
         info->height = h;

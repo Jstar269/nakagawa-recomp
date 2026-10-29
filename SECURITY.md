@@ -131,6 +131,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
 | `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |
 | `src/rt/stale_code.c` | FNV-32 | Self-modifying-code detection (`sr_stale_fnv1a`), checked per block | Keep: performance-critical change detector |
+| `tools/psp_oracle/insn_trace.py` | FNV-32 | Checks that the insn-trace probe ran the header's fixture words, against the probe's own FNV-1a report; the trace identity itself is SHA-256 | Keep: mirrors the on-device check |
 | `src/rt/mpeg.c` | FNV-64 | Change detector for a cached YCbCr conversion buffer | Keep: cache validity, not integrity |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
@@ -155,6 +156,9 @@ Why the project's security requirements are met, in brief:
   (2) Guest code → host memory, crossed only through HLE handlers that validate every guest pointer and size.
   (3) Contributions → `main`, crossed only through reviewed pull requests with required CI.
   (4) Private inputs → the public tree, crossed only through the publication and provenance gates.
+  (5) GitHub's answers to Check for updates → the player, crossed only when the user asks: a bounded parser that
+  accepts this repository's release pages and assets alone, HTTPS to three allowlisted GitHub hosts, and a
+  downloaded ZIP kept only if it matches the release's published SHA-256 (`docs/SETUP.md`, "Network use").
 - **Secure design principles applied.** Fail closed: unsupported behaviour stops with a named reason instead of
   guessing. Complete mediation: every guest-to-host access is checked against the guest span. Least privilege:
   workflows default to read-only tokens and pin every action by commit. Economy of mechanism: one runtime,

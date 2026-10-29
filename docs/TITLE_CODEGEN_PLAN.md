@@ -313,9 +313,8 @@ scheduler world is a white-box test fixture rather than a title route.
 
 The same matrix pins the role-UID model. The generic build allocates threads until the
 pool actually produces the historical launcher UID `0x111` and the historical worker UID
-`0x114`, then asserts each is an ordinary thread: it holds no role, does not become
-`g_master_reent`, is registered in the guest reent hash, inherits the master reent, and is
-not reused as a worker. The fixture builds assert the complement — the configured entry
+`0x114`, then asserts each is an ordinary thread: it holds no role and is not reused as a
+worker. The fixture builds assert the complement — the configured entry
 captures whatever UID the allocator gave it (with the pool deliberately advanced first, so
 the capture cannot be explained by the number), and only that UID receives role treatment.
 Root capture and the "UID 0 is never a role" rule are asserted in every build.

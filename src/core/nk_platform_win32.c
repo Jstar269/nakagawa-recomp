@@ -376,6 +376,35 @@ bool nk_platform_mkdir_p(const char *dir_path) {
     return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
 }
 
+/* RtlAreLongPathsEnabled (Windows 10 1607 and later) is true only when both the
+ * process manifest and the system allow paths past MAX_PATH. */
+static bool win32_long_paths_enabled(void) {
+    typedef BOOLEAN (WINAPI *LongPathsEnabledFn)(void);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+    FARPROC proc = GetProcAddress(ntdll, "RtlAreLongPathsEnabled");
+    if (!proc) return false;
+    LongPathsEnabledFn enabled;
+    memcpy(&enabled, &proc, sizeof(enabled));
+    return enabled() != 0;
+}
+
+bool nk_platform_path_exceeds_limit(const char *path, bool is_directory) {
+    if (!path || !*path) return false;
+    WCHAR wpath[32768];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(WCHAR))) return false;
+    /* The extended-length form is not held to MAX_PATH. */
+    if (wcsncmp(wpath, L"\\\\?\\", 4) == 0) return false;
+    if (win32_long_paths_enabled()) return false;
+    /* A relative path is held to the limit as the full path it names. */
+    DWORD length = GetFullPathNameW(wpath, 0, NULL, NULL);
+    if (length == 0) length = (DWORD)wcslen(wpath) + 1u;
+    length -= 1u; /* the size it reports counts the terminator */
+    /* CreateDirectoryW keeps room for an 8.3 file name inside a new directory. */
+    DWORD limit = is_directory ? MAX_PATH - 12u : MAX_PATH;
+    return length + 1u > limit;
+}
+
 bool nk_platform_mkdir_p_private(const char *dir_path) {
     /* Application-data directories inherit the per-user ACL established by
      * Windows. Keep the same wide-character path handling as mkdir_p so a
@@ -436,6 +465,18 @@ static bool known_local_app_data_utf8(char *out_path, size_t max_len) {
     return resolved;
 }
 
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    PWSTR wide_path = NULL;
+    HRESULT result = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, NULL, &wide_path);
+    bool resolved = SUCCEEDED(result) && wide_path &&
+        wide_to_utf8(wide_path, out_path, max_len) && nk_platform_dir_exists(out_path);
+    if (wide_path) CoTaskMemFree(wide_path);
+    if (!resolved) out_path[0] = '\0';
+    return resolved;
+}
+
 static bool get_windows_data_base(char *out_base, size_t max_len) {
     char known_local_app_data[32768] = "";
     char local_app_data[32768] = "";
@@ -474,12 +515,31 @@ bool nk_platform_set_app_data_dir_override(const char *path) {
     return true;
 }
 
+/* With an override, every per-user folder of this process is in it: the data
+   folder is the override itself, and settings, cache, logs and saves are its
+   config, cache, logs and saves folders. A player opened on another data root
+   then never reads or writes the default profile's settings or saves. */
+static bool resolve_override_path(NkPathType type, char sep, char *out_path, size_t max_len) {
+    const char *leaf = NULL;
+    switch (type) {
+        case NK_PATH_DATA:   leaf = NULL; break;
+        case NK_PATH_CONFIG: leaf = "config"; break;
+        case NK_PATH_CACHE:  leaf = "cache"; break;
+        case NK_PATH_LOGS:   leaf = "logs"; break;
+        case NK_PATH_SAVES:  leaf = "saves"; break;
+        default: return false;
+    }
+    int written = leaf
+        ? snprintf(out_path, max_len, "%s%c%s", s_app_data_dir_override, sep, leaf)
+        : snprintf(out_path, max_len, "%s", s_app_data_dir_override);
+    return written > 0 && (size_t)written < max_len;
+}
+
 static bool resolve_windows_path(NkPathType type, char *out_path,
                                  size_t max_len) {
     if (!out_path || max_len == 0) return false;
-    if (type == NK_PATH_DATA && s_app_data_dir_override[0]) {
-        int written = snprintf(out_path, max_len, "%s", s_app_data_dir_override);
-        return written > 0 && (size_t)written < max_len;
+    if (s_app_data_dir_override[0]) {
+        return resolve_override_path(type, '\\', out_path, max_len);
     }
     char base[32768];
     if (!get_windows_data_base(base, sizeof(base))) return false;
@@ -506,6 +566,24 @@ bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
 
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
     return resolve_windows_path(NK_PATH_DATA, out_path, max_len);
+}
+
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len) {
+    return resolve_windows_path(type, out_path, max_len);
+}
+
+bool nk_platform_get_executable_path(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    WCHAR wide_path[32768];
+    DWORD length = GetModuleFileNameW(NULL, wide_path,
+                                      (DWORD)(sizeof(wide_path) / sizeof(wide_path[0])));
+    if (length == 0 || length >= sizeof(wide_path) / sizeof(wide_path[0]) ||
+        !wide_to_utf8(wide_path, out_path, max_len)) {
+        out_path[0] = '\0';
+        return false;
+    }
+    return true;
 }
 
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
@@ -861,6 +939,9 @@ bool nk_platform_spawn_process(
         &si.StartupInfo,
         &pi
     );
+    /* Read the refusal before the cleanup below can reset the thread's last
+       error: a security product's block reaches the player only as this code. */
+    DWORD create_error = success ? ERROR_SUCCESS : GetLastError();
 
     DeleteProcThreadAttributeList(attribute_list);
     free(attribute_list);
@@ -872,6 +953,7 @@ bool nk_platform_spawn_process(
     }
 
     if (!success) {
+        out_process->spawn_error = (int)create_error;
         return false;
     }
 
@@ -918,6 +1000,45 @@ bool nk_platform_spawn_process(
     out_process->job_handle = (void *)hJob;
     out_process->process_id = (int)pi.dwProcessId;
     out_process->is_active = true;
+    return true;
+}
+
+#ifndef ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION
+#define ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION 4551L
+#endif
+
+NkSpawnBlock nk_platform_spawn_block(int os_error) {
+    switch ((DWORD)os_error) {
+        case ERROR_ACCESS_DENIED:
+            return NK_SPAWN_BLOCK_ACCESS_DENIED;
+        case ERROR_VIRUS_INFECTED:
+        case ERROR_VIRUS_DELETED:
+            return NK_SPAWN_BLOCK_THREAT;
+        case ERROR_ACCESS_DISABLED_BY_POLICY:
+        case ERROR_ACCESS_DISABLED_NO_SAFER_UI_BY_POLICY:
+        case ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION:
+            return NK_SPAWN_BLOCK_POLICY;
+        default:
+            return NK_SPAWN_BLOCK_NONE;
+    }
+}
+
+bool nk_platform_describe_os_error(int os_error, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (os_error == 0) return false;
+    WCHAR text[512];
+    DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                  NULL, (DWORD)os_error, 0, text,
+                                  (DWORD)(sizeof(text) / sizeof(text[0])), NULL);
+    while (length > 0 && (text[length - 1] == L'\r' || text[length - 1] == L'\n' ||
+                          text[length - 1] == L' ')) {
+        text[--length] = L'\0';
+    }
+    if (length == 0 || !wide_to_utf8(text, out, out_size)) {
+        out[0] = '\0';
+        return false;
+    }
     return true;
 }
 
@@ -1009,3 +1130,15 @@ void nk_platform_close_process(NkProcessHandle *process) {
 }
 
 #endif /* _WIN32 */
+
+bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
+    TIME_ZONE_INFORMATION zone;
+    DWORD id;
+    if (!standard_minutes || !daylight_now) return false;
+    id = GetTimeZoneInformation(&zone);
+    if (id == TIME_ZONE_ID_INVALID) return false;
+    /* Bias is minutes to add to local time for UTC, so east of UTC is negative. */
+    *standard_minutes = -(int)(zone.Bias + zone.StandardBias);
+    *daylight_now = id == TIME_ZONE_ID_DAYLIGHT;
+    return true;
+}

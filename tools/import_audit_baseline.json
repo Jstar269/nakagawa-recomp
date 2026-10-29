@@ -1047,6 +1047,12 @@
     "name": "sceMp3SetLoopNum",
     "status": "unreviewed"
   },
+  "0x3d6d25a9": {
+    "classification": "dedicated",
+    "handler": "h_PsmfSetPsmf",
+    "name": "scePsmfPlayerSetPsmf",
+    "status": "unreviewed"
+  },
   "0x3dfaeba9": {
     "classification": "dedicated",
     "handler": "h_OskShutdown",
@@ -1341,11 +1347,10 @@
     "status": "complete"
   },
   "0x53b00e9a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerHandlerWide",
     "name": "sceKernelSetVTimerHandlerWide",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0x542ad630": {
     "classification": "controlled_unsupported",
@@ -1380,7 +1385,7 @@
   },
   "0x5622b7c1": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetAA3DataAndGetID",
     "name": "sceAtracSetAA3DataAndGetID",
     "status": "unreviewed"
   },
@@ -1467,7 +1472,7 @@
   },
   "0x5dd66588": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetAA3HalfwayBufferAndGetID",
     "name": "sceAtracSetAA3HalfwayBufferAndGetID",
     "status": "unreviewed"
   },
@@ -2582,6 +2587,12 @@
     "name": "__sceSasCore",
     "status": "unreviewed"
   },
+  "0xa3d81169": {
+    "classification": "dedicated",
+    "handler": "h_PsmfChangePlayMode",
+    "name": "scePsmfPlayerChangePlayMode",
+    "status": "unreviewed"
+  },
   "0xa4fc06a4": {
     "classification": "dedicated",
     "handler": "h_GeSetCallback",
@@ -3202,11 +3213,10 @@
     "status": "unreviewed"
   },
   "0xd2d615ef": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_CancelVTimerHandler",
     "name": "sceKernelCancelVTimerHandler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd3075926": {
     "classification": "dedicated",
@@ -3299,11 +3309,10 @@
     "status": "unreviewed"
   },
   "0xd8b299ae": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerHandler",
     "name": "sceKernelSetVTimerHandler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd8b73127": {
     "classification": "dedicated",
@@ -3389,6 +3398,12 @@
     "name": "sceNetAdhocctlGetParameter",
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
+  },
+  "0xdf089680": {
+    "classification": "dedicated",
+    "handler": "h_PsmfGetPsmfInfo",
+    "name": "scePsmfPlayerGetPsmfInfo",
+    "status": "partial"
   },
   "0xdf52098f": {
     "classification": "dedicated",

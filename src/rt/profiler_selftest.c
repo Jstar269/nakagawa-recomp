@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -123,6 +123,135 @@ static void test_audio_queue_line(void) {
           s_report_count);
 }
 
+/* Live profile view (#314). The history ring keeps the newest SR_PERF_HISTORY_LEN closed
+ * intervals, ages from the newest, and drops the oldest when full. */
+static void test_live_history_ring(void) {
+    static SrPerfHistory history;
+    SrPerfLiveInterval interval;
+    sr_perf_history_reset(&history);
+    CHECK(sr_perf_history_at(&history, 0) == NULL, "an empty ring has no newest interval");
+    memset(&interval, 0, sizeof(interval));
+    for (unsigned i = 1; i <= 3; i++) {
+        interval.wall_ns = i;
+        sr_perf_history_push(&history, &interval);
+    }
+    CHECK(history.count == 3, "three pushes hold three intervals (count=%u)", history.count);
+    CHECK(sr_perf_history_at(&history, 0) && sr_perf_history_at(&history, 0)->wall_ns == 3,
+          "age 0 is the newest push");
+    CHECK(sr_perf_history_at(&history, 2) && sr_perf_history_at(&history, 2)->wall_ns == 1,
+          "age 2 is the oldest of three");
+    CHECK(sr_perf_history_at(&history, 3) == NULL, "no interval past the oldest held");
+    for (unsigned i = 4; i <= SR_PERF_HISTORY_LEN + 5u; i++) {
+        interval.wall_ns = i;
+        sr_perf_history_push(&history, &interval);
+    }
+    CHECK(history.count == SR_PERF_HISTORY_LEN, "a full ring holds %u (count=%u)",
+          SR_PERF_HISTORY_LEN, history.count);
+    CHECK(sr_perf_history_at(&history, 0)->wall_ns == SR_PERF_HISTORY_LEN + 5u,
+          "the newest survives a wrap");
+    CHECK(sr_perf_history_at(&history, SR_PERF_HISTORY_LEN - 1u)->wall_ns == 6u,
+          "the oldest held after a wrap is the first not dropped (wall_ns=%llu)",
+          (unsigned long long)sr_perf_history_at(&history, SR_PERF_HISTORY_LEN - 1u)->wall_ns);
+    CHECK(sr_perf_history_at(&history, SR_PERF_HISTORY_LEN) == NULL, "no age past the ring");
+    history.head = SR_PERF_HISTORY_LEN;
+    CHECK(sr_perf_history_at(&history, 0) == NULL, "a corrupt head reads nothing");
+    sr_perf_history_push(&history, &interval);
+    CHECK(history.head == SR_PERF_HISTORY_LEN, "a corrupt head is not written through");
+    sr_perf_history_push(NULL, &interval);
+    CHECK(sr_perf_history_at(NULL, 0) == NULL, "a NULL ring is empty");
+}
+
+/* The rows are the PERF line's definitions: shares of the interval's wall time for the
+ * guest/host split and residency, shares of the recorded thread states for the scheduler. */
+static void test_live_rows(void) {
+    SrPerfLiveInterval iv;
+    SrPerfLiveRow rows[SR_PERF_LIVE_ROWS];
+    memset(&iv, 0, sizeof(iv));
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS) == 0, "an empty interval has no rows");
+    iv.wall_ns = 1000000000ull;
+    iv.cpu_ns = 600000000ull;
+    iv.ge_wait_ns = 100000000ull;
+    iv.present_ns = 50000000ull;
+    iv.idle_ns = 250000000ull;
+    iv.presents = 60;
+    iv.new_frames = 30;
+    iv.aot_ns = 550000000ull;
+    iv.interp_ns = 25000000ull;
+    iv.aot_to_interp = 12;
+    iv.interp_to_aot = 11;
+    iv.sched_ns[SR_PERF_SCHED_RUNNING] = 300;
+    iv.sched_ns[SR_PERF_SCHED_RUNNABLE] = 100;
+    iv.sched_ns[SR_PERF_SCHED_BLOCKED] = 500;
+    iv.sched_ns[SR_PERF_SCHED_IDLE] = 100;
+    iv.ge_cpu_ns = 3100000ull;
+    iv.gpu_draws = 812;
+    iv.vk_submit_ns = 400000ull;
+    iv.vk_wait_ns = 5200000ull;
+    iv.vk_readback_ns = 100000ull;
+    iv.audio_underruns = 2;
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS - 1u) == 0, "a short row buffer is refused");
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS) == SR_PERF_LIVE_ROWS, "eight rows");
+    static const char *const want[SR_PERF_LIVE_ROWS][2] = {
+        {"Frame", "30.0 game fps  16.7 ms per present"},
+        {"Guest/host", "cpu 60%  ge wait 10%  present 5%  idle 25%"},
+        {"Residency", "aot 55%  interpreter 3%"},
+        {"Transitions", "12 to interpreter  11 to aot"},
+        {"Scheduler", "run 30%  ready 10%  blocked 50%  idle 10%"},
+        {"GE CPU", "3.1 ms  812 gpu draws"},
+        {"Vulkan", "submit 0.4 wait 5.2 pipeline 0.0 readback 0.1 ms"},
+        {"Audio", "2 underruns"},
+    };
+    for (unsigned i = 0; i < SR_PERF_LIVE_ROWS; i++) {
+        CHECK(strcmp(rows[i].label, want[i][0]) == 0 && strcmp(rows[i].value, want[i][1]) == 0,
+              "row %u was '%s' '%s' (expected '%s' '%s')", i, rows[i].label, rows[i].value,
+              want[i][0], want[i][1]);
+    }
+    memset(iv.sched_ns, 0, sizeof(iv.sched_ns));
+    (void)sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS);
+    CHECK(strcmp(rows[4].value, "no thread states recorded") == 0,
+          "no thread states reads as such, not as 0%% everywhere");
+}
+
+/* Each closed telemetry interval lands in the history the live view reads, carrying the
+ * interval's counters, and the transition hot spots are the summary's top_pcs. */
+static void test_live_history_follows_the_report(void) {
+    SrPerfTopPc top[4];
+    sr_perf_init();
+    unsigned before = sr_perf_history()->count;
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_audio_queue(3, 0u, 1000000u, 1);
+    sr_perf_audio_queue(5, 0u, 1000000u, 1);
+    for (int i = 0; i < 3; i++) {
+        sr_perf_aot_begin(0x08804000u);
+        sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
+        sr_perf_interp_begin(0x08804120u);
+        sr_perf_interp_end(0x08804130u, 0);
+        sr_perf_aot_end();
+    }
+    sr_perf_aot_begin(0x08805000u);
+    sr_perf_interp_begin(0x08805200u);
+    sr_perf_interp_end(0x08805210u, 0);
+    sr_perf_aot_end();
+    sr_perf_test_force_report();
+    sr_perf_test_set_report_sink(NULL);
+    const SrPerfLiveInterval *newest = sr_perf_history_at(sr_perf_history(), 0);
+    CHECK(sr_perf_history()->count == before + 1u, "one report pushed one interval (%u -> %u)",
+          before, sr_perf_history()->count);
+    CHECK(newest && newest->wall_ns > 0 && newest->audio_underruns == 2 &&
+              newest->aot_to_interp == 4,
+          "the newest interval carries the report's counters (underruns=%llu aot_to_interp=%llu)",
+          newest ? (unsigned long long)newest->audio_underruns : 0ull,
+          newest ? (unsigned long long)newest->aot_to_interp : 0ull);
+    unsigned n = sr_perf_top_transitions(0, top, 4);
+    CHECK(n == 2 && top[0].pc == 0x08804120u && top[0].count == 3 &&
+              strcmp(top[0].reason, "stale-block") == 0 && top[1].pc == 0x08805200u &&
+              strcmp(top[1].reason, "dispatch-miss") == 0,
+          "top AOT->interpreter PCs, most frequent first (n=%u)", n);
+    CHECK(sr_perf_top_transitions(0, top, 1) == 1, "the top list stops at the caller's max");
+    CHECK(sr_perf_top_transitions(2, top, 4) == 0, "an unknown direction has no entries");
+}
+
 /* Guest symbol labels (codegen --symbol-map). The registered table is what the crash report and
  * the dispatch trace name addresses with; without a table every label is empty, so a build with
  * no map prints exactly what it printed before. Address 0 is a real function start on a zero-based
@@ -196,9 +325,110 @@ static void test_new_frames_are_distinct_buffers(void) {
           per_frame);
 }
 
+/* Execution share (perf.h): always on, so it is driven here with SR_PERF unset. */
+static void spin_ns(uint64_t ns) {
+    uint64_t until = sr_exec_now_ns() + ns;
+    while (sr_exec_now_ns() < until) {
+    }
+}
+
+static unsigned long long json_u64(const char *json, const char *key) {
+    char needle[64];
+    snprintf(needle, sizeof needle, "\"%s\": ", key);
+    const char *at = strstr(json, needle);
+    return at ? strtoull(at + strlen(needle), NULL, 10) : ~0ull;
+}
+
+static void test_exec_share(void) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) tmp = getenv("TEMP");
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    char path[512];
+    snprintf(path, sizeof path, "%s/nk_exec_share_selftest_%ld.json", tmp, (long)sr_exec_now_ns());
+#ifdef _WIN32
+    _putenv_s("SR_EXEC_SHARE_JSON", path);
+#else
+    setenv("SR_EXEC_SHARE_JSON", path, 1);
+#endif
+    sr_exec_slice_begin(SR_EXEC_TIER_NONE);
+    int outer = sr_exec_enter(SR_EXEC_TIER_AOT);
+    CHECK(outer == SR_EXEC_TIER_NONE && sr_exec_tier == SR_EXEC_TIER_AOT, "enter AOT from none");
+    int same = sr_exec_enter(SR_EXEC_TIER_AOT);   /* AOT to AOT: no switch */
+    sr_exec_leave(same);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_AOT, "an AOT-to-AOT dispatch keeps the AOT tier");
+    spin_ns(2000000u);
+    uint64_t idle_started = sr_exec_now_ns();
+    spin_ns(20000000u);
+    sr_exec_idle(idle_started);                   /* 20 ms of host wait: not guest work */
+
+    sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
+    int from_aot = sr_exec_enter(SR_EXEC_TIER_INTERP);
+    sr_exec_interp_entry(0x00001000u);
+    sr_exec_interp_instructions += 5u;
+    spin_ns(1000000u);
+    int nested = sr_exec_enter(SR_EXEC_TIER_AOT);   /* a linked call from the floor */
+    spin_ns(10000000u);
+    sr_exec_leave(nested);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_INTERP, "leaving a nested AOT call restores the floor");
+    sr_exec_interp_exit(1, 0);
+    sr_exec_leave(from_aot);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_AOT, "leaving the floor restores AOT");
+
+    for (unsigned i = 0; i < 2u; i++) {           /* two dispatch misses, one target twice */
+        int prev = sr_exec_enter(SR_EXEC_TIER_INTERP);
+        sr_exec_interp_entry(i ? 0x00002000u : 0x00001000u);
+        sr_exec_interp_exit(1, 1);
+        sr_exec_leave(prev);
+    }
+    sr_exec_leave(outer);
+    int saved = sr_exec_slice_end();
+    CHECK(saved == SR_EXEC_TIER_NONE, "slice ends with the tier it began with");
+
+    sr_exec_share_report();                       /* not armed: writes nothing */
+    FILE *probe = fopen(path, "r");
+    CHECK(probe == NULL, "an unarmed report writes no file");
+    if (probe) fclose(probe);
+    sr_exec_share_arm();
+    sr_exec_share_report();
+    char json[2048] = {0};
+    FILE *in = fopen(path, "r");
+    CHECK(in != NULL, "SR_EXEC_SHARE_JSON file written");
+    if (!in) return;
+    size_t got = fread(json, 1, sizeof json - 1u, in);
+    fclose(in);
+    remove(path);
+    json[got] = '\0';
+    CHECK(strstr(json, "\"schema\": \"nakagawa-exec-share-v1\"") != NULL, "schema: %s", json);
+    CHECK(json_u64(json, "interp_entries") == 3u, "interp_entries: %s", json);
+    CHECK(json_u64(json, "stale_block") == 1u && json_u64(json, "dispatch_miss") == 2u,
+          "entries by reason: %s", json);
+    CHECK(json_u64(json, "aot_handoff") == 1u && json_u64(json, "call_return") == 2u &&
+          json_u64(json, "other") == 0u, "exits: %s", json);
+    CHECK(json_u64(json, "interp_entry_points") == 2u, "distinct entry points: %s", json);
+    CHECK(json_u64(json, "miss_targets") == 2u, "distinct miss targets: %s", json);
+    CHECK(json_u64(json, "interp_instructions") == 5u, "interp instructions: %s", json);
+    unsigned long long aot_ns = json_u64(json, "aot_ns");
+    unsigned long long interp_ns = json_u64(json, "interp_ns");
+    unsigned long long idle_ns = json_u64(json, "idle_ns");
+    /* Spins: AOT 2 ms + a 10 ms nested call, the floor 1 ms, idle 20 ms. The bounds leave
+     * room for a busy host while still telling which tier each span went to. */
+    CHECK(interp_ns >= 1000000u && interp_ns < 9000000u,
+          "floor time excludes its nested AOT call: interp_ns=%llu", interp_ns);
+    CHECK(aot_ns >= 12000000u && aot_ns < 25000000u,
+          "AOT time includes the nested call and excludes the idle wait: aot_ns=%llu", aot_ns);
+    CHECK(idle_ns >= 20000000u, "idle_ns=%llu", idle_ns);
+    const char *share = strstr(json, "\"interp_time_share\": ");
+    double value = share ? strtod(share + strlen("\"interp_time_share\": "), NULL) : -1.0;
+    CHECK(value > 0.0 && value < 0.5, "interp_time_share=%f", value);
+}
+
 int main(void) {
+    test_exec_share();
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
+    test_live_history_ring();
+    test_live_rows();
+    test_live_history_follows_the_report();
     test_guest_symbol_labels();
     test_new_frames_are_distinct_buffers();
     sr_profile_test_reset();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 #ifndef NAKAGAWA_FLIGHT_RECORDER_H
 #define NAKAGAWA_FLIGHT_RECORDER_H
@@ -22,8 +22,57 @@ enum {
     SR_FLIGHT_CLASS_PRESENT = 1u << 8,
     SR_FLIGHT_CLASS_ALL = (1u << 9) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
-    SR_FLIGHT_SCHEMA_VERSION = 5u
+    SR_FLIGHT_MAX_THREADS = 128u,
+    SR_FLIGHT_SCHEMA_VERSION = 6u
 };
+
+/* ---- Terminal thread snapshot (schema 6) ----
+ * Every bundle carries one entry per guest thread that exists when it is written, so a
+ * thread that blocked long before the retained event window still shows what it waits on.
+ * The scheduler owns the thread table; it registers a source once at init and the recorder
+ * calls it while writing a bundle. The recorder never links against the scheduler: with no
+ * source registered the bundle writes an empty "threads" array. Every field is a scalar the
+ * scheduler holds; nothing is read from guest memory. */
+enum {
+    SR_FLIGHT_THREAD_DORMANT = 0u,
+    SR_FLIGHT_THREAD_READY = 1u,
+    SR_FLIGHT_THREAD_RUNNING = 2u,
+    SR_FLIGHT_THREAD_WAIT_DELAY = 3u,
+    SR_FLIGHT_THREAD_WAIT_OBJECT = 4u
+};
+
+/* Why a waiting thread is parked, in the classification sched_dump_threads() prints. */
+enum {
+    SR_FLIGHT_WHY_NONE = 0u,
+    SR_FLIGHT_WHY_SLEEP = 1u,
+    SR_FLIGHT_WHY_DELAY = 2u,
+    SR_FLIGHT_WHY_VBLANK = 3u,
+    SR_FLIGHT_WHY_CTRL = 4u,
+    SR_FLIGHT_WHY_THREAD_END = 5u,
+    SR_FLIGHT_WHY_OBJECT = 6u
+};
+
+typedef struct {
+    uint32_t uid;
+    int32_t priority;        /* current priority */
+    uint32_t state;          /* SR_FLIGHT_THREAD_* */
+    uint32_t suspended;      /* 1 while sceKernelSuspendThread is in effect */
+    uint32_t why;            /* SR_FLIGHT_WHY_* */
+    uint32_t wait_type;      /* PSP waitType as ReferThreadStatus reports it; 0 when not waiting */
+    uint32_t wait_object;    /* waited object; 0 when not in an object wait */
+    uint32_t has_block_nid;  /* 0: the last block happened outside any import */
+    uint32_t block_nid;      /* import NID the thread last blocked in */
+    uint32_t pc;             /* saved pc, or the live pc of the running thread */
+    uint32_t ra;             /* saved r[31], or the live one of the running thread */
+    uint32_t has_waited;     /* 0: not waiting, or the wait start is unknown */
+    uint64_t waited_us;      /* virtual microseconds since the current wait began */
+    uint32_t has_deadline;   /* 0: no wait, or an untimed wait */
+    uint64_t deadline_us;    /* virtual microseconds left before a timed wait expires */
+} SrFlightThread;
+
+/* Fills *out for the index-th existing thread and returns 1, or returns 0 when index is past
+ * the last one. Indices run 0, 1, 2, ... with no gaps. */
+typedef int (*SrFlightThreadSource)(uint32_t index, SrFlightThread *out);
 
 enum {
     SR_FLIGHT_KIND_HLE_IMPORT = 1u,
@@ -211,6 +260,8 @@ void sr_flight_nan_origin(uint32_t guest_pc, uint32_t domain, uint32_t dst, uint
 void sr_flight_snapshot(SrFlightSnapshot *out);
 int sr_flight_event_count(void);
 int sr_flight_event_at(uint32_t index, SrFlightEvent *out);
+/* Registers the thread table every later bundle snapshots (NULL clears it). */
+void sr_flight_set_thread_source(SrFlightThreadSource source);
 
 #if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit);
@@ -344,6 +395,9 @@ static inline int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
     (void)index;
     (void)out;
     return 0;
+}
+static inline void sr_flight_set_thread_source(SrFlightThreadSource source) {
+    (void)source;
 }
 #if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 static inline void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit) {

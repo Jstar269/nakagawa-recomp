@@ -62,6 +62,10 @@ struct NkUi {
     NkUiId focused;
     NkUiId focus_request;
     bool focus_pending;
+    /* The primary pointer button, and the control it went down on: a click
+       activates a control only when its press and its release both land on it. */
+    bool pointer_down;
+    NkUiId pointer_press_id;
     double now_s;
     unsigned container_depth;
     uint32_t text_color_stack[64];
@@ -73,6 +77,7 @@ struct NkUi {
     size_t custom_count;
     char frame_text[NK_UI_FRAME_TEXT_BYTES];
     size_t frame_text_used;
+    size_t (*display_text)(const char *in, char *out, size_t out_size);
     NkUiId ring_id;
     float ring_radius;
     const NkUiPromptImages *prompt_images;
@@ -131,20 +136,33 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             }
             nk_ui_consume_event(ui, i);
         } else if (event->type == NK_UI_EV_POINTER) {
-            if (event->down) {
-                focused = nk_ui_focus_hit_test(ui->focus_graph,
-                                               event->x, event->y);
-                if (focused != 0u &&
-                    nk_ui_focus_set(ui->focus_graph, focused)) {
+            /* A press focuses the control under it; the release activates it
+               only when it lands on the same control. A pointer that moves
+               while held sends more down events: they are a drag, never a
+               press, so a click whose first frame swapped the screen cannot
+               press the control that took the old one's place. */
+            bool press = event->down && !ui->pointer_down;
+            bool release = !event->down && ui->pointer_down;
+            ui->pointer_down = event->down;
+            focused = press || release
+                ? nk_ui_focus_hit_test(ui->focus_graph, event->x, event->y) : 0u;
+            if (press) {
+                ui->pointer_press_id = focused;
+                if (focused != 0u && nk_ui_focus_set(ui->focus_graph, focused)) {
                     ui->focused = focused;
-                    event->type = NK_UI_EV_ACTIVATE;
-                    event->repeat = false;
-                    ++i;
-                } else {
-                    nk_ui_consume_event(ui, i);
                 }
+                nk_ui_consume_event(ui, i);
+            } else if (release && focused != 0u && focused == ui->pointer_press_id &&
+                       nk_ui_focus_set(ui->focus_graph, focused)) {
+                ui->pointer_press_id = 0u;
+                ui->focused = focused;
+                event->type = NK_UI_EV_ACTIVATE;
+                event->down = true;
+                event->repeat = false;
+                ++i;
             } else {
-                /* Hover remains separate from focus and activation. */
+                /* Hover and drags stay separate from focus and activation. */
+                if (release) ui->pointer_press_id = 0u;
                 nk_ui_consume_event(ui, i);
             }
         } else if (event->type == NK_UI_EV_WHEEL) {
@@ -273,6 +291,7 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     if (ui->text.measure == NULL) {
         ui->text = fixed;
     }
+    ui->display_text = config != NULL ? config->display_text : NULL;
     ui->viewport.pixel_w = 1;
     ui->viewport.pixel_h = 1;
     ui->viewport.display_scale = 1.0f;
@@ -324,6 +343,10 @@ void nk_ui_set_prefs(NkUi *ui, const NkUiPrefs *prefs) {
     if (ui != NULL && prefs != NULL) {
         ui->prefs = *prefs;
     }
+}
+
+void nk_ui_cancel_press(NkUi *ui) {
+    if (ui != NULL) ui->pointer_press_id = 0u;
 }
 
 void nk_ui_push_event(NkUi *ui, const NkUiEvent *event) {
@@ -529,6 +552,9 @@ void nk_ui_label(NkUi *ui, NkUiId id, const char *text, int font, int size_px) {
     if (ui == NULL || !ui->frame_open || text == NULL || size_px <= 0) {
         return;
     }
+    if (ui->display_text != NULL) {
+        text = nk_ui_frame_text(ui, text);
+    }
     length = strlen(text);
     if (!nk_ui_clay_text(ui->clay, id, text, length, font, size_px, ui->text_color)) {
         ui->frame_ok = false;
@@ -547,7 +573,12 @@ const char *nk_ui_frame_text(NkUi *ui, const char *text) {
         return "";
     }
     out = &ui->frame_text[ui->frame_text_used];
-    memcpy(out, text, length + 1u);
+    if (ui->display_text != NULL) {
+        /* The rewrite never grows its input, so length + 1 bytes hold it. */
+        length = ui->display_text(text, out, length + 1u);
+    } else {
+        memcpy(out, text, length + 1u);
+    }
     ui->frame_text_used += length + 1u;
     return out;
 }
@@ -576,6 +607,7 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
                              float max_width, int max_lines) {
     static const char ellipsis[] = "\xE2\x80\xA6";
     char out[2048]; /* a details box can carry a few install paths */
+    char shown[sizeof(out)];
     size_t length;
     size_t line_start = 0u;
     size_t cursor = 0u;
@@ -584,6 +616,12 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
     if (ui == NULL || text == NULL || style == NULL || max_lines < 1 ||
         !(max_width > 0.0f)) {
         return text != NULL ? text : "";
+    }
+    /* Measure the text as it will be drawn: a cut made before the display rules
+       ran could keep part of the profile folder they would have replaced. */
+    if (ui->display_text != NULL) {
+        (void)ui->display_text(text, shown, sizeof(shown));
+        text = shown;
     }
     length = strlen(text);
     if (length >= sizeof(out) - sizeof(ellipsis)) {
@@ -605,7 +643,7 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
     }
     if (cursor >= length && (line < max_lines ||
         nk_ui_measure_logical(ui, style, text + line_start, length - line_start) <= max_width)) {
-        return text;
+        return text == shown ? nk_ui_frame_text(ui, shown) : text;
     }
     /* Cut the last line back until it and the ellipsis fit. */
     used = cursor > line_start ? cursor : line_start;
@@ -802,15 +840,16 @@ static bool nk_ui_image_usable(const NkUiImage *image) {
 static NkUiPixelRect nk_ui_image_fit(const NkUiImage *image, float cx, float cy, float w,
                                      float h, bool cover) {
     NkUiPixelRect px;
-    float sx = w / (float)image->width;
-    float sy = h / (float)image->height;
-    float s = cover ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
-    float dw = (float)image->width * s;
-    float dh = (float)image->height * s;
-    px.x0 = (int)floorf(cx - dw * 0.5f + 0.5f);
-    px.y0 = (int)floorf(cy - dh * 0.5f + 0.5f);
-    px.x1 = px.x0 + (int)floorf(dw + 0.5f);
-    px.y1 = px.y0 + (int)floorf(dh + 0.5f);
+    float scale_x = w / (float)image->width;
+    float scale_y = h / (float)image->height;
+    float scale = cover ? (scale_x > scale_y ? scale_x : scale_y)
+                        : (scale_x < scale_y ? scale_x : scale_y);
+    float drawn_w = (float)image->width * scale;
+    float drawn_h = (float)image->height * scale;
+    px.x0 = (int)floorf(cx - drawn_w * 0.5f + 0.5f);
+    px.y0 = (int)floorf(cy - drawn_h * 0.5f + 0.5f);
+    px.x1 = px.x0 + (int)floorf(drawn_w + 0.5f);
+    px.y1 = px.y0 + (int)floorf(drawn_h + 0.5f);
     return px;
 }
 
@@ -821,15 +860,15 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
     NkUiPixelRect box = nk_ui_round_rect(rect, density);
     float cx = (float)(box.x0 + box.x1) * 0.5f;
     float cy = (float)(box.y0 + box.y1) * 0.5f;
-    float bw = (float)(box.x1 - box.x0);
-    float bh = (float)(box.y1 - box.y0);
-    if (bw <= 0.0f || bh <= 0.0f) {
+    float box_w = (float)(box.x1 - box.x0);
+    float box_h = (float)(box.y1 - box.y0);
+    if (box_w <= 0.0f || box_h <= 0.0f) {
         return true;
     }
     if (nk_ui_image_usable(art->cover)) {
         if (!nk_ui_draw_add_scissor(draw, true, box, id) ||
             !nk_ui_draw_add_image(draw, art->cover,
-                                  nk_ui_image_fit(art->cover, cx, cy, bw, bh, true),
+                                  nk_ui_image_fit(art->cover, cx, cy, box_w, box_h, true),
                                   0xFFFFFFFFu, id) ||
             !nk_ui_draw_add_scissor(draw, false, box, id)) {
             return false;
@@ -839,8 +878,8 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
         float scale = art->contain_scale > 0.0f && art->contain_scale <= 1.0f
             ? art->contain_scale : 1.0f;
         if (!nk_ui_draw_add_image(draw, art->contain,
-                                  nk_ui_image_fit(art->contain, cx, cy, bw * scale,
-                                                  bh * scale, false),
+                                  nk_ui_image_fit(art->contain, cx, cy, box_w * scale,
+                                                  box_h * scale, false),
                                   0xFFFFFFFFu, id)) {
             return false;
         }
@@ -853,20 +892,20 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
 static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
                                NkUiRect rect, float density, uint32_t id) {
     float scale;
-    float ox;
-    float oy;
+    float origin_x;
+    float origin_y;
     size_t i;
     if (rect.w <= 0.0f || rect.h <= 0.0f) {
         return true;
     }
     scale = rect.w / art->view_w < rect.h / art->view_h
         ? rect.w / art->view_w : rect.h / art->view_h;
-    ox = rect.x + (rect.w - art->view_w * scale) * 0.5f - art->view_x * scale;
-    oy = rect.y + (rect.h - art->view_h * scale) * 0.5f - art->view_y * scale;
+    origin_x = rect.x + (rect.w - art->view_w * scale) * 0.5f - art->view_x * scale;
+    origin_y = rect.y + (rect.h - art->view_h * scale) * 0.5f - art->view_y * scale;
     for (i = 0; i < art->count; ++i) {
         const NkUiShape *shape = &art->shapes[i];
         if (shape->kind == NK_UI_SHAPE_RECT) {
-            NkUiRect r = {ox + shape->v[0] * scale, oy + shape->v[1] * scale,
+            NkUiRect r = {origin_x + shape->v[0] * scale, origin_y + shape->v[1] * scale,
                           shape->v[2] * scale, shape->v[3] * scale};
             if (!nk_ui_draw_add_rect(draw, r, density, shape->radius * scale,
                                      shape->rgba, id)) {
@@ -875,13 +914,13 @@ static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
         } else if (shape->kind == NK_UI_SHAPE_CIRCLE) {
             float xy[64];
             unsigned k;
-            float cx = (ox + shape->v[0] * scale) * density;
-            float cy = (oy + shape->v[1] * scale) * density;
-            float r = shape->v[2] * scale * density;
+            float cx = (origin_x + shape->v[0] * scale) * density;
+            float cy = (origin_y + shape->v[1] * scale) * density;
+            float radius = shape->v[2] * scale * density;
             for (k = 0; k < 32u; ++k) {
-                float a = (float)k * 0.19634954084936207f; /* 2 pi / 32 */
-                xy[k * 2u] = cx + r * cosf(a);
-                xy[k * 2u + 1u] = cy + r * sinf(a);
+                float angle = (float)k * 0.19634954084936207f; /* 2 pi / 32 */
+                xy[k * 2u] = cx + radius * cosf(angle);
+                xy[k * 2u + 1u] = cy + radius * sinf(angle);
             }
             if (!nk_ui_draw_add_convex(draw, xy, 32u, shape->rgba, id)) {
                 return false;
@@ -891,8 +930,8 @@ static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
             float xy[NK_UI_SHAPE_MAX_POINTS * 2u];
             unsigned k;
             for (k = 0; k < shape->count; ++k) {
-                xy[k * 2u] = (ox + shape->v[k * 2u] * scale) * density;
-                xy[k * 2u + 1u] = (oy + shape->v[k * 2u + 1u] * scale) * density;
+                xy[k * 2u] = (origin_x + shape->v[k * 2u] * scale) * density;
+                xy[k * 2u + 1u] = (origin_y + shape->v[k * 2u + 1u] * scale) * density;
             }
             if (!nk_ui_draw_add_convex(draw, xy, shape->count, shape->rgba, id)) {
                 return false;

@@ -12,10 +12,12 @@ same sense as
 > [`tools/psp_readiness.py`](../tools/psp_readiness.py) cover the implemented subset. Read those
 > first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the readiness tool
 > — extend that tool rather than adding a second precondition checker.
-> What remains unbuilt here is the PSP-side v2 instruction-trace producer and capture path.
-> `verify_gates.py` can consume a supplied `PSP_HARDWARE` + `LOCAL_COSIM` pair, but the scalar
-> probe and this verifier change do not produce a real-PSP trace. The producer is in the works
-> as a later hardware slice under issue #312.
+> The PSP-side v2 instruction-trace producer now exists for source-owned microprograms: the
+> `insn-trace` probe (`PSP-TRACE-001`, `fixtures/psp_oracle/probe_insn_trace.c`) single-steps the
+> fixtures of `fixtures/psp_oracle/insn_trace_fixtures.h` on the PSP, and
+> `tools/psp_oracle/insn_trace.py` writes the `PSP_HARDWARE` and `LOCAL_COSIM` traces that
+> `verify_gates.py` and `tracediff.py --strict-hardware` compare (#312). The resident producer
+> for arbitrary code described below remains a proposal.
 
 ## GE raster pixel corpus (#343)
 
@@ -769,6 +771,125 @@ One console is one data point; see §11. Nothing here closes issue #70
     25 ms. The frame that fell inside it was delivered once, 132 to 143 us after the handler
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
+
+- **PSP-3000 single-case run of the `vfpu-forms` probe on commit `781ccd34` (2026-10-28)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `781ccd34` is the commit that adds the probe (case 108 in
+  `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 950 records and the done record, all PASS. Both passes in the launch returned the same words.
+  The row cites only the cells named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-28, `781ccd34`) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-FORMS-001` | `h2f-p0-*`, `uc2i-p0-*`, `socp-p0-*`, `wbn-p0-*`, `rndf1-p0-*`, `rndf2-p0-*`, `h2f-p1-*`, `uc2i-p1-*`, `socp-p1-*`, `wbn-p1-*`, `rndf1-p1-*`, `rndf2-p1-*`, `vfpu-forms-done` | Anything the words do not show: the probe compares no value, and PASS records only that the instruction ran | MEASURED (`vfpu-forms`) |
+
+  What the cells establish, for these exact words only (issue #326). Each cell loads the whole register file
+  (word i = `0x3F800000 | i << 16`), presets VFPU_CC to `0x15`, places the operands in C000, runs one word and
+  stores the register file again. No form wrote VFPU_CC or any register outside its destination.
+  - *`vh2f.s`/`vh2f.p` (half to float, double-width output).* Each source word gives two lanes, low half first.
+    A normal half converts exactly (`0x3C00` to `0x3F800000`, `0x7BFF` to `0x477FE000`, `0x0400` to
+    `0x38800000`). A half denormal becomes a zero of its sign (`0x0001`, `0x03FF` to `0x00000000`, `0x83FF` to
+    `0x80000000`). Exponent 31 keeps the 10-bit payload in the low mantissa bits: `0x7C00` to `0x7F800000`,
+    `0x7C01` to `0x7F800001`, `0x7E00` to `0x7F800200`, `0x7FFF` to `0x7F8003FF`, `0xFE00` to `0xFF800200`.
+    The in-place `vh2f.p C000, C000` gave the same words as the disjoint form.
+  - *`vuc2i.s`.* Byte i of the source word (low first) becomes lane i = `(b * 0x01010101) >> 1`
+    (`0x80402010` to `0x08080808 0x10101010 0x20202020 0x40404040`; `0xFF` to `0x7FFFFFFF`).
+  - *`vsocp.s`/`vsocp.p`.* Each operand x gives the lanes (sat0(1 - x), sat0(x)), sat0 clamping to [0, 1] with
+    +0 at or below zero: 0.25 to (0.75, 0.25), 1.5 and +inf to (0, 1), -0, -0.5 and -inf to (1, +0),
+    `0x3F7FFFFF` to (`0x33800000`, `0x3F7FFFFF`), `0xB3800000` (-2^-24) to (1, 0). A denormal operand counts as
+    a zero of its sign, and every NaN operand (quiet, signalling or negative) writes `0x7F800001` to both lanes.
+  - *`vwbn.s` at exponents `0x00`, `0x01`, `0x7E`, `0x7F`, `0x80`, `0x96`, `0xFE` and `0xFF`.* An operand whose
+    exponent field is `0xFF` is returned unchanged. Otherwise, with x_exp the operand's exponent field and e the
+    immediate, the significand (implicit bit included for a normal; the raw mantissa for a zero or denormal)
+    shifts left by (x_exp - e) & 15 when x_exp > e, right by (e - x_exp) & 15 when 0 < x_exp < e, and not at all
+    otherwise; its low 23 bits become the mantissa of a word with the operand's sign and exponent e. At e =
+    `0x7F`: 0 to `0x3F800000`, 3.0 to `0x3F800000`, 5.5 to `0x3FC00000`, 0.75 to `0x3FE00000`, 1e10
+    (`0x501502F9`) to `0x3FAA05F2` (shift 33 & 15 = 1), the largest normal to `0x3FFF8000` (shift 127 & 15 = 15),
+    the smallest normal to `0x3F800200`, denormal `0x00400000` to `0x3FC00000`, -3.25 to `0xBFA00000`. This rule
+    reproduces all 448 no-prefix words.
+  - *`vrndf1.s`/`vrndf2.s`.* One draw takes exactly the `vrndi.s` step of `PSP-HLE-ISSUES-001` (RCX0-7 after the
+    draw matched it in all 68 cells) and returns `0x3F800000` (vrndf1) or `0x40000000` (vrndf2) OR'd with the low
+    23 bits of the word `vrndi.s` would return. From the thread-entry RCX the first draws are `0x3F894E24` and
+    `0x40094E24`. C000 lanes 1-3 kept their values.
+
+  Prefix cells, recorded but not implemented: under a negate-all S prefix `vh2f`, `vuc2i` and `vwbn` flipped the
+  raw sign bit of each source word, NaN words included. Under the `wzyx` swizzle with lanes 0 and 2 negated,
+  `vh2f` read +0 (then negated) for a lane outside the width, while `vuc2i` kept the source word and applied only
+  the negation. `vsocp` ignored both S prefixes. The generated code and `sr_vfpu_interp` implement these forms
+  under identity S, T and D prefixes only (`sr_vfpu_h2f`, `sr_vfpu_uc2i`, `sr_vfpu_socp`, `sr_vfpu_wbn` and
+  `sr_vfpu_rndf_step` in `src/rt/recomp.h`), at the measured widths `vh2f.s/.p`, `vuc2i.s`, `vsocp.s/.p`,
+  `vwbn.s` and `vrndf1.s/vrndf2.s`. Before this entry both lanes refused every one of them.
+  `check_vfpu_forms_measured` in `src/rt/vfpu_interp_selftest.c` pins every no-prefix word above in both lanes.
+  `vwbn.s` applies the rule at every exponent; only the eight listed have cells. Unmeasured, and failing closed in
+  both lanes: a pending prefix (the T and D prefixes were never set), the other widths, `vf2h`, `vrnds`, and
+  `vc2i`/`vus2i`.
+
+- **PSP-3000 single-case run of the `ge-sample` probe on commit `86e55611` (2026-10-28)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `86e55611` is the commit that adds the probe (case 109 in
+  `fixtures/psp_oracle/probe_ge_sample.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 816 records and the done record (out0 816), all PASS; every one of the 48 draws reached GE
+  idle within 0.5 ms. The row cites only the cells named in it. The raw envelope and host0 log stay in the
+  private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-28, `86e55611`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-SAMPLE-001` | `tri-*`, `spr-*`, `ge-sample-done` | The framebuffer alpha byte (0 in every drawn pixel; the CPU clear was also 0, so keep and write-zero are not told apart), the wait timings, and any other texture format, swizzle, CLUT, wrap mode, mip level or non-through draw | MEASURED (`ge-sample`) |
+
+  What the cells establish, for these exact draws only (issue #282). Each draw is one through-mode display list
+  (vertex type bit 23) into a 64x32 8888 framebuffer, texture function REPLACE/RGBA, clamp in u and v, no
+  blending or per-fragment test, sampling a 32x32 8888 texture whose texel (u, v) is R = 8u, G = 8v and B = 0xff
+  on odd columns (texture `u`) or odd rows (texture `v`), so a pixel's R, G and B give its texel and blend weight.
+  A triangle pair (TL TR BL, BL TR BR) and a sprite (TL, BR) over the same rectangle gave the same pixels in every
+  mapping except the two triangle 20-to-12 cells noted below. Float and 16-bit vertex words gave the same pixels.
+  - *Coverage.* Every draw covered exactly the pixels x0 <= x < x1, y0 <= y < y1 of its integer rectangle.
+  - *Sample point.* Each pixel samples the texture coordinate interpolated at its centre (x + 0.5, y + 0.5);
+    with s that coordinate in texels, texel i covers [i, i + 1), so its centre is at i + 0.5. Nearest
+    (`TEXFILTER` 0x000) returns texel floor(s). Bilinear (0x101) takes taps floor(s - 0.5) and floor(s - 0.5) + 1
+    with the weight of the second tap equal to frac(s - 0.5) truncated to 1/16; each channel is the 16x16-weighted
+    sum divided by 256, truncated (weight 5/16 of 0 and 0xff gives 79, 15/16 gives 239).
+  - *1:1, integer origin* (`*-1to1-*`, `*-s16-*`: 8x8 pixels at x, y 4..12 to texels 8..16). Pixel x shows texel
+    8 + (x - 4) under both filters, with no blend: bilinear at an integer origin is exact, and the last row and
+    column take nothing from texel 16.
+  - *1:1, +0.5 origin* (`*-half-*`: texels 8.5..16.5). Nearest shows texel 9 + (x - 4); bilinear blends texels
+    8 + (x - 4) and 9 + (x - 4) at 8/16 each.
+  - *2x magnification* (`*-mag2-*`: 8 pixels to texels 8..12). Nearest shows texels 8 8 9 9 10 10 11 11. Bilinear
+    takes s - 0.5 = 7.75, 8.25, 8.75, 9.25 and so on: the first pixel blends texel 7 at 4/16 and texel 8 at 12/16,
+    the second texel 8 at 12/16 and texel 9 at 4/16.
+  - *20-to-12 horizontal, 14-to-14 vertical* (`*-min20-*`, `*-s16min-*`: x 4..16 to u 6..26, y 4..18 to v 8..22,
+    the glyph mapping). Nearest shows columns 6 8 10 11 13 15 16 18 20 21 23 25 and rows 8..21. Bilinear follows
+    the same rule, with one addition: where the exact s - 0.5 lands on a 1/16 step, the PSP's own interpolation
+    can land just below it, so the truncated weight is one step lower. In the sprite this happens in u and v
+    alike: each row takes 1/16 of the row above it (the first row 1/16 of texel row 7). In the triangle pair it
+    happens in u in both triangles and in v only in the first triangle (TL TR BL); the second triangle's rows are
+    exact. This rule reproduces every pixel of all 48 draws.
+
+- **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
+  `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`
+  preflight (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0 blockers:
+  evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence of 136 records and the done record, all PASS. An earlier launch of `3edde7f2` traced the same
+  steps but its step records were cut to 34 of 35 words by the record writer, so it is not cited. The raw
+  log and traces stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `84568280`) |
+  | --- | --- | --- | --- |
+  | `PSP-TRACE-001` | `alu-branch-ls-*`, `delay-slots-*` | `insn-trace-done`; any instruction form, register or memory outside the two fixtures | MEASURED (`insn-trace`) |
+
+  What the run establishes (issue #312). The probe executed each fixture one instruction at a time on the
+  Allegrex: conditional branches were decided by the CPU, the link value (pc + 8) and the j/jal/jr targets
+  follow the architecture's definition in the probe, and every delay slot ran as its own step except the
+  annulled delay slot of a not-taken `beql`. `tools/psp_oracle/insn_trace.py` turned the log into v2
+  `PSP_HARDWARE` traces: `alu-branch-ls` 105 records (SHA-256 of the step records
+  `6d0acdf1a49be864ffe909991c302d534d8f75b7fa588da3a50d6ff2fd85654c`) and `delay-slots` 27 records
+  (`4b70f42c94fc8460efd0f81295fdbe9b9c680ae67d59a47a7ff587a2fecbfbec`). Nakagawa's `LOCAL_COSIM` traces of
+  the same words at the same commit agree with both under `strict_hardware_diff` (`STRICT_V2_AGREEMENT`, also
+  through `verify_gates.run_hardware_trace_gate`), and `tools/test_insn_trace.py` pins the two digests. A
+  codegen mutation that emits the fixture's `xor` as `or` is reported at step 13, pc `0x08900034`, the first
+  `xor`, with its differing `r16` write.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
@@ -2527,6 +2648,10 @@ not expected PSP values.
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
 | `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
+| `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
+| `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
+| `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
+| `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 
@@ -2870,8 +2995,8 @@ The legacy v1 trace header is:
 
 Strict v2 adds the `source_tier` field (`PSP_HARDWARE`, `LOCAL_COSIM`, or
 `PPSSPP_CORROBORATIVE`) and the identity fields described in
-[`TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md). The producer that emits
-`PSP_HARDWARE` traces on the PSP is in the works as a later hardware slice under issue #312.
+[`TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md). The `insn-trace` probe emits `PSP_HARDWARE` traces of
+the source-owned microprograms (#312, `PSP-TRACE-001` above); arbitrary code is not traced.
 
 ## 3. Architecture: a resident runner, not per-test rebuilds
 

@@ -1750,6 +1750,74 @@ _register_campaign_probe(
     },
 )
 
+# vfpu-forms (108, probe_hle_issues.c): the #326 VFPU form words, two passes. Every row is
+# emitted on every run, so the stream is fixed-shape: vh2f.s over 12 half pairs and vh2f.p
+# over 6 (each under no S prefix and the two TN_PFX forms) plus the in-place vh2f.p, vuc2i.s
+# over 10 byte words, vsocp.s over 22 operands and vsocp.p over 11 pairs, vwbn.s over 28
+# operands at eight exponents and once more at 0x7f under P1, and 17 vrndf1.s/vrndf2.s draws.
+VFPU_FORMS_PREFIXES = ("none", "p1", "p2")
+VFPU_FORMS_WBN_FORMS = ("00", "01", "7e", "7f", "80", "96", "fe", "ff", "7f-p1")
+VFPU_FORMS_GRID = {"h2f-s": 12, "h2f-p": 6, "uc2i": 10, "socp-s": 22, "socp-p": 11,
+                   "wbn": 28, "rndf": 17}
+VFPU_FORMS_PASSES = 2
+
+
+def _vfpu_forms_pass_cases(p: int) -> tuple[str, ...]:
+    g, pf = VFPU_FORMS_GRID, VFPU_FORMS_PREFIXES
+    h2f = tuple(f"h2f-p{p}-s-{i}-{x}" for i in range(g["h2f-s"]) for x in pf)
+    h2f += tuple(case for i in range(g["h2f-p"])
+                 for case in (*(f"h2f-p{p}-p-{i}-{x}" for x in pf), f"h2f-p{p}-alias-{i}"))
+    uc2i = tuple(f"uc2i-p{p}-{i}-{x}" for i in range(g["uc2i"]) for x in pf)
+    socp = tuple(f"socp-p{p}-s-{i}-{x}" for i in range(g["socp-s"]) for x in pf)
+    socp += tuple(f"socp-p{p}-p-{i}-{x}" for i in range(g["socp-p"]) for x in pf)
+    wbn = tuple(f"wbn-p{p}-{form}-{i}" for form in VFPU_FORMS_WBN_FORMS for i in range(g["wbn"]))
+    rndf = tuple(f"rndf{n}-p{p}-{k}" for n in (1, 2) for k in range(g["rndf"]))
+    return h2f + uc2i + socp + wbn + rndf
+
+
+VFPU_FORMS_CASES = tuple(case for p in range(VFPU_FORMS_PASSES)
+                         for case in _vfpu_forms_pass_cases(p))
+_register_campaign_probe(
+    "vfpu-forms", "PSP-VFPU-FORMS-001", VFPU_FORMS_CASES,
+    {case: (17 if case.startswith("rndf") else 13) for case in VFPU_FORMS_CASES},
+)
+
+# ge-sample (109, probe_ge_sample.c): the #282 GE texture sample-point cells. Every draw is
+# emitted on every run, so the stream is fixed-shape: per mapping, primitive (triangle pair
+# or sprite), filter and texture, one `-draw` record (the GE wait outcome, 7 words) and one
+# record per read-back row y 3..18 (16 raw 8888 pixels, x 3..18).
+GE_SAMPLE_MAPS = ("1to1", "half", "mag2", "min20", "s16", "s16min")
+GE_SAMPLE_PRIMS = ("tri", "spr")
+GE_SAMPLE_FILTERS = ("near", "lin")
+GE_SAMPLE_TEXTURES = ("u", "v")
+GE_SAMPLE_ROWS = tuple(range(3, 19))
+GE_SAMPLE_DRAWS = tuple(f"{prim}-{filt}-{m}-{tex}" for m in GE_SAMPLE_MAPS
+                        for prim in GE_SAMPLE_PRIMS for filt in GE_SAMPLE_FILTERS
+                        for tex in GE_SAMPLE_TEXTURES)
+GE_SAMPLE_CASES = tuple(case for draw in GE_SAMPLE_DRAWS
+                        for case in (f"{draw}-draw", *(f"{draw}-r{y:02d}" for y in GE_SAMPLE_ROWS)))
+_register_campaign_probe(
+    "ge-sample", "PSP-GE-SAMPLE-001", GE_SAMPLE_CASES,
+    {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
+)
+
+# insn-trace (119, probe_insn_trace.c): the #312 real-PSP instruction trace. Per fixture of
+# fixtures/psp_oracle/insn_trace_fixtures.h, an `<id>-init` record (34 words), one
+# `<id>-sNNNN` record per executed instruction (34 words: pc, op, r1..r25, r29..r31, hi,
+# lo and the store's address and value) and an `<id>-end` record (4 words). The step counts are those of the
+# fixtures' architectural execution, which Nakagawa's trace of the same words reproduces
+# (tools/test_insn_trace.py checks both against this table).
+INSN_TRACE_STEPS = (("alu-branch-ls", 105), ("delay-slots", 27))
+INSN_TRACE_CASES = tuple(
+    case for fixture, steps in INSN_TRACE_STEPS
+    for case in (f"{fixture}-init", *(f"{fixture}-s{step:04d}" for step in range(steps)),
+                 f"{fixture}-end"))
+_register_campaign_probe(
+    "insn-trace", "PSP-TRACE-001", INSN_TRACE_CASES,
+    {case: (34 if case.endswith("-init") else 4 if case.endswith("-end") else 34)
+     for case in INSN_TRACE_CASES},
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",
@@ -1968,7 +2036,7 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.
-HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch"})
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (

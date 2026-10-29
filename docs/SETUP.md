@@ -21,7 +21,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, the player decrypts it
+7. **Your own copy of the game** as an `.iso`, or as a compressed `.cso`, `.zso` or `.chd`
+   ([Compressed disc images](#compressed-disc-images)). If its executable is encrypted, the player decrypts it
    locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
@@ -385,6 +386,28 @@ The results are `KEY_REQUIRED` (a tag the built-in tables don't carry), `MALFORM
 
 A PSN release of a UMD game (an `EBOOT.PBP` whose `DATA.PSAR` is an NPUMDIMG disc image) is picked like a disc. The player converts it once, on a background worker with progress and cancel, into `<user data>/discs/<DISC_ID>/<DISC_ID>.iso`: the image is written beside that name, checked (an ISO9660 volume descriptor and a `PARAM.SFO` `DISC_ID` equal to the package's), then renamed into place, and it is then added exactly as a picked ISO. A cancelled or failed conversion removes the partial file. `--iso=<EBOOT.PBP>` converts the same way before inspection, and `nk_decrypt npumdimg --in EBOOT.PBP --out game.iso` runs the conversion from the command line. A PSOne Classic stops as `PSONE_CLASSIC_UNSUPPORTED` and an updater as `FIRMWARE_OUT_OF_SCOPE` before any key is read; DRM bound to the console that bought the game stops as `CONTEXT_REQUIRED` and is never run with a default. Other PSN (NPDRM) packages and PGD-protected data are not decrypted yet.
 
+### Compressed disc images
+
+The player also takes a compressed disc image: a `.cso` (CISO, versions 1 and 2), a `.zso` (ZISO) or a `.chd`
+made with `chdman createdvd`. It expands the image once, when you add it, into a plain `.iso` at
+`<user data>/discs/<DISC_ID>/<DISC_ID>.<cso|zso|chd>.iso`, and every later step reads that `.iso` exactly as it
+reads one you added yourself. This needs free space for the whole `.iso` (up to 1.8 GB for a UMD) beside the
+compressed file, which you can keep or move. The expansion runs on a background worker with progress and cancel;
+it is written beside its final name, its size is checked, and then it is renamed into place, so a cancelled or
+failed expansion leaves nothing behind. Adding the same unchanged file again reuses the expansion. The library
+keeps the expanded `.iso` for the build and shows the file you picked.
+
+A file it can't use stops with a named result: `DISC_IMAGE_TRUNCATED`, `DISC_IMAGE_HEADER_INVALID`,
+`DISC_IMAGE_VERSION_UNSUPPORTED`, `DISC_IMAGE_SIZE_INVALID`, `DISC_IMAGE_INDEX_INVALID` or
+`DISC_IMAGE_BLOCK_CORRUPT` for a damaged or unknown header or block, `DISC_IMAGE_WRITE_FAILED` when the `.iso`
+can't be written (often a full drive), and `DISC_NOT_PSP` when the image holds no PSP game. A CHD made as a CD
+image (`chdman createcd`) stops as `DISC_IMAGE_CHD_CD_UNSUPPORTED`: make it again from the `.iso` with
+`chdman createdvd`. A hard-disk, laserdisc or parent-linked CHD stops as `DISC_IMAGE_CHD_UNSUPPORTED`. CHD is
+read with the vendored libchdr ([`third_party/libchdr/`](../third_party/libchdr/PROVENANCE.md)); CSO and ZSO
+are read by the project's own code in `src/core/nk_disc_expand.c`. `python tools/nk_cli.py bringup` and
+`tools/nk_core/iso_inspect.py` take the same files and expand them through the same C code, with the
+`nk_disc_expand` tool that `tools/nk_core/disc_expand_tool.py` builds.
+
 ### User title manifests (`<user data>/manifests`)
 
 For titles requiring a title manifest overlay, place the manifest JSON files in:
@@ -475,7 +498,7 @@ The per-user data directory is the one font root. The import, the status and the
 To verify that system fonts are in place:
 
 1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
-2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check. Whenever a font is not your own import, the check's sentence in the player says which fonts in plain words (for example "the Japanese font, 10 of the 16 Latin fonts and the Korean font"), says that games asking for them get a stand-in font that looks different, or no font where nothing stands in, and points to the setup wizard; the check's message in the log keeps the exact file for every font ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
+2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to your own imported font for that exact index. It is `SYNTHETIC` (the player shows **Synthetic**, in amber) when every index resolves but at least one is a stand-in: a project font, another imported size or a legacy import ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)). Games still start; the text that uses a stand-in looks different. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check. Whenever a font is not your own import, the check's sentence in the player says which fonts in plain words (for example "the Japanese font, 10 of the 16 Latin fonts and the Korean font"), says that games asking for them get a stand-in font that looks different, or no font where nothing stands in, and points to Settings, PSP fonts; the check's message in the log keeps the exact file for every font ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
 3. **Player settings:** **Settings > PSP FONTS** shows the Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that page.
 
 ## 3. Build
@@ -634,6 +657,9 @@ scheduling jitter, while a second submission inside the same slot is still dropp
 long-run present rate never exceeds the cap (`gui-present-selftest`).
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
+On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,
+and everything is written when the game exits, aborts or writes a crash report. A process killed from
+outside, such as by the player's Stop or Task Manager, can lose its last 50 ms of output.
 
 Keyboard controls mirror a PSP layout: `X` = Cross/confirm, `Z` = Circle/back, `A` = Square,
 `S` = Triangle, `Q`/`W` = L/R, Enter = Start, Shift = Select, and arrow keys = D-pad.
@@ -766,21 +792,39 @@ then from `PATH`; without it the built-in readable debug font is used. Placing
 ### Network use
 
 Nakagawa works offline. The player and the runtime make no network connection unless you
-agree to one, and the game itself never reaches the network. Today there is exactly one
-connection, listed below; any future online feature will be opt-in and added here first.
+agree to one, and the game itself never reaches the network. Today there are two
+connections, listed below; any future online feature will be opt-in and added here first.
 
 | What | Host | When | Controlled by |
 | --- | --- | --- | --- |
 | Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
+| Check for updates | `api.github.com` (HTTPS) | When you select **CHECK FOR UPDATES** (Settings > Updates), or once at start if you turn on **Check at start** (off by default) | That button, and that switch |
+| Update download | `github.com`, which redirects to `release-assets.githubusercontent.com` (HTTPS) | Only after a check finds a newer version and you select **DOWNLOAD** | That button, per download |
 
 A release folder that carries a verified `prereqs/` tree never makes the build-tool
 download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
-There is no update check, telemetry or crash upload. The `network_mode` entry in
+The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
+`Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
+`NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
+Updates page then shows this version, the newest one (pre-releases count), the release page link and the
+first lines of its notes. **DOWNLOAD** keeps that release's Windows ZIP in the `downloads` folder of
+Nakagawa's data folder (`%LOCALAPPDATA%\Nakagawa\data\downloads`) only if its SHA-256 matches the
+release's published `.sha256` file, and GitHub's own checksum of the ZIP when GitHub lists one; on any
+mismatch the file is deleted. **INSTALL** is a separate click: it unpacks the checked ZIP into a new folder
+beside the running version (or in the downloads folder when Nakagawa doesn't run from a release folder) and
+tells you to start the new `bin\nakagawa_player.exe` yourself. It never replaces the running version.
+Your library, saves and settings stay in Nakagawa's data folders, outside the install folder, so the new
+version finds them. There are no retries and no background checks: a failure shows one "Couldn't Reach
+GitHub" card, and a failed check at start stays in the developer log. The release ZIP has no
+build-provenance attestation of its own yet, so the download is checked against the published checksum
+only.
+
+There is no telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
 offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
-prerequisite downloaders uses a network API, or if a pinned download names a host not listed
-in this section.
+prerequisite downloaders uses a network API, if a pinned download or the update check names a host not
+listed in this section, or if new code calls the native download transport.
 
 Release packaging is a maintainer step, not part of the player:
 `python -m tools.nk_core.prereq_fetcher` with `--bundle-dest` or `--source-archive` downloads

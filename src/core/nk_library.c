@@ -64,7 +64,6 @@ const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
     if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
 
-    /* Check if already exists */
     for (int i = 0; i < lib->count; i++) {
         if (strcmp(lib->entries[i].disc_id, entry->disc_id) == 0) {
             lib->entries[i] = *entry;
@@ -72,7 +71,6 @@ NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
         }
     }
 
-    /* Add new */
     if (lib->count >= NK_MAX_GAMES) {
         return NK_ERROR_OUT_OF_MEMORY;
     }
@@ -103,8 +101,8 @@ NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
  * to fit a buffer: a field of quotes or control characters is written whole. */
 static void write_json_string_field(FILE *f, const char *key, const char *src) {
     fprintf(f, "      \"%s\": \"", key);
-    for (size_t s = 0; src && src[s]; s++) {
-        unsigned char c = (unsigned char)src[s];
+    for (size_t i = 0; src && src[i]; i++) {
+        unsigned char c = (unsigned char)src[i];
         if (c == '\"' || c == '\\') {
             fputc('\\', f);
             fputc((int)c, f);
@@ -166,6 +164,9 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         write_json_string_field(f, "title_name", g->title_name);
         write_json_string_field(f, "disc_version", g->disc_version);
         write_json_string_field(f, "iso_path", g->iso_path);
+        if (g->source_image_path[0]) {
+            write_json_string_field(f, "source_image_path", g->source_image_path);
+        }
         write_json_string_field(f, "prepared_root", g->prepared_root);
         write_json_string_field(f, "title_id", g->title_id);
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
@@ -219,7 +220,7 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
 #endif
     fclose(f);
 
-    /* Atomic rename / replace with .bak backup preservation */
+    /* Promote the temp file over the target, keeping the previous file as .bak. */
     char bak_path[NK_MAX_PATH + 8];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
 
@@ -249,16 +250,16 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     }
 #else
     if (nk_platform_file_exists(target)) {
-        /* Copy through a temporary file and promote only after a complete,
-           verified copy. Opening bak_path directly truncated the previous
-           backup before a single byte was written, and short writes, read
-           errors and the close result were all discarded -- so one I/O error
-           destroyed the last recovery image while this function still returned
-           NK_OK, and a later corruption of the primary had nothing to fall back
-           to. A failed copy now leaves the existing backup exactly as it was. */
+        /* Copy through a temporary file and promote it only after a complete,
+           verified copy. Opening bak_path directly would truncate the previous
+           backup before a single byte was written, and a short write, read error
+           or failed close would destroy the last recovery image while this
+           function still returned NK_OK, leaving nothing to fall back to if the
+           primary is later corrupted. A failed copy leaves the existing backup
+           exactly as it was. */
         char bak_tmp[NK_MAX_PATH + 16];
-        int bw = snprintf(bak_tmp, sizeof(bak_tmp), "%s.new", bak_path);
-        if (bw > 0 && (size_t)bw < sizeof(bak_tmp)) {
+        int bak_tmp_len = snprintf(bak_tmp, sizeof(bak_tmp), "%s.new", bak_path);
+        if (bak_tmp_len > 0 && (size_t)bak_tmp_len < sizeof(bak_tmp)) {
             FILE *src = fopen(target, "rb");
             if (src) {
                 FILE *dst = fopen(bak_tmp, "wb");
@@ -296,7 +297,8 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     return NK_OK;
 }
 
-/* Minimal JSON key-value extraction helper */
+/* library.json is read by scanning the fixed layout nk_library_save writes, not
+ * through an nk_json tree; these are its scanner helpers. */
 static const char *skip_whitespace(const char *p) {
     if (!p) return NULL;
     while (*p && isspace((unsigned char)*p)) p++;
@@ -361,6 +363,20 @@ static const char *parse_string_val(const char *p, char *out_val, size_t max_len
     return p;
 }
 
+/* Reads the literal `true` or `false` at p. Returns the text after it, or NULL
+ * when neither is there. */
+static const char *parse_bool_val(const char *p, bool *out_value) {
+    if (strncmp(p, "true", 4) == 0) {
+        *out_value = true;
+        return p + 4;
+    }
+    if (strncmp(p, "false", 5) == 0) {
+        *out_value = false;
+        return p + 5;
+    }
+    return NULL;
+}
+
 static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     if (!lib || !target) return NK_ERROR_GENERIC;
 
@@ -373,45 +389,44 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     if (!f) return NK_ERROR_IO;
 
     fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
+    long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (sz <= 0 || sz > 4 * 1024 * 1024) {
+    if (file_size <= 0 || file_size > NK_LIBRARY_MAX_BYTES) {
         fclose(f);
         return NK_ERROR_IO;
     }
 
-    char *buf = (char *)malloc((size_t)sz + 1);
+    char *buf = (char *)malloc((size_t)file_size + 1);
     if (!buf) {
         fclose(f);
         return NK_ERROR_OUT_OF_MEMORY;
     }
 
-    size_t read_bytes = fread(buf, 1, (size_t)sz, f);
+    size_t read_bytes = fread(buf, 1, (size_t)file_size, f);
     fclose(f);
     buf[read_bytes] = '\0';
 
-    /* Verify schema version (mandatory) */
-    const char *sv = strstr(buf, "\"schema_version\"");
-    if (!sv) {
+    /* The schema version is mandatory; an unknown one is refused, not guessed at. */
+    const char *schema_pos = strstr(buf, "\"schema_version\"");
+    if (!schema_pos) {
         free(buf);
         return NK_ERROR_GENERIC;
     }
-    sv = strchr(sv, ':');
-    if (!sv) {
+    schema_pos = strchr(schema_pos, ':');
+    if (!schema_pos) {
         free(buf);
         return NK_ERROR_GENERIC;
     }
-    sv = skip_whitespace(sv + 1);
-    char *sv_end = NULL;
-    long version = strtol(sv, &sv_end, 10);
-    if (sv_end == sv || version != 1) {
+    schema_pos = skip_whitespace(schema_pos + 1);
+    char *schema_end = NULL;
+    long version = strtol(schema_pos, &schema_end, 10);
+    if (schema_end == schema_pos || version != 1) {
         /* Unsupported or malformed schema version: fail closed */
         free(buf);
         return NK_ERROR_GENERIC;
     }
 
-    /* Parse games array */
     const char *p = strstr(buf, "\"games\"");
     if (!p) {
         free(buf);
@@ -469,6 +484,11 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     next_p = parse_string_val(p, entry.iso_path, sizeof(entry.iso_path));
                     if (!next_p) { entry_failed = true; break; }
                     p = next_p;
+                } else if (strcmp(key, "source_image_path") == 0) {
+                    next_p = parse_string_val(p, entry.source_image_path,
+                                              sizeof(entry.source_image_path));
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
                 } else if (strcmp(key, "prepared_root") == 0) {
                     next_p = parse_string_val(p, entry.prepared_root, sizeof(entry.prepared_root));
                     if (!next_p) { entry_failed = true; break; }
@@ -511,45 +531,24 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     if (endptr == p) { entry_failed = true; break; }
                     p = endptr;
                 } else if (strcmp(key, "is_prepared") == 0) {
-                    if (strncmp(p, "true", 4) == 0) {
-                        entry.is_prepared = true;
-                        p += 4;
-                    } else if (strncmp(p, "false", 5) == 0) {
-                        entry.is_prepared = false;
-                        p += 5;
-                    } else {
-                        entry_failed = true;
-                        break;
-                    }
+                    next_p = parse_bool_val(p, &entry.is_prepared);
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
                 } else if (strcmp(key, "is_experimental") == 0 ||
                            strcmp(key, "executable_boot_fallback") == 0) {
                     bool value;
-                    if (strncmp(p, "true", 4) == 0) {
-                        value = true;
-                        p += 4;
-                    } else if (strncmp(p, "false", 5) == 0) {
-                        value = false;
-                        p += 5;
-                    } else {
-                        entry_failed = true;
-                        break;
-                    }
+                    next_p = parse_bool_val(p, &value);
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
                     if (strcmp(key, "is_experimental") == 0) {
                         entry.is_experimental = value;
                     } else {
                         entry.executable_boot_fallback = value;
                     }
                 } else if (strcmp(key, "assets_staged") == 0) {
-                    if (strncmp(p, "true", 4) == 0) {
-                        entry.assets_staged = true;
-                        p += 4;
-                    } else if (strncmp(p, "false", 5) == 0) {
-                        entry.assets_staged = false;
-                        p += 5;
-                    } else {
-                        entry_failed = true;
-                        break;
-                    }
+                    next_p = parse_bool_val(p, &entry.assets_staged);
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
                 } else if (strcmp(key, "extracted_asset_count") == 0 ||
                            strcmp(key, "extracted_audio_count") == 0 ||
                            strcmp(key, "extracted_visual_count") == 0 ||
@@ -602,10 +601,10 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
 
         if (entry_failed) {
             /* A malformed member invalidates the WHOLE file, not just this
-               entry. Scanning to the closing brace and continuing returned
-               NK_OK with the game silently dropped, so nk_library_load never
-               reached its .bak recovery and the next save made the loss
-               permanent. Fail closed so the backup path actually runs. */
+               entry. Skipping to the closing brace and continuing would return
+               NK_OK with the game silently dropped, so nk_library_load would
+               never reach its .bak recovery and the next save would make the
+               loss permanent. Fail closed so the backup path runs. */
             free(buf);
             return NK_ERROR_GENERIC;
         }

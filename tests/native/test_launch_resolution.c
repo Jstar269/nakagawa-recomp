@@ -28,6 +28,7 @@
 #include "nk_title_manifest.h"
 #include "nk_types.h"
 #include "native_test_isolation.h"
+#include "recomp.h"   /* the runtime's SR_LAUNCHER_DISPLAY_BOUNDS reader */
 
 /* The per-run root setup and its recursive cleanup run inside assert(); keep
  * them even in a build that defines NDEBUG (#735). */
@@ -149,6 +150,7 @@ static int write_launch_environment_probe(void) {
     const char *scale = getenv("SR_RESOLUTION_SCALE");
     const char *present_scaling = getenv("SR_PRESENT_SCALING");
     const char *fullscreen = getenv("SR_FULLSCREEN");
+    const char *launcher_display = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
     const char *volume = getenv("SR_MASTER_VOLUME");
     const char *input_profile = getenv("NK_INPUT_PROFILE");
     const char *novbpace = getenv("SR_NOVBPACE");
@@ -158,6 +160,8 @@ static int write_launch_environment_probe(void) {
     const char *disc_id = getenv("SR_DISC_ID");
     const char *ui_root = getenv("SR_UI_ROOT");
     const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
+    const char *developer_mode = getenv("SR_DEVELOPER_MODE");
+    const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -166,6 +170,7 @@ static int write_launch_environment_probe(void) {
                      "SR_RESOLUTION_SCALE=%s\n"
                      "SR_PRESENT_SCALING=%s\n"
                      "SR_FULLSCREEN=%s\n"
+                     "SR_LAUNCHER_DISPLAY_BOUNDS=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
                      "NK_INPUT_PROFILE=%s\n"
                      "SR_NOVBPACE=%s\n"
@@ -174,7 +179,9 @@ static int write_launch_environment_probe(void) {
                      "SR_GAME_TITLE=%s\n"
                      "SR_DISC_ID=%s\n"
                      "SR_UI_ROOT=%s\n"
-                     "SR_EXPERIMENTAL_60HZ=%s\n",
+                     "SR_EXPERIMENTAL_60HZ=%s\n"
+                     "SR_DEVELOPER_MODE=%s\n"
+                     "SR_HOST_TIME_ZONE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -182,6 +189,7 @@ static int write_launch_environment_probe(void) {
                      scale ? scale : "<unset>",
                      present_scaling ? present_scaling : "<unset>",
                      fullscreen ? fullscreen : "<unset>",
+                     launcher_display ? launcher_display : "<unset>",
                      volume ? volume : "<unset>",
                      input_profile ? input_profile : "<unset>",
                      novbpace ? novbpace : "<unset>",
@@ -190,7 +198,9 @@ static int write_launch_environment_probe(void) {
                      game_title ? game_title : "<unset>",
                      disc_id ? disc_id : "<unset>",
                      ui_root ? ui_root : "<unset>",
-                     experimental_60hz ? experimental_60hz : "<unset>") >= 0;
+                     experimental_60hz ? experimental_60hz : "<unset>",
+                     developer_mode ? developer_mode : "<unset>",
+                     host_time_zone ? host_time_zone : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -283,6 +293,24 @@ static void test_no_iso_child_environment(const char *test_executable,
     snprintf(custom_user_root, sizeof(custom_user_root), "%s%cuser_data_override", root, sep);
     assert(nk_platform_mkdir_p(custom_user_root));
     assert(nk_platform_set_app_data_dir_override(custom_user_root));
+    {
+        /* Every per-user folder follows the override: the data folder is the root itself and
+           settings, cache, logs and saves are folders in it, so a player opened on another root
+           reads and writes nothing of the default profile. */
+        static const struct { NkPathType type; const char *leaf; } folders[] = {
+            {NK_PATH_CONFIG, "config"}, {NK_PATH_CACHE, "cache"},
+            {NK_PATH_LOGS, "logs"}, {NK_PATH_SAVES, "saves"},
+        };
+        char resolved[NK_MAX_PATH];
+        char expected[NK_MAX_PATH * 4 + 16];
+        assert(nk_platform_resolve_path(NK_PATH_DATA, resolved, sizeof(resolved)));
+        assert(strcmp(resolved, custom_user_root) == 0);
+        for (size_t i = 0; i < sizeof(folders) / sizeof(folders[0]); i++) {
+            snprintf(expected, sizeof(expected), "%s%c%s", custom_user_root, sep, folders[i].leaf);
+            assert(nk_platform_resolve_path(folders[i].type, resolved, sizeof(resolved)));
+            assert(strcmp(resolved, expected) == 0);
+        }
+    }
 
     /* One font root: the per-user data directory (the override above in this run). Fonts are
      * imported there, so the launcher exports the root to the runtime. A cache under the package
@@ -341,8 +369,23 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_60hz;
     char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
     set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
+    /* Nor an inherited developer mode (#314): the launcher's setting decides. */
+    bool had_developer;
+    char *old_developer = capture_environment_value("SR_DEVELOPER_MODE", &had_developer);
+    set_environment_value("SR_DEVELOPER_MODE", "1");
+    bool had_host_zone;
+    char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
+    set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
+    /* Nor another launcher's display: the game window must open on this launcher's. */
+    bool had_launcher_display;
+    char *old_launcher_display = capture_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS",
+                                                           &had_launcher_display);
+    set_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS", "7,7,7,7");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
+    /* Prepare leaves the launcher's display unknown until the player sets it. */
+    assert(session.config.launcher_display_bounds[2] == 0);
+    assert(session.config.launcher_display_bounds[3] == 0);
     assert(session.iso_path[0] == '\0');
     assert(strcmp(session.game_title, "Launch Resolution Fixture") == 0);
     /* The player names its own folder after preparation (player_state.c). */
@@ -365,6 +408,12 @@ static void test_no_iso_child_environment(const char *test_executable,
     session.config.vsync = false;
     session.config.fullscreen = true;
     session.config.master_volume = 55;
+    /* The launcher window is on a second display, to the right of the primary and
+       above its top edge (main.c player_note_launcher_display). */
+    session.config.launcher_display_bounds[0] = 1920;
+    session.config.launcher_display_bounds[1] = -200;
+    session.config.launcher_display_bounds[2] = 2560;
+    session.config.launcher_display_bounds[3] = 1440;
     /* The host input profile the player resolved for the disc being launched
        (#520). A disc with its own mapping gets its own profile file; this is
        what the child runtime loads instead of the global one. */
@@ -422,6 +471,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_PRESENT_SCALING=integer\n") != NULL);
     assert(strstr(observed, "SR_FULLSCREEN=1\n") != NULL);
     assert(strstr(observed, "SR_MASTER_VOLUME=55\n") != NULL);
+    /* The launcher's display reaches the child, windowed or fullscreen, and the
+       inherited value does not. */
+    assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=1920,-200,2560,1440\n") != NULL);
+    assert(strstr(observed, "7,7,7,7") == NULL);
     /* The per-title mapping the player resolved reaches the child as
        NK_INPUT_PROFILE, so the launched title uses its own mapping (#520). */
     {
@@ -460,11 +513,30 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
+    assert(strstr(observed, "SR_DEVELOPER_MODE=0\n") != NULL);
+    /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
+       from the platform, never an inherited value. */
+    {
+        int zone_minutes = 0;
+        bool daylight = false;
+        char expected_zone[64];
+        assert(nk_platform_local_time_zone(&zone_minutes, &daylight));
+        assert(zone_minutes >= -720 && zone_minutes <= 840);
+        snprintf(expected_zone, sizeof(expected_zone), "SR_HOST_TIME_ZONE=%d,%d\n", zone_minutes,
+                 daylight ? 1 : 0);
+        assert(strstr(observed, expected_zone) != NULL);
+        assert(strstr(observed, "poisoned-parent-zone") == NULL);
+    }
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
     session.config.experimental_60hz = true;
+    session.config.developer_mode = true;
     session.config.fps_cap = -1;
+    /* A launcher that does not know its display exports an empty value, which
+       still masks the inherited one; the child then uses the primary display. */
+    memset(session.config.launcher_display_bounds, 0,
+           sizeof(session.config.launcher_display_bounds));
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
     nk_launch_stop(&session);
@@ -478,10 +550,21 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
+    assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
+    assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
+    assert(strstr(observed, "7,7,7,7") == NULL);
     session.config.experimental_60hz = false;
+    session.config.developer_mode = false;
 
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
     free(old_60hz);
+    restore_environment_value("SR_DEVELOPER_MODE", old_developer, had_developer);
+    free(old_developer);
+    restore_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS", old_launcher_display,
+                              had_launcher_display);
+    free(old_launcher_display);
+    restore_environment_value("SR_HOST_TIME_ZONE", old_host_zone, had_host_zone);
+    free(old_host_zone);
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
@@ -1324,6 +1407,74 @@ static void test_keep_run_log(const char *base, char sep) {
     test_rmdir(log_dir);
 }
 
+/* 23. The runtime opens its window on its own display that contains the centre of
+ * SR_LAUNCHER_DISPLAY_BOUNDS (sr_parse_display_bounds, sr_pick_display in recomp.h).
+ * -1 is the primary display: a missing, malformed or off-screen value lands there. */
+static void test_launcher_display_choice(void) {
+    printf("[LAUNCH_TEST] Subtest 23: game window display from SR_LAUNCHER_DISPLAY_BOUNDS\n");
+    fflush(stdout);
+    /* Two displays: the primary, then a larger one to its right whose top edge is higher. */
+    static const int two[] = { 0, 0, 1920, 1080,   1920, -200, 2560, 1440 };
+    int b[4];
+
+    assert(sr_parse_display_bounds("1920,-200,2560,1440", b));
+    assert(b[0] == 1920 && b[1] == -200 && b[2] == 2560 && b[3] == 1440);
+    assert(sr_pick_display(b, two, 2) == 1);
+    assert(sr_parse_display_bounds("0,0,1920,1080", b));
+    assert(sr_pick_display(b, two, 2) == 0);
+    /* The same layout enumerated the other way round: the match follows the bounds. */
+    {
+        static const int swapped[] = { 1920, -200, 2560, 1440,   0, 0, 1920, 1080 };
+        assert(sr_parse_display_bounds("1920,-200,2560,1440", b));
+        assert(sr_pick_display(b, swapped, 2) == 0);
+        assert(sr_parse_display_bounds("0,0,1920,1080", b));
+        assert(sr_pick_display(b, swapped, 2) == 1);
+    }
+    /* The other process may see slightly different bounds (scaling, a taskbar): only the
+     * centre matters. A display left of the primary has negative coordinates. */
+    assert(sr_parse_display_bounds("1900,-180,2600,1400", b));
+    assert(sr_pick_display(b, two, 2) == 1);
+    {
+        static const int left[] = { 0, 0, 1920, 1080,   -1280, 0, 1280, 1024 };
+        assert(sr_parse_display_bounds("-1280,0,1280,1024", b));
+        assert(sr_pick_display(b, left, 2) == 1);
+    }
+    /* Right and bottom edges are exclusive: a centre on x = 1920 is the second display's. */
+    assert(sr_parse_display_bounds("1820,0,200,100", b));
+    assert(sr_pick_display(b, two, 2) == 1);
+
+    /* Missing or malformed values do not parse; the runtime reports them and uses the primary. */
+    static const char *const malformed[] = {
+        "", "1920", "1920,0,2560", "1920,0,2560,1440,5", "1920,0,2560,1440,",
+        "a,b,c,d", "1920, 0,2560,1440", " 1920,0,2560,1440", "1920,0,2560,1440 ",
+        "+1920,0,2560,1440", "1920,0,0,1440", "1920,0,2560,0", "1920,0,-2560,1440",
+        "-,0,1,1", "1,,1,1", "1234567890,0,1,1", "1920;0;2560;1440", "0x10,0,1,1",
+    };
+    assert(!sr_parse_display_bounds(NULL, b));
+    for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
+        if (sr_parse_display_bounds(malformed[i], b)) {
+            fprintf(stderr, "[LAUNCH_TEST] accepted malformed bounds '%s'\n", malformed[i]);
+            assert(0);
+        }
+    }
+    assert(!sr_parse_display_bounds("1,1,1,1", NULL));
+
+    /* Off-screen: no display contains the centre (a display since unplugged). */
+    assert(sr_parse_display_bounds("5000,5000,1920,1080", b));
+    assert(sr_pick_display(b, two, 2) == -1);
+    assert(sr_parse_display_bounds("-3000,0,1920,1080", b));
+    assert(sr_pick_display(b, two, 2) == -1);
+    /* No displays, or a display whose bounds could not be read (left zero), never match. */
+    assert(sr_parse_display_bounds("0,0,1920,1080", b));
+    assert(sr_pick_display(b, two, 0) == -1);
+    assert(sr_pick_display(b, NULL, 2) == -1);
+    assert(sr_pick_display(NULL, two, 2) == -1);
+    {
+        static const int unread[] = { 0, 0, 0, 0,   0, 0, 1920, 1080 };
+        assert(sr_pick_display(b, unread, 2) == 1);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return write_launch_environment_probe();
@@ -2162,6 +2313,8 @@ int main(int argc, char **argv) {
     test_launch_stop_functionality(argv[0], base, sep);
 
     test_keep_run_log(base, sep);
+
+    test_launcher_display_choice();
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     native_test_assert_real_config_untouched();

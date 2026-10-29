@@ -30,7 +30,8 @@ typedef enum {
     PLAYER_UI_ROUTE_REMOVE = 4,    /* confirm Remove from library (#1304) */
     /* Settings is a view over the routes, never pushed; the top bar takes it to
        show the SETTINGS tab as the active one. */
-    PLAYER_UI_ROUTE_SETTINGS = 5
+    PLAYER_UI_ROUTE_SETTINGS = 5,
+    PLAYER_UI_ROUTE_STOP = 6       /* confirm STOP GAME */
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -193,6 +194,9 @@ typedef struct {
     float logical_width;
     const char *page_label;
     float logical_height;   /* 0 selects 800 */
+    /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
+       opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
+    const char *update_notice;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -229,8 +233,23 @@ typedef struct {
 #define PLAYER_UI_WIZARD_FONT_LINES 24u
 #define PLAYER_UI_WIZARD_CHECKS 10u
 
+/* What a one-line outcome says, which picks its colour: muted, ready,
+   warning or error (PlayerNoteKind in player_state.h, in the same order). */
+typedef enum {
+    PLAYER_UI_NOTE_NEUTRAL = 0,
+    PLAYER_UI_NOTE_DONE,
+    PLAYER_UI_NOTE_WARNING,
+    PLAYER_UI_NOTE_ERROR
+} PlayerUiNoteKind;
+
+/* The setup wizard's steps that a first run shows: Welcome, Online and
+   developer options, Select game and Verify. Copying the files ends on the
+   library card, and the fonts are imported in Settings > PSP fonts. */
+#define PLAYER_UI_WIZARD_ROUTE_STEPS 4
+
 /* The setup wizard (VIEW_SETUP_WIZARD). step is 0-5: Welcome, Online and
-   developer options, Select game, Verify, Fonts and system, Ready. */
+   developer options, Select game, Verify, then Fonts and system and Ready,
+   which only the older state-only callers reach. */
 typedef struct {
     int step;
     /* Select game */
@@ -267,6 +286,7 @@ typedef struct {
     const char *font_lines[PLAYER_UI_WIZARD_FONT_LINES];
     size_t font_line_count;
     const char *font_message;
+    PlayerUiNoteKind font_message_kind;
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
@@ -325,15 +345,17 @@ typedef struct {
 /* The Settings pages: the main page (VIEW_SETTINGS), online and developer
    options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
    tools (VIEW_PREREQ_ABOUT), the build tool removal check
-   (VIEW_CONFIRM_REMOVE_TOOLS) and build tools and cache (VIEW_BUILD_CACHE, #1306),
-   the page that opens the removal check. */
+   (VIEW_CONFIRM_REMOVE_TOOLS), build tools and cache (VIEW_BUILD_CACHE, #1306),
+   the page that opens the removal check, and Updates (VIEW_UPDATES). */
 typedef enum {
     PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
     PLAYER_UI_SETTINGS_PAGE_NOTICES,
     PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
     PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
-    PLAYER_UI_SETTINGS_PAGE_FONTS
+    PLAYER_UI_SETTINGS_PAGE_FONTS,
+    PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
+    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET /* VIEW_CONFIRM_FACTORY_RESET */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -357,7 +379,6 @@ typedef enum {
     PLAYER_UI_SETTINGS_DONE,              /* save, back to the library */
     PLAYER_UI_SETTINGS_BACK,              /* a Settings page, back to the main page */
     PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
-    PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
     PLAYER_UI_SETTINGS_TOGGLE_NEWS,
     PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
     PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER,
@@ -370,10 +391,34 @@ typedef enum {
     PLAYER_UI_SETTINGS_KEEP_TOOLS,         /* the removal check, back to build tools and cache */
     PLAYER_UI_SETTINGS_OPEN_FONTS,         /* Settings > PSP fonts */
     PLAYER_UI_SETTINGS_IMPORT_FONTS,       /* the folder picker, then the import */
-    PLAYER_UI_SETTINGS_REMOVE_FONTS        /* remove the imported fonts */
+    PLAYER_UI_SETTINGS_REMOVE_FONTS,       /* remove the imported fonts */
+    PLAYER_UI_SETTINGS_CHECK_UPDATES,      /* open Updates and ask GitHub now */
+    PLAYER_UI_SETTINGS_OPEN_UPDATES,       /* open Updates as it is (the library notice) */
+    PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START,
+    PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE,
+    PLAYER_UI_SETTINGS_CANCEL_UPDATE,      /* stop the download */
+    PLAYER_UI_SETTINGS_INSTALL_UPDATE,
+    PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
+    PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
+    PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
+    PLAYER_UI_SETTINGS_FACTORY_RESET       /* move the user data aside and start afresh */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
+#define PLAYER_UI_RESET_FOLDERS 5u   /* PLAYER_FACTORY_RESET_FOLDERS */
+
+/* Where Check for updates is, in the order of player_state's PlayerUpdatePhase. */
+typedef enum {
+    PLAYER_UI_UPDATE_IDLE = 0,
+    PLAYER_UI_UPDATE_CHECKING,
+    PLAYER_UI_UPDATE_CURRENT,
+    PLAYER_UI_UPDATE_AVAILABLE,
+    PLAYER_UI_UPDATE_DOWNLOADING,
+    PLAYER_UI_UPDATE_DOWNLOADED,
+    PLAYER_UI_UPDATE_INSTALLING,
+    PLAYER_UI_UPDATE_INSTALLED,
+    PLAYER_UI_UPDATE_FAILED
+} PlayerUiUpdateStep;
 
 typedef struct {
     PlayerUiSettingsPage page;
@@ -392,9 +437,26 @@ typedef struct {
     const char *notice;             /* a settings notice (a failed save), or NULL */
     /* Build tools and cache: builds share compiled system libraries (#1306) */
     bool share_system_libraries;
+    /* Updates (VIEW_UPDATES): what the last step found, in words */
+    PlayerUiUpdateStep update_step;
+    PlayerUiUpdateStep update_failed_step;   /* CHECKING, DOWNLOADING or INSTALLING */
+    bool check_updates_at_start;
+    const char *current_version;    /* "0.0.2-dev" */
+    const char *update_version;     /* "0.0.2", once checked */
+    bool update_prerelease;
+    const char *update_published;   /* "2026-11-04", or "" */
+    const char *update_notes;
+    const char *update_page_url;
+    bool update_has_zip;
+    bool update_can_download;       /* a Windows ZIP and a Windows build */
+    const char *update_zip_name;
+    unsigned long long update_zip_bytes;
+    unsigned long long update_received_bytes;
+    const char *update_folder;      /* the downloads folder or the new version's folder */
+    const char *update_error_title;
+    const char *update_error_message;
     /* Online and developer options */
     bool online_mode;
-    bool online_updates;
     bool online_news;
     bool online_reports;
     bool developer_mode;
@@ -406,6 +468,10 @@ typedef struct {
     const char *font_lines[18];
     size_t font_line_count;
     const char *font_message;
+    PlayerUiNoteKind font_message_kind;
+    /* Factory reset (VIEW_CONFIRM_FACTORY_RESET): the folders that move aside */
+    const char *reset_folders[PLAYER_UI_RESET_FOLDERS];
+    size_t reset_folder_count;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -444,6 +510,9 @@ typedef enum {
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
+/* The characters a binding's button shows whole at every launcher size: the
+   label is mono caps, so this is a width (INPUT_SETTINGS_BINDING_TEXT_MAX). */
+#define PLAYER_UI_CONTROLLER_BINDING_CHARS 20u
 #define PLAYER_UI_CONTROLLER_LIVE_LINES 4u
 
 /* A binding's prompt glyph (#1299): the shape `action` has in the model's glyph
@@ -561,6 +630,9 @@ typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
     bool stalled_game_notice_visible;
+    /* The notice is for frames that show nothing, not for frames that stopped. */
+    bool stalled_game_dark_picture;
+    double now_s;           /* drives the starting bar (0 holds it still) */
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
     /* The files the title's package build still waits for, with Check again
@@ -608,6 +680,8 @@ enum {
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
+    PLAYER_UI_ID_STOP_KEEP = 0x4411u,
+    PLAYER_UI_ID_STOP_CONFIRM = 0x4412u,
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
@@ -631,7 +705,6 @@ enum {
     PLAYER_UI_ID_SETTINGS_NOTICES = 0x450Eu,
     PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS = 0x450Fu,
     PLAYER_UI_ID_SETTINGS_ONLINE_MODE = 0x4511u,
-    PLAYER_UI_ID_SETTINGS_UPDATES = 0x4512u,
     PLAYER_UI_ID_SETTINGS_NEWS = 0x4513u,
     PLAYER_UI_ID_SETTINGS_REPORTS = 0x4514u,
     PLAYER_UI_ID_SETTINGS_DEVELOPER = 0x4515u,
@@ -645,6 +718,17 @@ enum {
     PLAYER_UI_ID_SETTINGS_FONTS = 0x451Du,
     PLAYER_UI_ID_SETTINGS_IMPORT_FONTS = 0x451Eu,
     PLAYER_UI_ID_SETTINGS_REMOVE_FONTS = 0x451Fu,
+    PLAYER_UI_ID_SETTINGS_UPDATES = 0x4520u,          /* the Updates row's button */
+    PLAYER_UI_ID_UPDATE_CHECK = 0x4521u,
+    PLAYER_UI_ID_UPDATE_AT_START = 0x4522u,
+    PLAYER_UI_ID_UPDATE_DOWNLOAD = 0x4523u,
+    PLAYER_UI_ID_UPDATE_CANCEL = 0x4524u,
+    PLAYER_UI_ID_UPDATE_INSTALL = 0x4525u,
+    PLAYER_UI_ID_UPDATE_FOLDER = 0x4526u,
+    PLAYER_UI_ID_UPDATE_PAGE = 0x4527u,
+    PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
+    PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
+    PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -727,6 +811,18 @@ typedef struct {
 } PlayerUiRemoveModel;
 
 PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *model);
+
+/* Stop game: STOP GAME asks first, as quitting with a game running does. KEEP
+   PLAYING holds focus first and Back is KEEP PLAYING; STOP GAME returns
+   PLAYER_UI_ACTION_PRIMARY with PLAYER_UI_PRIMARY_STOP_GAME. */
+typedef struct {
+    const char *title;          /* the game that runs */
+    size_t title_index;
+    float logical_width;
+    float logical_height;
+} PlayerUiStopModel;
+
+PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);
@@ -754,6 +850,9 @@ void player_ui_version_line(const char *version, long long epoch, char *out, siz
 PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 struct SDL_Window *window,
                                 char *error, size_t error_size);
+/* False when this build was compiled without the SDL_Renderer or SDL3_ttf
+   support player_ui_nk_create needs, so it can never succeed here. */
+bool player_ui_nk_built_with_launcher(void);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
@@ -762,6 +861,13 @@ bool player_ui_nk_draws_view(int view);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);
+/* The most titles one frame shows: a library page's cards and its demos. */
+#define PLAYER_UI_SHOWN_TITLES_MAX 256u
+/* The library indices of the titles the last frame showed (the cards of the
+   library page and its demos, or the title page's title), at most `cap` of
+   them. The package check looks at these first: checking every title of a
+   large library reads every disc. */
+size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 /* Test only: a title's model as the last frame filled it, or NULL. */
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);

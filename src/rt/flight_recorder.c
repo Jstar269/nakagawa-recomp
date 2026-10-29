@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 #ifndef SR_FLIGHT_RECORDER_LINKED
 #define SR_FLIGHT_RECORDER_LINKED
@@ -231,6 +231,9 @@ static uint32_t s_refusal_distinct;
 static uint32_t s_refusal_nids[SR_FLIGHT_REFUSAL_NIDS_MAX];
 static uint64_t s_refusal_nid_counts[SR_FLIGHT_REFUSAL_NIDS_MAX];
 static uint64_t s_refusal_unlisted;
+
+/* The scheduler's thread table, snapshotted into every bundle (schema 6). */
+static SrFlightThreadSource s_flight_thread_source;
 
 static const SrFlightClassName s_flight_class_names[] = {
     {SR_FLIGHT_CLASS_HLE, "hle"},
@@ -608,6 +611,10 @@ int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
     return 1;
 }
 
+void sr_flight_set_thread_source(SrFlightThreadSource source) {
+    s_flight_thread_source = source;
+}
+
 /* A build identity is emitted only in a shape the schema can express: a decimal
  * Unix timestamp for source_date_epoch and hex digits for build_id. Anything
  * else (a hand-compile with a malformed -D) is recorded as null with a visible
@@ -686,6 +693,70 @@ static int write_refusals(FILE *file) {
                    (unsigned long long)s_refusal_unlisted) >= 0;
 }
 
+static const char *thread_state_name(uint32_t state) {
+    switch (state) {
+    case SR_FLIGHT_THREAD_DORMANT: return "dormant";
+    case SR_FLIGHT_THREAD_READY: return "ready";
+    case SR_FLIGHT_THREAD_RUNNING: return "running";
+    case SR_FLIGHT_THREAD_WAIT_DELAY: return "wait-delay";
+    case SR_FLIGHT_THREAD_WAIT_OBJECT: return "wait-object";
+    default: return NULL;
+    }
+}
+
+static const char *thread_why_name(uint32_t why) {
+    switch (why) {
+    case SR_FLIGHT_WHY_NONE: return "none";
+    case SR_FLIGHT_WHY_SLEEP: return "sleep";
+    case SR_FLIGHT_WHY_DELAY: return "delay";
+    case SR_FLIGHT_WHY_VBLANK: return "vblank";
+    case SR_FLIGHT_WHY_CTRL: return "ctrl";
+    case SR_FLIGHT_WHY_THREAD_END: return "thread-end";
+    case SR_FLIGHT_WHY_OBJECT: return "object";
+    default: return NULL;
+    }
+}
+
+/* Schema 6 terminal thread snapshot: one line per existing guest thread, scalars only. An
+ * entry whose state or reason the recorder cannot name fails the bundle rather than writing
+ * a value the schema does not define. */
+static int write_threads(FILE *file) {
+    if (fputs("  \"threads\": [", file) == EOF) return 0;
+    uint32_t written = 0u;
+    for (uint32_t index = 0u; s_flight_thread_source && index < SR_FLIGHT_MAX_THREADS; ++index) {
+        SrFlightThread thread;
+        memset(&thread, 0, sizeof(thread));
+        if (!s_flight_thread_source(index, &thread)) break;
+        const char *state = thread_state_name(thread.state);
+        const char *why = thread_why_name(thread.why);
+        if (!state || !why) {
+            fprintf(stderr, "SR_FLIGHT: thread snapshot entry has an unknown state; bundle not written\n");
+            return 0;
+        }
+        char block_nid[16];
+        char waited[24];
+        char deadline[24];
+        if (thread.has_block_nid) snprintf(block_nid, sizeof(block_nid), "%" PRIu32, thread.block_nid);
+        else snprintf(block_nid, sizeof(block_nid), "null");
+        if (thread.has_waited) snprintf(waited, sizeof(waited), "%llu", (unsigned long long)thread.waited_us);
+        else snprintf(waited, sizeof(waited), "null");
+        if (thread.has_deadline) snprintf(deadline, sizeof(deadline), "%llu", (unsigned long long)thread.deadline_us);
+        else snprintf(deadline, sizeof(deadline), "null");
+        if (fprintf(file,
+                    "%s    {\"uid\": %" PRIu32 ", \"priority\": %" PRId32 ", \"state\": \"%s\", "
+                    "\"suspended\": %s, \"why\": \"%s\", \"wait_type\": %" PRIu32 ", "
+                    "\"wait_object\": %" PRIu32 ", \"block_nid\": %s, \"pc\": %" PRIu32 ", "
+                    "\"ra\": %" PRIu32 ", \"waited_us\": %s, \"deadline_us\": %s}",
+                    written ? ",\n" : "\n", thread.uid, thread.priority, state,
+                    thread.suspended ? "true" : "false", why, thread.wait_type,
+                    thread.wait_object, block_nid, thread.pc, thread.ra, waited, deadline) < 0) {
+            return 0;
+        }
+        written++;
+    }
+    return fputs(written ? "\n  ],\n" : "],\n", file) != EOF;
+}
+
 static int write_bundle(int reason) {
     if (s_flight_dumped || s_flight_classes == 0u) return 0;
     const char *output = getenv("SR_FLIGHT_OUTPUT");
@@ -755,6 +826,7 @@ static int write_bundle(int reason) {
                        terminal, (unsigned long long)s_flight_terminal_sequence,
                        s_flight_terminal_kind, s_flight_terminal_arg) >= 0;
     ok = ok && write_refusals(file);
+    ok = ok && write_threads(file);
     ok = ok && fputs("  \"events\": [", file) != EOF;
     uint32_t count = retained_count();
     uint64_t first = s_flight_recorded > s_flight_limit ? s_flight_recorded - s_flight_limit : 0u;

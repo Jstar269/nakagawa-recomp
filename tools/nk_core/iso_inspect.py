@@ -17,6 +17,7 @@ from typing import Dict, Iterator, Optional, Sequence
 
 import psp_import_table
 import title_manifest
+from . import disc_expand_tool
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -400,6 +401,9 @@ def plan_guest_module_layout(
       otherwise). Two fixed-address modules may share addresses: only modules loaded
       at the same time compete for memory, and the allocator decides that when the
       game loads them.
+    * a code overlay (an MWo3 file the game reads into memory itself) is declared the
+      same way and translated at its own load address; the runtime binds it when the
+      game invalidates the instruction cache over it, not at sceKernelLoadModule.
 
     Modules are listed by case-insensitive filename.
     """
@@ -451,6 +455,27 @@ def plan_guest_module_layout(
             deferred.append({
                 "name": name,
                 "reason": "duplicate of the main executable, not loaded as a module",
+            })
+            continue
+        if mod_bytes[:4] == b"MWo3":
+            # A code overlay is not a module: the game reads it to its own load address
+            # and announces it with an instruction-cache invalidate, where the runtime
+            # binds its translation. It is translated like a runtime-placed module and
+            # never loaded through sceKernelLoadModule.
+            from analyze import code_overlay_layout
+            try:
+                code_overlay_layout(mod_bytes)
+            except ValueError as exc:
+                raise IsoInspectionError(
+                    f"code overlay has a malformed header: {name}: {exc}",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                ) from exc
+            modules.append({
+                "name": name,
+                "required": True,
+                "role": "guest-prx",
+                "placement": "runtime",
+                "guest_path": guest_path,
             })
             continue
         interface = read_guest_module_interface(name, mod_bytes)
@@ -698,6 +723,29 @@ def inspect_iso(
     path = Path(iso_path)
     if not path.is_file():
         raise IsoInspectionError(f"ISO file does not exist: {path}")
+
+    # A compressed disc image (.cso, .zso, .chd) is expanded once, by the
+    # player's own C code through tools/nk_core/disc_expand_tool.py, into the
+    # per-user data root, and the plain .iso it becomes is what is inspected.
+    source_format = disc_expand_tool.compressed_format(path)
+    if source_format is not None:
+        if user_data_root is not None:
+            data_root = Path(user_data_root)
+        else:
+            from .prereq_fetcher import default_data_root
+
+            data_root = default_data_root()
+        try:
+            expanded = disc_expand_tool.ensure_plain_iso(path, data_root)
+        except disc_expand_tool.DiscImageRefused as exc:
+            raise IsoInspectionError(str(exc), boundary_code=exc.code) from exc
+        except (RuntimeError, OSError) as exc:
+            raise IsoInspectionError(
+                f"The compressed disc image could not be expanded: {exc}"
+            ) from exc
+        info = inspect_iso(expanded, registry, user_data_root=user_data_root)
+        info.container_metadata["source_format"] = source_format
+        return info
 
     size_bytes = path.stat().st_size
 
@@ -2125,12 +2173,17 @@ def inspect_compatibility_preflight(
             + [state["detail"] for state in latin_states]
             + [states["korean"]["detail"]]
         )
+        exact = (states["japanese"]["source"] == "user" and
+                 states["korean"]["source"] == "user" and
+                 all(state["source"] == "user" and state["served_index"] == index
+                     for index, state in enumerate(latin_states)))
         if (states["japanese"]["source"] != "none" and
                 states["korean"]["source"] != "none" and
                 all(state["source"] != "none" for state in latin_states)):
+            # Every font served; SYNTHETIC when one is a stand-in, not the user's own (#1300).
             fonts_check = {
-                "code": "SYSTEM_FONTS", "status": "OK",
-                "message": slot_message, "issues": [],
+                "code": "SYSTEM_FONTS", "status": "OK" if exact else "SYNTHETIC",
+                "message": slot_message, "issues": [] if exact else [313],
             }
         else:
             fonts_check = {

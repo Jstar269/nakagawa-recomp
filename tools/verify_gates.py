@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Run optional differential verification gates without shell-specific syntax."""
 
@@ -79,7 +80,7 @@ def run_hardware_trace_gate(psp_trace: str, cosim_trace: str) -> int:
             flush=True,
         )
         print(
-            "  PSP_HARDWARE_TRACE producer: in the works (issue #312)",
+            "  PSP_HARDWARE_TRACE producer: CASE=insn-trace with tools/psp_oracle/insn_trace.py (#312)",
             flush=True,
         )
         return 1
@@ -234,7 +235,7 @@ def main() -> int:
             "  NOT_RUN: optional gate; set both PSP_HARDWARE_TRACE and LOCAL_COSIM_TRACE to run it",
             flush=True,
         )
-        print("  PSP_HARDWARE_TRACE producer: in the works (issue #312)", flush=True)
+        print("  PSP_HARDWARE_TRACE producer: CASE=insn-trace with tools/psp_oracle/insn_trace.py (#312)", flush=True)
 
     print("[verify] done.", flush=True)
     return int(status != 0)

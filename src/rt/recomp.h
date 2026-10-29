@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -146,6 +147,68 @@ static inline uint32_t sr_vfpu_rnd_step(uint32_t rcx[8]) {
                      (((next_carry >> (4 * (k + 4))) & 0xfu) << 16) | (n[k] >> 16);
     }
     return n[0] + n[1] + n[3];
+}
+
+/* VFPU forms measured on a PSP-3000 by PSP-VFPU-FORMS-001 (2026-10-28, issue #326;
+ * docs/HARDWARE_ORACLE.md): the raw result words of vh2f, vuc2i, vsocp, vwbn and
+ * vrndf1/vrndf2 under identity S/T/D prefixes, which is all these helpers model. The
+ * generated code and sr_vfpu_interp both call them; a pending prefix and the widths no
+ * cell covered fail closed in both lanes. */
+
+/* vrndf1.s / vrndf2.s: one step of the random unit (sr_vfpu_rnd_step, the same state
+ * update as vrndi.s) whose low 23 bits become the mantissa of a float in [1, 2)
+ * (vrndf1) or [2, 4) (vrndf2). All 68 measured draws match. */
+static inline uint32_t sr_vfpu_rndf_step(uint32_t rcx[8], int two) {
+    return (two ? 0x40000000u : 0x3f800000u) | (sr_vfpu_rnd_step(rcx) & 0x7fffffu);
+}
+
+/* vh2f: one IEEE half to a float32 word. A half denormal becomes a zero of its sign;
+ * exponent 31 keeps the 10-bit payload in the LOW mantissa bits (0x7c01 -> 0x7f800001,
+ * 0x7e00 -> 0x7f800200), so infinities map to infinities; normals convert exactly. */
+static inline uint32_t sr_vfpu_h2f(uint32_t h) {
+    const uint32_t sign = (h & 0x8000u) << 16, e = (h >> 10) & 0x1fu, m = h & 0x3ffu;
+    if (e == 0u) return sign;
+    if (e == 31u) return sign | 0x7f800000u | m;
+    return sign | ((e + 112u) << 23) | (m << 13);
+}
+
+/* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
+static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
+    return ((b & 0xffu) * 0x01010101u) >> 1;
+}
+
+/* vwbn.s with exponent imm8 e: a word whose exponent field is 0xff passes unchanged.
+ * Otherwise the significand (implicit bit included for a normal, the raw mantissa for a
+ * zero or denormal) shifts left by (x_exp - e) & 15 when x_exp > e, right by
+ * (e - x_exp) & 15 when 0 < x_exp < e, not at all otherwise, and the low 23 bits become
+ * the mantissa of a float with the operand's sign and exponent e. The 4-bit shift count
+ * is what the cells show: 1e10 at e = 0x7f shifts by 1, the largest normal by 15, the
+ * smallest normal right by 14. All 448 measured words (eight exponents) match. */
+static inline uint32_t sr_vfpu_wbn(uint32_t x, uint32_t e) {
+    const uint32_t xe = (x >> 23) & 0xffu;
+    if (xe == 0xffu) return x;
+    uint32_t sig = (x & 0x7fffffu) | (xe != 0u ? 0x800000u : 0u);
+    if (xe > e) sig <<= (xe - e) & 15u;
+    else if (xe != 0u && xe < e) sig >>= (e - xe) & 15u;
+    return (x & 0x80000000u) | ((e & 0xffu) << 23) | (sig & 0x7fffffu);
+}
+
+/* vsocp: one operand x to the pair (sat0(1 - x), sat0(x)), sat0 clamping to [0, 1]
+ * with +0 for anything at or below zero. A denormal operand counts as a zero of its
+ * sign; a NaN operand writes the canonical 0x7f800001 to both lanes. */
+static inline void sr_vfpu_socp(uint32_t x, uint32_t out[2]) {
+    if ((x & 0x7f800000u) == 0u) x &= 0x80000000u;
+    if ((x & 0x7fffffffu) > 0x7f800000u) {
+        out[0] = out[1] = 0x7f800001u;
+        return;
+    }
+    float f, a;
+    memcpy(&f, &x, 4);
+    a = 1.0f - f;
+    a = a <= 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    f = f <= 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+    memcpy(&out[0], &a, 4);
+    memcpy(&out[1], &f, 4);
 }
 
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
@@ -308,6 +371,20 @@ static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
         return 0;
     }
     return 1;
+}
+
+/* Range-checked destination test for writers that copy through sr_guest_copy_out()
+ * or sr_guest_fill() instead of forming one host pointer over the span (#1049).
+ * Unlike sr_guest_span_writable() it accepts a span through the swizzled VRAM
+ * mirrors: those helpers walk the span in sr_guest_host_run() pieces, each inside
+ * one block that stays contiguous in physical VRAM, and translate every piece
+ * through SR_HOST(). A span that starts in one VRAM view and ends in another is
+ * therefore exact as well: the bytes are guest-contiguous, and each lands where a
+ * scalar store to that guest address would. Only a span that leaves the arena is
+ * refused. Callers that still form a host pointer keep using
+ * sr_guest_span_writable() and its VRAM_MIRROR_BULK_UNSUPPORTED report. */
+static inline int sr_guest_span_writable_any_view(uint32_t addr, uint32_t size) {
+    return size == 0u || sr_inrange_n(addr, size);
 }
 
 /* Bulk readers call this immediately before forming their host pointer. */
@@ -1147,6 +1224,12 @@ typedef struct SrModuleCode {
     uint32_t nfuncs;
     const SrModuleSpan *spans;
     uint32_t nspans;
+    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py,
+     * MWo3). It is bound, at its link address, when the guest invalidates the instruction
+     * cache over it and these leading bytes of the file (header and text) are in memory,
+     * and unbound when they no longer are. sceKernelLoadModule never binds it. */
+    uint32_t overlay_check_len;
+    uint64_t overlay_check_fnv1a64;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1185,6 +1268,10 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
+/* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
+ * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns
+ * the number of bindings changed. */
+uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi);
 
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* Opt-in dynamic check of guest stack preservation at generated callable
@@ -1396,6 +1483,8 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
+uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
  * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
  * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
@@ -1504,6 +1593,58 @@ static inline bool sr_gui_request_launcher_foreground_once(
     raise_window(context);
     return true;
 }
+/* The game window opens on the display that holds the launcher window. SDL display IDs are
+ * per process, so the launcher (nk_launch.c) passes that display's desktop bounds instead, as
+ * SR_LAUNCHER_DISPLAY_BOUNDS=x,y,w,h, and the runtime picks its own display containing the
+ * centre of that rectangle. An empty value means the launcher did not know; the runtime then
+ * uses the primary display. */
+static inline bool sr_display_bounds_field(const char **p, int *out, char end) {
+    const char *s = *p;
+    bool negative = *s == '-';
+    int value = 0, digits = 0;
+    if (negative) s++;
+    /* At most nine digits, so the value always fits an int; no desktop is that large. */
+    while (*s >= '0' && *s <= '9' && digits < 9) {
+        value = value * 10 + (*s - '0');
+        s++;
+        digits++;
+    }
+    if (digits == 0 || *s != end) return false;
+    *out = negative ? -value : value;
+    *p = end ? s + 1 : s;
+    return true;
+}
+
+/* Parse an SR_LAUNCHER_DISPLAY_BOUNDS value into bounds (x, y, w, h). Returns false, leaving
+ * bounds unspecified, for NULL, empty, or anything other than four decimal integers separated
+ * by commas with a positive width and height. */
+static inline bool sr_parse_display_bounds(const char *value, int bounds[4]) {
+    const char *p = value;
+    if (!p || !bounds) return false;
+    if (!sr_display_bounds_field(&p, &bounds[0], ',') ||
+        !sr_display_bounds_field(&p, &bounds[1], ',') ||
+        !sr_display_bounds_field(&p, &bounds[2], ',') ||
+        !sr_display_bounds_field(&p, &bounds[3], '\0'))
+        return false;
+    return bounds[2] > 0 && bounds[3] > 0;
+}
+
+/* The index of the first of `count` displays (x, y, w, h each, in `displays`) whose bounds
+ * contain the centre of `bounds`, or -1 when none does; the caller then uses the primary
+ * display. A display with no width or height never matches. */
+static inline int sr_pick_display(const int bounds[4], const int *displays, int count) {
+    if (!bounds || !displays || count <= 0) return -1;
+    long long cx = (long long)bounds[0] + bounds[2] / 2;
+    long long cy = (long long)bounds[1] + bounds[3] / 2;
+    for (int i = 0; i < count; i++) {
+        const int *d = displays + 4 * i;
+        if (d[2] <= 0 || d[3] <= 0) continue;
+        if (cx >= d[0] && cx < (long long)d[0] + d[2] &&
+            cy >= d[1] && cy < (long long)d[1] + d[3])
+            return i;
+    }
+    return -1;
+}
 void     gui_init(const char *title);
 int      gui_on(void);
 int      gui_interactive(void);                  /* 1 when a person is at a real window: not offscreen, headless or acceptance */
@@ -1600,6 +1741,14 @@ int  sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
                                  uint32_t *gp_out);
 void sr_hle_loadexec_finish(void);
 extern uint32_t sr_last_nid;
+/* The import the running guest thread is inside. sr_last_nid is process-wide and outlives
+ * the call, so it can name another thread's import or one that already returned; this pair is
+ * scoped to the call instead. sr_syscall sets it around its handler and restores the outer
+ * pair on return (a nested import inside a callback does not leak out), and the scheduler
+ * (src/rt/sched.c) saves it per thread across switches. sr_import_active is 0 outside any
+ * import. The flight recorder's thread snapshot reads it at each block. */
+extern uint32_t sr_import_nid;
+extern int sr_import_active;
 
 /* Late-import resolution contract (src/rt/hle.c, Track B). Runtime-loaded PRX exports are
  * published by module load through sr_hle_register_late_import(); dispatch() queries
@@ -1706,6 +1855,7 @@ int sr_host_data_prepare(void);
 size_t sr_host_data_entry_count(void);      /* valid after READY */
 
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
+void     sched_preempt_timer_start(void);          /* paced runs: a stronger due thread preempts at once (#1296) */
 int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
 void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
@@ -1723,6 +1873,13 @@ void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
 typedef uint64_t (*SrSchedGeNextDeadline)(void);
 typedef void (*SrSchedGeServiceDue)(void);
 void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
+/* VTimer handlers (hle.c): the earliest guest-time deadline of a running VTimer with a
+ * handler (UINT64_MAX when none), and the interrupt-service step that runs the most overdue
+ * handler once.  With no hooks registered the scheduler behaves as before. */
+typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
+typedef void (*SrSchedVtimerServiceOne)(void);
+void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                                SrSchedVtimerServiceOne service_one);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */

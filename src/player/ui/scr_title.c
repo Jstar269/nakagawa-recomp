@@ -39,6 +39,10 @@
 #define TITLE_ID_STALL_EYEBROW 0x20000036u
 #define TITLE_ID_STALL_TEXT 0x20000037u
 #define TITLE_ID_STALL_ACTIONS 0x20000038u
+#define TITLE_ID_START_CARD 0x20000039u
+#define TITLE_ID_START_NAME 0x2000003Au
+#define TITLE_ID_START_TEXT 0x2000003Bu
+#define TITLE_ID_START_BAR 0x2000003Cu
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -87,6 +91,17 @@ static PlayerUiAction action(PlayerUiActionKind kind, size_t title_index,
 
 static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
+}
+
+/* An outcome line's colour: only a warning is amber, and only a failure red. */
+static uint32_t note_rgba(const NkUiTheme *theme, PlayerUiNoteKind kind) {
+    switch (kind) {
+    case PLAYER_UI_NOTE_DONE: return theme->ready;
+    case PLAYER_UI_NOTE_WARNING: return theme->warning;
+    case PLAYER_UI_NOTE_ERROR: return theme->error;
+    case PLAYER_UI_NOTE_NEUTRAL:
+    default: return theme->muted;
+    }
 }
 
 /* docs/COMPATIBILITY.md category -> player tier, for a title with no player
@@ -405,9 +420,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             if (model->stalled_game_notice_visible &&
                 nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_2)) {
-                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW, "No new frames");
+                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW,
+                              model->stalled_game_dark_picture ? "Black screen" : "No new frames");
                 nk_ui_text_role(ui, TITLE_ID_STALL_TEXT,
-                                "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
+                                model->stalled_game_dark_picture
+                                    ? "The game is running but has shown only a black screen for 30 seconds. It may be stuck."
+                                    : "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
                                 NK_UI_TYPE_BODY_S, theme->paper);
                 row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
                 row.align_y = NK_UI_ALIGN_CENTER;
@@ -492,6 +510,29 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     result = action(PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
                                     model->title_index, PLAYER_UI_PRIMARY_NONE);
                 }
+            }
+            /* The first start of a new package took 7 to 9 s before its window
+               opened (v0.0.1 walkthrough); a chip and one line in the package
+               card are easy to miss in that wait, so a card says what is
+               happening, with a moving bar. */
+            if (title->package_state == PLAYER_UI_PACKAGE_STARTING &&
+                nk_ui_card_begin(ui, TITLE_ID_START_CARD, sizing_grow(), sizing_fit(),
+                                 NK_UI_SPACE_3)) {
+                float bar = width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside -
+                            2.0f * NK_UI_SPACE_5;
+                char line[320];
+                NkUiTextStyle name = nk_ui_type(NK_UI_TYPE_HEADING, theme->paper);
+                (void)snprintf(line, sizeof(line), "Starting %s\xE2\x80\xA6",
+                               safe_text(title->title, "the game"));
+                nk_ui_text(ui, TITLE_ID_START_NAME,
+                           nk_ui_text_clamp(ui, line, &name, bar, 1), &name);
+                nk_ui_text_role(ui, TITLE_ID_START_TEXT,
+                                "Its window opens when it is ready. The first start can "
+                                "take several seconds.",
+                                NK_UI_TYPE_BODY_S, theme->muted);
+                nk_ui_progress_bar(ui, TITLE_ID_START_BAR, bar > 40.0f ? bar : 40.0f,
+                                   -1.0f, model->now_s);
+                nk_ui_end_container(ui);
             }
             /* The player tier, then what to expect in plain words and any
                known issues (#1297). The docs category describes the
@@ -883,6 +924,49 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
     return result;
 }
 
+/* Stop game: the same question quitting with a game running asks, in a flow
+   card. KEEP PLAYING holds focus first; STOP GAME is the danger button. */
+PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Keep playing"}
+    };
+    const NkUiTheme *theme;
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    float inner;
+    char text[320];
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
+                       model->logical_height > 80.0f ? model->logical_height : 800.0f, 640.0f);
+    if (inner <= 0.0f) return result;
+    flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Stop game", theme->warning);
+    (void)snprintf(text, sizeof(text), "Stop %s?", safe_text(model->title, "the game"));
+    nk_ui_text_role(ui, FLOW_ID_TITLE, nk_ui_frame_text(ui, text), NK_UI_TYPE_TITLE,
+                    theme->paper);
+    nk_ui_text_role(ui, FLOW_ID_LEAD,
+                    "The game closes now, and anything since its last save is lost.",
+                    NK_UI_TYPE_BODY_S, theme->muted);
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                     NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_STOP_KEEP, "Keep playing", 0u)) {
+                result = action(PLAYER_UI_ACTION_BACK, model->title_index,
+                                PLAYER_UI_PRIMARY_NONE);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_STOP_CONFIRM, "Stop game", NK_UI_BUTTON_DANGER)) {
+                result = action(PLAYER_UI_ACTION_PRIMARY, model->title_index,
+                                PLAYER_UI_PRIMARY_STOP_GAME);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    flow_end(ui, "", prompts, 3u);
+    return result;
+}
+
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model) {
     static const NkUiPromptItem prompts_consent[] = {
         {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
@@ -1258,13 +1342,16 @@ static void wizard_text(NkUi *ui, uint32_t k, const char *text, NkUiTypeRole rol
     }
 }
 
+/* The chips name the steps a first run shows (PLAYER_UI_WIZARD_ROUTE_STEPS):
+   copying the files ends on the library card, so no Fonts or Ready chip
+   promises a step that never comes. */
 static void wizard_steps(NkUi *ui, int step) {
-    static const char *const names[6] = {"Welcome", "Options", "Game", "Verify", "Fonts",
-                                         "Ready"};
+    static const char *const names[PLAYER_UI_WIZARD_ROUTE_STEPS] = {"Welcome", "Options",
+                                                                    "Game", "Verify"};
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
     if (!nk_ui_begin_container(ui, WIZ_ID_STEPS, &row, NULL)) return;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < PLAYER_UI_WIZARD_ROUTE_STEPS; ++i) {
         bool done = i < step;
         bool current = i == step;
         NkUiLayout chip = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(),
@@ -1409,8 +1496,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                     NK_UI_TYPE_BODY, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
             if (wizard_switch(ui, PLAYER_UI_ID_WIZARD_ONLINE, WIZ_ID_TEXT + 0x80u, "Online mode",
-                              "Check nakagawa.jaycast.net for updates and news, and let you send "
-                              "reports. Nothing is sent without you.",
+                              "Check nakagawa.jaycast.net for news and let you send reports. "
+                              "Nothing is sent without you.",
                               model->online_mode, inner - 32.0f)) {
                 result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_ONLINE);
             }
@@ -1424,8 +1511,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             nk_ui_end_container(ui);
         }
         wizard_text(ui, 2u,
-                    "This version has no online features yet and makes no connection. Your "
-                    "choice is kept for when they arrive.",
+                    "News and reports aren't built yet, so online mode makes no connection. "
+                    "Your choice is kept for when they arrive.",
                     NK_UI_TYPE_CAPTION, theme->warning);
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 3u, &result);
         break;
@@ -1691,7 +1778,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
         };
         static const WizardButton font_buttons[] = {
-            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Import fonts folder", NK_UI_BUTTON_SMALL,
+            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Choose font files", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_IMPORT_FONTS},
             {PLAYER_UI_ID_WIZARD_REMOVE_FONTS, "Remove imported fonts", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_REMOVE_FONTS}
@@ -1729,7 +1816,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             wizard_text(ui, 4u,
                         safe_text(model->font_message,
                                   "Importing reads the .pgf files in a folder you choose."),
-                        NK_UI_TYPE_CAPTION, theme->warning);
+                        NK_UI_TYPE_CAPTION,
+                        model->font_message != NULL && model->font_message[0] != '\0'
+                            ? note_rgba(theme, model->font_message_kind) : theme->muted);
             wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 2u, &result);
             nk_ui_end_container(ui);
         }
@@ -2211,6 +2300,10 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              "Controller and keyboard", false, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_OPEN_CONTROLLER);
             }
+            if (settings_row(ui, 10u, PLAYER_UI_ID_SETTINGS_UPDATES, "Updates",
+                             "Check for updates", false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_CHECK_UPDATES);
+            }
             {
                 NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
                 (void)snprintf(line, sizeof(line), "Controller: %s",
@@ -2249,9 +2342,262 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
         }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset",
+                         NK_UI_BUTTON_DANGER)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET);
+        }
         nk_ui_end_container(ui);
     }
     nk_ui_end_container(ui);
+}
+
+/* Text only wraps at spaces, so a folder path is one word that would run out of
+   the card. Each word longer than max_word bytes keeps its start and its end
+   (the folder's own name) around "...". */
+static void settings_shorten_words(const char *in, char *out, size_t cap, size_t max_word) {
+    size_t used = 0u;
+    if (cap == 0u) return;
+    while (*in != '\0' && used + 1u < cap) {
+        size_t word = strcspn(in, " ");
+        if (word > max_word) {
+            size_t head = 12u;
+            size_t tail = max_word - head - 3u;
+            while (tail > 0u && ((unsigned char)in[word - tail] & 0xC0u) == 0x80u) --tail;
+            (void)snprintf(out + used, cap - used, "%.*s...%.*s", (int)head, in, (int)tail,
+                           in + word - tail);
+        } else {
+            (void)snprintf(out + used, cap - used, "%.*s", (int)word, in);
+        }
+        used += strlen(out + used);
+        in += word;
+        while (*in == ' ' && used + 1u < cap) out[used++] = *in++;
+        out[used] = '\0';
+    }
+    out[used < cap ? used : cap - 1u] = '\0';
+}
+
+/* Settings > Updates: one card that says where the check is, with the next step
+   first. Nothing here reaches the network on its own: every button is a click. */
+static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
+                             PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    PlayerUiUpdateStep step = model->update_step;
+    const char *version = safe_text(model->update_version, "");
+    bool busy = step == PLAYER_UI_UPDATE_CHECKING || step == PLAYER_UI_UPDATE_DOWNLOADING ||
+                step == PLAYER_UI_UPDATE_INSTALLING;
+    char lead[192];
+    char line[640];
+    char a[32];
+    char b[32];
+    uint32_t lead_rgba = theme->muted;
+    flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+    nk_ui_text_role(ui, FLOW_ID_TITLE, "Updates", NK_UI_TYPE_TITLE, theme->paper);
+    switch (step) {
+        case PLAYER_UI_UPDATE_CHECKING:
+            (void)snprintf(lead, sizeof(lead), "Asking GitHub for the newest version...");
+            break;
+        case PLAYER_UI_UPDATE_CURRENT:
+            (void)snprintf(lead, sizeof(lead), "You have the newest version.");
+            lead_rgba = theme->ready;
+            break;
+        case PLAYER_UI_UPDATE_AVAILABLE:
+            (void)snprintf(lead, sizeof(lead), "Version %s is out.", version);
+            lead_rgba = theme->ready;
+            break;
+        case PLAYER_UI_UPDATE_DOWNLOADING:
+            (void)snprintf(lead, sizeof(lead), "Downloading version %s...", version);
+            break;
+        case PLAYER_UI_UPDATE_DOWNLOADED:
+            (void)snprintf(lead, sizeof(lead), "Version %s is downloaded and checked.", version);
+            lead_rgba = theme->ready;
+            break;
+        case PLAYER_UI_UPDATE_INSTALLING:
+            (void)snprintf(lead, sizeof(lead), "Unpacking version %s...", version);
+            break;
+        case PLAYER_UI_UPDATE_INSTALLED:
+            (void)snprintf(lead, sizeof(lead), "Version %s is ready to start.", version);
+            lead_rgba = theme->ready;
+            break;
+        case PLAYER_UI_UPDATE_FAILED:
+            (void)snprintf(lead, sizeof(lead), "%s",
+                           safe_text(model->update_error_title, "Something went wrong"));
+            lead_rgba = theme->warning;
+            break;
+        case PLAYER_UI_UPDATE_IDLE:
+        default:
+            (void)snprintf(lead, sizeof(lead),
+                           "Nakagawa can ask GitHub whether a newer version is out. The request "
+                           "carries nothing about you, this PC or your games.");
+            break;
+    }
+    nk_ui_text_role(ui, FLOW_ID_LEAD, lead, NK_UI_TYPE_BODY_S, lead_rgba);
+    if (wizard_box_begin(ui, 0u)) {
+        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+        if (version[0] != '\0') {
+            const char *published = safe_text(model->update_published, "");
+            char about[48] = "";
+            if (model->update_prerelease && published[0] != '\0') {
+                (void)snprintf(about, sizeof(about), " (pre-release, %s)", published);
+            } else if (model->update_prerelease) {
+                (void)snprintf(about, sizeof(about), " (pre-release)");
+            } else if (published[0] != '\0') {
+                (void)snprintf(about, sizeof(about), " (%s)", published);
+            }
+            (void)snprintf(line, sizeof(line), "This version: %s    Newest: %s%s",
+                           safe_text(model->current_version, "unknown"), version, about);
+        } else {
+            (void)snprintf(line, sizeof(line), "This version: %s",
+                           safe_text(model->current_version, "unknown"));
+        }
+        nk_ui_text_role(ui, SET_ID_TEXT + 0xD0u, line, NK_UI_TYPE_DATA, theme->paper);
+        switch (step) {
+            case PLAYER_UI_UPDATE_AVAILABLE:
+                if (model->update_notes && model->update_notes[0]) {
+                    nk_ui_text(ui, SET_ID_TEXT + 0xD1u,
+                               nk_ui_text_clamp(ui, model->update_notes, &text, inner - 32.0f, 4),
+                               &text);
+                }
+                if (model->update_page_url && model->update_page_url[0]) {
+                    nk_ui_text_role(ui, SET_ID_TEXT + 0xD5u, model->update_page_url,
+                                    NK_UI_TYPE_CAPTION, theme->dim);
+                }
+                if (!model->update_has_zip) {
+                    (void)snprintf(line, sizeof(line),
+                                   "This release has no Windows download. Its page on GitHub "
+                                   "lists what it offers.");
+                } else if (!model->update_can_download) {
+                    (void)snprintf(line, sizeof(line),
+                                   "Download it from the release page on GitHub.");
+                } else {
+                    flow_bytes(a, sizeof(a), model->update_zip_bytes);
+                    (void)snprintf(line, sizeof(line),
+                                   "Download fetches %s (%s) and checks it against the "
+                                   "release's published SHA-256. Nothing is installed until "
+                                   "you choose Install.",
+                                   safe_text(model->update_zip_name, "the Windows ZIP"), a);
+                }
+                nk_ui_text(ui, SET_ID_TEXT + 0xD2u, line, &text);
+                break;
+            case PLAYER_UI_UPDATE_DOWNLOADING:
+                nk_ui_progress_bar(ui, SET_ID_TEXT + 0xD3u, inner - 32.0f,
+                                   model->update_zip_bytes > 0ull
+                                       ? (float)((double)model->update_received_bytes /
+                                                 (double)model->update_zip_bytes)
+                                       : -1.0f,
+                                   0.0);
+                flow_bytes(a, sizeof(a), model->update_received_bytes);
+                flow_bytes(b, sizeof(b), model->update_zip_bytes);
+                (void)snprintf(line, sizeof(line), "%s of %s", a, b);
+                nk_ui_text_role(ui, SET_ID_TEXT + 0xD4u, line, NK_UI_TYPE_DATA, theme->muted);
+                break;
+            case PLAYER_UI_UPDATE_DOWNLOADED: {
+                char folder[96];
+                settings_shorten_words(safe_text(model->update_folder, "the downloads folder"),
+                                       folder, sizeof(folder), 72u);
+                (void)snprintf(line, sizeof(line),
+                               "Its SHA-256 matches the release's published checksum. Saved in "
+                               "%s. Install unpacks it into a new folder of its own; this "
+                               "version stays as it is.", folder);
+                nk_ui_text(ui, SET_ID_TEXT + 0xD2u,
+                           nk_ui_text_clamp(ui, line, &text, inner - 32.0f, 4), &text);
+                break;
+            }
+            case PLAYER_UI_UPDATE_INSTALLED: {
+                char folder[96];
+                settings_shorten_words(safe_text(model->update_folder, "a new folder"), folder,
+                                       sizeof(folder), 72u);
+                (void)snprintf(line, sizeof(line),
+                               "It is in %s. Close Nakagawa, then start bin\\nakagawa_player.exe "
+                               "from that folder. Your library, saves and settings stay where "
+                               "they are and carry over.", folder);
+                nk_ui_text(ui, SET_ID_TEXT + 0xD2u,
+                           nk_ui_text_clamp(ui, line, &text, inner - 32.0f, 5), &text);
+                break;
+            }
+            case PLAYER_UI_UPDATE_FAILED:
+                text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+                settings_shorten_words(safe_text(model->update_error_message, ""), line,
+                                       sizeof(line), 72u);
+                nk_ui_text(ui, SET_ID_TEXT + 0xD2u,
+                           nk_ui_text_clamp(ui, line, &text, inner - 32.0f, 5), &text);
+                break;
+            default:
+                break;
+        }
+        if (!busy &&
+            wizard_switch(ui, PLAYER_UI_ID_UPDATE_AT_START, SET_ID_TEXT + 0xE0u,
+                          "Check at start",
+                          "Asks GitHub once each time Nakagawa starts. Off unless you turn it "
+                          "on.",
+                          model->check_updates_at_start, inner - 32.0f)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START);
+        }
+        nk_ui_end_container(ui);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            switch (step) {
+                case PLAYER_UI_UPDATE_AVAILABLE:
+                    if (model->update_can_download &&
+                        nk_ui_button(ui, PLAYER_UI_ID_UPDATE_DOWNLOAD, "Download",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_PAGE, "Open release page",
+                                     model->update_can_download ? 0u : NK_UI_BUTTON_PRIMARY)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE);
+                    }
+                    break;
+                case PLAYER_UI_UPDATE_DOWNLOADING:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_CANCEL, "Cancel", 0u)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_CANCEL_UPDATE);
+                    }
+                    break;
+                case PLAYER_UI_UPDATE_DOWNLOADED:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_INSTALL, "Install",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_INSTALL_UPDATE);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_FOLDER, "Open folder", 0u)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER);
+                    }
+                    break;
+                case PLAYER_UI_UPDATE_INSTALLED:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_FOLDER, "Open folder",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER);
+                    }
+                    break;
+                case PLAYER_UI_UPDATE_IDLE:
+                case PLAYER_UI_UPDATE_CURRENT:
+                case PLAYER_UI_UPDATE_FAILED:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_UPDATE_CHECK,
+                                     step == PLAYER_UI_UPDATE_IDLE ? "Check for updates"
+                                                                   : "Check again",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_CHECK_UPDATES);
+                    }
+                    /* A failed install leaves the checked ZIP to unpack by hand. */
+                    if (step == PLAYER_UI_UPDATE_FAILED &&
+                        model->update_failed_step == PLAYER_UI_UPDATE_INSTALLING &&
+                        model->update_folder && model->update_folder[0] &&
+                        nk_ui_button(ui, PLAYER_UI_ID_UPDATE_FOLDER, "Open folder", 0u)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER);
+                    }
+                    break;
+                default:
+                    break;
+            }
+            if (step != PLAYER_UI_UPDATE_DOWNLOADING &&
+                nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back",
+                             busy ? NK_UI_BUTTON_PRIMARY : 0u)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
 }
 
 /* The Settings pages that are a dialog card over the flow frame. */
@@ -2270,14 +2616,14 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         nk_ui_text_role(ui, FLOW_ID_TITLE, "Online and developer options", NK_UI_TYPE_TITLE,
                         theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
-                        "This version has no online features yet and makes no connection. Your "
-                        "choice is kept for when they arrive.",
+                        "News and reports aren't built yet, so online mode makes no "
+                        "connection. Your choice is kept for when they arrive.",
                         NK_UI_TYPE_BODY_S, theme->warning);
         if (wizard_box_begin(ui, 0u)) {
             if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, SET_ID_TEXT + 0x80u,
                               "Online mode",
-                              "Check nakagawa.jaycast.net for updates and news, and let you send "
-                              "reports. Nothing is sent without you.",
+                              "Check nakagawa.jaycast.net for news and let you send reports. "
+                              "Nothing is sent without you.",
                               model->online_mode, inner - 32.0f)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ONLINE);
             }
@@ -2286,13 +2632,6 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                                              NK_UI_SPACE_3);
                 char label[48];
                 if (nk_ui_begin_container(ui, SET_ID_TEXT + 0x88u, &row, NULL)) {
-                    (void)snprintf(label, sizeof(label), "Update check: %s",
-                                   settings_on_off(model->online_updates));
-                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_UPDATES, label,
-                                     NK_UI_BUTTON_SMALL |
-                                         (model->online_updates ? NK_UI_BUTTON_PRIMARY : 0u))) {
-                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UPDATES);
-                    }
                     (void)snprintf(label, sizeof(label), "News: %s",
                                    settings_on_off(model->online_news));
                     if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NEWS, label,
@@ -2426,6 +2765,9 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             }
         }
         break;
+    case PLAYER_UI_SETTINGS_PAGE_UPDATES:
+        settings_updates(ui, model, inner, result);
+        break;
     case PLAYER_UI_SETTINGS_PAGE_FONTS:
         /* Walkthrough blocker: the wizard's Fonts step is not on the Add to
            library path, so the import lives here, with each slot's status. */
@@ -2433,9 +2775,10 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
                         "Optional. Games look right with your PSP's own fonts: copy the .pgf "
-                        "files from flash0:/font on your PSP to a folder on this PC and import "
-                        "it (docs/SETUP.md, \"Copying the fonts from your PSP\"). Until then "
-                        "similar fonts stand in.",
+                        "files from flash0:/font on your PSP to a folder on this PC (docs/SETUP.md, "
+                        "\"Copying the fonts from your PSP\"), then choose them here. The import "
+                        "reads ltn0.pgf to ltn15.pgf, jpn0.pgf and kr0.pgf from that folder; "
+                        "until then similar fonts stand in.",
                         NK_UI_TYPE_BODY_S, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
             NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
@@ -2462,7 +2805,8 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 nk_ui_end_container(ui);
             }
             if (model->font_message != NULL && model->font_message[0] != '\0') {
-                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION,
+                                                note_rgba(theme, model->font_message_kind));
                 nk_ui_text(ui, SET_ID_TEXT + 0xDCu,
                            nk_ui_text_clamp(ui, model->font_message, &text, inner - 32.0f, 2),
                            &text);
@@ -2474,7 +2818,7 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                                          NK_UI_SPACE_3);
             row.padding_top = NK_UI_SPACE_1;
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Import fonts folder",
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Choose font files",
                                  NK_UI_BUTTON_PRIMARY)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
                 }
@@ -2484,6 +2828,62 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 }
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", 0u)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET:
+        /* Owner, 2026-10-29: back to a first run, with the user data moved
+           aside (player_app_factory_reset), never deleted. */
+        flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Factory reset", theme->warning);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Reset Nakagawa Recomp to a first run?",
+                        NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Your library, saves, imported PSP fonts, keys, settings, built games "
+                        "and downloaded build tools move into backup folders. Nakagawa Recomp "
+                        "then starts again with the setup it shows the first time. Nothing is "
+                        "deleted, and your disc images and logs stay where they are.",
+                        NK_UI_TYPE_BODY, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->paper);
+            nk_ui_text_role(ui, SET_ID_TEXT + 0x200u,
+                            model->reset_folder_count > 0u
+                                ? "These folders get \"-backup-\" and today's date and time "
+                                  "added to their names:"
+                                : "Nakagawa Recomp has no user data on this PC yet.",
+                            NK_UI_TYPE_BODY_S, theme->muted);
+            for (size_t i = 0u; i < model->reset_folder_count && i < PLAYER_UI_RESET_FOLDERS;
+                 ++i) {
+                /* The folders differ at their ends (config, data, cache,
+                   saves), so a long one keeps its end and loses its middle. */
+                char folder[600];
+                settings_shorten_words(safe_text(model->reset_folders[i], ""), folder,
+                                       sizeof(folder), 72u);
+                nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0x201u + (NkUiId)i),
+                           nk_ui_text_clamp(ui, folder, &data, inner - 32.0f, 1), &data);
+            }
+            if (model->reset_folder_count > 0u) {
+                nk_ui_text_role(ui, SET_ID_TEXT + 0x20Fu,
+                                "To undo it, close Nakagawa Recomp and give each folder its "
+                                "old name back.",
+                                NK_UI_TYPE_CAPTION, theme->muted);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Keep everything",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                if (model->reset_folder_count > 0u &&
+                    nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_CONFIRM_RESET, "Reset",
+                                 NK_UI_BUTTON_DANGER)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_FACTORY_RESET);
                 }
                 nk_ui_end_container(ui);
             }

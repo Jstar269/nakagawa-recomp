@@ -536,6 +536,92 @@ static int test_input_waits_for_a_new_screen_layout(void) {
     return 1;
 }
 
+static void push_pointer(NkUi *ui, float x, float y, bool down) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_POINTER;
+    event.x = x;
+    event.y = y;
+    event.down = down;
+    nk_ui_push_event(ui, &event);
+}
+
+/* The owner's first run: one click on COPY FILES AND CONTINUE swapped in the
+   copy screen, whose CANCEL sat where the button was, and the same click
+   cancelled the copy. A click activates a control only when its press and its
+   release both land on it; a held pointer that moves is a drag, not a press. */
+static int test_click_needs_press_and_release_on_one_control(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create click context");
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
+
+    /* Press and release on one button: it fires on the release, once. */
+    push_pointer(ui, 10.0f, 10.0f, true);
+    CHECK(draw_button_pair(ui, 10u, 0u) == 0u, "a press alone activates nothing");
+    CHECK(nk_ui_focused(ui) == 10u, "a press focuses the control under it");
+    push_pointer(ui, 10.0f, 10.0f, false);
+    CHECK(draw_button_pair(ui, 10u, 0u) == 10u, "the release on the pressed button fires it");
+    CHECK(draw_button_pair(ui, 10u, 0u) == 0u, "it fires once");
+
+    /* The copy button (10) and the copy screen's CANCEL (20), which takes its
+       place once 10 fires. One click, one event a frame: the press, two small
+       moves with the button held, the release. Before, the press fired 10 and
+       a held move then pressed 20. */
+    {
+        bool copying = false;
+        bool cancelled = false;
+        int fired_on = -1;
+        for (frame = 0; frame < 8; ++frame) {
+            if (frame == 0) push_pointer(ui, 10.0f, 10.0f, true);
+            if (frame == 1) push_pointer(ui, 11.0f, 10.0f, true);
+            if (frame == 2) push_pointer(ui, 12.0f, 11.0f, true);
+            if (frame == 3) push_pointer(ui, 12.0f, 11.0f, false);
+            activated = draw_button_pair(ui, copying ? 20u : 10u, 0u);
+            if (activated == 10u && !copying) {
+                copying = true;
+                fired_on = frame;
+            } else if (activated == 20u) {
+                cancelled = true;
+            }
+        }
+        CHECK(copying && fired_on == 3, "the copy button fires once, on the release");
+        CHECK(!cancelled, "the click does not press the CANCEL that took its place");
+    }
+
+    /* A host that changes screen drops the press, even for a control with the
+       same id in the same place. */
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    push_pointer(ui, 10.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    nk_ui_cancel_press(ui);
+    push_pointer(ui, 10.0f, 10.0f, false);
+    activated = 0u;
+    for (frame = 0; frame < 3 && activated == 0u; ++frame) {
+        activated = draw_button_pair(ui, 10u, 0u);
+    }
+    CHECK(activated == 0u, "a cancelled press's release activates nothing");
+
+    /* A press on one button released on the other activates neither. */
+    push_pointer(ui, 10.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    push_pointer(ui, 300.0f, 10.0f, false);
+    activated = 0u;
+    for (frame = 0; frame < 3 && activated == 0u; ++frame) {
+        activated = draw_button_pair(ui, 10u, 0u);
+    }
+    CHECK(activated == 0u, "a release away from the pressed button activates nothing");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* A row: a control that owns left and right (a segmented control), then a plain
    button to its right. */
 static void horizontal_row_frame(NkUi *ui, NkUiNavDir *taken, bool *took) {
@@ -657,6 +743,13 @@ static int test_image_decode(void) {
     first_serial = image.serial;
     CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &second) == NK_UI_IMAGE_OK &&
           second.serial != first_serial, "every decode gets its own serial");
+    {
+        /* Caller-filled pixels (the VRAM viewer, #314) draw from the same serial space. */
+        uint64_t own = nk_ui_image_new_serial();
+        uint64_t again = nk_ui_image_new_serial();
+        CHECK(own != 0u && own != first_serial && own != second.serial && again != own,
+              "a caller-owned image gets a serial no decode or earlier call has");
+    }
     nk_ui_image_free(&second);
     nk_ui_image_free(&image);
     CHECK(image.rgba_pm == NULL && image.width == 0u && image.serial == 0u, "free zeroes the image");
@@ -770,6 +863,68 @@ static int test_app_icon(void) {
     return 1;
 }
 
+/* A host's display rule for the test: the synthetic profile folder becomes "~",
+   which never grows the text. */
+#define SYNTH_HOME "C:\\path\\SYNTHETIC-USER"
+static size_t synth_display_text(const char *in, char *out, size_t out_size) {
+    size_t home_len = strlen(SYNTH_HOME);
+    size_t used = 0u;
+    while (*in != '\0' && used + 1u < out_size) {
+        if (strncmp(in, SYNTH_HOME, home_len) == 0) {
+            out[used++] = '~';
+            in += home_len;
+        } else {
+            out[used++] = *in++;
+        }
+    }
+    out[used] = '\0';
+    return used;
+}
+
+/* Every string reaches the frame through the host's display rules: copied
+   text, labels, styled text, and a clamp, which measures the rewritten text
+   so that its cut never keeps part of the profile folder. */
+static int test_display_text_rules(void) {
+    static const char path[] = SYNTH_HOME "\\Games\\PSP\\disc.iso";
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiTextStyle style = nk_ui_type(NK_UI_TYPE_DATA, 0xFFFFFFFFu);
+    NkUiConfig config;
+    NkUiLayout layout;
+    NkUi *ui;
+    char dump[4096];
+    const char *shown;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.display_text = synth_display_text;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 400.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create context with display rules");
+    nk_ui_begin(ui, 0.0);
+    CHECK(nk_ui_begin_container(ui, 1u, &layout, NULL), "open display rules container");
+    shown = nk_ui_frame_text(ui, path);
+    CHECK(strcmp(shown, "~\\Games\\PSP\\disc.iso") == 0, "frame text shows the profile as ~");
+    shown = nk_ui_text_clamp(ui, path, &style, 2000.0f, 1);
+    CHECK(strcmp(shown, "~\\Games\\PSP\\disc.iso") == 0, "a clamp that fits returns the rewritten text");
+    shown = nk_ui_text_clamp(ui, "Copied from " SYNTH_HOME "\\Games\\PSP\\a-long-file-name.iso",
+                             &style, 60.0f, 1);
+    CHECK(strstr(shown, "SYNTHETIC") == NULL && strstr(shown, "C:\\path") == NULL,
+          "a clamp cuts the rewritten text, never a part of the profile folder");
+    nk_ui_label(ui, 2u, path, 0, 16);
+    nk_ui_text(ui, 3u, "Log file: " SYNTH_HOME "\\logs\\player.txt", &style);
+    nk_ui_end_container(ui);
+    CHECK(nk_ui_end(ui) != NULL, "complete display rules frame");
+    CHECK(nk_ui_dump(ui, dump, sizeof(dump)) < sizeof(dump), "display rules dump fits");
+    CHECK(strstr(dump, "SYNTHETIC-USER") == NULL, "no drawn run carries the profile folder");
+    CHECK(strstr(dump, "~\\\\Games") != NULL || strstr(dump, "~\\Games") != NULL,
+          "the label run shows the rewritten path");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -779,8 +934,10 @@ int main(int argc, char **argv) {
         !test_container_return_contract() || !test_backend_declarations() ||
         !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() ||
         !test_input_waits_for_a_new_screen_layout() ||
+        !test_click_needs_press_and_release_on_one_control() ||
         !test_control_owns_horizontal() || !test_wave_caps() ||
-        !test_image_decode() || !test_image_command() || !test_app_icon()) {
+        !test_image_decode() || !test_image_command() || !test_app_icon() ||
+        !test_display_text_rules()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

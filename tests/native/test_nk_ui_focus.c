@@ -587,6 +587,10 @@ static int test_event_construction(void) {
     CHECK(n == 1 && ev[0].type == NK_UI_EV_CYCLE && ev[0].dir == NK_UI_DIR_LEFT, "Shift+Tab is CYCLE/left");
     n = nk_ui_input_button(&in, NK_UI_BTN_CYCLE_NEXT, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.6, ev, 4);
     CHECK(n == 1 && ev[0].type == NK_UI_EV_CYCLE && ev[0].dir == NK_UI_DIR_RIGHT, "Tab is CYCLE/right");
+    n = nk_ui_input_button(&in, NK_UI_BTN_PAGE_PREV, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.7, ev, 4);
+    CHECK(n == 1 && ev[0].type == NK_UI_EV_PAGE && ev[0].dir == NK_UI_DIR_LEFT, "Page previous is PAGE/left");
+    n = nk_ui_input_button(&in, NK_UI_BTN_PAGE_NEXT, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.8, ev, 4);
+    CHECK(n == 1 && ev[0].type == NK_UI_EV_PAGE && ev[0].dir == NK_UI_DIR_RIGHT, "Page next is PAGE/right");
     CHECK(nk_ui_input_button(&in, (NkUiInputButton)99, true, 0, NK_UI_PAD_NEUTRAL, 0.0, ev, 4) == 0u,
           "an unknown button is ignored");
     CHECK(nk_ui_input_button(&in, NK_UI_BTN_BACK, true, 4, NK_UI_PAD_NEUTRAL, 4.0, ev, 0) == 0u,
@@ -1205,6 +1209,18 @@ static int test_sdl_translation(void) {
     e = key_event(SDLK_DOWN, false, false, 0);
     (void)tr(&s, &e, 3.5);
     CHECK(nk_ui_input_poll(&s.input, 9.0, g_out, NK_UI_INPUT_MAX_EVENTS) == 0u, "key release stops it");
+    e = key_event(SDLK_PAGEDOWN, true, false, 0);
+    n = tr(&s, &e, 3.6);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_PAGE && g_out[0].dir == NK_UI_DIR_RIGHT,
+          "Page Down is the next page");
+    e = key_event(SDLK_PAGEDOWN, false, false, 0);
+    (void)tr(&s, &e, 3.61);
+    e = key_event(SDLK_PAGEUP, true, false, 0);
+    n = tr(&s, &e, 3.7);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_PAGE && g_out[0].dir == NK_UI_DIR_LEFT,
+          "Page Up is the previous page");
+    e = key_event(SDLK_PAGEUP, false, false, 0);
+    (void)tr(&s, &e, 3.71);
     e = key_event(SDLK_Z, true, false, 0);
     CHECK(tr(&s, &e, 4.0) == 0u, "an unmapped key is ignored");
 
@@ -1248,9 +1264,31 @@ static int test_sdl_translation(void) {
     CHECK(n == 1 && g_out[0].type == NK_UI_EV_NAV && g_out[0].dir == NK_UI_DIR_RIGHT, "stick right past 0.5");
     e.gaxis.value = 5000;
     CHECK(tr(&s, &e, 7.1) == 0u, "stick back inside the dead zone releases");
+    /* The triggers turn pages: a press past 0.5, held until below 0.35. */
     e.gaxis.axis = SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
     e.gaxis.value = 30000;
-    CHECK(tr(&s, &e, 7.2) == 0u, "triggers are ignored");
+    n = tr(&s, &e, 7.2);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_PAGE && g_out[0].dir == NK_UI_DIR_RIGHT &&
+          g_out[0].down, "right trigger is the next page");
+    e.gaxis.value = 13000;
+    CHECK(tr(&s, &e, 7.21) == 0u, "a trigger eased back above the release point stays held");
+    e.gaxis.value = 30000;
+    CHECK(tr(&s, &e, 7.22) == 0u, "pressing a held trigger again turns no page");
+    e.gaxis.value = 2000;
+    CHECK(tr(&s, &e, 7.23) == 0u, "a released trigger is silent");
+    e.gaxis.value = 20000;
+    n = tr(&s, &e, 7.24);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_PAGE && g_out[0].dir == NK_UI_DIR_RIGHT,
+          "the next press past 0.5 turns the page again");
+    e.gaxis.value = 0;
+    (void)tr(&s, &e, 7.25);
+    e.gaxis.axis = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
+    e.gaxis.value = 32767;
+    n = tr(&s, &e, 7.26);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_PAGE && g_out[0].dir == NK_UI_DIR_LEFT,
+          "left trigger is the previous page");
+    e.gaxis.value = 0;
+    (void)tr(&s, &e, 7.27);
 
     /* Hot-plug through SDL's own events: a pad that connects switches the whole
        prompt bar to controller glyphs, and its removal switches back. */

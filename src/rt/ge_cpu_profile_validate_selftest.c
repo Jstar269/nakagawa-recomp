@@ -30,6 +30,7 @@
 
 #include "recomp.h"
 #include "debug.h"
+#include "ge_capture.h"
 #include "ge_shared.h"
 
 #include <inttypes.h>
@@ -689,6 +690,61 @@ static void test_ge_vram_cpu_visibility(void) {
     }
 }
 
+/* The colour target's pixels are read and written in place when that is exactly what the
+ * guest accessors would do, and through the accessors otherwise. A depth-tested full-screen
+ * sprite into a target clear of the depth surface takes no accessor call at all (each one
+ * cost about 3000 host cycles); a target that overlaps the depth surface keeps every access
+ * on the accessor path, so the software depth is still written back before it is read. */
+#define LIST_FB_DIRECT 0x08116000u
+static void test_ge_fb_direct_access(void) {
+    static const uint32_t through16 = (7u << 2) | (2u << 7) | (1u << 23);
+    uint32_t vertex = VRAM_TEST_VERTS + 0x400u;
+    uint32_t sprite = vertex;
+    vertex = depth_test_vertex(vertex, 0u, 0u, 0x5555u, 0xFF405060u);
+    (void)depth_test_vertex(vertex, 480u, 272u, 0x5555u, 0xFF405060u);
+    s_pc = LIST_FB_DIRECT;
+    W(0x10, 0x080000u);
+    W(0x9C, 0x00000000u);                /* colour base: 0x04000000 */
+    W(0x9D, 512u);
+    W(0xD2, 3u);                         /* 8888 */
+    W(0x9E, 0x110000u);                  /* depth base: 0x04110000, clear of the colour */
+    W(0x9F, 512u);
+    W(0xD4, 0u);
+    W(0xD5, (271u << 10) | 479u);
+    W(0x23, 1u);                         /* depth test enabled */
+    W(0xDE, 1u);                         /* always pass */
+    W(0x21, 1u);                         /* blending enabled */
+    W(0xDF, 0x000032u);                  /* src alpha, one minus src alpha, add */
+    W(0x28, 0u);
+    W(0xD3, 0u);
+    W(0x12, through16);
+    prim(6u, 2u, sprite);
+    W(0x0C, 0u);
+
+    unsigned long long direct0, accessor0, direct1, accessor1;
+    ge_fb_access_counts(&direct0, &accessor0);
+    expect(ge_run_list(LIST_FB_DIRECT, 0) == 0, "fb_direct", "list did not reach END");
+    ge_fb_access_counts(&direct1, &accessor1);
+    expect(direct1 - direct0 >= 480ull * 272ull * 2ull, "fb_direct",
+           "every pixel's read and write of a target clear of depth is made in place");
+    expect(accessor1 == accessor0, "fb_direct",
+           "a target clear of depth takes no guest-accessor call");
+    expect((MEM_R32(0x04000000u + (100u * 512u + 200u) * 4u) & 0x00FFFFFFu) == 0x00405060u,
+           "fb_direct", "the in-place store is what the CPU then reads");
+    uint32_t linear = (100u * 512u + 200u) * 2u;
+    expect(MEM_R16(0x04110000u + (linear ^ 0x2040u)) == 0x5555u,
+           "fb_direct", "the depth written beside the in-place colour reaches guest VRAM");
+
+    /* build_vram_depth_list_at(0x0CC000): its depth surface runs past 0x04100000, the start
+     * of its colour target, so those colour accesses must stay on the accessor path. */
+    build_vram_depth_list_at(0x0CC000u);
+    ge_fb_access_counts(&direct0, &accessor0);
+    expect(ge_run_list(LIST_VRAM_DEPTH, 0) == 0, "fb_direct_overlap", "list did not reach END");
+    ge_fb_access_counts(&direct1, &accessor1);
+    expect(accessor1 > accessor0, "fb_direct_overlap",
+           "colour accesses that overlap the depth surface keep the accessor path");
+}
+
 /* ---- GPU backend stand-in (the hook contract src/rt/gpu_sdl3vk/ge_gpu.c fills) ---- */
 
 static unsigned s_hook_prims, s_hook_flushes;
@@ -1319,6 +1375,92 @@ static uint32_t build_bbox_list(const BboxCase *c, uint32_t sprite_a, uint32_t s
     return bjump;
 }
 
+/* The developer VRAM viewer's decoder (#314): each colour PSM expands as the texture decoder
+ * expands it, DEPTH16 is the VRAMDUMP grey, rows follow the stride, unsupported or unreadable
+ * requests read nothing, and guest memory is left as it was. */
+static void test_ge_vram_view_decode(void) {
+    static const uint32_t base = 0x041C0000u;
+    static const uint16_t p16[2][4] = {
+        {0x001Fu, 0x07E0u, 0xDEADu, 0xBEEFu},
+        {0xF800u, 0x0000u, 0xDEADu, 0xBEEFu},
+    };
+    uint8_t before[64];
+    uint32_t out[8];
+    for (unsigned y = 0; y < 2u; y++)
+        for (unsigned x = 0; x < 4u; x++)
+            memcpy(SR_HOST(base + (y * 4u + x) * 2u), &p16[y][x], 2u);
+    memcpy(before, SR_HOST(base), sizeof before);
+
+    /* 5650, a 2x2 window of a stride-4 surface: the second row starts one stride on. */
+    memset(out, 0xA5, sizeof out);
+    expect(ge_vram_decode_surface(base, 2u, 2u, 4u, 0u, out) == 1, "vram_view", "5650 decodes");
+    expect(out[0] == 0xFF0000FFu && out[1] == 0xFF00FF00u && out[2] == 0xFFFF0000u &&
+           out[3] == 0xFF000000u, "vram_view", "5650 expands each channel and is opaque");
+    expect(out[4] == 0xA5A5A5A5u, "vram_view", "nothing is written past width * height");
+
+    uint16_t v5551[2] = {0x801Fu, 0x7C00u};
+    memcpy(SR_HOST(base + 0x100u), v5551, sizeof v5551);
+    expect(ge_vram_decode_surface(base + 0x100u, 2u, 1u, 2u, 1u, out) == 1 &&
+           out[0] == 0xFF0000FFu && out[1] == 0x00FF0000u, "vram_view",
+           "5551 takes alpha from bit 15");
+    uint16_t v4444 = 0x1234u;
+    memcpy(SR_HOST(base + 0x110u), &v4444, 2u);
+    expect(ge_vram_decode_surface(base + 0x110u, 1u, 1u, 1u, 2u, out) == 1 &&
+           out[0] == 0x11223344u, "vram_view", "4444 scales each nibble by 17");
+    uint32_t v8888 = 0x80402010u;
+    memcpy(SR_HOST(base + 0x120u), &v8888, 4u);
+    expect(ge_vram_decode_surface(base + 0x120u, 1u, 1u, 1u, 3u, out) == 1 &&
+           out[0] == 0x80402010u, "vram_view", "8888 is the stored word");
+    uint16_t depth = 0xABCDu;
+    memcpy(SR_HOST(base + 0x130u), &depth, 2u);
+    expect(ge_vram_decode_surface(base + 0x130u, 1u, 1u, 1u, 11u, out) == 1 &&
+           out[0] == 0xFFABABABu, "vram_view", "DEPTH16 is its high byte as opaque grey");
+
+    memset(out, 0xA5, sizeof out);
+    expect(!ge_vram_decode_surface(base, 0u, 1u, 4u, 0u, out) &&
+           !ge_vram_decode_surface(base, 4u, 1u, 2u, 0u, out) &&
+           !ge_vram_decode_surface(base, 1u, 1u, 1u, 4u, out) &&
+           !ge_vram_decode_surface(base, GE_VRAM_VIEW_MAX_WIDTH + 1u, 1u,
+                                   GE_VRAM_VIEW_MAX_WIDTH + 1u, 0u, out) &&
+           !ge_vram_decode_surface(base, 1u, 1u, 1u, 0u, NULL) &&
+           !ge_vram_decode_surface(0xFFFFF000u, 4u, 4u, 4u, 3u, out),
+           "vram_view", "a zero size, short stride, unknown format, oversize, NULL output or "
+           "unreadable rectangle is refused");
+    expect(out[0] == 0xA5A5A5A5u, "vram_view", "a refused request writes nothing");
+    expect(memcmp(before, SR_HOST(base), sizeof before) == 0, "vram_view",
+           "decoding leaves guest memory as it was");
+
+    /* The bound texture goes through the texture decoder with the GE state as it is; the
+     * state is only read. */
+    GeState *state = ge_state_ptr();
+    GeState saved = *state;
+    uint32_t texels[2] = {0x11223344u, 0x55667788u};
+    memcpy(SR_HOST(base + 0x200u), texels, sizeof texels);
+    state->tex_addr = base + 0x200u;
+    state->tex_w = 2;
+    state->tex_h = 1;
+    state->tex_bufw = 2u;
+    state->tex_fmt = 3u;
+    state->tex_swizzle = 0;
+    GeState staged = *state;
+    memset(out, 0, sizeof out);
+    expect(ge_vram_decode_bound_texture(out, 8u) == 1 && out[0] == 0x11223344u &&
+           out[1] == 0x55667788u, "vram_view", "the bound texture decodes as the sampler reads it");
+    expect(memcmp(&staged, state, sizeof staged) == 0, "vram_view",
+           "decoding the bound texture leaves the GE state as it was");
+    expect(ge_vram_decode_bound_texture(out, 1u) == 0, "vram_view",
+           "a texture larger than the buffer is refused");
+    g_ge_capture_active = 1;
+    expect(ge_vram_decode_bound_texture(out, 8u) == 0, "vram_view",
+           "no texture is decoded while a GE capture runs");
+    g_ge_capture_active = 0;
+    state->tex_addr = 0xFFFFF000u;
+    expect(ge_vram_decode_bound_texture(out, 8u) == 0, "vram_view",
+           "an unreadable texture is refused");
+    *state = saved;
+    printf("VRAM_VIEW decode cases=11\n");
+}
+
 static void test_ge_bounding_box_branch(void) {
     /* Transform-mode boxes under emit_setup's perspective (w = -z) and 480x272 viewport. */
     s_vtx = BBOX_VERTS;
@@ -1566,8 +1708,10 @@ int main(int argc, char **argv) {
     expect_fault("sparse_only", &sparse_only, &sparse_fault);
 
     test_ge_vram_cpu_visibility();
+    test_ge_fb_direct_access();
     test_ge_vram_depth_bit13_absolute_xor();
     test_ge_bounding_box_branch();
+    test_ge_vram_view_decode();
 
     printf("ge_cpu_profile_validate_selftest: strip_cache=%s scenarios=%u faults=%u failures=%d\n",
            strip_cache ? "on" : "off", s_scenarios, s_faults, s_failures);

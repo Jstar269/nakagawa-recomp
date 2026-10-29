@@ -39,6 +39,7 @@ typedef struct {
     bool fullscreen;
     bool vsync;
     bool experimental_60hz; /* exports SR_EXPERIMENTAL_60HZ=1; only an enhancement-package build reads it */
+    bool developer_mode;    /* exports SR_DEVELOPER_MODE=1: the runtime's developer HUD and pages (#314) */
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
     uint32_t headless_accept_presented_frames; /* 0 disables the windowed acceptance checkpoint */
@@ -50,6 +51,12 @@ typedef struct {
        it over as NK_INPUT_PROFILE. Empty leaves the child on its own resolved
        profile path, which is the pre-#520 behaviour. */
     char input_profile_path[NK_MAX_PATH];
+    /* Desktop bounds (x, y, w, h) of the display that holds the launcher window,
+       exported as SR_LAUNCHER_DISPLAY_BOUNDS so the child opens its window on that
+       display (sr_parse_display_bounds in src/rt/recomp.h). A width or height of
+       0, as prepare_session leaves it, exports an empty value: the child then
+       uses the primary display. */
+    int launcher_display_bounds[4];
 } NkRuntimeConfig;
 
 typedef struct {
@@ -247,6 +254,25 @@ bool nk_launch_keep_run_log_in(const char *events_path, const char *log_dir,
  * log), capped at NK_LAUNCH_RUN_LOG_MAX_BYTES. */
 bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
                             char *out_path, size_t out_size);
+
+/* The card for a program the OS refused to start because a security product or
+ * policy blocked it, built from the OS error the spawn reported
+ * (NkProcessHandle.spawn_error). `program` names it in a sentence ("the game")
+ * and `program_title` in a title ("Game"). The details hold the OS's own text for
+ * the error and the program's path. Returns false, with `out` cleared, when the
+ * error is not such a block (nk_platform_spawn_block says NK_SPAWN_BLOCK_NONE). */
+typedef struct {
+    NkSpawnBlock block;
+    char code[32];
+    char title[128];
+    char message[512];
+    char details[512];
+} NkSpawnBlockReport;
+
+bool nk_launch_describe_spawn_block(int os_error, const char *program,
+                                    const char *program_title,
+                                    const char *program_path,
+                                    NkSpawnBlockReport *out);
 
 #ifdef __cplusplus
 }

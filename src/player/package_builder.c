@@ -18,6 +18,7 @@
 
 #include "package_builder.h"
 #include "nk_json.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 
 #include <ctype.h>
@@ -653,8 +654,14 @@ static void winhttp_close(void *context) {
 
 static bool winhttp_open(void *context, const char *url, const char *allowed_hosts,
                          PackageHttpResponse *response) {
-    (void)context;
+    const PackageHttpOptions *options = (const PackageHttpOptions *)context;
+    wchar_t user_agent[64] = L"NakagawaRecomp/PrerequisiteBootstrap";
     if (!allowed_url(url, allowed_hosts) || !response) return false;
+    if (options && options->user_agent &&
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, options->user_agent, -1, user_agent,
+                            (int)(sizeof(user_agent) / sizeof(user_agent[0]))) <= 0) {
+        return false;
+    }
     WinHttpDownload *state = (WinHttpDownload *)calloc(1, sizeof(*state));
     if (!state) return false;
     if (strlen(url) >= sizeof(state->final_url)) {
@@ -662,7 +669,7 @@ static bool winhttp_open(void *context, const char *url, const char *allowed_hos
         return false;
     }
     snprintf(state->final_url, sizeof(state->final_url), "%s", url);
-    state->session = WinHttpOpen(L"NakagawaRecomp/PrerequisiteBootstrap",
+    state->session = WinHttpOpen(user_agent,
                                  WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!state->session) {
@@ -783,6 +790,14 @@ static bool sha256_begin(BCRYPT_ALG_HANDLE *algorithm, BCRYPT_HASH_HANDLE *hash,
     return true;
 }
 #endif
+
+PackageHttpOpen package_builder_native_transport(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return winhttp_open;
+#else
+    return NULL;
+#endif
+}
 
 bool package_builder_download_verified(
     const PackagePrerequisite *item, const char *destination,
@@ -1430,6 +1445,16 @@ NkResult package_builder_start_prerequisite_fetch(
     const char *argv[] = { python_path, "-c", code, NULL };
     if (!nk_platform_spawn_process(python_path, argv, envp, source_root,
                                    session->log_file_path, &session->process)) {
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(session->process.spawn_error,
+                                           "the build tools' Python", "Build Tools",
+                                           python_path, &block)) {
+            safe_str_copy(session->failure_code, sizeof(session->failure_code), block.code);
+            safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
+                          block.message);
+            fprintf(stderr, "[BUILD] %s: %s\n", block.code, block.details);
+            return NK_ERROR_PROCESS_SPAWN;
+        }
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
                       "Could not start the verified Python prerequisite fetcher.");
@@ -2051,28 +2076,36 @@ bool package_builder_find_tool(const char *name, char *out_path, size_t out_size
 bool package_builder_find_tool_in_root(const char *name, const char *data_root,
                                        char *out_path, size_t out_size) {
     if (out_path && out_size) out_path[0] = '\0';
+#if defined(_WIN32) || defined(_WIN64)
     if (name && name[0] && data_root && data_root[0] && out_path && out_size) {
         char executable[NK_MAX_PATH];
-#if defined(_WIN32) || defined(_WIN64)
         int n = snprintf(executable, sizeof(executable),
                          "%s%cprerequisites%cmsys64%cucrt64%cbin%c%s.exe", data_root,
                          nk_platform_path_separator(), nk_platform_path_separator(),
                          nk_platform_path_separator(), nk_platform_path_separator(),
                          nk_platform_path_separator(), name);
-#else
-        int n = snprintf(executable, sizeof(executable),
-                         "%s%cprerequisites%cmsys64%cucrt64%cbin%c%s", data_root,
-                         nk_platform_path_separator(), nk_platform_path_separator(),
-                         nk_platform_path_separator(), nk_platform_path_separator(),
-                         nk_platform_path_separator(), name);
-#endif
         if (n > 0 && (size_t)n < sizeof(executable) && nk_platform_file_exists(executable)) {
             if (nk_platform_absolute_path(executable, out_path, out_size)) return true;
             safe_str_copy(out_path, out_size, executable);
             return true;
         }
     }
+#else
+    /* Nothing is ever downloaded into the per-user root here, and the build
+       child gets no PATH entry for it (package_builder_start adds one only for
+       the Windows download), so a tool found there would be one the build
+       cannot run. */
+    (void)data_root;
+#endif
     return package_builder_find_tool(name, out_path, out_size);
+}
+
+const char *package_builder_make_tool_name(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return "mingw32-make";
+#else
+    return "make";
+#endif
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -2149,18 +2182,43 @@ bool package_builder_toolchain_missing(
 ) {
     const char *tool = NULL;
     const char *fix = NULL;
+    const char *make_tool = package_builder_make_tool_name();
+#if defined(_WIN32) || defined(_WIN64)
+    const char *python_fix =
+        "Install CPython 3.15 or 3.14 (see docs/SETUP.md) or set the PYTHON environment "
+        "variable to the interpreter.";
+    const char *gcc_fix =
+        "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-gcc) and put "
+        "its bin directory on PATH.";
+    const char *make_fix =
+        "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
+        "its bin directory on PATH.";
+    const char *source =
+        "Use the player's pinned prerequisite consent card to install the Windows build tools.";
+#else
+    const char *python_fix =
+        "Install CPython 3.15 or 3.14 (on Ubuntu 24.04, python3.15 from the deadsnakes PPA; "
+        "see docs/LINUX_DEVELOPMENT.md) or set the PYTHON environment variable to the "
+        "interpreter.";
+    const char *gcc_fix =
+        "Install GCC from your distribution's packages (on Ubuntu, build-essential) so that "
+        "gcc is on PATH.";
+    const char *make_fix =
+        "Install GNU Make from your distribution's packages (on Ubuntu, build-essential) so "
+        "that make is on PATH.";
+    const char *source =
+        "Nakagawa downloads build tools only on Windows; here it uses the ones your system "
+        "provides.";
+#endif
     if (!have_python) {
         tool = "python";
-        fix = "Install CPython 3.15 or 3.14 (see docs/SETUP.md) or set the PYTHON environment "
-              "variable to the interpreter.";
+        fix = python_fix;
     } else if (!have_gcc) {
         tool = "gcc";
-        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-gcc) and put "
-              "its bin directory on PATH.";
+        fix = gcc_fix;
     } else if (!have_make) {
-        tool = "mingw32-make";
-        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
-              "its bin directory on PATH.";
+        tool = make_tool;
+        fix = make_fix;
     }
     if (!tool) {
         if (out_tool && out_tool_size) out_tool[0] = '\0';
@@ -2171,9 +2229,8 @@ bool package_builder_toolchain_missing(
     if (out_message && out_message_size) {
         snprintf(out_message, out_message_size,
                  "BUILD_TOOLCHAIN_MISSING: %s was not found on PATH. The package build "
-                 "runs python, gcc and mingw32-make, so it cannot start. %s "
-                 "Use the player's pinned prerequisite consent card to install the Windows build tools.",
-                 tool, fix);
+                 "runs python, gcc and %s, so it cannot start. %s %s",
+                 tool, make_tool, fix, source);
     }
     return true;
 }

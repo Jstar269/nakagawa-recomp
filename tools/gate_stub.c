@@ -93,6 +93,7 @@ int      sched_uid_is_launcher(uint32_t uid) { (void)uid; return 0; }
 int      sched_current_is_worker(void)   { return 0; }
 int      sched_current_is_launcher(void) { return 0; }
 void    sched_init(CpuState *cpu) { (void)cpu; }
+void    sched_preempt_timer_start(void) {}
 uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
 void    sched_exit_current(int32_t status) { (void)status; }
 void    sched_exit_current_delete(int32_t status) { (void)status; }
@@ -195,6 +196,7 @@ int      sr_hle_register_late_import(uint32_t nid, uint32_t target) { (void)nid;
 /* --- GE stubs (ge.c / gpu_sdl3vk) --- */
 uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t ge_run_list(uint32_t addr, int resume) { (void)addr; (void)resume; return 0u; }
+uint32_t ge_last_finish_id(void) { return 0u; }
 uint32_t ge_framebuffer(void) { return 0u; }
 uint32_t g_ge_stall_addr = 0;
 typedef struct GeGpuHooks GeGpuHooks;
@@ -237,6 +239,18 @@ void     sr_perf_aot_instruction(uint32_t pc, uint32_t opcode) { (void)pc; (void
 void     sr_perf_guest_begin(void) {}
 void     sr_perf_guest_end(void) {}
 void     sr_perf_shutdown(void) {}
+/* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+void sr_exec_tier_switch(int tier) { sr_exec_tier = tier; }
+void sr_exec_interp_entry(uint32_t entry_pc) { (void)entry_pc; }
+void sr_exec_interp_exit(int returned_to_aot, int call_return) { (void)returned_to_aot; (void)call_return; }
+void sr_exec_slice_begin(int tier) { sr_exec_tier = tier; }
+int sr_exec_slice_end(void) { int tier = sr_exec_tier; sr_exec_tier = 0; return tier; }
+uint64_t sr_exec_now_ns(void) { return 0; }
+void sr_exec_idle(uint64_t started_ns) { (void)started_ns; }
+void sr_exec_share_arm(void) {}
+void sr_exec_share_report(void) {}
 void     sr_perf_interp_set_reason(SrPerfInterpReason reason) { (void)reason; }
 void     sr_perf_interp_begin(uint32_t pc) { (void)pc; }
 void     sr_perf_interp_instruction(void) {}
@@ -271,6 +285,7 @@ uint32_t g_sr_store_context_mem_offset = 0;
 unsigned g_sr_store_context_mem_words = 0;
 int      g_sr_last_writer_enabled = 0;
 void     sr_debug_init_watches(void) {}
+int      sr_debug_streams_init(void) { return 0; }   /* the gate keeps the C runtime's streams */
 int      sr_check_mem_watch(uint32_t addr, uint32_t val, int write, uint32_t pc) {
     (void)addr; (void)val; (void)write; (void)pc;
     return 0;
@@ -317,7 +332,7 @@ void     f_00304290(void *s) { (void)s; }
 
 /* --- GE / vblank stubs (dead on microtest path) --- */
 uint32_t g_frame_prims = 0u;
-uint32_t sr_vblank_handler(void) { return 0u; }
+int      sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) { (void)no; (void)handler; (void)arg; return -1; }
 int      sr_vblank_dispatch_registered(void) { return 0; }
 void     sr_vblank_tick(void) {}
 void     sr_vblank_nop(void) {}

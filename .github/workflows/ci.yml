@@ -161,6 +161,9 @@ jobs:
       - name: Enforce tracked-tree reference ratchet
         run: python tools/tree_lint.py --check
 
+      - name: Enforce core runtime purity (no game addresses in src/rt)
+        run: python tools/purity_gate.py
+
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |
@@ -455,7 +458,7 @@ jobs:
           python -m coverage xml -o coverage-python.xml
 
       # Informational only: `fail_ci_if_error: false` and the Codecov status checks
-      # are non-blocking (codecov.yml), so an upload or Codecov outage never fails
+      # are non-blocking (.github/codecov.yml), so an upload or Codecov outage never fails
       # the Python gate. Each shard uploads its own partial report under the same
       # `python` flag, which Codecov merges for the commit.
       - name: Upload Python coverage to Codecov
@@ -808,7 +811,7 @@ jobs:
           test "${#reports[@]}" -gt 0
           echo "C coverage: ${#reports[@]} gcov reports"
 
-      # Informational only: the C number never gates a merge (codecov.yml). The reports
+      # Informational only: the C number never gates a merge (.github/codecov.yml). The reports
       # are already generated above, so the action only uploads them (plugins: noop).
       - name: Upload C coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -836,6 +839,34 @@ jobs:
       # windows_runtime selftests part (#306). It links SDL3 (sched.c's host clock).
       - name: Build and run HLE thread selftest (links SDL3)
         run: make CC=gcc -j4 hle-thread-selftest
+
+      # The same production-HLE harness under the generic and both fixture title
+      # configurations (#306); it ran on no hosted job before.
+      - name: Run Linux title-configured HLE selftests
+        run: make CC=gcc -j4 hle-title-selftest
+
+      - name: Run Linux scheduler selftest matrix
+        run: make CC=gcc -j4 sched-selftest
+
+      - name: Run Linux dispatch isolation selftest matrix
+        run: make CC=gcc -j4 dispatch-isolation-selftest
+
+      - name: Run Linux AOT/interpreter cosimulation
+        run: make CC=gcc -j4 cosim-selftest
+
+      - name: Run Linux cosimulation mutation corpus
+        run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
+
+      - name: Run Linux GPU snapshot sync selftest
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 make CC=gcc -j4 gpu-snapsync-selftest
 
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest

@@ -177,8 +177,8 @@ const char *package_builder_get_output_line(
     int index
 );
 
-/* Locate runnable CPython 3.14.x or 3.15.x from PYTHON, UCRT64, or PATH. Candidates must
- * pass a bounded version probe before their paths are returned. */
+/* Locate runnable CPython 3.15.x, or 3.14.x when no 3.15 runs, from PYTHON, UCRT64, or
+ * PATH. Candidates must pass a bounded version probe before their paths are returned. */
 bool package_builder_find_python(char *out_path, size_t out_size);
 /* Prefer the installed pinned prerequisite under data_root, then use host search. */
 bool package_builder_find_python_in_root(const char *data_root,
@@ -212,6 +212,10 @@ void package_builder_describe_cli_not_found(
 /* Locate a host build tool ("gcc", "mingw32-make") on PATH only: the spawned
  * build child sees exactly this PATH, so no hidden fallback location counts. */
 bool package_builder_find_tool(const char *name, char *out_path, size_t out_size);
+/* The per-user download root counts only on Windows, the one platform with a
+ * pinned prerequisite download (<root>/prerequisites/msys64/ucrt64/bin, which the
+ * build child gets on PATH). Elsewhere the build uses the system's tools, so the
+ * lookup is PATH only. */
 bool package_builder_find_tool_in_root(const char *name, const char *data_root,
                                        char *out_path, size_t out_size);
 
@@ -284,6 +288,15 @@ typedef bool (*PackageHttpOpen)(void *context, const char *url,
 typedef bool (*PackageDownloadContinue)(void *context, uint64_t received,
                                         uint64_t expected);
 
+/* What the native transport's context may say; a NULL context keeps its defaults. */
+typedef struct {
+    const char *user_agent;   /* NULL keeps "NakagawaRecomp/PrerequisiteBootstrap" */
+} PackageHttpOptions;
+
+/* The native HTTPS transport (WinHTTP, redirects followed only within the allowed
+ * hosts), or NULL where there is none. Its context is NULL or a PackageHttpOptions. */
+PackageHttpOpen package_builder_native_transport(void);
+
 /* Download one manifest item to a .part file, check exact byte count and SHA-256,
  * then atomically promote it. A NULL transport selects native WinHTTP. */
 bool package_builder_download_verified(
@@ -308,6 +321,13 @@ typedef struct {
     PackagePrerequisite item;
 } PackageBootstrapSession;
 
+/* Windows-only install of the pinned embedded CPython ("cpython-embed-amd64") into
+ * <data_root>/prerequisites/python on a worker thread: it downloads and verifies the
+ * archive, expands it into python.pending, then moves it into place. start returns
+ * false on bad arguments, on other platforms, or when the thread cannot start.
+ * poll reports progress and, once `finished`, the outcome with its error code and
+ * message; it returns false only for a NULL session or an unsupported platform.
+ * cancel asks the worker to stop; close waits for it and releases its handle. */
 bool package_builder_bootstrap_python_start(
     PackageBootstrapSession *session, const PackagePrerequisite *python_item,
     const char *data_root);
@@ -319,11 +339,20 @@ bool package_builder_bootstrap_python_poll(PackageBootstrapSession *session,
 void package_builder_bootstrap_python_cancel(PackageBootstrapSession *session);
 void package_builder_bootstrap_python_close(PackageBootstrapSession *session);
 
+/* Resets the session and starts the verified Python prerequisite fetcher from
+ * python_path, writing its log, progress and cancel files for this session. On failure,
+ * failure_code and failure_boundary say why. `bootstrapped_python` is not used. */
 NkResult package_builder_start_prerequisite_fetch(
     PackageBuildSession *session, const char *python_path, const char *cli_path,
     const char *data_root, const char *log_dir, bool bootstrapped_python);
+/* Asks a running prerequisite fetch to stop by writing a cancel marker file:
+ * cancel_file_path, or the session's own when that is NULL or empty. Does nothing
+ * while the session is not building. */
 void package_builder_request_prerequisite_cancel(
     PackageBuildSession *session, const char *cancel_file_path);
+/* Deletes the per-user download folder, <data_root>/prerequisites. Returns false, with
+ * error_code and error_message set, when data_root is missing, the path is too long, or
+ * some files could not be removed. */
 bool package_builder_remove_downloaded_tools(const char *data_root,
                                             char *error_code, size_t error_code_size,
                                             char *error_message, size_t error_message_size);
@@ -334,10 +363,17 @@ bool package_builder_clear_shared_library_cache(const char *data_root,
                                                 char *error_code, size_t error_code_size,
                                                 char *error_message, size_t error_message_size);
 
-/* Pure: report the first missing build tool (python, gcc, mingw32-make).
- * Returns false and clears the outputs when all three are present. On success
- * out_tool holds the tool name and out_message a BUILD_TOOLCHAIN_MISSING card
- * body that names it and how to install it. */
+/* The make the package build runs: MSYS2's mingw32-make on Windows, the system
+ * make elsewhere. tools/title_codegen_plan.py defaults to the same name, so the
+ * player's preflight looks for the tool the build will actually call. */
+const char *package_builder_make_tool_name(void);
+
+/* Pure: report the first missing build tool (python, gcc, then the make
+ * package_builder_make_tool_name names). Returns false and clears the outputs
+ * when all three are present. On success out_tool holds the tool name and
+ * out_message a BUILD_TOOLCHAIN_MISSING card body that names it and how to
+ * install it: on Windows through the pinned prerequisite consent card, elsewhere
+ * from the system's own packages, since no other platform has a download. */
 bool package_builder_toolchain_missing(
     bool have_python, bool have_gcc, bool have_make,
     char *out_tool, size_t out_tool_size,

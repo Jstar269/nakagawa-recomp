@@ -323,7 +323,7 @@ static void test_nk_json_validate_utf8_edge_cases(void) {
 
 static void test_hostile_library_json(const char *test_dir) {
     char fpath[512];
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
 
     printf("[HOSTILE_TEST] Testing library.json parser resilience...\n");
     fflush(stdout);
@@ -416,7 +416,7 @@ static void test_hostile_library_json(const char *test_dir) {
     assert(nk_library_add_or_update(&lib, &valid_entry) == NK_OK);
     assert(nk_library_save(&lib, fpath) == NK_OK);
 
-    NkLibrary loaded_lib;
+    static NkLibrary loaded_lib;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&loaded_lib, fpath) == NK_OK);
     assert(nk_library_count(&loaded_lib) == 1);
     assert(nk_library_find_by_disc_id(&loaded_lib, "TEST00005") != NULL);
@@ -437,7 +437,7 @@ static void test_hostile_library_json(const char *test_dir) {
     const char corrupt_primary[] = "CORRUPT_INVALID_JSON_CONTENT_TRUNCATED";
     write_test_file(fpath, corrupt_primary, strlen(corrupt_primary));
 
-    NkLibrary recovered_lib;
+    static NkLibrary recovered_lib;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&recovered_lib, fpath) == NK_OK);
     assert(nk_library_count(&recovered_lib) >= 1);
     assert(nk_library_find_by_disc_id(&recovered_lib, "TEST00005") != NULL);
@@ -468,7 +468,7 @@ static void test_hostile_library_json(const char *test_dir) {
     snprintf(double_bak_path, sizeof(double_bak_path), "%.500s.bak", double_corrupt_path);
     write_test_file(double_corrupt_path, "BAD_PRIMARY", 11);
     write_test_file(double_bak_path, "BAD_BACKUP", 10);
-    NkLibrary double_corrupt_lib;
+    static NkLibrary double_corrupt_lib;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&double_corrupt_lib, double_corrupt_path) == NK_ERROR_GENERIC);
     assert(nk_library_count(&double_corrupt_lib) == 0);
 
@@ -478,10 +478,10 @@ static void test_hostile_library_json(const char *test_dir) {
     write_test_file(fpath, "", 0);
     assert(nk_library_load(&lib, fpath) == NK_ERROR_IO);
 
-    /* 12. Oversized library file (>4MB) */
+    /* 12. Oversized library file (over NK_LIBRARY_MAX_BYTES) */
     printf("[HOSTILE_TEST] Subtest 12: oversized library file\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%coversized_lib.json", test_dir, nk_platform_path_separator());
-    size_t big_sz = 4 * 1024 * 1024 + 16;
+    size_t big_sz = (size_t)NK_LIBRARY_MAX_BYTES + 16u;
     char *big_buf = (char *)malloc(big_sz);
     assert(big_buf != NULL);
     memset(big_buf, ' ', big_sz);
@@ -543,7 +543,7 @@ static NkResult load_library_with_title_body(const char *fpath, const char *titl
 
 static void test_library_json_string_escapes(const char *test_dir) {
     char fpath[512];
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
 
     printf("[HOSTILE_TEST] Testing library.json string escapes...\n"); fflush(stdout);
 
@@ -1784,7 +1784,7 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
 
     char valid_path[600];
     snprintf(valid_path, sizeof(valid_path), "%s%c\xef\xbf\xbd.json", test_dir, nk_platform_path_separator());
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&lib, valid_path) == NK_OK);
     assert(nk_library_count(&lib) == 1);
     snprintf(bad_path, sizeof(bad_path), "%s%c\xff.json", test_dir, nk_platform_path_separator());

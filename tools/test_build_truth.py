@@ -1114,6 +1114,18 @@ class OptimizationProfileContractTests(unittest.TestCase):
         self.assertTrue(info_other.get("CFLAGS", "").startswith("-O0 "), info_other.get("CFLAGS"))
         self.assertTrue(info_other.get("RECOMP_FLAGS", "").startswith("-O0 "), info_other.get("RECOMP_FLAGS"))
 
+    def test_gcc_only_generated_code_flag_is_not_passed_to_clang(self) -> None:
+        # #317: Clang refuses -ftrack-macro-expansion=0, so the generated-code flags carry it only
+        # for GCC. GCC's flags are unchanged.
+        gcc = self.run_compiler_info("CC=gcc").get("RECOMP_FLAGS", "")
+        self.assertIn("-ftrack-macro-expansion=0", gcc.split())
+        self.assertIn("-fno-var-tracking", gcc.split())
+        if shutil.which("clang") is None:
+            self.skipTest("clang is not on PATH")
+        clang = self.run_compiler_info("CC=clang").get("RECOMP_FLAGS", "")
+        self.assertNotIn("-ftrack-macro-expansion=0", clang.split())
+        self.assertIn("-fno-var-tracking", clang.split())
+
     def test_hst_name_does_not_change_generic_optimization_defaults(self) -> None:
         info = self.run_compiler_info("GAME_NAME=hst")
         self.assertEqual(info.get("RUNTIME_OPT"), "-O0")

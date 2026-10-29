@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 
 from .package_cache import (
     BoundedJsonError,
-    MAX_CACHE_JSON_BYTES,
     MAX_CACHE_JSON_DEPTH,
     MAX_CACHE_JSON_ITEMS,
     MAX_CACHE_JSON_MEMBERS,
@@ -32,7 +31,10 @@ LIBRARY_SCHEMA_VERSION = 1
 # structural ceilings run before json.loads, and record-level limits bound the
 # decoded list. Byte, structure, and record limits apply independently;
 # nothing is ever truncated silently.
-MAX_LIBRARY_JSON_BYTES = MAX_CACHE_JSON_BYTES
+# Room for MAX_LIBRARY_GAMES records as the player writes them (about 1 KiB each
+# with typical paths); the player's reader has the same limit, NK_LIBRARY_MAX_BYTES
+# in src/core/nk_library.h.
+MAX_LIBRARY_JSON_BYTES = 16 * 1024 * 1024
 MAX_LIBRARY_JSON_DEPTH = MAX_CACHE_JSON_DEPTH
 MAX_LIBRARY_GAMES = 4096
 
@@ -46,18 +48,22 @@ _LIBRARY_ROOT_FIELDS = frozenset({"schema_version", "updated_at", "games"})
 
 # A saved record emits every dataclass field, even defaults. The package-cache
 # structural budgets would reject an ordinary saved library around 1,170 games.
-# Give this route budgets derived from its own record schema; the independent
-# 1 MiB byte limit still applies, including to large settings overrides.
+# Give this route budgets derived from the record schemas that write
+# library.json: this module's, and the player's, whose records carry 22 fields
+# (nk_library_save in src/core/nk_library.c). The independent byte limit still
+# applies, including to large settings overrides.
+_PLAYER_RECORD_FIELD_COUNT = 22
+_RECORD_FIELD_BUDGET = max(len(_GAME_RECORD_FIELDS), _PLAYER_RECORD_FIELD_COUNT)
 MAX_LIBRARY_JSON_MEMBERS = max(
     MAX_CACHE_JSON_MEMBERS,
-    MAX_LIBRARY_GAMES * len(_GAME_RECORD_FIELDS) + len(_LIBRARY_ROOT_FIELDS),
+    MAX_LIBRARY_GAMES * _RECORD_FIELD_BUDGET + len(_LIBRARY_ROOT_FIELDS),
 )
 MAX_LIBRARY_JSON_ITEMS = max(
     MAX_CACHE_JSON_ITEMS, MAX_LIBRARY_JSON_MEMBERS + MAX_LIBRARY_GAMES,
 )
 MAX_LIBRARY_JSON_NODES = max(
     MAX_CACHE_JSON_NODES,
-    MAX_LIBRARY_GAMES * (2 * len(_GAME_RECORD_FIELDS) + 1)
+    MAX_LIBRARY_GAMES * (2 * _RECORD_FIELD_BUDGET + 1)
     + 2 * len(_LIBRARY_ROOT_FIELDS) + 2,
 )
 
@@ -162,6 +168,11 @@ class LibraryGameRecord:
         return Path(self.iso_path).is_file()
 
 
+def _library_key(disc_id: str) -> str:
+    """The key a disc id is stored and looked up under: case- and edge-whitespace-insensitive."""
+    return disc_id.upper().strip()
+
+
 class GameLibrary:
     """Persistent storage for registered and installed PSP games."""
 
@@ -170,14 +181,13 @@ class GameLibrary:
         self._games: Dict[str, LibraryGameRecord] = {}
 
     def add_or_update_game(self, record: LibraryGameRecord) -> None:
-        key = record.disc_id.upper().strip()
-        self._games[key] = record
+        self._games[_library_key(record.disc_id)] = record
 
     def get_game(self, disc_id: str) -> Optional[LibraryGameRecord]:
-        return self._games.get(disc_id.upper().strip())
+        return self._games.get(_library_key(disc_id))
 
     def remove_game(self, disc_id: str) -> bool:
-        key = disc_id.upper().strip()
+        key = _library_key(disc_id)
         if key in self._games:
             del self._games[key]
             return True
@@ -191,7 +201,7 @@ class GameLibrary:
 
     def verify_sources(self) -> Dict[str, bool]:
         """Verify availability of source ISO files for all registered games."""
-        return {disc_id: rec.is_source_available() for disc_id, rec in self._games.items()}
+        return {disc_id: record.is_source_available() for disc_id, record in self._games.items()}
 
     def save(self, target_file: Optional[Path | str] = None) -> None:
         out_file = Path(target_file).resolve() if target_file else self.storage_file
@@ -208,7 +218,7 @@ class GameLibrary:
         payload = {
             "schema_version": LIBRARY_SCHEMA_VERSION,
             "updated_at": time.time(),
-            "games": [rec.to_dict() for rec in self._games.values()],
+            "games": [record.to_dict() for record in self._games.values()],
         }
 
         try:
@@ -217,9 +227,9 @@ class GameLibrary:
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=out_file.parent,
                 prefix=f".{out_file.name}.", suffix=".tmp", delete=False,
-            ) as f:
-                tmp_file = Path(f.name)
-                json.dump(payload, f, indent=2, ensure_ascii=False)
+            ) as handle:
+                tmp_file = Path(handle.name)
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
             # Validate with the exact reader before replacing a working library.
             # Oversized settings or invalid in-memory records must never install
             # a file that this same loader cannot read back.
@@ -239,9 +249,9 @@ class GameLibrary:
         with a named diagnosis rather than a parser-implementation exception.
         """
         path = Path(file_path).resolve()
-        lib = cls(storage_file=path)
+        library = cls(storage_file=path)
         if not path.is_file():
-            return lib
+            return library
 
         try:
             data = read_bounded_json(
@@ -288,16 +298,15 @@ class GameLibrary:
                 f"{path}: 'games' holds {len(games_list)} records, "
                 f"over the {MAX_LIBRARY_GAMES}-record limit"
             )
-        for index, g_dict in enumerate(games_list):
+        for index, record_dict in enumerate(games_list):
             try:
-                rec = LibraryGameRecord.from_dict(g_dict)
+                record = LibraryGameRecord.from_dict(record_dict)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"{path}: game record {index} is invalid: {exc}") from exc
-            key = rec.disc_id.upper().strip()
-            if key in lib._games:
+            if _library_key(record.disc_id) in library._games:
                 raise ValueError(
-                    f"{path}: game record {index} repeats disc_id {bounded_echo(rec.disc_id)}"
+                    f"{path}: game record {index} repeats disc_id {bounded_echo(record.disc_id)}"
                 )
-            lib.add_or_update_game(rec)
+            library.add_or_update_game(record)
 
-        return lib
+        return library

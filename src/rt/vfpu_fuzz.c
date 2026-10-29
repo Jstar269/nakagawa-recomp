@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -328,6 +329,15 @@ int main(int argc, char **argv) {
              * (controls 8-15) left random. */
             if (top == 0x34 && ((w >> 16) & 0x3FFu) == 0x21u) {
                 s0.vfpuCtrl[0] = 0xe4; s0.vfpuCtrl[1] = 0xe4; s0.vfpuCtrl[2] = 0;
+            }
+            /* The PSP-VFPU-FORMS-001 forms (vh2f, vuc2i, vrndf1/vrndf2, vsocp, vwbn) are
+             * likewise defined only under identity prefixes (issue #326). */
+            if (top == 0x34) {
+                const uint32_t jump = (w >> 21) & 0x1Fu, sel = (w >> 16) & 0x1Fu;
+                if (jump >= 24u || (jump == 1u && (sel == 2u || sel == 3u || sel == 19u || sel == 24u)) ||
+                    (jump == 2u && sel == 5u)) {
+                    s0.vfpuCtrl[0] = 0xe4; s0.vfpuCtrl[1] = 0xe4; s0.vfpuCtrl[2] = 0;
+                }
             }
 
             /* G-25: point memory operands at the scratch page and make GPRs

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 from __future__ import annotations
 
@@ -1010,6 +1010,163 @@ class NanOriginFlightTests(unittest.TestCase):
             return subprocess.run(
                 [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
                  str(left_path), str(right_path), "--align", align],
+                capture_output=True, text=True, check=False,
+            )
+
+
+WAIT_SEMA_NID = 0x4E3A1105
+ALLOCATE_VPL_NID = 0xBED27435
+
+
+def v6_thread(uid, *, state="wait-object", why="object", priority=32, wait_type=3,
+              wait_object=0, block_nid=None, pc=0x08900100, ra=0x08900200, waited_us=None,
+              deadline_us=None, suspended=False):
+    return {
+        "uid": uid, "priority": priority, "state": state, "suspended": suspended, "why": why,
+        "wait_type": wait_type, "wait_object": wait_object, "block_nid": block_nid,
+        "pc": pc, "ra": ra, "waited_us": waited_us, "deadline_us": deadline_us,
+    }
+
+
+def v6_threads():
+    """A blocked main thread, a delayed worker, and a ready thread that waits on nothing."""
+    return [
+        v6_thread(0x110, why="object", wait_object=0x1234, block_nid=ALLOCATE_VPL_NID,
+                  waited_us=180_000_000),
+        v6_thread(0x111, state="wait-delay", why="delay", wait_type=2, block_nid=0xCEADEB47,
+                  waited_us=500, deadline_us=1500),
+        v6_thread(0x112, state="ready", why="none", wait_type=0),
+    ]
+
+
+def v6_bundle(events, *, threads, reason="exit", sequence=None, fired=0, dropped=0):
+    for record in events:
+        record["schema_version"] = 6
+    bundle = make_bundle(
+        events, recorded=len(events) + dropped, dropped=dropped, terminal_reason=reason,
+        terminal_sequence=sequence, version=6,
+        triggers={"first_fatal": True, "first_unsupported_nid": True, "fired": fired},
+    )
+    bundle["refusals"] = v5_refusals([])
+    bundle["threads"] = threads
+    return bundle
+
+
+class ThreadSnapshotTests(unittest.TestCase):
+    """Schema 6 (#320): every bundle carries a terminal snapshot of the guest threads."""
+
+    def _events(self):
+        return [event(1, "sched", kind=4, arg0=0x110, arg1=0x110, arg2=0x1234, version=6)]
+
+    def test_schema_6_bundle_with_threads_validates(self):
+        bundle = v6_bundle(self._events(), threads=v6_threads(), sequence=1)
+        flight_diff.validate_bundle(bundle)
+
+    def test_schema_6_bundle_with_no_scheduler_has_an_empty_block(self):
+        flight_diff.validate_bundle(v6_bundle(self._events(), threads=[], sequence=1))
+
+    def test_schema_6_requires_the_threads_block(self):
+        bundle = v6_bundle(self._events(), threads=[], sequence=1)
+        del bundle["threads"]
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "missing required property 'threads'"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_5_bundle_still_validates_and_carries_no_threads(self):
+        bundle = v5_bundle([v5_hle(1)], reason="exit", sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        flight_diff.validate_bundle(bundle)
+        bundle["threads"] = []
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "forbidden schema"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_thread_entries_are_scalar_and_self_consistent(self):
+        cases = {
+            "a ready thread names no wait": v6_thread(0x112, state="ready", why="object"),
+            "a delay is a delay": v6_thread(0x111, state="wait-delay", why="object", wait_type=2),
+            "a ready thread has not waited": v6_thread(0x112, state="ready", why="none",
+                                                       wait_type=0, waited_us=5),
+            "an unknown state": v6_thread(0x112, state="blocked"),
+            "a negative wait": v6_thread(0x110, waited_us=-1),
+            "a NID out of range": v6_thread(0x110, block_nid=1 << 32),
+        }
+        for label, thread in cases.items():
+            with self.subTest(label):
+                bundle = v6_bundle(self._events(), threads=[thread], sequence=1)
+                with self.assertRaises(flight_diff.FlightDiffError):
+                    flight_diff.validate_bundle(bundle)
+        bundle = v6_bundle(self._events(), threads=[v6_thread(0x110)], sequence=1)
+        bundle["threads"][0]["name"] = "main"
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "not allowed"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_each_thread_is_listed_once_and_one_runs_at_most(self):
+        duplicate = v6_bundle(self._events(), threads=[v6_thread(0x110), v6_thread(0x110)],
+                              sequence=1)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "listed once"):
+            flight_diff.validate_bundle(duplicate)
+        running = v6_thread(0x110, state="running", why="none", wait_type=0)
+        two = v6_bundle(self._events(), threads=[running, dict(running, uid=0x111)], sequence=1)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "at most one thread is running"):
+            flight_diff.validate_bundle(two)
+
+    def test_threads_are_reported_not_compared(self):
+        baseline = v6_bundle(self._events(), threads=v6_threads(), sequence=1)
+        candidate = v6_bundle(self._events(), threads=[], sequence=1)
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+
+    def test_cli_prints_each_sides_waiting_threads(self):
+        baseline = v6_bundle(self._events(), threads=[], sequence=1)
+        candidate = v6_bundle(self._events(), threads=v6_threads(), sequence=1)
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, flight_diff.EXIT_MATCH, result.stderr)
+        lines = result.stdout.splitlines()
+        start = lines.index("waiting threads (candidate): 2")
+        self.assertEqual(lines[start + 1:start + 4], [
+            "  uid=0x110 why=object wait_object=0x1234 block_nid=0xbed27435 waited_us=180000000",
+            "  uid=0x111 why=delay wait_object=0x0 block_nid=0xceadeb47 waited_us=500",
+            "waiting threads (baseline): none",
+        ])
+
+    def test_cli_names_the_wait_even_when_the_window_slid(self):
+        # A stalled run keeps generating events, so its window slides and the pair is
+        # incomparable; what the stalled thread waits on is still printed.
+        events = [event(sequence, "sched", kind=3, arg0=0x111, arg1=0x111, version=6)
+                  for sequence in range(3, 7)]
+        candidate = v6_bundle(events, threads=v6_threads(), sequence=6, dropped=2)
+        baseline = v6_bundle(self._events(), threads=[], sequence=1)
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, flight_diff.EXIT_INCOMPARABLE, result.stderr)
+        self.assertIn("candidate dropped 2 events", result.stdout)
+        self.assertIn("waiting threads (candidate): 2\n"
+                      "  uid=0x110 why=object wait_object=0x1234 block_nid=0xbed27435 "
+                      "waited_us=180000000\n", result.stdout)
+        self.assertIn("waiting threads (baseline): none", result.stdout)
+
+    def test_cli_output_for_schema_5_bundles_is_unchanged(self):
+        bundle = v5_bundle([v5_hle(1)], reason="exit", sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        result = self._run_cli(bundle, copy.deepcopy(bundle))
+        self.assertEqual(result.returncode, flight_diff.EXIT_MATCH, result.stderr)
+        self.assertNotIn("waiting threads", result.stdout)
+
+    def test_schema_pins_the_recorder_version_and_thread_cap(self):
+        header = (ROOT / "src" / "rt" / "flight_recorder.h").read_text(encoding="utf-8")
+        version = int(re.search(r"SR_FLIGHT_SCHEMA_VERSION = (\d+)u", header).group(1))
+        cap = int(re.search(r"SR_FLIGHT_MAX_THREADS = (\d+)u", header).group(1))
+        schema = json.loads(flight_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(max(schema["properties"]["schema_version"]["enum"]), version)
+        self.assertEqual(schema["properties"]["threads"]["maxItems"], cap)
+
+    def _run_cli(self, left, right) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path)],
                 capture_output=True, text=True, check=False,
             )
 

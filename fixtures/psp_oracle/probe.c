@@ -145,6 +145,10 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_GE_TIMING 114
 /* #1296: CPU instruction-class and per-frame syscall timing; synthetic buffers only. */
 #define PSP_ORACLE_CASE_CPU_TIMING 115
+/* #363: a new thread's k0 block (does the kernel zero k0+4?); see run_thread_k0_block. */
+#define PSP_ORACLE_CASE_THREAD_K0_BLOCK 116
+/* #1595: __sceSasInit on a core that is already initialized; see run_sas_init. */
+#define PSP_ORACLE_CASE_SAS_INIT 117
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -376,6 +380,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/ge_timing_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 #define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+#define PROBE_HOST0_LOG "host0:/thread_k0_block_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+#define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -3402,6 +3410,156 @@ static void run_thread_exit_delete(int emulated) {
     for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
         run_exit_delete_cell(emulated, cells[i].id, cells[i].status,
                              cells[i].method);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+/* The k0 block of a thread (#363). The kernel points k0 at a per-thread block
+   near the top of the thread's stack; libc code keeps per-thread state in it
+   (a reent pointer at k0+4 in the title this answers for). Question: does
+   sceKernelCreateThread hand a new thread a block with k0+4 == 0, even when
+   the stack memory it reuses was dirtied by an earlier thread?
+
+   K0-MAIN       the probe's own thread.
+   K0-FRESH      a new thread: k0, its stack span, sp at entry, k0+4, nonzero
+                 words in the block, 0xffffffff words below sp (the default
+                 stack fill) and the two lowest stack words.
+   K0-FRESH-Wnn  the 64 words from k0, in four rows of 16.
+   K0-REUSE-*    thread D fills its stack below sp with 0xa5a5a5a5 and stores
+                 0xa5a5a5a5 at k0+4 (what the title's launcher does with a
+                 reent pointer), exits and is deleted; thread R of the same
+                 size and attribute (0, NO_FILLSTACK 0x00100000, CLEAR_STACK
+                 0x00200000) is then created and reports its stack base, k0,
+                 k0+4 and how many 0xa5a5a5a5 words survived.
+   The lowest K0_GUARD_WORDS stack words are never written or counted: on a
+   PSP-3000 (6.61) the first launch hung after thread D overwrote them, so
+   the kernel keeps state there (K0-FRESH reports the two lowest words).
+   Reads stay inside each thread's own stack span and k0 block; the only
+   writes are D's own stack between the guard words and sp, and its k0+4.
+   PASS = every create, start and wait succeeded; the values are data. */
+#define K0_WORDS 64u
+#define K0_STACK 0x4000u
+#define K0_ATTR_NOFILL 0x00100000u
+#define K0_ATTR_CLEAR 0x00200000u
+#define K0_FILL 0xa5a5a5a5u
+#define K0_SP_GAP 256u
+#define K0_GUARD_WORDS 16u
+typedef struct {
+    uint32_t k0, base, size, sp, w1, nonzero, ff_words, fill_words, scanned, low0, low1;
+    uint32_t words[K0_WORDS];
+} K0Report;
+static K0Report g_k0_report;
+static int g_k0_dirty;
+static uint32_t k0_read(void) {
+    uint32_t v;
+    __asm__ volatile("move %0, $k0" : "=r"(v));
+    return v;
+}
+static uint32_t k0_sp(void) {
+    uint32_t v;
+    __asm__ volatile("move %0, $sp" : "=r"(v));
+    return v;
+}
+static void k0_capture(K0Report *r) {
+    memset(r, 0, sizeof(*r));
+    r->k0 = k0_read();
+    r->sp = k0_sp();
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (sceKernelReferThreadStatus(sceKernelGetThreadId(), &info) == 0) {
+        r->base = (uint32_t)(uintptr_t)info.stack;
+        r->size = (uint32_t)info.stackSize;
+    }
+    /* Only a k0 inside this thread's own stack span is read. */
+    if (r->base && r->k0 >= r->base && r->k0 + K0_WORDS * 4u <= r->base + r->size) {
+        const volatile uint32_t *b = (const volatile uint32_t *)(uintptr_t)r->k0;
+        for (uint32_t i = 0; i < K0_WORDS; i++) {
+            r->words[i] = b[i];
+            if (b[i]) r->nonzero++;
+        }
+        r->w1 = r->words[1];
+    }
+    if (r->base && r->sp > r->base + K0_SP_GAP + K0_GUARD_WORDS * 4u &&
+        r->sp <= r->base + r->size) {
+        const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)r->base;
+        r->low0 = w[0];
+        r->low1 = w[1];
+        w += K0_GUARD_WORDS;
+        r->scanned = (r->sp - K0_SP_GAP - r->base) / 4u - K0_GUARD_WORDS;
+        for (uint32_t i = 0; i < r->scanned; i++) {
+            if (w[i] == 0xffffffffu) r->ff_words++;
+            if (w[i] == K0_FILL) r->fill_words++;
+        }
+    }
+}
+static int k0_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    k0_capture(&g_k0_report);
+    if (g_k0_dirty && g_k0_report.scanned) {
+        volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_k0_report.base + K0_GUARD_WORDS;
+        for (uint32_t i = 0; i < g_k0_report.scanned; i++) w[i] = K0_FILL;
+        const K0Report *r = &g_k0_report;
+        if (r->k0 >= r->base && r->k0 + K0_WORDS * 4u <= r->base + r->size)
+            ((volatile uint32_t *)(uintptr_t)r->k0)[1] = K0_FILL;
+    }
+    return 0;
+}
+/* Create, run to completion and delete one thread: 0 or the first error. */
+static int k0_run(int emulated, const char *step, uint32_t attr, int dirty) {
+    g_k0_dirty = dirty;
+    probe_step(emulated, "thread-k0-block", step);
+    SceUID t = sceKernelCreateThread("k0probe", k0_entry, 32, K0_STACK, attr, NULL);
+    if (t < 0) return (int)t;
+    int rc = sceKernelStartThread(t, 0, NULL);
+    if (rc >= 0) {
+        SceUInt timeout = 2000000;
+        rc = sceKernelWaitThreadEnd(t, &timeout);
+    }
+    const int del = sceKernelDeleteThread(t);
+    return rc < 0 ? rc : (del < 0 ? del : 0);
+}
+static void run_thread_k0_block(int emulated) {
+    static const char *const word_rows[4] = {
+        "K0-FRESH-W00", "K0-FRESH-W10", "K0-FRESH-W20", "K0-FRESH-W30"};
+    static const struct {
+        const char *id;
+        uint32_t attr;
+    } reuse[3] = {
+        {"K0-REUSE-DEF", 0u},
+        {"K0-REUSE-NOFILL", K0_ATTR_NOFILL},
+        {"K0-REUSE-CLEAR", K0_ATTR_CLEAR},
+    };
+    K0Report r;
+    k0_capture(&r);
+    const uint32_t mo[6] = {r.k0, r.base, r.size, r.base + r.size - r.k0, r.w1, r.nonzero};
+    emit_record_extended(emulated, "PSP-THREAD-K0-001", "K0-MAIN", "PASS", r.k0, mo, 6);
+
+    const int rc = k0_run(emulated, "fresh", 0u, 0);
+    r = g_k0_report;
+    const uint32_t fo[11] = {r.k0, r.base, r.size, r.sp, r.base + r.size - r.k0, r.w1,
+                             r.nonzero, r.ff_words, r.scanned, r.low0, r.low1};
+    emit_record_extended(emulated, "PSP-THREAD-K0-001", "K0-FRESH", rc == 0 ? "PASS" : "FAIL",
+                         (uint32_t)rc, fo, 11);
+    for (uint32_t row = 0; row < 4; row++) {
+        emit_record_extended(emulated, "PSP-THREAD-K0-001", word_rows[row],
+                             rc == 0 ? "PASS" : "FAIL", (uint32_t)rc, r.words + row * 16u, 16);
+    }
+
+    for (uint32_t i = 0; i < 3; i++) {
+        const int rd = k0_run(emulated, "reuse-dirty", reuse[i].attr, 1);
+        const K0Report d = g_k0_report;
+        const int rr = rd == 0 ? k0_run(emulated, "reuse-read", reuse[i].attr, 0) : rd;
+        const K0Report *q = &g_k0_report;
+        uint32_t differ = 0;
+        for (uint32_t w = 0; w < K0_WORDS; w++) differ += q->words[w] != r.words[w];
+        const uint32_t ro[9] = {d.base, d.k0, q->base, q->k0, q->w1, q->fill_words, d.scanned,
+                                q->ff_words, differ};
+        emit_record_extended(emulated, "PSP-THREAD-K0-001", reuse[i].id,
+                             (rd == 0 && rr == 0) ? "PASS" : "FAIL",
+                             (uint32_t)(rd != 0 ? rd : rr), ro, 9);
     }
 }
 #endif
@@ -10186,6 +10344,139 @@ static void at3_stream_queries(int emulated, int atrac_id) {
     probe_emit_durable(emulated, line, strlen(line));
 }
 
+/* #1296 / #1096 follow-up: how long one sceAtracDecodeData takes, and whether its caller gives up
+   the CPU meanwhile. A lower-priority peer only counts while the caller is not runnable, so a
+   count that advances across a decode means the caller blocked inside it. A 1 ms delay is the
+   positive control. Call 0's full PCM is dumped to the private host0 log. */
+#define AT3_PEER_PRIO_STEP 8
+static volatile uint32_t s_at3_peer_count;
+static volatile int s_at3_peer_stop;
+
+static int at3_peer_thread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    while (!s_at3_peer_stop) s_at3_peer_count++;
+    return 0;
+}
+
+static void at3_timing_line(int emulated, const char *step, int rc, uint32_t dt_us, uint32_t peer) {
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-timing-%s status=RC "
+                   "result=0x%08x dt_us=%u peer=%u\n",
+                   step, (unsigned int)rc, (unsigned int)dt_us, (unsigned int)peer);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static int at3_timed_decode(int emulated, const char *step, int atrac_id, int *samples, int *end_flag,
+                            int *remain) {
+    const uint32_t c0 = s_at3_peer_count;
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int rc = sceAtracDecodeData(atrac_id, s_at3_pcm, samples, end_flag, remain);
+    const uint32_t t1 = sceKernelGetSystemTimeLow();
+    const uint32_t c1 = s_at3_peer_count;
+    at3_timing_line(emulated, step, rc, t1 - t0, c1 - c0);
+    return rc;
+}
+
+static SceUID at3_peer_start(int emulated) {
+    const int self = sceKernelGetThreadCurrentPriority();
+    int prio = self + AT3_PEER_PRIO_STEP;
+    if (prio > 0x6f) prio = 0x6f;
+    s_at3_peer_count = 0;
+    s_at3_peer_stop = 0;
+    SceUID peer = sceKernelCreateThread("at3_peer", at3_peer_thread, prio, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = peer >= 0 ? sceKernelStartThread(peer, 0, NULL) : peer;
+    if (peer >= 0 && start_rc < 0) {
+        sceKernelDeleteThread(peer);
+        peer = -1;
+    }
+    /* Positive control: a 1 ms delay gives the CPU away, so the peer must count across it. */
+    uint32_t control = 0;
+    if (peer >= 0) {
+        const uint32_t c0 = s_at3_peer_count;
+        sceKernelDelayThread(1000);
+        control = s_at3_peer_count - c0;
+    }
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-peer status=RC "
+                   "result=0x%08x self_prio=%d peer_prio=%d control_delay_us=1000 control_peer=%u\n",
+                   (unsigned int)start_rc, self, prio, (unsigned int)control);
+    probe_emit_durable(emulated, line, strlen(line));
+    return peer;
+}
+
+static void at3_peer_stop(SceUID peer) {
+    s_at3_peer_stop = 1;
+    if (peer < 0) return;
+    SceUInt join_us = 2000000u;
+    if (sceKernelWaitThreadEnd(peer, &join_us) < 0) sceKernelTerminateDeleteThread(peer);
+    else sceKernelDeleteThread(peer);
+}
+
+/* Call 0's full PCM as hex lines in the durable host0 log (a file the probe creates is removed at
+   teardown): 16 interleaved s16 values per line, in order. */
+static void at3_pcm0_dump(int emulated, int samples) {
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int base = 0; base < count; base += 16) {
+        char line[200];
+        int n = snprintf(line, sizeof(line),
+                         "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm0-hex status=RC "
+                         "result=0x00000000 at=%d v=", base);
+        for (int k = 0; k < 16 && base + k < count && n > 0 && n < (int)sizeof(line) - 6; k++)
+            n += snprintf(line + n, sizeof(line) - (size_t)n, "%04x", (unsigned int)s_at3_pcm[base + k]);
+        if (n > 0 && n < (int)sizeof(line) - 1) {
+            line[n++] = '\n';
+            line[n] = '\0';
+            probe_emit_durable(emulated, line, (size_t)n);
+        }
+    }
+}
+
+/* The same timing and blocking measurement for an ATRAC3+ stream (#1296: the codec most music
+   uses), when a second private input is staged in host0. Runs between the AT3 pass and unload. */
+#define AT3P_DECODE_INPUT_PATH "host0:/at3p-input-buffer.bin"
+#define AT3P_DECODE_CALLS 10
+static void run_at3p_timing(int emulated) {
+    SceUID fd = sceIoOpen(AT3P_DECODE_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;   /* not staged: the AT3 pass alone */
+    uint32_t total = 0;
+    while (total < AT3_DECODE_BYTES) {
+        const int n = sceIoRead(fd, s_at3_input + total, AT3_DECODE_BYTES - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    probe_step(emulated, "at3-decode", "at3p-get-atracid");
+    const int id = total == AT3_DECODE_BYTES ? sceAtracGetAtracID(PSP_ATRAC_AT3PLUS) : -2;
+    at3_result(emulated, "at3p-get-atracid", id);
+    if (id < 0) return;
+    probe_step(emulated, "at3-decode", "at3p-set-data");
+    const int set_rc = sceAtracSetData(id, s_at3_input, AT3_DECODE_BYTES);
+    at3_result(emulated, "at3p-set-data", set_rc);
+    if (set_rc == 0) {
+        const SceUID peer = at3_peer_start(emulated);
+        int end_flag = 0;
+        for (int call = 0; call < AT3P_DECODE_CALLS && end_flag == 0; call++) {
+            char step[24];
+            int samples = -1, remain = -1, rc;
+            (void)snprintf(step, sizeof(step), "at3p-decode%d", call);
+            probe_step(emulated, "at3-decode", step);
+            rc = at3_timed_decode(emulated, step, id, &samples, &end_flag, &remain);
+            char line[200];
+            (void)snprintf(line, sizeof(line),
+                           "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3p-result-%d status=RC "
+                           "result=0x%08x samples=%d end=%d remain=%d\n",
+                           call, (unsigned int)rc, samples, end_flag, remain);
+            probe_emit_durable(emulated, line, strlen(line));
+            if (rc != 0) break;
+        }
+        at3_peer_stop(peer);
+    }
+    probe_step(emulated, "at3-decode", "at3p-release-atracid");
+    at3_result(emulated, "at3p-release-atracid", sceAtracReleaseAtracID(id));
+}
+
 static void run_at3_decode(int emulated) {
     int input_rc = -1;
     int input_read = 0;
@@ -10251,9 +10542,10 @@ static void run_at3_decode(int emulated) {
                     probe_step(emulated, "at3-decode", "set-data");
                     setdata_rc = sceAtracSetData(atrac_id, s_at3_input, AT3_DECODE_BYTES);
                     at3_result(emulated, "set-data", setdata_rc);
+                    const SceUID peer = at3_peer_start(emulated);
                     probe_step(emulated, "at3-decode", "decode-data");
-                    decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &samples, &end_flag,
-                                                   &remain_frames);
+                    decode_rc = at3_timed_decode(emulated, "decode0", atrac_id, &samples, &end_flag,
+                                                 &remain_frames);
                     at3_result(emulated, "decode-data", decode_rc);
                     char decoded[200];
                     (void)snprintf(decoded, sizeof(decoded),
@@ -10264,6 +10556,7 @@ static void run_at3_decode(int emulated) {
                     /* #1096 follow-up: later frames, PCM fingerprints and the stream-position queries. The PCM
                        bytes stay in the private host0 log as a hash plus a few leading samples. */
                     at3_pcm_record(emulated, "decode0", decode_rc, samples, end_flag, remain_frames);
+                    at3_pcm0_dump(emulated, samples);
                     at3_stream_queries(emulated, atrac_id);
                     for (int more = 1; more <= AT3_DECODE_EXTRA_CALLS && decode_rc == 0 && end_flag == 0;
                          more++) {
@@ -10272,15 +10565,17 @@ static void run_at3_decode(int emulated) {
                         (void)snprintf(step, sizeof(step), "decode%d", more);
                         probe_step(emulated, "at3-decode", step);
                         memset(s_at3_pcm, 0, sizeof(s_at3_pcm));
-                        decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &s2, &e2, &r2);
+                        decode_rc = at3_timed_decode(emulated, step, atrac_id, &s2, &e2, &r2);
                         at3_pcm_record(emulated, step, decode_rc, s2, e2, r2);
                         end_flag = e2;
                     }
+                    at3_peer_stop(peer);
                     at3_stream_queries(emulated, atrac_id);
                     probe_step(emulated, "at3-decode", "release-atracid");
                     release_rc = sceAtracReleaseAtracID(atrac_id);
                     at3_result(emulated, "release-atracid", release_rc);
                 }
+                run_at3p_timing(emulated);
                 probe_step(emulated, "at3-decode", "unload-atrac3plus");
                 atrac_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
                 at3_result(emulated, "unload-atrac3plus", atrac_unload_rc);
@@ -10300,6 +10595,88 @@ static void run_at3_decode(int emulated) {
     probe_step(emulated, "at3-decode", "park");
     /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. Returning from main would
        drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+#include <pspsascore.h>
+#include <psputility_avmodules.h>
+/* #1595: what __sceSasInit returns when the core is already initialized. A game can stop its mixer thread
+   for a movie and call __sceSasInit again on the same core, with no exit call in between (sceSasCore exports
+   none). Cells: init, the same init again, a re-init with other parameters (and what the getters then
+   report), an init of a second core, a re-init over a voice that is playing (end flag before and after), and
+   a misaligned core after init. Synthetic VAG data only. Ends in the normal teardown. */
+#define SAS_INIT_GRAIN 256
+#define SAS_INIT_VAG_BLOCKS 64u
+static SceSasCore s_sas_core_a __attribute__((aligned(64)));
+static SceSasCore s_sas_core_b __attribute__((aligned(64)));
+static unsigned char s_sas_vag[SAS_INIT_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static short s_sas_out[2048 * 2] __attribute__((aligned(64)));
+
+static void sas_result(int emulated, const char *step, int rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SAS-001 case_id=sas-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+static int sas_init(SceSasCore *core, int grain, int voices, int mode) {
+    return __sceSasInit(core, grain, voices, (PspSasOutputModes)mode, PSP_SAS_SAMPLE_RATE);
+}
+
+static void run_sas_init(int emulated) {
+    /* Non-silent ADPCM: filter 0, shift 0, alternating nibbles; flags 0 until the last block, which ends. */
+    for (uint32_t b = 0; b < SAS_INIT_VAG_BLOCKS; b++) {
+        unsigned char *blk = s_sas_vag + b * 16u;
+        blk[0] = 0x00;
+        blk[1] = b + 1u == SAS_INIT_VAG_BLOCKS ? 0x01 : 0x00;
+        for (int i = 2; i < 16; i++) blk[i] = 0x71;
+    }
+    probe_step(emulated, "sas-init", "load-avcodec");
+    const int avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    sas_result(emulated, "load-avcodec", avcodec_rc);
+    probe_step(emulated, "sas-init", "load-sascore");
+    const int sascore_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_SASCORE);
+    sas_result(emulated, "load-sascore", sascore_rc);
+    if (sascore_rc == 0) {
+        probe_step(emulated, "sas-init", "init-a");
+        sas_result(emulated, "init-a", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "grain-a", __sceSasGetGrain(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "reinit-a-same");
+        sas_result(emulated, "reinit-a-same", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        probe_step(emulated, "sas-init", "reinit-a-other");
+        sas_result(emulated, "reinit-a-other", sas_init(&s_sas_core_a, 512, 16, 1));
+        sas_result(emulated, "grain-a-after-other", __sceSasGetGrain(&s_sas_core_a));
+        sas_result(emulated, "outputmode-a-after-other", __sceSasGetOutputmode(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "init-b");
+        sas_result(emulated, "init-b", sas_init(&s_sas_core_b, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "grain-b", __sceSasGetGrain(&s_sas_core_b));
+        sas_result(emulated, "grain-a-after-b", __sceSasGetGrain(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "reinit-a-playing");
+        sas_result(emulated, "reinit-a-base", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "setvoice-a0", __sceSasSetVoice(&s_sas_core_a, 0, s_sas_vag, sizeof(s_sas_vag), 0));
+        sas_result(emulated, "keyon-a0", __sceSasSetKeyOn(&s_sas_core_a, 0));
+        sas_result(emulated, "core-a-1", __sceSasCore(&s_sas_core_a, s_sas_out));
+        sas_result(emulated, "endflag-a-playing", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        sas_result(emulated, "envelope-a0-playing", __sceSasGetEnvelopeHeight(&s_sas_core_a, 0));
+        sas_result(emulated, "reinit-a-over-voice", sas_init(&s_sas_core_a, SAS_INIT_GRAIN, 32, 0));
+        sas_result(emulated, "endflag-a-after-reinit", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        sas_result(emulated, "envelope-a0-after-reinit", __sceSasGetEnvelopeHeight(&s_sas_core_a, 0));
+        sas_result(emulated, "core-a-2", __sceSasCore(&s_sas_core_a, s_sas_out));
+        sas_result(emulated, "endflag-a-after-core", (int)__sceSasGetEndFlag(&s_sas_core_a));
+        probe_step(emulated, "sas-init", "init-misaligned");
+        sas_result(emulated, "init-misaligned",
+                   sas_init((SceSasCore *)((unsigned char *)&s_sas_core_b + 4), SAS_INIT_GRAIN, 32, 0));
+    }
+    probe_step(emulated, "sas-init", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. The AV
+       modules stay loaded; sceSasCore has no exit call and unloading under an initialized core is not measured
+       here. */
     probe_teardown(emulated);
 }
 #endif
@@ -11509,6 +11886,10 @@ int main(int argc, char *argv[]) {
     run_ge_timing(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
     run_cpu_timing(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+    run_thread_k0_block(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
+    run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -25,6 +26,7 @@
 #include "../perf.h"
 #include "../fbcap_policy.h"
 #include "../fbcap.h"
+#include "../recomp.h"   /* sr_parse_display_bounds, sr_pick_display */
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -48,6 +50,10 @@
 #define PRESENT_FRAMES 3
 #define HUD_W 240
 #define HUD_H 108
+/* The developer profile HUD (#314): the live view's rows and a bar per closed interval. */
+#define PROFILE_HUD_W 560
+#define PROFILE_HUD_H 232
+#define HUD_STAGING_BYTES (PROFILE_HUD_W * PROFILE_HUD_H * 4)
 
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
@@ -126,21 +132,43 @@ uint64_t sdl3vk_frame_semaphore_generation(void) {
 
 /* ---- performance overlay (HUD) ------------------------------------------------------ */
 
-static int s_hud_enabled = 0;
+static int s_hud_enabled = 0;    /* SDL3VK_HUD_*: 0 off */
+static int s_developer = 0;      /* SR_DEVELOPER_MODE: the profile HUD is offered */
 static int (*s_audio_active_cb)(void) = NULL;
 static SDL_Surface  *s_hud_surf = NULL;
 static SDL_Renderer *s_hud_ren = NULL;
 static VkFormat      s_hud_fmt = VK_FORMAT_UNDEFINED;
 
 int sdl3vk_hud_is_enabled(void) {
+    return s_hud_enabled != SDL3VK_HUD_OFF;
+}
+
+int sdl3vk_hud_mode(void) {
     return s_hud_enabled;
 }
 
-void sdl3vk_hud_set_enabled(int enabled) {
-    s_hud_enabled = enabled ? 1 : 0;
-    if (s_hud_enabled) {
+int sdl3vk_developer_mode(void) {
+    return s_developer;
+}
+
+int sdl3vk_hud_next_mode(int mode, int developer) {
+    if (mode == SDL3VK_HUD_OFF) return SDL3VK_HUD_PERF;
+    if (mode == SDL3VK_HUD_PERF && developer) return SDL3VK_HUD_PROFILE;
+    return SDL3VK_HUD_OFF;
+}
+
+static void hud_set_mode(int mode) {
+    s_hud_enabled = mode == SDL3VK_HUD_PROFILE && s_developer ? SDL3VK_HUD_PROFILE
+                  : mode != SDL3VK_HUD_OFF ? SDL3VK_HUD_PERF : SDL3VK_HUD_OFF;
+    if (s_hud_enabled != SDL3VK_HUD_OFF) {
         sr_perf_enable_counters();
     }
+}
+
+void sdl3vk_hud_set_enabled(int enabled) {
+    /* On keeps the profile HUD a developer already chose. */
+    hud_set_mode(!enabled ? SDL3VK_HUD_OFF
+                          : s_hud_enabled != SDL3VK_HUD_OFF ? s_hud_enabled : SDL3VK_HUD_PERF);
 }
 
 void sdl3vk_set_audio_active_cb(int (*cb)(void)) {
@@ -375,6 +403,68 @@ static int init_step_fails(void) {
 #define INIT_OK(cond, ...) do { if (init_step_fails() || !(cond)) { \
     fprintf(stderr, __VA_ARGS__); goto fail; } } while (0)
 
+/* The display the game window opens on: the one holding the launcher window, named by
+ * SR_LAUNCHER_DISPLAY_BOUNDS (sr_pick_display in recomp.h), else the primary. A value that
+ * is set but cannot be used is reported, not ignored. Returns 0 only when SDL has no primary
+ * display either; SDL_WINDOWPOS_CENTERED_DISPLAY(0) then means the primary. */
+static SDL_DisplayID sdl3vk_launcher_display(void) {
+    SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    const char *value = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
+    int bounds[4];
+    if (!value || !value[0]) return primary;
+    if (!sr_parse_display_bounds(value, bounds)) {
+        fprintf(stderr, "sdl3vk: SR_LAUNCHER_DISPLAY_BOUNDS=%s is not x,y,w,h; "
+                        "opening on the primary display\n", value);
+        return primary;
+    }
+    int count = 0;
+    SDL_DisplayID *ids = SDL_GetDisplays(&count);
+    int *rects = (ids && count > 0) ? (int *)SDL_calloc((size_t)count, 4 * sizeof(int)) : NULL;
+    int pick = -1;
+    if (rects) {
+        for (int i = 0; i < count; i++) {
+            SDL_Rect r;
+            /* A display whose bounds cannot be read keeps a zero rectangle and never matches. */
+            if (SDL_GetDisplayBounds(ids[i], &r)) {
+                rects[4 * i] = r.x;
+                rects[4 * i + 1] = r.y;
+                rects[4 * i + 2] = r.w;
+                rects[4 * i + 3] = r.h;
+            }
+        }
+        pick = sr_pick_display(bounds, rects, count);
+    }
+    SDL_DisplayID display = pick >= 0 ? ids[pick] : primary;
+    if (pick < 0)
+        fprintf(stderr, "sdl3vk: no display contains the launcher's display %s; "
+                        "opening on the primary display\n", value);
+    SDL_free(rects);
+    SDL_free(ids);
+    return display;
+}
+
+/* The game window, created centred on the launcher's display so it never appears on
+ * another one first. */
+static SDL_Window *sdl3vk_create_window(const char *title) {
+    SDL_DisplayID display = sdl3vk_launcher_display();
+    SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) return NULL;
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
+                          title ? title : "Nakagawa Recomp");
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER,
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER,
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, PSP_W * 2);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, PSP_H * 2);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                          SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                          (s_window_hidden ? SDL_WINDOW_HIDDEN : 0));
+    SDL_Window *win = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+    return win;
+}
+
 int sdl3vk_init(const char *title) {
     s_init_steps = 0;
     INIT_OK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD), "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
@@ -383,14 +473,12 @@ int sdl3vk_init(const char *title) {
      * a window nobody sees, for headless routes. It is never raised or put in front. */
     const char *hidden_env = getenv("SR_WINDOW_HIDDEN");
     s_window_hidden = hidden_env && hidden_env[0] && strcmp(hidden_env, "0") != 0;
-    INIT_OK((s_win = SDL_CreateWindow(title ? title : "Nakagawa Recomp",
-                                      PSP_W * 2, PSP_H * 2,
-                                      SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
-                                      (s_window_hidden ? SDL_WINDOW_HIDDEN : 0))) != NULL,
+    INIT_OK((s_win = sdl3vk_create_window(title)) != NULL,
             "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
     {
         /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
-         * surface is created so the swapchain picks up the right extent. */
+         * surface is created so the swapchain picks up the right extent. Desktop
+         * fullscreen takes the display the window is on, which is the launcher's. */
         const char *fs = getenv("SR_FULLSCREEN");
         if (fs && fs[0] && atoi(fs) != 0 && !SDL_SetWindowFullscreen(s_win, true)) {
             fprintf(stderr, "sdl3vk: SR_FULLSCREEN=1 could not be applied: %s\n",
@@ -544,7 +632,7 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkMapMemory(s_dev,f->staging_mem,0,VK_WHOLE_SIZE,0,&f->staging_map));
 
         VkBufferCreateInfo hbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        hbci.size = HUD_W * HUD_H * 4;
+        hbci.size = HUD_STAGING_BYTES;
         hbci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         INIT_VK(vkCreateBuffer(s_dev, &hbci, NULL, &f->hud_staging));
         VkMemoryRequirements hmr;
@@ -576,6 +664,10 @@ int sdl3vk_init(const char *title) {
 
     INIT_OK(create_swapchain(), "sdl3vk: no swapchain for the new window\n");
 
+    /* The launcher always says, so a run it starts is a developer run only when its setting
+     * is on; a run started by hand is one when SR_DEVELOPER_MODE is set and not 0. */
+    const char *developer_env = getenv("SR_DEVELOPER_MODE");
+    s_developer = developer_env && developer_env[0] && strcmp(developer_env, "0") != 0;
     const char *hud_env = getenv("SR_HUD");
     if (hud_env && hud_env[0] && strcmp(hud_env, "0") != 0) {
         sdl3vk_hud_set_enabled(1);
@@ -873,7 +965,7 @@ static void poll_input(int *quit) {
                 break;
             }
             if (ev.key.key == SDLK_F3 && !ev.key.repeat) {
-                sdl3vk_hud_set_enabled(!s_hud_enabled);
+                hud_set_mode(sdl3vk_hud_next_mode(s_hud_enabled, s_developer));
             }
             /* While the keyboard is claimed its keys go to the keyboard only: a keyboard Enter that
              * confirms the field must not leave a START pulse behind for the title to see. */
@@ -1345,16 +1437,86 @@ static int prescale_ensure(int w, int h) {
     return 1;
 }
 
-static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_img, int swap_w, int swap_h) {
-    if (!f || !f->hud_staging_map || swap_w < HUD_W || swap_h < HUD_H) return;
+/* The developer profile HUD (#314): the live view's rows for the newest closed telemetry
+ * interval (sr_perf_live_rows, the PERF line's definitions), the hottest AOT-to-interpreter
+ * PC of the run, and one bar per closed interval, newest on the right, splitting its wall
+ * time into cpu, GE wait, present and idle. Updated once a second, when an interval closes. */
+static void draw_profile_hud(SDL_Renderer *ren, int w, int h, double game_fps, double per_frame,
+                             double vblank_hz) {
+    static const Uint8 part_rgb[4][3] = {
+        {215, 242, 74},   /* cpu */
+        {219, 176, 36},   /* GE wait */
+        {108, 182, 255},  /* present */
+        {70, 80, 95},     /* idle */
+    };
+    const SrPerfHistory *history = sr_perf_history();
+    const SrPerfLiveInterval *newest = sr_perf_history_at(history, 0);
+    SrPerfLiveRow rows[SR_PERF_LIVE_ROWS];
+    SrPerfTopPc top;
+    char line[96];
+    float y = 8.0f;
+    unsigned count;
 
-    if (!s_hud_surf || s_hud_fmt != s_swap_fmt) {
+    SDL_SetRenderDrawColor(ren, 240, 240, 240, 255);
+    snprintf(line, sizeof(line), "Profile  %.1f game fps  %.1f VBlanks/frame  %.1f Hz", game_fps,
+             per_frame, vblank_hz);
+    SDL_RenderDebugText(ren, 12, y, line);
+    y += 16.0f;
+    count = sr_perf_live_rows(newest, rows, SR_PERF_LIVE_ROWS);
+    SDL_SetRenderDrawColor(ren, 200, 206, 214, 255);
+    if (!count) {
+        SDL_RenderDebugText(ren, 12, y, "Collecting: an interval closes every second");
+        y += 14.0f;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        snprintf(line, sizeof(line), "%-11s %s", rows[i].label, rows[i].value);
+        SDL_RenderDebugText(ren, 12, y, line);
+        y += 14.0f;
+    }
+    if (sr_perf_top_transitions(0, &top, 1)) {
+        snprintf(line, sizeof(line), "%-11s 0x%08X x%llu %s", "Hot PC", (unsigned)top.pc,
+                 (unsigned long long)top.count, top.reason);
+        SDL_RenderDebugText(ren, 12, y, line);
+    }
+
+    /* The graph: 4 px bars with a 1 px gap along the bottom. */
+    const float graph_h = 36.0f, base = (float)h - 8.0f;
+    unsigned fit = (unsigned)((w - 24) / 5);
+    for (unsigned age = 0; history && age < history->count && age < fit; age++) {
+        const SrPerfLiveInterval *iv = sr_perf_history_at(history, age);
+        if (!iv || !iv->wall_ns) continue;
+        const uint64_t parts[4] = {iv->cpu_ns, iv->ge_wait_ns, iv->present_ns, iv->idle_ns};
+        float x = (float)(w - 12) - (float)(age + 1u) * 5.0f;
+        float top_y = base;
+        for (int p = 0; p < 4; p++) {
+            float share = (float)((double)parts[p] / (double)iv->wall_ns);
+            float bar = share > 1.0f ? graph_h : share * graph_h;
+            if (bar <= 0.0f) continue;
+            if (top_y - bar < base - graph_h) bar = top_y - (base - graph_h);
+            if (bar <= 0.0f) break;
+            SDL_FRect r = { x, top_y - bar, 4.0f, bar };
+            SDL_SetRenderDrawColor(ren, part_rgb[p][0], part_rgb[p][1], part_rgb[p][2], 255);
+            SDL_RenderFillRect(ren, &r);
+            top_y -= bar;
+        }
+    }
+}
+
+static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_img, int swap_w, int swap_h) {
+    /* The profile HUD needs a window it fits in; a smaller one shows the performance HUD. */
+    int profile = s_hud_enabled == SDL3VK_HUD_PROFILE && swap_w >= PROFILE_HUD_W &&
+                  swap_h >= PROFILE_HUD_H;
+    int hud_w = profile ? PROFILE_HUD_W : HUD_W;
+    int hud_h = profile ? PROFILE_HUD_H : HUD_H;
+    if (!f || !f->hud_staging_map || swap_w < hud_w || swap_h < hud_h) return;
+
+    if (!s_hud_surf || s_hud_fmt != s_swap_fmt || s_hud_surf->w != hud_w || s_hud_surf->h != hud_h) {
         if (s_hud_ren) { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
         if (s_hud_surf) { SDL_DestroySurface(s_hud_surf); s_hud_surf = NULL; }
         s_hud_fmt = s_swap_fmt;
         SDL_PixelFormat sdl_fmt = (s_swap_fmt == VK_FORMAT_R8G8B8A8_UNORM || s_swap_fmt == VK_FORMAT_R8G8B8A8_SRGB)
                                   ? SDL_PIXELFORMAT_RGBA32 : SDL_PIXELFORMAT_BGRA32;
-        s_hud_surf = SDL_CreateSurface(HUD_W, HUD_H, sdl_fmt);
+        s_hud_surf = SDL_CreateSurface(hud_w, hud_h, sdl_fmt);
         if (s_hud_surf) {
             s_hud_ren = SDL_CreateSoftwareRenderer(s_hud_surf);
         }
@@ -1368,52 +1530,56 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     double presents = 0.0, frame_ms = 0.0, vblank_hz = 0.0, game_fps = 0.0, per_frame = 0.0;
     sr_perf_get_hud_metrics(&presents, &frame_ms, &vblank_hz);
     sr_perf_get_hud_frames(&game_fps, &per_frame);
-    /* -1: no backend query registered, so the status is unknown. */
-    int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
 
     SDL_SetRenderDrawColor(s_hud_ren, 20, 24, 32, 230);
-    SDL_FRect bg = { 0, 0, (float)HUD_W, (float)HUD_H };
+    SDL_FRect bg = { 0, 0, (float)hud_w, (float)hud_h };
     SDL_RenderFillRect(s_hud_ren, &bg);
     SDL_SetRenderDrawColor(s_hud_ren, 70, 90, 130, 255);
     SDL_RenderRect(s_hud_ren, &bg);
 
-    char line[64];
-    SDL_SetRenderDrawColor(s_hud_ren, 240, 240, 240, 255);
-    snprintf(line, sizeof(line), "Game FPS:  %.1f", game_fps);
-    SDL_RenderDebugText(s_hud_ren, 12, 10, line);
-
-    if (per_frame > 0.0)
-        snprintf(line, sizeof(line), "Per frame: %.1f VBlanks", per_frame);
-    else
-        snprintf(line, sizeof(line), "Per frame: -");
-    SDL_RenderDebugText(s_hud_ren, 12, 30, line);
-
-    snprintf(line, sizeof(line), "Presents:  %.1f/s", presents);
-    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
-
-    snprintf(line, sizeof(line), "VBlank:    %.1f Hz", vblank_hz);
-    SDL_RenderDebugText(s_hud_ren, 12, 70, line);
-
-    if (audio_active > 0) {
-        SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
+    if (profile) {
+        draw_profile_hud(s_hud_ren, hud_w, hud_h, game_fps, per_frame, vblank_hz);
     } else {
-        SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
+        /* -1: no backend query registered, so the status is unknown. */
+        int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
+        char line[64];
+        SDL_SetRenderDrawColor(s_hud_ren, 240, 240, 240, 255);
+        snprintf(line, sizeof(line), "Game FPS:  %.1f", game_fps);
+        SDL_RenderDebugText(s_hud_ren, 12, 10, line);
+
+        if (per_frame > 0.0)
+            snprintf(line, sizeof(line), "Per frame: %.1f VBlanks", per_frame);
+        else
+            snprintf(line, sizeof(line), "Per frame: -");
+        SDL_RenderDebugText(s_hud_ren, 12, 30, line);
+
+        snprintf(line, sizeof(line), "Presents:  %.1f/s", presents);
+        SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+
+        snprintf(line, sizeof(line), "VBlank:    %.1f Hz", vblank_hz);
+        SDL_RenderDebugText(s_hud_ren, 12, 70, line);
+
+        if (audio_active > 0) {
+            SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
+        } else {
+            SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
+        }
+        snprintf(line, sizeof(line), "Audio:     %s",
+                 audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
+        SDL_RenderDebugText(s_hud_ren, 12, 90, line);
     }
-    snprintf(line, sizeof(line), "Audio:     %s",
-             audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
-    SDL_RenderDebugText(s_hud_ren, 12, 90, line);
 
     SDL_RenderPresent(s_hud_ren);
 
     const uint8_t *src_px = (const uint8_t *)s_hud_surf->pixels;
     uint8_t *dst_px = (uint8_t *)f->hud_staging_map;
     int pitch = s_hud_surf->pitch;
-    for (int y = 0; y < HUD_H; y++) {
-        memcpy(dst_px + y * HUD_W * 4, src_px + y * pitch, HUD_W * 4);
+    for (int y = 0; y < hud_h; y++) {
+        memcpy(dst_px + y * hud_w * 4, src_px + y * pitch, (size_t)hud_w * 4);
     }
 
     int ox = 16, oy = 16;
-    if (swap_w < HUD_W + ox || swap_h < HUD_H + oy) {
+    if (swap_w < hud_w + ox || swap_h < hud_h + oy) {
         ox = 0; oy = 0;
     }
 
@@ -1423,8 +1589,8 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     bic.imageOffset.x = ox;
     bic.imageOffset.y = oy;
     bic.imageOffset.z = 0;
-    bic.imageExtent.width = HUD_W;
-    bic.imageExtent.height = HUD_H;
+    bic.imageExtent.width = (uint32_t)hud_w;
+    bic.imageExtent.height = (uint32_t)hud_h;
     bic.imageExtent.depth = 1;
 
     /* The frame blit just wrote this region; order the overlay write after it. */

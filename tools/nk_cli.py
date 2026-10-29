@@ -63,6 +63,7 @@ from nk_core import package_cache  # noqa: E402
 from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # noqa: E402
 from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
+from nk_core import disc_expand_tool  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -91,6 +92,8 @@ from nk_core.iso_inspect import (  # noqa: E402
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
+from psp_import_table import MODULE_ATTR_KERNEL as PSP_MODULE_ATTR_KERNEL  # noqa: E402
+from analyze import code_overlay_layout, is_code_overlay  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -553,6 +556,11 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     selected_name = Path(selected).name.casefold()
     for directory, entry in walk_disc_module_entries(iso_path):
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+            # Any other file is a candidate only when it is a code overlay, found by
+            # its magic whatever its name (analyze.code_overlay_layout).
+            overlay = _iso_code_overlay_candidate(iso_path, file_size, directory, entry)
+            if overlay is not None:
+                candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
@@ -591,10 +599,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                 elif header.startswith(b"~SCE"):
                     kind = "encrypted-prx"
                 elif header.startswith(b"~PSP"):
-                    kind = "encrypted-prx" if _encrypted_prx_header_supported(
-                        header
-                    ) else "unsupported"
-                    if kind == "unsupported":
+                    if _encrypted_prx_header_supported(header):
+                        kind = "encrypted-prx"
+                    elif _psp_container_kernel_mode(header):
+                        kind = "kernel-container"
+                        reason = ("a kernel-mode module in an encrypted container the "
+                                  "boundary does not open")
+                    else:
+                        kind = "unsupported"
                         reason = "its encrypted-container header is not one the boundary supports"
                 else:
                     kind = "unsupported"
@@ -626,11 +638,41 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
         names[folded] = member_path
     staged_size = sum(
         candidate["entry"].size for candidate in candidates
-        if candidate["kind"] == "plain-elf"
+        if candidate["kind"] in _PLAIN_CANDIDATE_KINDS
     )
     if staged_size > MAX_GUEST_MODULE_SET_BYTES:
         raise PackageBuildError("Guest-module inputs exceed the supported aggregate size.")
     return candidates
+
+
+#: Candidate kinds whose disc bytes are used as they are: a plain module or a code overlay.
+_PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
+
+
+def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
+                                entry: IsoDirectoryEntry) -> dict | None:
+    """The candidate for a code overlay among a title's other disc files, else None.
+
+    A game reads a code overlay into memory itself and announces it with an
+    instruction-cache invalidate, where the runtime binds its translation; the build
+    translates it like a runtime-placed module. A file that carries the magic but whose
+    header is malformed is a named unsupported candidate."""
+    if entry.multi_extent or entry.size < 4 or entry.size > MAX_GUEST_MODULE_BYTES:
+        return None
+    with iso_path.open("rb") as stream:
+        if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
+            return None
+        data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    kind, reason = "code-overlay", None
+    if not _disc_module_name_ok(entry.name):
+        kind, reason = "unsupported", "its file name is not a supported module name"
+    else:
+        try:
+            code_overlay_layout(data)
+        except ValueError as exc:
+            kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
+    return {"name": entry.name, "directory": directory, "entry": entry,
+            "kind": kind, "reason": reason}
 
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
@@ -639,6 +681,17 @@ def _encrypted_prx_header_supported(header: bytes) -> bool:
     sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
     return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
         sum(sizes) <= MAX_EXECUTABLE_BYTES
+
+
+def _psp_container_kernel_mode(header: bytes) -> bool:
+    """Whether a ~PSP container's plaintext header declares a kernel-mode module.
+
+    The container header repeats SceModuleInfo's attribute (offset 4) in the clear,
+    so the kernel-mode bit is known without opening the container.
+    """
+    return len(header) >= 6 and bool(
+        struct.unpack_from("<H", header, 4)[0] & PSP_MODULE_ATTR_KERNEL
+    )
 
 
 def _stage_iso_modules(
@@ -652,7 +705,7 @@ def _stage_iso_modules(
     file_size = iso_path.stat().st_size
     with iso_path.open("rb") as source:
         for candidate in candidates:
-            if candidate["kind"] != "plain-elf":
+            if candidate["kind"] not in _PLAIN_CANDIDATE_KINDS:
                 continue
             entry: IsoDirectoryEntry = candidate["entry"]
             destination = _require_child(
@@ -714,8 +767,9 @@ def _declare_experimental_disc_modules(
 
     Every candidate must resolve to a plain module: a valid plain copy in the
     per-title decrypted folder wins (the player's disc check decrypts the disc's
-    own there, #295); otherwise an already plain disc copy is used. Anything else
-    stops by name. The plain copies are staged in a private folder under
+    own there, #295); otherwise an already plain disc copy is used. A kernel-mode
+    module in a container the boundary cannot open is left out by name (deferred),
+    because the runtime never runs kernel-mode code. Anything else stops by name. The plain copies are staged in a private folder under
     ``experimental/<DISC_ID>`` and planned by plan_guest_module_layout, which
     declares each module that runs as translated guest code as runtime-placed and
     leaves out the ones the runtime serves completely.
@@ -726,6 +780,7 @@ def _declare_experimental_disc_modules(
     title_folder = decrypted_module_dir(user_root, disc_id)
     module_sources: list[tuple[dict, str, Path | None]] = []
     unready: list[dict] = []
+    kernel_left_out: list[dict] = []
     for candidate in candidates:
         folder_copy = None
         if title_folder is not None and _disc_module_name_ok(candidate["name"]):
@@ -735,8 +790,19 @@ def _declare_experimental_disc_modules(
                 folder_copy = candidate_file
         if folder_copy is not None:
             module_sources.append((candidate, "folder", folder_copy))
-        elif candidate["kind"] == "plain-elf":
+        elif candidate["kind"] in _PLAIN_CANDIDATE_KINDS:
             module_sources.append((candidate, "iso", None))
+        elif candidate["kind"] == "kernel-container":
+            # The runtime never runs PSP kernel-mode code (plan_guest_module_layout
+            # leaves a decrypted kernel-mode module out too), so a container that
+            # cannot be opened is left out by name rather than stopping the build.
+            # The game's load of it gets the record the host serves, and a call into
+            # one of its functions fails closed at the call as a named NID.
+            kernel_left_out.append({
+                "name": candidate["name"],
+                "reason": "kernel-mode module in an encrypted container the boundary "
+                          "does not open; the runtime does not run kernel-mode code",
+            })
         else:
             unready.append(candidate)
     # CFW patch modules stay excluded, whichever copy supplies them.
@@ -768,7 +834,7 @@ def _declare_experimental_disc_modules(
             lines=lines, log_lines=lines,
         )
     if not module_sources:
-        return [], [], None
+        return [], kernel_left_out, None
     try:
         module_dir = _stage_iso_modules(
             iso_path, user_root, disc_id,
@@ -789,6 +855,7 @@ def _declare_experimental_disc_modules(
             for candidate, _source, _folder_copy in module_sources
         ]
         bindings, deferred = plan_guest_module_layout(selected_elf, module_inputs)
+        deferred = kernel_left_out + deferred
     except (IsoInspectionError, OSError) as exc:
         boundary_code = (
             getattr(exc, "boundary_code", None)
@@ -1078,6 +1145,13 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     """
     if _classify_decrypted_elf_file(path, module=True) == "PLAIN_MIPS_ELF32":
         return
+    data = path.read_bytes()
+    if is_code_overlay(data):
+        try:
+            code_overlay_layout(data)
+            return
+        except ValueError:
+            pass
     path.unlink(missing_ok=True)
     raise PackageBuildError(
         f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32; "
@@ -1155,9 +1229,9 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                     magic = module_stream.read(4)
             except OSError as exc:
                 raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
-            if magic != b"\x7fELF":
+            if magic != b"\x7fELF" and not is_code_overlay(magic):
                 suggested = module_dir_arg or default_module_dir
-                token = "ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
+                token ="ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
                 raise PackageBuildError(
                     f"{token}Required guest PRX {_module_label(name, disc_name)} at "
                     f"{source_path} is not a decrypted ELF. Place a decrypted "
@@ -1217,7 +1291,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             offset += count
                     with temporary.open("rb") as module_stream:
                         magic = module_stream.read(4)
-                    if magic != b"\x7fELF":
+                    if magic != b"\x7fELF" and not is_code_overlay(magic):
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
                         if magic in (b"~PSP", b"~SCE"):
@@ -3423,6 +3497,9 @@ def _bringup_human_summary(report: dict) -> str:
                   "says why and what to do next)")
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
+    elif report["failure_class"] == "DISC_IMAGE_REFUSED":
+        detail = (" (the compressed disc image could not be expanded into a plain .iso; "
+                  "the message above names the reason)")
     elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
         detail = (" (the file is a PlayStation Store package (PBP), not a disc image; "
                   "the player converts PSN releases of UMD games, the command line does not)")
@@ -3461,9 +3538,72 @@ def _bringup_human_summary(report: dict) -> str:
     )
 
 
+LIBRARY_LOCK_TIMEOUT_SECONDS = 300.0
+
+
+@contextlib.contextmanager
+def _library_lock(user_root: Path, timeout_seconds: float = LIBRARY_LOCK_TIMEOUT_SECONDS):
+    """Hold the per-user library's write lock while a library entry is read, changed and saved.
+
+    Several bring-ups may build into one data folder at once (``bringup --user-data-root``);
+    each rewrites library.json from what it read, so without the lock one would drop the
+    title another just added. The OS releases the lock with its process.
+    """
+    lock_dir = user_root / "locks"
+    if lock_dir.is_symlink():
+        raise PackageBuildError("The library lock folder is a symlink; refusing to write outside per-user data.")
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_dir = _require_child(user_root, lock_dir, "Library lock folder")
+    handle = open(lock_dir / "library.lock", "a+b")
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise PackageBuildError(
+                        f"The per-user library stayed locked for {int(timeout_seconds)} s; "
+                        "another build is still writing it."
+                    ) from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
                            selected: str, is_experimental: bool,
                            boot_executable: str = "") -> None:
+    with _library_lock(user_root):
+        _write_bringup_library_locked(user_root, iso_path, metadata, title_id, selected,
+                                      is_experimental, boot_executable)
+
+
+def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, title_id: str,
+                                  selected: str, is_experimental: bool,
+                                  boot_executable: str) -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -3485,14 +3625,23 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         games = [game for game in payload["games"]
                  if not isinstance(game, dict) or
                  str(game.get("disc_id", "")).upper() != metadata.disc_id.upper()]
-    games.append({
+    record = {
         "disc_id": metadata.disc_id.upper(),
         "title_id": title_id,
         "iso_path": str(iso_path),
         "selected_executable": selected,
         "boot_executable": boot_executable,
         "is_experimental": is_experimental,
-    })
+    }
+    # The disc's own name and version, so the player's card names the game: a record
+    # without them shows as an untitled disc.
+    title = getattr(metadata, "title", "")
+    if isinstance(title, str) and title.strip():
+        record["title_name"] = title.strip()
+    version = getattr(metadata, "version", "")
+    if isinstance(version, str) and version.strip():
+        record["disc_version"] = version.strip()
+    games.append(record)
     if len(games) > MAX_LIBRARY_GAMES:
         raise PackageBuildError(
             f"The bring-up user library would exceed the {MAX_LIBRARY_GAMES}-record limit."
@@ -3907,13 +4056,41 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
             if not private_sweep_import_report.is_relative_to(work_dir):
                 raise PackageBuildError("Private sweep import report must stay under the bring-up work directory.")
-        user_root = _user_data_root(work_dir / "user-data")
-        if not user_root.is_relative_to(work_dir):
-            raise PackageBuildError("Bring-up user data escaped the selected work directory.")
+        shared_root = getattr(args, "user_data_root", None)
+        if shared_root is not None:
+            # A data folder several bring-ups build into (a whole collection the player
+            # opens with --user-data-root); the run's own files stay in the work directory.
+            user_root = _user_data_root(Path(shared_root))
+        else:
+            user_root = _user_data_root(work_dir / "user-data")
+            if not user_root.is_relative_to(work_dir):
+                raise PackageBuildError("Bring-up user data escaped the selected work directory.")
         user_root.mkdir(parents=True, exist_ok=True)
         iso_path = Path(args.iso).expanduser().resolve(strict=True)
     except (PackageBuildError, OSError, ValueError):
         fail_stage(report, "inspect", "INVALID_ISO")
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+
+    # A compressed disc image (.cso, .zso, .chd) is expanded once into this
+    # bring-up's user-data root by the player's own C code, and every later
+    # stage reads the expanded .iso.
+    started = time.perf_counter()
+    try:
+        iso_path = disc_expand_tool.ensure_plain_iso(iso_path, user_root)
+    except disc_expand_tool.DiscImageRefused as exc:
+        print(f"The disc image was not expanded [{exc.code}]: {exc}")
+        fail_stage(report, "inspect",
+                   "INVALID_ISO" if exc.code == "DISC_NOT_PSP" else "DISC_IMAGE_REFUSED",
+                   duration_ms=int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    except (RuntimeError, OSError) as exc:
+        print(f"The disc image could not be expanded: {exc}")
+        fail_stage(report, "inspect", "DISC_IMAGE_REFUSED",
+                   duration_ms=int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
@@ -4606,6 +4783,9 @@ def main() -> int:
                            help="Private work directory outside the repository")
     p_bringup.add_argument("--report", required=True,
                            help="Destination for the public-safe JSON report")
+    p_bringup.add_argument("--user-data-root", type=Path, default=None,
+                           help="Player data folder to build into, shared with other bring-ups "
+                                "(default: <work-dir>/user-data, this run's own)")
     p_bringup.add_argument("--launch-timeout", type=int,
                            default=BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS,
                            help="Hard launch limit in seconds "

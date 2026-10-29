@@ -678,7 +678,7 @@ int main(int argc, char **argv) {{
     if (strcmp(mode, "library_test") == 0) {{
         if (argc < 3) return 1;
         const char *lib_json = argv[2];
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         nk_library_init(&lib);
 
         NkGameEntry g1;
@@ -701,7 +701,7 @@ int main(int argc, char **argv) {{
         assert(nk_library_count(&lib) == 1);
         assert(nk_library_save(&lib, lib_json) == NK_OK);
 
-        NkLibrary loaded;
+        static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
         assert(nk_library_load(&loaded, lib_json) == NK_OK);
         assert(nk_library_count(&loaded) == 1);
 
@@ -796,7 +796,7 @@ int main(int argc, char **argv) {{
 
     if (strcmp(mode, "boot_roundtrip") == 0) {{
         if (argc < 5) return 1;
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkResult load_result = nk_library_load(&lib, argv[2]);
         printf("LOAD_RESULT:%d\\n", (int)load_result);
         if (load_result != NK_OK) return 0;
@@ -806,7 +806,7 @@ int main(int argc, char **argv) {{
         NkResult save_result = nk_library_save(&lib, argv[3]);
         printf("SAVE_RESULT:%d\\n", (int)save_result);
         if (save_result != NK_OK) return 0;
-        NkLibrary saved_lib;
+        static NkLibrary saved_lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkResult saved_load_result = nk_library_load(&saved_lib, argv[3]);
         const NkGameEntry *saved_entry = saved_load_result == NK_OK
             ? nk_library_find_by_disc_id(&saved_lib, "TEST00001") : NULL;
@@ -838,7 +838,7 @@ int main(int argc, char **argv) {{
 
     if (strcmp(mode, "boot_save_unterminated") == 0) {{
         if (argc < 3) return 1;
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkGameEntry game;
         memset(&game, 0, sizeof(game));
         nk_library_init(&lib);
@@ -1054,6 +1054,93 @@ int main(int argc, char **argv) {{
             nk_cli._unready_module_lines(candidates),
             ["MODULE bad-align.prx: not ready (" + candidates[0]["reason"] + ")"],
         )
+
+    def test_unopenable_kernel_mode_container_is_left_out_by_name(self) -> None:
+        # A disc may carry Sony kernel-mode drivers in containers the boundary does not
+        # open. Their plaintext ~PSP header repeats the module attribute, so the intake
+        # knows they are kernel-mode, and the runtime never runs kernel-mode code: they
+        # are deferred by name instead of stopping the build. A user-mode container the
+        # boundary cannot open still stops by name.
+        def container(attribute: int) -> bytes:
+            header = bytearray(0x150)
+            header[:4] = b"~PSP"
+            struct.pack_into("<H", header, 4, attribute)
+            return bytes(header)  # zero segment count: not a header the boundary opens
+
+        work = self.temp_dir / "kernel-container"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "kernel.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/PRX/videocodec.prx": container(0x1006)},
+            disc_id="TEST00081",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [("videocodec.prx", "kernel-container")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00081", candidates, selected, {},
+        )
+        self.assertEqual(declared, [])
+        self.assertIsNone(staged)
+        self.assertEqual([item["name"] for item in deferred], ["videocodec.prx"])
+        self.assertIn("kernel-mode", deferred[0]["reason"])
+
+        user_iso = work / "user-mode.iso"
+        create_test_iso_with_module_tree(
+            user_iso, {"PSP_GAME/USRDIR/PRX/game.prx": container(0x0000)},
+            disc_id="TEST00082",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(user_iso, "EBOOT.BIN")
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        with self.assertRaises(nk_cli.ExperimentalModuleIntakeError) as ctx:
+            nk_cli._declare_experimental_disc_modules(
+                user_iso, user_root, "TEST00082", candidates, selected, {},
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+
+    def test_code_overlay_is_found_by_its_magic_and_declared_runtime_placed(self) -> None:
+        # A game's own code overlays (MWo3) are found by their magic whatever their file
+        # name, staged as they are, and declared runtime-placed so the build translates
+        # them; a file with the magic and a malformed header is a named candidate.
+        load = 0x08C00000
+        text = struct.pack("<4I", 0x27BDFFF0, 0x03E00008, 0x27BD0010, 0)
+        data = bytes(8)
+        data_lo = load + 0x40 + len(text)
+        overlay = (struct.pack("<4s7I", b"MWo3", 1, load, len(text), len(data), 0,
+                               data_lo, data_lo) + bytes(0x20) + text + data)
+        work = self.temp_dir / "code-overlay"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "overlay.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/Title.ovl": overlay,
+                       "PSP_GAME/USRDIR/data/notes.bin": b"not code"},
+            disc_id="TEST00083",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [("Title.ovl", "code-overlay")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00083", candidates, selected, {},
+        )
+        self.assertEqual(deferred, [])
+        self.assertEqual(declared, [{
+            "name": "Title.ovl", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/Title.ovl",
+        }])
+        self.assertEqual((staged / "Title.ovl").read_bytes(), overlay)
+
+        bad_iso = work / "bad-overlay.iso"
+        create_test_iso_with_module_tree(
+            bad_iso, {"PSP_GAME/USRDIR/Bad.ovl": overlay[:-4]}, disc_id="TEST00084")
+        candidates = nk_cli._discover_iso_module_candidates(bad_iso, "EBOOT.BIN")
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("code-overlay header is malformed", candidates[0]["reason"])
 
     def test_non_congruent_valid_module_is_accepted(self) -> None:
         # p_offset (84) and p_vaddr (0) differ modulo p_align 0x10. The loader copies segment
@@ -1584,7 +1671,8 @@ int main(int argc, char **argv) {{
                         json.loads(ready.stdout)["compatibility_preflight"]["checks"]}
         self.assertEqual(ready_checks["DATA_ROOT"]["status"], "OK")
         self.assertEqual(ready_checks["RUNTIME_PACKAGE"]["status"], "OK")
-        self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "OK")
+        # Project fonts only: every font is a stand-in, not the user's own (#1300).
+        self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "SYNTHETIC")
 
         data_root.rmdir()
         extracted_data_root = (
