@@ -1782,6 +1782,28 @@ _register_campaign_probe(
     {case: (17 if case.startswith("rndf") else 13) for case in VFPU_FORMS_CASES},
 )
 
+# vfpu-funnel (118, probe_hle_issues.c): the #326 funnel add and average words, two passes.
+# Every row is emitted on every run, so the stream is fixed-shape: per pass, vfad then vavg,
+# each at .p, .t and .q (one step per form and size), over 26 operand sets, each under no S
+# prefix and the two TN_PFX forms. Rows are <form>-p<pass>-<size>-<i>-<prefix>, 13 words each.
+VFPU_FUNNEL_FORMS = ("fad", "avg")
+VFPU_FUNNEL_SIZES = ("p", "t", "q")
+VFPU_FUNNEL_PREFIXES = ("none", "p1", "p2")
+VFPU_FUNNEL_OPERAND_SETS = 26
+VFPU_FUNNEL_PASSES = 2
+VFPU_FUNNEL_CASES = tuple(
+    f"{form}-p{p}-{size}-{i}-{pfx}"
+    for p in range(VFPU_FUNNEL_PASSES)
+    for form in VFPU_FUNNEL_FORMS
+    for size in VFPU_FUNNEL_SIZES
+    for i in range(VFPU_FUNNEL_OPERAND_SETS)
+    for pfx in VFPU_FUNNEL_PREFIXES
+)
+_register_campaign_probe(
+    "vfpu-funnel", "PSP-VFPU-FUNNEL-001", VFPU_FUNNEL_CASES,
+    {case: 13 for case in VFPU_FUNNEL_CASES},
+)
+
 # ge-sample (109, probe_ge_sample.c): the #282 GE texture sample-point cells. Every draw is
 # emitted on every run, so the stream is fixed-shape: per mapping, primitive (triangle pair
 # or sprite), filter and texture, one `-draw` record (the GE wait outcome, 7 words) and one
@@ -2036,7 +2058,7 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.
-HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms"})
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "vfpu-funnel"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (

@@ -239,6 +239,9 @@ else ifeq ($(CASE),thread-k0-block)
 CASE_ID = 116
 else ifeq ($(CASE),sas-init)
 CASE_ID = 117
+# 118: the #326 VFPU funnel add and average words (vfad, vavg; probe_hle_issues.c).
+else ifeq ($(CASE),vfpu-funnel)
+CASE_ID = 118
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
@@ -428,6 +431,9 @@ TARGET = $(BUILD_DIR)/hle_intr_cells
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),vfpu-forms)
 TARGET = $(BUILD_DIR)/vfpu_forms
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-funnel)
+TARGET = $(BUILD_DIR)/vfpu_funnel
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
 # same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.

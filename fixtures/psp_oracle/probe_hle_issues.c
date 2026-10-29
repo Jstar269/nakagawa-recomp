@@ -7,7 +7,9 @@
 //   CASE=hle-intr-cells (PSP-HLE-INTR-001): #325 VTimer/alarm handler return values and
 //     VBLANK sub-interrupt delivery while interrupts are suspended or a handler holds;
 //   CASE=vfpu-forms (PSP-VFPU-FORMS-001): #326 raw result words of vh2f, vuc2i, vsocp,
-//     vwbn, vrndf1 and vrndf2, register-only.
+//     vwbn, vrndf1 and vrndf2, register-only;
+//   CASE=vfpu-funnel (PSP-VFPU-FUNNEL-001): #326 raw result words of vfad and vavg at
+//     .p, .t and .q, register-only.
 // These cases live apart from probe_hle_measure.c because they do what that file's
 // families never may: hle-intr-cells registers a VBLANK sub-interrupt handler, sets
 // VTimer and alarm handlers and suspends interrupts, and hle-issues-batch calls a kernel
@@ -32,8 +34,8 @@
 #include <string.h>
 
 PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
-#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108
-/* hle-issues-batch and vfpu-forms run VFPU words on the main thread; without the VFPU
+#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 118
+/* hle-issues-batch, vfpu-forms and vfpu-funnel run VFPU words on the main thread; without the VFPU
    attribute the first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
@@ -48,6 +50,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_ISSUES_BATCH 106
 #define HLE_CASE_INTR_CELLS 107
 #define HLE_CASE_VFPU_FORMS 108
+#define HLE_CASE_VFPU_FUNNEL 118
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -61,6 +64,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "vfpu-forms"
 #define HLE_TEST_ID "PSP-VFPU-FORMS-001"
 #define HLE_LOG "host0:/vfpu_forms_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VFPU_FUNNEL
+#define HLE_CAMPAIGN_ID "vfpu-funnel"
+#define HLE_TEST_ID "PSP-VFPU-FUNNEL-001"
+#define HLE_LOG "host0:/vfpu_funnel_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -852,6 +859,172 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_VFPU_FORMS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FUNNEL
+
+/* #326 VFPU funnel add and average (PSP-VFPU-FUNNEL-001), one launch, register-only: the
+   raw result word of vfad (sum of the source lanes) and vavg (their average) at .p, .t and
+   .q, each over 26 operand sets chosen so that different summation rules (sequential,
+   pairwise, exact-then-round) and different divisions (x / n against x * (1 / n)) give
+   different bits, and each under no S prefix and the two TN_PFX forms. Two passes for
+   repeatability. Every word is emitted as a word. The encodings are VFPU op 0x34, jump
+   field 2, op field 6 (vfad) or 7 (vavg), vd S200 (0x08), vs C000, size from bit 7 (.p),
+   bit 15 (.t) or both (.q); they sit one op field above the vsocp words of the vfpu-forms
+   case (0xd0450008, 0xd0450088), which were checked against psp-as (pspdev binutils).
+   Nothing outside the VFPU registers of this thread is touched. */
+
+#include "hle_vfpu_cells.h"
+
+/* Source C000 (image 0-3), destination S200 (image 32). */
+TN_CELL_SET(fn_fad_p, "0xd0460088")   /* vfad.p S200, C000.p */
+TN_CELL_SET(fn_fad_t, "0xd0468008")   /* vfad.t S200, C000.t */
+TN_CELL_SET(fn_fad_q, "0xd0468088")   /* vfad.q S200, C000.q */
+TN_CELL_SET(fn_avg_p, "0xd0470088")   /* vavg.p S200, C000.p */
+TN_CELL_SET(fn_avg_t, "0xd0478008")   /* vavg.t S200, C000.t */
+TN_CELL_SET(fn_avg_q, "0xd0478088")   /* vavg.q S200, C000.q */
+
+typedef void (*fn_cell_fn)(const uint32_t *in, uint32_t *out, uint32_t *cc);
+
+/* Operand sets, four float32 words each (lanes 0-3 of C000); lanes beyond the size are
+   ignored by the instruction but still recorded. */
+static const uint32_t s_fn_ops[26][4] = {
+    /*  0: 2^24, 1, 1, 1: sequential 2^24, pairwise 2^24+2, exact-then-round 2^24+4 */
+    {0x4b800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+    /*  1: 1, 1, 1, 2^24: the same values in reverse order */
+    {0x3f800000u, 0x3f800000u, 0x3f800000u, 0x4b800000u},
+    /*  2: 1, 2^-24, 2^-24, 0: sequential 1, exact 1 + 2^-23 */
+    {0x3f800000u, 0x33800000u, 0x33800000u, 0x00000000u},
+    /*  3: 2^-24, 2^-24, 1, 0 */
+    {0x33800000u, 0x33800000u, 0x3f800000u, 0x00000000u},
+    /*  4: 1e30, -1e30, 3, 0: the cancellation comes first */
+    {0x7149f2cau, 0xf149f2cau, 0x40400000u, 0x00000000u},
+    /*  5: 3, 1e30, -1e30, 0: the 3 is absorbed before the cancellation */
+    {0x40400000u, 0x7149f2cau, 0xf149f2cau, 0x00000000u},
+    /*  6: 5, 0, 0, 0 */
+    {0x40a00000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    /*  7: 7, 0, 0, 0 */
+    {0x40e00000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    /*  8: 1, 0, 0, 0 */
+    {0x3f800000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    /*  9: 100, 0, 0, 0 */
+    {0x42c80000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    /* 10: 1, 1, 1, 0: vavg.t is 3 / 3 or 3 * (1 / 3) */
+    {0x3f800000u, 0x3f800000u, 0x3f800000u, 0x00000000u},
+    /* 11: 1, 2, 3, 4 */
+    {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u},
+    /* 12: -0 four times */
+    {0x80000000u, 0x80000000u, 0x80000000u, 0x80000000u},
+    /* 13: 0, -0, 0, -0 */
+    {0x00000000u, 0x80000000u, 0x00000000u, 0x80000000u},
+    /* 14: +inf, -inf, 1, 1 */
+    {0x7f800000u, 0xff800000u, 0x3f800000u, 0x3f800000u},
+    /* 15: +inf, 1, 1, 1 */
+    {0x7f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+    /* 16: quiet NaN, 1, 1, 1 */
+    {0x7fc00000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+    /* 17: 1, 1, signalling NaN, 1 */
+    {0x3f800000u, 0x3f800000u, 0x7f800001u, 0x3f800000u},
+    /* 18: negative NaN with a payload, 0, 0, 0 */
+    {0xffc00001u, 0x00000000u, 0x00000000u, 0x00000000u},
+    /* 19: the smallest denormal twice */
+    {0x00000001u, 0x00000001u, 0x00000000u, 0x00000000u},
+    /* 20: a large denormal (2^-127) twice */
+    {0x00400000u, 0x00400000u, 0x00000000u, 0x00000000u},
+    /* 21: FLT_MAX twice (overflow) */
+    {0x7f7fffffu, 0x7f7fffffu, 0x00000000u, 0x00000000u},
+    /* 22: -FLT_MAX twice */
+    {0xff7fffffu, 0xff7fffffu, 0x00000000u, 0x00000000u},
+    /* 23: 1 + 2^-23 four times */
+    {0x3f800001u, 0x3f800001u, 0x3f800001u, 0x3f800001u},
+    /* 24: 1.5, 2.25, -0.125, 1e-8 */
+    {0x3fc00000u, 0x40100000u, 0xbe000000u, 0x322bcc77u},
+    /* 25: 1e30, 3, -1e30, 0: the 3 sits between the cancelling pair */
+    {0x7149f2cau, 0x40400000u, 0xf149f2cau, 0x00000000u},
+};
+
+static const char *const s_fn_forms[2] = {"fad", "avg"};
+static const char *const s_fn_sizes[3] = {"p", "t", "q"};
+static const fn_cell_fn s_fn_cells[2][3][3] = {
+    {{fn_fad_p_none, fn_fad_p_p1, fn_fad_p_p2}, {fn_fad_t_none, fn_fad_t_p1, fn_fad_t_p2},
+     {fn_fad_q_none, fn_fad_q_p1, fn_fad_q_p2}},
+    {{fn_avg_p_none, fn_avg_p_p1, fn_avg_p_p2}, {fn_avg_t_none, fn_avg_t_p1, fn_avg_t_p2},
+     {fn_avg_q_none, fn_avg_q_p1, fn_avg_q_p2}},
+};
+static const uint32_t s_fn_words[2][3] = {
+    {0xd0460088u, 0xd0468008u, 0xd0468088u},
+    {0xd0470088u, 0xd0478008u, 0xd0478088u},
+};
+static const char *const s_fn_pfx_names[3] = {"none", "p1", "p2"};
+static const uint32_t s_fn_pfx_words[3] = {TN_PFXW_NONE, TN_PFXW_P1, TN_PFXW_P2};
+
+static uint32_t s_fn_in[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+static uint32_t s_fn_out[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+
+/* One cell: background image word i = 0x3f800000 | i << 16, source lanes at image 0-3, then
+   the word. Row <name>: result = the instruction word; out0-3 = image 32-35 after (S200 and
+   the three words after it); out4/out5 = VFPU_CC after the preset / after the word;
+   out6-9 = image 0-3 before; out10 = number of image words outside 32-35 that changed;
+   out11 = the first such index (0xffffffff when none); out12 = the vpfxs word issued
+   before it (0 = none). */
+static void fn_cell(const char *name, fn_cell_fn fn, uint32_t word, uint32_t pfx,
+                    const uint32_t *lanes)
+{
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        s_fn_in[i] = 0x3f800000u | (i << 16);
+    }
+    for (unsigned i = 0; i < 4u; i++) {
+        s_fn_in[i] = lanes[i];
+    }
+    uint32_t cc[2] = {0u, 0u};
+    fn(s_fn_in, s_fn_out, cc);
+    uint32_t changed = 0u, first = 0xffffffffu;
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        if ((i < 32u || i > 35u) && s_fn_out[i] != s_fn_in[i]) {
+            if (changed++ == 0u) {
+                first = i;
+            }
+        }
+    }
+    const uint32_t w[13] = {
+        s_fn_out[32], s_fn_out[33], s_fn_out[34], s_fn_out[35], cc[0], cc[1], s_fn_in[0],
+        s_fn_in[1], s_fn_in[2], s_fn_in[3], changed, first, pfx,
+    };
+    hle_record(name, "PASS", word, w, 13);
+}
+
+/* Rows fad-p<pass>-<size>-<i>-<pfx> and avg-p<pass>-<size>-<i>-<pfx>: the form at the size
+   over operand set i, one step per (form, pass, size) before its cells. */
+static void fn_group(unsigned pass, unsigned form, unsigned size)
+{
+    char name[64];
+    snprintf(name, sizeof(name), "%s-p%u-%s", s_fn_forms[form], pass, s_fn_sizes[size]);
+    hle_step(name);
+    for (unsigned i = 0; i < 26u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "%s-p%u-%s-%u-%s", s_fn_forms[form], pass,
+                     s_fn_sizes[size], i, s_fn_pfx_names[f]);
+            fn_cell(name, s_fn_cells[form][size][f], s_fn_words[form][size],
+                    s_fn_pfx_words[f], s_fn_ops[i]);
+        }
+    }
+}
+
+static int hle_run(void)
+{
+    /* Traps off before the first VFPU cell, as in the vfpu-compare case. */
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        for (unsigned form = 0; form < 2u; form++) {
+            for (unsigned size = 0; size < 3u; size++) {
+                fn_group(pass, form, size);
+            }
+        }
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_VFPU_FUNNEL */
 
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_INTR_CELLS
