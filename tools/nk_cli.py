@@ -3534,9 +3534,72 @@ def _bringup_human_summary(report: dict) -> str:
     )
 
 
+LIBRARY_LOCK_TIMEOUT_SECONDS = 300.0
+
+
+@contextlib.contextmanager
+def _library_lock(user_root: Path, timeout_seconds: float = LIBRARY_LOCK_TIMEOUT_SECONDS):
+    """Hold the per-user library's write lock while a library entry is read, changed and saved.
+
+    Several bring-ups may build into one data folder at once (``bringup --user-data-root``);
+    each rewrites library.json from what it read, so without the lock one would drop the
+    title another just added. The OS releases the lock with its process.
+    """
+    lock_dir = user_root / "locks"
+    if lock_dir.is_symlink():
+        raise PackageBuildError("The library lock folder is a symlink; refusing to write outside per-user data.")
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_dir = _require_child(user_root, lock_dir, "Library lock folder")
+    handle = open(lock_dir / "library.lock", "a+b")
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise PackageBuildError(
+                        f"The per-user library stayed locked for {int(timeout_seconds)} s; "
+                        "another build is still writing it."
+                    ) from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
                            selected: str, is_experimental: bool,
                            boot_executable: str = "") -> None:
+    with _library_lock(user_root):
+        _write_bringup_library_locked(user_root, iso_path, metadata, title_id, selected,
+                                      is_experimental, boot_executable)
+
+
+def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, title_id: str,
+                                  selected: str, is_experimental: bool,
+                                  boot_executable: str) -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -3558,14 +3621,23 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         games = [game for game in payload["games"]
                  if not isinstance(game, dict) or
                  str(game.get("disc_id", "")).upper() != metadata.disc_id.upper()]
-    games.append({
+    record = {
         "disc_id": metadata.disc_id.upper(),
         "title_id": title_id,
         "iso_path": str(iso_path),
         "selected_executable": selected,
         "boot_executable": boot_executable,
         "is_experimental": is_experimental,
-    })
+    }
+    # The disc's own name and version, so the player's card names the game: a record
+    # without them shows as an untitled disc.
+    title = getattr(metadata, "title", "")
+    if isinstance(title, str) and title.strip():
+        record["title_name"] = title.strip()
+    version = getattr(metadata, "version", "")
+    if isinstance(version, str) and version.strip():
+        record["disc_version"] = version.strip()
+    games.append(record)
     if len(games) > MAX_LIBRARY_GAMES:
         raise PackageBuildError(
             f"The bring-up user library would exceed the {MAX_LIBRARY_GAMES}-record limit."
@@ -3980,9 +4052,15 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
             if not private_sweep_import_report.is_relative_to(work_dir):
                 raise PackageBuildError("Private sweep import report must stay under the bring-up work directory.")
-        user_root = _user_data_root(work_dir / "user-data")
-        if not user_root.is_relative_to(work_dir):
-            raise PackageBuildError("Bring-up user data escaped the selected work directory.")
+        shared_root = getattr(args, "user_data_root", None)
+        if shared_root is not None:
+            # A data folder several bring-ups build into (a whole collection the player
+            # opens with --user-data-root); the run's own files stay in the work directory.
+            user_root = _user_data_root(Path(shared_root))
+        else:
+            user_root = _user_data_root(work_dir / "user-data")
+            if not user_root.is_relative_to(work_dir):
+                raise PackageBuildError("Bring-up user data escaped the selected work directory.")
         user_root.mkdir(parents=True, exist_ok=True)
         iso_path = Path(args.iso).expanduser().resolve(strict=True)
     except (PackageBuildError, OSError, ValueError):
@@ -4679,6 +4757,9 @@ def main() -> int:
                            help="Private work directory outside the repository")
     p_bringup.add_argument("--report", required=True,
                            help="Destination for the public-safe JSON report")
+    p_bringup.add_argument("--user-data-root", type=Path, default=None,
+                           help="Player data folder to build into, shared with other bring-ups "
+                                "(default: <work-dir>/user-data, this run's own)")
     p_bringup.add_argument("--launch-timeout", type=int,
                            default=BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS,
                            help="Hard launch limit in seconds "

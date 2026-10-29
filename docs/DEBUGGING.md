@@ -95,9 +95,24 @@ The summary fields mean:
 - `aot_to_interpreter_count` and `interpreter_to_aot_count` count completed tier hand-offs. Each
   direction retains a deterministic, bounded top-16 table keyed by guest PC and reason. The table
   is an aggregate heavy-hitter sample, not a per-transition log; the total counts remain exact.
-- `vfpu` counts fallback operations, family classification, fallback time, and failures. Native AOT
-  VFPU execution has no separate per-instruction timer yet, so AOT VFPU time is not inferred from
-  total guest time; this boundary is in the works (#282).
+- `vfpu` counts fallback operations, family classification, fallback time, and failures.
+  `vfpu.aot_families` covers native AOT VFPU code, which runs inline, so there is no call to time.
+  It is filled only in a `PERF_AOT_INSTRUCTIONS=1` census build; otherwise its status is
+  `not_compiled` and the `aot_vfpu_time` boundary stays `partial`.
+  - Families are by primary opcode: `load`, `store`, `vfpu0` (0x18), `vfpu1` (0x19), `vfpu3`
+    (0x1b), `vfpu4` (0x34), `matrix` (0x3c), `prefix_imm` (0x37), and `move_control` (0x12, 0x3f).
+  - `count` per family is exact.
+  - Time is sampled. One VFPU instruction in `stride` (64) is timed from its start to the next
+    instruction's start. One scalar instruction in `baseline_stride` (1024) is timed the same
+    way, as the baseline: the hook plus an ordinary instruction.
+  - A sample counts only when the next instruction is at `pc + 4`, so no branch, call, return or
+    dispatch lands in it.
+  - `estimated_ns` is `count * max(0, mean_ns - baseline_mean_ns)`: the family's cost above an
+    ordinary instruction. It is an estimate from samples. The host clock's tick (100 ns for QPC
+    on Windows) is longer than most instructions, so individual samples are quantized and only
+    the means over many samples carry the figure.
+  - The census build's own hook slows every instruction, so compare families with each other and
+    with the same build's `aot_ns`, not with a default build.
 - `scheduler` is global execution residency: running, runnable, blocked, and idle intervals, plus
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
@@ -205,10 +220,39 @@ inspected its counted guest region was about 5 to 6 ms, and the runtime's own `w
 inside a 178 ms harness run. Its GE, Vulkan and texture counters are all zero. A null result here bounds
 the counter cost only for a workload this small. The platform-ladder fixtures delete every ambient `SR_*`
 variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), so their `SR_PERF=1` runs
-stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
-them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
+stay counter-off. Of 60 such runs, none printed `PERF enabled`. The benchmark runner
+(`tools/run_perf_benchmarks.py`) therefore times the three ladder workloads without expecting a summary,
+and records a `note` saying so, instead of failing them. `cosim-selftest` builds with `TRACE=1`, which measures a
 different instrumentation. So the cost of the counters on a workload with substantial guest work is not
-measured here.
+measured here; the real-workload measurement follows.
+
+**Real workload (2026-10-29).** The workload is a private Hot Shots Tennis route (boot, menus, then the
+exhibition match): 14,000 vblanks with the window hidden, dummy audio, and vblank pacing off, so the route's
+guest work sets the wall time. It runs about 0.93 billion AOT instructions and no interpreter instructions.
+No route, capture or title data is in the repository.
+
+Three arms ran round-robin with the start arm rotated: 15 rounds, 45 runs, no failures.
+
+- `base-p0`: main `c0e6056e`, `SR_PERF=0`.
+- `base-p1`: the same build, `SR_PERF=1`.
+- `p2-p0`: the same main plus the always-on execution share (#1632), `SR_PERF=0`.
+
+The decision rule is the one above. The host ran the private regression gate's title runs at the same time,
+so process CPU time (which includes GPU driver threads) is far noisier than wall time. Both are reported.
+
+| Arm | Wall median, IQR (s) | CPU median, IQR (s) |
+| --- | --- | --- |
+| `base-p0` | 52.43, 2.44 | 62.25, 15.80 |
+| `base-p1` | 53.81, 5.20 | 58.69, 10.98 |
+| `p2-p0` | 53.99, 3.31 | 68.05, 17.23 |
+
+| Comparison | Wall 95% interval (s) | CPU 95% interval (s) | Result |
+| --- | --- | --- | --- |
+| `SR_PERF` on minus off | [-1.66, +2.91] | [-12.16, +9.09] | not distinguishable from noise at 15 runs |
+| execution share in minus out | [-0.65, +2.71] | [-10.86, +13.97] | not distinguishable from noise at 15 runs |
+
+Both costs are therefore bounded at about +5% of this route's wall time, at 95%. Neither is shown to be
+zero. Tightening the bound needs a quiet host or more rounds.
 
 Historical environment for the recorded base commit `788465b2`. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
 other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
@@ -283,8 +327,9 @@ measured with a micro-benchmark linked against `perf.c` at the default `-O0` (Ry
 | interpreter entry plus exit (two tier switches, entry-point set) | 74 to 80 ns |
 | scheduler slice begin plus end | 66 to 70 ns |
 
-A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). The
-cost on a full title run with the #282 method is not measured yet.
+A title that dispatches a million computed transfers a second pays about 2 ms a second (0.2%). On a
+full title route, measured with the #282 method, the cost is not distinguishable from noise at 15 runs
+(wall-time 95% interval [-0.65, +2.71] s on a 52 s route; see "Measured overhead of the perf counters").
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 

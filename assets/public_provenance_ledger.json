@@ -439,7 +439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8395f9079fe0f77d41cb648f44844d118a1e31a582b8a2ab0a5e54baf51741ca"
+      "sha256": "de5388bb0d14e0a05f64a302e9739db9646cf82052154a197c758b46562c191f"
     },
     {
       "path": "NOTICE.md",
@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "23989ac68ca2b51f625bf0dc0f9c0a3b53dbae74fce870b300e367f6d172a088"
+      "sha256": "9f87c59f1851fa180916519a533b9b2b92cd36b1bf5d444a1abf7b4a102b3278"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1e92dedaa40d11ebee2dc2bebd027e5c730df78c44d6c1c8a34b71362aefb54c"
+      "sha256": "d39826d57aba58966040a26cafde7afbc49fe7e3f0cdc9ca31466d686a288741"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "754a65780711a56caf74d05d6a2b5dbca75724e47b461ba34ffcac1d8f9e50dd"
+      "sha256": "a2349ac35ffb0d4f69a81814cf6f92327c90bebf7faf18075804caee48945182"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1496,18 +1496,6 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "a97c9e3f8b5331928776fce8c5c01be9cc70364212a26f0034c3b81282e33d0e"
-    },
-    {
-      "path": "docs/HLE_COVERAGE.md",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "generality-proof-p6-20261028",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3b2876892a73ffa4ae90f66416260ef1ce9f337a8de7a8e8beddd7699b3645d1"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1702,7 +1690,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9a295c780014a351f1d459325103e879c1a2d9308f4c899a025ba414ac75bc53"
+      "sha256": "9efeb0638fda728e474d40d8fa69305007984896ba4961d76f734b0c301674d2"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -8993,19 +8981,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "15597a9ca93918909c4d886e50d26d3337f0b1e11a2cc4cb05c9663b0ca891a1"
-    },
-    {
-      "path": "src/rt/hle_evidence.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "generality-proof-p6-20261028",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "b549deacc38cb1d011380fbb10551897af09f95e48379c234fb832de86f7c62e"
+      "sha256": "11cf52f11eb7725f88d3c1c3f6288460aa284b7d604e717ddf1c67b47a887825"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -9444,7 +9420,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f04b223a9ddbee087069f65e771e3c489827e39a1da94a3e0d7d0c3d62ffced1"
+      "sha256": "c77bd27a226e609e7405909aeb07edf03ece6681bc36182ea0f6a78cf5b16034"
     },
     {
       "path": "src/rt/perf.h",
@@ -11701,7 +11677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36b79d5c25589ce406b0831cf31bc0668533203e195bd152479369d67d7db232"
+      "sha256": "3bd6dc62e85dac6113fc071be4b140006df7655ae1422c8f7947d11a7134607b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -12419,6 +12395,18 @@
       "sha256": "1c8c9fd1b5e210ec9af01716f32ab8dc183385dcfcfc5706a13d54355c94a5d3"
     },
     {
+      "path": "tools/library_build.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "all-games-library-build-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "89f4f2b8a904a3850cda2cc7af3b1e34b37caab4bb03be5efd8826835c0563d3"
+    },
+    {
       "path": "tools/library_sweep.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12574,7 +12562,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc3f020b72ff32fe4fd690a6c81b37273955a5cb0b14ec6e448255e1f6bd783c"
+      "sha256": "a539ce499be8e33527deab3f23635626c9dad7c740879ab93aed26f284d17f4f"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -12598,7 +12586,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7179f5e5e4a844d0421ebd6752054d1d14c965d592d00ed0be1aaa583bbc9087"
+      "sha256": "5cad3b39f6cf17879e52e918c614173b69316a3e9a0b7898d7dc44fa4efe2ecd"
     },
     {
       "path": "tools/nk_core/fonts.py",
@@ -13345,7 +13333,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7535c592157a6641bdb455ce902a1e8dd1fa566cb80291611cdf48e47f5aef3"
+      "sha256": "e1469f8fc5c3f6f7999444af5df3cf5996317eabb70f43f1f36af27fd362196a"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -13369,7 +13357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac795c17d476b42c19a7ff289a4339d752b9d719841ba362e0f749ddb06fc5ec"
+      "sha256": "8d19781a979a6626032e19394751d1eb6706017dab40997f3d258e7fe00ed6e2"
     },
     {
       "path": "tools/scratch_dir.py",
@@ -13585,7 +13573,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c06de3791755723a96ddb905d34110f2d40a71180785c22324f3bf3243bf9dd0"
+      "sha256": "bb7cc53c6c4986a4ef37210a02f6e962d6879197500ad35ebee99d4a1b630913"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -13814,7 +13802,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20998f3f9a01dc98825e04a22da10310eb351d2adffd59d48a58a1f33adfd337"
+      "sha256": "8be78233c2975b7fe1d8dbe766954f092b22f3165e49de4b95714e10f48d85d0"
     },
     {
       "path": "tools/test_contrib_check.py",
@@ -14562,6 +14550,18 @@
       "sha256": "a61fbd562708f80dfdcd86a5d542883f1d7d3efa4e49ceaca251115d0999cbe3"
     },
     {
+      "path": "tools/test_library_build.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "all-games-library-build-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3886bd269c22e95baa2aa51adab95ab4832f204a0298762d018775bed37c8cfe"
+    },
+    {
       "path": "tools/test_library_sweep.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -14799,7 +14799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d3cf9ab9b16fceeee78cd9bb488bc43d7cdf2c30af06e034f7046bd74913ddbd"
+      "sha256": "4b48626efef099cde82b2c0ee8fa2314925072ea8d54ed3344c958fa0fffc947"
     },
     {
       "path": "tools/test_package_cache.py",
@@ -14871,7 +14871,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f66319b7654fb49b639e5583f102d85d9dcc71bf08d518d27c7bc4ad4dbe3d70"
+      "sha256": "6b82f5eedeec0aef75319356cb3cb558003cad0504762ae87e24c157cdc72713"
     },
     {
       "path": "tools/test_pgf_validate_parity.py",
@@ -15399,7 +15399,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6dd58694dad0fbdd494e386348d1c73e4d466cc7ff2d43799c5d68d4c62b489"
+      "sha256": "e1254efad101b1c6cf3f63c2b266f673b948ced423447a212d3b888fdf2079af"
     },
     {
       "path": "tools/test_release_manifest.py",
@@ -15895,18 +15895,6 @@
       "sha256": "c448ca62ac1db370ca426361af945c30baf69f3c63b42d64b350beaa4e34cde7"
     },
     {
-      "path": "tools/test_verification_ledger.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "generality-proof-p6-20261028",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3944b5110851155aca5a8e4183fae5d74b5df951b3cdf3506f6eb0d5cd8528c7"
-    },
-    {
       "path": "tools/test_vfpu_addressing.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -16266,18 +16254,6 @@
         "upstream_attribution": null
       },
       "sha256": "be50d5918e769a5e7f277c1d1ce8f9af2d7dde5916e88164c40fedaf539b564f"
-    },
-    {
-      "path": "tools/verification_ledger.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "generality-proof-p6-20261028",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "a61124be66fa2f1408f4f1239894f67bfbe0f0760efbfa9286e35fe4ffe7d7d3"
     },
     {
       "path": "tools/verify_gates.py",
