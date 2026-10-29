@@ -17,6 +17,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import analyze  # noqa: E402
+from analyze import (  # noqa: E402
+    _cfg_ranges_for, _cfg_opcode_identity, _cfg_branch_likely,
+    _cfg_control_transfer, _cfg_is_eret, _cfg_section_blob, _cfg_field,
+    _cfg_successor_classifications, UINT32_END_MAX, CFG_SCHEMA_VERSION,
+    branch_target, branch_kind, BRANCH_LINK, BRANCH_UNCOND,
+)
 import prxload  # noqa: E402
 from elf_bounds import checked_mul, checked_span, image_extent  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
@@ -795,6 +801,297 @@ def traced_line_events(function, *args):
     return count
 
 
+def _canonical_cfg_report_reference(image, ranges=None, entries=None):
+    """Return a deterministic, observation-only CFG/ownership report.
+
+    The report deliberately does not replace :func:`analyze` or code generation.
+    It consumes the same scalar read surface as those tools and can also consume
+    a validated ProgramImage directly.  All control transfers retain their
+    delay-slot and branch-likely semantics; ambiguous ownership is recorded as a
+    conflict instead of being silently resolved by traversal order.
+    """
+    reader = getattr(image, "read_at_vaddr", None)
+    if not callable(reader):
+        raise ValueError("CFG image must provide read_at_vaddr(address, size)")
+    effective_ranges = _cfg_ranges_for(image, ranges)
+    nodes = {}
+    unreadable_spans = []
+    for lo, hi in effective_ranges:
+        for address in range(lo, hi, 4):
+            raw = reader(address, min(4, hi - address))
+            if raw is not None and len(raw) == 4:
+                word = int.from_bytes(raw, "little")
+                nodes[address] = {
+                    "address": address,
+                    "word": word,
+                    "opcode": _cfg_opcode_identity(word),
+                    "delay_slot_of": None,
+                    "delay_slot_annulled_when_not_taken": False,
+                    "branch_likely": _cfg_branch_likely(word),
+                    "content_classification": "padding" if word == 0 else "instruction-word",
+                    "edges": [],
+                }
+            else:
+                unreadable_spans.append({
+                    "start": address,
+                    "end": min(address + 4, hi),
+                    "classification": "partial-executable" if raw else "unreadable-executable",
+                })
+
+    entry_values = entries
+    if entry_values is None:
+        entry_value = getattr(image, "entry_point", None)
+        entry_values = [] if entry_value is None else [entry_value]
+    try:
+        entry_candidates = list(entry_values)
+    except TypeError as exc:
+        raise ValueError("CFG entries must be an iterable of guest addresses") from exc
+    if any(
+        type(value) is not int or value < 0 or value > UINT32_END_MAX - 1
+        for value in entry_candidates
+    ):
+        raise ValueError("CFG entries must be 32-bit guest addresses")
+    entry_set = {value for value in entry_candidates if value in nodes}
+    unmapped_entries = sorted(set(entry_candidates) - entry_set)
+    edge_rows = []
+    delay_owner = {}
+
+    def add_edge(source, target, kind, detail=None):
+        edge = {"source": source, "target": target, "kind": kind}
+        if detail is not None:
+            edge["detail"] = detail
+        edge_rows.append(edge)
+        nodes[source]["edges"].append(edge)
+
+    for address in sorted(nodes):
+        row = nodes[address]
+        word = row["word"]
+        control = _cfg_control_transfer(word)
+        if control and address + 4 in nodes:
+            delay_owner[address + 4] = address
+            nodes[address + 4]["delay_slot_of"] = address
+            nodes[address + 4]["delay_slot_annulled_when_not_taken"] = row["branch_likely"]
+            add_edge(
+                address, address + 4, "delay-slot",
+                "annulled-when-not-taken" if row["branch_likely"] else "always-executed",
+            )
+
+        op = word >> 26
+        funct = word & 0x3F
+        if _cfg_is_eret(word):
+            row["terminator"] = "eret"
+        elif op == 2:
+            target = ((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+            add_edge(address, target, "direct-jump", "j")
+        elif op == 3:
+            target = ((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+            add_edge(address, target, "call", "jal")
+            if address + 8 in nodes:
+                add_edge(address, address + 8, "fallthrough", "call-return")
+        elif branch_target(address, word) is not None:
+            target = branch_target(address, word)
+            kind = branch_kind(word)
+            if kind == BRANCH_LINK:
+                add_edge(address, target, "call", "linking-branch")
+                if address + 8 in nodes:
+                    add_edge(address, address + 8, "fallthrough", "call-return")
+            elif kind == BRANCH_UNCOND:
+                add_edge(address, target, "direct-branch", "unconditional-branch")
+            else:
+                add_edge(address, target, "branch", "conditional-branch")
+                if address + 8 in nodes:
+                    add_edge(address, address + 8, "fallthrough", "branch-not-taken")
+        elif op == 0 and funct == 8:
+            rs = (word >> 21) & 0x1F
+            if rs == 31:
+                row["terminator"] = "return"
+            else:
+                add_edge(address, None, "unresolved-indirect", "computed-jump")
+                row["terminator"] = "indirect-jump"
+        elif op == 0 and funct == 9:
+            if (word >> 11) & 0x1F:
+                add_edge(address, None, "unresolved-indirect", "computed-call")
+                if address + 8 in nodes:
+                    add_edge(address, address + 8, "fallthrough", "call-return")
+            else:
+                add_edge(address, None, "unresolved-indirect", "computed-tail-transfer")
+        elif address not in delay_owner and address + 4 in nodes:
+            add_edge(address, address + 4, "fallthrough", "linear")
+
+    # A direct jump or unconditional branch to a known entry is a tail transfer;
+    # all other direct jumps remain ordinary intra-function edges until ownership
+    # evidence says otherwise.
+    for edge in edge_rows:
+        if edge["target"] in entry_set and edge["kind"] in ("direct-jump", "direct-branch"):
+            edge["kind"] = "tail-call"
+            edge["detail"] = "known-entry-tail-transfer"
+
+    owners = {}
+    owner_reasons = {}
+    incoming = {}
+
+    def record_owner(address, entry, reason):
+        owners.setdefault(address, set()).add(entry)
+        owner_reasons.setdefault(address, {}).setdefault(entry, set()).add(reason)
+
+    edges_by_source = {}
+    for edge in edge_rows:
+        edges_by_source.setdefault(edge["source"], []).append(edge)
+
+    # Traverse each seeded entry independently. Calls, tail transfers and
+    # unresolved indirect edges do not transfer ownership. Reaching another
+    # known entry by fallthrough/branch is retained as interior-entry evidence.
+    for entry in sorted(entry_set):
+        stack = [(entry, "entry")]
+        seen = set()
+        while stack:
+            address, reason = stack.pop()
+            if address not in nodes:
+                continue
+            record_owner(address, entry, reason)
+            if address in seen:
+                continue
+            seen.add(address)
+            for edge in edges_by_source.get(address, ()):
+                target = edge["target"]
+                if target is None:
+                    continue
+                if edge["kind"] in ("call", "tail-call", "unresolved-indirect"):
+                    continue
+                if target in entry_set and target != entry:
+                    incoming.setdefault(target, []).append({
+                        "source": address, "entry": entry, "kind": edge["kind"]
+                    })
+                    continue
+                stack.append((target, edge["kind"]))
+
+    interior_entries = []
+    continuation_edges = []
+    for target, records in sorted(incoming.items()):
+        unique = {(r["source"], r["entry"], r["kind"]) for r in records}
+        for source, entry, kind in sorted(unique):
+            interior_entries.append({
+                "address": target, "source": source, "owner": entry, "reason": kind
+            })
+            if kind == "fallthrough":
+                continuation_edges.append({"source": source, "target": target, "owner": entry})
+
+    conflicts = []
+    for address in sorted(nodes):
+        node_owners = sorted(owners.get(address, ()))
+        if len(node_owners) > 1:
+            conflicts.append({
+                "address": address,
+                "owners": node_owners,
+                "reason": "multiple-entry-reachability",
+            })
+
+        node = nodes[address]
+        if not node_owners:
+            node["classification"] = "padding" if node["word"] == 0 else "unowned-executable"
+        elif any(item["address"] == address for item in interior_entries):
+            node["classification"] = "interior-entry"
+        elif len(node_owners) > 1:
+            node["classification"] = "owner-conflict"
+        else:
+            node["classification"] = "owned"
+        node["owners"] = node_owners
+        node["owner_reasons"] = [
+            {"owner": owner, "reasons": sorted(owner_reasons[address][owner])}
+            for owner in node_owners
+        ]
+        node["edges"] = sorted(
+            node["edges"],
+            key=lambda edge: (
+                edge["kind"],
+                edge["target"] is None,
+                edge["target"] or 0,
+                edge.get("detail", ""),
+            ),
+        )
+
+    data_spans = []
+    jump_table_ownership = []
+    for section in getattr(image, "sections", ()):
+        name, blob = _cfg_section_blob(image, section)
+        section_type = _cfg_field(section, "section_type", _cfg_field(section, "typ", None))
+        section_flags = _cfg_field(section, "flags", 0) or 0
+        if section_type != 1 or not blob or section_flags & 4 or name in (".text", ".sceStub.text"):
+            continue
+        start = _cfg_field(section, "address", _cfg_field(section, "addr", 0))
+        end = start + len(blob)
+        data_spans.append({"start": start, "end": end, "section": name, "classification": "data"})
+        for offset in range(0, len(blob) - 3, 4):
+            value = int.from_bytes(blob[offset:offset + 4], "little")
+            if value in nodes:
+                jump_table_ownership.append({
+                    "address": start + offset,
+                    "section": name,
+                    "target": value,
+                    "owners": sorted(owners.get(value, ())),
+                    "classification": "jump-table-candidate",
+                })
+
+    direct_edges = [edge for edge in edge_rows if edge["target"] is not None]
+    call_edges = [edge for edge in edge_rows if edge["kind"] == "call"]
+    tail_call_edges = [edge for edge in edge_rows if edge["kind"] == "tail-call"]
+    fallthrough_edges = [edge for edge in edge_rows if edge["kind"] == "fallthrough"]
+    unresolved = [edge for edge in edge_rows if edge["kind"] == "unresolved-indirect"]
+    byte_classification = [
+        {
+            "start": address,
+            "end": address + 4,
+            "classification": nodes[address]["classification"],
+        }
+        for address in sorted(nodes)
+    ] + unreadable_spans
+    byte_classification.sort(key=lambda item: (item["start"], item["end"], item["classification"]))
+    padding = sorted(address for address, node in nodes.items() if node["content_classification"] == "padding")
+    unowned_executable = sorted(
+        address for address, node in nodes.items() if node["classification"] == "unowned-executable"
+    )
+    report = {
+        "schema_version": CFG_SCHEMA_VERSION,
+        "executable_intervals": [
+            {"start": lo, "end": hi} for lo, hi in effective_ranges
+        ],
+        "entries": sorted(entry_set),
+        "unmapped_entries": unmapped_entries,
+        "instructions": [nodes[address] for address in sorted(nodes)],
+        "edges": sorted(edge_rows, key=lambda edge: (
+            edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0, edge.get("detail", ""),
+        )),
+        "direct_edges": sorted(direct_edges, key=lambda edge: (
+            edge["source"], edge["kind"], edge["target"] or 0, edge.get("detail", ""),
+        )),
+        "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "continuation_edges": sorted(continuation_edges, key=lambda edge: (edge["source"], edge["target"])),
+        "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"], item.get("reason", ""))),
+        "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: (edge["source"], edge.get("detail", ""))),
+        "ownership_conflicts": conflicts,
+        "ownership_map": [
+            {
+                "address": address,
+                "classification": nodes[address]["classification"],
+                "owners": sorted(owners.get(address, ())),
+            }
+            for address in sorted(nodes)
+        ],
+        "byte_classification": byte_classification,
+        "padding": padding,
+        "unowned_executable": unowned_executable,
+        "data_spans": sorted(data_spans, key=lambda item: (item["start"], item["end"], item["section"])),
+        "jump_table_ownership": sorted(
+            jump_table_ownership, key=lambda item: (item["address"], item["target"], item["section"])
+        ),
+    }
+    report["successor_classifications"] = _cfg_successor_classifications(report)
+    return report
+
+
+
 class CanonicalCfgTests(unittest.TestCase):
     def test_cfg_requires_a_mapped_image_reader(self):
         with self.assertRaisesRegex(ValueError, "read_at_vaddr"):
@@ -847,7 +1144,7 @@ class CanonicalCfgTests(unittest.TestCase):
         )
         self.assertEqual(
             report,
-            analyze._canonical_cfg_report_reference(
+            _canonical_cfg_report_reference(
                 image,
                 ranges=[(0x1000, 0x1A08)],
                 entries=[0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0x1500, 0x1700, 0x1704, 0x1900, 0x1A00],

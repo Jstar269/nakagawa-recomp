@@ -67,7 +67,7 @@ class TestTomlEmit(unittest.TestCase):
         self.assertEqual(out1, out2)
 
     def test_cfg_edge_serializer_order_determinism(self):
-        from analyze import _canonical_cfg_report_reference
+        from test_elf_bounds import _canonical_cfg_report_reference
 
         class FakeImage:
             def __init__(self):
