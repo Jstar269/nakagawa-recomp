@@ -743,6 +743,13 @@ static int test_image_decode(void) {
     first_serial = image.serial;
     CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &second) == NK_UI_IMAGE_OK &&
           second.serial != first_serial, "every decode gets its own serial");
+    {
+        /* Caller-filled pixels (the VRAM viewer, #314) draw from the same serial space. */
+        uint64_t own = nk_ui_image_new_serial();
+        uint64_t again = nk_ui_image_new_serial();
+        CHECK(own != 0u && own != first_serial && own != second.serial && again != own,
+              "a caller-owned image gets a serial no decode or earlier call has");
+    }
     nk_ui_image_free(&second);
     nk_ui_image_free(&image);
     CHECK(image.rgba_pm == NULL && image.width == 0u && image.serial == 0u, "free zeroes the image");
