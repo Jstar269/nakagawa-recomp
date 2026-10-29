@@ -54,6 +54,21 @@ int main(void) {
         assert(sdl3vk_pick_surface_format(RES_SUCCESS, 2, NULL) == -1);
         assert(sdl3vk_pick_surface_format(RES_OUT_OF_HOST_MEMORY, 4, two_bgra) == -1);
     }
+    /* F3 (#314): off, the performance HUD, off again; developer mode adds the profile HUD
+     * between them, and a profile mode outside developer mode goes off. */
+    {
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_OFF, 0) == SDL3VK_HUD_PERF);
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_PERF, 0) == SDL3VK_HUD_OFF);
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_OFF, 1) == SDL3VK_HUD_PERF);
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_PERF, 1) == SDL3VK_HUD_PROFILE);
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_PROFILE, 1) == SDL3VK_HUD_OFF);
+        assert(sdl3vk_hud_next_mode(SDL3VK_HUD_PROFILE, 0) == SDL3VK_HUD_OFF);
+        assert(sdl3vk_developer_mode() == 0);   /* nothing opened a window here */
+        sdl3vk_hud_set_enabled(1);
+        assert(sdl3vk_hud_mode() == SDL3VK_HUD_PERF);
+        sdl3vk_hud_set_enabled(0);
+        assert(sdl3vk_hud_mode() == SDL3VK_HUD_OFF && !sdl3vk_hud_is_enabled());
+    }
     /* Present scaling (issue #1129): destination rectangle, prescale factor and final filter
      * for each mode. An exact integer fit is one nearest blit in every mode. */
     {

@@ -3410,6 +3410,7 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
     config->experimental_60hz = settings->experimental_60hz;
+    config->developer_mode = settings->developer_mode;
 }
 
 /* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is
