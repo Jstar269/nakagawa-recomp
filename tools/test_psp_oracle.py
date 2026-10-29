@@ -3111,6 +3111,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VFPU-FUNNEL-001",
                 # The 2026-10-29 acceptance-eligible vfpu-sort run of 9171f055 (#326).
                 "PSP-VFPU-SORT-001",
+                # The 2026-10-29 acceptance-eligible vfpu-forms2 run of 97827132 (#326).
+                "PSP-VFPU-FORMS2-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
@@ -7812,15 +7814,16 @@ class VfpuForms2ProbeTests(unittest.TestCase):
                        0xDEADBEEF):
             self.assertIn(needed, seed_words)
 
-    def test_manifest_row_is_a_single_launch_not_run_case(self) -> None:
+    def test_manifest_row_is_a_single_launch_measured_forms2_case(self) -> None:
         self.assertEqual(len(self.rows), 1)
         row = self.rows[0]
         self.assertEqual(row["prx"], "vfpu_forms2.prx")
         self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
         self.assertEqual(row["diagnostic_case_ids"], ["vfpu-forms2"])
         self.assertEqual(row["issues"], [326])
-        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-        self.assertNotIn("evidence_cases", row)
+        # The 2026-10-29 acceptance-eligible PSP-3000 run of 97827132 cites every cell.
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
         self.assertEqual(row["case_ids"][-1], "vfpu-forms2-done")
 
 

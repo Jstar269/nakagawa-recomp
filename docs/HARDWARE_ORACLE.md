@@ -772,6 +772,34 @@ One console is one data point; see §11. Nothing here closes issue #70
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
 
+- **PSP-3000 single-case run of the `vfpu-forms2` probe on commit `97827132` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `97827132` is the commit that adds the probe (case 121 in
+  `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 636 records and the done record, all PASS. Both passes in the launch returned the same words.
+  The row cites only the cells named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `97827132`) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-FORMS2-001` | `rnds-p0-*`, `wrndi-p0-*`, `wrndf1-p0-*`, `wrndf2-p0-*`, `f2h-p0-*`, `c2i-p0-*`, `rnds-p1-*`, `wrndi-p1-*`, `wrndf1-p1-*`, `wrndf2-p1-*`, `f2h-p1-*`, `c2i-p1-*`, `vfpu-forms2-done` | Anything the words do not show: the probe compares no value, and PASS records only that the instruction ran | MEASURED (`vfpu-forms2`) |
+
+  What the cells establish, for these exact words only (issue #326). The random unit is the RCX image of
+  PSP-HLE-ISSUES-001: four 32-bit components and a 32-bit carry spread over RCX0-RCX7.
+  - *`vrnds.s`.* The seed word becomes all four components and the carry, whatever the state was: 24 seeds from
+    two different states give the same RCX words, and the next `vrndi.s` draws by the measured step.
+  - *Wide draws.* `vrndi`, `vrndf1` and `vrndf2` at .p, .t and .q take one step of the unit per lane, the last
+    lane first; each lane is the value the `.s` form would give for that step. No other register changed.
+  - *`vf2h.p` and `vf2h.q`.* Lanes in pairs become packed halves, the even lane in the low half, by truncation
+    toward zero. A result below the half normal range, a float denormal included, is a zero of its sign; an
+    exponent past the half range is an infinity of its sign; a NaN keeps its sign and the low 10 mantissa bits,
+    so `0x7FC00000` becomes `0x7C00`. Under negate-all and the wzyx swizzle with lanes 0 and 2 negated, a lane
+    takes the raw word its swizzle names and then its negate bit, and a swizzle past the width reads +0 with the
+    negate bit ignored.
+  - *`vc2i.s`.* The four bytes of the word, low first, each become the top byte of a lane, the rest zero; negate-all
+    flips the source sign bit first. Under the wzyx swizzle the lane reads lane 0 with its sign flipped, which no
+    rule above explains; the runtime does not model that prefix.
+
 - **PSP-3000 single-case run of the `vfpu-sort` probe on commit `9171f055` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `9171f055` is the commit that adds the probe (case 120 in
   `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
@@ -2707,6 +2735,7 @@ not expected PSP values.
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `vfpu-funnel` | `PSP-VFPU-FUNNEL-001` | `MEASURED` (2026-10-29, `8d0f75ad`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vfad.p/.t/.q` and `vavg.p/.t/.q` of C000 into S200 over 26 operand sets (summation-order, cancellation, signed-zero, infinity, NaN, denormal, overflow and divide-by-3 cases), under no S prefix and two S prefixes, with VFPU_CC and a changed-word census. 936 result records. |
 | `vfpu-sort` | `PSP-VFPU-SORT-001` | `MEASURED` (2026-10-29, `9171f055`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vsrt1.q`, `vsrt2.q`, `vsrt3.q` and `vsrt4.q` of C000 into C200 over 24 operand sets (ordinary orders, equal values, signed zeros, NaNs against numbers in several lane positions, infinities, denormals, neighbouring floats), under no S prefix and two S prefixes, with VFPU_CC and a changed-word census. 576 result records. |
+| `vfpu-forms2` | `PSP-VFPU-FORMS2-001` | `MEASURED` (2026-10-29, `97827132`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vrnds.s` from two random-unit states, `vrndi`, `vrndf1` and `vrndf2` at .p, .t and .q from eight states, `vf2h.p`/`.q` over 28 operand quads and `vc2i.s` over ten byte patterns, the conversions under no S prefix, negate-all and wzyx with lanes 0 and 2 negated |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 

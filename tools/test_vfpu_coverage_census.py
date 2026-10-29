@@ -114,34 +114,30 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertEqual(census.compatibility_disposition(record), "aot-direct")
             self.assertEqual(census.agreement_status(record), "agree-supported-direct")
 
-    def test_named_vfpu4_identity_rows_are_unimplemented_and_fail_closed(self):
-        cases = (
-            (0x01, 0x00, 0x0000, "vrnds"),
-            (0x01, 0x02, 0x0080, "vrndf1"),
-            (0x01, 0x03, 0x8000, "vrndf2"),
-            (0x01, 0x01, 0x8080, "vrndi"),
-        )
-        words = tuple((0x34 << 26) | (rs << 21) | (rt << 16) | size_bits
-                      for rs, rt, size_bits, _ in cases)
-        records = census.classify_words(words)
-        self.assertEqual(census.validate_agreement(records)["agree-unsupported"], len(cases))
-        by_word = {record["word"]: record for record in records}
-        rows = census._make_rows(records)
-        self.assertEqual(len(rows), len(cases))
-        for (_rs, _rt, _size, name), word in zip(cases, words, strict=True):
-            with self.subTest(name=name):
-                record = by_word[word]
-                self.assertFalse(record["interpreter_supported"])
+    def test_measured_vfpu7_forms_agree_as_interpreter_routes(self):
+        # PSP-VFPU-FORMS2-001 (2026-10-29, issue #326): vrnds.s seeds the random unit
+        # (a state op), the wide draws and the conversions compute; both lanes reject
+        # the widths the probe did not measure.
+        kinds = {0xD0200000: "state", 0xD0218080: "compute", 0xD0220080: "compute",
+                 0xD0238000: "compute", 0xD0320088: "compute", 0xD0328088: "compute",
+                 0xD0390008: "compute"}
+        rejected = (0xD0200080, 0xD0320008, 0xD0390088)
+        records = {r["word"]: r for r in census.classify_words(tuple(kinds) + rejected)}
+        for word, kind in kinds.items():
+            with self.subTest(word=f"0x{word:08x}"):
+                record = records[word]
+                self.assertTrue(record["interpreter_supported"])
+                self.assertEqual(record["interpreter_kind"], kind)
+                self.assertEqual(census.agreement_status(record), "agree-supported-routed")
                 self.assertEqual(
-                    census.compatibility_disposition(record),
-                    "supported-opcode-form-unmodeled",
+                    census.compatibility_disposition(record), "aot-routes-to-sr-vfpu-interp"
                 )
-                self.assertIn(f"VFPU4 identity {name}", record["aot_reason"])
+        for word in rejected:
+            with self.subTest(word=f"0x{word:08x}"):
+                record = records[word]
+                self.assertFalse(record["interpreter_supported"])
                 self.assertIn("issue=326", record["aot_emitted"])
-                row = next(row for row in rows if name in " ".join(row["aot_reason"]))
-                self.assertEqual(row["boundary_issue"], 326)
-                self.assertEqual(row["compatibility_disposition"], "supported-opcode-form-unmodeled")
-                self.assertEqual(row["agreement"], "agree-unsupported")
+                self.assertEqual(census.agreement_status(record), "agree-unsupported")
 
     def test_vrndi_single_is_direct_in_both_lanes(self):
         # vrndi.s follows the issue #326 step rule in the generated code and the
@@ -172,7 +168,7 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         for row in census._make_rows(records):
             self.assertEqual(row["compatibility_disposition"], "aot-direct")
             self.assertIn("vfpu-interp-selftest:check_vfpu_forms_measured", row["differential_tests"])
-        closed = census.classify_words((0xD0338088, 0xD0380088, 0xD0458008, 0xD37F0088, 0xD0220080))
+        closed = census.classify_words((0xD0338088, 0xD0380088, 0xD0458008, 0xD37F0088))
         self.assertEqual(census.validate_agreement(closed)["agree-unsupported"], len(closed))
 
     def test_measured_vfpu9_forms_agree_as_interpreter_routes(self):

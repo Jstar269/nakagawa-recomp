@@ -77,28 +77,27 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
             ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
             self.assertEqual(ran.returncode, 0, ran.stderr)
 
-    def test_vfpu4_public_identity_rows_still_fail_closed(self):
-        # vrnds has no recorded rule (issue #326); vrndi (PSP-HLE-ISSUES-001) and the
-        # vrndf1/vrndf2 float draws (PSP-VFPU-FORMS-001) are measured at .s only, so
-        # .p/.t/.q stay closed.
-        cases = (
-            (0x01, 0x00, 0x0000, "vrnds"),
-            (0x01, 0x02, 0x0080, "vrndf1"),
-            (0x01, 0x03, 0x8080, "vrndf2"),
-            (0x01, 0x01, 0x0080, "vrndi"),
-            (0x01, 0x01, 0x8000, "vrndi"),
-            (0x01, 0x01, 0x8080, "vrndi"),
-        )
-        for rs, rt, size_bits, name in cases:
-            word = (0x34 << 26) | (rs << 21) | (rt << 16) | size_bits
+    def test_measured_vfpu7_forms_route_to_the_interpreter(self):
+        # vrnds.s, vrndi/vrndf1/vrndf2 at .p/.t/.q, vf2h.p/.q and vc2i.s follow the
+        # 2026-10-29 PSP-3000 measurement PSP-VFPU-FORMS2-001 (issue #326), implemented
+        # once in sr_vfpu_interp. The AOT routes exactly those widths and raises
+        # Unsupported for the rest, which still fail closed through the interpreter.
+        routed = (0xD0200000, 0xD0210080, 0xD0218000, 0xD0218080, 0xD0220080,
+                  0xD0238080, 0xD0320088, 0xD0328088, 0xD0390008)
+        for word in routed:
             with self.subTest(word=f"0x{word:08x}"):
-                with self.assertRaises(codegen.Unsupported) as caught:
+                body, saddr, ssize = codegen.vfpu_effect(0x3400, word)
+                self.assertEqual((saddr, ssize), (None, 0))
+                self.assertIn("s->pc=0x00003400u", body)
+                self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", body)
+                self.assertIn("VFPU_UNSUPPORTED", body)
+        for word in (0xD0200080, 0xD0320008, 0xD0328008, 0xD0390088):
+            with self.subTest(word=f"0x{word:08x}"):
+                with self.assertRaises(codegen.Unsupported):
                     codegen.vfpu_effect(0x3400, word)
-                self.assertIn(f"VFPU4 identity {name}", str(caught.exception))
                 line = codegen.normal_line(0x3400, word)
                 self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", line)
                 self.assertIn("SR_VFPU_OTHER", line)
-                self.assertIn("VFPU_UNSUPPORTED", line)
                 self.assertIn("issue=326", line)
                 self.assertIn("return;", line)
 
@@ -193,7 +192,7 @@ int main(void) {{
         body = codegen.vfpu_effect(0x3400, 0xD0330080)[0]
         self.assertLess(body.index("uint32_t _s1=s->vi[1];"), body.index("s->vi[0]=sr_vfpu_h2f"))
         for word in (0xD0338008, 0xD0338088, 0xD0380088, 0xD0458008, 0xD0458088,
-                     0xD37F0088, 0xD3E08080, 0xD0220080, 0xD0238080):
+                     0xD37F0088, 0xD3E08080):
             with self.subTest(word=f"0x{word:08x}"):
                 with self.assertRaises(codegen.Unsupported):
                     codegen.vfpu_effect(0x3400, word)

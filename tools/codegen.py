@@ -1390,14 +1390,19 @@ def _flit(v):
         s += ".0"
     return s + "f"
 
-# Public VFPU mnemonic identities (PSPDev VFPU docs / PPSSPP's selector table).
-# These rows name still-unimplemented forms only; every one must keep the #326
-# fail-closed interpreter fallback until semantic evidence is admitted.
-_VFPU4_NAMED_UNIMPLEMENTED = {
-    (0x01, 0x00): "vrnds",
-    (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
-    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
+# VFPU7 forms (op 0x34, jump field 1) whose semantics follow the 2026-10-29 PSP-3000
+# measurement PSP-VFPU-FORMS2-001 (issue #326) and live only in sr_vfpu_interp:
+# selector -> (name, vector sizes it accepts). vrndi.s, vrndf1.s and vrndf2.s stay
+# inline (_vrndi_single_stmt, _vfpu_forms_effect). The AOT routes exactly these sizes
+# to the interpreter, which also refuses the prefixes the probe did not measure; any
+# other size raises Unsupported, matching the interpreter's SR_VFPU_OTHER for it.
+_VFPU7_INTERP_ROUTED = {
+    0x00: ("vrnds", (1,)),
+    0x01: ("vrndi", (2, 3, 4)),
+    0x02: ("vrndf1", (2, 3, 4)),
+    0x03: ("vrndf2", (2, 3, 4)),
+    0x12: ("vf2h", (2, 4)),
+    0x19: ("vc2i", (1,)),
 }
 
 
@@ -1515,11 +1520,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
         if forms is not None:
             return forms, None, 0
-        public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
-        if public_name is not None:
-            raise Unsupported(
-                f"VFPU4 identity {public_name} rs={jump} rt=0x{rt_selector:02x} at 0x{addr:08x}"
-            )
+        routed = _VFPU7_INTERP_ROUTED.get(rt_selector) if jump == 0x01 else None
+        if routed is not None and vec_size(w) in routed[1]:
+            return _vfpu_interp_stmt(addr, w), None, 0
         vd, vs = w & 0x7F, (w >> 8) & 0x7F
         n = vec_size(w)
         di = vreg_indices(vd, n)

@@ -172,6 +172,36 @@ static inline uint32_t sr_vfpu_h2f(uint32_t h) {
     return sign | ((e + 112u) << 23) | (m << 13);
 }
 
+/* PSP-VFPU-FORMS2-001 (PSP-3000, 2026-10-29, issue #326), identity prefixes unless a
+ * helper says otherwise. */
+
+/* vrnds.s: the seed word becomes all four 32-bit components of the random unit and its
+ * 32-bit carry, whatever the state was (96 cells from two different states). The RCX
+ * image is the one sr_vfpu_rnd_step reads and writes. */
+static inline void sr_vfpu_rnd_seed(uint32_t rcx[8], uint32_t seed) {
+    for (int k = 0; k < 8; k++)
+        rcx[k] = (rcx[k] & 0xfff00000u) | (((seed >> (4 * k)) & 0xfu) << 16) |
+                 ((k < 4 ? seed : seed >> 16) & 0xffffu);
+}
+
+/* vf2h: one float32 word to an IEEE half by truncation (round toward zero). A result
+ * below the half normal range, a float denormal included, is a zero of its sign; an
+ * exponent past the half range is an infinity of its sign; a NaN keeps its sign and the
+ * LOW 10 mantissa bits, so 0x7fc00000 becomes 0x7c00 (vh2f's mapping run backwards). */
+static inline uint32_t sr_vfpu_f2h(uint32_t b) {
+    const uint32_t sign = (b >> 16) & 0x8000u, e = (b >> 23) & 0xffu, m = b & 0x7fffffu;
+    if (e == 0xffu) return sign | 0x7c00u | (m & 0x3ffu);
+    const int he = (int)e - 112;
+    if (he >= 31) return sign | 0x7c00u;
+    if (he <= 0) return sign;
+    return sign | ((uint32_t)he << 10) | (m >> 13);
+}
+
+/* vc2i: one byte b to the top byte of a word, the rest zero. */
+static inline uint32_t sr_vfpu_c2i(uint32_t b) {
+    return (b & 0xffu) << 24;
+}
+
 /* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
 static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
     return ((b & 0xffu) * 0x01010101u) >> 1;
