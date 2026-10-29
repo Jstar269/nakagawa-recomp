@@ -436,6 +436,17 @@ If no drive appears at all, a plugin that uses the USB port, such as PSPLink, is
 
 You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`), the Japanese font `jpn0.pgf` and the Korean font `kr0.pgf` are all used exactly, so all 18 game font slots come from your own PSP ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)). If you imported fonts with an older build, import them again to pick up the Japanese and Korean ones.
 
+##### Without a Flash 0 USB setting: Nakagawa Font Copy
+
+If your custom firmware has no Flash 0 USB setting, use Nakagawa Font Copy, a small PSP app built from this project's source in `src/psp_companion/` (#737). It reads the PSP's font files, decrypts nothing and changes nothing on the PSP. It writes only to its own folder, `NAKAGAWA/fonts`, on the Memory Stick, or on a PSP Go's internal storage when you start it from there.
+
+1. Build the app with the PSPSDK (`make -C src/psp_companion`; see [PSPDEV integration](PSPDEV_LOCAL_VERIFICATION.md)), then copy `src/psp_companion/build/EBOOT.PBP` to `PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP` on the Memory Stick. Releases do not include the app yet.
+2. On the PSP, open **Game > Memory Stick > Nakagawa Font Copy** and press **X**. The app copies every `.pgf` file in `flash0:/font` and checks each copy against the original, then says how many fonts it copied. Running it again replaces the copies.
+3. Leave the app, connect the PSP to your PC with a USB cable, and turn on **Settings > USB Connection** on the PSP. The Memory Stick appears on the PC as a drive.
+4. In the player, open **Settings**, then **PSP FONTS**, choose **CHOOSE FONT FILES**, open the Memory Stick's `NAKAGAWA\fonts` folder and pick its `.pgf` files. The import reads every `.pgf` file in that folder. From a terminal, `python tools/nk_cli.py fonts import <drive>:\NAKAGAWA\fonts` does the same, with your PSP's drive letter in place of `<drive>`.
+
+The app only lists `flash0:/font` and opens its files read-only. If the PSP does not let it list the folder, it opens the eighteen firmware font files (`jpn0.pgf`, `kr0.pgf` and `ltn0.pgf` to `ltn15.pgf`) by name instead. Its build pins the file calls it may make, so no remove, rename or file-control call can be in it. The copy code is the hardware oracle's `font-files` case ([`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md)), and `tools/test_psp_oracle.py` checks which files the app selects and that it writes only inside its folder.
+
 #### Importing fonts
 
 ```powershell

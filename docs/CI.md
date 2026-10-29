@@ -862,7 +862,10 @@ developer runs locally, without private inputs:
   against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
   as an artifact, so the repository stores no generated executable (#1100) and the
   Windows runner still executes the whole route; where PSPDEV is installed, the
-  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`.
+  The same job builds Nakagawa Font Copy (`src/psp_companion/Makefile`), the PSP app
+  behind the player's font import, through its user-mode import gate; nothing from
+  that build is uploaded. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

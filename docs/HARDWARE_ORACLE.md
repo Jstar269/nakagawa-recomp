@@ -2937,7 +2937,10 @@ is not in the campaign queue; it runs only when the maintainer asks for it. It
 lists `flash0:/font`, opens each regular file read-only, and copies it to
 `host0:/fonts/` for the maintainer's private use, verifying each copy with
 SHA-256 over the flash0 read, the host0 read-back and a second flash0 read. The
-copies and digests are private evidence and are never committed.
+copies and digests are private evidence and are never committed. The user-facing
+Nakagawa Font Copy app (`src/psp_companion/fontcopy.c`) runs the same code with its
+own settings: `.pgf` files only, its Memory Stick folder in place of `host0:/fonts`,
+and the firmware font names opened one by one when the listing is refused.
 
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
 with the host0 `transport-write` preflight, then the new cases above, followed

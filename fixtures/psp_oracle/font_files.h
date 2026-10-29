@@ -10,12 +10,22 @@
  * time. Shared by the probe (fixtures/psp_oracle/probe.c, CASE=font-files) and a host harness
  * (fixtures/psp_oracle/io_cases_host.c) that runs the same code against a fake file system.
  *
+ * The user-facing font-copy app (src/psp_companion/fontcopy.c) runs the same copy with three
+ * settings the oracle case leaves unset, so the case's calls and records are unchanged:
+ * dest_dir (its own memory-stick folder instead of host0:/fonts, with dest_parent created
+ * first), pgf_only (only names ending in .pgf, in any case, are copied) and known_names (if the
+ * listing cannot be opened, each of these names is opened read-only under flash0:/font instead).
+ *
  * Safety contract (checked by the host harness tests in tools/test_psp_oracle.py):
- *  - flash0: is only ever listed (sceIoDopen/sceIoDread/sceIoDclose) and opened PSP_O_RDONLY.
- *    No write, create, truncate, remove, rename or mkdir names a flash0: path.
- *  - Writes go only to host0:/fonts/<name>, where <name> is a listed regular file whose name is
- *    1 to 63 bytes of [A-Za-z0-9_.-] not starting with '.'; other names are recorded and skipped.
- *  - If the listing cannot be opened, the case records the result and stops; nothing is copied.
+ *  - flash0: is only ever listed (sceIoDopen/sceIoDread/sceIoDclose), opened PSP_O_RDONLY and,
+ *    for a known name, measured with sceIoLseek. No write, create, truncate, remove, rename or
+ *    mkdir names a flash0: path.
+ *  - Writes go only to <destination>/<name> (host0:/fonts unless dest_dir names another folder),
+ *    where <name> is a listed or known regular file whose name is 1 to 63 bytes of
+ *    [A-Za-z0-9_.-] not starting with '.'; other names are recorded and skipped. sceIoMkdir names
+ *    only dest_parent and the destination.
+ *  - If the listing cannot be opened and no known name is given, the case records the result
+ *    and stops; nothing is copied.
  *  - Each copy is verified: pass A reads flash0 and writes host0 while hashing (SHA-256), pass B
  *    reads the host0 copy back, pass C re-reads flash0. A copy passes only when the three digests
  *    and byte counts agree with each other and with the listed size.
@@ -57,6 +67,8 @@ enum {
     FONTFILES_ENTRY_NOT_FILE = 1,  /* not a regular file (directory, link, ...): not copied */
     FONTFILES_ENTRY_NAME = 2,      /* name not 1-63 bytes of [A-Za-z0-9_.-] or starts with '.' */
     FONTFILES_ENTRY_SIZE = 3,      /* size negative or above FONTFILES_FILE_MAX: not copied */
+    FONTFILES_ENTRY_NOT_PGF = 4,   /* pgf_only: the name does not end in .pgf: not copied */
+    FONTFILES_ENTRY_ABSENT = 5,    /* a known name that does not open: not copied */
 };
 
 /* out8 bits of a font-copy record. */
@@ -69,6 +81,12 @@ typedef struct FontFiles {
     void (*emit)(void *ctx, const char *line, size_t length);
     void (*step)(void *ctx, const char *step);
     void *ctx;
+    /* Copy settings; all zero for the oracle case (see the header comment). */
+    const char *dest_parent;          /* created before dest_dir; NULL for none */
+    const char *dest_dir;             /* NULL: FONTFILES_HOST_DIR */
+    uint32_t pgf_only;
+    const char *const *known_names;   /* tried only when the listing cannot be opened */
+    uint32_t known_count;
     uint32_t entries;
     uint32_t candidates;
     uint32_t copied;
@@ -215,6 +233,26 @@ static size_t fontfiles_safe_name(const char *name) {
     return length;
 }
 
+/* A safe name of the given length that ends in ".pgf", in any case. */
+static int fontfiles_is_pgf(const char *name, size_t length) {
+    if (length < 5u) return 0;
+    const char *tail = name + length - 4u;
+    return tail[0] == '.' && (tail[1] | 0x20) == 'p' && (tail[2] | 0x20) == 'g' &&
+           (tail[3] | 0x20) == 'f';
+}
+
+/* Where copies go, and whether that folder leaves room for any safe name. */
+static const char *fontfiles_dest(const FontFiles *f) {
+    return f->dest_dir != NULL ? f->dest_dir : FONTFILES_HOST_DIR;
+}
+
+static int fontfiles_dest_fits(const FontFiles *f) {
+    const char *dest = fontfiles_dest(f);
+    const size_t length = strlen(dest);
+    if (length == 0u || length + 1u + FONTFILES_NAME_MAX >= FONTFILES_PATH_MAX) return 0;
+    return f->dest_parent == NULL || strlen(f->dest_parent) < length;
+}
+
 static void fontfiles_emit(FontFiles *f, int used) {
     if (used <= 0 || (size_t)used + 1u >= FONTFILES_LINE_MAX) return;
     s_fontfiles_line[used++] = '\n';
@@ -287,7 +325,7 @@ static void fontfiles_copy(FontFiles *f, uint32_t index) {
     memset(sha_b, 0, sizeof(sha_b));
     memset(sha_c, 0, sizeof(sha_c));
     snprintf(s_fontfiles_path, sizeof(s_fontfiles_path), "%s/%.63s", FONTFILES_DIR, name);
-    snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", FONTFILES_HOST_DIR, name);
+    snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", fontfiles_dest(f), name);
 
     /* Pass A: flash0 read-only -> host0, hashing what was read. */
     static FontFilesSha256 sha;
@@ -358,9 +396,82 @@ static void fontfiles_copy(FontFiles *f, uint32_t index) {
     fontfiles_emit(f, used);
 }
 
+/* font-mkdir-parent (only when dest_parent is set), then font-mkdir: result = sceIoMkdir
+ * result. A folder that already exists is not an error here; the copies show whether it is
+ * usable. */
+static void fontfiles_mkdir(FontFiles *f) {
+    int used;
+    if (f->dest_parent != NULL) {
+        fontfiles_step(f, "mkdir:", f->dest_parent);
+        const int parent_rc = sceIoMkdir(f->dest_parent, 0777);
+        used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
+            "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-mkdir-parent "
+            "status=PASS result=0x%08x", (unsigned int)parent_rc);
+        fontfiles_emit(f, used);
+    }
+    fontfiles_step(f, "mkdir:", fontfiles_dest(f));
+    const int mkdir_rc = sceIoMkdir(fontfiles_dest(f), 0777);
+    used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
+        "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-mkdir "
+        "status=PASS result=0x%08x", (unsigned int)mkdir_rc);
+    fontfiles_emit(f, used);
+}
+
+/* The listing could not be opened: open each known name read-only instead and measure it with
+ * sceIoLseek. font-known-NNNN: result = the sceIoOpen result (0xffffffff when the name was not
+ * opened), out0/out1 = the measured size low/high (0xffffffff when not measured), out2 =
+ * disposition; detail = the name, or - when it is not a safe name. */
+static void fontfiles_known(FontFiles *f) {
+    for (uint32_t i = 0; i < f->known_count && i < FONTFILES_ENTRIES_MAX; i++) {
+        const char *name = f->known_names[i] != NULL ? f->known_names[i] : "";
+        const size_t length = fontfiles_safe_name(name);
+        uint32_t disposition = FONTFILES_ENTRY_COPY;
+        int open_rc = (int)FONTFILES_ERROR;
+        int64_t size = -1;
+        if (length == 0u) {
+            disposition = FONTFILES_ENTRY_NAME;
+        } else if (f->pgf_only && !fontfiles_is_pgf(name, length)) {
+            disposition = FONTFILES_ENTRY_NOT_PGF;
+        } else {
+            snprintf(s_fontfiles_path, sizeof(s_fontfiles_path), "%s/%.63s", FONTFILES_DIR, name);
+            fontfiles_step(f, "open:", s_fontfiles_path);
+            const SceUID fd = sceIoOpen(s_fontfiles_path, PSP_O_RDONLY, 0);
+            open_rc = fd;
+            if (fd < 0) {
+                disposition = FONTFILES_ENTRY_ABSENT;
+            } else {
+                fontfiles_step(f, "seek:", s_fontfiles_path);
+                size = (int64_t)sceIoLseek(fd, 0, SEEK_END);
+                (void)sceIoClose(fd);
+                if (size < 0 || size > (int64_t)FONTFILES_FILE_MAX) {
+                    disposition = FONTFILES_ENTRY_SIZE;
+                }
+            }
+        }
+        const uint64_t bits = size < 0 ? UINT64_MAX : (uint64_t)size;
+        const int used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
+            "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-known-%04u "
+            "status=PASS result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x detail=%s",
+            (unsigned int)i, (unsigned int)open_rc, (unsigned int)(uint32_t)(bits & 0xffffffffu),
+            (unsigned int)(uint32_t)(bits >> 32), (unsigned int)disposition,
+            length != 0u ? name : "-");
+        fontfiles_emit(f, used);
+        f->entries++;
+        if (disposition == FONTFILES_ENTRY_COPY) {
+            memcpy(s_fontfiles_names[f->candidates], name, length + 1u);
+            s_fontfiles_sizes[f->candidates] = (uint32_t)size;
+            f->candidates++;
+        }
+    }
+}
+
 /* font-dir-open, font-mkdir, font-entry-NNNN..., font-dir-close, font-copy-NNNN...,
- * font-files-done. A listing that cannot be opened goes straight to font-files-done. */
-static void fontfiles_run(FontFiles *f) {
+ * font-files-done. A listing that cannot be opened goes straight to font-files-done, unless
+ * known names are given: then font-known-NNNN..., and font-mkdir and font-copy-NNNN... when
+ * one of them opened. A destination that cannot hold a copy path is refused (font-dest) before
+ * any call. */
+static void fontfiles_list_and_copy(FontFiles *f) {
+    int used;
     f->step(f->ctx, "dopen:" FONTFILES_DIR);
     SceUID dir = sceIoDopen(FONTFILES_DIR);
     const int first = dir;
@@ -370,19 +481,14 @@ static void fontfiles_run(FontFiles *f) {
         dir = sceIoDopen(FONTFILES_DIR_SLASH);
         second = dir;
     }
-    int used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
+    used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
         "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-dir-open "
         "status=%s result=0x%08x out0=0x%08x out1=0x%08x",
         dir >= 0 ? "PASS" : "FAIL", (unsigned int)dir, (unsigned int)first,
         (unsigned int)second);
     fontfiles_emit(f, used);
     if (dir >= 0) {
-        f->step(f->ctx, "mkdir:" FONTFILES_HOST_DIR);
-        const int mkdir_rc = sceIoMkdir(FONTFILES_HOST_DIR, 0777);
-        used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
-            "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-mkdir "
-            "status=PASS result=0x%08x", (unsigned int)mkdir_rc);
-        fontfiles_emit(f, used);
+        fontfiles_mkdir(f);
         int end = (int)FONTFILES_ERROR;
         for (uint32_t i = 0; i < FONTFILES_ENTRIES_MAX; i++) {
             memset(&s_fontfiles_dirent, 0, sizeof(s_fontfiles_dirent));
@@ -400,6 +506,8 @@ static void fontfiles_run(FontFiles *f) {
                 disposition = FONTFILES_ENTRY_NOT_FILE;
             } else if (length == 0u) {
                 disposition = FONTFILES_ENTRY_NAME;
+            } else if (f->pgf_only && !fontfiles_is_pgf(name, length)) {
+                disposition = FONTFILES_ENTRY_NOT_PGF;
             } else if (size < 0 || size > (int64_t)FONTFILES_FILE_MAX) {
                 disposition = FONTFILES_ENTRY_SIZE;
             }
@@ -448,6 +556,25 @@ static void fontfiles_run(FontFiles *f) {
             (unsigned int)f->entries, (unsigned int)end);
         fontfiles_emit(f, used);
         for (uint32_t i = 0; i < f->candidates; i++) fontfiles_copy(f, i);
+    } else if (f->known_count > 0u && f->known_names != NULL) {
+        fontfiles_known(f);
+        if (f->candidates > 0u) {
+            fontfiles_mkdir(f);
+            for (uint32_t i = 0; i < f->candidates; i++) fontfiles_copy(f, i);
+        }
+    }
+}
+
+static void fontfiles_run(FontFiles *f) {
+    int used;
+    if (fontfiles_dest_fits(f)) {
+        fontfiles_list_and_copy(f);
+    } else {
+        /* font-dest: result = project code 0x80000107, the destination is unusable. */
+        used = snprintf(s_fontfiles_line, FONTFILES_LINE_MAX,
+            "NAKAGAWA_PSP_TEST schema=1 test_id=" FONTFILES_TEST_ID " case_id=font-dest "
+            "status=FAIL result=0x80000107");
+        fontfiles_emit(f, used);
     }
     /* font-files-done: out0 entries, out1 copy candidates, out2 verified copies, out3 records
      * before this one. */
