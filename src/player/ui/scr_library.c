@@ -494,8 +494,10 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                                                NK_UI_SPACE_3);
                 pager.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, LIBRARY_ID_PAGER, &pager, NULL)) {
+                    /* Neither is the screen's default focus: that is the
+                       first card. */
                     if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_PAGE_PREVIOUS, "Previous",
-                                     NK_UI_BUTTON_SMALL |
+                                     NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT |
                                      (model->page_index == 0u ? NK_UI_BUTTON_DISABLED : 0u))) {
                         result = action(PLAYER_UI_ACTION_PAGE_PREVIOUS, 0u);
                     }
@@ -503,7 +505,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                                     nk_ui_caps(ui, safe_text(model->page_label, "More titles")),
                                     NK_UI_TYPE_LABEL_S, theme->muted);
                     if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_PAGE_NEXT, "Next",
-                                     NK_UI_BUTTON_SMALL |
+                                     NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT |
                                      (model->page_index + 1u >= page_count
                                           ? NK_UI_BUTTON_DISABLED : 0u))) {
                         result = action(PLAYER_UI_ACTION_PAGE_NEXT, 0u);

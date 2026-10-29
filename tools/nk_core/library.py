@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 
 from .package_cache import (
     BoundedJsonError,
-    MAX_CACHE_JSON_BYTES,
     MAX_CACHE_JSON_DEPTH,
     MAX_CACHE_JSON_ITEMS,
     MAX_CACHE_JSON_MEMBERS,
@@ -32,7 +31,10 @@ LIBRARY_SCHEMA_VERSION = 1
 # structural ceilings run before json.loads, and record-level limits bound the
 # decoded list. Byte, structure, and record limits apply independently;
 # nothing is ever truncated silently.
-MAX_LIBRARY_JSON_BYTES = MAX_CACHE_JSON_BYTES
+# Room for MAX_LIBRARY_GAMES records as the player writes them (about 1 KiB each
+# with typical paths); the player's reader has the same limit, NK_LIBRARY_MAX_BYTES
+# in src/core/nk_library.h.
+MAX_LIBRARY_JSON_BYTES = 16 * 1024 * 1024
 MAX_LIBRARY_JSON_DEPTH = MAX_CACHE_JSON_DEPTH
 MAX_LIBRARY_GAMES = 4096
 
@@ -46,18 +48,22 @@ _LIBRARY_ROOT_FIELDS = frozenset({"schema_version", "updated_at", "games"})
 
 # A saved record emits every dataclass field, even defaults. The package-cache
 # structural budgets would reject an ordinary saved library around 1,170 games.
-# Give this route budgets derived from its own record schema; the independent
-# 1 MiB byte limit still applies, including to large settings overrides.
+# Give this route budgets derived from the record schemas that write
+# library.json: this module's, and the player's, whose records carry 22 fields
+# (nk_library_save in src/core/nk_library.c). The independent byte limit still
+# applies, including to large settings overrides.
+_PLAYER_RECORD_FIELD_COUNT = 22
+_RECORD_FIELD_BUDGET = max(len(_GAME_RECORD_FIELDS), _PLAYER_RECORD_FIELD_COUNT)
 MAX_LIBRARY_JSON_MEMBERS = max(
     MAX_CACHE_JSON_MEMBERS,
-    MAX_LIBRARY_GAMES * len(_GAME_RECORD_FIELDS) + len(_LIBRARY_ROOT_FIELDS),
+    MAX_LIBRARY_GAMES * _RECORD_FIELD_BUDGET + len(_LIBRARY_ROOT_FIELDS),
 )
 MAX_LIBRARY_JSON_ITEMS = max(
     MAX_CACHE_JSON_ITEMS, MAX_LIBRARY_JSON_MEMBERS + MAX_LIBRARY_GAMES,
 )
 MAX_LIBRARY_JSON_NODES = max(
     MAX_CACHE_JSON_NODES,
-    MAX_LIBRARY_GAMES * (2 * len(_GAME_RECORD_FIELDS) + 1)
+    MAX_LIBRARY_GAMES * (2 * _RECORD_FIELD_BUDGET + 1)
     + 2 * len(_LIBRARY_ROOT_FIELDS) + 2,
 )
 

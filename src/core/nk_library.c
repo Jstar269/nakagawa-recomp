@@ -389,7 +389,7 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (file_size <= 0 || file_size > 4 * 1024 * 1024) {
+    if (file_size <= 0 || file_size > NK_LIBRARY_MAX_BYTES) {
         fclose(f);
         return NK_ERROR_IO;
     }

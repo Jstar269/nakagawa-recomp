@@ -139,25 +139,29 @@ def truncate(oracle, out, count):
     return written
 
 
-def main(argv):
-    if len(argv) != 4:
-        sys.stderr.write("usage: codegen_gate.py <elf> <oracle.trace> <workdir>\n")
-        return 2
-    elf, oracle, workdir = (os.path.abspath(a) for a in argv[1:])
-    os.makedirs(workdir, exist_ok=True)
-    gen = os.path.join(workdir, "gen.c")
-    drv_ext = ".exe" if sys.platform.startswith("win") else ""
-    drv = os.path.join(workdir, "driver" + drv_ext)
-    mine = os.path.join(workdir, "my.trace")
-    trunc = os.path.join(workdir, "oracle_pre_hle.trace")
-
+def gate_env():
+    """The environment every gate build and run uses (temporary files under .tmp)."""
     env = dict(os.environ)
     tmp = os.path.join(ROOT, ".tmp")
     os.makedirs(tmp, exist_ok=True)
     env["TMPDIR"] = env["TMP"] = env["TEMP"] = tmp.replace("\\", "/")
+    return env
 
+
+def build_traced_driver(elf, workdir, env, mutate=None):
+    """Generate C for ``elf`` and link the headless traced driver; return its path or None.
+
+    ``mutate``, when given, is called with the generated main C path before compiling.
+    The instruction-trace mutation test (tools/test_insn_trace.py) uses it to change
+    generated code in its own temporary directory, never a tracked file.
+    """
+    gen = os.path.join(workdir, "gen.c")
+    drv_ext = ".exe" if sys.platform.startswith("win") else ""
+    drv = os.path.join(workdir, "driver" + drv_ext)
     if run([sys.executable, os.path.join(ROOT, "tools", "codegen.py"), "--static-verify", elf, gen]):
-        return 1
+        return None
+    if mutate is not None:
+        mutate(gen)
     rt = os.path.join(ROOT, "src", "rt")
     cc = os.environ.get("CC", "gcc")
 
@@ -167,7 +171,7 @@ def main(argv):
     os.makedirs(config_dir, exist_ok=True)
     config_header = os.path.join(config_dir, "sr_title_config.h")
     if run([sys.executable, os.path.join(ROOT, "tools", "title_runtime_config.py"), "--output", config_header]):
-        return 1
+        return None
 
     # codegen.py writes the per-chunk registration files gen_0.c, gen_1.c, ...
     # alongside gen.c (each defines sr_register_chunk_i(), called by sr_register_all
@@ -200,6 +204,21 @@ def main(argv):
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
             os.path.join(rt, "title_config.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
+        return None
+    return drv
+
+
+def main(argv):
+    if len(argv) != 4:
+        sys.stderr.write("usage: codegen_gate.py <elf> <oracle.trace> <workdir>\n")
+        return 2
+    elf, oracle, workdir = (os.path.abspath(a) for a in argv[1:])
+    os.makedirs(workdir, exist_ok=True)
+    mine = os.path.join(workdir, "my.trace")
+    trunc = os.path.join(workdir, "oracle_pre_hle.trace")
+    env = gate_env()
+    drv = build_traced_driver(elf, workdir, env)
+    if drv is None:
         return 1
 
     # Run the compiled driver while capturing stdout/stderr to inspect for SV_MISMATCH
