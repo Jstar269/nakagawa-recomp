@@ -131,6 +131,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
 | `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |
 | `src/rt/stale_code.c` | FNV-32 | Self-modifying-code detection (`sr_stale_fnv1a`), checked per block | Keep: performance-critical change detector |
+| `tools/psp_oracle/insn_trace.py` | FNV-32 | Checks that the insn-trace probe ran the header's fixture words, against the probe's own FNV-1a report; the trace identity itself is SHA-256 | Keep: mirrors the on-device check |
 | `src/rt/mpeg.c` | FNV-64 | Change detector for a cached YCbCr conversion buffer | Keep: cache validity, not integrity |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |

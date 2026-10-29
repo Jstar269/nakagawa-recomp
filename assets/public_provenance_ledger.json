@@ -483,7 +483,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "945f9b31154f95d1cb6088e04259f4c0b39df3857325e19e0b9517d734b87c5b"
+      "sha256": "e453166a1196a35cbc3e96a83eb2a32de1cf2b40b1ec72ce9b98b3316a7af9d0"
     },
     {
       "path": "SUPPORT.md",
@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "5a7dd8ce5312343bf8600266d333e2d537abca5d2364c403a8503d48a6c68fe3"
+      "sha256": "3a0ba9a89a4f7d305b37218d7ecfa82dd9ea6125b5424ab3a822db9f329cf3f8"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "925100a63dd704cfce391e4cc45997172fcb673962134151ecc6dfb54318fb54"
+      "sha256": "12e8dc6bf47e4ff8e7b22e5cd43aa7c7fdeacec9034049efb901ad0906bcba0e"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -2474,7 +2474,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d924222651569e77818b3c965e7da27b5d25731cd9ab69f6214ca6c8f82c6b1"
+      "sha256": "00f3138d639d89a8345148798613caab027e5da8d4a1fd521047878b1a908f87"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2603,6 +2603,30 @@
       "sha256": "1c3e3c3f314450e8a02baf2fd610de8d6cf0ec5ed7afa48fa9cd1e9d64341954"
     },
     {
+      "path": "fixtures/psp_oracle/insn_trace_fixtures.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "insn-trace-differential-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "57707d793a7064d828a99ed455950f630264140c3ab3471aafcec6b53d73903d"
+    },
+    {
+      "path": "fixtures/psp_oracle/insn_trace_tramp.S",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "insn-trace-differential-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e22b0bdea981394dbe756163a799949217a99f6e668efe9ae5c226e9e9b4d6b6"
+    },
+    {
       "path": "fixtures/psp_oracle/io_cases_host.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -2718,6 +2742,18 @@
         "upstream_attribution": null
       },
       "sha256": "c861d7a4bc0613ace988c077d43377d46b71b0276478326a3c976581eff4574b"
+    },
+    {
+      "path": "fixtures/psp_oracle/probe_insn_trace.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "insn-trace-differential-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6866f9c058dcaa2ef31b5263c80fa1721fb8016f1bc76b4835c8110706fd0d1d"
     },
     {
       "path": "fixtures/psp_oracle/psp_b1.c",
@@ -11641,7 +11677,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7e6e4a20ad8c3b64f4d665a2b4d9673dcb4604b5a55871177f094ea8a2b7c4a"
+      "sha256": "c05405dfaf73cd0129c60c74cde1f5f2361b3fc0dd7ae71c2702875b68d5c383"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -11654,7 +11690,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6326940f71dc1176cffdc877d991bba9c6cc398b9ddf25b2595429f69b681eb1"
+      "sha256": "788297637986a6e96d7c97bb41526eed7f7421b185cc9720c81534333fcaec35"
     },
     {
       "path": "tools/admit_paths.py",
@@ -11837,7 +11873,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5e7e9db2e102db809c621b302a9760cefb1f5bdc22d73649c0181fbc18344949"
+      "sha256": "66c8928f615310d3e72fdf6b43f0472de163026474793ab0235fb9bf4b366e00"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -12976,6 +13012,18 @@
       "sha256": "76dd67a69f9e9c9b1ac4697e1163cfb830c78d06a10eca0e9b6ab002c75e5839"
     },
     {
+      "path": "tools/psp_oracle/insn_trace.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "insn-trace-differential-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7bcac9ec3662b4035b44d88e6a657a1d9aec9de46a8bc4a449956c5f89d37cbb"
+    },
+    {
       "path": "tools/psp_oracle/manifest.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12985,7 +13033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a5348158b4a4a4734b633b7a5118ed74891f0c2e45bf9f12abd8cf29afb2320"
+      "sha256": "24e8cb37fb4979ac2fc9e7dee604c9e5c620796a749c13be70cc74ec10b5b809"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -12997,7 +13045,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d45330b55aba40a59895a4230d4d25153de55f1059a76cd6594742747ed4c360"
+      "sha256": "ee2248c473c3b31acfb2fea4451493628a83be66fd157f49446e2eccf61f9097"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -14295,7 +14343,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f455c7dfd75dd7af921703339e5ac57f4ae592db09e619053f2d91dfcd91e0b1"
+      "sha256": "52b7bda4a1e8e7a30583ed45ac6833ab1d322bd36158d9f69d4eb064430b8a84"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -14440,6 +14488,18 @@
         "upstream_attribution": null
       },
       "sha256": "e51192de96712061272f5a0625916fa87455a3e651f662fe85f6aaaff81844fb"
+    },
+    {
+      "path": "tools/test_insn_trace.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "insn-trace-differential-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2be024751ac2e96b03b6ef3d278644119c3e7ccbe90de9f6b960f0f9c98f0181"
     },
     {
       "path": "tools/test_intr_waits_matrix.py",
@@ -15111,7 +15171,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab9d2d18f7ba5aa067d75cc9413fdf93dedf5beb191f38c669eaa240f4ae71fb"
+      "sha256": "a42952546dbd1901953126a61345a1808693d166717612446829b83e6127e22a"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -16181,7 +16241,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c71ddbc65bd0db734324fa1a311dc69e9e30f5f4fb7288a9629316d056f42688"
+      "sha256": "9e147a104d0dbe05d527a6c2414e17daa5536ddff524b95724a70dff1a3f0f18"
     },
     {
       "path": "tools/verify_key_scrub.py",
