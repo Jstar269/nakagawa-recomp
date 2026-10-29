@@ -414,6 +414,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_enhancement_package.py` | Unit tests for the enhancement package schema and validator. |
+| `test_failure_codes.py` | The failure-code taxonomy (`assets/failure_codes.json`, `docs/FAILURE_CODES.md`) agrees with the report schema and every code emitter. |
 | `test_font_provisioning.py` | Firmware font provisioning: structural validation and the local cache contract. |
 | `test_generic_title_planning_proof.py` | Planning proof: the tracked title is unchanged while a synthetic second title flows generically. |
 | `test_hle_title_config_behavior.py` | Production-path regressions for the title-qualified HLE bindings. |
