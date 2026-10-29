@@ -12421,7 +12421,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9830679fd4a8e59b9f1937379054539bc1f2419c83b49bbe510f9467d90447aa"
+      "sha256": "d1e788eb78bf1dba17194420e50ae8aa42203e79df434fe80c00c3160f507a41"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -13184,7 +13184,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30f7c81899b6b0179951c1990bb2cac8fe347da08b45b98ce72491784763d3ea"
+      "sha256": "835bd7a654b3d441df61461a6e8e5ce27a983a5617ff2e33d2b33f1a07a4d7ac"
     },
     {
       "path": "tools/make_app_icon.py",
@@ -15375,7 +15375,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5fa3c51aedbfaa52a6e1a81b18eb3582c6c9969eee358b4038a3a65812f0b362"
+      "sha256": "85a786bbb8204b06a75c33bf521d9a2b7b2b1b161085277235f773dcf5698368"
     },
     {
       "path": "tools/test_manager_safety.ps1",
