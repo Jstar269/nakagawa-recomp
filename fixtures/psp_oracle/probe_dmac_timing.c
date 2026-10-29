@@ -7,8 +7,9 @@
 //     channel busy, by size, source/destination memory (main RAM or VRAM) and alignment;
 //     what a Try refused with BUSY leaves in its destination; whether BUSY is decided
 //     before or after the NULL-pointer and zero-size checks; in which order two blocking
-//     callers queued behind a pending transfer are served; and how long a lower-priority
-//     thread sees the channel busy.
+//     callers queued behind a pending transfer are served; how long a lower-priority
+//     thread sees the channel busy; and, call by call from 0x10 to 0x10000 bytes, which
+//     sizes a Try refuses and a blocking call waits for while another transfer is pending.
 //
 // Memory: three 0x110000-byte blocks from user partition 2 (A, B, C) and the two 1 MiB
 // halves of VRAM (0x04000000 and 0x04100000). The CPU fills and checks every byte through
@@ -720,6 +721,141 @@ static void dt_b4_cell(const char *case_id, uint32_t vram, uint32_t n)
     hle_record(case_id, setup ? "ERROR" : capped ? "TIMEOUT" : "PASS", last, out, 15);
 }
 
+/* ---- c1 / c2: one call of each size while the first transfer is pending ---------------
+   c1 is sceDmacTryMemcpy and c2 sceDmacMemcpy, main RAM A to C. out0 size, out1 trials,
+   out2 first pending at the call, out3 BUSY, out4 results 0, out5 other results, out6 min us,
+   out7 max us, out8 first transfer returned before this call returned, out9 full copies
+   (destination checked after the first transfer ended), out10 trials whose destination
+   changed at all, out11 unjoined workers, out12 setup error. */
+static void dt_c_cell(const char *case_id, uint32_t api, uint32_t n)
+{
+    uint32_t pend = 0, busy = 0, zero = 0, other = 0, min_us = UINT32_MAX, max_us = 0, after = 0;
+    uint32_t full = 0, changed = 0, unjoined = 0, setup = 0, stray = 0, last = 0;
+    const uint32_t seed = 0x500u + n / 16u;
+    dt_fill(s_dt_a, n, seed);
+    for (uint32_t t = 0; t < DT_TRIALS; t++) {
+        dt_clear(s_dt_c, n + DT_GUARD);
+        dt_flush(s_dt_a, n);
+        dt_flush(s_dt_c, n + DT_GUARD);
+        const SceUID first = dt_first(DT_API_MEMCPY);
+        if (first < 0) {
+            setup = (uint32_t)first;
+            break;
+        }
+        const uint32_t pending = dt_pending(&s_dt_jobs[0]);
+        const uint32_t t0 = sceKernelGetSystemTimeLow();
+        const uint32_t r = (uint32_t)dt_call(api, s_dt_c, s_dt_a, n);
+        const uint32_t us = sceKernelGetSystemTimeLow() - t0;
+        const uint32_t first_done = s_dt_jobs[0].returned;
+        if (!dt_join(first)) unjoined++;
+        pend += pending;
+        after += first_done;
+        if (r == DT_BUSY) busy++; else if (r == 0u) zero++; else other++;
+        if (us < min_us) min_us = us;
+        if (us > max_us) max_us = us;
+        last = r;
+        if (dt_check(s_dt_c, 0u, n, n + DT_GUARD, 0u, seed, &stray) == 0u) full++;
+        if (dt_changed(s_dt_c, n + DT_GUARD)) changed++;
+    }
+    const uint32_t out[13] = {n, DT_TRIALS, pend, busy, zero, other, min_us, max_us, after, full,
+                              changed, unjoined, setup};
+    hle_record(case_id, setup ? "ERROR" : "PASS", last, out, 13);
+}
+
+/* ---- b5: the busy window, polled with a Try that the pending transfer refuses ---------
+   As b4, but each poll is a 0x10000-byte Try (main RAM A + 1 MiB is not a source of the
+   first transfer), so the window ends at the start of the first poll the channel accepts.
+   out0 size, out1 trials, out2 first pending at the first poll, out3 min BUSY polls, out4
+   max, out5 min us from the first call's entry to the start of the accepted poll, out6 max
+   of that, out7 min us of the first call, out8 max of that, out9 min us from the first
+   call's return to the start of the accepted poll (signed, as a 32-bit word), out10 max of
+   that, out11 last accepted result, out12 cells that reached DT_POLL_MAX, out13 unjoined
+   workers, out14 setup error, out15 1 = VRAM pair. */
+static void dt_b5_cell(const char *case_id, uint32_t vram, uint32_t n)
+{
+    uint32_t pend = 0, polls_min = UINT32_MAX, polls_max = 0, win_min = UINT32_MAX, win_max = 0;
+    uint32_t call_min = UINT32_MAX, call_max = 0, last = 0, capped = 0, unjoined = 0, setup = 0;
+    int32_t tail_min = INT32_MAX, tail_max = INT32_MIN;
+    const uint32_t src = vram ? DT_VRAM_SRC : s_dt_a;
+    const uint32_t dst = vram ? DT_VRAM_DST : s_dt_b;
+    for (uint32_t t = 0; t < DT_TRIALS; t++) {
+        dt_flush(src, n);
+        dt_flush(dst, n);
+        dt_flush(s_dt_a + 0x100000u, 0x10000u);
+        dt_flush(s_dt_c, 0x10000u);
+        dt_job(0, DT_API_MEMCPY, dst, src, n);
+        const SceUID first = dt_start(0, DT_FIRST_PRIORITY);
+        if (first < 0) {
+            setup = (uint32_t)first;
+            break;
+        }
+        pend += dt_pending(&s_dt_jobs[0]);
+        uint32_t polls = 0;
+        uint32_t r = DT_BUSY;
+        uint32_t accepted_at = 0;
+        for (; polls < DT_POLL_MAX; polls++) {
+            accepted_at = sceKernelGetSystemTimeLow();
+            r = (uint32_t)dt_call(DT_API_TRY, s_dt_c, s_dt_a + 0x100000u, 0x10000u);
+            if (r != DT_BUSY) {
+                break;
+            }
+        }
+        if (!dt_join(first)) unjoined++;
+        if (polls == DT_POLL_MAX) capped++;
+        last = r;
+        const uint32_t win = accepted_at - s_dt_jobs[0].enter_us;
+        const uint32_t call = s_dt_jobs[0].exit_us - s_dt_jobs[0].enter_us;
+        const int32_t tail = (int32_t)(accepted_at - s_dt_jobs[0].exit_us);
+        if (polls < polls_min) polls_min = polls;
+        if (polls > polls_max) polls_max = polls;
+        if (win < win_min) win_min = win;
+        if (win > win_max) win_max = win;
+        if (call < call_min) call_min = call;
+        if (call > call_max) call_max = call;
+        if (tail < tail_min) tail_min = tail;
+        if (tail > tail_max) tail_max = tail;
+    }
+    const uint32_t out[16] = {n, DT_TRIALS, pend, polls_min, polls_max, win_min, win_max, call_min,
+                              call_max, (uint32_t)tail_min, (uint32_t)tail_max, last, capped,
+                              unjoined, setup, vram};
+    hle_record(case_id, setup ? "ERROR" : capped ? "TIMEOUT" : "PASS", last, out, 16);
+}
+
+static const uint32_t s_dt_c_sizes[13] = {0x10u, 0x20u, 0x40u, 0x80u, 0x100u, 0x200u, 0x400u,
+                                          0x800u, 0x1000u, 0x2000u, 0x4000u, 0x8000u, 0x10000u};
+static const uint32_t s_dt_align2[6][2] = {{2, 0}, {0, 2}, {3, 0}, {8, 0}, {0, 8}, {12, 0}};
+
+static void dt_followup_cells(void)
+{
+    static char id[48];
+    hle_step("c1");
+    for (unsigned s = 0; s < 13u; s++) {
+        snprintf(id, sizeof(id), "c1-try-%06x", (unsigned int)s_dt_c_sizes[s]);
+        dt_c_cell(id, DT_API_TRY, s_dt_c_sizes[s]);
+    }
+    hle_step("c2");
+    for (unsigned s = 0; s < 13u; s++) {
+        snprintf(id, sizeof(id), "c2-memcpy-%06x", (unsigned int)s_dt_c_sizes[s]);
+        dt_c_cell(id, DT_API_MEMCPY, s_dt_c_sizes[s]);
+    }
+    hle_step("b5");
+    dt_b5_cell("b5-vv-010000", 1u, 0x10000u);
+    dt_b5_cell("b5-vv-040000", 1u, 0x40000u);
+    dt_b5_cell("b5-vv-100000", 1u, 0x100000u);
+    dt_b5_cell("b5-rr-040000", 0u, 0x40000u);
+    dt_b5_cell("b5-rr-0c0000", 0u, 0xc0000u);
+    hle_step("a2-cells");
+    for (unsigned k = 0; k < 6u; k++) {
+        for (unsigned z = 0; z < 2u; z++) {
+            const uint32_t n = z ? 0x10000u : 0x1000u;
+            snprintf(id, sizeof(id), "a-%02x-%02x-%06x", (unsigned int)s_dt_align2[k][0],
+                     (unsigned int)s_dt_align2[k][1], (unsigned int)n);
+            dt_time_cell(id, s_dt_a, s_dt_b, DT_BLOCK_BYTES, DT_API_MEMCPY, n, s_dt_align2[k][0],
+                         s_dt_align2[k][1], 0x600u + k * 2u + z);
+        }
+    }
+}
+
 static void dt_busy_cells(void)
 {
     dt_fill(DT_VRAM_SRC, DT_VRAM_BYTES, 0x300u);
@@ -760,6 +896,7 @@ static int hle_run(void)
     dt_flush(s_dt_c, DT_BLOCK_BYTES);
     dt_timing_cells();
     dt_busy_cells();
+    dt_followup_cells();
     dt_release();
     return 1;
 }

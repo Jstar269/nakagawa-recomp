@@ -7563,9 +7563,20 @@ class DmaTimingProbeTests(unittest.TestCase):
         spec, counts = CAMPAIGN_PROBE_CASES["dma-timing"]
         self.assertEqual(spec.test_id, "PSP-DMAC-002")
         self.assertEqual(spec.terminal_case, "dma-timing-done")
-        self.assertEqual(len(parse_golden.DMA_TIMING_CASES), 72 + 22 + 1 + 5 + 2 + 6)
+        self.assertEqual(len(parse_golden.DMA_TIMING_CASES),
+                         72 + 22 + 1 + 5 + 2 + 6 + 13 + 13 + 5 + 12)
         self.assertEqual(parse_golden.DMA_TIMING_CASES[:2], ("t-rr-m-000010", "t-rr-m-000040"))
-        self.assertEqual(parse_golden.DMA_TIMING_CASES[-1], "b4-rr-100000")
+        self.assertEqual(parse_golden.DMA_TIMING_CASES[107], "b4-rr-100000")
+        self.assertEqual(parse_golden.DMA_TIMING_CASES[-1], "a-0c-00-010000")
+        self.assertEqual(counts["c1-try-000010"], 13)
+        self.assertEqual(counts["c2-memcpy-010000"], 13)
+        self.assertEqual(counts["b5-rr-0c0000"], 16)
+        self.assertIn("s_dt_c_sizes[13] = {0x10u, 0x20u, 0x40u, 0x80u, 0x100u, 0x200u, 0x400u,",
+                      self.section)
+        self.assertIn("s_dt_align2[6][2] = {{2, 0}, {0, 2}, {3, 0}, {8, 0}, {0, 8}, {12, 0}}",
+                      self.section)
+        for name in parse_golden.DMA_TIMING_B5_CELLS:
+            self.assertIn(f'"{name}"', self.section)
         self.assertEqual(counts["t-vv-t-100000"], 13)
         self.assertEqual(counts["a-20-00-010000"], 13)
         self.assertEqual(counts["b1-try-dest"], 11)

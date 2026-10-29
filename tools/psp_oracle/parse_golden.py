@@ -1805,7 +1805,9 @@ _register_campaign_probe(
 # Every cell is emitted on every run, so the stream is fixed-shape: t-<pair>-<api>-<size>
 # for the four main-RAM/VRAM pairs, both APIs and nine sizes (13 words), a-<src offset>-
 # <dst offset>-<size> for eleven alignments at two sizes (13 words), then b1 (11), the five
-# b2 cells (12), the two b3 cells (17) and the six b4 cells (15).
+# b2 cells (12), the two b3 cells (17), the six b4 cells (15), then c1-try-<size> and
+# c2-memcpy-<size> for thirteen sizes (13), the five b5 cells (16) and six more alignment
+# pairs (13).
 DMA_TIMING_PAIRS = ("rr", "rv", "vr", "vv")
 DMA_TIMING_APIS = ("m", "t")
 DMA_TIMING_SIZES = (0x10, 0x40, 0x100, 0x400, 0x1000, 0x4000, 0x10000, 0x40000, 0x100000)
@@ -1821,8 +1823,19 @@ DMA_TIMING_T_CASES = tuple(f"t-{pair}-{api}-{size:06x}" for pair in DMA_TIMING_P
                            for api in DMA_TIMING_APIS for size in DMA_TIMING_SIZES)
 DMA_TIMING_A_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN
                            for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_C_SIZES = (0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000,
+                      0x4000, 0x8000, 0x10000)
+DMA_TIMING_C1_CASES = tuple(f"c1-try-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_C2_CASES = tuple(f"c2-memcpy-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_B5_CELLS = ("b5-vv-010000", "b5-vv-040000", "b5-vv-100000", "b5-rr-040000",
+                       "b5-rr-0c0000")
+DMA_TIMING_ALIGN2 = ((2, 0), (0, 2), (3, 0), (8, 0), (0, 8), (12, 0))
+DMA_TIMING_A2_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN2
+                            for size in DMA_TIMING_ALIGN_SIZES)
 DMA_TIMING_CASES = (DMA_TIMING_T_CASES + DMA_TIMING_A_CASES + ("b1-try-dest",)
-                    + DMA_TIMING_B2_CELLS + DMA_TIMING_B3_CELLS + DMA_TIMING_B4_CELLS)
+                    + DMA_TIMING_B2_CELLS + DMA_TIMING_B3_CELLS + DMA_TIMING_B4_CELLS
+                    + DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_B5_CELLS
+                    + DMA_TIMING_A2_CASES)
 _register_campaign_probe(
     "dma-timing", "PSP-DMAC-002", DMA_TIMING_CASES,
     {
@@ -1831,6 +1844,8 @@ _register_campaign_probe(
         **{case: 12 for case in DMA_TIMING_B2_CELLS},
         **{case: 17 for case in DMA_TIMING_B3_CELLS},
         **{case: 15 for case in DMA_TIMING_B4_CELLS},
+        **{case: 13 for case in DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_A2_CASES},
+        **{case: 16 for case in DMA_TIMING_B5_CELLS},
     },
 )
 
