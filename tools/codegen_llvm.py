@@ -697,6 +697,13 @@ class FunctionLowering:
             b.position_before(first)
             frame = self.call("llvm.frameaddress.p0", L.const(L.i32, 0))
             self.call("sr_llvm_host_stack_check", self.c32(self.start), frame)
+        # A transfer that leaves the body opens a fresh block for any C code that follows it
+        # (dead()); one that nothing followed, such as the block after each continuation exit,
+        # is empty and unreachable, and goes. Anything else malformed fails here, by name.
+        for block in list(self.function.blocks):
+            if not block.instructions and block is not self.function.blocks[0]:
+                self.function.delete_block(block)
+        self.function.check()
         return self.function
 
     def _control(self, addr, w, insns, labels, continuations, dup_slot_skips, consumed):

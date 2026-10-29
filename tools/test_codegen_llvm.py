@@ -157,6 +157,26 @@ class LoweringTests(unittest.TestCase):
         self.assertIn(f"store i32 {entry_sp}, ptr", text)
         self.assertVerifies(text)
 
+    def test_several_continuation_exits_lower_to_terminated_blocks(self):
+        # Two paths fall through into other entries (0x100c and 0x1014): each continuation
+        # exit is a TAIL transfer. Found at title scale (HST, PAC-MAN CE): every exit but
+        # the last left an empty, unterminated block behind.
+        words = {
+            0x1000: beq(4, 5, 3), 0x1004: NOP,
+            0x1008: addiu(2, 0, 1),
+            0x100C: JR_RA, 0x1010: addiu(2, 0, 2),
+            0x1014: JR_RA, 0x1018: NOP,
+        }
+        known = {0x1000, 0x100C, 0x1014}
+        insns, _labels, continuations = codegen.function_flow(
+            FakeElf(words), 0x1000, [(0x1000, 0x1100)], known)
+        self.assertEqual(continuations, {0x1008: 0x100C, 0x1010: 0x1014})
+        _, text = self.ir(words, known=known)
+        self.assertEqual(text.count("call void @sr_llvm_tail_record("), 2)
+        self.assertIn("ptr @f_0000100c", text)
+        self.assertIn("ptr @f_00001014", text)
+        self.assertVerifies(text)
+
     def test_unsupported_forms_fall_back_with_a_reason(self):
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "FPU at 0x00001000"):
             self.lower(program(mul_s(0, 1, 2), JR_RA, NOP))

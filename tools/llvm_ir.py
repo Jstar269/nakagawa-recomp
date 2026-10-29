@@ -277,6 +277,14 @@ class Function(Value):
         self.blocks.append(block)
         return block
 
+    def delete_block(self, block: BasicBlock) -> None:
+        """``LLVMDeleteBasicBlock`` for a block nothing branches to."""
+        for other in self.blocks:
+            if other.terminator is not None and block in other.terminator.successors:
+                raise ValueError(f"{self.name}: block {block.name} still has a predecessor")
+        self.blocks.remove(block)
+        self._block_names.discard(block.name)
+
     def fresh_name(self, hint: str = "v") -> str:
         while True:
             self._counter += 1
