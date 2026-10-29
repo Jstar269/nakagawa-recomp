@@ -1570,7 +1570,7 @@ static void test_fuzz_library(unsigned iters) {
     size_t seed_size = strlen(s_valid_library_json);
     write_file_bytes(lib_path, s_valid_library_json, seed_size);
 
-    NkLibrary base_lib;
+    static NkLibrary base_lib;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&base_lib, lib_path) == NK_OK);
     assert(nk_library_count(&base_lib) == 1);
 
@@ -1583,7 +1583,7 @@ static void test_fuzz_library(unsigned iters) {
 
         write_file_bytes(lib_path, mutated, cur_size);
 
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         if (nk_library_load(&lib, lib_path) == NK_OK) {
             accepted++;
         }
