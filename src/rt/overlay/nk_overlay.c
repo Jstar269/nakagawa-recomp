@@ -144,6 +144,12 @@ NkOverlayAction nk_overlay_frame(NkUi *ui, NkOverlayState *state, const NkOverla
        as Esc does from the menu. Guide is the host's (it never reaches nk_ui). The
        page is still built: a frame without it would drop the focus it keeps. */
     menu = nk_ui_take_event(ui, NK_UI_EV_MENU, NULL);
+    /* The developer pages exist only in developer mode: without it the menu is drawn, and
+       the menu offers no way to them. */
+    if ((state->screen == NK_OVERLAY_SCREEN_VRAM || state->screen == NK_OVERLAY_SCREEN_PROFILE) &&
+        !model->developer) {
+        state->screen = NK_OVERLAY_SCREEN_MENU;
+    }
     switch (state->screen) {
     case NK_OVERLAY_SCREEN_SETTINGS:
         result = nk_overlay_page_settings(ui, state, model);
@@ -156,6 +162,12 @@ NkOverlayAction nk_overlay_frame(NkUi *ui, NkOverlayState *state, const NkOverla
         break;
     case NK_OVERLAY_SCREEN_PAD_LOST:
         result = nk_overlay_page_pad_lost(ui, state, model);
+        break;
+    case NK_OVERLAY_SCREEN_VRAM:
+        result = nk_overlay_page_vram(ui, state, model);
+        break;
+    case NK_OVERLAY_SCREEN_PROFILE:
+        result = nk_overlay_page_profile(ui, state, model);
         break;
     case NK_OVERLAY_SCREEN_MENU:
     default:

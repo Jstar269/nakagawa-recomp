@@ -2121,6 +2121,56 @@ static void texdump_maybe(void) {
             s_ge_frame, path, ge.clut_addr, ge.clut_fmt, ge.tex_swizzle, ge.tex_bufw, ge.tex_filter);
 }
 
+/* One texel of a linear direct-colour row (PSM 0-3) as r|g<<8|b<<16|a<<24, by the same
+ * unpack_color expansion the sampler uses. `row` holds the row's bytes as stored. */
+static uint32_t ge_direct_texel(const uint8_t *row, uint32_t x, uint32_t psm) {
+    int r, g, b, a;
+    if (psm == 3) {
+        uint32_t texel;
+        memcpy(&texel, row + (size_t)x * 4u, 4u);
+        return texel;
+    }
+    uint16_t texel;
+    memcpy(&texel, row + (size_t)x * 2u, 2u);
+    unpack_color(texel, (int)psm, &r, &g, &b, &a);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+}
+
+/* A DEPTH16 value as the VRAMDUMP decoder shows it: its high byte as opaque grey. */
+static uint32_t ge_depth16_gray(uint16_t z) {
+    uint32_t gray = (uint32_t)(z >> 8);
+    return gray | (gray << 8) | (gray << 16) | 0xFF000000u;
+}
+
+int ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height, uint32_t stride,
+                           uint32_t format, uint32_t *out) {
+    uint8_t row[GE_VRAM_VIEW_MAX_WIDTH * 4u];
+    SrGuestRectSpan source;
+    uint32_t bpp = format == 3u ? 4u : 2u;
+    if (!out || !width || !height || width > GE_VRAM_VIEW_MAX_WIDTH ||
+        height > GE_VRAM_VIEW_MAX_HEIGHT || stride < width || (format > 3u && format != 11u))
+        return 0;
+    /* The whole rectangle first: nothing is read unless every row is readable now. */
+    if (!sr_guest_rect_readable(addr, 0u, 0u, stride, width, height, bpp, &source) ||
+        !sr_guest_span_readable_current(source.first, source.total_bytes))
+        return 0;
+    for (uint32_t y = 0; y < height; y++) {
+        uint32_t *dst = out + (size_t)y * width;
+        if (!sr_guest_copy_in(row, source.first + y * source.row_pitch, source.row_bytes))
+            return 0;
+        for (uint32_t x = 0; x < width; x++) {
+            if (format == 11u) {
+                uint16_t z;
+                memcpy(&z, row + (size_t)x * 2u, 2u);
+                dst[x] = ge_depth16_gray(z);
+            } else {
+                dst[x] = ge_direct_texel(row, x, format);
+            }
+        }
+    }
+    return 1;
+}
+
 /* GPU backend texture decode: current texture, through the exact sampler path above.
  * Linear (non-swizzled) direct-color formats take a row-wise fast path with the same
  * unpack_color expansion — render-to-texture sources are re-decoded every frame and the
@@ -2147,14 +2197,8 @@ void ge_decode_tex_rgba(uint32_t *out) {
                 if (ge.tex_fmt == 3) {
                     memcpy(dst, row, (size_t)ge.tex_w * 4);
                 } else {
-                    for (int u = 0; u < ge.tex_w; u++) {
-                        uint16_t texel;
-                        int r, g, b, a;
-                        memcpy(&texel, row + (size_t)u * 2u, 2u);
-                        unpack_color(texel, (int)ge.tex_fmt, &r, &g, &b, &a);
-                        dst[u] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) |
-                                 ((uint32_t)a << 24);
-                    }
+                    for (int u = 0; u < ge.tex_w; u++)
+                        dst[u] = ge_direct_texel(row, (uint32_t)u, ge.tex_fmt);
                 }
             }
             return;
@@ -2175,13 +2219,10 @@ void ge_decode_tex_rgba(uint32_t *out) {
                     source.first + (uint32_t)v * source.row_pitch);
                 memcpy(dst, src, (size_t)ge.tex_w * 4);
             } else {
-                const uint16_t *src = (const uint16_t *)SR_HOST(
+                const uint8_t *src = (const uint8_t *)SR_HOST(
                     source.first + (uint32_t)v * source.row_pitch);
-                for (int u = 0; u < ge.tex_w; u++) {
-                    int r, g, b, a;
-                    unpack_color(src[u], (int)ge.tex_fmt, &r, &g, &b, &a);
-                    dst[u] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
-                }
+                for (int u = 0; u < ge.tex_w; u++)
+                    dst[u] = ge_direct_texel(src, (uint32_t)u, ge.tex_fmt);
             }
         }
         return;
@@ -5572,6 +5613,27 @@ static uint64_t ge_vramdump_surface_size(uint32_t width, uint32_t height,
     }
 }
 
+int ge_vram_decode_bound_texture(uint32_t *out, size_t capacity) {
+    uint64_t bytes;
+    if (!out || ge.tex_w <= 0 || ge.tex_h <= 0 || ge.tex_w > (int)GE_VRAM_VIEW_MAX_WIDTH ||
+        ge.tex_h > (int)GE_VRAM_VIEW_MAX_HEIGHT ||
+        (size_t)ge.tex_w * (size_t)ge.tex_h > capacity || ge.tex_fmt > 10u)
+        return 0;
+    /* A running GE capture would record these reads, and its replay mode reads captured
+     * memory instead of the guest's: the viewer stays out of both. */
+#ifndef SR_GE_VRAM_DECODER_CLI
+    if (g_ge_capture_active) return 0;
+#endif
+    bytes = ge_vramdump_surface_size((uint32_t)ge.tex_w, (uint32_t)ge.tex_h,
+                                     ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w,
+                                     ge.tex_fmt);
+    if (!bytes || bytes > 0x00400000u ||
+        !sr_guest_span_readable_current(ge.tex_addr, (uint32_t)bytes))
+        return 0;
+    ge_decode_tex_rgba(out);
+    return 1;
+}
+
 static void ge_vramdump_surface(FILE *file, int *first, const char *name,
                                 const char *kind, uint32_t addr, uint32_t width,
                                 uint32_t height, uint32_t stride, uint32_t format,
@@ -5857,9 +5919,7 @@ int main(int argc, char **argv) {
     if (format == 11u) {
         for (uint32_t y = 0; y < height; y++) {
             for (uint32_t x = 0; x < width; x++) {
-                uint8_t gray = (uint8_t)(MEM_R16(addr + (y * stride + x) * 2u) >> 8);
-                pixels[y * width + x] = (uint32_t)gray | ((uint32_t)gray << 8) |
-                                        ((uint32_t)gray << 16) | 0xFF000000u;
+                pixels[y * width + x] = ge_depth16_gray(MEM_R16(addr + (y * stride + x) * 2u));
             }
         }
     } else {

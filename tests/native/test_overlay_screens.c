@@ -3,9 +3,10 @@
 
 /* The in-game overlay's pages (#1159, C9c) on the SDL-free nk_ui core: page flow,
    focus, the actions each control returns, the layout at every supported window
-   size, and draw-list goldens (fixtures/nk_ui/overlay.golden). Synthetic models
-   only: no game, no SDL, no fonts. Run with --write-goldens after an intended
-   change and say in the pull request why the golden moved. */
+   size, the developer pages and their gate (#314), and draw-list goldens
+   (fixtures/nk_ui/overlay.golden). Synthetic models only: no game, no SDL, no fonts.
+   Run with --write-goldens after an intended change and say in the pull request why
+   the golden moved. */
 
 #include "nk_overlay.h"
 #include "nk_ui_draw.h"
@@ -383,6 +384,315 @@ static void test_fits_every_window(void) {
     }
 }
 
+/* ---- Developer pages (#314) ---------------------------------------------------------- */
+
+static uint8_t g_pixels[4u * 4u * 4u];
+static NkUiImage g_image = {4u, 4u, g_pixels, 1u};
+
+static NkOverlayVram synthetic_vram(void) {
+    NkOverlayVram vram;
+    static const NkOverlayVramSurface display = {0x04000000u, 512u, 480u, 272u, 3u};
+    static const NkOverlayVramSurface draw = {0x04088000u, 512u, 480u, 272u, 0u};
+    static const NkOverlayVramSurface depth = {0x04110000u, 512u, 480u, 272u,
+                                               NK_OVERLAY_VRAM_DEPTH16};
+    static const NkOverlayVramSurface texture = {0x08A00000u, 128u, 128u, 64u, 5u};
+    memset(&vram, 0, sizeof(vram));
+    vram.sources[NK_OVERLAY_VRAM_DISPLAY] = display;
+    vram.sources[NK_OVERLAY_VRAM_DRAW] = draw;
+    vram.sources[NK_OVERLAY_VRAM_DEPTH] = depth;
+    vram.sources[NK_OVERLAY_VRAM_TEXTURE] = texture;
+    vram.present[NK_OVERLAY_VRAM_DISPLAY] = true;
+    vram.present[NK_OVERLAY_VRAM_DRAW] = true;
+    vram.present[NK_OVERLAY_VRAM_DEPTH] = true;
+    vram.present[NK_OVERLAY_VRAM_TEXTURE] = true;
+    vram.texture_swizzled = true;
+    vram.image = &g_image;
+    return vram;
+}
+
+static NkOverlayProfile synthetic_profile(void) {
+    NkOverlayProfile profile;
+    static const NkOverlayProfileRow rows[] = {
+        {"Frame", "30.0 game fps  16.7 ms per present"},
+        {"Guest/host", "cpu 60%  ge wait 10%  present 5%  idle 25%"},
+        {"Residency", "aot 55%  interpreter 3%"},
+        {"Transitions", "12 to interpreter  11 to aot"},
+        {"Scheduler", "run 30%  ready 10%  blocked 50%  idle 10%"},
+        {"GE CPU", "3.1 ms  812 gpu draws"},
+        {"Vulkan", "submit 0.4 wait 5.2 pipeline 0.0 readback 0.1 ms"},
+        {"Audio", "2 underruns"},
+        {"To interpreter", "0x08804120 x3 stale-block"},
+        {"Back to AOT", "0x08804130 x3 call-return"}
+    };
+    memset(&profile, 0, sizeof(profile));
+    profile.row_count = sizeof(rows) / sizeof(rows[0]);
+    memcpy(profile.rows, rows, sizeof(rows));
+    for (size_t i = 0; i < 12u; ++i) {
+        profile.bars[i][NK_OVERLAY_PROFILE_CPU] = 0.5f + 0.02f * (float)i;
+        profile.bars[i][NK_OVERLAY_PROFILE_GE_WAIT] = 0.1f;
+        profile.bars[i][NK_OVERLAY_PROFILE_PRESENT] = 0.05f;
+        profile.bars[i][NK_OVERLAY_PROFILE_IDLE] = 0.3f - 0.02f * (float)i;
+    }
+    profile.bar_count = 12u;
+    profile.note = "Counters of the last closed second; top PCs cover the whole run.";
+    return profile;
+}
+
+/* Without developer mode neither page exists: the menu does not offer them, and a state
+   that names one draws the menu instead. With it, the menu offers both. */
+static void test_developer_gate(void) {
+    NkUi *ui = overlay_ui(1280, 800, 1.0f);
+    NkOverlayModel model = base_model(1280.0f, 800.0f);
+    NkOverlayVram vram = synthetic_vram();
+    NkOverlayProfile profile = synthetic_profile();
+    NkOverlayState state;
+    NkOverlayAction action;
+    if (ui == NULL) return;
+    model.vram = &vram;
+    model.profile = &profile;
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    (void)settle(ui, &state, &model);
+    CHECK(!frame_has(ui, &state, &model, NK_OVERLAY_ID_VRAM) &&
+          !frame_has(ui, &state, &model, NK_OVERLAY_ID_PROFILE),
+          "gate: without developer mode the menu offers no developer page");
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_VRAM, 0u);
+    CHECK(!frame_has(ui, &state, &model, NK_OVERLAY_ID_VRAM_SOURCE) &&
+          state.screen == NK_OVERLAY_SCREEN_MENU,
+          "gate: the VRAM page is not drawn without developer mode");
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_PROFILE, 0u);
+    CHECK(!frame_has(ui, &state, &model, NK_OVERLAY_ID_PROFILE_BACK) &&
+          state.screen == NK_OVERLAY_SCREEN_MENU,
+          "gate: the Profile page is not drawn without developer mode");
+    CHECK(!state.vram.chosen, "gate: the VRAM viewer never ran without developer mode");
+
+    model.developer = true;
+    CHECK(frame_has(ui, &state, &model, NK_OVERLAY_ID_VRAM) &&
+          frame_has(ui, &state, &model, NK_OVERLAY_ID_PROFILE),
+          "gate: developer mode offers the VRAM viewer and the profile");
+    (void)settle(ui, &state, &model);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_RESUME, "gate: RESUME stays the menu's default");
+    nk_ui_focus(ui, NK_OVERLAY_ID_VRAM);
+    (void)settle(ui, &state, &model);
+    action = frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE && state.screen == NK_OVERLAY_SCREEN_VRAM,
+          "gate: VRAM VIEWER opens its page");
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_MENU, NK_OVERLAY_ID_PROFILE);
+    (void)settle(ui, &state, &model);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(state.screen == NK_OVERLAY_SCREEN_PROFILE, "gate: PROFILE opens its page");
+    CHECK(frame_has_text(ui, &state, &model, "0x08804120 x3 stale-block"),
+          "profile: the page shows the rows it is given");
+    action = frame_with(ui, &state, &model, NK_UI_EV_BACK, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE && state.screen == NK_OVERLAY_SCREEN_MENU,
+          "profile: Back returns to the menu");
+    (void)settle(ui, &state, &model);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_PROFILE, "profile: the menu comes back on PROFILE");
+    model.profile = NULL;
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_PROFILE, 0u);
+    CHECK(frame_has_text(ui, &state, &model, "No interval has closed yet."),
+          "profile: no counters yet says so");
+    nk_ui_destroy(ui);
+}
+
+/* The viewer starts on the display framebuffer and asks for it to be decoded; each row
+   moves the window and asks again. */
+static void test_vram_page(void) {
+    NkUi *ui = overlay_ui(1280, 800, 1.0f);
+    NkOverlayModel model = base_model(1280.0f, 800.0f);
+    NkOverlayVram vram = synthetic_vram();
+    NkOverlayState state;
+    NkOverlayAction action;
+    if (ui == NULL) return;
+    model.developer = true;
+    model.vram = &vram;
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_VRAM, 0u);
+    action = frame_with(ui, &state, &model, -1, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_VRAM_VIEW, "vram: the first frame asks for a decode");
+    CHECK(state.vram.source == NK_OVERLAY_VRAM_DISPLAY && state.vram.view.addr == 0x04000000u &&
+          state.vram.view.format == 3u && state.vram.view.width == 480u,
+          "vram: the viewer starts on the display framebuffer");
+    action = settle(ui, &state, &model);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE, "vram: an unchanged window asks nothing");
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_VRAM_SOURCE, "vram: SOURCE is the page's default");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(action.kind == NK_OVERLAY_ACT_VRAM_VIEW && state.vram.source == NK_OVERLAY_VRAM_DRAW &&
+          state.vram.view.addr == 0x04088000u && state.vram.view.format == 0u,
+          "vram: right on SOURCE moves to the draw framebuffer");
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_VRAM_SOURCE, "vram: right keeps focus on the row");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(state.vram.source == NK_OVERLAY_VRAM_TEXTURE && state.vram.view.addr == 0x08A00000u &&
+          state.vram.view.format == 5u,
+          "vram: the texture keeps its own address and format for the texture decoder");
+    CHECK(frame_has_text(ui, &state, &model, "128 \xC3\x97 64 px, swizzled"),
+          "vram: the texture's size and swizzle are shown");
+    vram.present[NK_OVERLAY_VRAM_DISPLAY] = false;
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(state.vram.source == NK_OVERLAY_VRAM_DRAW,
+          "vram: a source the GE state does not name is skipped");
+    vram.present[NK_OVERLAY_VRAM_DISPLAY] = true;
+
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_VRAM_ADDRESS, "vram: down reaches ADDRESS");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(action.kind == NK_OVERLAY_ACT_VRAM_VIEW && state.vram.source == NK_OVERLAY_VRAM_CUSTOM &&
+          state.vram.view.addr == 0x04088000u + 512u * 272u * 2u,
+          "vram: right on ADDRESS steps one window and leaves the source");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(state.vram.view.addr == 0x04088000u, "vram: left steps back");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(action.kind == NK_OVERLAY_ACT_VRAM_VIEW && state.vram.view.stride == 480u &&
+          state.vram.view.width == 480u, "vram: left on STRIDE takes 32 pixels off");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_VRAM_FORMAT, "vram: down reaches FORMAT");
+    action = frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_VRAM_VIEW && state.vram.view.format == 1u,
+          "vram: Confirm on FORMAT steps 5650 to 5551");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(state.vram.view.format == NK_OVERLAY_VRAM_DEPTH16, "vram: left from 5650 wraps to DEPTH16");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_UP);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_UP);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_UP);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(state.vram.source == NK_OVERLAY_VRAM_DISPLAY,
+          "vram: SOURCE from a moved window goes back to the display framebuffer");
+    model.vram = NULL;
+    CHECK(frame_has_text(ui, &state, &model, "Nothing to show"),
+          "vram: no host data shows an empty picture, not a stale one");
+    model.vram = &vram;
+    action = frame_with(ui, &state, &model, NK_UI_EV_BACK, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE && state.screen == NK_OVERLAY_SCREEN_MENU,
+          "vram: Back returns to the menu");
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    CHECK(!state.vram.chosen, "vram: a new pause starts the viewer afresh");
+    nk_ui_destroy(ui);
+}
+
+/* The window always stays inside the 2 MiB of VRAM. */
+static void test_vram_clamp(void) {
+    const uint32_t end = NK_OVERLAY_VRAM_BASE + NK_OVERLAY_VRAM_SIZE;
+    static const NkOverlayVramSurface uncached = {0x44000000u, 512u, 480u, 272u, 3u};
+    static const NkOverlayVramSurface mirror = {0x04201000u, 512u, 480u, 272u, 0u};
+    static const NkOverlayVramSurface ram = {0x08800000u, 512u, 480u, 272u, 0u};
+    static const NkOverlayVramSurface huge = {0x04000003u, 4096u, 9000u, 9000u, 7u};
+    static const NkOverlayVramSurface empty = {0x04000000u, 0u, 0u, 0u, 2u};
+    static const NkOverlayVramSurface start = {0x04000000u, 512u, 480u, 272u, 0u};
+    NkOverlayVramSurface v;
+    v = uncached;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.addr == 0x04000000u && v.height == 272u, "clamp: the uncached view folds onto VRAM");
+    v = mirror;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.addr == 0x04001000u, "clamp: a mirror folds onto VRAM");
+    v = ram;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.addr == NK_OVERLAY_VRAM_BASE, "clamp: an address outside VRAM goes to its base");
+    v = huge;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.addr == 0x04000002u && v.format == 0u && v.stride == NK_OVERLAY_VRAM_MAX_STRIDE &&
+          v.width == NK_OVERLAY_VRAM_MAX_SIDE && v.height == NK_OVERLAY_VRAM_MAX_SIDE,
+          "clamp: alignment, format and size limits");
+    v = start;
+    v.format = 3u;
+    v.addr = end - 512u * 100u * 4u;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.height == 100u, "clamp: the height shrinks to the rows left");
+    v = start;
+    v.format = 3u;
+    v.addr = end - 8u;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.height == 1u && v.width == 2u, "clamp: one short row near the end");
+    CHECK(v.addr + ((v.height - 1u) * v.stride + v.width) * 4u <= end,
+          "clamp: the last pixel is inside VRAM");
+    v = empty;
+    nk_overlay_vram_clamp(&v);
+    CHECK(v.stride == 1u && v.width == 1u && v.height == 1u, "clamp: never an empty window");
+
+    v = start;
+    nk_overlay_vram_step(&v, -1);
+    CHECK(v.addr == 0x04000000u, "step: back from the base stays at the base");
+    for (int i = 0; i < 40; ++i) nk_overlay_vram_step(&v, 1);
+    CHECK(v.addr == end - 512u * 272u * 2u && v.height == 272u,
+          "step: forward stops at the last whole window");
+    nk_overlay_vram_step(&v, -1);
+    CHECK(v.addr == end - 2u * 512u * 272u * 2u, "step: back one window from the last");
+    CHECK(strcmp(nk_overlay_vram_format_name(NK_OVERLAY_VRAM_DEPTH16), "DEPTH16") == 0 &&
+          strcmp(nk_overlay_vram_format_name(5u), "CLUT8") == 0 &&
+          strcmp(nk_overlay_vram_format_name(99u), "UNKNOWN") == 0, "format names");
+    CHECK(nk_overlay_vram_bpp(3u) == 4u && nk_overlay_vram_bpp(0u) == 2u &&
+          nk_overlay_vram_bpp(NK_OVERLAY_VRAM_DEPTH16) == 2u, "bytes per pixel");
+}
+
+/* The developer pages fit every supported window too. */
+static void test_developer_pages_fit(void) {
+    static const struct { int w; int h; float scale; } sizes[] = {
+        {960, 600, 1.0f}, {1280, 800, 1.0f}, {1920, 1200, 1.5f}
+    };
+    static const NkOverlayScreen screens[] = {
+        NK_OVERLAY_SCREEN_MENU, NK_OVERLAY_SCREEN_VRAM, NK_OVERLAY_SCREEN_PROFILE
+    };
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkOverlayVram vram = synthetic_vram();
+    NkOverlayProfile profile = synthetic_profile();
+    profile.bar_count = NK_OVERLAY_PROFILE_BARS;
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        NkUi *ui = overlay_ui(sizes[s].w, sizes[s].h, sizes[s].scale);
+        NkOverlayModel model = base_model((float)sizes[s].w / sizes[s].scale,
+                                          (float)sizes[s].h / sizes[s].scale);
+        int bar_top = sizes[s].h - (int)(NK_UI_PROMPT_BAR_HEIGHT * sizes[s].scale + 0.5f);
+        int edge = (int)(NK_UI_SAFE_AREA_MIN * sizes[s].scale + 0.5f);
+        if (ui == NULL) continue;
+        model.developer = true;
+        model.vram = &vram;
+        model.profile = &profile;
+        for (size_t k = 0; k < sizeof(screens) / sizeof(screens[0]); ++k) {
+            NkOverlayState state;
+            const NkUiDrawList *list;
+            bool inside = true;
+            bool clear = true;
+            bool found_card = false;
+            nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+            state.screen = screens[k];
+            nk_ui_begin(ui, 0.0);
+            (void)nk_overlay_frame(ui, &state, &model);
+            list = nk_ui_end(ui);
+            CHECK(list != NULL, "every developer page completes at every window size");
+            for (uint32_t i = 0u; list != NULL && i < list->ncmd; ++i) {
+                const NkUiDrawCmd *cmd = &list->cmd[i];
+                if (cmd->kind == NK_UI_DRAW_SCISSOR_START || cmd->kind == NK_UI_DRAW_SCISSOR_END) {
+                    continue;
+                }
+                if (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 ||
+                    cmd->bounds[2] > sizes[s].w || cmd->bounds[3] > sizes[s].h) {
+                    if (inside) {
+                        fprintf(stderr, "  element 0x%08X draws at %d,%d-%d,%d\n",
+                                (unsigned)cmd->element_id, cmd->bounds[0], cmd->bounds[1],
+                                cmd->bounds[2], cmd->bounds[3]);
+                    }
+                    inside = false;
+                }
+                if (cmd->kind == NK_UI_DRAW_BORDER && cmd->rgba_pm == theme->line_strong &&
+                    cmd->bounds[2] - cmd->bounds[0] > sizes[s].w / 4) {
+                    found_card = true;
+                    if (cmd->bounds[0] < edge || cmd->bounds[1] < edge ||
+                        cmd->bounds[2] > sizes[s].w - edge || cmd->bounds[3] > bar_top) {
+                        clear = false;
+                    }
+                }
+            }
+            if (!inside || !found_card || !clear) {
+                fprintf(stderr, "  developer page %d at %dx%d: inside=%d card=%d clear=%d\n",
+                        (int)screens[k], sizes[s].w, sizes[s].h, inside, found_card, clear);
+            }
+            CHECK(inside && found_card && clear, "every developer page fits every supported window");
+        }
+        nk_ui_destroy(ui);
+    }
+}
+
 static void bind(NkInputProfile *profile, NkPspButton button, NkBindingSourceType type, int index,
                  NkBindingSourceType secondary_type, int secondary_index) {
     profile->psp_buttons[button].primary.type = type;
@@ -550,6 +860,26 @@ static bool build_golden(char *out, size_t cap, size_t *used) {
     ok = ok && append_case(out, cap, used, "pad-lost", ui, &state, &model);
     model.pad_connected = true;
     ok = ok && append_case(out, cap, used, "pad-reconnected", ui, &state, &model);
+    {
+        /* The developer pages (#314), appended so the cases above keep their bytes. */
+        NkOverlayVram vram = synthetic_vram();
+        NkOverlayProfile profile = synthetic_profile();
+        model.developer = true;
+        model.vram = &vram;
+        model.profile = &profile;
+        nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+        ok = ok && append_case(out, cap, used, "menu-developer", ui, &state, &model);
+        nk_overlay_go(&state, NK_OVERLAY_SCREEN_VRAM, 0u);
+        ok = ok && append_case(out, cap, used, "vram-display", ui, &state, &model);
+        state.vram.source = NK_OVERLAY_VRAM_TEXTURE;
+        state.vram.view = vram.sources[NK_OVERLAY_VRAM_TEXTURE];
+        vram.note = "The texture is in main RAM; shown through the texture decoder.";
+        ok = ok && append_case(out, cap, used, "vram-texture", ui, &state, &model);
+        nk_overlay_go(&state, NK_OVERLAY_SCREEN_PROFILE, 0u);
+        ok = ok && append_case(out, cap, used, "profile", ui, &state, &model);
+        model.vram = NULL;
+        model.profile = NULL;
+    }
     nk_ui_destroy(ui);
     nk_ui_destroy(small);
     return ok;
@@ -596,6 +926,10 @@ int main(int argc, char **argv) {
     test_quit();
     test_pad_lost();
     test_fits_every_window();
+    test_developer_gate();
+    test_vram_page();
+    test_vram_clamp();
+    test_developer_pages_fit();
     test_describe_controls();
     CHECK(build_golden(golden, sizeof(golden), &golden_size), "build the overlay golden");
     if (write) {
