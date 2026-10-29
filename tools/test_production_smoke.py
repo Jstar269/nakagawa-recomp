@@ -1619,7 +1619,7 @@ class TestPresenterContract(unittest.TestCase):
         # Only the two intended returns carry the code: the unprepared target and the failed present.
         self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
         self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
-        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }", present)
         # The GE selftest drives the present-failure path through the existing fault seam.
         self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
         self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)

@@ -3678,7 +3678,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
         s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
     /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
-     * then exist only in its image. Report it apart from the earlier -1 declines, where no
+     * then exist only in its image. Report it apart from the NOT_RESIDENT declines, where no
      * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
     if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
