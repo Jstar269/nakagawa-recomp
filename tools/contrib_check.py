@@ -481,6 +481,13 @@ def docs_gate(paths: list[str]) -> Gate:
     return _run("documentation-freshness", [GATE_PYTHON, "tools/lint_docs.py"], timeout=300)
 
 
+def purity_gate(paths: list[str]) -> Gate:
+    """Hosted hygiene runs tools/purity_gate.py on every change; locally, when it can matter."""
+    if not any(p.startswith("src/rt/") or p == "tools/purity_gate.py" for p in paths):
+        return Gate("core-purity", NOT_RUN, "no changed src/rt/ file")
+    return _run("core-purity", [GATE_PYTHON, "tools/purity_gate.py"], timeout=300)
+
+
 def publication_gate() -> tuple[Gate, Gate]:
     """Publication safety, split into contributor and maintainer obligations."""
     try:
@@ -550,6 +557,7 @@ def run(base: str) -> list[Gate]:
         c_gate(paths),
         markdown_gate(paths),
         docs_gate(paths),
+        purity_gate(paths),
     ]
     gates.extend(publication_gate())
     return gates

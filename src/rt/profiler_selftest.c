@@ -325,7 +325,105 @@ static void test_new_frames_are_distinct_buffers(void) {
           per_frame);
 }
 
+/* Execution share (perf.h): always on, so it is driven here with SR_PERF unset. */
+static void spin_ns(uint64_t ns) {
+    uint64_t until = sr_exec_now_ns() + ns;
+    while (sr_exec_now_ns() < until) {
+    }
+}
+
+static unsigned long long json_u64(const char *json, const char *key) {
+    char needle[64];
+    snprintf(needle, sizeof needle, "\"%s\": ", key);
+    const char *at = strstr(json, needle);
+    return at ? strtoull(at + strlen(needle), NULL, 10) : ~0ull;
+}
+
+static void test_exec_share(void) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) tmp = getenv("TEMP");
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    char path[512];
+    snprintf(path, sizeof path, "%s/nk_exec_share_selftest_%ld.json", tmp, (long)sr_exec_now_ns());
+#ifdef _WIN32
+    _putenv_s("SR_EXEC_SHARE_JSON", path);
+#else
+    setenv("SR_EXEC_SHARE_JSON", path, 1);
+#endif
+    sr_exec_slice_begin(SR_EXEC_TIER_NONE);
+    int outer = sr_exec_enter(SR_EXEC_TIER_AOT);
+    CHECK(outer == SR_EXEC_TIER_NONE && sr_exec_tier == SR_EXEC_TIER_AOT, "enter AOT from none");
+    int same = sr_exec_enter(SR_EXEC_TIER_AOT);   /* AOT to AOT: no switch */
+    sr_exec_leave(same);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_AOT, "an AOT-to-AOT dispatch keeps the AOT tier");
+    spin_ns(2000000u);
+    uint64_t idle_started = sr_exec_now_ns();
+    spin_ns(20000000u);
+    sr_exec_idle(idle_started);                   /* 20 ms of host wait: not guest work */
+
+    sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
+    int from_aot = sr_exec_enter(SR_EXEC_TIER_INTERP);
+    sr_exec_interp_entry(0x00001000u);
+    sr_exec_interp_instructions += 5u;
+    spin_ns(1000000u);
+    int nested = sr_exec_enter(SR_EXEC_TIER_AOT);   /* a linked call from the floor */
+    spin_ns(10000000u);
+    sr_exec_leave(nested);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_INTERP, "leaving a nested AOT call restores the floor");
+    sr_exec_interp_exit(1, 0);
+    sr_exec_leave(from_aot);
+    CHECK(sr_exec_tier == SR_EXEC_TIER_AOT, "leaving the floor restores AOT");
+
+    for (unsigned i = 0; i < 2u; i++) {           /* two dispatch misses, one target twice */
+        int prev = sr_exec_enter(SR_EXEC_TIER_INTERP);
+        sr_exec_interp_entry(i ? 0x00002000u : 0x00001000u);
+        sr_exec_interp_exit(1, 1);
+        sr_exec_leave(prev);
+    }
+    sr_exec_leave(outer);
+    int saved = sr_exec_slice_end();
+    CHECK(saved == SR_EXEC_TIER_NONE, "slice ends with the tier it began with");
+
+    sr_exec_share_report();                       /* not armed: writes nothing */
+    FILE *probe = fopen(path, "r");
+    CHECK(probe == NULL, "an unarmed report writes no file");
+    if (probe) fclose(probe);
+    sr_exec_share_arm();
+    sr_exec_share_report();
+    char json[2048] = {0};
+    FILE *in = fopen(path, "r");
+    CHECK(in != NULL, "SR_EXEC_SHARE_JSON file written");
+    if (!in) return;
+    size_t got = fread(json, 1, sizeof json - 1u, in);
+    fclose(in);
+    remove(path);
+    json[got] = '\0';
+    CHECK(strstr(json, "\"schema\": \"nakagawa-exec-share-v1\"") != NULL, "schema: %s", json);
+    CHECK(json_u64(json, "interp_entries") == 3u, "interp_entries: %s", json);
+    CHECK(json_u64(json, "stale_block") == 1u && json_u64(json, "dispatch_miss") == 2u,
+          "entries by reason: %s", json);
+    CHECK(json_u64(json, "aot_handoff") == 1u && json_u64(json, "call_return") == 2u &&
+          json_u64(json, "other") == 0u, "exits: %s", json);
+    CHECK(json_u64(json, "interp_entry_points") == 2u, "distinct entry points: %s", json);
+    CHECK(json_u64(json, "miss_targets") == 2u, "distinct miss targets: %s", json);
+    CHECK(json_u64(json, "interp_instructions") == 5u, "interp instructions: %s", json);
+    unsigned long long aot_ns = json_u64(json, "aot_ns");
+    unsigned long long interp_ns = json_u64(json, "interp_ns");
+    unsigned long long idle_ns = json_u64(json, "idle_ns");
+    /* Spins: AOT 2 ms + a 10 ms nested call, the floor 1 ms, idle 20 ms. The bounds leave
+     * room for a busy host while still telling which tier each span went to. */
+    CHECK(interp_ns >= 1000000u && interp_ns < 9000000u,
+          "floor time excludes its nested AOT call: interp_ns=%llu", interp_ns);
+    CHECK(aot_ns >= 12000000u && aot_ns < 25000000u,
+          "AOT time includes the nested call and excludes the idle wait: aot_ns=%llu", aot_ns);
+    CHECK(idle_ns >= 20000000u, "idle_ns=%llu", idle_ns);
+    const char *share = strstr(json, "\"interp_time_share\": ");
+    double value = share ? strtod(share + strlen("\"interp_time_share\": "), NULL) : -1.0;
+    CHECK(value > 0.0 && value < 0.5, "interp_time_share=%f", value);
+}
+
 int main(void) {
+    test_exec_share();
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
     test_live_history_ring();
