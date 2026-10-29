@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d6a300a499d873955e7e76355f0d62a25e255821d547f45ce9d515fb6ea593c0"
+      "sha256": "15a75ccdba8d952ba573b83de0c27a28a42b34ae4e58ac27c1045e7479232376"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d4fa68e5102a0966713ac9e23ac52b2ddbb99c0c3c1c5b7df8f85b5f2da0c901"
+      "sha256": "2349e0ef20d9ccb7ea8bb0775fa299f6a4eec4121034605f20fa82ac30a293d4"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1531,7 +1531,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d5bb1803c29ed6ea2956e44015789aa671a5b1a2f50a59c08a38286aebf11c22"
+      "sha256": "e2c09568a2a07afbe3b3f2a5cf5793e831727149a66a49989537577812dacdd0"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -8945,7 +8945,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e21c66791d9b692d284144b218205abb29f79d30527166443e28fa0355670984"
+      "sha256": "ef8abcbc435a58841e86b17c59740ac8e9e3555caf591d5b78a47c91c55de5ab"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8983,7 +8983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2aa1dcb849accae96fb598af27b196f3bd901c531c9325626d6385311a531699"
+      "sha256": "dcc29360fe60383f2c60fae8e082109b2cf5d78fb6e092402ec5b284eea5dea6"
     },
     {
       "path": "src/rt/intr_conformance.h",

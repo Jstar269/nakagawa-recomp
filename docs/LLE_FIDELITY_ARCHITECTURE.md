@@ -104,7 +104,9 @@ ahead of time without a load address and laid out only when the game loads it
   module's functions are reachable only through its `SrModuleCode` descriptor,
   which records the identity (size and FNV-1a digest) of the translated file.
 - **Load.** `sceKernelLoadModule` (and `sceKernelLoadModuleByID`, through the path
-  the descriptor was opened with) takes memory from the user partition with the
+  the descriptor was opened with) names its module by the full path: a relative
+  path resolves against the calling thread's current directory, as the PSP module
+  manager's own `sceIoOpen` does. It takes memory from the user partition with the
   ordinary allocator -- the lowest free range that holds the image, as
   `PSP_SMEM_Low` does -- relocates the image with the project PRX loader, clears its
   BSS, binds the translation at that base and registers the module's exports. The
