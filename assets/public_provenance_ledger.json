@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "366494c7035e218c2447a4283b0cc042a257c9db4b09e9d0a32099528afcc829"
+      "sha256": "eb5bef26ace97507ac13fb8ab16885f167b52c00ab948b76a38c66871c1f55d6"
     },
     {
       "path": ".clang-format",
@@ -16152,7 +16152,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70c8f772b1b122e50a0a5da42da94db55dfd876d408c8cb52f4d69b1509b3e09"
+      "sha256": "a983a54a8d8a64efe01d4c90186ef0ffa9c26e70d94a2c96de2872df9d3beadc"
     },
     {
       "path": "tools/test_public_export.py",
