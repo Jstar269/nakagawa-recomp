@@ -30,7 +30,7 @@ if _TOOLS_DIRECTORY not in sys.path:
 # Import the local analyzer
 import build_profile
 from analyze import (
-    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
+    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
     static_coverage,
@@ -2217,6 +2217,14 @@ def stale_block_for_function(elf, addr, ranges, known, resume_owners=None,
         elf, addr, ranges, known,
         resume_owners=resume_owners or {},
         dispatch_boundaries=dispatch_boundaries or set())
+    words = head_run_words(elf, addr, insns)
+    if not words:
+        return None
+    return (entry, len(words), stale_fnv1a(words))
+
+
+def head_run_words(elf, addr, insns):
+    """The words of the contiguous translated run of ``insns`` from ``addr``."""
     words = []
     pc = addr
     while pc in insns:
@@ -2227,9 +2235,7 @@ def stale_block_for_function(elf, addr, ranges, known, resume_owners=None,
         if pc > 0xFFFFFFFF - 4:
             break
         pc = (pc + 4) & 0xFFFFFFFF
-    if not words:
-        return None
-    return (entry, len(words), stale_fnv1a(words))
+    return words
 
 def is_control(w):
     op = w >> 26
@@ -2240,6 +2246,9 @@ def is_control(w):
 
 def function_flow(elf, start, ranges, known, resume_owners=None,
                   dispatch_boundaries=None):
+    # One membership test per walked instruction: index the spans once per walk (same
+    # answers as in_ranges over the list), as analyze.trace_function does.
+    ranges = span_index(ranges)
     insns, labels, seen = set(), set(), set()
     resume_owners = resume_owners or {}
     dispatch_boundaries = dispatch_boundaries or set()
@@ -2700,14 +2709,23 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
                   profile=None, dispatch_boundaries=None, lle_cpu=False,
-                  stack_census=False):
+                  stack_census=False, flow=None):
+    """The C body of the entry ``start``.
+
+    ``flow`` is this entry's ``function_flow`` result over the same arguments when
+    the caller already walked it (the walk is most of the cost); it is read, never
+    changed.
+    """
     hst_profile = profile == "hst"
     if lle_cpu is False:
         lle_cpu = LLE_CPU
     resume_owners = resume_owners or {}
-    insns, labels, continuations = function_flow(
-        elf, start, ranges, known, resume_owners=resume_owners,
-        dispatch_boundaries=dispatch_boundaries)
+    ranges = span_index(ranges)
+    if flow is None:
+        flow = function_flow(
+            elf, start, ranges, known, resume_owners=resume_owners,
+            dispatch_boundaries=dispatch_boundaries)
+    insns, labels, continuations = flow
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
     sv_points = ({} if ADDRESS_SPACE.runtime_module
@@ -3372,6 +3390,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
 
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
                          relocations=relocations)
+    spans = span_index(ranges)
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
@@ -3387,9 +3406,11 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                             f'    sr_unimplemented({G(a)}, "import stub without NID mapping");\n}}')
             else:
                 try:
-                    text = "\n".join(emit_function(elf, a, ranges, known, profile=profile))
-                    record = stale_block_for_function(elf, a, ranges, known)
-                    nwords = record[1] if record is not None else 0
+                    # One walk serves the body and its translated-word count.
+                    flow = function_flow(elf, a, spans, known)
+                    text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
+                                                   flow=flow))
+                    nwords = len(head_run_words(elf, a, flow[0]))
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
                     text = (f"void {space.symbol(a)}(CpuState *s) {{  /* untranslatable: {reason} */\n"

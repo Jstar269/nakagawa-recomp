@@ -185,6 +185,37 @@ class FrameBalanceBasicsTests(unittest.TestCase):
         self.assertEqual(owner.depth_at(0x100C), 0x70)
         self.assertEqual(efb.verify_resume_entry(elf, ranges, 0x100C, 0x1000), [])
 
+    def test_frame_walk_scans_the_span_list_once(self):
+        """The walk tests one address per step, so it indexes the spans once.
+
+        Over a plain list each test scanned every span; an image with hundreds of
+        owned spans spent most of its entry audit in that scan.
+        """
+
+        class ScanCountingSpans(list):
+            def __init__(self, spans):
+                super().__init__(spans)
+                self.scans = 0
+
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+
+        words = emit(
+            0x1000,
+            addiu(SP, SP, -0x20),
+            *([NOP] * 64),
+            jr(RA),
+            addiu(SP, SP, 0x20),
+        )
+        elf, (span,) = image(words)
+        ranges = ScanCountingSpans(
+            [span] + [(0x100000 + 0x100 * i, 0x100080 + 0x100 * i) for i in range(300)]
+        )
+        profile = efb.profile_entry(elf, 0x1000, ranges)
+        self.assertEqual(efb.classify(profile), efb.CALLABLE)
+        self.assertEqual(ranges.scans, 1)
+
     def test_address_taken_tiny_leaf_stays_callable(self):
         """A frameless two-instruction leaf is balanced, not a continuation."""
         words = emit(0x1000, jr(RA), addu(V0, A0, 0))

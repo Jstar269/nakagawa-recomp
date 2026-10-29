@@ -36,6 +36,22 @@ class IterationTrackingKnownEntries:
         return iter(self.entries)
 
 
+class ScanCountingSpans(list):
+    """A span list that counts every full scan of itself.
+
+    ``in_ranges`` over a plain list scans it once per membership test; an index
+    built from it scans it once.
+    """
+
+    def __init__(self, spans):
+        super().__init__(spans)
+        self.scans = 0
+
+    def __iter__(self):
+        self.scans += 1
+        return super().__iter__()
+
+
 def jal(target):
     return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
 
@@ -71,6 +87,30 @@ class ContinuationFlowTests(unittest.TestCase):
 
         self.assertTrue(any("void f_00001000" in line for line in text))
         self.assertEqual(known.iterations, 0)
+
+    def test_flow_and_emission_scan_the_span_list_once_per_body(self):
+        # An image whose owned code is split into hundreds of spans (each run of code
+        # reached outside the named sections is its own span) made every membership
+        # test of the walk scan them all: one profiled executable with 284 spans spent
+        # 61% of its code-generation time in that scan. The walk indexes them once.
+        body = 64
+        words = {0x1000 + 4 * i: 0x24420001 for i in range(body)}  # addiu v0, v0, 1
+        words[0x1000 + 4 * body] = 0x03E00008                        # jr ra
+        words[0x1004 + 4 * body] = 0x00000000
+        spans = [(0x1000, 0x1008 + 4 * body)]
+        spans += [(0x100000 + 0x100 * i, 0x100080 + 0x100 * i) for i in range(300)]
+        elf, known = FakeElf(words), {0x1000}
+
+        ranges = ScanCountingSpans(spans)
+        insns, _labels, _continuations = codegen.function_flow(elf, 0x1000, ranges, known)
+        self.assertEqual(len(insns), body + 2)
+        self.assertEqual(ranges.scans, 1)
+
+        ranges = ScanCountingSpans(spans)
+        indexed = "\n".join(codegen.emit_function(elf, 0x1000, list(spans), known))
+        text = "\n".join(codegen.emit_function(elf, 0x1000, ranges, known))
+        self.assertEqual(text, indexed)
+        self.assertEqual(ranges.scans, 1)
 
     def test_linked_transfers_carry_the_native_resume_boundary(self):
         linked_jal = "\n".join(

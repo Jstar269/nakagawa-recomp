@@ -684,11 +684,12 @@ class _SpanIndex:
     the covered set of integers unchanged.
     """
 
-    __slots__ = ("starts", "ends")
+    __slots__ = ("starts", "ends", "_key")
 
     def __init__(self, ranges):
         self.starts = []
         self.ends = []
+        self._key = None
         for lo, hi in sorted((lo, hi) for lo, hi in ranges if lo < hi):
             if self.ends and lo <= self.ends[-1]:
                 if hi > self.ends[-1]:
@@ -702,14 +703,29 @@ class _SpanIndex:
         return i >= 0 and addr < self.ends[i]
 
 
+def span_index(ranges):
+    """``ranges`` (a span list or a :class:`_SpanIndex`) as a :class:`_SpanIndex`.
+
+    Membership in the index is a binary search with the same answer as
+    :func:`in_ranges`. A walker that tests one address per instruction builds it
+    once per walk: an image whose owned code is split into hundreds of spans (code
+    reached outside the named sections becomes one span per run) otherwise pays a
+    scan of every span on each test.
+    """
+    return ranges if isinstance(ranges, _SpanIndex) else _SpanIndex(ranges)
+
+
 def span_key(ranges):
     """A hashable key for ``ranges`` (a span list or a :class:`_SpanIndex`).
 
     It is the merged, sorted, non-empty span tuple, so two range lists covering
-    the same addresses have the same key, whichever form they arrive in.
+    the same addresses have the same key, whichever form they arrive in. An index
+    computes its key once.
     """
-    index = ranges if isinstance(ranges, _SpanIndex) else _SpanIndex(ranges)
-    return tuple(zip(index.starts, index.ends, strict=True))
+    index = span_index(ranges)
+    if index._key is None:
+        index._key = tuple(zip(index.starts, index.ends, strict=True))
+    return index._key
 
 
 def _file_backed_exec_ranges(elf):
@@ -767,8 +783,7 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Without the memo every start re-expands the whole shared tail it reaches: a profiled
     # run of one large executable expanded each word about 190 times. `walked=None` is the
     # uncached walk, kept so tests can pin the memoized walk against it.
-    if not isinstance(ranges, _SpanIndex):
-        ranges = _SpanIndex(ranges)
+    ranges = span_index(ranges)
     stack = [start]
     local = set()
     new_calls = []
