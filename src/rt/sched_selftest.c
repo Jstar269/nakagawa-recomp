@@ -145,9 +145,25 @@ static int g_test_handler_raise_ge;
 static uint32_t g_test_handler_wake_obj;
 static CpuState g_test_handler_seen;
 static uint32_t g_test_vblank_no, g_test_vblank_arg;
-uint32_t sr_vblank_handler(void) { return g_test_vblank_handler; }
-uint32_t sr_vblank_arg(void) { return g_test_vblank_arg; }
-uint32_t sr_vblank_no(void) { return g_test_vblank_no; }
+/* An optional second sub-interrupt, for a title that keeps two VBLANK handlers at once. */
+static uint32_t g_test_vblank2_handler, g_test_vblank2_no, g_test_vblank2_arg;
+static CpuState g_test_handler2_seen;
+static uint32_t g_test_handler_order[4];
+static unsigned g_test_handler_order_n;
+/* Test sub-interrupts: g_test_vblank_no carries g_test_vblank_handler and its arg, and
+ * g_test_vblank2_no carries the second handler when one is set. */
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) {
+    if (no >= 16u) return -1;
+    if (g_test_vblank2_handler && no == g_test_vblank2_no) {
+        *handler = g_test_vblank2_handler;
+        *arg = g_test_vblank2_arg;
+        return 1;
+    }
+    if (no != g_test_vblank_no || !g_test_vblank_handler) return 0;
+    *handler = g_test_vblank_handler;
+    *arg = g_test_vblank_arg;
+    return 1;
+}
 int sr_vblank_dispatch_registered(void) { return 0; }
 static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
@@ -223,7 +239,14 @@ uint32_t sr_alloc_uid(void) {
 typedef void (*TestBody)(CpuState *);
 static TestBody g_test_body;
 void dispatch(CpuState *s, uint32_t target) {
-    if (target == g_test_vblank_handler && target != 0u) {
+    if (target == g_test_vblank2_handler && target != 0u) {
+        if (g_test_handler_order_n < 4u) g_test_handler_order[g_test_handler_order_n++] = target;
+        memcpy(&g_test_handler2_seen, s, sizeof(g_test_handler2_seen));
+        s->r[16] = 0xdeadbee2u;
+        s->r[29] = 0x12121212u;
+        s->pc = 0xfeedfac2u;
+    } else if (target == g_test_vblank_handler && target != 0u) {
+        if (g_test_handler_order_n < 4u) g_test_handler_order[g_test_handler_order_n++] = target;
         g_test_handler_calls++;
         memcpy(&g_test_handler_seen, s, sizeof(g_test_handler_seen));
         if (g_test_handler_raise_ge) {
@@ -294,6 +317,10 @@ static void reset_sched(void) {
     g_test_vcount = 0;
     g_test_savedata_busy = 0;
     g_test_vblank_handler = 0;
+    g_test_vblank_no = 0;
+    g_test_vblank2_handler = 0;
+    memset(&g_test_handler2_seen, 0, sizeof(g_test_handler2_seen));
+    g_test_handler_order_n = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
     g_test_handler_wake_obj = 0;
@@ -2267,6 +2294,44 @@ static void test_interrupt_frame_is_restored(void) {
     expect(g_test_handler_seen.r[28] != interrupted.r[28],
            "MEASURED, NOT FIXED: the VBLANK handler does NOT inherit the interrupted "
            "thread's own $gp, unlike every other nested call in this runtime");
+}
+
+/* A title can keep two VBLANK sub-interrupt handlers at once (a frame counter on 0 and a
+ * video player's on 1). One VBLANK runs both, in number order, each from the interrupted
+ * frame with its own (no, arg); the first handler's register writes do not reach the second,
+ * and the interrupted thread gets its frame back after the last one. */
+static void test_vblank_runs_every_enabled_subintr(void) {
+    reset_sched();
+    s_pace_on = 0;
+    s_vbl_next_us = UINT64_MAX;
+    int running = mk(0x221u, TH_RUNNING, 20);
+    s_cur = running;
+    g_test_vblank_handler = 0x00001234u;
+    g_test_vblank_no = 0u;
+    g_test_vblank_arg = 0x0000a000u;
+    g_test_vblank2_handler = 0x00005678u;
+    g_test_vblank2_no = 1u;
+    g_test_vblank2_arg = 0x0000b000u;
+    g_cpu_store.pc = 0x11112222u;
+    g_cpu_store.r[16] = 0x33334444u;
+    g_cpu_store.r[29] = 0x77778888u;
+    CpuState interrupted;
+    memcpy(&interrupted, &g_cpu_store, sizeof(interrupted));
+
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    sched_resume_interrupts(1u);
+    expect(g_test_handler_order_n == 2u && g_test_handler_order[0] == 0x00001234u &&
+               g_test_handler_order[1] == 0x00005678u,
+           "one VBLANK runs both enabled sub-interrupt handlers, in number order");
+    expect(g_test_handler_seen.r[4] == 0u && g_test_handler_seen.r[5] == 0x0000a000u &&
+               g_test_handler2_seen.r[4] == 1u && g_test_handler2_seen.r[5] == 0x0000b000u,
+           "each handler receives its own (sub-interrupt number, arg)");
+    expect(g_test_handler2_seen.r[16] == interrupted.r[16] &&
+               g_test_handler2_seen.r[29] == SR_VBLANK_STACK_TOP &&
+               g_test_handler2_seen.r[31] == 0u && g_test_handler2_seen.pc == 0x00005678u,
+           "the second handler starts from the interrupted frame, not the first handler's");
+    expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
+           "the interrupted thread gets its frame back after the last handler");
 }
 
 /* #70 slice A -- paced mode owns its clock, and the owner is the host.
@@ -5107,6 +5172,7 @@ int main(int argc, char **argv) {
     test_clock_reads_are_observational();
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
+    test_vblank_runs_every_enabled_subintr();
     test_paced_vtime_is_host_anchored();
     test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();

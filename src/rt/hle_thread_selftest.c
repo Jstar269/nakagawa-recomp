@@ -274,9 +274,16 @@ extern void sr_hle_test_umd_reset(void);
 extern uint32_t sr_hle_test_guest_fault_count(void);
 extern uint32_t sr_hle_test_guest_fault_addr(void);
 extern void sr_hle_test_guest_fault_reset(void);
-extern uint32_t sr_vblank_handler(void);
-uint32_t sr_vblank_no(void);
-uint32_t sr_vblank_arg(void);
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
+
+/* The handler the scheduler would deliver for VBLANK sub-interrupt `no` (0 when none), and its
+ * arg through *arg when one is delivered. */
+static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
+    uint32_t handler = 0u, a = 0u;
+    if (sr_vblank_subintr(no, &handler, &a) != 1) return 0u;
+    if (arg) *arg = a;
+    return handler;
+}
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -14620,7 +14627,7 @@ static void test_atrac_context_abi(void) {
  * through sr_syscall -- the same path a generated import stub takes -- and
  * pins behaviour the old h_ok routing could not produce: per-channel volume
  * retention with the neighbouring audio error codes, VBLANK disable/release
- * delivery transitions observed through sr_vblank_handler(), retained power
+ * delivery transitions observed through sr_vblank_subintr(), retained power
  * clocks reflected by the Get handlers, and the decoder's own frame size from
  * sceAtracGetMaxSample. HOST_TESTED, not PSP_HARDWARE evidence; anything the
  * runtime does not measure is marked UNMEASURED in the handler comments. */
@@ -14683,36 +14690,70 @@ static void test_td24b_cheap_hle_batch(void) {
     /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
     reset_fixture();
     sr_hle_init();
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
-           "sub-interrupt fixture starts from a released VBLANK line");
-    expect(sr_vblank_handler() == 0u, "VBLANK delivery starts clear");
+    for (uint32_t no = 0u; no < 16u; no++)
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u) == 0u,
+               "sub-interrupt fixture starts from released VBLANK sub-interrupts");
+    expect(vblank_delivered(5u, NULL) == 0u, "VBLANK delivery starts clear");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
-    expect(sr_vblank_no() == 5u && sr_vblank_arg() == 0x1234u,
-           "RegisterSubIntrHandler keeps the sub-interrupt number and arg the handler is called with");
-    expect(sr_vblank_handler() == 0u, "a registered-but-disabled handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a registered-but-disabled handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 4u, 0u, 0u) == 0u,
+           "EnableSubIntr on another sub-interrupt answers success");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "enabling sub-interrupt 4 does not enable the handler registered on 5");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success");
-    expect(sr_vblank_handler() == 0x08001000u, "an enabled VBLANK handler is delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    uint32_t arg = 0u;
+    expect(vblank_delivered(5u, &arg) == 0x08001000u && arg == 0x1234u,
+           "an enabled VBLANK handler is delivered with the arg it registered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "DisableSubIntr answers success");
-    expect(sr_vblank_handler() == 0u, "a disabled VBLANK handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a disabled VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success a second time");
-    expect(sr_vblank_handler() == 0x08001000u, "Disable keeps the registration: Enable resumes it");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0x08001000u,
+           "Disable keeps the registration: Enable resumes it");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler answers success");
-    expect(sr_vblank_handler() == 0u, "a released VBLANK handler is not delivered");
-    expect(sr_vblank_no() == 0u && sr_vblank_arg() == 0u,
-           "ReleaseSubIntrHandler clears the sub-interrupt number and arg");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a released VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr after release still answers success");
-    expect(sr_vblank_handler() == 0u, "Release clears the handler word: Enable delivers nothing");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "Release clears the handler word: Enable delivers nothing");
     expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "DisableSubIntr on a non-VBLANK line answers success without effect");
     expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
-    expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 16u, 0x08001000u, 0u) ==
+               0x80020065u,
+           "a VBLANK sub-interrupt number past 15 is refused (ILLEGAL_INTRCODE)");
+    uint32_t h = 0u, a = 0u;
+    expect(sr_vblank_subintr(16u, &h, &a) == -1, "the scheduler's walk ends after sub-interrupt 15");
+
+    /* Two VBLANK sub-interrupts at once: a title's frame counter on 0 and a video player's
+     * handler on 1, the second released when its video closes. Each number keeps its own
+     * handler, arg and enable state, so the release leaves the frame counter running. With
+     * one shared slot the second registration replaced the first handler and the release
+     * removed it: the game's counter stopped and a wait on it never ended. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 0u, 0x08003000u, 0x30u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the frame-counter handler is registered and enabled on sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08004000u, 0x40u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is registered and enabled on sub-interrupt 1");
+    arg = 0u;
+    expect(vblank_delivered(0u, &arg) == 0x08003000u && arg == 0x30u,
+           "registering sub-interrupt 1 leaves sub-interrupt 0's handler and arg in place");
+    arg = 0u;
+    expect(vblank_delivered(1u, &arg) == 0x08004000u && arg == 0x40u,
+           "both handlers are delivered on the same VBLANK");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is released");
+    expect(vblank_delivered(1u, NULL) == 0u, "the released sub-interrupt is no longer delivered");
+    expect(vblank_delivered(0u, NULL) == 0x08003000u,
+           "releasing sub-interrupt 1 keeps delivering sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the two-handler fixture leaves the VBLANK line released");
 
     /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
      * registration line once, not once per frame. A changed registration and a register after
@@ -14741,7 +14782,9 @@ static void test_td24b_cheap_hle_batch(void) {
         expect(count_occurrences(err,
                    "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
                "a changed arg and a register after Release each write the registration line");
-        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+        uint32_t quiet_arg = 0u;
+        expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
+                   vblank_delivered(1u, &quiet_arg) == 0x08002000u && quiet_arg == 0x10u,
                "the quiet path still records the latest registration");
         expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
                "the log fixture leaves the VBLANK line released");

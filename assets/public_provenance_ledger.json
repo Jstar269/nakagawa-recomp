@@ -8933,7 +8933,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "73af983f875ebc40af037993b129ce26484c8551285499cc79ba2720cae04562"
+      "sha256": "745de1189732beca65c02b5a03190794f0c99637ee33a3e38147c38d4739a07d"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8971,7 +8971,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a77f444030941e182bbfd655cf3511a0e67560185b4bc7fd928cac0e42c29a7"
+      "sha256": "18a7559c06672335530023e9170f71a2ef65994a1f7272a2e842c58d2c2c8c11"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9556,7 +9556,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e231f933e979df80dc02fd775f09c16d08daac51acacba050d5ce2717065be8b"
+      "sha256": "64e5316ae817f9e712b2c7b59ae67cf84fefa34de7eb2659c86037b6912a792c"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -9568,7 +9568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "558d865455856f9b4557b126bd768bb27d39567b3d0a94952cb461c24a928468"
+      "sha256": "02ba26fcf6abf183ddca36c1b73c3240491533585fcd775c91fcaec53e01ece2"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -12018,7 +12018,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3231aa88926d5e8803258e8d64672568a055cf466e97a9029da74207c255a171"
+      "sha256": "b881978f9fa0a45eb1c7e0b47fb97d37c4f796ba48c3f0531ecb438533bbfde7"
     },
     {
       "path": "tools/ge_replay_metrics.py",
@@ -13766,7 +13766,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5865a5d29308a333256e807211c3d0af2ee58e068f3bbf2c2ba6f0e428e61649"
+      "sha256": "36d93079a47aadb3fef9a3fd19acd51d4294f47804fa1a3c7fea22a05162f40c"
     },
     {
       "path": "tools/test_dco_policy.py",

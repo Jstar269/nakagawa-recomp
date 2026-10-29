@@ -12991,12 +12991,24 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
-/* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
- * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
-static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
-/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
- * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
-static int g_vbl_registered = 0;
+/* VBLANK (PSP_VBLANK_INT = 30) sub-interrupt handlers the game registers; the scheduler
+ * delivers every enabled one once per frame (they typically wake a sleeping game thread).
+ * The interrupt has its own handler, arg and enable state per sub-interrupt number 0..15
+ * (PSPSDK pspintrman.h). A title may use several at once: a game registers its frame
+ * counter on sub-interrupt 0 and its video player another on 1, then releases 1 when the
+ * video closes; with a single shared slot that registration replaced the game's handler
+ * and the release removed it, so the frame counter stopped and the game waited for it
+ * forever. `registered` holds a Register that Release has not cleared; a handler word of 0
+ * is still a registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+#define SR_VBLANK_SUBINTR_COUNT 16u
+/* PSPSDK pspkerror.h SCE_KERNEL_ERROR_ILLEGAL_INTRCODE, for a sub-interrupt number past 15;
+ * the PSP's own answer for these calls is UNMEASURED. */
+#define SCE_KERNEL_ERROR_ILLEGAL_INTRCODE 0x80020065u
+typedef struct VblankSubIntr {
+    uint32_t handler, arg;
+    int registered, enabled;
+} VblankSubIntr;
+static VblankSubIntr g_vbl[SR_VBLANK_SUBINTR_COUNT];
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -13359,41 +13371,58 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        VblankSubIntr *v = &g_vbl[A1];
         /* Titles re-register the same handler before almost every frame (#1287), so the line
          * is written only when a registration changes the slot, or always under SR_HLELOG.
          * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
-        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
-                      g_vbl_arg != A3;
+        int changed = !v->registered || v->handler != A2 || v->arg != A3;
         if (changed || hle_log_on())
             fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
+        v->handler = A2; v->arg = A3; v->registered = 1;
     }
     return 0;
 }
-static uint32_t h_EnableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 1; return 0; }
-/* sceKernelDisableSubIntr(intno, no): stop delivery of the VBLANK (intno 30)
- * sub-interrupt without unregistering its handler, so a later Enable resumes
- * the same handler. Public behaviour reference: the PSPSDK interrupt manager
- * (pspinterrupt.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
- * retained delivery state here (g_vbl_handler/g_vbl_on, owned by
- * h_RegisterSubIntr/h_EnableSubIntr above); other lines have no delivery
- * state, so like the neighbouring Enable they answer success without effect
- * (UNMEASURED). */
-static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; return 0; }
-/* sceKernelReleaseSubIntrHandler(intno, no): unregister the VBLANK handler and
- * stop its delivery. Same public references as Disable above; the handler word
- * itself is cleared, so Enable after Release delivers nothing until a fresh
- * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
- * with Enable/Disable. */
+/* sceKernelEnableSubIntr(intno, no) and sceKernelDisableSubIntr(intno, no): start or stop
+ * delivery of one VBLANK (intno 30) sub-interrupt without unregistering its handler, so a
+ * later Enable resumes the same handler. Public behaviour reference: the PSPSDK interrupt
+ * manager (pspintrman.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
+ * retained delivery state here (g_vbl, owned by h_RegisterSubIntr); other lines have no
+ * delivery state, so they answer success without effect (UNMEASURED). */
+static uint32_t h_EnableSubIntr(CpuState *s) {
+    if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        g_vbl[A1].enabled = 1;
+    }
+    return 0;
+}
+static uint32_t h_DisableSubIntr(CpuState *s) {
+    if (A0 == 30) {
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        g_vbl[A1].enabled = 0;
+    }
+    return 0;
+}
+/* sceKernelReleaseSubIntrHandler(intno, no): unregister one VBLANK sub-interrupt handler and
+ * stop its delivery; the others keep running. The handler word itself is cleared, so
+ * Enable after Release delivers nothing until a fresh Register. Non-VBLANK lines answer
+ * success without effect (UNMEASURED), as with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
     if (A0 == 30) {
-        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+        memset(&g_vbl[A1], 0, sizeof(g_vbl[A1]));
     }
     return 0;
 }
-uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
-uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
-uint32_t sr_vblank_no(void) { return g_vbl_no; }
+/* The scheduler's view of VBLANK sub-interrupt `no`: 1 with its handler and arg when it is
+ * registered and enabled, 0 when it is not, -1 past the last sub-interrupt number. */
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) {
+    if (no >= SR_VBLANK_SUBINTR_COUNT) return -1;
+    if (!g_vbl[no].enabled || !g_vbl[no].handler) return 0;
+    *handler = g_vbl[no].handler;
+    *arg = g_vbl[no].arg;
+    return 1;
+}
 
 static uint32_t s_vcount_fwd;  /* mirror of s_vcount for clock/input timing (set in sr_display_advance_vcount) */
 uint32_t sr_audio_vbl(void) { return s_vcount_fwd; }

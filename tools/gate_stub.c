@@ -319,7 +319,7 @@ void     f_00304290(void *s) { (void)s; }
 
 /* --- GE / vblank stubs (dead on microtest path) --- */
 uint32_t g_frame_prims = 0u;
-uint32_t sr_vblank_handler(void) { return 0u; }
+int      sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) { (void)no; (void)handler; (void)arg; return -1; }
 int      sr_vblank_dispatch_registered(void) { return 0; }
 void     sr_vblank_tick(void) {}
 void     sr_vblank_nop(void) {}
