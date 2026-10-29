@@ -772,7 +772,7 @@ static int test_app_icon(void) {
 
 /* A host's display rule for the test: the synthetic profile folder becomes "~",
    which never grows the text. */
-#define SYNTH_HOME "C:\\Users\\SYNTHETIC-USER"
+#define SYNTH_HOME "C:\\path\\SYNTHETIC-USER"
 static size_t synth_display_text(const char *in, char *out, size_t out_size) {
     size_t home_len = strlen(SYNTH_HOME);
     size_t used = 0u;
@@ -818,7 +818,7 @@ static int test_display_text_rules(void) {
     CHECK(strcmp(shown, "~\\Games\\PSP\\disc.iso") == 0, "a clamp that fits returns the rewritten text");
     shown = nk_ui_text_clamp(ui, "Copied from " SYNTH_HOME "\\Games\\PSP\\a-long-file-name.iso",
                              &style, 60.0f, 1);
-    CHECK(strstr(shown, "SYNTHETIC") == NULL && strstr(shown, "Users") == NULL,
+    CHECK(strstr(shown, "SYNTHETIC") == NULL && strstr(shown, "C:\\path") == NULL,
           "a clamp cuts the rewritten text, never a part of the profile folder");
     nk_ui_label(ui, 2u, path, 0, 16);
     nk_ui_text(ui, 3u, "Log file: " SYNTH_HOME "\\logs\\player.txt", &style);
