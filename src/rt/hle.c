@@ -28031,6 +28031,80 @@ static void hle_register_iofilemgr_handlers(void) {
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
 }
 
+/* What a stalled thread's object wait is on, for the watchdog's thread dump: the kernel
+ * object's class, name and the state that decides whether the wait can end. 0 when no object
+ * has the uid (a thread left waiting on a deleted object, or a wait the HLE does not own). */
+static int hle_describe_wait_object(uint32_t thread_uid, uint32_t obj, char *out, size_t cap) {
+    Sync *y = NULL;
+    for (int i = 0; i < (int)(sizeof(s_sync) / sizeof(s_sync[0])); i++)
+        if (s_sync[i].used && s_sync[i].uid == obj) { y = &s_sync[i]; break; }
+    if (y && y->kind == SYNC_KIND_SEMA) {
+        snprintf(out, cap, "semaphore 0x%x '%s' count=%d max=%d", obj, y->name, y->count, y->maxc);
+        return 1;
+    }
+    if (y && y->kind == SYNC_KIND_EVENT_FLAG) {
+        for (int i = 0; i < EVF_WAITER_MAX; i++) {
+            const EvfWaiter *w = &s_evf_waiters[i];
+            if (w->active && w->evf == obj && w->thread == thread_uid) {
+                snprintf(out, cap, "event flag 0x%x '%s' pattern=0x%08x wants=0x%08x mode=%s%s", obj,
+                         y->name, y->pattern, w->bits, (w->mode & 1u) ? "OR" : "AND",
+                         (w->mode & 0x30u) ? "+clear" : "");
+                return 1;
+            }
+        }
+        snprintf(out, cap, "event flag 0x%x '%s' pattern=0x%08x", obj, y->name, y->pattern);
+        return 1;
+    }
+    if (y && y->kind == SYNC_KIND_LWMUTEX) {
+        uint32_t wa = y->workarea;
+        if (wa && sr_guest_span_readable(wa, 8u))
+            snprintf(out, cap, "lwmutex 0x%x '%s' lockLevel=%d owner=0x%x", obj, y->name,
+                     (int32_t)MEM_R32(wa), MEM_R32(wa + 4u));
+        else
+            snprintf(out, cap, "lwmutex 0x%x '%s'", obj, y->name);
+        return 1;
+    }
+    const Mutex *m = mutex_find(obj);
+    if (m) {
+        snprintf(out, cap, "mutex 0x%x '%s' count=%d owner=0x%x waiters=%d", obj, m->name,
+                 m->current_count, m->lock_thread, m->num_wait_threads);
+        return 1;
+    }
+    const Mbx *x = mbx_find(obj);
+    if (x) {
+        snprintf(out, cap, "message box 0x%x '%s' messages=%d", obj, x->name, x->nmsgs);
+        return 1;
+    }
+    const MsgPipe *pipe = msg_pipe_find(obj);
+    if (pipe) {
+        snprintf(out, cap, "message pipe 0x%x '%s' bytes=%u/%u", obj, pipe->name, pipe->count,
+                 pipe->capacity);
+        return 1;
+    }
+    const FplPool *fpl = fpl_lookup(obj);
+    if (fpl) {
+        snprintf(out, cap, "fixed pool 0x%x '%s' free=%d/%d", obj, fpl->name, fpl->nfree,
+                 fpl->nblocks);
+        return 1;
+    }
+    if (vpl_lookup(obj)) {
+        snprintf(out, cap, "variable pool 0x%x", obj);
+        return 1;
+    }
+    return 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+int sr_hle_test_describe_wait_object(uint32_t thread_uid, uint32_t obj, char *out, size_t cap) {
+    return hle_describe_wait_object(thread_uid, obj, out, cap);
+}
+#endif
+
+static const char *hle_watchdog_nid_name(uint32_t nid) {
+    const HleEntry *e = hle_find(nid);
+    return e ? e->name : sr_nid_name(nid);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -28039,6 +28113,7 @@ void sr_hle_init(void) {
         return;
     }
     sched_set_thread_exit_hook(hle_module_thread_exit);
+    sched_set_watchdog_describers(hle_describe_wait_object, hle_watchdog_nid_name);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
@@ -28356,6 +28431,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        sched_note_import_return(nid, ret);
         sr_rt_phase = rt_phase_saved;
         sr_import_active = import_active_saved;
         sr_import_nid = import_nid_saved;
@@ -28428,6 +28504,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (e->unsupported_error) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
+    sched_note_import_return(nid, ret);
     sr_rt_phase = rt_phase_saved;
     sr_import_active = import_active_saved;
     sr_import_nid = import_nid_saved;

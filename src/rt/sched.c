@@ -217,6 +217,12 @@ typedef struct {
     uint32_t block_nid;           /* NID of that import */
     int      block_start_valid;   /* block_start_us is the start of the current wait */
     uint64_t block_start_us;      /* virtual time the current wait began */
+    /* The last import this thread finished, its return value, and how many times in a row
+     * it returned that value: what names a thread that polls a call forever. */
+    int      last_import_valid;
+    uint32_t last_import_nid;
+    uint32_t last_import_ret;
+    uint32_t last_import_repeats;
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
@@ -1045,6 +1051,63 @@ static int sched_guest_hexdump(uint32_t addr, char *out, size_t out_sz) {
 
 /* Diagnostic: dump every thread's state, entry, saved PC, and what it waits on. Reveals a thread
  * blocked on a sema/event that is never signalled (a likely scene-transition gate). */
+/* The watchdog dumps name what a stalled thread is doing. The kernel objects and the NID
+ * names live in hle.c, which installs these when it initializes; without them (the white-box
+ * scheduler selftest) the dumps keep only the scheduler's own fields. */
+static SrSchedWaitDescriber s_wait_describer;
+static SrSchedNidNamer s_nid_namer;
+
+void sched_set_watchdog_describers(SrSchedWaitDescriber describe, SrSchedNidNamer name) {
+    s_wait_describer = describe;
+    s_nid_namer = name;
+}
+
+/* Called by sr_syscall when an import returns on the current thread. */
+void sched_note_import_return(uint32_t nid, uint32_t ret) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return;
+    TCB *t = &s_tcb[s_cur];
+    if (t->last_import_valid && t->last_import_nid == nid && t->last_import_ret == ret) {
+        if (t->last_import_repeats != UINT32_MAX) t->last_import_repeats++;
+    } else {
+        t->last_import_valid = 1;
+        t->last_import_nid = nid;
+        t->last_import_ret = ret;
+        t->last_import_repeats = 1u;
+    }
+}
+
+static const char *sched_nid_label(uint32_t nid, char *buf, size_t cap) {
+    const char *name = s_nid_namer ? s_nid_namer(nid) : NULL;
+    if (name) return name;
+    snprintf(buf, cap, "nid 0x%08x", nid);
+    return buf;
+}
+
+/* One indented line under a thread's dump row: the object an object wait is on, the import
+ * the thread blocked in, and the last import it finished. Printed only when there is
+ * something to say, so the row itself keeps its format. */
+static void sched_dump_thread_detail(const TCB *t) {
+    char obj[160] = "", blocked[96] = "", last[128] = "", nb[24], nl[24];
+    if (t->state == TH_WAIT_OBJ && !t->join_waiting && !t->sleeping &&
+        t->wait_obj != CTRL_WAIT_OBJ && t->wait_obj != VBLANK_WAIT_OBJ) {
+        char what[128];
+        if (s_wait_describer && s_wait_describer(t->uid, t->wait_obj, what, sizeof what))
+            snprintf(obj, sizeof obj, " on %s", what);
+        else
+            snprintf(obj, sizeof obj, " on uid 0x%x (no kernel object has this uid)", t->wait_obj);
+    }
+    if ((t->state == TH_WAIT_OBJ || t->state == TH_WAIT_DELAY) && t->has_block_nid)
+        snprintf(blocked, sizeof blocked, " in %s", sched_nid_label(t->block_nid, nb, sizeof nb));
+    if (t->last_import_valid)
+        snprintf(last, sizeof last, " last import %s -> 0x%08x (x%u)",
+                 sched_nid_label(t->last_import_nid, nl, sizeof nl), t->last_import_ret,
+                 t->last_import_repeats);
+    if (obj[0] || blocked[0] || last[0])
+        fprintf(stderr, "    uid=0x%x waits%s%s%s;%s\n", t->uid, obj[0] || blocked[0] ? "" : " -",
+                obj, blocked, last[0] ? last : " no import returned yet");
+    (void)nb; (void)nl;
+}
+
 void sched_dump_threads(void) {
     static const char *st[] = { "DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ" };
     fprintf(stderr, "--- threads (%d) cur=%d tick=%llu ---\n", s_ntcb, s_cur, (unsigned long long)s_tick);
@@ -1114,6 +1177,7 @@ void sched_dump_threads(void) {
                 t->wait_obj, (unsigned long long)t->wake,
                 why, deadline, t->is_cb_wait, t->wakeups,
                 t->join_waiting ? t->join_target : 0u);
+        sched_dump_thread_detail(t);
     }
 }
 
@@ -3263,6 +3327,7 @@ void sr_yield(CpuState *s) {
                         s_tcb[i].priority, s_tcb[i].saved.pc, s_tcb[i].saved.r[31],
                         s_tcb[i].saved.r[19], s_tcb[i].saved.r[2],
                         s_tcb[i].wait_obj, s_tcb[i].wakeups);
+            for (int i = 0; i < s_ntcb; i++) sched_dump_thread_detail(&s_tcb[i]);
             fflush(stderr);
             }
         }

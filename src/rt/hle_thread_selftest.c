@@ -4439,6 +4439,60 @@ static void test_ms0_unified_namespace(void) {
     free(save_fs);
 }
 
+/* The watchdog's thread dump names the kernel object an object wait is on: its class, name and
+ * the count or pattern that decides whether the wait can end. A uid no object holds is 0, so
+ * the dump says so instead of guessing. */
+static uint32_t wd_create(uint32_t nid, const char *name, uint32_t a1, uint32_t a2, uint32_t a3) {
+    static uint32_t name_cur = 0x08907000u;
+    CpuState cpu;
+    title_hle_write_cstr(name_cur, name);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name_cur;
+    cpu.r[5] = a1;
+    cpu.r[6] = a2;
+    cpu.r[7] = a3;
+    name_cur += 0x40u;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_watchdog_wait_object_names(void) {
+    extern int sr_hle_test_describe_wait_object(uint32_t, uint32_t, char *, size_t);
+    char out[160];
+    sr_hle_init();
+    uint32_t sema = wd_create(0xd6da4ba1u, "wd-sema", 0u, 0u, 1u);       /* init 0, max 1 */
+    uint32_t evf = wd_create(0x55c20a00u, "wd-flag", 0u, 0x5u, 0u);      /* pattern 5 */
+    uint32_t mutex = wd_create(0xb7d098c6u, "wd-mutex", 0u, 0u, 0u);     /* unlocked */
+    uint32_t mbx = wd_create(0x8125221du, "wd-mbx", 0u, 0u, 0u);
+    expect((sema & 0x80000000u) == 0u && (evf & 0x80000000u) == 0u &&
+               (mutex & 0x80000000u) == 0u && (mbx & 0x80000000u) == 0u,
+           "watchdog names: the four fixture objects are created");
+    expect(sr_hle_test_describe_wait_object(0u, sema, out, sizeof out) &&
+               strstr(out, "semaphore") && strstr(out, "'wd-sema'") &&
+               strstr(out, "count=0 max=1"),
+           "watchdog names: a semaphore wait names the semaphore and its count");
+    expect(sr_hle_test_describe_wait_object(0u, evf, out, sizeof out) &&
+               strstr(out, "event flag") && strstr(out, "'wd-flag'") &&
+               strstr(out, "pattern=0x00000005"),
+           "watchdog names: an event-flag wait names the flag and its pattern");
+    expect(sr_hle_test_describe_wait_object(0u, mutex, out, sizeof out) &&
+               strstr(out, "mutex") && strstr(out, "'wd-mutex'") && strstr(out, "owner=0x0"),
+           "watchdog names: a mutex wait names the mutex and its owner");
+    expect(sr_hle_test_describe_wait_object(0u, mbx, out, sizeof out) &&
+               strstr(out, "message box") && strstr(out, "'wd-mbx'") && strstr(out, "messages=0"),
+           "watchdog names: a message-box wait names the box and its queue");
+    expect(!sr_hle_test_describe_wait_object(0u, 0x7ffff0u, out, sizeof out),
+           "watchdog names: a uid no kernel object holds is not described");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = sema; (void)sr_syscall(&cpu, 0x28b6489cu);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = evf; (void)sr_syscall(&cpu, 0xef9e4c70u);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = mutex; (void)sr_syscall(&cpu, 0xf8170fbeu);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = mbx; (void)sr_syscall(&cpu, 0x86255adau);
+    }
+    expect(!sr_hle_test_describe_wait_object(0u, sema, out, sizeof out),
+           "watchdog names: a deleted object is no longer described");
+}
+
 static void test_utility_av_module_state(void) {
     CpuState cpu;
     sr_hle_init();
@@ -37308,6 +37362,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
+    test_watchdog_wait_object_names();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
