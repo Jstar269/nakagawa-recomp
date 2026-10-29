@@ -938,6 +938,7 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
         if (!player_ui_file_url(path, url, sizeof(url)) || !SDL_OpenURL(url)) {
             fprintf(stderr, "[PLAYER] The save folder could not be opened: %s\n",
                     SDL_GetError());
+            player_app_set_folder_open_error(app, path, SDL_GetError());
         }
     }
 #endif
@@ -3772,7 +3773,9 @@ static int player_run_command_line_launch(PlayerApp *app, int game_index,
 
 /* --user-data-root=<folder> makes this process keep its library, title
  * manifests, packages and staged games in <folder>, the same meaning as
- * nk_cli's --user-data-root. It must apply before the library loads. */
+ * nk_cli's --user-data-root, and its settings, cache, logs and saves in the
+ * folder's config, cache, logs and saves folders (nk_platform_set_app_data_dir_
+ * override). It must apply before anything resolves a per-user folder. */
 static bool player_apply_user_data_root(int argc, char *argv[]) {
     static const char prefix[] = "--user-data-root=";
     for (int i = 1; i < argc; i++) {
@@ -3844,7 +3847,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
     char data_root[NK_MAX_PATH];
     if (!player_prerequisite_data_root(app, data_root, sizeof(data_root))) {
         player_app_prereq_fail(app, "DATA_DIR_UNAVAILABLE",
-            "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA and retry.");
+            PLAYER_DATA_DIR_UNAVAILABLE_TEXT " and retry.");
         return;
     }
 
@@ -5156,14 +5159,12 @@ int main(int argc, char *argv[]) {
 #endif
         if (next_ui == NULL) {
             /* There is no other launcher to fall back to: say why, once, and
-               stop. A missing file means the ZIP was extracted incompletely. */
-            const char *reason = ui_error[0] != '\0' ? ui_error : "it could not initialize";
-            char message[768];
-            (void)snprintf(message, sizeof(message),
-                           "Nakagawa Recomp can't open its launcher: %s.\n\n"
-                           "Some of its files are missing. Extract the ZIP again, keeping "
-                           "every folder, and start nakagawa_player.exe from the extracted "
-                           "folder.", reason);
+               stop. A build without the launcher's support needs building
+               again; a missing file needs installing again. */
+            char message[1024];
+            player_launcher_unavailable_message(ui_error,
+                                                !player_ui_nk_built_with_launcher(),
+                                                message, sizeof(message));
             fprintf(stderr, "[PLAYER] LAUNCHER_UNAVAILABLE: %s\n", message);
             if (interactive_window) {
                 SDL_HideWindow(window);
@@ -5819,6 +5820,8 @@ int main(int argc, char *argv[]) {
                     !SDL_OpenURL(url)) {
                     fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
                             SDL_GetError());
+                    player_app_set_folder_open_error(&app, app.requested_open_path,
+                                                     SDL_GetError());
                 }
             }
 #endif
@@ -6024,6 +6027,10 @@ int main(int argc, char *argv[]) {
                                 "it stays where Windows put it.\n");
             }
 #else
+            /* No POSIX backend raises another process's window: X11 and Wayland
+               leave focus to the window manager, which gives the new game
+               window focus itself. The raise always reports false here, and
+               the stall path below minimizes instead of raising. */
             (void)fronted;
 #endif
         }

@@ -269,6 +269,74 @@ void     sr_perf_audio_output(uint64_t started_ns, uint32_t frames);
 void     sr_perf_audio_queue(int channel, uint32_t queued_frames, uint64_t starved_ns,
                              int underrun);
 
+/* Live profile view (#314): the developer HUD and the pause overlay's Profile page read the
+ * nakagawa-perf-v1 counters through these, never a second set. One SrPerfLiveInterval is one
+ * closed telemetry interval with the PERF / PERF_ATTRIB definitions (docs/DEBUGGING.md):
+ * cpu_ns, ge_wait_ns, present_ns and idle_ns are the PERF line's cpu/ge_wait/present/idle
+ * split of wall_ns; the rest are the interval's own counters. Nothing here is collected
+ * unless the counters are on (SR_PERF, SR_HUD, or the HUD toggled on). */
+typedef struct SrPerfLiveInterval {
+    uint64_t wall_ns;
+    uint64_t cpu_ns;
+    uint64_t ge_wait_ns;
+    uint64_t present_ns;
+    uint64_t idle_ns;
+    uint64_t presents;
+    uint64_t new_frames;
+    uint64_t vblanks;
+    uint64_t aot_ns;
+    uint64_t interp_ns;
+    uint64_t aot_to_interp;
+    uint64_t interp_to_aot;
+    uint64_t sched_ns[SR_PERF_SCHED_STATE_COUNT];
+    uint64_t ge_cpu_ns;
+    uint64_t gpu_draws;           /* gpu_replay_draws */
+    uint64_t vk_submit_ns;
+    uint64_t vk_wait_ns;
+    uint64_t vk_pipeline_ns;
+    uint64_t vk_readback_ns;
+    uint64_t audio_underruns;     /* summed over the PERF_AUDIO channels */
+} SrPerfLiveInterval;
+
+/* The closed intervals, newest last, in a fixed ring: a full ring drops its oldest. */
+#define SR_PERF_HISTORY_LEN 120u
+typedef struct SrPerfHistory {
+    SrPerfLiveInterval slot[SR_PERF_HISTORY_LEN];
+    unsigned head;    /* the slot the next push writes */
+    unsigned count;   /* intervals held, at most SR_PERF_HISTORY_LEN */
+} SrPerfHistory;
+
+void     sr_perf_history_reset(SrPerfHistory *history);
+void     sr_perf_history_push(SrPerfHistory *history, const SrPerfLiveInterval *interval);
+/* The interval `age` closes back (0: the newest); NULL past the oldest held. */
+const SrPerfLiveInterval *sr_perf_history_at(const SrPerfHistory *history, unsigned age);
+/* This process's intervals since the counters came on. */
+const SrPerfHistory *sr_perf_history(void);
+
+/* One AOT/interpreter transition hot spot, as the summary's top_pcs lists them (whole run). */
+typedef struct SrPerfTopPc {
+    uint32_t pc;
+    uint64_t count;
+    const char *reason;   /* "dispatch-miss", "stale-block", "aot-handoff", "call-return" */
+} SrPerfTopPc;
+/* direction 0: AOT -> interpreter, 1: interpreter -> AOT. Writes up to `max` entries, most
+ * frequent first, and returns how many. */
+unsigned sr_perf_top_transitions(unsigned direction, SrPerfTopPc *out, unsigned max);
+
+/* One labelled line of the live view, plain ASCII so the HUD's debug font can draw it. */
+#define SR_PERF_LIVE_LABEL_MAX 16u
+#define SR_PERF_LIVE_VALUE_MAX 56u
+typedef struct SrPerfLiveRow {
+    char label[SR_PERF_LIVE_LABEL_MAX];
+    char value[SR_PERF_LIVE_VALUE_MAX];
+} SrPerfLiveRow;
+#define SR_PERF_LIVE_ROWS 8u
+/* Formats one interval as the live view's rows: frame, guest/host split, AOT/interpreter
+ * residency, transitions, scheduler residency, GE CPU, Vulkan and audio. Pure. Returns the
+ * number of rows written (SR_PERF_LIVE_ROWS, or 0 for a NULL or empty interval). */
+unsigned sr_perf_live_rows(const SrPerfLiveInterval *interval, SrPerfLiveRow *rows,
+                           unsigned max);
+
 /* In-game HUD metrics query (reuses SR_PERF counters, zero overhead when inactive) */
 void     sr_perf_enable_counters(void);
 void     sr_perf_get_hud_metrics(double *out_fps, double *out_frame_ms, double *out_vblank_hz);
