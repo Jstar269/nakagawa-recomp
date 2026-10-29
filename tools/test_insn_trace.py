@@ -24,7 +24,10 @@ FIXTURE_DIR = ROOT / "fixtures" / "psp_oracle"
 # SHA-256 of the step records (no header) of each fixture's PSP_HARDWARE trace, measured on a
 # PSP-3000 / 6.6.1 (docs/HARDWARE_ORACLE.md, PSP-TRACE-001). The raw trace stays private; a
 # Nakagawa trace of the same words must reproduce these exact records.
-PSP_MEASURED_STREAM_SHA256 = {}
+PSP_MEASURED_STREAM_SHA256 = {
+    "alu-branch-ls": "6d0acdf1a49be864ffe909991c302d534d8f75b7fa588da3a50d6ff2fd85654c",
+    "delay-slots": "4b70f42c94fc8460efd0f81295fdbe9b9c680ae67d59a47a7ff587a2fecbfbec",
+}
 
 REG = {f"${i}": i for i in range(32)}
 
@@ -272,8 +275,6 @@ class LocalTraceTests(unittest.TestCase):
         self.assertEqual(ds[16], "16 pc=0x08910044 op=0xac880000 m32[0x09f00000]=0xfffffffb")
 
     def test_streams_reproduce_the_psp_measurement(self) -> None:
-        if not PSP_MEASURED_STREAM_SHA256:
-            self.skipTest("no PSP measurement recorded")
         for fid, lines in self.lines.items():
             digest = hashlib.sha256("".join(line + "\n" for line in lines).encode()).hexdigest()
             self.assertEqual(digest, PSP_MEASURED_STREAM_SHA256[fid], fid)

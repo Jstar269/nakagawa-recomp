@@ -3109,6 +3109,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VFPU-FORMS-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
+                # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
+                "PSP-TRACE-001",
             },
         )
         self.assertEqual(
