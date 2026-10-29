@@ -61,6 +61,17 @@ LLE_CPU = False
 # never off the seam return, because legitimate HLE errors are nonzero.
 LLE_IMPORT_SEAM = False
 
+# Entry splitting (owner decision, 2026-10-29). A body normally owns every
+# instruction it reaches by a conditional branch, including another entry's code, so
+# each entry of a large branch-connected region translates its own copy of the region
+# (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
+# exceed this many instructions instead stops at every other entry: a conditional
+# branch into one, taken or not taken, becomes a TAIL transfer to that entry's own
+# body (#855), as `j` and straight-line fall-through already are. Bodies within the
+# budget are byte-identical to the unsplit output. 0 splits every body; None never
+# splits. Set by --region-split-threshold=N|off.
+REGION_SPLIT_THRESHOLD = 32768
+
 # TD-27 stale-code detection (tools/codegen.py side of the SR_STALE_DETECT
 # gate). When True, codegen emits one compact (address, entry word, word
 # count, FNV-1a) record per translated primary-image function into
@@ -2238,8 +2249,30 @@ def is_control(w):
         return True
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
+class _WalkBudgetExceeded(Exception):
+    """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
+
+
 def function_flow(elf, start, ranges, known, resume_owners=None,
                   dispatch_boundaries=None):
+    """Ownership of the body for the entry ``start``: (insns, labels, continuations).
+
+    Every caller gets the same answer for the same entry. The body is split at other
+    entries when REGION_SPLIT_THRESHOLD says so (see its comment).
+    """
+    threshold = REGION_SPLIT_THRESHOLD
+    if threshold is not None and threshold > 0:
+        try:
+            return _walk_body(elf, start, ranges, known, resume_owners,
+                              dispatch_boundaries, split=False, budget=threshold)
+        except _WalkBudgetExceeded:
+            pass
+    return _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
+                      split=threshold is not None, budget=None)
+
+
+def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
+               split, budget):
     insns, labels, seen = set(), set(), set()
     resume_owners = resume_owners or {}
     dispatch_boundaries = dispatch_boundaries or set()
@@ -2255,6 +2288,11 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
     # branch-connected regions creates continuation cycles and would recursively consume
     # the host stack for perfectly ordinary guest loops; straight-line/call boundaries in
     # this image form an acyclic graph (maximum observed depth 34).
+    #
+    # With ``split`` the body stops at other entries on conditional edges too: a taken
+    # target that is another entry stays outside the body (the emitter records a TAIL
+    # transfer to it), and a not-taken successor that is one is a continuation. TAIL
+    # transfers (#855) run a guest loop through such edges in constant host stack.
     continuations = {}
 
     def is_entry_boundary(next_pc):
@@ -2296,6 +2334,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
         while in_ranges(pc, ranges) and pc not in seen:
             seen.add(pc)
             insns.add(pc)
+            if budget is not None and len(insns) > budget:
+                raise _WalkBudgetExceeded
             w = read32(elf, pc)
             if w is None:
                 break
@@ -2348,8 +2388,10 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 # inside this translated body.  Cross-module/foreign entry
                 # targets must dispatch just like an indirect branch; adding
                 # them to ``labels`` without visiting them leaves an undefined
-                # C goto in the generated translation unit.
-                if in_ranges(t, ranges):
+                # C goto in the generated translation unit.  A split body also
+                # leaves another entry's code to that entry (a branch back to its
+                # own start stays a loop edge).
+                if in_ranges(t, ranges) and not (split and t != start and is_jump_boundary(t)):
                     labels.add(t)
                     stack.append(t)
                 insns.add(pc + 4)
@@ -2357,6 +2399,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 # Both successors belong to one native control-flow region.  In
                 # particular, do not turn a loop's not-taken edge into a host call.
                 pc += 8
+                if split and stop_at_continuation(pc - 8, pc):
+                    break
                 continue
             next_pc = pc + 4
             if stop_at_continuation(pc, next_pc):
@@ -3180,13 +3224,26 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
+        elif in_ranges(target, ranges) and (target in known or target in resume_owners):
+            # A split body's edge into another entry (function_flow): the same TAIL
+            # transfer as `j` to that entry, after the delay slot (annulled on the
+            # not-taken path of a likely branch).
+            tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
+                                      resumable, stack_census)
+            if is_likely(w):
+                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
+            else:
+                out.extend("   " + line for line in _delay)
+                out.append(f"      if (_c) {{ {tail} }} }}")
         else:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
-        if addr in dup_slot_skips:
+        if addr in continuations:
+            out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+        elif addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
         # Do not let an unrelated natural end path fall into the first continuation
@@ -3627,6 +3684,17 @@ def main(argv):
             # sr_import_call instead of sr_syscall. Default (absent)
             # preserves byte-identical HLE stubs.
             enable_lle_import_seam()
+        elif o.startswith("--region-split-threshold="):
+            value = o.split("=", 1)[1]
+            try:
+                threshold = None if value == "off" else int(value, 10)
+            except ValueError:
+                threshold = -1
+            if threshold is not None and threshold < 0:
+                sys.stderr.write(f"invalid --region-split-threshold value: {o}\n")
+                return 2
+            global REGION_SPLIT_THRESHOLD
+            REGION_SPLIT_THRESHOLD = threshold
         elif o == "--stale-detect":
             # TD-27 stale-code detection: emit the compact translation-time
             # record table and route `cache` through the check hook.

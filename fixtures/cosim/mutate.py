@@ -336,9 +336,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "codegen-likely-slot-always-runs",
         "GENERATOR: a not-taken branch-likely still runs its delay slot",
         [(
+            # In-body labels, entry crossings of split bodies, and foreign targets.
             "            if is_likely(w):\n",
             "            if False and is_likely(w):\n",
-            2,
+            3,
         )],
         target="generator",
     ),
@@ -471,7 +472,59 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
         target="fpu-reference",
     ),
+    # Broken entry crossings (codegen --region-split-threshold). These run in a lane
+    # whose every body is split at other entries, so each conditional edge into
+    # another entry is the TAIL transfer under test; the xing_* cells must diverge.
+    Mutant(
+        "split-crossing-drops-slot",
+        "SPLIT GENERATOR: a branch into another entry loses its delay slot",
+        [(
+            '                out.extend("   " + line for line in _delay)\n'
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        "split-crossing-runs-annulled-slot",
+        "SPLIT GENERATOR: a not-taken branch-likely into another entry runs its slot",
+        [(
+            '                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")\n',
+            '                out.extend("   " + line for line in _delay)\n'
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        "split-crossing-ignores-condition",
+        "SPLIT GENERATOR: a branch into another entry transfers when not taken",
+        [(
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '                out.append(f"      {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        "split-fall-through-lost",
+        "SPLIT GENERATOR: a not-taken branch does not continue into the next entry",
+        [(
+            "        if addr in continuations:\n"
+            "            out.append(f\"    goto _sr_cont_{continuations[addr]:08x};\")\n"
+            "        elif addr in dup_slot_skips:\n"
+            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
+            "        if addr in dup_slot_skips:\n"
+            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
+            1,
+        )],
+        target="split-generator",
+    ),
 )
+
+#: The codegen arguments of the split-generator lane: every body split at other entries.
+SPLIT_CODEGEN_ARGS = "--stack-census --region-split-threshold=0"
 
 
 def resolve_make() -> str:
@@ -523,6 +576,9 @@ def make_command(source: Path, target: str,
         command = ["cosim-selftest", f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"]
     elif target == "generator":
         command = ["cosim-selftest", f"CODEGEN_TOOL={source.as_posix()}"]
+    elif target == "split-generator":
+        command = ["cosim-selftest", f"CODEGEN_TOOL={source.as_posix()}",
+                   f"COSIM_CODEGEN_ARGS={SPLIT_CODEGEN_ARGS}"]
     elif target == "scheduler":
         command = ["aot-return-boundary-thread-selftest"]
         if harness_source is not None:
@@ -598,7 +654,7 @@ def run_gate(source: Path, target: str = "interpreter",
         # own existing cells remain active; the dedicated AOT-return mutant below
         # runs the new regression without this isolation.
         env["SR_COSIM_SKIP_AOT_RETURN_CASES"] = "1"
-    if target == "generator":
+    if target in ("generator", "split-generator"):
         # A mutated copy of codegen.py still has to import its siblings
         # (analyze, host_stubs, build_profile), and running it from the ignored
         # build tree puts the wrong directory first on sys.path.
@@ -695,7 +751,8 @@ def gate_options(mutant: Mutant) -> dict[str, bool | str | None]:
             "accepted_boundary": accepted_boundary}
 
 
-BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER}
+BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER,
+             "split-generator": GENERATOR}
 
 
 def plan_lanes(mutants: tuple[Mutant, ...] | list[Mutant],
@@ -706,15 +763,19 @@ def plan_lanes(mutants: tuple[Mutant, ...] | list[Mutant],
     dealt round-robin over at most `jobs` lanes, so a lane's order, and the build
     history its tree sees, is fixed for a given `jobs`. Scheduler mutants build
     the HLE-thread harness, a different gate with its own baseline, so they form
-    one lane of their own. Returns (baseline target, indices into `mutants`) for
-    each lane: the cosimulation lanes, then the scheduler lane.
+    one lane of their own, and so do split-generator mutants, whose baseline is the
+    unmutated generator with every body split. Returns (baseline target, indices
+    into `mutants`) for each lane: the cosimulation lanes, then the split-generator
+    and scheduler lanes.
     """
-    cosim = [index for index, mutant in enumerate(mutants) if mutant.target != "scheduler"]
-    scheduler = [index for index, mutant in enumerate(mutants) if mutant.target == "scheduler"]
+    own_lane = ("split-generator", "scheduler")
+    cosim = [index for index, mutant in enumerate(mutants) if mutant.target not in own_lane]
     lanes = [("interpreter", cosim[lane::jobs]) for lane in range(jobs)]
     lanes = [lane for lane in lanes if lane[1]]
-    if scheduler:
-        lanes.append(("scheduler", scheduler))
+    for target in own_lane:
+        indices = [index for index, mutant in enumerate(mutants) if mutant.target == target]
+        if indices:
+            lanes.append((target, indices))
     return lanes
 
 
@@ -761,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
         "fp-convert": FP_CONVERT.read_text(encoding="utf-8"),
         "fpu-reference": FPU_REFERENCE.read_text(encoding="utf-8"),
         "generator": GENERATOR.read_text(encoding="utf-8"),
+        "split-generator": GENERATOR.read_text(encoding="utf-8"),
         "scheduler": SCHEDULER.read_text(encoding="utf-8"),
     }
     filenames = {
@@ -768,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
         "fp-convert": "fp_convert.h",
         "fpu-reference": "fpu_reference.c",
         "generator": "codegen.py",
+        "split-generator": "codegen.py",
         "scheduler": "sched.c",
     }
     mutant_root = args.build_dir / "mutants"

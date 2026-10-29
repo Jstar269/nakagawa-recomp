@@ -1108,6 +1108,18 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
             expect_lane_word(test, lanes[i], "callee v0", lanes[i]->state.r[2],
                              COSIM_SCRATCH - 0x20u, &failed);
         }
+    } else if (strcmp(test->name, "xing_taken") == 0 || strcmp(test->name, "xing_likely") == 0
+               || strcmp(test->name, "xing_fall_a") == 0) {
+        /* Entry crossings (generate.py): the same result whether the body copies the
+         * other entry's code or transfers to its own body. */
+        const uint32_t want_v0 = strcmp(test->name, "xing_taken") == 0 ? 0x1103u
+            : strcmp(test->name, "xing_likely") == 0 ? 0x1110u : 0x1364u;
+        const uint32_t want_v1 = 0xFFFFFFFFu;  /* xing_dst's counter, run down to -1 */
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned i = 0u; i < 2u; i++) {
+            expect_lane_word(test, lanes[i], "v0", lanes[i]->state.r[2], want_v0, &failed);
+            expect_lane_word(test, lanes[i], "v1", lanes[i]->state.r[3], want_v1, &failed);
+        }
     } else if (strcmp(test->name, "jtarget") == 0) {
         expect_lane_word(test, &aot, "v0", aot.state.r[2], COSIM_SCRATCH, &failed);
         expect_lane_word(test, &interp, "v0", interp.state.r[2], COSIM_SCRATCH, &failed);

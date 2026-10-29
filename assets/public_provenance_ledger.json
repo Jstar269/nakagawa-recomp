@@ -204,7 +204,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3eb570aae83b45801b73e84a67238c47d0be44383514b6c956688c4e51408b92"
+      "sha256": "ac73627abeadb3ff57bbb5f69178f85d47f07d17634836b3ba6b1eae4f6d2e61"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -439,7 +439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ab455f8832c935cc17c6066bac9e6ff9ef1d813000f60ede9b0d6028e9dda322"
+      "sha256": "2f00320b398e3c8956b9b48a23852052d27ad80472c343ca72827ebc4f0f7ef6"
     },
     {
       "path": "NOTICE.md",
@@ -1393,7 +1393,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "833148056505257dddcca255c7891cea602f965aaa5d24fb570dc4e80b22202b"
+      "sha256": "55189c1848081ba6667b8dfcc0af12cfce114fef721724044e68016f741a17c8"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -2128,7 +2128,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc313c55826c3c1d623bbfac7efa64097d7ca00a56030505c83899e9c0744a41"
+      "sha256": "0fa516870bfc91267865c4092f3b16db20df23038a401ec9499fb40a22b942ed"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -2164,7 +2164,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16bd56e2b3b0087b2b4fd7c94c01849af0a8e83f5c9466351df804df6cb15129"
+      "sha256": "602dcfa96d4213ad94d112d815aabd13a36489d639fc1ae149dd645ebc1dc1e6"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -2176,7 +2176,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9872f2e982db83a0ccae04e17d3ef00b8bffe5ceb94e36da12f8c189519d7d56"
+      "sha256": "f280f732d72a97c2bdc22a275adae28f068913f75f0d99e04f78f053aebf19f2"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -12592,7 +12592,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "43ea0604ccfd72efa25f702d663741626cb57fff2534f750fcd64d64efe58647"
+      "sha256": "0169ee551f29d303a45a38cfb5cba5d9def552f9a97992d9b818be0731ff1dbe"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -14377,7 +14377,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50ade8a21c926ea33631a30ee72b4680b802e2671df355a7d1fbd44abce36ce1"
+      "sha256": "a6ad68ff023253f780e13edacbd2571bff3f833763f55406ed55c8e5f6380e75"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -14582,7 +14582,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "617831990686c85522ee2c8bb59e8c68b73092fc444b5b1bdb15776bf46ee054"
+      "sha256": "a7d1f9d1c18ff68bb34b8a1fdc4093d515e84ecdbc38e9fd2a8b256cd1232467"
     },
     {
       "path": "tools/test_cosim_mutation_gate_outcome.py",

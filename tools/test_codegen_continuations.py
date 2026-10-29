@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import sys
@@ -51,6 +52,25 @@ def jalr(rd, rs):
 def beq(rs, rt, pc, target):
     offset = ((target - (pc + 4)) >> 2) & 0xFFFF
     return 0x10000000 | (rs << 21) | (rt << 16) | offset
+
+
+def bne(rs, rt, pc, target):
+    return beq(rs, rt, pc, target) | 0x04000000
+
+
+def beql(rs, rt, pc, target):
+    return (beq(rs, rt, pc, target) & 0x03FFFFFF) | 0x50000000
+
+
+@contextmanager
+def region_split_threshold(value):
+    """Run with codegen.REGION_SPLIT_THRESHOLD set, restoring it afterwards."""
+    saved = codegen.REGION_SPLIT_THRESHOLD
+    codegen.REGION_SPLIT_THRESHOLD = value
+    try:
+        yield
+    finally:
+        codegen.REGION_SPLIT_THRESHOLD = saved
 
 
 def regimm(selector, rs, pc, target):
@@ -452,7 +472,11 @@ class ContinuationFlowTests(unittest.TestCase):
                 following = source[at + len(call):at + len(call) + 60]
                 self.assertEqual(following.split()[0], "SR_TAIL_DRAIN(s);", following)
 
-    def test_conditional_successors_stay_native_to_avoid_host_recursion(self):
+    def test_conditional_successors_stay_native_below_the_split_threshold(self):
+        # Changed deliberately with entry splitting (owner decision, 2026-10-29): a body
+        # copies another entry's code over conditional edges only while its walk stays
+        # within REGION_SPLIT_THRESHOLD, and never with the threshold off.
+        # EntrySplitTests covers the same shape split.
         elf = FakeElf(
             {
                 0x1000: beq(1, 2, 0x1000, 0x1020),
@@ -466,10 +490,13 @@ class ContinuationFlowTests(unittest.TestCase):
             }
         )
         known = {0x1000, 0x1008, 0x1020}
-        insns, labels, continuations = codegen.function_flow(elf, 0x1000, [(0x1000, 0x102C)], known)
-        self.assertIn(0x1020, labels)
-        self.assertIn(0x1008, insns)
-        self.assertEqual(continuations, {})
+        for threshold in (None, codegen.REGION_SPLIT_THRESHOLD):
+            with self.subTest(threshold=threshold), region_split_threshold(threshold):
+                insns, labels, continuations = codegen.function_flow(
+                    elf, 0x1000, [(0x1000, 0x102C)], known)
+                self.assertIn(0x1020, labels)
+                self.assertIn(0x1008, insns)
+                self.assertEqual(continuations, {})
 
         text = "\n".join(codegen.emit_function(elf, 0x1000, [(0x1000, 0x102C)], known))
         taken = text.index("if (_c) { goto L_00001020; }")
@@ -500,6 +527,130 @@ class ContinuationFlowTests(unittest.TestCase):
         )
         self.assertNotIn("goto L_00002000", text)
         self.assertIn("s->pc = 0x00002000u; sr_tail_record(s, s->pc, NULL,", text)
+
+
+class EntrySplitTests(unittest.TestCase):
+    """A split body leaves every other entry's code to that entry's own body.
+
+    Entries 0x1000, 0x1010 and 0x1020 are adjacent. 0x1000 branches into 0x1020 and,
+    when the branch is not taken, falls through into 0x1010; 0x1010 branches back to
+    its own start. RANGES covers all three.
+    """
+
+    RANGES = [(0x1000, 0x1030)]
+    KNOWN = {0x1000, 0x1010, 0x1020}
+
+    def elf(self, branch=bne):
+        return FakeElf({
+            0x1000: 0x24020001,                       # addiu v0, zero, 1
+            0x1004: 0x24030002,                       # addiu v1, zero, 2
+            0x1008: branch(1, 2, 0x1008, 0x1020),     # into entry 0x1020
+            0x100C: 0x24420004,                       # addiu v0, v0, 4 (slot)
+            0x1010: 0x24420008,                       # entry: addiu v0, v0, 8
+            0x1014: beq(2, 0, 0x1014, 0x1010),        # back to its own start
+            0x1018: 0x00000000,
+            0x101C: 0x00000000,
+            0x1020: 0x24420010,                       # entry: addiu v0, v0, 16
+            0x1024: 0x03E00008,                       # jr ra
+            0x1028: 0x00000000,
+        })
+
+    def flow(self, elf, start, threshold=0, **kwargs):
+        with region_split_threshold(threshold):
+            return codegen.function_flow(elf, start, self.RANGES, self.KNOWN, **kwargs)
+
+    def emit(self, elf, start, threshold=0, **kwargs):
+        with region_split_threshold(threshold):
+            return "\n".join(codegen.emit_function(elf, start, self.RANGES, self.KNOWN, **kwargs))
+
+    def test_split_body_owns_no_other_entry(self):
+        insns, labels, continuations = self.flow(self.elf(), 0x1000)
+        self.assertEqual(insns, {0x1000, 0x1004, 0x1008, 0x100C})
+        self.assertEqual(labels, set())
+        self.assertEqual(continuations, {0x1008: 0x1010})
+
+    def test_unsplit_body_copies_both_entries(self):
+        insns, labels, continuations = self.flow(self.elf(), 0x1000, threshold=None)
+        self.assertTrue({0x1010, 0x1014, 0x1020, 0x1024} <= insns)
+        self.assertIn(0x1020, labels)
+        # Straight-line fall-through into an entry was a continuation before splitting.
+        self.assertEqual(continuations, {0x101C: 0x1020})
+
+    def test_taken_edge_is_a_tail_transfer_after_the_delay_slot(self):
+        text = self.emit(self.elf(), 0x1000)
+        slot = text.index("s->r[2] = (s->r[2] + 0x00000004u)")
+        tail = text.index("if (_c) { sr_tail_record(s, 0x00001020u, f_00001020, _sp_entry, 1u); return; }")
+        self.assertLess(slot, tail)
+        self.assertNotIn("L_00001020", text)
+
+    def test_not_taken_edge_continues_into_the_next_entry(self):
+        text = self.emit(self.elf(), 0x1000)
+        branch = text.index("0x00001008u, 0x")
+        cont = text.index("goto _sr_cont_00001010;", branch)
+        self.assertLess(branch, cont)
+        target = text.index("  _sr_cont_00001010: ;")
+        self.assertIn("sr_tail_record(s, 0x00001010u, f_00001010, _sp_entry, 1u); return;",
+                      text[target:])
+
+    def test_likely_edge_runs_its_slot_only_when_taken(self):
+        text = self.emit(self.elf(beql), 0x1000)
+        self.assertIn("if (_c) { sr_begin(s, 0x0000100cu,", text)
+        self.assertIn("sr_tail_record(s, 0x00001020u, f_00001020, _sp_entry, 1u); return; }", text)
+        self.assertEqual(text.count("0x0000100cu"), 1, text)
+        self.assertIn("goto _sr_cont_00001010;", text)
+
+    def test_branch_to_its_own_start_stays_a_loop_edge(self):
+        insns, labels, continuations = self.flow(self.elf(), 0x1010)
+        self.assertIn(0x1010, labels)
+        self.assertEqual(continuations, {0x101C: 0x1020})
+        text = self.emit(self.elf(), 0x1010)
+        self.assertIn("goto L_00001010;", text)
+
+    def test_resume_body_is_entered_through_its_own_symbol(self):
+        # 0x1020 as a resume label owned by 0x1010: another body's crossing enters it
+        # through r_00001020; its owner still reaches it natively.
+        owners = {0x1020: 0x1010}
+        known = self.KNOWN - {0x1020}
+        with region_split_threshold(0):
+            text = "\n".join(codegen.emit_function(
+                self.elf(), 0x1000, self.RANGES, known, resume_owners=owners))
+            owner_flow = codegen.function_flow(
+                self.elf(), 0x1010, self.RANGES, known, resume_owners=owners)
+        self.assertIn("sr_tail_record(s, 0x00001020u, r_00001020, _sp_entry, 1u); return;", text)
+        self.assertIn(0x1020, owner_flow[0])
+
+    def test_dispatch_boundary_target_is_dispatched_by_address(self):
+        with region_split_threshold(0):
+            text = "\n".join(codegen.emit_function(
+                self.elf(), 0x1000, self.RANGES, self.KNOWN - {0x1020},
+                dispatch_boundaries={0x1020}))
+        self.assertIn("s->pc = 0x00001020u; sr_tail_record(s, s->pc, NULL,", text)
+
+    def test_threshold_splits_only_bodies_whose_walk_exceeds_it(self):
+        elf = self.elf()
+        unsplit = self.emit(elf, 0x1000, threshold=None)
+        walked = len(self.flow(elf, 0x1000, threshold=None)[0])
+        self.assertEqual(self.emit(elf, 0x1000, threshold=walked), unsplit)
+        self.assertEqual(self.emit(elf, 0x1000, threshold=4), self.emit(elf, 0x1000))
+        self.assertNotEqual(self.emit(elf, 0x1000), unsplit)
+
+    def test_every_ownership_reader_sees_the_split_body(self):
+        with region_split_threshold(0):
+            insns, _labels, _continuations = codegen.function_flow(
+                self.elf(), 0x1000, self.RANGES, self.KNOWN)
+            record = codegen.stale_block_for_function(
+                self.elf(), 0x1000, self.RANGES, self.KNOWN)
+        self.assertEqual(record[1], len(insns))
+
+    def test_threshold_option_is_parsed_and_checked(self):
+        saved = codegen.REGION_SPLIT_THRESHOLD
+        try:
+            self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
+                                           "--region-split-threshold=-1"]), 2)
+            self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
+                                           "--region-split-threshold=many"]), 2)
+        finally:
+            codegen.REGION_SPLIT_THRESHOLD = saved
 
 
 if __name__ == "__main__":

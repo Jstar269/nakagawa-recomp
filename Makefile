@@ -1059,6 +1059,7 @@ PUBLIC_TARGETS := \
 	platform-ladder-clean \
 	profile-zero-e2e \
 	cosim-selftest \
+	cosim-selftest-split \
 	cosim-selftest-run \
 	cosim-selftest-clean \
 	cosim-mutants \
@@ -1195,6 +1196,7 @@ HELP_DESCRIPTION_platform-ladder-overlay := run the guest-placed overlay module 
 HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
 HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
+HELP_DESCRIPTION_cosim-selftest-split := run the cosimulation with every body split at other entries
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
 HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
@@ -2170,6 +2172,7 @@ COSIM_INTERP_SRC ?= src/rt/guest_interp.c
 COSIM_FP_CONVERT_PRELUDE ?=
 COSIM_FP_CONVERT_PRELUDE_FLAG = $(if $(strip $(COSIM_FP_CONVERT_PRELUDE)),-include "$(COSIM_FP_CONVERT_PRELUDE)",)
 COSIM_FPU_REFERENCE_SRC ?= fixtures/cosim/fpu_reference.c
+COSIM_CODEGEN_ARGS ?= --stack-census
 
 # The loader and codegen rules are named directly rather than through `pipeline`.
 # This guest deliberately imports nothing, and tools/imports.py fails closed on an
@@ -2184,7 +2187,7 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
-		CODEGEN_USER_ARGS=--stack-census \
+		CODEGEN_USER_ARGS="$(COSIM_CODEGEN_ARGS)" \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	"$(PYTHON)" $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
 	$(MAKE) cosim-selftest-run \
@@ -2196,7 +2199,14 @@ cosim-selftest:
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
 		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
 		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC) \
-		CODEGEN_USER_ARGS=--stack-census
+		CODEGEN_USER_ARGS="$(COSIM_CODEGEN_ARGS)"
+
+# The same comparison with every generated body split at other entries
+# (codegen --region-split-threshold=0): each conditional edge into another entry,
+# taken or not taken, is a TAIL transfer to that entry's own body (the xing_* cells).
+cosim-selftest-split:
+	$(MAKE) cosim-selftest COSIM_DIR=$(COSIM_DIR)-split \
+		COSIM_CODEGEN_ARGS="--stack-census --region-split-threshold=0"
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.

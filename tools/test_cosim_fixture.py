@@ -321,7 +321,7 @@ class FixtureLayoutTests(unittest.TestCase):
     def test_every_cell_ends_in_a_register_transfer_with_a_delay_slot(self):
         """Leaving through a transfer IS the cosim synchronization point.
 
-        Most cells end in `jr $ra`. Three do not, for reasons that are part of
+        Most cells end in `jr $ra`. A few do not, for reasons that are part of
         what they test, so each is named here rather than blanket-exempted:
 
           jrtail    ends in `jr $rs` and relinquishes control through its
@@ -330,6 +330,9 @@ class FixtureLayoutTests(unittest.TestCase):
           xtailmid  ends in a `j` tail, which is the whole point -- it must NOT
                     return, so that the cross-tier tail control isolates guest
                     memory commitment from frame re-entry.
+          xing_fall_a, xing_fall_b
+                    end by falling into the next cell, another entry: the
+                    entry crossing is what they test (FALL_INTO_CELLS).
 
         Anything else without a defined exit has no synchronization point in
         either lane.
@@ -338,6 +341,12 @@ class FixtureLayoutTests(unittest.TestCase):
         jump_tail = {"xtailmid", "jthunk"}
         for name, (_offset, words) in self.layout.items():
             if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
+                continue
+            if name in cosim.FALL_INTO_CELLS:
+                # Ends by falling into the next entry: that crossing is the test.
+                following = cosim.FALL_INTO_CELLS[name]
+                self.assertEqual(self.layout[following][0], _offset + 4 * len(words),
+                                 f"cell {name} must sit directly before {following}")
                 continue
             self.assertGreaterEqual(len(words), 2, f"cell {name} is too short to have an exit")
             terminator = words[-2]
