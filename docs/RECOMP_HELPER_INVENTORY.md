@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **370** (declared in `recomp.h`: 312)
-- reach class: emitter-reached 69, production-runtime-only 271, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 344
+- helpers: **372** (declared in `recomp.h`: 313)
+- reach class: emitter-reached 70, production-runtime-only 272, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 346
 
 ## Helpers
 
@@ -55,6 +55,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `dispatch_record_semantic_stop` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_record_semantic_stop_issue` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_report_host_stack_boundary` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `dispatch_report_null_code_pointer` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_run_interp` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_semantic_boundary_name` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_tail_step` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
@@ -333,6 +334,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_newlib_malloc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_newlib_memalign` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_newlib_realloc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_null_code_pointer` | `rt/recomp.c` | yes | emitter-reached (via `SR_CODE_POINTER`) | `rt/recomp.c`: upstream_derived |
 | `sr_oor` | `rt/ge.c`, `rt/ge_replay.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge.c`: upstream_derived; `rt/ge_replay.c`: project_authored_attested; `rt/recomp.c`: upstream_derived |
 | `sr_parse_display_bounds` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_pick_display` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
