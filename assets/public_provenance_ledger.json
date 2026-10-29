@@ -12626,7 +12626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c96eb9e42012245bd6af74f1514f6fb686440aea4757adecead78a3504af8851"
+      "sha256": "e12551eb936627504f95ba9be6ee78ebb9889305d2eb34a01d386d77e4119bc7"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -13193,7 +13193,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eed9a9683a60a70fdf04d68ce2dbb0ff3519a083b34f5582c41b99f6e685926e"
+      "sha256": "07a9a5cac490fe566de1f089b3e11c30cd4b12825d2f50965c5f8c8685569200"
     },
     {
       "path": "tools/make_app_icon.py",
@@ -14459,7 +14459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4b929677cfb24918429209a18f0235442b7ea883d8676bed7b4e57116065465"
+      "sha256": "6ee1f287fc07db913673d4972fe3e9bf15576655216e08ebbee075e039b27c23"
     },
     {
       "path": "tools/test_codegen_madd_msub.py",
