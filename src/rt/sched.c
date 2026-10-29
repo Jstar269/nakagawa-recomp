@@ -609,9 +609,8 @@ uint32_t sched_guest_stack_floor(void) { return sched_guest_stack_floor_above(0u
 /* The HLE user partition (hle.c) installs a check that refuses a stack range it has
  * handed out. A callback rather than a link-time reference: several fixtures link
  * sched.c without hle.c, and with no check installed every range is accepted. */
-typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
-static SchedStackRangeRefusal s_stack_range_refusal;
-void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
+static SrSchedStackRangeRefusal s_stack_range_refusal;
+void sched_set_stack_range_refusal(SrSchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
 
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
@@ -1253,8 +1252,6 @@ int sched_wait_vblank(void) {
  * the next start edge is observed. WaitVblank keeps its measured in-window fast
  * return, but services a callback already pending for the caller first. */
 int sched_wait_vblank_cb(int wait_start) {
-    extern int sr_thread_has_pending_callbacks(uint32_t thread_uid);
-    extern int sr_thread_dispatch_callbacks(void);
     if (s_cur < 0 || s_cur >= s_ntcb) {
         /* No current thread means no waiter exists; report it instead of a
          * synthesized "waited and returned 0". Callers map this to CAN_NOT_WAIT. */
@@ -1640,7 +1637,6 @@ static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 static uint64_t s_host_pump_ns;
 static int s_host_pump_valid;
 static void sched_pump_host_window(void) {
-    extern void gui_pump(void);
     if (!gui_on()) return;
     uint64_t now = host_now_ns();
     if (s_host_pump_valid && now - s_host_pump_ns < SCHED_HOST_PUMP_PERIOD_NS) return;
@@ -1716,7 +1712,6 @@ static void deliver_vblank(void) {
      * frames/s before (1.84x), 27.75 after. */
 
     static unsigned long long vb = 0;
-    extern uint32_t g_frame_prims;
     if (sched_vblog_on() && (++vb % 1) == 0) {
         uint32_t h0 = 0u, a0 = 0u;
         int first = sr_vblank_subintr(0u, &h0, &a0);
@@ -1790,7 +1785,6 @@ static void deliver_vblank(void) {
             fflush(stderr);
         }
     }
-    extern int sr_vblank_dispatch_registered(void);
     /* Deliver every active callback slot in stable slot/registration order.  A callback
      * may delete itself or another slot; the HLE walker snapshots each slot immediately
      * before dispatch, so later slots observe that change on this same VBLANK. */
@@ -1815,7 +1809,6 @@ static void deliver_vblank(void) {
     /* HLE advances the scripted input segment before it latches this VBLANK's
      * pad sample. Check the pause script after that work so a same-VBLANK press
      * can be deferred until the guest reads it and queues its audio stimulus. */
-    extern void sr_vblank_tick(void);
     sr_vblank_tick();
     sched_pause_script_maybe_request();
 }
@@ -3937,8 +3930,6 @@ void sched_thread_sleep_cb(void) {
     }
     t->sleeping = 1;
     while (t->sleeping) {
-        extern int sr_thread_has_pending_callbacks(uint32_t);
-        extern int sr_thread_dispatch_callbacks(void);
         /* A wakeup delivered while this thread was dispatching callbacks (below)
          * cannot take the sched_thread_wakeup fast path -- state is not yet
          * TH_WAIT_OBJ during dispatch -- so it banks into t->wakeups. Consume a
@@ -5061,7 +5052,6 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * direct-call host-stack window could still describe (#855, recomp.h). */
             sr_host_stack_window_clear();
         }
-        extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
         sr_rt_phase = t->rt_phase;
         sr_import_active = t->import_active;

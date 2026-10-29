@@ -39,12 +39,18 @@ int  gegpu_init(void);
  * Safe to call when idle/uninitialized. */
 void gegpu_flush(const char *reason);
 
-/* Present the framebuffer at fbaddr straight from its GPU image. Returns 1 when shown,
- * 0 when the user closed the window, -1 when no GPU-valid target owns the address (not
- * GPU-resident, e.g. CPU-written movie frames) — the caller should convert guest VRAM instead.
+/* Present the framebuffer at fbaddr straight from its GPU image. The result is one of:
+ * GEGPU_PRESENT_SHOWN: the frame is on screen.
+ * GEGPU_PRESENT_WINDOW_CLOSED: the user closed the window.
+ * GEGPU_PRESENT_NOT_RESIDENT: no GPU-valid target owns the address (e.g. CPU-written movie
+ *   frames); the caller should convert guest VRAM instead.
  * GEGPU_PRESENT_TARGET_FAILED: a GPU-valid target exists, but preparing or presenting it failed,
- * so its newest pixels may exist only in the GPU image. The caller must make guest VRAM current
- * with gegpu_sync_guest_fb() before converting it, or decline the frame. */
+ *   so its newest pixels may exist only in the GPU image. The caller must make guest VRAM current
+ *   with gegpu_sync_guest_fb() before converting it, or decline the frame.
+ * SHOWN and WINDOW_CLOSED keep the values sdl3vk_present_image_ex() returns for them. */
+#define GEGPU_PRESENT_SHOWN 1
+#define GEGPU_PRESENT_WINDOW_CLOSED 0
+#define GEGPU_PRESENT_NOT_RESIDENT (-1)
 #define GEGPU_PRESENT_TARGET_FAILED (-2)
 int  gegpu_present(unsigned int fbaddr, int fmt, unsigned int stride);
 int  gegpu_capture_materialize(void);

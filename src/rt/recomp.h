@@ -1495,6 +1495,17 @@ double   ge_timing_run_clk(void);
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
+/* Diagnostic counters the watchdog and statistics reports print (hle.c). The GE ones
+ * are kept by ge.c, the MPEG ones by mpeg.c. */
+extern uint32_t g_frame_prims;
+extern unsigned long g_ge_list_sig, g_ge_prim_count;
+extern unsigned long g_list_writes, g_list_nonblack, g_list_clearpx;
+extern unsigned long g_ge_list_through_cmds, g_ge_list_transform_cmds;
+extern unsigned long g_ge_list_through_vertices, g_ge_list_transform_vertices;
+extern unsigned long g_ge_list_through_sprites, g_ge_list_transform_sprites;
+extern unsigned long g_ge_pixels;
+extern unsigned long g_tex_samples, g_tex_nonzero;
+extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
  * (sceGeGetCmd returns SCE_KERNEL_ERROR_INVALID_VALUE); an out-of-range index yields 0,
@@ -1658,6 +1669,7 @@ void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+void     gui_pump(void);                         /* service the window's pending events */
 int      gui_headless_acceptance_requested(void);
 int      gui_headless_acceptance_ready(void);
 int      gui_headless_acceptance_complete(void);
@@ -1880,6 +1892,22 @@ typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
 typedef void (*SrSchedVtimerServiceOne)(void);
 void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
                                 SrSchedVtimerServiceOne service_one);
+/* hle.c's user-partition overlap test: sched.c refuses a thread stack range it reports. */
+typedef int (*SrSchedStackRangeRefusal)(uint32_t base, uint32_t end);
+void     sched_set_stack_range_refusal(SrSchedStackRangeRefusal refusal);
+CpuState *sr_cpu_for_callbacks(void);               /* the CpuState guest callbacks run on */
+void     sched_dump_threads(void);                  /* the watchdog's thread table, to stderr */
+void     sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
+                                uint32_t *wait, uint32_t *spin);
+/* Callback and VBLANK service hle.c provides to the scheduler. */
+int      sr_thread_has_pending_callbacks(uint32_t thread_uid);
+int      sr_thread_dispatch_callbacks(void);
+int      sr_vblank_dispatch_registered(void);
+void     sr_vblank_tick(void);
+/* The guest VBLANK count (hle.c) and the host audio backend's statistics dump. */
+uint32_t sr_audio_vbl(void);
+void     sr_audio_dump_stats(void);
+void     sr_audio_dump_finish(void);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */

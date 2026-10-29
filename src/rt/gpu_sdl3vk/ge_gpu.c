@@ -3664,11 +3664,11 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (dbg) fprintf(stderr, "GEGPU_PRESENT[%llu]: fbaddr=0x%08x fmt=%d stride=%u s_ready=%d\n",
             (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, fbaddr, fmt, stride, s_ready);
     }
-    if (!s_ready) return -1;
+    if (!s_ready) return GEGPU_PRESENT_NOT_RESIDENT;
     readback_poll();
     /* Display buffers in main RAM (movie frames, CPU-composed screens) are never
      * GPU-resident; folding them into the VRAM window could alias a real target. */
-    if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }
+    if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
     uint32_t fba = vram_off(fbaddr);
     Target *t = target_color_acquire(fba, stride ? stride : 512u, (uint32_t)fmt, 1);
     if (!t || !t->gpu_valid || (int)t->fmt != (fmt & 3)) {
@@ -3676,7 +3676,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             fprintf(stderr, "GEGPU_PRESENT[%llu]: EARLY-EXIT t=%p gpu_valid=%d fmt=%d/%d\n",
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
-        s_cnt_present_cpu++; return -1; }
+        s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
     /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
      * then exist only in its image. Report it apart from the earlier -1 declines, where no
      * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
@@ -3685,8 +3685,8 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     stats_tick();
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
-     * the target's newest pixels may exist only in its image. 0 (user close) and 1 (shown)
-     * pass through unchanged. */
+     * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)
+     * are GEGPU_PRESENT_WINDOW_CLOSED and GEGPU_PRESENT_SHOWN and pass through unchanged. */
     if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;
     return pr;
 }
@@ -6806,8 +6806,8 @@ int gegpu_snapshot_sync_selftest(void) {
     /* Declines that involve no GPU-valid target keep -1, so gui_present does not sync guest
      * VRAM for them. Only a GPU-valid target that fails to prepare or present reports
      * GEGPU_PRESENT_TARGET_FAILED (issue #827). */
-    if (gegpu_present(0x08010000u, (int)fmt, stride) != -1 ||
-        gegpu_present(base, (int)fmt, FB_W + 64u) != -1) {
+    if (gegpu_present(0x08010000u, (int)fmt, stride) != GEGPU_PRESENT_NOT_RESIDENT ||
+        gegpu_present(base, (int)fmt, FB_W + 64u) != GEGPU_PRESENT_NOT_RESIDENT) {
         fprintf(stderr, "gpu snapshot sync selftest: a present decline without a GPU target was not -1\n");
         coherence_reset_targets();
         return 0;
@@ -6861,7 +6861,8 @@ int gegpu_snapshot_sync_selftest(void) {
     sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
     int rebuilt_present = gegpu_present(base, (int)fmt, stride);
     sdl3vk_present_fault_clear();
-    if (rebuilt_present != 1 || gegpu_present(base, (int)fmt, stride) != 1) {
+    if (rebuilt_present != GEGPU_PRESENT_SHOWN ||
+        gegpu_present(base, (int)fmt, stride) != GEGPU_PRESENT_SHOWN) {
         fprintf(stderr, "gpu snapshot sync selftest: a shown present did not stay 1 (rebuild=%d)\n",
                 rebuilt_present);
         coherence_reset_targets();

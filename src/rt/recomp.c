@@ -2469,7 +2469,6 @@ int g_hle_depth = 0;
 
 void sr_hle_call(CpuState *s, uint32_t nid) {
     sr_hit_hle = 1;
-    extern uint32_t sr_syscall(CpuState *s, uint32_t nid);
     g_hle_depth++;
     s->r[2] = sr_syscall(s, nid);
     g_hle_depth--;

@@ -156,6 +156,7 @@ static uint64_t sr_host_filetime_ticks(void) {
 
 uint32_t sr_last_nid = 0;
 
+extern int sr_libc_death_wish;    /* defined with h_ExitGame below */
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
 static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid);
@@ -629,10 +630,7 @@ static void user_partition_init(void) {
     }
     s_heap = base;
     s_heap_base = base;
-    {
-        extern void sched_set_stack_range_refusal(int (*refusal)(uint32_t, uint32_t));
-        sched_set_stack_range_refusal(sr_user_partition_overlaps);
-    }
+    sched_set_stack_range_refusal(sr_user_partition_overlaps);
     s_part_top = et ? (uint32_t)strtoul(et, NULL, 16) : 0x0A000000u;
     if (s_part_top <= s_heap) {
         fprintf(stderr,
@@ -4149,7 +4147,6 @@ static uint32_t h_ExitThread(CpuState *s) {
      * exit is part of normal boot teardown, not a libc failure. The exemption is a ROLE
      * test, not a UID-number test: a build with no launcher binding exempts nothing, so
      * an ordinary thread cannot inherit the exemption by its allocated number. */
-    extern int sr_libc_death_wish;     /* defined alongside h_ExitGame below */
     int death_wish = sr_libc_death_wish;
     uint32_t uid = sched_current_uid();
     if (sched_uid_is_root(uid) || sched_uid_is_launcher(uid)) {
@@ -6439,7 +6436,6 @@ int sr_hle_test_psmf_summary_rejects_truncation(void) {
 
 static void psmf_log_summary(SrPsmfPlayer *p) {
     if (!p || !psmf_log_on()) return;
-    extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
     /* Host-stack line buffer: runs on native host thread stack (1 MB on Win32, 2+ MB on POSIX),
      * not guest MIPS stack. Shallow leaf call; reentrant across concurrent player instances
@@ -12936,7 +12932,6 @@ static uint32_t h_UmdGetDiscInfo(CpuState *s) {
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
 static void sr_umd_signal_ready(void) {
-    extern void sched_wake(uint32_t);
     s_umd_drive_stat = UMD_STAT_ACTIVE;
     sched_wake(0x554D44u);
     if (s_umd_cb_uid)
@@ -12994,7 +12989,6 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
  * the settle, fire the UMD-ready signal so any waiting thread and the registered callback fire. */
 static uint32_t h_UmdActivate(CpuState *s) {
     (void)s;
-    extern void sched_delay_current(uint64_t);
     /* 30 ms virtual delay keeps the loader's stat-read interleaving realistic. */
     sched_delay_current(30000);
     sr_umd_signal_ready();
@@ -13246,7 +13240,6 @@ static int sr_thread_dispatch_callback_uid(uint32_t thread_uid, CpuState *cpu,
 }
 
 static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid) {
-    extern CpuState *sr_cpu_for_callbacks(void);
     CpuState *cpu = sr_cpu_for_callbacks();
     if (!cpu) return 0;
 
@@ -13270,7 +13263,6 @@ static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid) {
 
 int sr_thread_dispatch_callbacks(void) {
     uint32_t thread_uid = sched_current_uid();
-    extern CpuState *sr_cpu_for_callbacks(void);
     CpuState *cpu = sr_cpu_for_callbacks();
     if (!cpu) return 0;
 
@@ -19282,7 +19274,6 @@ static void audio_lead_note(uint32_t vbl, int ch, int queued) {
 }
 
 static void audio_note_lead(int ch, int queued) {
-    extern uint32_t sr_audio_vbl(void);   /* defined later in this file */
     if (!audio_stat_on()) return;
     audio_lead_note(sr_audio_vbl(), ch, queued);
 }
@@ -19919,7 +19910,6 @@ static void hle_exit_audio_stats(void) {
     }
 #ifndef SR_HLE_THREAD_SELFTEST
     /* audio.c is not linked into the executable HLE harness. */
-    extern void sr_audio_dump_stats(void);
     sr_audio_dump_stats();
 #endif
 }
@@ -19929,7 +19919,6 @@ static void hle_exit_audio_stats(void) {
  * SR_AUDIOSTAT gate; a second close is a no-op. Only the public audio backend exports it. */
 static void hle_exit_close_audio_dump(void) {
 #if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
-    extern void sr_audio_dump_finish(void);
     sr_audio_dump_finish();
 #endif
 }
@@ -21576,11 +21565,6 @@ static void ge_enqueue_trace_result(CpuState *s, const char *op,
                                     uint32_t list_id, const char *outcome,
                                     uint32_t next_pc, int list_completed) {
     if (!ge_enqueue_trace_in_window()) return;
-    extern unsigned long g_ge_list_sig, g_ge_prim_count;
-    extern unsigned long g_list_writes, g_list_nonblack, g_list_clearpx;
-    extern unsigned long g_ge_list_through_cmds, g_ge_list_transform_cmds;
-    extern unsigned long g_ge_list_through_vertices, g_ge_list_transform_vertices;
-    extern unsigned long g_ge_list_through_sprites, g_ge_list_transform_sprites;
     fprintf(stderr,
             "GE_ENQUEUE_RESULT frame=%u op=%s thread=0x%x call_pc=0x%08x "
             "list_id=0x%08x outcome=%s next_pc=0x%08x "
@@ -22216,8 +22200,6 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         if (sync == 0u && fbdu && s_fbcap_armed[0] && s_framebuf &&
             s_vcount >= (uint32_t)fbdu_n &&
             display_host_span_valid(&s_display_active)) {
-            extern unsigned long g_ge_pixels;
-            extern unsigned long g_tex_samples, g_tex_nonzero;
             int snap_ok = snapshot_sync_ok(s_display_active.addr,
                                             (uint32_t)s_display_active.fmt,
                                             (uint32_t)s_display_active.stride, "SR_FBDUMP");
@@ -22236,7 +22218,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
               fprintf(stderr, "mpeg: ringPut=%lu getAvcAu=%lu avcDecode=%lu noData=%lu\n",
                       g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata); }
             sr_dump_calls();
-            extern void sched_dump_threads(void); sched_dump_threads();
+            sched_dump_threads();
             /* Only a capture serviced by this frame's present may affect the exit
              * verdict. An unserviced arm is a failed attempt, never a stale success. */
             int cres = sr_capture_result();
@@ -22471,7 +22453,6 @@ void sr_vblank_tick(void) {
     static uint32_t profile_dump_window = 0;
     if (profile_dump_period > 0 &&
         sr_vcount_window_crossed(s_vcount, profile_dump_period, &profile_dump_window)) {
-        extern void sr_profile_dump(void);
         sr_profile_dump();
     }
     ge_set_frame(s_vcount);
@@ -22503,8 +22484,6 @@ void sr_vblank_tick(void) {
                 "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
                 diff, diff / 60);
         uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
-        extern void sched_watchdog_summary(uint32_t *, uint32_t *,
-                                           uint32_t *, uint32_t *);
         sched_watchdog_summary(&ready, &delay, &wait, &spin);
         fprintf(stderr,
                 "BOOT_EVENT phase=stalled observation=no_new_flip "
@@ -22528,10 +22507,9 @@ void sr_vblank_tick(void) {
                 s_display_active.stride, s_display_active.fmt);
         /* Thread wait state: a parked thread's reason is read from the dump (wait
          * reason/deadline/callback/wakeup/join columns), not from a stale wait_obj. */
-        { extern void sched_dump_threads(void); sched_dump_threads(); }
+        sched_dump_threads();
         /* Movie-stack activity: sceMpeg and scePsmfPlayer are separate libraries; these
          * counters say whether either stack was being fed. */
-        extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
         fprintf(stderr, "WATCHDOG_MPEG: put=%lu getavc=%lu avcdec=%lu nodata=%lu\n",
                 g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata);
         fprintf(stderr, "WATCHDOG_PSMF: player_calls=%lu getvideo=%lu getaudio=%lu\n",
@@ -22555,8 +22533,6 @@ void sr_vblank_tick(void) {
         uint32_t dark = 0u;
         if (sr_picture_watch_tick(&s_picture_watch, s_vcount, &dark) == SR_PICTURE_WATCH_REPORT) {
             uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
-            extern void sched_watchdog_summary(uint32_t *, uint32_t *,
-                                               uint32_t *, uint32_t *);
             sched_watchdog_summary(&ready, &delay, &wait, &spin);
             fprintf(stderr,
                     "BOOT_EVENT phase=stalled observation=dark_picture "

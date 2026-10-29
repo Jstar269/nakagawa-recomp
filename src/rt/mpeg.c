@@ -172,9 +172,8 @@ static Mpeg *mpeg_find(uint32_t mpegAddr) {
 
 /* The MPEG ring-refill callback is a nested host->guest call and shares the
  * frame policy with hle.c's GE marshallers: a per-owner, per-depth frame out of
- * the reserved region rather than the fixed 0x09df8000 this used to hard-code.
- * Everything else about the marshalling -- zeroed state, inherited $gp, $ra = 0,
- * 0xe4 VFPU prefixes, full caller restore -- is unchanged. */
+ * the reserved region. The rest of the marshalling is zeroed state, inherited
+ * $gp, $ra = 0, 0xe4 VFPU prefixes and a full caller restore. */
 static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
     uint32_t frame_sp = 0;
     int frame = -1;
@@ -440,8 +439,8 @@ uint32_t mpeg_regist_stream(uint32_t mpegAddr, uint32_t streamType, uint32_t str
     return sid;
 }
 /* sceMpegMallocAvcEsBuf: PPSSPP keeps a couple of flags rather than really allocating; returns a
- * 1-based ES-buffer index (non-zero) the game treats as a valid handle, or 0 if none free. The
- * earlier h_ok returned 0, so the game read the movie's ES-buffer alloc as failed and tore down. */
+ * 1-based ES-buffer index (non-zero) the game treats as a valid handle, or 0 if none is free.
+ * A game reads 0 as a failed allocation and tears the movie down. */
 uint32_t mpeg_malloc_avc_es_buf(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
