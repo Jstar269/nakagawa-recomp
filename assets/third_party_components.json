@@ -383,6 +383,107 @@
         ]
       },
       {
+        "id": "libchdr",
+        "name": "libchdr",
+        "spdx_id": "BSD-3-Clause",
+        "upstream_origin": "https://github.com/rtissera/libchdr",
+        "upstream_revision": "47d794151b2b64f6aba60304e6480f4f5a2bc24b",
+        "disposition": "statically_linked_subset",
+        "notice_file": "libchdr.txt",
+        "copyright_notices": [
+          "Copyright Romain Tisserand"
+        ],
+        "note": "Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
+        "license_texts": [
+          {
+            "file": "third_party/libchdr/LICENSE.txt",
+            "copied_from": "libchdr LICENSE.txt at commit 47d794151b2b64f6aba60304e6480f4f5a2bc24b, imported byte-identical",
+            "sha256": "e3989a7aee74a91b8cdbdfe204a6b8d03288863ec7533a21c51f1a987ba73539"
+          }
+        ]
+      },
+      {
+        "id": "libchdr-miniz",
+        "name": "miniz (carried by libchdr)",
+        "spdx_id": "MIT",
+        "upstream_origin": "https://github.com/richgel999/miniz",
+        "upstream_revision": "3.1.2 (libchdr deps/miniz-3.1.2 at 47d794151b2b64f6aba60304e6480f4f5a2bc24b)",
+        "disposition": "statically_linked_subset",
+        "notice_file": "libchdr-miniz.txt",
+        "copyright_notices": [
+          "Copyright 2013-2014 RAD Game Tools and Valve Software",
+          "Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC"
+        ],
+        "note": "libchdr's inflate for the CHD zlib codecs. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
+        "license_texts": [
+          {
+            "file": "third_party/libchdr/deps/miniz-3.1.2/LICENSE.txt",
+            "copied_from": "miniz LICENSE (stored as LICENSE.txt) at tag 3.1.2 (commit 77d0dce8627735138c51770d1799a1ef48f2117d), CRLF line endings normalised to LF (third_party/libchdr/PROVENANCE.md)",
+            "sha256": "6f20fa7672b00e2e975c291df737cf227addf3ad32e36fef3fe0f416e4664d3d"
+          }
+        ]
+      },
+      {
+        "id": "libchdr-zstd",
+        "name": "Zstandard decompressor (carried by libchdr)",
+        "spdx_id": "BSD-3-Clause",
+        "upstream_origin": "https://github.com/facebook/zstd",
+        "upstream_revision": "v1.5.7 (libchdr deps/zstd-1.5.7 at 47d794151b2b64f6aba60304e6480f4f5a2bc24b)",
+        "disposition": "statically_linked_subset",
+        "notice_file": "libchdr-zstd.txt",
+        "copyright_notices": [
+          "Copyright (c) Meta Platforms, Inc. and affiliates."
+        ],
+        "note": "libchdr's decoder for the CHD zstd codecs. Upstream offers BSD-3-Clause or GPL-2.0-only; the project uses BSD-3-Clause. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
+        "license_texts": [
+          {
+            "file": "third_party/libchdr/deps/zstd-1.5.7/LICENSE.txt",
+            "copied_from": "Zstandard LICENSE (stored as LICENSE.txt) at tag v1.5.7 (commit f8745da6ff1ad1e7bab384bd1f9d742439278e99), imported byte-identical",
+            "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+          }
+        ]
+      },
+      {
+        "id": "libchdr-lzma-sdk",
+        "name": "LZMA SDK decoder (carried by libchdr)",
+        "spdx_id": "LZMA-SDK-9.22",
+        "upstream_origin": "https://www.7-zip.org/sdk.html",
+        "upstream_revision": "26.02 (libchdr deps/lzma-26.02 at 47d794151b2b64f6aba60304e6480f4f5a2bc24b)",
+        "disposition": "statically_linked_subset",
+        "notice_file": "libchdr-lzma-sdk.txt",
+        "copyright_notices": [
+          "Igor Pavlov: public domain"
+        ],
+        "note": "libchdr's decoder for the CHD lzma codecs; placed in the public domain. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
+        "license_texts": [
+          {
+            "file": "third_party/libchdr/deps/lzma-26.02/LICENSE.txt",
+            "copied_from": "libchdr deps/lzma-26.02/LICENSE (stored as LICENSE.txt) at commit 47d794151b2b64f6aba60304e6480f4f5a2bc24b, final newline added (third_party/libchdr/PROVENANCE.md)",
+            "sha256": "80a299fe3660988ee37f93b21777b1352a7dd0375f6e0747950ad3b0386675e1"
+          }
+        ]
+      },
+      {
+        "id": "libchdr-dr-flac",
+        "name": "dr_flac (carried by libchdr)",
+        "spdx_id": "Unlicense",
+        "upstream_origin": "https://github.com/mackron/dr_libs",
+        "upstream_revision": "dr_flac v0.13.4 (libchdr include/dr_libs/dr_flac.h at 47d794151b2b64f6aba60304e6480f4f5a2bc24b)",
+        "disposition": "statically_linked_subset",
+        "notice_file": "libchdr-dr-flac.txt",
+        "copyright_notices": [
+          "David Reid: public domain (Unlicense) or MIT-0"
+        ],
+        "note": "libchdr's FLAC reader for the CHD flac codecs. Upstream offers the Unlicense or MIT-0, both kept at the end of dr_flac.h; the project elects the Unlicense, as for dr_wav. The licence text is the dr_libs project LICENSE already in the tree. Compiled into the native player (and the nk_disc_expand wrapper the Python tools build) to read CHD disc images at import, through src/core/nk_disc_chd.c; see third_party/libchdr/PROVENANCE.md. Not linked into the runtime.",
+        "license_texts": [
+          {
+            "file": "third_party/dr_libs/LICENSE.txt",
+            "copied_from": "dr_libs LICENSE (third_party/dr_libs/PROVENANCE.md); the same two alternatives dr_flac.h carries at its end",
+            "sha256": "dd1c647e6f767f8ff4b2dfae0fed314726600a01e0cf1ef556afddd5fa96ff15"
+          }
+        ]
+      },
+      {
         "id": "ffmpeg-h264",
         "name": "FFmpeg H.264 decoder subset",
         "spdx_id": "LGPL-2.1-or-later",
