@@ -435,6 +435,7 @@ The folders are the per-user ones of [`SETUP.md`](SETUP.md) (on Windows
 | `<data>/title-input-identities/<DISC_ID>/title-input-identity.json` | `schema_version` 2 | Rebuilt by the next package build | Read as absent; the package card asks for a rebuild |
 | `<data>/fonts/v2/manifest.json` | `schema_version` 2, also named by the folder | n/a (v0.0.1 wrote `v2`) | A later layout gets a folder of its own and leaves `v2` as it is |
 | `<data>/experimental/<DISC_ID>/profile.json` | `schema_version` 1 | n/a | Not accepted: the package check fails closed |
+| `<data>/registry/system.json` (the PSP system settings a game changes; `src/rt/hle.c`, `SR_SYSTEM_REGISTRY` overrides the path) | `schema_version` 1, the only version so far (v0.0.1 and later) | (none exist) | Ignored: the game sees the modeled defaults, and the next registry flush moves the file to `system.json.corrupt` (kept, not deleted) before writing a fresh one |
 
 Logs, the update download (kept only when its SHA-256 matches) and the
 content-addressed package cache (section 6) hold no state a user could lose.

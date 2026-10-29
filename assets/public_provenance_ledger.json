@@ -1732,7 +1732,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f698a721f36eaaa18230f0a3f1cd22565687f1ba8b53a15cfcb945687d9b9f68"
+      "sha256": "d3fdeafa618bc08eec7621d36591da2baeb54c956524f903b9d56591f3b077f1"
     },
     {
       "path": "docs/SETUP.md",
