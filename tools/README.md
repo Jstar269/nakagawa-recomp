@@ -176,6 +176,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
+| `verification_ledger.py` | Generate `docs/HLE_COVERAGE.md` and `src/rt/hle_evidence.h`: the evidence class of every registered HLE NID and every executed VFPU form. |
 | `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
 | `regen_all.py` | Run every committed-output generator in a fixed order, provenance refresh last; `--check` fails on any stale file and prints the one fix command (docs/CI.md). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
@@ -503,6 +504,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_telemetry_export_security.py` | Telemetry export must not leak private diagnostic data. |
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
+| `test_verification_ledger.py` | Verification ledger: committed outputs current, the five classes, curated tables validated both ways, runtime log-once wiring. |
 | `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
 | `test_regen_all.py` | Tests for the all-generator refresh: step inventory, committed outputs current, the downgrade refusal and `--check` failure. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |
@@ -550,6 +552,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
+| `test_disc_expand.py` | Compressed disc images (.cso, .zso, .chd) reach `iso_inspect` and `nk_cli.py bringup` through the `nk_disc_expand` C wrapper (`nk_core/disc_expand_tool.py`), expanded once into the per-title folder; refusals keep their named codes. |
 | `test_format_portability_check.py` | The format portability checker fails a synthetic `%u`/`%d` on a fixed-width value and passes PRI macros and casts, through the API and the CLI. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |

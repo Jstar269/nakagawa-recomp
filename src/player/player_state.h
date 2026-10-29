@@ -6,6 +6,7 @@
 
 #include "nk_types.h"
 #include "nk_iso.h"
+#include "nk_disc_expand.h"
 #include "nk_library.h"
 #include "nk_launch.h"
 #include "nk_font.h"
@@ -428,17 +429,23 @@ typedef struct {
     PlayerNoteKind font_message_kind; /* what font_message says: done, a warning, ... */
 } SetupWizardState;
 
-/* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
- * image, #295 phase 2). The player converts it once into a private ISO under
- * the per-user data root, <data>/discs/<DISC_ID>/<DISC_ID>.iso, and then
- * imports that ISO exactly as a picked disc image. */
+/* A file the player turns into a private ISO once, on its conversion worker,
+ * and then imports exactly as a picked disc image:
+ *  - a PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
+ *    image, #295 phase 2), converted into <data>/discs/<DISC_ID>/<DISC_ID>.iso;
+ *  - a compressed disc image (.cso, .zso, .chd; disc_format names which),
+ *    expanded into <data>/discs/<DISC_ID>/<DISC_ID>.<ext>.iso by
+ *    nk_disc_import (src/core/nk_disc_expand.h). */
 typedef struct {
-    char pbp_path[MAX_PATH_LEN];
+    char pbp_path[MAX_PATH_LEN]; /* the picked file: the package or the compressed image */
     char iso_path[MAX_PATH_LEN];
     char disc_id[MAX_DISC_ID_LEN];
     char title[MAX_TITLE_LEN];
     /* A checked conversion is already at iso_path. */
     bool iso_ready;
+    /* NK_DISC_FORMAT_NONE for a PSN package; otherwise the compressed image's
+       format, and iso_path and disc_id are known once it is expanded. */
+    NkDiscFormat disc_format;
 } PlayerPsnPackage;
 
 typedef struct {
@@ -1142,6 +1149,22 @@ bool player_app_psn_conversion_take_request(PlayerApp *app);
 void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
                                         uint64_t total_bytes);
 void player_app_psn_conversion_finish(PlayerApp *app);
+
+/* Compressed disc images (.cso, .zso, .chd), expanded once at import. */
+/* Check a picked compressed image and fingerprint it. iso_ready is true when
+ * the same unchanged file was expanded before; otherwise the image goes to the
+ * conversion worker (player_app_psn_conversion_begin). False with a named
+ * DISC_IMAGE_* code and a plain sentence for an image the player refuses. */
+bool player_disc_image_inspect(const char *image_path, PlayerPsnPackage *package,
+                               char *code, size_t code_size,
+                               char *message, size_t message_size);
+/* Expand the image into its per-title folder (nk_disc_import) and fill in
+ * package->iso_path and package->disc_id. A failure or a cancel keeps nothing
+ * (code CANCELLED for a cancel). */
+bool player_disc_image_expand(PlayerPsnPackage *package,
+                              const PlayerPsnConvertCallbacks *callbacks,
+                              char *code, size_t code_size,
+                              char *message, size_t message_size);
 
 /* Setup Wizard API */
 void player_app_start_setup_wizard(PlayerApp *app);

@@ -92,6 +92,9 @@ a target and what isn't built yet.
   host reimplementation. Read before proposing any HLE shortcut.
 - [`HLE_AND_WORKAROUND_INVENTORY.md`](HLE_AND_WORKAROUND_INVENTORY.md) — the
   five-tier HLE budget, including `TITLE_SPECIFIC_HLE` driven toward zero.
+- [`HLE_COVERAGE.md`](HLE_COVERAGE.md) — the generated verification ledger: the
+  evidence class of every registered HLE NID and every executed VFPU form, used to
+  choose which HLE to replace with LLE first.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
@@ -247,6 +250,7 @@ Every substantial document carries one status.
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
+| `HLE_COVERAGE.md` | CURRENT | Generated verification ledger: evidence class per registered HLE NID and per executed VFPU form; regenerate with `tools/verification_ledger.py` |
 | `RECOMP_HELPER_INVENTORY.md` | CURRENT | Generated helper inventory of `src/rt/recomp.c` and `src/rt/recomp.h` for #346 (names, defining files, header declaration, reach and provenance class; no line numbers or call counts); regenerate with `tools/recomp_helper_inventory.py`, and `--details` prints lines and counts |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |
 

@@ -69,8 +69,8 @@ EBOOT.BIN.dec*
 # one's digest and where it was copied from), so they must travel with the source.
 # Git does not descend into a directory it has already excluded, so the exclusion
 # is narrowed to /third_party/* and reviewed public dependencies are re-included
-# here. Clay's, stb's, Kenney's, portable-snippets', dr_libs' and Monocypher's pinned sources and provenance must
-# travel with the source export.
+# here. Clay's, stb's, Kenney's, portable-snippets', dr_libs', Monocypher's and libchdr's pinned sources and
+# provenance must travel with the source export.
 !/third_party/licenses/
 !/third_party/clay/
 !/third_party/portable-snippets/
@@ -78,6 +78,7 @@ EBOOT.BIN.dec*
 !/third_party/stb/
 !/third_party/kenney/
 !/third_party/monocypher/
+!/third_party/libchdr/
 
 # Runtime state, logs, captures, and reports
 /logs/
