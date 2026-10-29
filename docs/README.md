@@ -202,6 +202,14 @@ Every substantial document carries one status.
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `PARSER_SAFETY_INVENTORY.json` | CURRENT | Per-boundary hostile-input/resource and campaign inventory (#319); does not establish issue completion |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
+| `decisions/README.md` | CURRENT | Index of decision records and how to add one |
+| `decisions/0001-llvm-ir-backend.md` | CURRENT | Decision record: LLVM IR for the #330 direct backend |
+| `decisions/0002-shared-analysis-ir.md` | CURRENT | Decision record: One analysis IR for the C and LLVM backends |
+| `decisions/0003-lle-first.md` | CURRENT | Decision record: LLE first; HLE only at the kernel and hardware boundary |
+| `decisions/0004-per-path-provenance.md` | CURRENT | Decision record: Provenance recorded per path |
+| `decisions/0005-non-retail-discs.md` | CURRENT | Decision record: Non-retail discs accepted, labelled, keyed by content hash |
+| `decisions/0006-register-promotion-opt-in.md` | CURRENT | Decision record: Register promotion stays opt-in (#284) |
+| `decisions/0007-no-vfpu-simd.md` | CURRENT | Decision record: No VFPU SIMD fast paths (#292) |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |

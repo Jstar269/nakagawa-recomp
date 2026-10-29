@@ -1702,7 +1702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1ec0ec197a923f904179b55fa9343576fa0afdf44d4c69d9aa2990fa83742cb"
+      "sha256": "7ca09691ceb04635b7d6c8562d3875b029bb75e125f8323283a26b9f042f23bc"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
