@@ -4173,6 +4173,7 @@ int main(int argc, char **argv) {
         applied.fullscreen = true;
         applied.master_volume = 55;
         applied.reduce_motion = true;
+        applied.developer_mode = true;
 
         NkRuntimeConfig cfg;
         memset(&cfg, 0, sizeof(cfg));
@@ -4184,6 +4185,7 @@ int main(int argc, char **argv) {
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
+        assert(cfg.developer_mode == true);   /* the runtime's developer pages follow it (#314) */
         assert(cfg.gui_mode == true);   /* untouched by the mapping */
         /* NULL arguments are safe no-ops. */
         player_app_apply_settings_to_session(NULL, &cfg);

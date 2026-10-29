@@ -321,6 +321,24 @@ void      ge_decode_tex_rgba(uint32_t *out);
  * address, buffer width and size (tex_mip_*), with level 0's format, swizzle and CLUT.
  * out must hold that level's (1 << tex_mip_wlog2) * (1 << tex_mip_hlog2) words. */
 void      ge_decode_tex_level_rgba(uint32_t level, uint32_t *out);
+/* Decode one linear surface of guest memory to RGBA8 for the developer VRAM viewer (#314):
+ * format 0-3 is a colour PSM (5650, 5551, 4444, 8888) expanded as the texture decoder does,
+ * 11 is DEPTH16 shown as the VRAMDUMP decoder shows it. `stride` is in pixels. The whole
+ * rectangle is checked readable before any byte is read, and the bytes are copied as stored
+ * (sr_guest_copy_in: no scalar accessor, GE capture or watch hook runs). Like every guest
+ * read, a span the GPU rasterizer still owns is first brought back to guest memory (the
+ * coherence step a CPU read of it takes), so the view shows what the guest would read;
+ * nothing else is written but `out` (width * height words). Returns 0, reading nothing, for
+ * an unreadable rectangle or unsupported arguments. */
+#define GE_VRAM_VIEW_MAX_WIDTH 512u
+#define GE_VRAM_VIEW_MAX_HEIGHT 512u
+int       ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height,
+                                 uint32_t stride, uint32_t format, uint32_t *out);
+/* Level 0 of the texture the GE state names now (tex_addr, tex_w x tex_h, any PSM, swizzle and
+ * the loaded CLUT), decoded by ge_decode_tex_rgba for the viewer. Refused (0, nothing read)
+ * while a GE capture is active, when the texture's bytes are not all readable, when it is
+ * larger than GE_VRAM_VIEW_MAX_*, or when `capacity` words cannot hold it. */
+int       ge_vram_decode_bound_texture(uint32_t *out, size_t capacity);
 void      ge_replay_restore(const GeState *state, const uint16_t *zbuf);
 void      ge_cpu_profile_reset(void);
 void      ge_cpu_profile_get(GeCpuProfileStats *out);
