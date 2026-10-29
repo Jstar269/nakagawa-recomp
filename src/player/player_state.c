@@ -1121,6 +1121,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->online_reports = true;
     settings->share_system_libraries = true;
     settings->check_updates_at_start = false;
+    settings->picker_folder[0] = '\0';
     settings->developer_mode = false;
     settings->experimental_60hz = false;
 }
@@ -1354,6 +1355,13 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.check_updates_at_start = update_val;
     }
 
+    /* A folder that no longer fits is dropped, not cut short. */
+    const char *picker_folder = nk_json_get_string(nk_json_obj_get(root, "picker_folder"));
+    if (picker_folder && strlen(picker_folder) < sizeof(app->settings.picker_folder)) {
+        snprintf(app->settings.picker_folder, sizeof(app->settings.picker_folder), "%s",
+                 picker_folder);
+    }
+
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
     bool sounds_val = false;
     if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
@@ -1371,6 +1379,67 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     nk_json_free(root);
     app->settings_notice[0] = '\0';
     return NK_OK;
+}
+
+/* Writes `"key": "value",` with the value escaped for JSON, as the library
+ * file does: a Windows folder is full of backslashes. */
+static void player_settings_write_string(FILE *f, const char *key, const char *value) {
+    fprintf(f, "  \"%s\": \"", key);
+    for (size_t i = 0; value && value[i]; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if (c == '\"' || c == '\\') {
+            fputc('\\', f);
+            fputc((int)c, f);
+        } else if (c < 0x20) {
+            fprintf(f, "\\u%04x", (unsigned)c);
+        } else {
+            fputc((int)c, f);
+        }
+    }
+    fputs("\",\n", f);
+}
+
+bool player_app_picker_start_folder(const PlayerApp *app, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (app && app->settings.picker_folder[0] &&
+        nk_platform_dir_exists(app->settings.picker_folder) &&
+        strlen(app->settings.picker_folder) < out_size) {
+        snprintf(out, out_size, "%s", app->settings.picker_folder);
+        return true;
+    }
+    return nk_platform_get_desktop_dir(out, out_size);
+}
+
+bool player_path_parent_folder(const char *path, char *out, size_t out_size) {
+    if (!out || out_size < 4) return false;
+    out[0] = '\0';
+    if (!path || !path[0]) return false;
+    size_t length = strlen(path);
+    while (length > 0 && path[length - 1] != '/' && path[length - 1] != '\\') --length;
+    if (length == 0) return false;
+    /* Keep the root's separator: "/" stays "/", and "C:\" stays "C:\" because
+       "C:" alone is the drive's current folder, not its root. */
+    size_t keep = length - 1u;
+    if (keep == 0 || (keep == 2 && path[1] == ':')) keep = length;
+    if (keep >= out_size) return false;
+    memcpy(out, path, keep);
+    out[keep] = '\0';
+    return true;
+}
+
+void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool is_folder) {
+    if (!app || !picked || !picked[0]) return;
+    char folder[sizeof(app->settings.picker_folder)];
+    if (is_folder) {
+        if (strlen(picked) >= sizeof(folder)) return;
+        snprintf(folder, sizeof(folder), "%s", picked);
+    } else if (!player_path_parent_folder(picked, folder, sizeof(folder))) {
+        return;
+    }
+    if (strcmp(folder, app->settings.picker_folder) == 0) return;
+    snprintf(app->settings.picker_folder, sizeof(app->settings.picker_folder), "%s", folder);
+    (void)player_app_save_settings(app, NULL);
 }
 
 NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
@@ -1449,6 +1518,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
             app->settings.share_system_libraries ? "true" : "false");
     fprintf(f, "  \"check_updates_at_start\": %s,\n",
             app->settings.check_updates_at_start ? "true" : "false");
+    player_settings_write_string(f, "picker_folder", app->settings.picker_folder);
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 

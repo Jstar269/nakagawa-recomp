@@ -100,6 +100,11 @@ bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
 /* Resolve the pre-canonical Windows profile location used by older builds.
  * Returns false on non-Windows hosts or when USERPROFILE is unavailable. */
 bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len);
+
+/* The user's Desktop folder, where a first run's file pickers open. Windows:
+ * FOLDERID_Desktop, which follows a Desktop the user moved (or OneDrive moved).
+ * POSIX: $HOME/Desktop when it exists, else $HOME. False when there is none. */
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len);
 #if defined(_WIN32) || defined(_WIN64)
 /* Unit-testable Windows base selection: LOCALAPPDATA, Known Folder, APPDATA.
  * USERPROFILE is deliberately not a candidate. */
