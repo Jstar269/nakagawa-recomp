@@ -6,9 +6,11 @@
     python tools/library_build.py <disc folder> --user-data-root <data folder>
         --work-dir <work folder> [--manifest-dir <folder>] [--jobs N]
 
-Each disc runs the production bring-up (``nk_cli.py bringup --user-data-root``): identify,
-decrypt, analyse, generate, compile and package into the shared data folder, then a short
-hidden launch that names the first failure. The player opened with ``--user-data-root`` on
+Each disc first gets the player's disc check (its encrypted executable and modules decrypted
+from the disc into the title's folder, ``nk_core.decrypt_tool.decrypt_disc``), then runs the
+production bring-up (``nk_cli.py bringup --user-data-root``): identify, import, analyse,
+generate, compile and package into the shared data folder, then a short hidden launch that names
+the first failure. The player opened with ``--user-data-root`` on
 the same folder lists every title that built.
 
 The run never stops on one title: each disc ends with a record (built, or the exact failure)
@@ -39,7 +41,7 @@ import time
 from typing import Any, Callable
 
 from library_sweep import _read_bringup_progress, _terminate_process_tree
-from nk_core import inspect_iso
+from nk_core import decrypt_tool, inspect_iso
 
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
@@ -101,6 +103,18 @@ def identify(path: Path) -> dict[str, Any]:
         "title": metadata.title,
         "disc_version": metadata.version,
     }
+
+
+class DiscDecryption:
+    """The player's disc check: the project's own engine, built once per run."""
+
+    def __init__(self) -> None:
+        self.tool: Path | None = None
+
+    def __call__(self, iso: Path, user_data_root: Path, disc_id: str) -> list[dict]:
+        if self.tool is None:
+            self.tool = decrypt_tool.find_or_build_tool(ROOT)
+        return decrypt_tool.decrypt_disc(iso, user_data_root, disc_id, self.tool)
 
 
 def bringup_command(iso: Path, user_data_root: Path, work_dir: Path,
@@ -202,6 +216,7 @@ class LibraryBuild:
                  title_timeout_seconds: int, launch_timeout_seconds: int,
                  retry_failed: bool = False, limit: int | None = None,
                  identify_disc: Callable[[Path], dict[str, Any]] = identify,
+                 decrypt: Callable[[Path, Path, str], list[dict]] | None = None,
                  command: Callable[[Path, Path, Path, int], list[str]] = bringup_command,
                  log: Callable[[str], None] = print,
                  pause_poll_seconds: float = PAUSE_POLL_SECONDS) -> None:
@@ -216,6 +231,7 @@ class LibraryBuild:
         self.retry_failed = retry_failed
         self.limit = limit
         self.identify_disc = identify_disc
+        self.decrypt = decrypt
         self.command = command
         self.log = log
         self.pause_poll_seconds = pause_poll_seconds
@@ -351,8 +367,20 @@ class LibraryBuild:
                            "work_dir": str(work_dir)})
         self.write_manifest()
         iso = self.disc_root / record["source"]
-        command = self.command(iso, self.user_data_root, work_dir, self.launch_timeout_seconds)
         started = time.monotonic()
+        if self.decrypt is not None and record.get("disc_id"):
+            # A failure here is recorded and the bring-up still runs: it names the boundary.
+            try:
+                rows = self.decrypt(iso, self.user_data_root, record["disc_id"])
+                failed = [row for row in rows if row.get("status") != 0]
+                decrypt_step = {"files": len(rows), "failed": [row["name"] for row in failed],
+                                "first_failure": failed[0].get("message") if failed else None}
+            except Exception as exc:
+                decrypt_step = {"files": None, "failed": None,
+                                "first_failure": f"{type(exc).__name__}: {exc}"[:300]}
+            with self.lock:
+                record["decrypt_step"] = decrypt_step
+        command = self.command(iso, self.user_data_root, work_dir, self.launch_timeout_seconds)
         timed_out = False
         return_code: int | None = None
         try:
@@ -522,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retry-failed", action="store_true",
                         help="Build again the titles whose last attempt failed or timed out")
     parser.add_argument("--limit", type=int, default=None, help="Build at most this many titles")
+    parser.add_argument("--no-decrypt", action="store_true",
+                        help="Skip the disc check that decrypts each disc's executable and modules")
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.title_timeout < 1 or args.launch_timeout < 1:
         parser.error("--jobs, --title-timeout and --launch-timeout must be positive")
@@ -529,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
         args.disc_root, args.user_data_root, args.work_dir, args.manifest_dir,
         jobs=args.jobs, priority=args.priority, title_timeout_seconds=args.title_timeout,
         launch_timeout_seconds=args.launch_timeout, retry_failed=args.retry_failed,
-        limit=args.limit,
+        limit=args.limit, decrypt=None if args.no_decrypt else DiscDecryption(),
     )
     manifest = build.run()
     print(json.dumps(manifest["counts"], sort_keys=True))

@@ -92,9 +92,10 @@ Starting a module that is already started returns `SCE_KERNEL_ERROR_ALREADY_STAR
 
 `tools/library_build.py <disc folder> --user-data-root <data folder> --work-dir <work folder>` builds every disc
 image in a folder into one player data folder, so `nakagawa_player.exe --user-data-root=<data folder>` then lists
-every title that built and shows, for each, how far its first launch went. Each disc runs `nk_cli.py bringup
---user-data-root`, the same route as a single bring-up; several bring-ups share the data folder safely, because the
-library is written under a lock.
+every title that built and shows, for each, how far its first launch went. Each disc first gets the player's disc
+check (its encrypted executable and modules decrypted from your own disc into the title's folder, with the same
+engine), then runs `nk_cli.py bringup --user-data-root`, the same route as a single bring-up; several bring-ups share
+the data folder safely, because the library is written under a lock.
 
 The run never stops on one title. After each title it rewrites `library-build.json` and `library-build.md` in the
 data folder (and in each `--manifest-dir`): the disc ID and title, and either the package built (its size, the

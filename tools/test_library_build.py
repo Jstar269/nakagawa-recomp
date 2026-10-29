@@ -11,13 +11,15 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import library_build  # noqa: E402
-from test_iso_parity import create_test_iso  # noqa: E402
+from nk_core import decrypt_tool  # noqa: E402
+from test_iso_parity import create_test_iso, create_test_iso_with_executables  # noqa: E402
 
 # A stand-in for `nk_cli.py bringup`: what it does depends on the disc file's name.
 STUB_BRINGUP = r'''
@@ -208,6 +210,67 @@ class LibraryBuildTests(unittest.TestCase):
         (self.work / "PAUSE").unlink()
         runner.join(timeout=60)
         self.assertEqual(finished[0]["counts"], {"BUILT": 3})
+
+    def test_the_disc_check_decrypts_before_the_bringup_and_never_stops_it(self) -> None:
+        self.disc("ok-test70050.iso", "TEST70050")
+        self.disc("ok-test70051.iso", "TEST70051")
+        order: list[str] = []
+
+        def decrypt(iso: Path, data: Path, disc_id: str) -> list[dict]:
+            order.append(disc_id)
+            self.assertEqual(data, self.data.resolve())
+            if disc_id == "TEST70051":
+                raise RuntimeError("synthetic engine failure")
+            return [{"member": "PSP_GAME/SYSDIR/EBOOT.BIN", "name": "EBOOT.elf", "status": 0,
+                     "message": ""},
+                    {"member": "PSP_GAME/USRDIR/A.PRX", "name": "A.PRX", "status": 1,
+                     "message": "refused"}]
+
+        result = self.build(jobs=1, decrypt=decrypt).run()
+        self.assertEqual(order, ["TEST70050", "TEST70051"])
+        self.assertEqual(self.calls(), ["ok-test70050", "ok-test70051"],
+                         "every bring-up runs after its disc check, even a failed one")
+        records = self.by_source(result)
+        self.assertEqual(records["ok-test70050.iso"]["decrypt_step"],
+                         {"files": 2, "failed": ["A.PRX"], "first_failure": "refused"})
+        self.assertIn("synthetic engine failure",
+                      records["ok-test70051.iso"]["decrypt_step"]["first_failure"])
+        self.assertEqual(result["counts"], {"BUILT": 2})
+
+    def test_decrypt_disc_writes_the_executable_where_the_player_reads_it(self) -> None:
+        encrypted = self.discs / "encrypted.iso"
+        create_test_iso_with_executables(encrypted, b"~PSP" + b"\0" * 60, disc_id="TEST70060")
+        plain = self.discs / "plain.iso"
+        create_test_iso_with_executables(plain, b"\x7fELF" + b"\0" * 60, disc_id="TEST70061")
+        seen: list[bytes] = []
+
+        def runner(source: Path, destination: Path) -> tuple[int, str]:
+            seen.append(source.read_bytes()[:4])
+            destination.write_bytes(b"decrypted")
+            return 0, "ok"
+
+        rows = decrypt_tool.decrypt_disc(encrypted, self.data, "test70060", runner=runner)
+        target = self.data / "titles" / "TEST70060" / "decrypted" / "EBOOT.elf"
+        self.assertEqual([(row["member"], row["name"], row["status"]) for row in rows],
+                         [("PSP_GAME/SYSDIR/EBOOT.BIN", "EBOOT.elf", 0)])
+        self.assertEqual(seen, [b"~PSP"])
+        self.assertEqual(target.read_bytes(), b"decrypted")
+        again = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
+        self.assertEqual(len(seen), 1, "a decrypted copy already there is kept")
+        self.assertEqual(again[0]["message"], "kept the decrypted copy already there")
+        self.assertEqual(decrypt_tool.decrypt_disc(plain, self.data, "TEST70061", runner=runner),
+                         [], "a plain executable needs nothing")
+
+        # A module set the intake refuses keeps its boundary; the executable is still decrypted.
+        from nk_core import iso_inspect
+        refused = iso_inspect.IsoInspectionError("DUPLICATE_DISC_MODULE_BASENAME: synthetic")
+        target.unlink()
+        with mock.patch.object(iso_inspect, "list_disc_module_candidates", side_effect=refused):
+            rows = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
+        self.assertEqual([(row["name"], row["status"]) for row in rows],
+                         [("(guest modules)", -1), ("EBOOT.elf", 0)])
+        self.assertIn("DUPLICATE_DISC_MODULE_BASENAME", rows[0]["message"])
+        self.assertTrue(target.is_file())
 
     def test_the_default_job_count_follows_the_cpus(self) -> None:
         self.assertEqual(library_build.default_jobs(None), 1)
