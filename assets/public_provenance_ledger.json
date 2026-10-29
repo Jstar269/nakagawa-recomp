@@ -15255,7 +15255,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eb72a1255b009b4df5e21c53c770d9dae9508fadfc397bbe2de6ac0b9c5c10f8"
+      "sha256": "e834c6d92232d68486390166e55f08df8d269f478d4db1a30fbd73497e04a644"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -16252,7 +16252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7a0066bf7e154deeeda7d9be0357ffe94a440a4679c15093a31248f6f18fbf34"
+      "sha256": "de8556f90d82532d46f124cf946986c47df380783c19b5309606244e248df467"
     },
     {
       "path": "tools/test_shader_embed.py",
