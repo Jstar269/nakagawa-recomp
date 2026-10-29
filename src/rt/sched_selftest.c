@@ -136,8 +136,18 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
     return 0;
 }
 
-int gui_on(void) { return 0; }
-void gui_pump(void) {}
+/* The window seam: off unless a test turns it on; each pump records the host time and the
+ * longest gap since the previous pump (or since the test's start mark). */
+static int g_test_gui_on;
+static unsigned g_test_pumps;
+static uint64_t g_test_pump_last_ns, g_test_pump_max_gap_ns;
+int gui_on(void) { return g_test_gui_on; }
+void gui_pump(void) {
+    uint64_t gap = g_test_host_ns - g_test_pump_last_ns;
+    if (gap > g_test_pump_max_gap_ns) g_test_pump_max_gap_ns = gap;
+    g_test_pump_last_ns = g_test_host_ns;
+    g_test_pumps++;
+}
 int gui_headless_acceptance_complete(void) { return 0; }
 static uint32_t g_test_vblank_handler;
 static unsigned g_test_handler_calls;
@@ -316,6 +326,12 @@ static void reset_sched(void) {
     g_test_vblank_delivered = 0;
     g_test_vcount = 0;
     g_test_savedata_busy = 0;
+    g_test_gui_on = 0;
+    g_test_pumps = 0;
+    g_test_pump_last_ns = 0;
+    g_test_pump_max_gap_ns = 0;
+    s_host_pump_ns = 0;
+    s_host_pump_valid = 0;
     g_test_vblank_handler = 0;
     g_test_vblank_no = 0;
     g_test_vblank2_handler = 0;
@@ -999,6 +1015,46 @@ static unsigned preempt_timer_run(int waiter_priority) {
     s_preempt_timer_published = UINT64_MAX;
     s_host_ns_fn = NULL;
     return g_pt_waiter_ran_at;
+}
+
+/* A stalled guest must not stall the host window. The only thread polls in 50 us delays,
+ * as a title's GE-lock wait does, for two host seconds: it blocks before its slice ends, so
+ * sr_yield never runs. The scheduler loop still pumps the window at least once per display
+ * period of host time.
+ *
+ * MUTANT: drop sched_pump_host_window() from the sched_run loop -- the window is pumped
+ *   only from sr_yield, which this thread never reaches, and no pump happens at all. */
+enum { HP_ENTRY = 0x09310000u, HP_START_US = 1000u, HP_DELAY_US = 50u, HP_RUN_US = 2000000u };
+static int g_hp_done;
+static void host_pump_body(CpuState *s) {
+    (void)s;
+    while (g_test_host_ns < (uint64_t)(HP_START_US + HP_RUN_US) * 1000u)
+        sched_delay_current(HP_DELAY_US);
+    g_hp_done = 1;
+}
+static int host_pump_stop(void) { return g_hp_done; }
+
+static void test_waiting_guest_keeps_host_window_pumped(void) {
+    reset_sched();
+    begin_clock_fixture(1, HP_START_US);
+    g_test_gui_on = 1;
+    g_test_pump_last_ns = g_test_host_ns;
+    g_hp_done = 0;
+    g_test_body = host_pump_body;
+    sr_sched_stop_requested = host_pump_stop;
+    sched_run(HP_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    uint64_t tail = g_test_host_ns - g_test_pump_last_ns;
+    if (tail > g_test_pump_max_gap_ns) g_test_pump_max_gap_ns = tail;
+    const unsigned pumps = g_test_pumps;
+    const uint64_t max_gap = g_test_pump_max_gap_ns;
+    g_test_gui_on = 0;
+    s_host_ns_fn = NULL;
+    expect(g_hp_done == 1, "the polling thread ran its two host seconds");
+    expect(pumps >= HP_RUN_US / 16684u,
+           "a thread that only waits in short delays still gets the window pumped every display period");
+    expect(max_gap <= SCHED_HOST_PUMP_PERIOD_NS + 2u * HP_DELAY_US * 1000u,
+           "no gap between window pumps exceeds one display period plus one poll");
 }
 
 static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
@@ -5173,6 +5229,7 @@ int main(int argc, char **argv) {
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
+    test_waiting_guest_keeps_host_window_pumped();
     test_paced_vtime_is_host_anchored();
     test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();

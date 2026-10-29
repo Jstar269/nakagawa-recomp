@@ -1628,6 +1628,24 @@ int sr_vblank_quantum_due(void) {
 }
 static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 
+/* The host window's event pump runs on host time, at most one display period apart, from
+ * both the scheduler loop and sr_yield. Counting guest yields was not enough: a thread that
+ * waits in short delays (a title's GE-lock poll calls DelayThreadCB(50) in a loop) blocks
+ * before its slice ends, so sr_yield rarely ran, the window went unpumped for seconds and
+ * Windows marked it "Not responding" while the guest was stalled. */
+#define SCHED_HOST_PUMP_PERIOD_NS 16683333u
+static uint64_t s_host_pump_ns;
+static int s_host_pump_valid;
+static void sched_pump_host_window(void) {
+    extern void gui_pump(void);
+    if (!gui_on()) return;
+    uint64_t now = host_now_ns();
+    if (s_host_pump_valid && now - s_host_pump_ns < SCHED_HOST_PUMP_PERIOD_NS) return;
+    s_host_pump_ns = now;
+    s_host_pump_valid = 1;
+    gui_pump();
+}
+
 /* Microseconds of virtual time until the next vblank is due (0 when overdue). */
 static uint64_t vblank_due_us(void) {
     pace_setup();
@@ -3093,10 +3111,7 @@ void sr_yield(CpuState *s) {
     if ((s_tick & 0xff) == 0) vtime_refresh(); /* observation only; time already progressed above */
     t111_trace(s);
     /* Pump messages if we are spinning/loading and not calling gui_present. */
-    if (gui_on() && (s_tick & 0x7f) == 0) {
-        extern void gui_pump(void);
-        gui_pump();
-    }
+    sched_pump_host_window();
     /* The PSP VBLANK is an interrupt source: time crossing its deadline latches
      * the bit, and only the eligible-delivery phase runs the handler. */
     scheduler_latch_due_events();
@@ -4924,6 +4939,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
+        sched_pump_host_window();   /* every pass, so a guest that only waits still pumps */
         if (sched_dump && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
