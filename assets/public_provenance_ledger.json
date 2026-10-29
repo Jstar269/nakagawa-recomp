@@ -761,7 +761,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "331355ec9073337d4c9b34d5c10994f60262b8d641a6f80f40d1bfbe1cced6da"
+      "sha256": "ef07a82fa15a2073bd4196ad4d5162ae77a5b4e9e8fea8ca8b742af0a0aa172a"
     },
     {
       "path": "assets/flight_recorder_schema.json",
@@ -1480,7 +1480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "645e3452ca8b8e3182c045e585cd4bcbed3217f13b115e2e28775f4051e2158a"
+      "sha256": "430681456e7562a424bcb2a8bb2153216f0a4d2c127b481c3b30eaeeaea54a65"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -12737,7 +12737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e84204ade71ed285f718d1fe0ab765d232048d2e0a830f35ca7eebafd465181a"
+      "sha256": "5c6343f2bc639cea8fe97bf97142c675d654e9fbbda09f5449fe28469b5b30d2"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -14798,7 +14798,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50ecfa63d1e5d5e0ded059f806705ae54f896fc27025567a50a7dfdef1d9e4ec"
+      "sha256": "5dbfaa0f89c47a78e50d6faf28efcc3e56d37bef1c6d48584fb7703f7ea06d70"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
