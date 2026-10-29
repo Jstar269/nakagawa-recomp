@@ -15,6 +15,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +149,9 @@ struct PlayerUiNk {
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
+    /* The titles this frame shows (player_ui_nk_shown_titles). */
+    int shown_titles[PLAYER_UI_SHOWN_TITLES_MAX];
+    size_t shown_count;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
     char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
@@ -260,6 +264,10 @@ static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
         }
     }
     return true;
+}
+
+bool player_ui_nk_built_with_launcher(void) {
+    return nk_ui_sdlr_available() && nk_ui_ttf_available();
 }
 
 PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
@@ -459,7 +467,9 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
         case WIZARD_STEP_SELECT_GAME:
             model.has_iso = game->iso_path[0] != '\0';
             model.iso_selected = app->wizard.iso_selected;
-            model.iso_path = game->iso_path;
+            /* A compressed image shows the file the user picked. */
+            model.iso_path = game->source_image_path[0] ? game->source_image_path
+                                                        : game->iso_path;
             player_ui_format_size(size, sizeof(size), game->iso_size_bytes);
             snprintf(player->wizard_detail, sizeof(player->wizard_detail),
                      "Size: %s \xC2\xB7 Disc ID: %s", size,
@@ -565,7 +575,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
-    model.iso_path = game->iso_path;
+    model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
                  "%s Then open the disc again.", player_preflight_plain_message(blocking));
@@ -1287,6 +1297,14 @@ bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
            nk_ui_router_depth(player->router) == 1u;
 }
 
+size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap) {
+    size_t count;
+    if (player == NULL || out == NULL) return 0u;
+    count = player->shown_count < cap ? player->shown_count : cap;
+    memcpy(out, player->shown_titles, count * sizeof(out[0]));
+    return count;
+}
+
 bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     NkUiEvent translated[8];
     size_t count;
@@ -1564,22 +1582,16 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->is_demo = game->is_showcase_package;
     out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
                : game->is_sample ? "Test program" : "Your disc";
+    /* Disc art is asked for by the screen that shows it
+       (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
     out->picture = NULL;
-    if (out->art_kind == NK_UI_ART_NONE) {
-        player_ui_art_get(player->art, game->iso_path, false, &out->icon, NULL);
-    }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (strcmp(player->status_reported[index], out->library_status) != 0) {
         snprintf(player->status_reported[index], sizeof(player->status_reported[index]), "%s",
                  out->library_status);
         printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
                out->library_status);
-    }
-    if (out->icon != NULL && !player->icon_reported[index]) {
-        player->icon_reported[index] = true;
-        printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%d width=%u height=%u\n", index,
-               (unsigned)out->icon->width, (unsigned)out->icon->height);
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
@@ -1637,12 +1649,96 @@ static void player_ui_fill_titles(PlayerUiNk *player, const PlayerApp *app,
     }
 }
 
+/* Asks the art cache for one title's disc icon (and its picture, for the
+   title page). Only titles on screen ask: the cache holds PLAYER_UI_ART_SLOTS
+   discs, and a library that asked for every title on every frame filled it
+   with the first ones, so later pages never showed their art. */
+static void player_ui_note_shown(PlayerUiNk *player, size_t index) {
+    if (player->shown_count < PLAYER_UI_SHOWN_TITLES_MAX && index <= (size_t)INT_MAX) {
+        player->shown_titles[player->shown_count++] = (int)index;
+    }
+}
+
+static void player_ui_title_art(PlayerUiNk *player, const PlayerApp *app, size_t index,
+                                bool want_picture) {
+    PlayerUiTitle *title = &player->titles[index];
+    player_ui_note_shown(player, index);
+    if (title->art_kind != NK_UI_ART_NONE) return;
+    player_ui_art_get(player->art, app->games[index].iso_path, want_picture,
+                      &title->icon, want_picture ? &title->picture : NULL);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (title->icon != NULL && !player->icon_reported[index]) {
+        player->icon_reported[index] = true;
+        printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%zu width=%u height=%u\n", index,
+               (unsigned)title->icon->width, (unsigned)title->icon->height);
+    }
+#endif
+}
+
+/* The title at grid position `position` (counting titles that are not demos),
+   or `count` when the position holds no title. */
+static size_t player_ui_library_title_at(const PlayerUiTitle *titles, size_t count,
+                                         size_t position) {
+    for (size_t i = 0u; i < count; ++i) {
+        if (titles[i].is_demo) continue;
+        if (position == 0u) return i;
+        --position;
+    }
+    return count;
+}
+
+/* The disc art of the games on the library page shown: grid positions
+   [page * page_size, (page + 1) * page_size), counting the titles that are not
+   demos, as the library screen lays them out. */
+static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
+                                       size_t count, size_t page, size_t page_size) {
+    size_t first;
+    size_t position = 0u;
+    if (page_size == 0u || page > SIZE_MAX / page_size) return;
+    first = page * page_size;
+    for (size_t i = 0u; i < count; ++i) {
+        if (player->titles[i].is_demo) {
+            player_ui_note_shown(player, i);  /* every page shows the demos */
+            continue;
+        }
+        if (position >= first && position < first + page_size) {
+            player_ui_title_art(player, app, i, false);
+        }
+        ++position;
+    }
+}
+
 
 static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
     uint32_t value = focused;
     if (value < PLAYER_UI_ID_LIBRARY_ITEM_BASE) return count;
     value -= PLAYER_UI_ID_LIBRARY_ITEM_BASE;
     return value < count ? (size_t)value : count;
+}
+
+/* Shows library page `page`. A card with focus hands it to the card in the
+   same place on the new page (the last one when the page is shorter), since
+   the page shown follows the focused card. */
+static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t page_size,
+                                        size_t slots, size_t page) {
+    NkUiId focused = nk_ui_focused(player->ui);
+    size_t index = player_ui_focused_title_index(focused, count);
+    size_t slot = SIZE_MAX;
+    if (index < count) {
+        size_t position = player_ui_library_grid_position(player->titles, count, index);
+        if (position < count) slot = position % page_size;
+    } else if (focused == PLAYER_UI_ID_LIBRARY_ADD) {
+        slot = (slots - 1u) % page_size;
+    }
+    player->library_page = page;
+    if (slot != SIZE_MAX) {
+        size_t position = page * page_size + slot;
+        if (position >= slots) position = slots - 1u;
+        index = position + 1u < slots
+            ? player_ui_library_title_at(player->titles, count, position) : count;
+        nk_ui_focus(player->ui, index < count ? PLAYER_UI_ID_LIBRARY_ITEM(index)
+                                              : PLAYER_UI_ID_LIBRARY_ADD);
+    }
 }
 
 bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
@@ -1725,6 +1821,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         }
     }
     nk_ui_begin(player->ui, now_s);
+    player->shown_count = 0u;
     {
         NkUiId restore = nk_ui_router_take_focus_restore(player->router);
         if (restore != 0u) nk_ui_focus(player->ui, restore);
@@ -1809,6 +1906,26 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         else if (player->library_page > (slots - 1u) / page_size) {
             player->library_page = (slots - 1u) / page_size;
         }
+        if (slots > page_size) {
+            /* Page Down and Page Up, the pad's triggers and the mouse wheel turn
+               the page, so a library of hundreds of games is not a hundred
+               presses of NEXT. */
+            NkUiNavDir dir = NK_UI_DIR_NONE;
+            size_t last_page = (slots - 1u) / page_size;
+            while (nk_ui_take_event(player->ui, NK_UI_EV_PAGE, &dir) ||
+                   nk_ui_take_event(player->ui, NK_UI_EV_WHEEL, &dir)) {
+                size_t page = player->library_page;
+                if ((dir == NK_UI_DIR_RIGHT || dir == NK_UI_DIR_DOWN) && page < last_page) {
+                    ++page;
+                } else if ((dir == NK_UI_DIR_LEFT || dir == NK_UI_DIR_UP) && page > 0u) {
+                    --page;
+                } else {
+                    continue;
+                }
+                player_ui_library_turn_page(player, count, page_size, slots, page);
+            }
+        }
+        player_ui_library_page_art(player, app, count, player->library_page, page_size);
         PlayerUiLibraryModel model;
         memset(&model, 0, sizeof(model));
         model.titles = player->titles;
@@ -1868,11 +1985,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);
-            if (player->titles[index].art_kind == NK_UI_ART_NONE) {
-                player_ui_art_get(player->art, app->games[index].iso_path, true,
-                                  &player->titles[index].icon,
-                                  &player->titles[index].picture);
-            }
+            player_ui_title_art(player, app, (size_t)index, true);
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;

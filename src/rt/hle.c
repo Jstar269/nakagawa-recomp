@@ -59,6 +59,7 @@
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
@@ -174,6 +175,8 @@ typedef struct {
     uint32_t unsupported_error;
     atomic_uint unimplemented_error;
     atomic_uint unsupported_state;
+    unsigned char unverified;      /* 1 when docs/HLE_COVERAGE.md classes the NID unverified */
+    atomic_uint unverified_noted;  /* set by the first call's log line */
 } HleEntry;
 typedef struct HleDevctlRefusal {
     struct HleDevctlRefusal *next;
@@ -237,6 +240,25 @@ static void hle_note_unsupported(HleEntry *e) {
     hle_register_unsupported_summary();
     fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)\n",
             e->name, e->nid, e->unsupported_error);
+}
+
+/* One stderr line the first time a NID with no recorded evidence runs its handler. Diagnostic
+ * only: it changes no result or state. The class comes from the generated hle_evidence.h. */
+static int hle_nid_unverified(uint32_t nid) {
+    size_t lo = 0u, hi = SR_HLE_UNVERIFIED_NID_COUNT;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        if (sr_hle_unverified_nids[mid] < nid) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < SR_HLE_UNVERIFIED_NID_COUNT && sr_hle_unverified_nids[lo] == nid;
+}
+
+static void hle_note_unverified(HleEntry *e) {
+    if (!e->unverified || atomic_exchange_explicit(&e->unverified_noted, 1u, memory_order_acq_rel))
+        return;
+    fprintf(stderr, "HLE: unverified: %s (NID 0x%08x) has no recorded evidence (docs/HLE_COVERAGE.md)\n",
+            e->name, e->nid);
 }
 
 static void hle_note_success_exception(HleEntry *e) {
@@ -428,6 +450,8 @@ static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
         atomic_store_explicit(&e->unimplemented_error, unsupported_error,
                               memory_order_release);
         atomic_store_explicit(&e->unsupported_state, 0u, memory_order_release);
+        e->unverified = (unsigned char)hle_nid_unverified(nid);
+        atomic_store_explicit(&e->unverified_noted, 0u, memory_order_release);
     }
     hle_unlock();
 }
@@ -14331,12 +14355,21 @@ extern void f_32200000(CpuState *s);
 extern void f_32280000(CpuState *s);
 extern void f_322f8868(CpuState *s);
 
-/* sceKernelLoadModule(path, flags, option). */
+static uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity);
+
+/* sceKernelLoadModule(path, flags, option). The PSP's module manager opens the path with
+ * sceIoOpen in the caller's context (uofw src/kd/modulemgr/loadModule.c), so a relative
+ * path names the file under the calling thread's current directory, as every file-manager
+ * path does. The module is then the one the manifest declares by that full path: a title
+ * that changes into its data directory and loads "Target/libfont.prx" loads the declared,
+ * translated libfont, not an undeclared host-served record with no start entry (#299). */
 static uint32_t h_LoadModule(CpuState *s) {
-    char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
-        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    return load_module_by_guest_path(path, A2);
+    char resolved[512];
+    uint32_t rc = io_guest_path(A0, resolved, sizeof(resolved));
+    /* An unreadable path string is the module manager's illegal address, not an I/O error. */
+    if (rc == 0x80010016u) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (rc != 0u) return rc;
+    return load_module_by_guest_path(resolved, A2);
 }
 
 static const char *hle_fd_guest_path(uint32_t fd);
@@ -28248,7 +28281,9 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
@@ -28372,6 +28407,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         hle_note_unsupported(e);
         ret = e->unsupported_error;
     } else {
+        hle_note_unverified(e);
         ret = e->fn(s);
         hle_note_success_exception(e);
     }

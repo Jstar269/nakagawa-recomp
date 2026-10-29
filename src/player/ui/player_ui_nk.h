@@ -812,6 +812,9 @@ void player_ui_version_line(const char *version, long long epoch, char *out, siz
 PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 struct SDL_Window *window,
                                 char *error, size_t error_size);
+/* False when this build was compiled without the SDL_Renderer or SDL3_ttf
+   support player_ui_nk_create needs, so it can never succeed here. */
+bool player_ui_nk_built_with_launcher(void);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
@@ -820,6 +823,13 @@ bool player_ui_nk_draws_view(int view);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);
+/* The most titles one frame shows: a library page's cards and its demos. */
+#define PLAYER_UI_SHOWN_TITLES_MAX 256u
+/* The library indices of the titles the last frame showed (the cards of the
+   library page and its demos, or the title page's title), at most `cap` of
+   them. The package check looks at these first: checking every title of a
+   large library reads every disc. */
+size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 /* Test only: a title's model as the last frame filled it, or NULL. */
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);

@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nk_cli  # noqa: E402
 import title_manifest  # noqa: E402
-from nk_core import package_cache  # noqa: E402
 from nk_core.fonts import import_fonts, inspect_font_cache  # noqa: E402
+from nk_core.library import MAX_LIBRARY_GAMES, MAX_LIBRARY_JSON_BYTES  # noqa: E402
 from nk_core.prereq_fetcher import default_data_root  # noqa: E402
 from test_font_provisioning import latin_pgf  # noqa: E402
 from nk_core import (
@@ -2087,8 +2087,45 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(record.settings_override, {"resolution_scale": 4})
         self.assertEqual(record.last_played, 1234.5)
 
+    def test_player_and_tools_share_the_library_limits(self) -> None:
+        """A library the tools write must load in the player: both readers hold the
+        same record and byte limits (the player's were 64 records and 4 MiB)."""
+        root = Path(__file__).resolve().parents[1]
+        types_h = (root / "src" / "core" / "nk_types.h").read_text(encoding="utf-8")
+        library_h = (root / "src" / "core" / "nk_library.h").read_text(encoding="utf-8")
+        games = re.search(r"#define NK_MAX_GAMES (\d+)", types_h)
+        size = re.search(r"#define NK_LIBRARY_MAX_BYTES \((\d+)L \* 1024L \* 1024L\)", library_h)
+        self.assertIsNotNone(games)
+        self.assertIsNotNone(size)
+        self.assertEqual(int(games.group(1)), MAX_LIBRARY_GAMES)
+        self.assertEqual(int(size.group(1)) * 1024 * 1024, MAX_LIBRARY_JSON_BYTES)
+
+    def test_full_library_written_by_the_player_is_readable(self) -> None:
+        """MAX_LIBRARY_GAMES records in the player's format (nk_library_save), with
+        long paths, fit the byte limit and the structural budgets of the CLI route."""
+        folder = "D:/PSP collection/" + "A" * 80
+        games = [{
+            "disc_id": f"TEST{i:05d}", "title_name": "Synthetic title " + "T" * 100,
+            "disc_version": "1.00", "iso_path": f"{folder}/disc-{i:05d}.iso",
+            "prepared_root": f"{folder}/prepared/TEST{i:05d}",
+            "title_id": f"experimental-test{i:05d}", "iso_size_bytes": 1800000000,
+            "status": 1, "is_experimental": True, "executable_eboot_kind": 2,
+            "executable_boot_kind": 1, "executable_selection": 1,
+            "executable_boot_fallback": False, "boot_executable": "EBOOT.BIN",
+            "selected_executable": "EBOOT.BIN", "is_prepared": True,
+            "assets_staged": False, "extracted_asset_count": 0,
+            "extracted_audio_count": 0, "extracted_visual_count": 0,
+            "extracted_layout_count": 0, "last_played": "",
+        } for i in range(MAX_LIBRARY_GAMES)]
+        path = self.temp_dir / "library.json"
+        path.write_text(json.dumps({"schema_version": 1, "games": games}, indent=6),
+                        encoding="utf-8")
+        self.assertLess(path.stat().st_size, MAX_LIBRARY_JSON_BYTES)
+        payload = nk_cli._read_library_json(path)
+        self.assertEqual(len(payload["games"]), MAX_LIBRARY_GAMES)
+
     def test_library_exactly_at_byte_limit_is_accepted(self) -> None:
-        limit = package_cache.MAX_CACHE_JSON_BYTES
+        limit = MAX_LIBRARY_JSON_BYTES
         prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "TEST80002", "settings_override": {"pad": "'
         suffix = '"}}]}'
         text = prefix + "A" * (limit - len(prefix) - len(suffix)) + suffix
@@ -2101,17 +2138,17 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     def test_large_fully_populated_library_round_trip(self) -> None:
         path = self.temp_dir / "large_library.json"
         lib = GameLibrary(storage_file=path)
-        for index in range(1200):
+        for index in range(MAX_LIBRARY_GAMES):
             lib.add_or_update_game(LibraryGameRecord(
                 disc_id=f"SYNTH{index:05d}", title_name=f"Synthetic {index}",
                 iso_path="synthetic.iso", settings_override={"scale": 2},
             ))
         lib.save()
-        self.assertLess(path.stat().st_size, package_cache.MAX_CACHE_JSON_BYTES)
+        self.assertLess(path.stat().st_size, MAX_LIBRARY_JSON_BYTES)
         loaded = GameLibrary.load(path)
-        self.assertEqual(loaded.count(), 1200)
-        self.assertEqual(loaded.get_game("SYNTH01199").to_dict(),
-                         lib.get_game("SYNTH01199").to_dict())
+        self.assertEqual(loaded.count(), MAX_LIBRARY_GAMES)
+        self.assertEqual(loaded.get_game("SYNTH04095").to_dict(),
+                         lib.get_game("SYNTH04095").to_dict())
 
     def test_save_rejects_unreadable_output_without_replacing_library(self) -> None:
         path = self.temp_dir / "preserved_library.json"
@@ -2122,7 +2159,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         lib.save()
         before = path.read_bytes()
         lib.get_game("SYNTH00001").settings_override = {
-            "padding": "x" * package_cache.MAX_CACHE_JSON_BYTES,
+            "padding": "x" * MAX_LIBRARY_JSON_BYTES,
         }
         with self.assertRaisesRegex(ValueError, "byte.*limit"):
             lib.save()
@@ -2141,7 +2178,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertFalse(path.with_name(path.name + ".tmp").exists())
 
     def test_library_one_byte_over_limit_is_rejected(self) -> None:
-        limit = package_cache.MAX_CACHE_JSON_BYTES
+        limit = MAX_LIBRARY_JSON_BYTES
         prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "TEST80002", "settings_override": {"pad": "'
         suffix = '"}}]}'
         text = prefix + "A" * (limit + 1 - len(prefix) - len(suffix)) + suffix
@@ -2303,7 +2340,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     def test_nk_cli_library_route_enforces_the_same_ceilings(self) -> None:
         user_root = self.temp_dir / "user"
         user_root.mkdir()
-        limit = package_cache.MAX_CACHE_JSON_BYTES
+        limit = MAX_LIBRARY_JSON_BYTES
         prefix = '{"schema_version": 1, "games": [{"disc_id": "TEST80002", "pad": "'
         suffix = '"}]}'
         (user_root / "library.json").write_text(
@@ -2341,6 +2378,69 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(entry["title_id"], "synthetic")
         self.assertEqual(entry["iso_path"], "replacement.iso")
 
+    def test_bringup_library_writers_sharing_a_root_keep_every_title(self) -> None:
+        """Bring-ups building into one data folder (bringup --user-data-root) each rewrite
+        library.json from what they read; the library lock keeps every title they add."""
+        import threading
+        import time as time_module
+
+        self._cli_library(0)
+        original_read = nk_cli._read_library_json
+
+        def slow_read(path):
+            payload = original_read(path)
+            time_module.sleep(0.05)  # widen the read-to-write window the lock must cover
+            return payload
+
+        errors: list[BaseException] = []
+
+        def add(index: int) -> None:
+            try:
+                nk_cli._write_bringup_library(
+                    self.temp_dir, Path(f"disc-{index}.iso"),
+                    SimpleNamespace(disc_id=f"TEST{index:05d}", title=f"Title {index}",
+                                    version="1.01"),
+                    "synthetic", "BOOT.BIN", True,
+                )
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        with patch.object(nk_cli, "_read_library_json", side_effect=slow_read):
+            threads = [threading.Thread(target=add, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
+        library = json.loads((self.temp_dir / "library.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(game["disc_id"] for game in library["games"]),
+                         [f"TEST{index:05d}" for index in range(6)])
+        entry = nk_cli._load_library_entry(self.temp_dir, "TEST00003")
+        self.assertEqual(entry["title_name"], "Title 3", "the card names the game")
+        self.assertEqual(entry["disc_version"], "1.01")
+
+    def test_bringup_builds_into_a_shared_data_folder(self) -> None:
+        """bringup --user-data-root builds into that folder, not <work-dir>/user-data."""
+        shared = self.temp_dir / "collection-data"
+        work = self.temp_dir / "work"
+        report = work / "bringup.json"
+        args = SimpleNamespace(
+            iso=str(self.temp_dir / "missing.iso"), work_dir=str(work), report=str(report),
+            user_data_root=shared, launch_timeout=20, instruction_trace=False,
+            private_sweep_import_report=None, sweep_progress_report=None,
+        )
+        usage = subprocess.run(
+            [sys.executable, str(Path(nk_cli.__file__)), "bringup", "--help"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("--user-data-root", usage)
+        with patch("builtins.print"):
+            self.assertEqual(nk_cli.cmd_bringup(args), 1)
+        self.assertTrue(shared.is_dir())
+        self.assertFalse((work / "user-data").exists())
+        self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["failure_class"],
+                         "INVALID_ISO")
+
     def test_cli_library_append_over_limit_preserves_existing_file(self) -> None:
         path = self._cli_library(2)
         before = path.read_bytes()
@@ -2359,7 +2459,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
             nk_cli._write_bringup_library(
                 self.temp_dir, Path("synthetic.iso"),
                 SimpleNamespace(disc_id="TEST99999"),
-                "A" * package_cache.MAX_CACHE_JSON_BYTES, "BOOT.BIN", False,
+                "A" * MAX_LIBRARY_JSON_BYTES, "BOOT.BIN", False,
             )
         self.assertEqual(path.read_bytes(), before)
 

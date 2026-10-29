@@ -306,13 +306,84 @@ class PerfSummaryDiffTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("expected 'nakagawa-perf-v1'", result.stderr)
 
+    def _run_aot_vfpu_harness(self, census: bool) -> dict:
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is not available")
+        # 4096 straight-line vadd.s words (opcode 0x18) at consecutive PCs, then 4096 vdot.q
+        # (opcode 0x19) words each followed by a jump-away PC, then 8192 scalar words.
+        harness = (
+            "#include \"perf.h\"\n"
+            "int main(void) {\n"
+            "    sr_perf_init();\n"
+            "    sr_perf_guest_begin();\n"
+            "    sr_perf_aot_begin(0x1000u);\n"
+            "    uint32_t pc = 0x1000u;\n"
+            "    for (unsigned i = 0; i < 4096u; i++, pc += 4u) sr_perf_aot_instruction(pc, 0x60000000u);\n"
+            "    for (unsigned i = 0; i < 4096u; i++) {\n"
+            "        sr_perf_aot_instruction(0x20000u + i * 16u, 0x64008080u);\n"
+            "        sr_perf_aot_instruction(0x40000u + i * 16u, 0x00000000u);\n"
+            "    }\n"
+            "    pc = 0x80000u;\n"
+            "    for (unsigned i = 0; i < 8192u; i++, pc += 4u) sr_perf_aot_instruction(pc, 0x24020001u);\n"
+            "    sr_perf_aot_end();\n"
+            "    sr_perf_guest_end();\n"
+            "    sr_perf_shutdown();\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        with scratch_dir.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "aot_vfpu_harness.c"
+            executable = root / ("aot_vfpu_harness.exe" if os.name == "nt" else "aot_vfpu_harness")
+            source.write_text(harness, encoding="ascii")
+            flags = ["-DPERF_AOT_INSTRUCTIONS=1"] if census else []
+            built = subprocess.run(
+                [compiler, "-std=c11", *flags, "-I", str(ROOT / "src" / "rt"), str(source),
+                 str(ROOT / "src" / "rt" / "perf.c"), "-o", str(executable)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            out = root / "summary.json"
+            env = os.environ.copy()
+            env.update({"SR_PERF": "1", "SR_PERF_JSON": str(out)})
+            env.pop("SR_PERF_CSV", None)
+            ran = subprocess.run([str(executable)], env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            value = json.loads(out.read_text(encoding="utf-8"))
+        perf_summary_diff.validate_summary(value)
+        return value
+
+    def test_census_build_samples_native_aot_vfpu_time_per_family(self):
+        value = self._run_aot_vfpu_harness(census=True)
+        families = value["vfpu"]["aot_families"]
+        self.assertEqual(families["status"], "sampled")
+        rows = families["families"]
+        self.assertEqual(rows["vfpu0"]["count"], 4096)
+        self.assertEqual(rows["vfpu1"]["count"], 4096)
+        self.assertEqual(sum(row["count"] for row in rows.values()), 8192)
+        # Straight-line VFPU words are sampled once per stride; a word whose successor is not at
+        # pc + 4 never yields a sample, so control flow cannot land in a family's time.
+        self.assertEqual(rows["vfpu0"]["samples"], 4096 // families["stride"] - 1)
+        self.assertEqual(rows["vfpu1"]["samples"], 0)
+        self.assertEqual(rows["vfpu1"]["estimated_ns"], 0)
+        self.assertGreater(families["baseline_samples"], 0)
+        statuses = {row["metric"]: row["status"] for row in value["boundaries"]}
+        self.assertEqual(statuses["aot_vfpu_time"], "sampled")
+
+    def test_default_build_reports_aot_vfpu_time_not_compiled(self):
+        value = self._run_aot_vfpu_harness(census=False)
+        families = value["vfpu"]["aot_families"]
+        self.assertEqual(families["status"], "not_compiled")
+        statuses = {row["metric"]: row["status"] for row in value["boundaries"]}
+        self.assertEqual(statuses["aot_vfpu_time"], "partial")
+
     def test_runtime_csv_exports_gpu_replay_counter_deltas(self):
         compiler = shutil.which("gcc")
         if compiler is None:
             self.skipTest("gcc is not available")
         names = ["queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
                  "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps",
-                 "upload_ring_fallbacks"]
+                 "upload_ring_fallbacks", "snapshot_copy_px"]
         with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "gpu_replay_harness.c"
@@ -332,6 +403,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
                 "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 107;\n"
                 "    counts[SR_PERF_GPU_DRAWS] = 3;\n"
                 "    counts[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = 2;\n"
+                "    counts[SR_PERF_GPU_SNAPSHOT_COPY_PX] = 4096;\n"
                 "    sr_perf_shutdown();\n"
                 "    return 0;\n"
                 "}\n",
@@ -358,7 +430,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
             expected = {"queue_submits": 7, "batches": 0, "draws": 3, "snapshot_requests": 0,
                         "snapshot_copies": 0, "upload_ring_reservations": 0,
                         "upload_ring_bytes": 0, "upload_ring_wraps": 0,
-                        "upload_ring_fallbacks": 2}
+                        "upload_ring_fallbacks": 2, "snapshot_copy_px": 4096}
             for name in names:
                 column = f"gpu_replay_{name}"
                 self.assertIn(column, header)

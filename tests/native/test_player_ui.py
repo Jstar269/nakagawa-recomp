@@ -281,6 +281,27 @@ def synthetic_art_iso(
     path.write_bytes(image)
 
 
+def write_large_library(scratch: Path, data: Path, count: int) -> None:
+    """A saved library of `count` experimental titles, each on its own synthetic
+    disc with its own one-pixel ICON0.PNG, in the player's data folder `data`."""
+    discs = scratch / "large-library"
+    discs.mkdir()
+    games = []
+    for index in range(count):
+        disc_id = f"SCAL{index:05d}"
+        iso = discs / f"{disc_id}.iso"
+        synthetic_art_iso(iso, include_picture=False,
+                          icon_bytes=png_pixel(index % 251, (index * 7) % 251, 90))
+        games.append({
+            "disc_id": disc_id, "title_name": f"Synthetic title {index}",
+            "iso_path": str(iso), "title_id": f"experimental-{disc_id.lower()}",
+            "is_experimental": True, "selected_executable": "EBOOT.BIN",
+        })
+    data.mkdir(parents=True)
+    (data / "library.json").write_text(
+        json.dumps({"schema_version": 1, "games": games}), encoding="utf-8")
+
+
 def synthetic_pbp_package(path: Path, *, disc_id: str = "TEST00424",
                           title: str = "Store Package") -> None:
     """Write a synthetic PlayStation Store package named like a disc image.
@@ -835,6 +856,8 @@ class NativePlayerUiTests(unittest.TestCase):
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
+        library_titles: int = 0,
+        dedicated_data_root: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1014,6 +1037,15 @@ class NativePlayerUiTests(unittest.TestCase):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if ready_source_iso is not None:
                 ui_iso_path = ready_source_iso
+            if library_titles:
+                # Where this run's player reads its library (LOCALAPPDATA on Windows,
+                # XDG_DATA_HOME elsewhere; both point into the scratch folder below).
+                write_large_library(
+                    scratch,
+                    localappdata / "Nakagawa" / "data" if os.name == "nt"
+                    else userprofile / "data" / "nakagawa-recomp",
+                    library_titles,
+                )
             if stale_package:
                 synthetic_stale_package(runtime_root)
             if incompatible_package:
@@ -1091,6 +1123,9 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
                 (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
+            dedicated = scratch / "dedicated-data-root"
+            if dedicated_data_root:
+                args.append(f"--user-data-root={dedicated}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
 
@@ -1130,6 +1165,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 if isinstance(candidate, dict) and "fps_cap" in candidate:
                     persisted_settings = candidate
                     break
+
+            def files_under(folder: Path) -> list[str]:
+                return sorted(path.relative_to(folder).as_posix()
+                              for path in folder.rglob("*") if path.is_file())
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -1141,6 +1180,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
                 "settings": persisted_settings,
+                "default_profile_files": files_under(localappdata / "Nakagawa"),
+                "dedicated_files": files_under(dedicated),
                 "downloaded_tool_marker_exists": (
                     tool_marker.is_file() if tool_marker is not None else None
                 ),
@@ -1311,6 +1352,41 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotIn("next_ui_disc_icon", missing["stdout"],
                          "an unreadable disc keeps the placeholder")
 
+    def test_a_library_of_hundreds_of_titles_loads_pages_and_checks_what_it_shows(self) -> None:
+        """A library of 300 titles: every one loads (the player held 64, and one
+        more made the whole library load empty); the first card, not NEXT, has the
+        first focus; while the first page shows, only its titles get a package
+        check (a full check reads the disc, and every title was checked in turn);
+        Page Down turns pages, focus keeps its place, and the page shown gets its
+        disc icons (the art cache was filled by the first 64 titles)."""
+        events = (("WAIT_MS=4000", "KEY_RIGHT", "WAIT_MS=300")
+                  + ("KEY_PAGEDOWN", "WAIT_MS=100") * 9 + ("WAIT_MS=3000",))
+        run = self.run_player("library", events, library_titles=300, timeout=180.0)
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in stdout:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        statuses = {int(i) for i in re.findall(r"next_ui_library_status index=(\d+)", stdout)}
+        self.assertTrue(set(range(300)) <= statuses, "every saved title is in the launcher")
+
+        first_page = stdout.split("[PLAYER_UI_TEST] wait_ms result=PASS", 1)[0]
+        checked_first = {int(i) for i in re.findall(r"package_check index=(\d+)", first_page)}
+        self.assertIn(0, checked_first, "the first page's titles are checked")
+        self.assertLess(max(checked_first), 16,
+                        "no title off the first page is checked while it shows")
+
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", {frame["selected"] for frame in frames},
+                      "Right from the first card reaches the second card")
+        selected = int(frames[-1]["selected"])
+        self.assertGreaterEqual(selected, 64, "nine pages on, past the old 64-title limit")
+        icons = {int(i) for i in re.findall(r"next_ui_disc_icon index=(\d+)", stdout)}
+        self.assertIn(selected, icons, "the page turned to shows its disc icons")
+        checked = {int(i) for i in re.findall(r"package_check index=(\d+)", stdout)}
+        self.assertIn(selected, checked)
+        self.assertNotIn(299, checked, "the last page was never shown, so never checked")
+
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.
 
@@ -1341,7 +1417,13 @@ class NativePlayerUiTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 4, completed.stderr)
         self.assertIn("LAUNCHER_UNAVAILABLE", completed.stderr)
-        self.assertIn("Extract the ZIP again", completed.stderr)
+        if sys.platform == "win32":
+            self.assertIn("Extract the ZIP again", completed.stderr)
+        else:
+            # No release ZIP or nakagawa_player.exe off Windows (#306).
+            self.assertNotIn("ZIP", completed.stderr)
+            self.assertIn("tools/stage_install.py", completed.stderr)
+        self.assertNotIn("compiled without", completed.stderr)
         self.assertIn("assets\\fonts\\ui", completed.stderr)
         self.assertNotIn(marker, completed.stdout)
         self.assertNotIn("frame=", completed.stdout, "nothing is drawn after the message")
@@ -1625,6 +1707,23 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
+
+    def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
+        """--user-data-root=<folder> opens the player on a second profile, for example a
+        whole collection under test: a settings change lands in <folder>/config, and
+        nothing is written under the default profile. Before, only the library moved;
+        settings, logs, the cache and saves still went to the default profile."""
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+            dedicated_data_root=True,
+        )
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("resolution_scale"), 2, "the change was saved")
+        self.assertIn("config/settings.json", run["dedicated_files"])
+        self.assertEqual(run["default_profile_files"], [],
+                         "nothing is written under the default profile")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are
@@ -3248,11 +3347,13 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
         self.assertEqual(frames[2]["picker"], "1")
 
-    def test_compressed_and_non_psp_disc_images_get_their_own_cards(self) -> None:
-        """A .cso is a compressed disc image, and an ISO9660 image without a PSP_GAME folder
-        is a disc image of something else: each gets its own plain card, not the generic
-        "isn't a PSP disc image" card or an "unknown PSP title" page."""
-        # A CISO header (magic, header size, uncompressed size, block size, version).
+    def test_damaged_compressed_and_non_psp_disc_images_get_their_own_cards(self) -> None:
+        """A .cso whose block index points outside the file is a damaged compressed disc
+        image, and an ISO9660 image without a PSP_GAME folder is a disc image of something
+        else: each gets its own plain card, not the generic "isn't a PSP disc image" card or
+        an "unknown PSP title" page."""
+        # A CISO header (magic, header size, uncompressed size, block size, version)
+        # whose block index is all zeros: every block points into the header.
         cso = b"CISO" + struct.pack("<IQIBB2x", 0x18, 2048 * 32, 2048, 1, 0) + bytes(4096)
         # A valid ISO9660 image whose root holds only a text file.
         sector = 2048
@@ -3290,7 +3391,7 @@ class NativePlayerUiTests(unittest.TestCase):
         image[18 * sector:18 * sector + len(root)] = root
         image[19 * sector:19 * sector + 16] = b"synthetic text\n\n"
         cases = (
-            ("source-owned-compressed.cso", cso, "DISC_IMAGE_COMPRESSED", "Compressed_Disc_Image"),
+            ("source-owned-compressed.cso", cso, "DISC_IMAGE_INDEX_INVALID", "Damaged_Disc_Image"),
             ("source-owned-data-disc.iso", bytes(image), "DISC_NOT_PSP", "Not_a_PSP_Disc_Image"),
         )
         for name, payload, code, title in cases:
@@ -3302,6 +3403,36 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[1]["error"], code)
                 self.assertEqual(frames[1]["error_title"], title)
                 self.assertEqual(frames[2]["picker"], "1")
+
+    def test_compressed_disc_images_open_the_card_their_iso_opens(self) -> None:
+        """A .cso, .zso or .chd is expanded once, with the wizard's progress panel, and
+        then opens exactly the card its .iso opens: no refusal, the same view."""
+        from test_disc_expand import BUILDERS
+
+        with tempfile.TemporaryDirectory(prefix=".compressed-disc-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic.iso"
+            create_test_iso_with_executables(
+                iso_path, b"synthetic input executable\n", disc_id="TEST00042",
+                title="Synthetic Compressed Disc",
+            )
+            iso = iso_path.read_bytes()
+        wait = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100")
+        plain = self.run_player("library", wait, drop_bytes=("source-owned.iso", iso))
+        plain_views = [frame["view"] for frame in plain["frames"]]
+        self.assertNotIn("error", plain_views, plain["stdout"])
+        for name, build in BUILDERS.items():
+            with self.subTest(format=name):
+                run = self.run_player("library", wait,
+                                      drop_bytes=(f"source-owned.{name}", build(iso)))
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                views = [frame["view"] for frame in frames]
+                self.assertNotIn("error", views, run["stdout"])
+                self.assertIn("1", [frame["extracting"] for frame in frames if frame["view"] == "wizard"],
+                              "the expansion shows the wizard's progress panel")
+                self.assertEqual(views[-1], plain_views[-1], run["stdout"])
+                self.assertEqual(frames[-1]["error"], "NONE")
+                self.assertIn(f"[PLAYER] Disc image {name} expanded into TEST00042", run["stdout"])
 
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
@@ -4111,6 +4242,46 @@ class FirstRunRouteTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
 
+    def test_add_to_library_on_a_compressed_disc_stores_its_expansion(self) -> None:
+        """A compressed disc given as --iso is expanded once into the per-title folder;
+        ADD TO LIBRARY stores the expanded .iso for every later step and the picked file
+        for the user. Adding the same unchanged file again reuses the expansion."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_disc_expand import build_cso
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-compressed-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Compressed Disc",
+                            volume_id="TEST00001")
+            cso = scratch / "supported.cso"
+            cso.write_bytes(build_cso(iso.read_bytes()))
+            events = "--ui-test-events=WAIT_VIEW=supported,15000;KEY_RETURN;WAIT_VIEW=library,10000;QUIT"
+            completed = self.run_route(scratch, [
+                f"--iso={cso}", events, f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("[PLAYER] Expanding disc image cso", completed.stdout)
+            libraries = list(scratch.rglob("library.json"))
+            self.assertEqual(len(libraries), 1)
+            games = json.loads(libraries[0].read_text(encoding="utf-8"))["games"]
+            self.assertEqual([game["disc_id"] for game in games], ["TEST00002"])
+            expanded = Path(games[0]["iso_path"])
+            self.assertEqual(expanded.name, "TEST00002.cso.iso")
+            self.assertEqual(expanded.parent.name, "TEST00002")
+            self.assertEqual(expanded.parent.parent.name, "discs")
+            self.assertEqual(expanded.read_bytes(), iso.read_bytes())
+            self.assertEqual(Path(games[0]["source_image_path"]), cso)
+
+            again = self.run_route(scratch, [
+                f"--iso={cso}", "--ui-test-events=WAIT_VIEW=supported,15000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+            self.assertNotIn("[PLAYER] Expanding disc image", again.stdout)
+            self.assertIn("supported", [frame["view"] for frame in parse_frames(again.stdout)])
+
     def test_add_to_library_sets_up_an_archive_disc_before_saving_it(self) -> None:
         """ADD TO LIBRARY on an archive disc runs the wizard's staging worker.
 
@@ -4304,7 +4475,20 @@ class PlayerVersionIdentityTests(unittest.TestCase):
     A dry run of the player link shows the define the build passes; nothing is
     compiled. The date itself (MM-DD-YYYY from the epoch) is checked by
     tests/native/test_player_screens.c.
+
+    `player-ui-regressions` runs this module under `make -j4 --output-sync=target`,
+    and that make's MAKEFLAGS (its jobserver and its output-sync mutex handle) reach
+    the dry run through the environment. The handle is a raw Windows handle number
+    the child never inherits, so a dry run that used it could wait on whatever
+    handle has that number in its own process: hosted runs hung for the whole
+    timeout holding jobserver tokens. `-j1 --output-sync=none` makes the dry run
+    a standalone make while keeping the variables the shard passes (CC, VULKAN_SDK).
     """
+
+    # A dry run takes about 13 s on a Windows desktop, and the shard that runs both
+    # of them takes 41-67 s on hosted Windows runners; 180 s is about three times
+    # that whole shard, so a stuck dry run fails in minutes, not after ten.
+    DRY_RUN_TIMEOUT_S = 180
 
     def _player_defines(self, env_extra: dict[str, str]) -> list[str]:
         make = shutil.which("mingw32-make") or shutil.which("make")
@@ -4316,8 +4500,10 @@ class PlayerVersionIdentityTests(unittest.TestCase):
             build_root = Path(scratch).as_posix()
             exe = f"{build_root}/nakagawa_player{'.exe' if os.name == 'nt' else ''}"
             run = subprocess.run(
-                [make, "--no-print-directory", "-n", "-B", f"BUILD_ROOT={build_root}", exe],
-                cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+                [make, "--no-print-directory", "-j1", "--output-sync=none", "-n", "-B",
+                 f"BUILD_ROOT={build_root}", exe],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+                timeout=self.DRY_RUN_TIMEOUT_S,
             )
         if run.returncode != 0:
             self.skipTest(f"the player dry run needs its build dependencies: {run.stderr[-400:]}")

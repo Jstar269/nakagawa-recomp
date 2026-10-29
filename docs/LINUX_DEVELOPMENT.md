@@ -121,6 +121,29 @@ make CC=gcc GAME_NAME=ci BUILD_DIR=build/slt-check \
 (`H264_FFMPEG=1`). When a change routes the native jobs, hosted `native_tools` runs it with that
 backend and the Windows job runs it on Media Foundation ([CI](CI.md)).
 
+### The player on Linux
+
+The player builds with the CMake route above or `make CC=gcc player`. Its launcher needs SDL3_ttf
+(`sdl3-ttf` through `pkg-config`); a player built without it says so when it starts and asks for a
+rebuild with SDL3_ttf installed.
+
+- **BUILD PACKAGE** runs the system's own `python` (CPython 3.15 or 3.14), `gcc` and `make` from
+  `PATH`. Nothing is downloaded on Linux: the pinned prerequisite download is Windows-only. When a
+  tool is missing, the card names it and the Ubuntu package that provides it
+  (`BUILD_TOOLCHAIN_MISSING`). The player's checks are tested on Linux; a whole game package
+  built and launched on Linux is not yet.
+- **Open folder** buttons (saves, build inputs, updates) go through `xdg-open`. Without it, as in a
+  minimal WSL distribution, the player shows a `FOLDER_OPEN_FAILED` card with the folder's path.
+- **Check for updates** shows the release page only; downloading and installing an update works on
+  Windows only (`UPDATE_PLATFORM_UNSUPPORTED`).
+- The launcher does not bring the game window to the front: X11 and Wayland leave focus to the
+  window manager.
+
+### Makefile title-configured HLE selftests
+
+`make CC=gcc hle-title-selftest` runs the production-HLE harness under the generic and both fixture
+title configurations; hosted `native_tools` runs it too.
+
 ### Python test suites
 
 ```bash
@@ -134,7 +157,6 @@ python tools/lint_docs.py
 | Gate | Status | Issue |
 | --- | --- | --- |
 | Consumer ISO compatibility | The automated Linux CMake/player and runtime gates use only the source-owned TEST00007/TEST00008 showcase fixtures. Compatibility across consumer ISOs and title-specific semantics remains in the works. | #306 |
-| `hle-title-selftest` | `hle-thread-selftest` builds and runs on Linux, in hosted `native_tools` too. `hle-title-selftest` runs the same harness under the generic and both fixture title configurations; it has no Linux CI job yet. | #306 |
 | Interactive SDL3/Vulkan presentation | The showcase smoke uses dummy video/audio drivers and checks headless output. Interactive desktop presentation and a broader Linux device/display matrix remain in the works. | #306 |
 | Python suites that call `git` | `tools/test_lint_docs.py`, `tools/test_publication_policy_gate.py`, and `tools/publish_audit.py` use `git` on the checkout. They work in an ordinary Linux clone; they fail in a Windows checkout opened from WSL, because its worktree paths are Windows paths. Never set `GIT_DIR` to work around it. | #306 |
 | Full `python -m unittest discover -s tools` | Takes several minutes; CI splits it into shards. Run the focused suites above while developing. | #306 |

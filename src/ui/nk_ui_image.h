@@ -42,6 +42,11 @@ typedef struct {
 NkUiImageStatus nk_ui_image_decode_png(const uint8_t *bytes, size_t size,
                                        const NkUiImageLimits *limits, NkUiImage *out);
 
+/* A fresh serial for an image whose pixels the caller fills and owns (never passed to
+   nk_ui_image_free). Take a new one whenever the pixels change, so a backend that keyed a
+   texture by the old serial uploads the new pixels. */
+uint64_t nk_ui_image_new_serial(void);
+
 /* Frees the pixels and zeroes the image. NULL and an empty image are fine. */
 void nk_ui_image_free(NkUiImage *image);
 

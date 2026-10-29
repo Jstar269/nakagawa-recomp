@@ -43,6 +43,7 @@ set(CORE_SOURCES
     src/core/nk_psp_amctrl.c
     src/core/nk_psp_lzrc.c
     src/core/nk_psp_npumdimg.c
+    src/core/nk_disc_expand.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -69,6 +70,47 @@ target_include_directories(nakagawa_core PUBLIC
 # the player and to the tests that link this library. tools/test_public_ci_wiring.py checks that
 # both build files agree.
 target_compile_definitions(nakagawa_core PUBLIC SR_PUBLIC_SAFE)
+
+# -----------------------------------------------------------------------------
+# libchdr (third_party/libchdr, BSD-3-Clause; see its PROVENANCE.md)
+# -----------------------------------------------------------------------------
+# Reads CHD disc images for the import step (src/core/nk_disc_chd.c), built with
+# upstream's default configuration (bundled miniz, single-file zstd decompressor
+# and LZMA SDK decoder, no assembly). Linked into the player and the disc
+# expansion test only; the runtime never links it. Upstream code is compiled
+# without the project's warning flags.
+set(LIBCHDR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libchdr)
+add_library(nk_libchdr STATIC
+    ${LIBCHDR_DIR}/src/libchdr_bitstream.c
+    ${LIBCHDR_DIR}/src/libchdr_cdrom.c
+    ${LIBCHDR_DIR}/src/libchdr_chd.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_avhuff.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_cdfl.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_cdlz.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_cdzl.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_cdzs.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_flac.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_huff.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_lzma.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_zlib.c
+    ${LIBCHDR_DIR}/src/libchdr_codec_zstd.c
+    ${LIBCHDR_DIR}/src/libchdr_flac.c
+    ${LIBCHDR_DIR}/src/libchdr_huffman.c
+    ${LIBCHDR_DIR}/deps/lzma-26.02/src/LzmaDec.c
+    ${LIBCHDR_DIR}/deps/miniz-3.1.2/miniz.c
+    ${LIBCHDR_DIR}/deps/zstd-1.5.7/zstddeclib.c
+)
+target_include_directories(nk_libchdr
+    PUBLIC ${LIBCHDR_DIR}/include
+    PRIVATE ${LIBCHDR_DIR}/deps/lzma-26.02/include ${LIBCHDR_DIR}/deps/miniz-3.1.2
+            ${LIBCHDR_DIR}/deps/zstd-1.5.7)
+target_compile_definitions(nk_libchdr PRIVATE
+    MINIZ_NO_ARCHIVE_APIS MINIZ_NO_DEFLATE_APIS MINIZ_NO_STDIO MINIZ_NO_TIME)
+if(MSVC)
+    target_compile_options(nk_libchdr PRIVATE /W0)
+else()
+    target_compile_options(nk_libchdr PRIVATE -w)
+endif()
 
 # -----------------------------------------------------------------------------
 # Native Core Test Harness
@@ -114,6 +156,14 @@ target_include_directories(test_pgf_public PRIVATE
 # carries the public-safe define directly.
 target_compile_definitions(test_pgf_public PRIVATE SR_PUBLIC_SAFE)
 add_test(NAME pgf_public_test COMMAND test_pgf_public)
+
+add_executable(test_disc_expand
+    tests/native/test_disc_expand.c
+    tests/native/native_test_isolation.c
+    src/core/nk_disc_chd.c
+)
+target_link_libraries(test_disc_expand PRIVATE nakagawa_core nk_libchdr)
+add_test(NAME disc_expand_test COMMAND test_disc_expand)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
@@ -211,15 +261,17 @@ set(NK_UI_OVERLAY_SOURCES
     src/rt/overlay/overlay_toast.c
     src/rt/overlay/overlay_dialogs.c
     src/rt/overlay/overlay_controls.c
+    src/rt/overlay/overlay_dev.c
     src/rt/overlay/overlay_host.c
 )
-# The overlay pages built so far (C9c), SDL-free; overlay_host.c builds only into the runtime.
+# The overlay pages built so far (C9c, and the developer pages of #314), SDL-free; overlay_host.c builds only into the runtime.
 set(NK_UI_OVERLAY_C9C_SOURCES
     src/rt/overlay/nk_overlay.c
     src/rt/overlay/overlay_pause.c
     src/rt/overlay/overlay_quick.c
     src/rt/overlay/overlay_dialogs.c
     src/rt/overlay/overlay_controls.c
+    src/rt/overlay/overlay_dev.c
 )
 set(NK_UI_TEST_SOURCES
     tests/native/test_nk_ui_core.c
@@ -436,6 +488,7 @@ if(BUILD_PLAYER)
         src/player/setup_staging.c
         src/player/ui_renderer.c
         src/player/package_builder.c
+        src/core/nk_disc_chd.c
         src/player/update_check.c
         ${NK_UI_CORE_SOURCES}
         ${NK_UI_EDGE_SOURCES}
@@ -468,7 +521,7 @@ if(BUILD_PLAYER)
         target_compile_definitions(nakagawa_player PRIVATE
             NK_PLAYER_BUILD_EPOCH=${NK_PLAYER_BUILD_EPOCH}LL)
     endif()
-    target_link_libraries(nakagawa_player PRIVATE nakagawa_core)
+    target_link_libraries(nakagawa_player PRIVATE nakagawa_core nk_libchdr)
     add_custom_command(TARGET nakagawa_player POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/ui"

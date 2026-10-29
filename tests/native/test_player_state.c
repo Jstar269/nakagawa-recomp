@@ -208,6 +208,7 @@ static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
 
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
+    if (!file) fprintf(stderr, "write_text_file: cannot create %s: %s\n", path, strerror(errno));
     assert(file != NULL);
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
@@ -2048,7 +2049,7 @@ static void test_sample_entries_never_reach_library_json(void) {
     seed_entry(&user, "TEST00041", "Synthetic User Title");
     assert(player_app_add_game(app, &user));
 
-    NkLibrary loaded;
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&loaded);
     assert(nk_library_load(&loaded, path) == NK_OK);
     assert(nk_library_count(&loaded) == 1);
@@ -2151,6 +2152,76 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
 /* #1282, #1286, #1280: the cards say what happened in plain words. Codes and
    raw boundaries go to the details, the developer log and the copied report,
    never the badge or the headline. */
+/* #306: a card names this platform's fix. A Linux build compiled without
+   SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
+   and a missing data root named Windows' LOCALAPPDATA. */
+static void test_platform_cards_name_this_platform(void) {
+    char message[1024];
+    player_launcher_unavailable_message(
+        "The next UI needs the SDL_Renderer and SDL3_ttf build dependencies.", true,
+        message, sizeof(message));
+    assert(strstr(message, "can't open its launcher: The next UI needs") != NULL);
+    assert(strstr(message, "dependencies..") == NULL);
+    assert(strstr(message, "compiled without the SDL_Renderer and SDL3_ttf support") != NULL);
+    assert(strstr(message, "build the player again") != NULL);
+    assert(strstr(message, "ZIP") == NULL);
+    assert(strstr(message, "nakagawa_player.exe") == NULL);
+
+    player_launcher_unavailable_message("", false, message, sizeof(message));
+    assert(strstr(message, "can't open its launcher: it could not initialize.") != NULL);
+    assert(strstr(message, "compiled without") == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    /* Windows keeps the release ZIP's words. */
+    assert(strstr(message, "Extract the ZIP again") != NULL);
+    assert(strstr(message, "nakagawa_player.exe") != NULL);
+#else
+    assert(strstr(message, "ZIP") == NULL);
+    assert(strstr(message, "nakagawa_player.exe") == NULL);
+    assert(strstr(message, "tools/stage_install.py") != NULL);
+    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "LOCALAPPDATA") == NULL);
+    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "Windows") == NULL);
+
+    /* The production card, with no data root to resolve. */
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    bool had_xdg = false;
+    bool had_home = false;
+    char *saved_xdg = capture_environment_value("XDG_DATA_HOME", &had_xdg);
+    char *saved_home = capture_environment_value("HOME", &had_home);
+    assert(app != NULL);
+    nk_ps_set_env("XDG_DATA_HOME", NULL);
+    nk_ps_set_env("HOME", NULL);
+    assert(!player_app_open_prerequisite_about(app));
+    assert(strcmp(app->last_error.error_code, "DATA_DIR_UNAVAILABLE") == 0);
+    assert(strstr(app->last_error.message, "XDG_DATA_HOME or HOME") != NULL);
+    assert(strstr(app->last_error.message, "LOCALAPPDATA") == NULL);
+    restore_environment_value("XDG_DATA_HOME", saved_xdg, had_xdg);
+    restore_environment_value("HOME", saved_home, had_home);
+    free(saved_xdg);
+    free(saved_home);
+    free(app);
+#endif
+    /* A folder the file manager could not show is a card naming the folder,
+       not only a console line (main.c raises it when SDL_OpenURL fails). */
+    {
+        PlayerApp *folder_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(folder_app != NULL);
+        folder_app->active_view = VIEW_SETTINGS;
+        player_app_set_folder_open_error(folder_app, "/synthetic/saves/TEST00001",
+                                         "xdg-open failed");
+        assert(folder_app->active_view == VIEW_ERROR);
+        assert(strcmp(folder_app->last_error.error_code, "FOLDER_OPEN_FAILED") == 0);
+        assert(folder_app->last_error.return_view == VIEW_SETTINGS);
+        assert(strstr(folder_app->last_error.message, "Open it yourself") != NULL);
+        assert(strcmp(folder_app->last_error.details,
+                      "/synthetic/saves/TEST00001 (xdg-open failed)") == 0);
+#if !defined(_WIN32) && !defined(_WIN64)
+        assert(strstr(folder_app->last_error.message, "xdg-utils") != NULL);
+#endif
+        free(folder_app);
+    }
+    printf("[PLAYER_STATE_TEST] platform cards name this platform's fix PASS\n");
+}
+
 static void test_error_cards_are_plain(void) {
     /* The reason table, one place for every stop boundary. */
     assert(strcmp(player_runtime_stop_feature("unsupported-import-scenetadhocinit"),
@@ -2608,13 +2679,27 @@ static void test_package_build_lifecycle(const char *self_executable) {
     snprintf(tool_path, sizeof(tool_path), "%s%cgcc.exe", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
     snprintf(tool_path, sizeof(tool_path), "%s%cmingw32-make.exe", prereq_bin, sep);
+    write_text_file(tool_path, "fixture\n");
 #else
+    /* Off Windows nothing is downloaded: the build runs the system's gcc and
+       make from PATH (#306). A tool in the per-user prerequisites folder does
+       not count, since the build child never gets that folder on PATH; the
+       planted mingw32-make there must not satisfy the preflight either. */
+    char host_tools[NATIVE_TEST_PATH_MAX + 128];
+    bool had_path = false;
+    char *saved_path = capture_environment_value("PATH", &had_path);
+    snprintf(host_tools, sizeof(host_tools), "%s%chost-tools", rebuild_root, sep);
+    assert(nk_platform_mkdir_p(host_tools));
     snprintf(tool_path, sizeof(tool_path), "%s%cgcc", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
-    snprintf(tool_path, sizeof(tool_path), "%s%c%s", prereq_bin, sep,
-             "mingw32-make");
-#endif
+    snprintf(tool_path, sizeof(tool_path), "%s%cmake", prereq_bin, sep);
     write_text_file(tool_path, "fixture\n");
+    snprintf(tool_path, sizeof(tool_path), "%s%cgcc", host_tools, sep);
+    write_text_file(tool_path, "fixture\n");
+    /* PATH names only the fixture folder, so the host's own tools cannot
+       satisfy (or hide) the preflight. */
+    nk_ps_set_env("PATH", host_tools);
+#endif
 
     PlayerApp *rebuild_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(rebuild_app != NULL);
@@ -2697,6 +2782,24 @@ static void test_package_build_lifecycle(const char *self_executable) {
     }
     assert(rebuild_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
     nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+#if !defined(_WIN32) && !defined(_WIN64)
+    /* gcc alone: the card names make and the package that provides it, and says
+       nothing is downloaded here. It used to say only that Linux build-tool
+       installation was in the works, even with every tool installed. */
+    assert(!player_app_rebuild_package(rebuild_app, 0));
+    assert(rebuild_app->active_view == VIEW_ERROR);
+    assert(strcmp(rebuild_app->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
+    assert(strstr(rebuild_app->last_error.message, "make was not found on PATH") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "build-essential") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "downloads build tools only on Windows") != NULL);
+    assert(strstr(rebuild_app->last_error.message, "in the works") == NULL);
+    assert(!rebuild_app->build_session.is_building);
+    snprintf(tool_path, sizeof(tool_path), "%s%cmake", host_tools, sep);
+    write_text_file(tool_path, "fixture\n");
+    rebuild_app->last_error.error_code[0] = '\0';
+    rebuild_app->active_view = VIEW_LIBRARY;
+    printf("[PLAYER_STATE_TEST] Linux build tools: a missing make is named, nothing downloads PASS\n");
+#endif
     bool rebuild_started = player_app_rebuild_package(rebuild_app, 0);
     if (!rebuild_started) {
         fprintf(stderr, "rebuild action refused: %s: %s\n",
@@ -2888,6 +2991,10 @@ static void test_package_build_lifecycle(const char *self_executable) {
                               saved_source_media, had_source_media);
     restore_environment_value("NK_INSTALL_ROOT", saved_install_override,
                               had_install_override);
+#if !defined(_WIN32) && !defined(_WIN64)
+    restore_environment_value("PATH", saved_path, had_path);
+    free(saved_path);
+#endif
     free(saved_python);
     free(saved_build_mode);
     free(saved_title_id);
@@ -3656,6 +3763,15 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+    /* Copies of this binary stand in for the bundled python and child modes above. Any other
+     * arguments are a mode this binary does not have: name them and stop, instead of running
+     * the whole suite again inside a child (which would start its own children). */
+    if (argc > 1) {
+        fprintf(stderr, "test_player_state: no mode takes these arguments:");
+        for (int i = 1; i < argc; i++) fprintf(stderr, " [%s]", argv[i]);
+        fprintf(stderr, "\n");
+        return 97;
+    }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
     test_source_iso_member_path_validation();
@@ -3700,6 +3816,7 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
     test_skipped_showcase_logs_its_reason();
     test_build_outcome_is_shown_once_per_session();
@@ -4066,6 +4183,7 @@ int main(int argc, char **argv) {
         applied.fullscreen = true;
         applied.master_volume = 55;
         applied.reduce_motion = true;
+        applied.developer_mode = true;
 
         NkRuntimeConfig cfg;
         memset(&cfg, 0, sizeof(cfg));
@@ -4077,6 +4195,7 @@ int main(int argc, char **argv) {
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
+        assert(cfg.developer_mode == true);   /* the runtime's developer pages follow it (#314) */
         assert(cfg.gui_mode == true);   /* untouched by the mapping */
         /* NULL arguments are safe no-ops. */
         player_app_apply_settings_to_session(NULL, &cfg);
@@ -4411,7 +4530,7 @@ int main(int argc, char **argv) {
         assert(player_app_find_game_by_disc_id(wiz, "UCUS98701") == 0);
         assert(wiz->games[0].extracted_asset_count == 4);
         assert(wiz->active_view == PLAYER_VIEW_READY_LIBRARY);
-        NkLibrary persisted;
+        static NkLibrary persisted;  /* too large for the stack (NK_MAX_GAMES) */
         assert(nk_library_load(&persisted, staged_library_path) == NK_OK);
         const NkGameEntry *persisted_game = nk_library_find_by_disc_id(&persisted, "UCUS98701");
         assert(persisted_game != NULL);
@@ -4643,7 +4762,7 @@ int main(int argc, char **argv) {
                                                   sizeof(refusal_report)) == 0);
         assert(strstr(refusal_report, "(disc TEST00001)") != NULL);
         assert(strstr(refusal_report, "(disc TEST00002)") != NULL);
-        PlayerApp refusal_app;
+        static PlayerApp refusal_app;  /* too large for the stack (NK_MAX_GAMES) */
         memset(&refusal_app, 0, sizeof(refusal_app));
         snprintf(refusal_app.title_manifest_report,
                  sizeof(refusal_app.title_manifest_report), "%s", refusal_report);
@@ -8301,10 +8420,15 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
         assert(capp->active_view == VIEW_LIBRARY);
 #else
-        /* Automatic installation is Windows x64 only for now: other hosts are
-           refused with a clear message, and nothing is downloaded. */
+        /* Only Windows has a pinned download: other hosts use the system's own
+           tools, so the card names the first missing one and its package, and
+           nothing is downloaded (#306). Which tool is first depends on whether
+           this host has a 3.14 or 3.15 interpreter in a standard location. */
         assert(!player_app_start_package_build(capp, 0));
-        assert(strstr(capp->last_error.message, "in the works") != NULL);
+        assert(strcmp(capp->last_error.error_code, "BUILD_TOOLCHAIN_MISSING") == 0);
+        assert(strstr(capp->last_error.message, "was not found on PATH") != NULL);
+        assert(strstr(capp->last_error.message, "downloads build tools only on Windows") != NULL);
+        assert(strstr(capp->last_error.message, "in the works") == NULL);
         assert(strstr(capp->last_error.message, "#") == NULL);
         assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
 #endif

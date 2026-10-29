@@ -658,6 +658,18 @@ void sr_perf_vblank_coalesced(void) {}
 void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 void sr_perf_shutdown(void) {}
+/* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
+int sr_exec_tier;
+uint64_t sr_exec_interp_instructions;
+void sr_exec_tier_switch(int tier) { sr_exec_tier = tier; }
+void sr_exec_interp_entry(uint32_t entry_pc) { (void)entry_pc; }
+void sr_exec_interp_exit(int returned_to_aot, int call_return) { (void)returned_to_aot; (void)call_return; }
+void sr_exec_slice_begin(int tier) { sr_exec_tier = tier; }
+int sr_exec_slice_end(void) { int tier = sr_exec_tier; sr_exec_tier = 0; return tier; }
+uint64_t sr_exec_now_ns(void) { return 0; }
+void sr_exec_idle(uint64_t started_ns) { (void)started_ns; }
+void sr_exec_share_arm(void) {}
+void sr_exec_share_report(void) {}
 int sr_rt_phase;
 uint32_t sr_rt_nid;
 uint32_t (*sr_rt_pc_fn)(void);
@@ -2245,6 +2257,40 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
+
+        /* sceKernelLoadModule opens its path through the file manager in the caller's
+         * context, so a relative path resolves against the calling thread's current
+         * directory exactly as sceIoOpen's does. A title that changes into its data
+         * directory and loads "Target/libfont.prx" names the module the manifest
+         * declares by its full path; matching the bare relative string instead missed
+         * the declaration, recorded a host-served stub with no start entry, and stopped
+         * guest libfont startup (#299). */
+        static const char cwd_guest[] = "ms0:/NKRT";
+        static const char cwd_relative[] = "RT_ALPHA.PRX";
+        title_hle_write_cstr(RT_PATH_ADDR, cwd_guest);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        expect(sr_hle_test_io_chdir(&cpu) == 0u,
+               "runtime placement: sceIoChdir selects the module directory");
+        s_rt_start_calls = 0;
+        uid = rt_load(cwd_relative, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_alpha_code, &base) && base == predicted,
+               "runtime placement: a cwd-relative LoadModule path places the declared module");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_start_calls == 1u,
+               "runtime placement: the cwd-relative module runs its translated module_start");
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   !sr_module_code_is_bound(&s_rt_alpha_code, NULL),
+               "runtime placement: the cwd-relative module stops and unloads");
+        s_rt_start_calls = 0;
+        s_rt_stop_calls = 0;
+        title_hle_write_cstr(RT_PATH_ADDR, "ms0:/");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        expect(sr_hle_test_io_chdir(&cpu) == 0u,
+               "runtime placement: sceIoChdir returns to the Memory Stick root");
         hle_test_setenv("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
     }
 
