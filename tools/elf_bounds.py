@@ -19,6 +19,9 @@ ELF32_PHDR_SIZE = 32
 ELF32_SHDR_SIZE = 40
 MAX_ELF_FILE_BYTES = 256 * 1024 * 1024
 MAX_ELF_IMAGE_BYTES = 256 * 1024 * 1024
+SHF_ALLOC = 0x2
+#: Section types a PSP loader reads: SHT_RELA, SHT_REL and the two PSP relocation formats.
+LOADER_SECTION_TYPES = frozenset({4, 9, 0x700000A0, 0x700000A1})
 
 
 def checked_span(total: int, offset: int, size: int, label: str) -> None:
@@ -46,6 +49,13 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
     The returned ``phdrs``/``shdrs`` contain the same little-endian fields used
     by the existing tools.  No payload is interpreted here; callers still own
     the PRX relocation-format checks.
+
+    Two section-table defects that a PSP loader never sees are tolerated and
+    reported in ``findings`` instead of refusing the file: a section the loader
+    does not read (not allocated, not relocations, not the section-string table)
+    whose bytes lie past the end of the file keeps size 0, and a section-string
+    table that cannot name the sections turns the table into the unnamed form
+    (``shstrndx`` 0, every name 0). Everything a loader reads stays fail-closed.
     """
 
     total = len(data)
@@ -98,6 +108,7 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
             )
 
     shdrs = []
+    findings = []
     if shnum:
         if shentsize < ELF32_SHDR_SIZE:
             raise ValueError(f"{path}: ELF section-header entry is too small")
@@ -112,11 +123,29 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
             fields = struct.unpack_from("<10I", data, off)
             name, typ, flags, addr, sec_off, size, link, info, align, entsz = fields
             # SHT_NOBITS occupies no bytes in the file.  All other sections
-            # must be fully file-backed before a caller slices them.
+            # must be fully file-backed before a caller slices them, except one
+            # the loader never reads: its absent bytes leave it empty.
+            unread = not (flags & SHF_ALLOC) and typ not in LOADER_SECTION_TYPES and i != shstrndx
             if typ != 8 and size:
-                checked_span(total, sec_off, size, f"section {i}")
+                try:
+                    checked_span(total, sec_off, size, f"section {i}")
+                except ValueError:
+                    if not unread:
+                        raise
+                    findings.append(
+                        f"section {i} (type 0x{typ:x}, not loaded) ends past the end of the "
+                        f"file (offset=0x{sec_off:x}, size=0x{size:x}, file=0x{total:x}); "
+                        "it is read as empty"
+                    )
+                    sec_off, size = min(sec_off, total), 0
             elif sec_off > total:
-                raise ValueError(f"section {i} offset is outside the file")
+                if not unread:
+                    raise ValueError(f"section {i} offset is outside the file")
+                findings.append(
+                    f"section {i} (type 0x{typ:x}, not loaded) starts past the end of the "
+                    "file; it is read as empty"
+                )
+                sec_off = total
             shdrs.append(
                 dict(
                     name=name,
@@ -141,13 +170,23 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
                 raise ValueError(f"{path}: section-string table cannot be SHT_NOBITS")
             checked_span(total, shstr["off"], shstr["size"], "section-string table")
             shstr_end = shstr["off"] + shstr["size"]
-            for section in shdrs:
-                name_off = section["name"]
-                if name_off >= shstr["size"]:
-                    raise ValueError(f"{path}: section name offset is out of range")
-                name_start = shstr["off"] + name_off
-                if data.find(b"\0", name_start, shstr_end) < 0:
-                    raise ValueError(f"{path}: unterminated section name")
+            unusable = next((
+                "a section name offset is out of range"
+                if section["name"] >= shstr["size"] else "a section name is unterminated"
+                for section in shdrs
+                if section["name"] >= shstr["size"]
+                or data.find(b"\0", shstr["off"] + section["name"], shstr_end) < 0
+            ), None)
+            if unusable is not None:
+                # Names are bookkeeping no PSP loader reads: the table stays usable
+                # by type, address and size, as an unnamed one.
+                findings.append(
+                    f"section-string table (section {shstrndx}, 0x{shstr['size']:x} bytes) "
+                    f"cannot name the sections: {unusable}; the section table is read unnamed"
+                )
+                shstrndx = 0
+                for section in shdrs:
+                    section["name"] = 0
 
     return dict(
         e_type=e_type,
@@ -162,6 +201,7 @@ def validate_elf32_envelope(data: bytes, path: str = "<memory>") -> dict:
         shstrndx=shstrndx,
         phdrs=phdrs,
         shdrs=shdrs,
+        findings=findings,
     )
 
 
