@@ -406,6 +406,10 @@ bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
     return resolve_posix_path(NK_PATH_DATA, out_path, max_len);
 }
 
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len) {
+    return resolve_posix_path(type, out_path, max_len);
+}
+
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
 }

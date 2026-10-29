@@ -2202,7 +2202,7 @@ static void test_error_cards_are_plain(void) {
        run's boot events; the report lists only the ones in this run's log. */
     player_dev_log_add(app, "runtime",
                        "BOOT_EVENT phase=boot reason=entry entry=0x08a9c92c");
-    const char *report_run_log = "build/player_state_report_TEST00042-last.txt";
+    const char *report_run_log = SR_SELFTEST_BUILD_ROOT "/player_state_report_TEST00042-last.txt";
     write_text_file(report_run_log,
                     "synthetic runtime output\n"
                     "BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
@@ -2226,7 +2226,7 @@ static void test_error_cards_are_plain(void) {
     assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
     assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
     assert(strstr(report, "Reason: Stopped at unsupported-import-scenetadhocinit") != NULL);
-    assert(strstr(report, "Log file: build/player_state_report_TEST00042-last.txt\n") != NULL);
+    assert(strstr(report, "Log file: " SR_SELFTEST_BUILD_ROOT "/player_state_report_TEST00042-last.txt\n") != NULL);
     assert(strstr(report, "Last boot events:\n"
                           "  BOOT_EVENT phase=boot reason=entry entry=0x08804000\n"
                           "  BOOT_EVENT phase=stop") != NULL);

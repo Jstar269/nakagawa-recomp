@@ -95,6 +95,8 @@ bool nk_platform_set_app_data_dir_override(const char *path);
 bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now);
 /* Resolve the canonical per-user data directory without creating it. */
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
+/* nk_platform_get_path's folder for `type`, without creating it. */
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len);
 /* Get/create the canonical per-user data directory. */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
 /* Resolve the pre-canonical Windows profile location used by older builds.

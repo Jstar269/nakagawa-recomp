@@ -4007,8 +4007,9 @@ size_t player_app_factory_reset_folders(const PlayerApp *app, char out[][NK_MAX_
     };
     char found[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH];
     size_t count = 0;
+    /* Resolved, never created: looking does not make a folder to move. */
     for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
-        if (nk_platform_get_path(types[i], found[count], sizeof(found[count])) &&
+        if (nk_platform_resolve_path(types[i], found[count], sizeof(found[count])) &&
             nk_platform_dir_exists(found[count])) {
             ++count;
         }
