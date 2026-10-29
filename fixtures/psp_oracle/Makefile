@@ -239,6 +239,9 @@ else ifeq ($(CASE),thread-k0-block)
 CASE_ID = 116
 else ifeq ($(CASE),sas-init)
 CASE_ID = 117
+# 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
+else ifeq ($(CASE),insn-trace)
+CASE_ID = 119
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -431,6 +434,12 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),ge-sample)
 TARGET = $(BUILD_DIR)/ge_sample
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The instruction trace: its own source, the single-step trampoline and the fixtures
+# header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
+# issue cells.
+else ifeq ($(CASE),insn-trace)
+TARGET = $(BUILD_DIR)/insn_trace
+OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -568,6 +577,10 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the instruction trace (probe_insn_trace.c).
+ifneq ($(filter $(BUILD_DIR)/probe_insn_trace.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -637,6 +650,12 @@ $(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h
 
 $(BUILD_DIR)/probe_ge_sample.o: probe_ge_sample.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/hle_power_imports.o: hle_power_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
