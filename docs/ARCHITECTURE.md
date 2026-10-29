@@ -225,7 +225,11 @@ These tools run on the development host before the native compiler.
   needs all of these: the promoted cosimulation and the production-smoke and profile-zero routes
   pass; HST and PAC-MAN CE reach the same route results as the legacy build; HST's guest CPU time
   per frame (`SR_PERF` `cpu_ms`) improves by at least 5% at its qualified `-O1`; and compile time
-  and peak compiler memory grow by at most 10%.
+  and peak compiler memory grow by at most 10%. Measured on 2026-10-29 (#284): every route still
+  passes, but on HST at `-O1` the guest time outside the GE fell by only about 1.3% (two runs per
+  build). The software GE takes 80% of guest time on that route, so frames sped up by about 0.25%.
+  Chunk objects grew by 0.03%, and PAC-MAN CE at `-O0` was about 11% slower. The option therefore
+  stays off by default; dropping write-backs of dead locals (liveness) is the next step to measure.
 
 ### Verification tools
 

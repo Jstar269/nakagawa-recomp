@@ -1393,7 +1393,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2ea71e6c061e0dff68f52282b7965920322c9999bbdcc8faac58ef838d94fd9b"
+      "sha256": "9b3b914113af251f605e0152d48da46f05a6c45a48974d75262714a80fb3cc6f"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
