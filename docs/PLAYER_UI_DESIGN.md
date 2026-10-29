@@ -243,7 +243,12 @@ one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, the
 when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
 status word through the table in [Status words](COMPATIBILITY.md#status-words). The status word itself describes
 the project's test route and read as a claim about the user's game (#1297), so only developer mode names it, in a
-`FOOTNOTE`. Under the card, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
+`FOOTNOTE`. A title with an enhancement package then has an ENHANCEMENTS card (eyebrow and an OPTIONAL tag): the
+switch 60 FPS GAME LOGIC: ON or OFF (`PRIMARY` while on, never the default focus, disabled while a game starts or
+runs or the title's package builds), then a `BODY_S` line saying it is an optional enhancement made for this game
+and that off plays the original game as released ([ENHANCEMENT_CONTRACT.md](ENHANCEMENT_CONTRACT.md#9-declarative-frame-rate-rescale-packages-60-hz-logic)
+section 9). When the switch is saved on but the package is gone, the card stays and says why in `error`, and the
+primary action reads ENHANCEMENT UNAVAILABLE. Under the cards, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
 the showcase demos, and also while that game starts or runs, a package builds or a disc is being copied. Prompt
 bar: MOVE, SELECT, BACK.
 

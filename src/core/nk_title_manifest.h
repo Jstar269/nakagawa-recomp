@@ -163,13 +163,33 @@ bool nk_title_manifest_experimental_profile_executable(
     size_t out_leaf_size
 );
 
-/* Validate the v2 generated package at <user_data_root>/packages/<DISC_ID>.
- * Experimental entries are additionally bound to their private profile's
- * selected executable hash. `current_disc_version` comes from the selected
- * library ISO inspection; `player_abi_version` comes from recomp.h. */
+/* True when `id` is an enhancement package id as tools/enhancement_package.py
+ * accepts it: ^[a-z0-9][a-z0-9._-]{0,63}$. Such an id is one path component
+ * that cannot climb out of the packages folder. */
+bool nk_title_manifest_enhancement_id_valid(const char *id);
+
+/* The folder name of a title's package under <user_data_root>/packages:
+ * <DISC_ID> for the authentic package (enhancement_package_id NULL or empty),
+ * <DISC_ID>-enhanced-<id> for an enhanced build, as `nk_cli.py build-package`
+ * names them. False, with `out` empty, when the disc ID is not a PSP disc ID,
+ * the id fails nk_title_manifest_enhancement_id_valid, or `out` is too small. */
+bool nk_title_manifest_package_dir_name(const char *disc_id,
+                                        const char *enhancement_package_id,
+                                        char *out, size_t out_size);
+
+/* Validate the v2 generated package at <user_data_root>/packages/<DISC_ID>, or
+ * at <user_data_root>/packages/<DISC_ID>-enhanced-<id> when
+ * `enhancement_package_id` names one. The package must be the variant its
+ * folder names: an authentic package records no enhancement package in its
+ * codegen options, and an enhanced one records this id. An invalid id is
+ * refused before any path is formed. Experimental entries are additionally
+ * bound to their private profile's selected executable hash.
+ * `current_disc_version` comes from the selected library ISO inspection;
+ * `player_abi_version` comes from recomp.h. */
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -193,10 +213,12 @@ void nk_title_manifest_set_cancel_check(NkTitleManifestCancelFn cancelled, void 
 /* Build a metadata identity for package status caches. It covers package.json,
  * build-report.json, the declared executable, every artifact in the completion
  * manifest, and the experimental profile identity when applicable. Missing
- * files are part of the identity too. */
+ * files are part of the identity too. `enhancement_package_id` selects the
+ * package folder as nk_title_manifest_validate_aot_package does. */
 bool nk_title_manifest_aot_package_cache_identity(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,

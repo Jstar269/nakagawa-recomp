@@ -2192,6 +2192,58 @@ static bool nk_manifest_normalize_disc_id(const char *source, char out[10]) {
     return true;
 }
 
+bool nk_title_manifest_enhancement_id_valid(const char *id) {
+    if (!id) return false;
+    size_t length = 0;
+    for (const char *p = id; *p; p++, length++) {
+        unsigned char ch = (unsigned char)*p;
+        bool alnum = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+        if (length >= NK_MAX_ENHANCEMENT_PACKAGE_ID - 1u) return false;
+        if (length == 0 ? !alnum : !(alnum || ch == '.' || ch == '_' || ch == '-')) {
+            return false;
+        }
+    }
+    return length > 0;
+}
+
+bool nk_title_manifest_package_dir_name(const char *disc_id,
+                                        const char *enhancement_package_id,
+                                        char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    char normalized[10];
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+    int written;
+    if (!enhancement_package_id || !enhancement_package_id[0]) {
+        written = snprintf(out, out_size, "%s", normalized);
+    } else {
+        if (!nk_title_manifest_enhancement_id_valid(enhancement_package_id)) return false;
+        written = snprintf(out, out_size, "%s-enhanced-%s", normalized,
+                           enhancement_package_id);
+    }
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+/* "packages<sep><package folder>" for the variant, relative to the user data root. */
+static bool package_variant_relative(const char *disc_id,
+                                     const char *enhancement_package_id,
+                                     char *out, size_t out_size) {
+    char folder[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 16];
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!nk_title_manifest_package_dir_name(disc_id, enhancement_package_id,
+                                            folder, sizeof(folder))) {
+        return false;
+    }
+    int written = snprintf(out, out_size, "packages%c%s",
+                           nk_platform_path_separator(), folder);
+    return written > 0 && (size_t)written < out_size;
+}
+
 static bool nk_manifest_json_escape(const char *source, char *out, size_t out_len) {
     if (!source || !out || out_len == 0) return false;
     size_t used = 0;
@@ -3063,6 +3115,7 @@ static bool package_completion_identity(const char *package_root,
 static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -3077,13 +3130,13 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     if (!user_data_root || !*user_data_root || !title_id || !out_identity ||
         !nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
 
-    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_relative[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 32];
     char package_root[NK_MAX_PATH * 2];
     char package_path[NK_MAX_PATH * 2];
     char report_path[NK_MAX_PATH * 2];
     char completion_path[NK_MAX_PATH * 2];
-    if (snprintf(package_relative, sizeof(package_relative), "packages%c%s",
-                 nk_platform_path_separator(), normalized) < 0 ||
+    if (!package_variant_relative(normalized, enhancement_package_id,
+                                  package_relative, sizeof(package_relative)) ||
         !package_join_path(package_root, sizeof(package_root), user_data_root,
                            package_relative) ||
         !package_direct_file(package_root, "package.json", package_path,
@@ -3098,6 +3151,12 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     package_cache_identity_update_text(&identity_ctx, "nk-aot-package-status-v1");
     package_cache_identity_update_text(&identity_ctx, user_data_root);
     package_cache_identity_update_text(&identity_ctx, normalized);
+    /* Only an enhanced build adds its id, so the authentic package's identity
+       is the one it had before enhanced builds had their own folder. */
+    if (enhancement_package_id && enhancement_package_id[0]) {
+        package_cache_identity_update_text(&identity_ctx, "enhancement-package");
+        package_cache_identity_update_text(&identity_ctx, enhancement_package_id);
+    }
     package_cache_identity_update_text(&identity_ctx, title_id);
     package_cache_identity_update_text(&identity_ctx, selected_executable);
     package_cache_identity_update_text(&identity_ctx, current_disc_version);
@@ -3236,6 +3295,7 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
 bool nk_title_manifest_aot_package_cache_identity(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -3246,7 +3306,7 @@ bool nk_title_manifest_aot_package_cache_identity(
 ) {
     uint64_t catalog_epoch = nk_title_catalog_epoch();
     return nk_title_manifest_aot_package_cache_identity_at_epoch(
-        user_data_root, disc_id, title_id, is_experimental,
+        user_data_root, disc_id, enhancement_package_id, title_id, is_experimental,
         selected_executable, current_disc_version, source_iso_path,
         player_abi_version,
         catalog_epoch, out_identity);
@@ -4806,11 +4866,41 @@ static bool package_catalog_identity_matches(const char *disc_id,
     return matches;
 }
 
+/* A package is the variant its folder names. A build records the enhancement
+   package it applied in the cache's codegen options (enhancement_package_id,
+   tools/nk_core/package_cache.py) and an authentic build records none, so an
+   enhanced build copied into the authentic folder, or one built from another
+   enhancement package, never launches as the variant the user chose. */
+static bool package_validate_variant(const JsonNode *package,
+                                     const char *enhancement_package_id,
+                                     char *error, size_t error_size) {
+    const JsonNode *options = obj_get(obj_get(package, "cache"), "codegen_options");
+    const JsonNode *recorded = obj_get(options, "enhancement_package_id");
+    if (!enhancement_package_id || !enhancement_package_id[0]) {
+        if (recorded || obj_get(options, "enhancement_package_epoch")) {
+            snprintf(error, error_size,
+                     "The package in the authentic package folder is an enhanced build.");
+            return false;
+        }
+        return true;
+    }
+    const char *recorded_id = NULL;
+    if (!package_string(recorded, &recorded_id) ||
+        strcmp(recorded_id, enhancement_package_id) != 0) {
+        snprintf(error, error_size,
+                 "The enhanced package was not built from enhancement package %s.",
+                 enhancement_package_id);
+        return false;
+    }
+    return true;
+}
+
 /* A validation the host cancelled fails with that reason, whatever check the
    abandoned hash fell through to. Only a valid package is ever cached. */
 static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4825,6 +4915,7 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4836,7 +4927,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     size_t reason_size
 ) {
     NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package_checked(
-        user_data_root, disc_id, title_id, is_experimental, selected_executable,
+        user_data_root, disc_id, enhancement_package_id, title_id, is_experimental,
+        selected_executable,
         current_disc_version, source_iso_path, player_abi_version, out_info,
         reason, reason_size);
     if (status != NK_RUNTIME_PACKAGE_OK && manifest_cancelled()) {
@@ -4851,6 +4943,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
 static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4870,6 +4963,12 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     if (!user_data_root || !*user_data_root || !title_id || !*title_id ||
         !nk_manifest_normalize_disc_id(disc_id, normalized)) {
         if (reason && reason_size) snprintf(reason, reason_size, "Library title identity is incomplete.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    bool enhanced = enhancement_package_id && enhancement_package_id[0];
+    if (enhanced && !nk_title_manifest_enhancement_id_valid(enhancement_package_id)) {
+        if (reason && reason_size) snprintf(reason, reason_size,
+            "The enhancement package id is not a valid package name.");
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     if (is_experimental) {
@@ -4894,14 +4993,20 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
         }
     }
 
-    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_relative[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 32];
     char package_root[NK_MAX_PATH * 2];
     char package_path[NK_MAX_PATH * 2];
-    snprintf(package_relative, sizeof(package_relative), "packages%c%s",
-             nk_platform_path_separator(), normalized);
+    if (!package_variant_relative(normalized, enhancement_package_id,
+                                  package_relative, sizeof(package_relative))) {
+        if (reason && reason_size) snprintf(reason, reason_size,
+            "The package folder name could not be formed.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
     if (!package_join_path(package_root, sizeof(package_root), user_data_root, package_relative) ||
         !nk_platform_dir_exists(package_root)) {
-        package_rebuild_reason(reason, reason_size, "Runtime package is missing.");
+        package_rebuild_reason(reason, reason_size,
+            enhanced ? "The enhanced runtime package is missing."
+                     : "Runtime package is missing.");
         return NK_RUNTIME_PACKAGE_MISSING;
     }
     char resolved_package_root[NK_MAX_PATH * 2];
@@ -4969,7 +5074,8 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     char status_identity_digest[65] = "";
     bool status_identity_valid = !is_experimental &&
         nk_title_manifest_aot_package_cache_identity_at_epoch(
-            user_data_root, normalized, title_id, false, selected_executable,
+            user_data_root, normalized, enhancement_package_id, title_id, false,
+            selected_executable,
             current_disc_version, source_iso_path, player_abi_version,
             catalog_epoch,
             status_identity_digest);
@@ -5021,6 +5127,12 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
         package_rebuild_reason(reason, reason_size, parse_error);
         json_free(package);
         return status;
+    }
+    if (!package_validate_variant(package, enhancement_package_id, parse_error,
+                                  sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
     }
     char package_identity_digest[65] = "";
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
@@ -5152,7 +5264,7 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
 #endif
             char status_identity_digest[65] = "";
             if (nk_title_manifest_aot_package_cache_identity_at_epoch(
-                    user_data_root, normalized, title_id, false,
+                    user_data_root, normalized, enhancement_package_id, title_id, false,
                     selected_executable, current_disc_version,
                     source_iso_path, player_abi_version, catalog_epoch,
                     status_identity_digest)) {

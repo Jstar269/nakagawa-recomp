@@ -1218,23 +1218,49 @@ static size_t seal_with_builtin_recipe(uint8_t *out, size_t cap, const uint8_t *
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
-static void write_runtime_package_fixture_with_options(
+/* `folder_enhancement_id` names the package folder (NULL: the authentic
+   packages/<disc_id>, else packages/<disc_id>-enhanced-<id>), and
+   `recorded_enhancement_id` the enhancement package the build's codegen options
+   record (NULL: none, as an authentic build records), the way
+   tools/nk_core/package_cache.py writes them. */
+static void write_runtime_package_fixture_variant(
     const char *user_root, const char *disc_id, const char *title_id,
     uint32_t abi_version, const char *executable_relative_path,
     const char *input_executable_sha256, const char *seed_executable_path,
     const char *source_media_json, size_t report_target_size,
-    bool synthetic_title_identity) {
+    bool synthetic_title_identity, const char *folder_enhancement_id,
+    const char *recorded_enhancement_id) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
     char aot_components_json[2048], native_components_json[2048], identity_json[2048];
     char aot_hash_input[2050], native_hash_input[2050], identity_hash_input[2050];
     char aot_digest[65], native_digest[65], modules_digest[65], identity_digest[65];
-    const char *codegen_options_digest =
+    char codegen_options_json[512] = "{}";
+    char codegen_options_digest[65] =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
+    if (recorded_enhancement_id) {
+        char options_hash_input[520];
+        snprintf(codegen_options_json, sizeof(codegen_options_json),
+                 "{\"enhancement_package_epoch\":\"aot-enhancement-package-v1\","
+                 "\"enhancement_package_id\":\"%s\","
+                 "\"enhancement_package_sha256\":\"%064d\"}",
+                 recorded_enhancement_id, 0);
+        int options_hash_length = snprintf(options_hash_input, sizeof(options_hash_input),
+                                           "%s\n", codegen_options_json);
+        assert(options_hash_length > 0 &&
+               (size_t)options_hash_length < sizeof(options_hash_input));
+        fixture_sha_bytes(options_hash_input, (size_t)options_hash_length,
+                          codegen_options_digest);
+    }
     snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
              nk_platform_path_separator());
-    snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages,
-             nk_platform_path_separator(), disc_id);
+    if (folder_enhancement_id) {
+        snprintf(package_dir, sizeof(package_dir), "%s%c%s-enhanced-%s", packages,
+                 nk_platform_path_separator(), disc_id, folder_enhancement_id);
+    } else {
+        snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages,
+                 nk_platform_path_separator(), disc_id);
+    }
     assert(nk_platform_mkdir_p(package_dir));
     snprintf(executable, sizeof(executable), "%s%c%s.exe", package_dir,
              nk_platform_path_separator(), title_id);
@@ -1317,9 +1343,9 @@ static void write_runtime_package_fixture_with_options(
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
-        "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
+        "\"codegen_options\":%s,\"runtime_abi_compatibility\":{"
         "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
-        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
+        cache_key_json, codegen_options_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
@@ -1389,6 +1415,18 @@ static void write_runtime_package_fixture_with_options(
     snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
              package_dir, nk_platform_path_separator());
     write_text_file(completion_path, completion_json);
+}
+
+static void write_runtime_package_fixture_with_options(
+    const char *user_root, const char *disc_id, const char *title_id,
+    uint32_t abi_version, const char *executable_relative_path,
+    const char *input_executable_sha256, const char *seed_executable_path,
+    const char *source_media_json, size_t report_target_size,
+    bool synthetic_title_identity) {
+    write_runtime_package_fixture_variant(
+        user_root, disc_id, title_id, abi_version, executable_relative_path,
+        input_executable_sha256, seed_executable_path, source_media_json,
+        report_target_size, synthetic_title_identity, NULL, NULL);
 }
 
 static void write_runtime_package_fixture(const char *user_root,
@@ -2080,7 +2118,20 @@ static int player_state_package_builder_child(int argc, char **argv) {
         if (!title_id || !title_id[0]) return 92;
         char executable[128];
         snprintf(executable, sizeof(executable), "%s.exe", title_id);
-        if (source_media && source_media[0]) {
+        bool enhanced = false;
+        for (int i = 4; i < argc; i++) {
+            if (strcmp(argv[i], "--experimental-60hz") == 0) enhanced = true;
+        }
+        const char *enhancement_id = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_ENHANCEMENT_ID");
+        if (enhanced) {
+            /* nk_cli.py reads the package and writes its own folder. */
+            if (!enhancement_id || !enhancement_id[0]) return 95;
+            write_runtime_package_fixture_variant(
+                user_root, disc_id, title_id, SR_CPUSTATE_ABI_VERSION, executable,
+                FIXTURE_SHA256, NULL,
+                source_media && source_media[0] ? source_media : NULL, 0, false,
+                enhancement_id, enhancement_id);
+        } else if (source_media && source_media[0]) {
             write_runtime_package_fixture_with_source_media(
                 user_root, disc_id, title_id, SR_CPUSTATE_ABI_VERSION,
                 executable, FIXTURE_SHA256, NULL, source_media);
@@ -2815,6 +2866,65 @@ static void test_package_build_lifecycle(const char *self_executable) {
                rebuild_app, &rebuild_app->games[0], NULL,
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_OK);
+
+    /* The enhanced build (docs/ENHANCEMENT_CONTRACT.md section 9): the authentic
+       package being ready does not make the enhanced one ready; building it
+       passes --experimental-60hz and writes packages/<disc>-enhanced-<id>, and
+       the authentic package is left exactly as it was. */
+    {
+        char stock_package[NATIVE_TEST_PATH_MAX + 256], stock_hash_before[65], stock_hash_after[65];
+        char enhanced_reason[1024] = "";
+        bool had_enhancement_env = false;
+        char *saved_enhancement_env = capture_environment_value(
+            "NAKAGAWA_TEST_PACKAGE_REBUILD_ENHANCEMENT_ID", &had_enhancement_env);
+        snprintf(stock_package, sizeof(stock_package), "%s%cpackages%c%s%cpackage.json",
+                 user_root, sep, sep, rebuild_app->games[0].disc_id, sep);
+        fixture_sha_file(stock_package, stock_hash_before);
+        GameRecord stock_game = rebuild_app->games[0];
+        snprintf(rebuild_app->games[0].enhancement_package_id,
+                 sizeof(rebuild_app->games[0].enhancement_package_id), "fixture-60hz");
+        player_app_runtime_package_cache_invalidate(rebuild_app);
+        assert(player_app_validate_runtime_package(
+                   rebuild_app, &rebuild_app->games[0], NULL,
+                   enhanced_reason, sizeof(enhanced_reason)) == NK_RUNTIME_PACKAGE_MISSING);
+        assert(strstr(enhanced_reason, "enhanced runtime package is missing") != NULL);
+        nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_ENHANCEMENT_ID", "fixture-60hz");
+        assert(player_app_start_package_build(rebuild_app, 0));
+        assert(strcmp(rebuild_app->build_session.enhancement_package_id, "fixture-60hz") == 0);
+        poll_player_package_build_to_terminal(rebuild_app);
+        if (!rebuild_app->build_session.is_complete) {
+            fprintf(stderr, "enhanced build did not complete: exit=%d message=%s\n",
+                    rebuild_app->build_session.exit_code,
+                    rebuild_app->build_session.current_message);
+        }
+        assert(rebuild_app->build_session.is_complete);
+        player_app_runtime_package_cache_invalidate(rebuild_app);
+        NkRuntimePackageInfo enhanced_info;
+        NkRuntimePackageStatus enhanced_status = player_app_validate_runtime_package(
+            rebuild_app, &rebuild_app->games[0], &enhanced_info,
+            enhanced_reason, sizeof(enhanced_reason));
+        if (enhanced_status != NK_RUNTIME_PACKAGE_OK) {
+            fprintf(stderr, "enhanced package status=%s reason=%s\n",
+                    runtime_package_status_name(enhanced_status), enhanced_reason);
+        }
+        assert(enhanced_status == NK_RUNTIME_PACKAGE_OK);
+        {
+            char expected_folder[96];
+            snprintf(expected_folder, sizeof(expected_folder), "%c%s-enhanced-fixture-60hz",
+                     sep, rebuild_app->games[0].disc_id);
+            assert(strstr(enhanced_info.package_root, expected_folder) != NULL);
+        }
+        fixture_sha_file(stock_package, stock_hash_after);
+        assert(strcmp(stock_hash_before, stock_hash_after) == 0);
+        assert(player_app_validate_runtime_package(
+                   rebuild_app, &stock_game, NULL, enhanced_reason,
+                   sizeof(enhanced_reason)) == NK_RUNTIME_PACKAGE_OK);
+        rebuild_app->games[0].enhancement_package_id[0] = '\0';
+        nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_ENHANCEMENT_ID",
+                      had_enhancement_env ? saved_enhancement_env : NULL);
+        free(saved_enhancement_env);
+        printf("[PLAYER_STATE_TEST] enhanced build writes its own package, authentic untouched PASS\n");
+    }
 
     write_runtime_package_fixture_with_source_media(
         user_root, rebuild_app->games[0].disc_id,
@@ -3721,6 +3831,165 @@ static void test_psn_package_imports_as_its_iso(void) {
     assert(test_remove_tree(base));
 }
 
+/* Package variants (docs/ENHANCEMENT_CONTRACT.md section 9): the authentic
+ * package lives in packages/<disc>, the enhanced build in
+ * packages/<disc>-enhanced-<id>. Each entry validates only the variant it names,
+ * neither stands in for the other, each must be the build its folder names,
+ * and an id that is not a package name never forms a path. */
+static void test_enhanced_package_variants(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], stock_dir[900], enhanced_dir[960];
+    char disc_id[MAX_DISC_ID_LEN];
+    NkTitleEntrySnapshot snapshot = {0};
+    assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1", &snapshot));
+    assert(snapshot.entry.primary_disc_id);
+    snprintf(disc_id, sizeof(disc_id), "%s", snapshot.entry.primary_disc_id);
+    nk_title_catalog_snapshot_release(&snapshot);
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cenhanced_variant_probe", cache_root, sep);
+    snprintf(stock_dir, sizeof(stock_dir), "%s%cpackages%c%s", root, sep, sep, disc_id);
+    snprintf(enhanced_dir, sizeof(enhanced_dir), "%s-enhanced-fixture-60hz", stock_dir);
+
+    NkGameEntry stock;
+    memset(&stock, 0, sizeof(stock));
+    snprintf(stock.disc_id, sizeof(stock.disc_id), "%s", disc_id);
+    snprintf(stock.title_id, sizeof(stock.title_id), "synthetic-allegrex-v1");
+    snprintf(stock.selected_executable, sizeof(stock.selected_executable), "EBOOT.BIN");
+    NkGameEntry enhanced = stock;
+    snprintf(enhanced.enhancement_package_id, sizeof(enhanced.enhancement_package_id),
+             "fixture-60hz");
+    NkRuntimePackageInfo info;
+    char reason[1024];
+    char name[128];
+
+    /* Folder names, and refused ids. */
+    assert(nk_launch_package_dir_name(&stock, name, sizeof(name)));
+    assert(strcmp(name, disc_id) == 0);
+    assert(nk_launch_package_dir_name(&enhanced, name, sizeof(name)));
+    {
+        char expected[96];
+        snprintf(expected, sizeof(expected), "%s-enhanced-fixture-60hz", disc_id);
+        assert(strcmp(name, expected) == 0);
+    }
+    assert(nk_title_manifest_enhancement_id_valid("a"));
+    assert(nk_title_manifest_enhancement_id_valid("0.9_x-y"));
+    assert(nk_title_manifest_enhancement_id_valid(
+        "a123456789012345678901234567890123456789012345678901234567890123"));
+    static const char *const refused[] = {
+        "", "../escape", "..", ".hidden", "-dash", "_under", "Upper", "a/b", "a\\b",
+        "a b", "a:b", "a\xC3\xA9",
+        "a1234567890123456789012345678901234567890123456789012345678901234"
+    };
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        assert(!nk_title_manifest_enhancement_id_valid(refused[i]));
+        /* An id longer than the entry's field cannot be stored in it. */
+        if (!refused[i][0] || strlen(refused[i]) >= NK_MAX_ENHANCEMENT_PACKAGE_ID) continue;
+        NkGameEntry bad = stock;
+        snprintf(bad.enhancement_package_id, sizeof(bad.enhancement_package_id), "%s",
+                 refused[i]);
+        assert(!nk_launch_package_dir_name(&bad, name, sizeof(name)));
+        assert(name[0] == '\0');
+        reason[0] = '\0';
+        assert(nk_launch_validate_runtime_package(root, &bad, &info, reason,
+                                                  sizeof(reason)) ==
+               NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(strstr(reason, "not a valid package name") != NULL);
+        assert(info.package_root[0] == '\0');
+        char identity[65];
+        assert(!nk_launch_runtime_package_cache_identity(root, &bad, identity));
+    }
+    assert(!nk_title_manifest_package_dir_name("ULUS1234", NULL, name, sizeof(name)));
+    assert(!nk_title_manifest_package_dir_name("../S12345", NULL, name, sizeof(name)));
+    assert(!nk_title_manifest_package_dir_name(disc_id, "fixture-60hz", name, 12));
+
+    /* Only the authentic package exists: the enhanced entry is MISSING, never
+       answered by the authentic package. */
+    remove_runtime_package_fixture(root, disc_id, "synthetic-allegrex-v1");
+    write_runtime_package_fixture(root, disc_id, "synthetic-allegrex-v1",
+                                  SR_CPUSTATE_ABI_VERSION, "synthetic-allegrex-v1.exe",
+                                  FIXTURE_SHA256, NULL);
+    assert(nk_launch_validate_runtime_package(root, &stock, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(strcmp(info.package_root + strlen(info.package_root) - strlen(disc_id),
+                  disc_id) == 0);
+    assert(nk_launch_validate_runtime_package(root, &enhanced, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_MISSING);
+    assert(info.package_root[0] == '\0');
+    assert(strstr(reason, "enhanced runtime package is missing") != NULL);
+
+    /* Both exist: each entry gets its own folder; off is still the authentic one. */
+    write_runtime_package_fixture_variant(
+        root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+        "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL, NULL, 0, false,
+        "fixture-60hz", "fixture-60hz");
+    assert(nk_launch_validate_runtime_package(root, &enhanced, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(strstr(info.package_root, "-enhanced-fixture-60hz") != NULL);
+    assert(nk_platform_file_exists(info.executable_path));
+    assert(strstr(info.executable_path, "-enhanced-fixture-60hz") != NULL);
+    assert(nk_launch_validate_runtime_package(root, &stock, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(strstr(info.package_root, "-enhanced-") == NULL);
+    {
+        char stock_identity[65], enhanced_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(root, &stock, stock_identity));
+        assert(nk_launch_runtime_package_cache_identity(root, &enhanced, enhanced_identity));
+        assert(strcmp(stock_identity, enhanced_identity) != 0);
+    }
+
+    /* The authentic package gone: the enhanced one still validates on its own,
+       and the authentic entry is MISSING rather than borrowing it. */
+    {
+        char stock_package[1000];
+        snprintf(stock_package, sizeof(stock_package), "%s%cpackage.json", stock_dir, sep);
+        assert(remove(stock_package) == 0);
+    }
+    assert(nk_launch_validate_runtime_package(root, &stock, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_MISSING);
+    assert(nk_launch_validate_runtime_package(root, &enhanced, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+
+    /* A folder must hold the build it names: an enhanced build in the authentic
+       folder, and a build of another enhancement package in this one, are
+       refused. */
+    write_runtime_package_fixture_variant(
+        root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+        "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL, NULL, 0, false,
+        NULL, "fixture-60hz");
+    assert(nk_launch_validate_runtime_package(root, &stock, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
+    assert(strstr(reason, "authentic package folder is an enhanced build") != NULL);
+    write_runtime_package_fixture_variant(
+        root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+        "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL, NULL, 0, false,
+        "fixture-60hz", "other-60hz");
+    assert(nk_launch_validate_runtime_package(root, &enhanced, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
+    assert(strstr(reason, "not built from enhancement package fixture-60hz") != NULL);
+    write_runtime_package_fixture_variant(
+        root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+        "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL, NULL, 0, false,
+        "fixture-60hz", NULL);
+    assert(nk_launch_validate_runtime_package(root, &enhanced, &info, reason,
+                                              sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
+
+    /* Clean up both folders. */
+    remove_runtime_package_fixture(root, disc_id, "synthetic-allegrex-v1");
+    {
+        static const char *const files[] = {
+            "package.json", "build-report.json", "completion-manifest.json",
+            "synthetic-allegrex-v1.exe", "synthetic-allegrex-v1_image.bin"
+        };
+        char path[1100];
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            snprintf(path, sizeof(path), "%s%c%s", enhanced_dir, sep, files[i]);
+            remove(path);
+        }
+        (void)test_rmdir(enhanced_dir);
+    }
+    printf("[PLAYER_STATE_TEST] enhanced and authentic package variants validate apart PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -3824,6 +4093,7 @@ int main(int argc, char **argv) {
     test_display_path_hides_profile_folder();
     test_license_folder_request();
     test_library_card_status_text();
+    test_enhanced_package_variants();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
     test_sample_entries_never_reach_library_json();
@@ -4149,16 +4419,6 @@ int main(int argc, char **argv) {
     assert(settings->settings.reduce_motion == true);
     player_app_toggle_reduce_motion(settings);
     assert(settings->settings.reduce_motion == false);
-
-    assert(settings->settings.experimental_60hz == false);
-    player_app_toggle_experimental_60hz(settings);
-    assert(settings->settings.experimental_60hz == true);
-    player_app_toggle_experimental_60hz(settings);
-    assert(settings->settings.experimental_60hz == false);
-    player_app_set_experimental_60hz(settings, true);
-    assert(settings->settings.experimental_60hz == true);
-    player_app_set_experimental_60hz(settings, false);
-    assert(settings->settings.experimental_60hz == false);
 
     player_app_adjust_volume(settings, 5);
     assert(settings->settings.master_volume == 85);
@@ -6139,29 +6399,179 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.launcher_window_height == 640);
         assert(s_app2->settings_notice[0] == '\0');
 
-        /* The player's --experimental-60hz is a session-only override: it opts the
-           launches of this session in, and a later save never records it. */
+        /* 60 FPS game logic is a per-title setting (docs/ENHANCEMENT_CONTRACT.md
+           section 9): off by default, saved as a list of disc IDs, and it selects
+           a title's enhanced build only when the title has a usable enhancement
+           package. --experimental-60hz turns it on for the session only. */
         {
+            char sep = nk_platform_path_separator();
+            char enh_root[640], enh_dir[700], enh_file[760];
+            snprintf(enh_root, sizeof(enh_root), "%s%cenhancement_setting_test", cache_dir, sep);
+            snprintf(enh_dir, sizeof(enh_dir), "%s%cenhancements", enh_root, sep);
+            snprintf(enh_file, sizeof(enh_file), "%s%ctest80001-60hz.json", enh_dir, sep);
+            assert(nk_platform_mkdir_p(enh_dir));
+            write_text_file(enh_file,
+                "{\"id\": \"fixture-60hz\", \"target_title_id\": \"fixture-title\"}");
+
             PlayerApp *x_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
             assert(x_app != NULL);
             player_app_settings_init_default(&x_app->settings);
             size_t path_len = strlen(test_settings_path);
             assert(path_len < sizeof(x_app->settings_path));
             memcpy(x_app->settings_path, test_settings_path, path_len + 1u);
-            assert(!player_app_experimental_60hz_active(x_app));
+            assert(strlen(enh_root) < sizeof(x_app->runtime_root));
+            memcpy(x_app->runtime_root, enh_root, strlen(enh_root) + 1u);
+            x_app->game_count = 2;
+            x_app->selected_game_index = 0;
+            snprintf(x_app->games[0].disc_id, sizeof(x_app->games[0].disc_id), "TEST80001");
+            snprintf(x_app->games[0].title_id, sizeof(x_app->games[0].title_id), "fixture-title");
+            snprintf(x_app->games[1].disc_id, sizeof(x_app->games[1].disc_id), "TEST80002");
+            snprintf(x_app->games[1].title_id, sizeof(x_app->games[1].title_id), "fixture-two");
+
+            /* Default: off, so both titles launch their authentic package. */
+            assert(x_app->settings.enhancement_60hz_disc_count == 0);
+            player_app_refresh_title_enhancements(x_app);
+            assert(x_app->title_enhancements[0].available);
+            assert(strcmp(x_app->title_enhancements[0].package_id, "fixture-60hz") == 0);
+            assert(!x_app->title_enhancements[1].available);
+            assert(x_app->title_enhancements[1].problem[0] == '\0');
+            assert(!player_app_title_60hz_on(x_app, 0));
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            assert(x_app->games[1].enhancement_package_id[0] == '\0');
+            /* Remove from library also plans the title's enhanced build. */
+            {
+                char enhanced_package[760], enhanced_file[820];
+                PlayerRemovalPlan plan;
+                bool planned = false;
+                snprintf(enhanced_package, sizeof(enhanced_package),
+                         "%s%cpackages%cTEST80001-enhanced-fixture-60hz", enh_root, sep, sep);
+                snprintf(enhanced_file, sizeof(enhanced_file), "%s%cpackage.json",
+                         enhanced_package, sep);
+                assert(nk_platform_mkdir_p(enhanced_package));
+                write_text_file(enhanced_file, "{}");
+                assert(player_app_plan_game_removal(x_app, 0, &plan));
+                for (size_t i = 0; i < plan.path_count; i++) {
+                    if (strcmp(plan.paths[i].path, enhanced_package) == 0) planned = true;
+                }
+                assert(planned);
+                assert(plan.kind_present[PLAYER_REMOVAL_PACKAGE]);
+                remove(enhanced_file);
+                (void)test_rmdir(enhanced_package);
+                char packages_dir[700];
+                snprintf(packages_dir, sizeof(packages_dir), "%s%cpackages", enh_root, sep);
+                (void)test_rmdir(packages_dir);
+            }
+
+            /* The session flag: every title with a package, and never saved. */
             player_app_set_experimental_60hz_session(x_app, true);
-            assert(player_app_experimental_60hz_active(x_app));
-            assert(x_app->settings.experimental_60hz == false);
+            assert(strcmp(x_app->games[0].enhancement_package_id, "fixture-60hz") == 0);
+            assert(x_app->games[1].enhancement_package_id[0] == '\0');
+            assert(!player_app_title_60hz_saved(x_app, "TEST80001"));
             player_app_toggle_vsync(x_app); /* a persisted change writes the file */
             PlayerApp *x_reload = (PlayerApp *)calloc(1, sizeof(PlayerApp));
             assert(x_reload != NULL);
             assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
             assert(x_reload->settings.vsync == x_app->settings.vsync);
-            assert(x_reload->settings.experimental_60hz == false);
-            assert(!player_app_experimental_60hz_active(x_reload));
-            /* The saved setting alone also turns it on. */
-            player_app_set_experimental_60hz(x_reload, true);
-            assert(player_app_experimental_60hz_active(x_reload));
+            assert(x_reload->settings.enhancement_60hz_disc_count == 0);
+            player_app_set_experimental_60hz_session(x_app, false);
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+
+            /* The per-title switch: saved, round-tripped, and it selects the
+               enhanced build for that title only. */
+            player_app_set_title_60hz(x_app, 0, true);
+            assert(player_app_title_60hz_saved(x_app, "TEST80001"));
+            assert(player_app_title_60hz_saved(x_app, "test80001"));
+            assert(!player_app_title_60hz_saved(x_app, "TEST80002"));
+            assert(strcmp(x_app->games[0].enhancement_package_id, "fixture-60hz") == 0);
+            assert(x_app->games[1].enhancement_package_id[0] == '\0');
+            assert(x_app->request_package_status_retry);
+            memset(x_reload, 0, sizeof(*x_reload));
+            assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
+            assert(x_reload->settings.enhancement_60hz_disc_count == 1);
+            assert(strcmp(x_reload->settings.enhancement_60hz_discs[0], "TEST80001") == 0);
+            {
+                char *saved = read_text_file(test_settings_path);
+                assert(strstr(saved, "\"enhancement_60hz_discs\": [\"TEST80001\"]") != NULL);
+                assert(strstr(saved, "experimental_60hz") == NULL);
+                free(saved);
+            }
+            /* A title with no package cannot be on, whatever is saved. */
+            player_app_set_title_60hz(x_app, 1, true);
+            assert(x_app->games[1].enhancement_package_id[0] == '\0');
+            assert(player_app_title_60hz_blocked(x_app, 1));
+            player_app_set_title_60hz(x_app, 1, false);
+            assert(!player_app_title_60hz_blocked(x_app, 1));
+
+            /* The package goes away while the switch is on: the title is
+               blocked, not quietly moved to the authentic package. */
+            remove(enh_file);
+            player_app_refresh_title_enhancements(x_app);
+            assert(!x_app->title_enhancements[0].available);
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            assert(player_app_title_60hz_blocked(x_app, 0));
+            {
+                PlayerLaunchWork *work = (PlayerLaunchWork *)calloc(1, sizeof(*work));
+                assert(work != NULL);
+                assert(!player_app_launch_begin(x_app, 0, work));
+                assert(strcmp(x_app->last_error.error_code, "ENHANCEMENT_UNAVAILABLE") == 0);
+                x_app->last_error.error_code[0] = '\0';
+                assert(!player_app_start_package_build(x_app, 0));
+                assert(strcmp(x_app->last_error.error_code, "ENHANCEMENT_UNAVAILABLE") == 0);
+                assert(!x_app->build_session.is_building);
+                x_app->last_error.error_code[0] = '\0';
+                free(work);
+            }
+            /* A package whose id is not a package name, or one made for another
+               title, is not usable. */
+            write_text_file(enh_file,
+                "{\"id\": \"../escape\", \"target_title_id\": \"fixture-title\"}");
+            player_app_refresh_title_enhancements(x_app);
+            assert(!x_app->title_enhancements[0].available);
+            assert(x_app->title_enhancements[0].problem[0] != '\0');
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            write_text_file(enh_file,
+                "{\"id\": \"fixture-60hz\", \"target_title_id\": \"another-title\"}");
+            player_app_refresh_title_enhancements(x_app);
+            assert(!x_app->title_enhancements[0].available);
+            write_text_file(enh_file, "{not json");
+            player_app_refresh_title_enhancements(x_app);
+            assert(!x_app->title_enhancements[0].available);
+            assert(player_app_title_60hz_blocked(x_app, 0));
+            write_text_file(enh_file,
+                "{\"id\": \"fixture-60hz\", \"target_title_id\": \"fixture-title\"}");
+            player_app_refresh_title_enhancements(x_app);
+            assert(!player_app_title_60hz_blocked(x_app, 0));
+            assert(strcmp(x_app->games[0].enhancement_package_id, "fixture-60hz") == 0);
+
+            /* Off again: the authentic package, and an empty saved list. */
+            player_app_set_title_60hz(x_app, 0, false);
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            memset(x_reload, 0, sizeof(*x_reload));
+            assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
+            assert(x_reload->settings.enhancement_60hz_disc_count == 0);
+
+            /* Nothing else turns it on: the old global "experimental_60hz"
+               switch, entries that are not disc IDs, and non-strings are
+               dropped; a lowercase disc ID is the same disc. */
+            write_text_file(test_settings_path,
+                "{\"schema_version\": 2, \"experimental_60hz\": true,"
+                " \"enhancement_60hz_discs\": [\"../TEST80001\", 5, \"NOTADISC\","
+                " \"test80001\", \"TEST80001\", \"TEST800016\"]}");
+            memset(x_reload, 0, sizeof(*x_reload));
+            assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
+            assert(x_reload->settings.enhancement_60hz_disc_count == 1);
+            assert(strcmp(x_reload->settings.enhancement_60hz_discs[0], "TEST80001") == 0);
+            write_text_file(test_settings_path,
+                "{\"schema_version\": 2, \"experimental_60hz\": true,"
+                " \"enhancement_60hz_discs\": \"TEST80001\"}");
+            memset(x_reload, 0, sizeof(*x_reload));
+            assert(player_app_load_settings(x_reload, test_settings_path) == NK_OK);
+            assert(x_reload->settings.enhancement_60hz_disc_count == 0);
+            assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+
+            remove(enh_file);
+            (void)test_rmdir(enh_dir);
+            (void)test_rmdir(enh_root);
             free(x_reload);
             free(x_app);
         }

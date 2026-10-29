@@ -2706,9 +2706,12 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
     } else if (root) {
         job->status = nk_launch_validate_runtime_package(
             root, &job->game, NULL, job->reason, sizeof(job->reason));
+        /* A developer layout can stand in for a missing authentic package,
+           never for the enhanced build. */
         job->runtime_available = job->status == NK_RUNTIME_PACKAGE_OK ||
             (job->status == NK_RUNTIME_PACKAGE_MISSING &&
              !job->game.is_experimental &&
+             !job->game.enhancement_package_id[0] &&
              nk_launch_runtime_available(root, job->game.title_id));
     } else {
         job->status = NK_RUNTIME_PACKAGE_MISSING;
@@ -2786,10 +2789,7 @@ static void player_package_status_queue_game(PlayerApp *app, int game_index,
     const PlayerRuntimePackageCacheEntry *cached =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
-    bool same_game = strcmp(cached->disc_id, game->disc_id) == 0 &&
-                     strcmp(cached->title_id, game->title_id) == 0 &&
-                     strcmp(cached->selected_executable,
-                            game->selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(cached, game);
     /* Worker creation failures recover on a bounded title-keyed backoff.
        Explicit retries bypass the deadline; ordinary selection and periodic
        scans can re-arm only after it expires. */
@@ -2904,10 +2904,7 @@ static bool player_package_status_start_next(
     PlayerRuntimePackageCacheEntry *cached =
         &app->runtime_package_cache[index];
     cached->explicit_retry_pending = false;
-    bool same_game = strcmp(cached->disc_id, job->game.disc_id) == 0 &&
-                     strcmp(cached->title_id, job->game.title_id) == 0 &&
-                     strcmp(cached->selected_executable,
-                            job->game.selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(cached, &job->game);
     if (same_game) {
         job->prior_status_valid = cached->status_valid;
         job->prior_identity_valid = cached->identity_valid;
@@ -3019,10 +3016,9 @@ static void player_package_status_finish(PlayerApp *app,
 #endif
     int current_index = -1;
     for (int i = 0; i < app->game_count; i++) {
-        if (strcmp(app->games[i].disc_id, job->game.disc_id) == 0 &&
-            strcmp(app->games[i].title_id, job->game.title_id) == 0 &&
-            strcmp(app->games[i].selected_executable,
-                   job->game.selected_executable) == 0) {
+        /* A title whose package variant changed while the check ran is not
+           this result's title: the other variant has its own package. */
+        if (player_game_same_package(&app->games[i], &job->game)) {
             current_index = i;
             break;
         }

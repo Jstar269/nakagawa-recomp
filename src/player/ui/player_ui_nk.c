@@ -1528,7 +1528,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     } else if (running) {
         out->package_state = PLAYER_UI_PACKAGE_RUNNING;
     } else if (app->build_session.is_building &&
-               strcmp(app->build_session.disc_id, game->disc_id) == 0) {
+               strcmp(app->build_session.disc_id, game->disc_id) == 0 &&
+               strcmp(app->build_session.enhancement_package_id,
+                      game->enhancement_package_id) == 0) {
+        /* A build of the other variant is not this package's build. */
         out->package_state = PLAYER_UI_PACKAGE_BUILDING;
     } else if (package_ready) {
         out->package_state = PLAYER_UI_PACKAGE_READY;
@@ -1596,6 +1599,22 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->can_remove = player_app_removal_blocker(app, index) == NULL;
+    {
+        const PlayerTitleEnhancement *enhancement = &app->title_enhancements[index];
+        bool saved = player_app_title_60hz_saved(app, game->disc_id);
+        out->enhancement_shown = enhancement->available || saved;
+        out->enhancement_on = player_app_title_60hz_on(app, index);
+        out->enhancement_session = app->experimental_60hz_session &&
+                                   enhancement->available && !saved;
+        out->enhancement_enabled = !app->launch_pending && !app->is_game_running &&
+            !out->enhancement_session &&
+            !(app->build_session.is_building &&
+              strcmp(app->build_session.disc_id, game->disc_id) == 0);
+        out->enhancement_problem = player_app_title_60hz_blocked(app, index)
+            ? (enhancement->problem[0] ? enhancement->problem
+                                       : "Its enhancement package is missing.")
+            : "";
+    }
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
@@ -1605,6 +1624,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
+    } else if (player_app_title_60hz_blocked(app, index)) {
+        /* 60 FPS game logic is on but its package is gone: neither variant
+           builds or plays until the user turns it off or brings it back. */
+        out->primary_action_label = "ENHANCEMENT UNAVAILABLE";
     } else if (package_ready) {
         out->primary_action_label = "PLAY";
         out->primary_action_enabled = true;
@@ -2032,6 +2055,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             if (action.kind == PLAYER_UI_ACTION_BACK) {
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                 (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_TOGGLE_60FPS) {
+                if (player->titles[index].enhancement_enabled) {
+                    player_app_set_title_60hz(app, index,
+                                              !player->titles[index].enhancement_on);
+                }
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {

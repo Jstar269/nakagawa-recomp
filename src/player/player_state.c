@@ -81,6 +81,15 @@ bool player_game_is_showcase(const GameRecord *game) {
     return game && strncmp(game->title_id, "showcase-", 9) == 0;
 }
 
+/* `disc_id` as the settings file keys it (ULUS12345); false when it is not a PSP
+   disc ID. */
+static bool player_disc_id_key(const char *disc_id, char key[PLAYER_DISC_ID_KEY_LEN]) {
+    return nk_title_manifest_package_dir_name(disc_id, NULL, key, PLAYER_DISC_ID_KEY_LEN);
+}
+
+static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
+                                           bool on);
+
 static const char *player_package_root(const PlayerApp *app, const GameRecord *game) {
     if (app && game && player_game_is_showcase(game) && app->showcase_root[0]) {
         return app->showcase_root;
@@ -207,7 +216,8 @@ static bool player_runtime_worker_failure_matches(
     return failure && failure->valid && game &&
         strcmp(failure->disc_id, game->disc_id) == 0 &&
         strcmp(failure->title_id, game->title_id) == 0 &&
-        strcmp(failure->selected_executable, game->selected_executable) == 0;
+        strcmp(failure->selected_executable, game->selected_executable) == 0 &&
+        strcmp(failure->enhancement_package_id, game->enhancement_package_id) == 0;
 }
 
 /* The table keeps its valid records first, so a lookup stops at the first
@@ -302,6 +312,8 @@ void player_app_runtime_package_worker_start_failed_record(
         snprintf(failure->title_id, sizeof(failure->title_id), "%s", game->title_id);
         snprintf(failure->selected_executable, sizeof(failure->selected_executable),
                  "%s", game->selected_executable);
+        snprintf(failure->enhancement_package_id, sizeof(failure->enhancement_package_id),
+                 "%s", game->enhancement_package_id);
     }
     if (failure->failure_count < 5) failure->failure_count++;
     uint64_t delay_ms = 5000;
@@ -327,6 +339,25 @@ static void player_runtime_cache_set_game_key(
     snprintf(entry->title_id, sizeof(entry->title_id), "%s", game->title_id);
     snprintf(entry->selected_executable, sizeof(entry->selected_executable),
              "%s", game->selected_executable);
+    snprintf(entry->enhancement_package_id, sizeof(entry->enhancement_package_id),
+             "%s", game->enhancement_package_id);
+}
+
+bool player_runtime_package_cache_entry_is_for(
+    const PlayerRuntimePackageCacheEntry *entry, const GameRecord *game) {
+    return entry && game &&
+           strcmp(entry->disc_id, game->disc_id) == 0 &&
+           strcmp(entry->title_id, game->title_id) == 0 &&
+           strcmp(entry->selected_executable, game->selected_executable) == 0 &&
+           strcmp(entry->enhancement_package_id, game->enhancement_package_id) == 0;
+}
+
+bool player_game_same_package(const GameRecord *a, const GameRecord *b) {
+    return a && b &&
+           strcmp(a->disc_id, b->disc_id) == 0 &&
+           strcmp(a->title_id, b->title_id) == 0 &&
+           strcmp(a->selected_executable, b->selected_executable) == 0 &&
+           strcmp(a->enhancement_package_id, b->enhancement_package_id) == 0;
 }
 
 void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
@@ -335,10 +366,7 @@ void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
-    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
-                     strcmp(entry->title_id, game->title_id) == 0 &&
-                     strcmp(entry->selected_executable,
-                            game->selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(entry, game);
     if (!same_game) {
         memset(entry, 0, sizeof(*entry));
         player_runtime_cache_set_game_key(entry, game);
@@ -353,10 +381,7 @@ void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
-    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
-                     strcmp(entry->title_id, game->title_id) == 0 &&
-                     strcmp(entry->selected_executable,
-                            game->selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(entry, game);
     if (!same_game) {
         memset(entry, 0, sizeof(*entry));
         player_runtime_cache_set_game_key(entry, game);
@@ -392,9 +417,7 @@ void player_app_runtime_package_cache_store(
     /* A stored reason survives a store for the same title; a warm cache hit
      * stores no new reason, and the earlier one still describes the package. */
     char prior_reason[sizeof(entry->reason)] = "";
-    if (strcmp(entry->disc_id, game->disc_id) == 0 &&
-        strcmp(entry->title_id, game->title_id) == 0 &&
-        strcmp(entry->selected_executable, game->selected_executable) == 0) {
+    if (player_runtime_package_cache_entry_is_for(entry, game)) {
         snprintf(prior_reason, sizeof(prior_reason), "%s", entry->reason);
     }
     memset(entry, 0, sizeof(*entry));
@@ -527,9 +550,7 @@ static bool player_runtime_cache_entry_matches(const PlayerApp *app, int index,
     const PlayerRuntimePackageCacheEntry *entry = &app->runtime_package_cache[index];
     return strcmp(app->games[index].disc_id, game->disc_id) == 0 &&
            strcmp(app->games[index].title_id, game->title_id) == 0 &&
-           strcmp(entry->disc_id, game->disc_id) == 0 &&
-           strcmp(entry->title_id, game->title_id) == 0 &&
-           strcmp(entry->selected_executable, game->selected_executable) == 0;
+           player_runtime_package_cache_entry_is_for(entry, game);
 }
 
 static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
@@ -640,6 +661,9 @@ void player_app_sync_library(PlayerApp *app) {
             app->selected_game_index = app->game_count - 1;
         }
     }
+    /* Each title's package variant follows its enhancement setting before any
+       check or launch reads the entries. */
+    player_app_refresh_title_enhancements(app);
     /* Library synchronization intentionally invalidates the result cache, but
        a title-keyed worker-start failure remains actionable while that title
        is still present. Removal drops it; re-adding then starts clean. */
@@ -1161,7 +1185,8 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->check_updates_at_start = false;
     settings->picker_folder[0] = '\0';
     settings->developer_mode = false;
-    settings->experimental_60hz = false;
+    memset(settings->enhancement_60hz_discs, 0, sizeof(settings->enhancement_60hz_discs));
+    settings->enhancement_60hz_disc_count = 0;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1361,15 +1386,28 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[5] = {"online_mode", "online_news", "online_reports",
-                                            "developer_mode", "experimental_60hz"};
-        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_news,
-                           &app->settings.online_reports, &app->settings.developer_mode,
-                           &app->settings.experimental_60hz};
-        for (int k = 0; k < 5; ++k) {
+        static const char *const keys[4] = {"online_mode", "online_news", "online_reports",
+                                            "developer_mode"};
+        bool *fields[4] = {&app->settings.online_mode, &app->settings.online_news,
+                           &app->settings.online_reports, &app->settings.developer_mode};
+        for (int k = 0; k < 4; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
+        }
+    }
+
+    /* The 60 FPS enhancement is on only for the disc IDs this list names. An
+       entry that is not a PSP disc ID is dropped, and nothing else turns it on:
+       the global "experimental_60hz" switch of earlier builds is not read. */
+    {
+        NkJsonNode *discs = nk_json_obj_get(root, "enhancement_60hz_discs");
+        size_t count = discs && nk_json_is_array(discs) ? nk_json_array_count(discs) : 0;
+        for (size_t i = 0; i < count; i++) {
+            const char *disc = nk_json_get_string(nk_json_array_get(discs, i));
+            char key[PLAYER_DISC_ID_KEY_LEN];
+            if (!disc || !player_disc_id_key(disc, key)) continue;
+            player_settings_set_title_60hz(&app->settings, key, true);
         }
     }
 
@@ -1548,8 +1586,11 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
-    fprintf(f, "  \"experimental_60hz\": %s,\n",
-            app->settings.experimental_60hz ? "true" : "false");
+    fprintf(f, "  \"enhancement_60hz_discs\": [");
+    for (int i = 0; i < app->settings.enhancement_60hz_disc_count; i++) {
+        fprintf(f, "%s\"%s\"", i ? ", " : "", app->settings.enhancement_60hz_discs[i]);
+    }
+    fprintf(f, "],\n");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
@@ -1989,30 +2030,170 @@ void player_app_toggle_ui_sounds(PlayerApp *app) {
     maybe_persist_settings(app);
 }
 
-void player_app_set_experimental_60hz(PlayerApp *app, bool on) {
-    if (!app) return;
-    app->settings.experimental_60hz = on;
-    player_dev_log_add(app, "settings",
-                       "experimental 60 Hz logic rescale %s (authentic 30 Hz when off)",
-                       on ? "on" : "off");
-    maybe_persist_settings(app);
+bool player_read_title_enhancement(const char *user_root, const GameRecord *game,
+                                   PlayerTitleEnhancement *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!user_root || !user_root[0] || !game || game->is_sample ||
+        game->is_showcase_package || !game->title_id[0] ||
+        !player_disc_id_key(game->disc_id, key)) {
+        return false;
+    }
+    char leaf[PLAYER_DISC_ID_KEY_LEN + 16];
+    for (size_t i = 0; key[i]; i++) key[i] = (char)tolower((unsigned char)key[i]);
+    snprintf(leaf, sizeof(leaf), "%s-60hz.json", key);
+    char folder[MAX_PATH_LEN];
+    char path[MAX_PATH_LEN];
+    if (!player_join_path(folder, sizeof(folder), user_root, "enhancements") ||
+        !player_join_path(path, sizeof(path), folder, leaf) ||
+        !nk_platform_file_exists(path)) {
+        return false;
+    }
+    FILE *f = nk_fopen_utf8(path, "rb");
+    if (!f) {
+        snprintf(out->problem, sizeof(out->problem), "Its enhancement package can't be read.");
+        return false;
+    }
+    char *text = NULL;
+    long size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) size = ftell(f);
+    /* tools/enhancement_package.py has no size limit of its own; a package is a
+       list of instruction sites, far below this. */
+    if (size > 0 && size <= 8L * 1024L * 1024L && fseek(f, 0, SEEK_SET) == 0) {
+        text = (char *)malloc((size_t)size + 1u);
+    }
+    size_t got = text ? fread(text, 1, (size_t)size, f) : 0;
+    fclose(f);
+    if (!text || got != (size_t)size) {
+        free(text);
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package can't be read or is too large.");
+        return false;
+    }
+    text[got] = '\0';
+    char error[128] = "";
+    NkJsonNode *package = nk_json_parse(text, got, error, sizeof(error));
+    free(text);
+    const char *id = package && nk_json_is_object(package)
+        ? nk_json_get_string(nk_json_obj_get(package, "id")) : NULL;
+    const char *target = package && nk_json_is_object(package)
+        ? nk_json_get_string(nk_json_obj_get(package, "target_title_id")) : NULL;
+    if (!package || !nk_json_is_object(package)) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package is not valid JSON.");
+    } else if (!id || !nk_title_manifest_enhancement_id_valid(id)) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package has no valid id.");
+    } else if (!target || strcmp(target, game->title_id) != 0) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package is for another game.");
+    } else {
+        snprintf(out->package_id, sizeof(out->package_id), "%s", id);
+        out->available = true;
+    }
+    if (package) nk_json_free(package);
+    return out->available;
 }
 
-void player_app_toggle_experimental_60hz(PlayerApp *app) {
+/* The settings list's index of a disc, or -1. */
+static int player_settings_title_60hz_index(const PlayerSettings *settings,
+                                            const char *key) {
+    for (int i = 0; settings && key && i < settings->enhancement_60hz_disc_count; i++) {
+        if (strcmp(settings->enhancement_60hz_discs[i], key) == 0) return i;
+    }
+    return -1;
+}
+
+static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
+                                           bool on) {
+    int index = player_settings_title_60hz_index(settings, key);
+    if (on && index < 0 && settings->enhancement_60hz_disc_count < MAX_LIBRARY_GAMES) {
+        snprintf(settings->enhancement_60hz_discs[settings->enhancement_60hz_disc_count++],
+                 PLAYER_DISC_ID_KEY_LEN, "%s", key);
+    } else if (!on && index >= 0) {
+        int last = --settings->enhancement_60hz_disc_count;
+        if (index != last) {
+            memcpy(settings->enhancement_60hz_discs[index],
+                   settings->enhancement_60hz_discs[last], PLAYER_DISC_ID_KEY_LEN);
+        }
+        memset(settings->enhancement_60hz_discs[last], 0, PLAYER_DISC_ID_KEY_LEN);
+    }
+}
+
+bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id) {
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    return app && disc_id && player_disc_id_key(disc_id, key) &&
+           player_settings_title_60hz_index(&app->settings, key) >= 0;
+}
+
+bool player_app_title_60hz_on(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    return player_app_title_60hz_saved(app, app->games[game_index].disc_id) ||
+           (app->experimental_60hz_session &&
+            app->title_enhancements[game_index].available);
+}
+
+bool player_app_title_60hz_blocked(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    return player_app_title_60hz_saved(app, app->games[game_index].disc_id) &&
+           !app->title_enhancements[game_index].available;
+}
+
+/* The variant the title launches: its enhanced build when the enhancement is on
+   and its package is usable, else the authentic package. */
+static void player_app_select_package_variant(PlayerApp *app, int game_index) {
+    GameRecord *game = &app->games[game_index];
+    const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
+    if (enhancement->available && player_app_title_60hz_on(app, game_index)) {
+        snprintf(game->enhancement_package_id, sizeof(game->enhancement_package_id), "%s",
+                 enhancement->package_id);
+    } else {
+        game->enhancement_package_id[0] = '\0';
+    }
+}
+
+void player_app_refresh_title_enhancements(PlayerApp *app) {
     if (!app) return;
-    player_app_set_experimental_60hz(app, !app->settings.experimental_60hz);
+    char user_root[NK_MAX_PATH];
+    bool have_root = player_app_data_root(app, user_root, sizeof(user_root));
+    for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
+        (void)player_read_title_enhancement(have_root ? user_root : NULL, &app->games[i],
+                                            &app->title_enhancements[i]);
+        player_app_select_package_variant(app, i);
+    }
+}
+
+void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!player_disc_id_key(app->games[game_index].disc_id, key)) return;
+    player_settings_set_title_60hz(&app->settings, key, on);
+    player_dev_log_add(app, "settings",
+                       "60 FPS game logic for %s %s (the original game when off)", key,
+                       on ? "on" : "off");
+    maybe_persist_settings(app);
+    /* Read the package again: the toggle is where a user who just added or
+       fixed it looks. */
+    char user_root[NK_MAX_PATH];
+    bool have_root = player_app_data_root(app, user_root, sizeof(user_root));
+    (void)player_read_title_enhancement(have_root ? user_root : NULL,
+                                        &app->games[game_index],
+                                        &app->title_enhancements[game_index]);
+    player_app_select_package_variant(app, game_index);
+    /* The other variant has its own package and its own status. */
+    if (game_index == app->selected_game_index) app->request_package_status_retry = true;
 }
 
 void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
     if (!app) return;
     app->experimental_60hz_session = on;
     player_dev_log_add(app, "settings",
-                       "experimental 60 Hz logic rescale %s for this session only",
-                       on ? "on" : "off");
-}
-
-bool player_app_experimental_60hz_active(const PlayerApp *app) {
-    return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
+                       "60 FPS game logic %s for this session, for every game with an "
+                       "enhancement package", on ? "on" : "off");
+    for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
+        player_app_select_package_variant(app, i);
+    }
 }
 
 void player_app_toggle_update_check_at_start(PlayerApp *app) {
@@ -2368,6 +2549,15 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
     if (have_build) {
         ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
                                 "packages", disc, NULL) && ok;
+        /* The title's enhanced build, when its enhancement package names one. */
+        const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
+        char enhanced_folder[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 16];
+        if (enhancement->available &&
+            nk_title_manifest_package_dir_name(disc, enhancement->package_id, enhanced_folder,
+                                               sizeof(enhanced_folder))) {
+            ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
+                                    "packages", enhanced_folder, NULL) && ok;
+        }
         ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
                                 "cache", "packages", disc) && ok;
         ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
@@ -3004,6 +3194,17 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     const char *root = player_package_root(app, game);
     memset(work, 0, sizeof(*work));
     app->close_confirmation_pending = false;
+    if (player_app_title_60hz_blocked(app, game_index)) {
+        /* 60 FPS game logic is on and its package is gone: the original game
+           is not started in its place. */
+        player_app_set_error(
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            "60 FPS game logic is on for this game, but its enhancement package is missing "
+            "or not valid. Turn the enhancement off on the game's page to play the original "
+            "game, or put the package back.",
+            "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
     /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
     app->launch_session.config.gui_mode = !app->launch_headless;
@@ -3014,9 +3215,6 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         work->has_package_root = true;
     }
     work->settings = app->settings;
-    /* The launch copy carries the session override; app->settings, which is saved,
-       does not. */
-    work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
@@ -3069,8 +3267,11 @@ void player_launch_work_run(PlayerLaunchWork *work) {
                                              work->package_error,
                                              sizeof(work->package_error))
         : NK_RUNTIME_PACKAGE_MISSING;
+    /* An enhanced build has no developer-layout stand-in: it is valid or the
+       launch stops here. */
     bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
         (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+         !game->enhancement_package_id[0] &&
          nk_launch_runtime_available(root, game->title_id));
     if (!runtime_available) {
         work->failed_step = PLAYER_LAUNCH_STEP_PACKAGE;
@@ -3456,7 +3657,6 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->vsync = settings->vsync;
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
-    config->experimental_60hz = settings->experimental_60hz;
     config->developer_mode = settings->developer_mode;
 }
 
@@ -3762,6 +3962,15 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         return false;
     }
     if (game_index < 0 || game_index >= app->game_count) return false;
+    if (player_app_title_60hz_blocked(app, game_index)) {
+        player_app_set_error(
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            "60 FPS game logic is on for this game, but its enhancement package is missing "
+            "or not valid. Turn the enhancement off on the game's page to build the "
+            "original game, or put the package back.",
+            "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
     if (!player_app_build_package_preflight(app, game_index, true)) {
         const PlayerPreflightCheck *blocker =
             player_app_package_build_preflight_blocker(app, game_index);
@@ -3775,6 +3984,9 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     const GameRecord *game = &app->games[game_index];
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
+    snprintf(app->build_session.enhancement_package_id,
+             sizeof(app->build_session.enhancement_package_id), "%s",
+             game->enhancement_package_id);
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {

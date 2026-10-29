@@ -49,6 +49,14 @@
 #define TITLE_ID_COMPAT_ISSUES 0x2000002Eu
 #define TITLE_ID_COMPAT_CATEGORY 0x2000002Du
 #define TITLE_ID_REMOVE_ROW 0x2000002Fu
+#define TITLE_ID_ENH_CARD 0x20000060u
+#define TITLE_ID_ENH_HEAD 0x20000061u
+#define TITLE_ID_ENH_EYEBROW 0x20000062u
+#define TITLE_ID_ENH_TAG 0x20000063u
+#define TITLE_ID_ENH_ROW 0x20000064u
+#define TITLE_ID_ENH_TEXT 0x20000065u
+#define TITLE_ID_ENH_PROBLEM 0x20000066u
+#define TITLE_ID_ENH_SESSION 0x20000067u
 #define TITLE_ID_PROMPTS 0x20000040u
 #define TITLE_ID_WAVES 0x20000050u
 
@@ -432,6 +440,58 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                    title->compatibility_category);
                     nk_ui_text_role(ui, TITLE_ID_COMPAT_CATEGORY, nk_ui_frame_text(ui, line),
                                     NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
+                nk_ui_end_container(ui);
+            }
+            /* An optional enhancement made for this game (60 FPS game logic,
+               docs/ENHANCEMENT_CONTRACT.md section 9), apart from what to
+               expect of the game as released. Off is the original game. */
+            if (title->enhancement_shown &&
+                nk_ui_card_begin(ui, TITLE_ID_ENH_CARD, sizing_grow(), sizing_fit(),
+                                 NK_UI_SPACE_3)) {
+                NkUiLayout head = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                              NK_UI_SPACE_3);
+                char label[48];
+                head.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, TITLE_ID_ENH_HEAD, &head, NULL)) {
+                    nk_ui_eyebrow(ui, TITLE_ID_ENH_EYEBROW, "Enhancements");
+                    nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Optional");
+                    nk_ui_end_container(ui);
+                }
+                (void)snprintf(label, sizeof(label), "60 FPS game logic: %s",
+                               title->enhancement_on ? "On" : "Off");
+                row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+                if (nk_ui_begin_container(ui, TITLE_ID_ENH_ROW, &row, NULL)) {
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_60FPS, label,
+                                     NK_UI_BUTTON_NOT_DEFAULT |
+                                     (title->enhancement_on ? NK_UI_BUTTON_PRIMARY : 0u) |
+                                     (title->enhancement_enabled ? 0u
+                                                                 : NK_UI_BUTTON_DISABLED))) {
+                        result = action(PLAYER_UI_ACTION_TOGGLE_60FPS, model->title_index,
+                                        PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_text_role(ui, TITLE_ID_ENH_TEXT,
+                                "An optional enhancement made for this game: its game logic "
+                                "runs 60 times a second instead of 30, from a separate "
+                                "package built for it. Off plays the original game as "
+                                "released.",
+                                NK_UI_TYPE_BODY_S, theme->paper);
+                if (title->enhancement_problem != NULL &&
+                    title->enhancement_problem[0] != '\0') {
+                    char line[256];
+                    (void)snprintf(line, sizeof(line),
+                                   "%s Turn it off to play the original game.",
+                                   title->enhancement_problem);
+                    nk_ui_text_role(ui, TITLE_ID_ENH_PROBLEM, nk_ui_frame_text(ui, line),
+                                    NK_UI_TYPE_BODY_S, theme->error);
+                }
+                if (title->enhancement_session) {
+                    nk_ui_text_role(ui, TITLE_ID_ENH_SESSION,
+                                    "On for this session: Nakagawa was started with "
+                                    "--experimental-60hz.",
+                                    NK_UI_TYPE_CAPTION, theme->muted);
                 }
                 nk_ui_end_container(ui);
             }

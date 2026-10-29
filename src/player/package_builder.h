@@ -109,6 +109,10 @@ typedef struct {
     /* Set by the caller before package_builder_start: the build compiles every system
        library itself and leaves the shared library cache untouched (#1306). */
     bool no_shared_libraries;
+    /* Set by the caller before package_builder_start: the enhancement package of
+       the enhanced build to write, packages/<disc_id>-enhanced-<id>; the build
+       runs with --experimental-60hz. Empty builds the authentic package. */
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
     /* Set by the caller before package_builder_start: the verified release bundle
        (#1285) whose msys64/ucrt64/bin leads the build child's PATH. Empty selects
        <user data root>/prerequisites, the per-user download. */

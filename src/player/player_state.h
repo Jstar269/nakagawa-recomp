@@ -137,6 +137,9 @@ typedef struct {
     char disc_id[MAX_DISC_ID_LEN];
     char title_id[64];
     char selected_executable[MAX_PATH_LEN];
+    /* The package variant the status is for (GameRecord.enhancement_package_id):
+       the authentic package's status never answers for the enhanced build. */
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
     char package_identity[65];
     NkRuntimePackageStatus status;
     uint64_t last_checked_ms;
@@ -154,6 +157,7 @@ typedef struct {
     char disc_id[MAX_DISC_ID_LEN];
     char title_id[64];
     char selected_executable[MAX_PATH_LEN];
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
     uint32_t failure_count;
     uint64_t retry_after_ms;
 } PlayerRuntimePackageWorkerFailure;
@@ -176,6 +180,22 @@ typedef struct {
 typedef enum {
     NK_NETWORK_MODE_OFFLINE = 0
 } NkNetworkMode;
+
+/* A PSP disc ID as the settings file keeps it: four letters, five digits, NUL. */
+#define PLAYER_DISC_ID_KEY_LEN 10
+
+/* A title's 60 FPS game-logic enhancement package (docs/ENHANCEMENT_CONTRACT.md
+ * section 9): <user data>/enhancements/<disc ID, lowercase>-60hz.json. */
+typedef struct {
+    /* The file parses, its id is a valid package name
+       (nk_title_manifest_enhancement_id_valid) and its target_title_id is the
+       title's own. */
+    bool available;
+    char package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
+    /* Why a file that exists cannot be used; empty when there is no file or it
+       is usable. */
+    char problem[160];
+} PlayerTitleEnhancement;
 
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
@@ -203,7 +223,13 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
-    bool experimental_60hz; /* experimental opt-in: native 60 Hz frame-rate rescaled game logic (default: off) */
+    /* The discs whose 60 FPS game-logic enhancement is on, one disc ID each
+       (PLAYER_DISC_ID_KEY_LEN). Off for every title by default; a title in this
+       list launches its enhanced build, packages/<disc_id>-enhanced-<id>
+       (docs/ENHANCEMENT_CONTRACT.md section 9). Saved as
+       "enhancement_60hz_discs". */
+    char enhancement_60hz_discs[MAX_LIBRARY_GAMES][PLAYER_DISC_ID_KEY_LEN];
+    int enhancement_60hz_disc_count;
     /* Builds keep the compiled system libraries a disc carries in the data folder and
        reuse them for other games with the same library (#1306). On by default; the
        copies never leave this PC. */
@@ -459,6 +485,9 @@ typedef struct PlayerApp {
     GameRecord games[MAX_LIBRARY_GAMES];
     PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];
     PlayerRuntimePackageWorkerFailure runtime_package_worker_failures[MAX_LIBRARY_GAMES];
+    /* Each title's enhancement package, read when the library is synchronised;
+       index as games[] (player_app_refresh_title_enhancements). */
+    PlayerTitleEnhancement title_enhancements[MAX_LIBRARY_GAMES];
     uint64_t runtime_package_cache_generation;
     int game_count;
     int selected_game_index;
@@ -578,8 +607,9 @@ typedef struct PlayerApp {
 
     /* Settings persistence */
     char settings_path[MAX_PATH_LEN];
-    /* --experimental-60hz on the command line: launches of this session opt in to
-       an enhancement-package build's 60 Hz logic. Never saved with the settings. */
+    /* --experimental-60hz on the command line: for this session every title that
+       has an enhancement package launches its enhanced build. Never saved with
+       the settings. */
     bool experimental_60hz_session;
     char settings_notice[128];
 
@@ -790,6 +820,12 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 );
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game);
+/* The cache entry holds the status of exactly this title's package: the same
+ * disc, title, selected executable and package variant. */
+bool player_runtime_package_cache_entry_is_for(
+    const PlayerRuntimePackageCacheEntry *entry, const GameRecord *game);
+/* Two records name the same package (disc, title, executable and variant). */
+bool player_game_same_package(const GameRecord *a, const GameRecord *b);
 NkRuntimePackageStatus player_app_cached_runtime_package_status(
     const PlayerApp *app, const GameRecord *game);
 bool player_app_cached_game_has_runtime(const PlayerApp *app,
@@ -929,14 +965,33 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
-void player_app_toggle_experimental_60hz(PlayerApp *app);
-void player_app_set_experimental_60hz(PlayerApp *app, bool on);
-/* A session-only opt-in (the --experimental-60hz flag): unlike the setter above it
-   is not written to the settings file. */
+/* The 60 FPS game-logic enhancement, per title (docs/ENHANCEMENT_CONTRACT.md
+ * section 9). A title launches its enhanced build only when it has a usable
+ * enhancement package and the enhancement is on: saved for that disc, or for
+ * every such title by the session flag. Otherwise it launches the authentic
+ * package. GameRecord.enhancement_package_id carries the choice to package
+ * checks, builds and launches. */
+
+/* Reads <user_root>/enhancements/<disc ID, lowercase>-60hz.json for `game` with
+ * nk_json. Returns out->available. A showcase demo, a test program or a disc ID
+ * that is not a PSP disc ID has none. */
+bool player_read_title_enhancement(const char *user_root, const GameRecord *game,
+                                   PlayerTitleEnhancement *out);
+/* Re-reads every title's enhancement package and sets each GameRecord's
+ * enhancement_package_id. player_app_sync_library calls it. */
+void player_app_refresh_title_enhancements(PlayerApp *app);
+/* The saved per-title setting for a disc. */
+bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id);
+/* The enhancement is on for the title: saved, or the session flag. */
+bool player_app_title_60hz_on(const PlayerApp *app, int game_index);
+/* Saved on, but the title has no usable enhancement package: nothing launches
+ * or builds until the package is back or the enhancement is turned off. */
+bool player_app_title_60hz_blocked(const PlayerApp *app, int game_index);
+/* Saves the per-title setting, re-selects the title's package variant, and asks
+ * for its package to be checked. */
+void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on);
+/* The --experimental-60hz flag: on for this session only, never saved. */
 void player_app_set_experimental_60hz_session(PlayerApp *app, bool on);
-/* Whether a launch now exports SR_EXPERIMENTAL_60HZ=1: the saved setting or the
-   session override. */
-bool player_app_experimental_60hz_active(const PlayerApp *app);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
