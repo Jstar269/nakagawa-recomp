@@ -469,6 +469,12 @@ class NativeHostBackendTests(unittest.TestCase):
                            "the presenter must be released after the perf summary is written")
         self.assertLess(release, helper.index("    exit(0);"),
                         "the presenter must be released before the process exits")
+        self.assertIn("atexit(gui_exit_cleanup)", gui,
+                      "guest process exit must release the presenter too")
+        cleanup = gui[gui.index("static void gui_exit_cleanup(void) {"):]
+        cleanup = cleanup[:cleanup.index("\n}")]
+        self.assertLess(cleanup.index("sr_perf_shutdown();"),
+                        cleanup.index("gui_release_presenter();"))
         release_start = gui.index("static void gui_release_presenter(void) {")
         release_body = gui[release_start:gui.index("\n}\n", release_start)]
         order = [release_body.find(call) for call in

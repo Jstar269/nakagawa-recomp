@@ -5909,6 +5909,7 @@ static void osk_guest_build(int fields, uint32_t out_len, uint32_t out_limit) {
         MEM_W32(f + 0x2cu, 0u);                            /* result: UNCHANGED */
         MEM_W32(f + 0x30u, out_limit);
     }
+    MEM_W32(OSK_PARAM_ADDR, 0x40u);
     MEM_W32(OSK_PARAM_ADDR + 0x30u, (uint32_t)fields);
     MEM_W32(OSK_PARAM_ADDR + 0x34u, OSK_FIELDS_ADDR);
     MEM_W32(OSK_PARAM_ADDR + 0x38u, 0u);
@@ -5954,6 +5955,30 @@ static int osk_write_script(const char *const *lines, int count) {
  * after use, and retain the earlier INIT refusal coverage. */
 #define NID_OSK_UPDATE 0x4b85c861u
 extern void sr_hle_test_osk_slot_reset(void);
+
+static void test_osk_parameter_sizes(void) {
+    CpuState cpu = {0};
+    static const uint32_t invalid[] = {0u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    sr_hle_test_osk_slot_reset();
+    cpu.r[4] = OSK_PARAM_ADDR;
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        MEM_W32(OSK_PARAM_ADDR, invalid[i]);
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+               "OSK rejects an unsupported parameter size");
+    }
+    expect(osk_poll(&cpu) == 0x80110005u, "invalid OSK sizes do not claim the dialog slot");
+    for (uint32_t size = 0x40u; size <= 0x44u; size += 4u) {
+        MEM_W32(OSK_PARAM_ADDR, size);
+        cpu.r[4] = OSK_PARAM_ADDR;
+        expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "OSK accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    cpu.r[4] = 0x0bffffc0u;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110004u,
+           "OSK rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
+}
 
 static void test_osk_update_and_shutdown_init_states(void) {
     CpuState cpu;
@@ -6529,7 +6554,63 @@ static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
  * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
 static void utility_param_block(uint32_t addr, uint32_t size) {
     for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr, size);
     MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_netconf_parameter_sizes(void) {
+    CpuState cpu;
+    static const uint32_t invalid[] = {0u, 0x37u, 0x39u, 0x3fu, 0x41u, 0x43u, 0x45u, 0x800u};
+    static const uint32_t valid[] = {0x38u, 0x40u, 0x44u};
+    sr_hle_test_osk_slot_reset();
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x44u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, invalid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "netconf rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    for (unsigned i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, valid[i]);
+        expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0u,
+               "netconf accepts a versioned parameter size");
+        sr_hle_test_osk_slot_reset();
+    }
+    MEM_W32(0x0bffffc0u, 0x44u);
+    expect(utility_call(&cpu, NID_NETCONF_DIALOG_INIT, 0x0bffffc0u) == 0x80110004u,
+           "netconf rejects a truncated versioned parameter block");
+    sr_hle_test_osk_slot_reset();
+}
+
+static uint32_t utility_fixture_size(uint32_t init) {
+    if (init == NID_GAMEDATA_DIALOG_INIT) return 0x590u;
+    if (init == NID_SHARING_DIALOG_INIT) return 0x50u;
+    return 0x40u;
+}
+
+static void test_storage_dialog_parameter_sizes(void) {
+    static const struct { uint32_t nid; uint32_t valid[3]; unsigned count; } cases[] = {
+        {NID_GAMEDATA_DIALOG_INIT, {0x590u, 0x598u, 0u}, 2},
+        {NID_SHARING_DIALOG_INIT, {0x50u, 0x54u, 0x64u}, 3},
+    };
+    CpuState cpu;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x600u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, 0x20u);
+        expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "storage dialog rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+        for (unsigned j = 0; j < cases[i].count; ++j) {
+            utility_param_block(UTILITY_OTHER_PARAM_ADDR, cases[i].valid[j]);
+            expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0u,
+                   "storage dialog accepts a versioned parameter size");
+            sr_hle_test_osk_slot_reset();
+        }
+        MEM_W32(0x0bffffc0u, cases[i].valid[0]);
+        expect(utility_call(&cpu, cases[i].nid, 0x0bffffc0u) == 0x80110004u,
+               "storage dialog rejects a truncated parameter block");
+        sr_hle_test_osk_slot_reset();
+    }
 }
 
 static void test_utility_dialog_single_slot(void) {
@@ -6588,7 +6669,8 @@ static void test_utility_dialog_single_slot(void) {
         if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
-        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        utility_param_block(block, savedata ? 0x600u : utility_fixture_size(dialogs[i].init));
+        if (dialogs[i].init == NID_OSK_INIT) MEM_W32(block, 0x40u);
         snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
                  "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
@@ -6642,7 +6724,7 @@ static void test_utility_dialog_single_slot(void) {
         const uint32_t init = dialogs[i].init;
         if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
             continue;
-        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, utility_fixture_size(init));
         snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
                  "then winds down to NONE after ShutdownStart", dialogs[i].name);
         expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
@@ -6784,7 +6866,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
                  "still reports INIT, then RUNNING", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
@@ -6801,7 +6883,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
         utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
         snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
@@ -7042,7 +7124,6 @@ static void reset_fixture(void) {
     memset(g_mem_base, 0, 0x0c000000u);
     sr_display_test_reset();
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     memset(&s_cpu_store, 0, sizeof(s_cpu_store));
     s_ntcb = 0;
     s_cur = -1;
@@ -7059,7 +7140,6 @@ static void reset_fixture(void) {
     g_root_uid = 0x110u;
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
-    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
@@ -14889,12 +14969,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int host_libc_contains_uid(uint32_t uid) {
-    for (int i = 0; i < MAXTHREADS; i++)
-        if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
-    return 0;
-}
-
 static void test_thread_delete_lifecycle_and_cleanup(void) {
     reset_fixture();
     sr_hle_init();
@@ -14943,8 +15017,6 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&
@@ -15387,8 +15459,8 @@ static void sfs_main_fn(CpuState *cpu) {
 
     /* The caller, by UID 0 and by its own UID ("Current thread" and "Current"). */
     const uint32_t untouched = sfs_free(cpu, 0u);
-    expect(untouched == self->stack_base + self->stack_size - self_first,
-           "stack free: UID 0 counts the caller's untouched stack above its low 0x10 bytes");
+    expect(untouched == self->k0_init - self_first,
+           "stack free: UID 0 counts the caller's untouched stack from its low 0x10 bytes up to k0");
     expect(sfs_free(cpu, self_uid) == untouched,
            "stack free: the caller's own UID answers what UID 0 answers");
     sfs_fill(sp - 0x400u, sp, 0xffu);
@@ -15405,21 +15477,23 @@ static void sfs_main_fn(CpuState *cpu) {
     const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
                                       0x30u, 0u);
     TCB *ct = tcb_by_uid(created);
-    expect(ct && ct->stack_size == 0x1000u && MEM_R8(ct->stack_base) == 0xffu &&
-           MEM_R8(ct->stack_base + ct->stack_size - 1u) == 0xffu,
-           "stack free: CreateThread fills the whole requested stack with 0xFF");
-    expect(ct && MEM_R32(ct->k0_init + 4u) == ct->k0_init + 0x10u,
-           "stack free: the fill leaves the runtime's k0/TLS block above the stack seeded");
-    expect(ct && sfs_free(cpu, created) == ct->stack_size - SFS_SKIP,
+    expect(ct && ct->stack_size == 0x1000u && MEM_R32(ct->stack_base) == created &&
+           MEM_R32(ct->stack_base + 4u) == 0xffffffffu && MEM_R8(ct->k0_init - 1u) == 0xffu,
+           "stack free: CreateThread fills the stack below k0 with 0xFF over a UID guard word");
+    expect(ct && ct->k0_init == ct->stack_base + ct->stack_size - 0x100u &&
+           MEM_R32(ct->k0_init + 4u) == 0u && MEM_R32(ct->k0_init + 0xc0u) == created &&
+           MEM_R32(ct->k0_init + 0xc8u) == ct->stack_base,
+           "stack free: the k0 block is the top 0x100 bytes of the stack, with k0+4 == 0");
+    expect(ct && sfs_free(cpu, created) == ct->k0_init - (ct->stack_base + SFS_SKIP),
            "stack free: a created thread answers its own untouched stack, not the caller's");
 
     /* NO_FILLSTACK: nothing is filled and the free size is 0. */
     const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
                                      0x30u, SFS_ATTR_NO_FILLSTACK);
     TCB *nt = tcb_by_uid(nofill);
-    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u &&
-           MEM_R8(nt->stack_base + nt->stack_size - 1u) == 0u,
-           "stack free: NO_FILLSTACK leaves the new stack as it was");
+    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u && MEM_R8(nt->k0_init - 1u) == 0u &&
+           MEM_R32(nt->k0_init + 0xc0u) == nofill,
+           "stack free: NO_FILLSTACK leaves the new stack as it was below its k0 block");
     expect(nt && sfs_free(cpu, nofill) == 0u,
            "stack free: a NO_FILLSTACK thread answers 0");
 
@@ -15448,7 +15522,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: the stronger thread ran to its end at StartThread");
     if (wt) {
         const uint32_t worker_first = wt->stack_base + SFS_SKIP;
-        expect(s_sfs.worker_free_untouched == wt->stack_base + wt->stack_size - worker_first &&
+        expect(s_sfs.worker_free_untouched == wt->k0_init - worker_first &&
                s_sfs.worker_free_used == (s_sfs.worker_sp - 0x100u) - worker_first,
                "stack free: UID 0 measures the calling worker's own stack");
     }
@@ -26364,7 +26438,7 @@ static void test_partition_spans_the_whole_user_partition(void) {
     uint32_t main_thread = sched_create_thread(0x2004u, 32, 0x20000u);
     expect(root != 0u && main_thread != 0u, "a module_start and a main thread are created");
     uint32_t floor = sched_guest_stack_floor();
-    expect(floor == 0x0a000000u - (0x40000u + 0x800u) - (0x20000u + 0x800u),
+    expect(floor == 0x0a000000u - 0x40000u - 0x20000u,
            "thread stacks are carved from the top of the user partition, 0x0a000000");
     expect(sr_hle_test_partition_bump_top() == floor,
            "the free span runs from the image to the lowest live stack");
@@ -31135,6 +31209,7 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
 #define EXITGAME_POISON 0xDEADBEEFu
 #define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
 #define EXITGAME_REENTERED 91  /* sceKernelExitGame ran the pending exit callback (#1392) */
+#define EXITGAME_ATEXIT 93
 #define EXITGAME_NO_REQUEST 92 /* the exit-callback quit request could not be set up */
 
 static void exit_game_reentered_guest_fn(CpuState *cpu) {
@@ -31142,7 +31217,10 @@ static void exit_game_reentered_guest_fn(CpuState *cpu) {
     _Exit(EXITGAME_REENTERED);
 }
 
+static void exit_game_atexit_probe(void) { _Exit(EXITGAME_ATEXIT); }
+
 static int run_exit_game_poisoned(void) {
+    if (getenv("SR_TEST_EXITGAME_ATEXIT")) atexit(exit_game_atexit_probe);
     CpuState cpu;
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) return 2;
@@ -31163,6 +31241,7 @@ static int run_exit_game_poisoned(void) {
     if (cb == 0u || exit_request_register(cb) != 0u || sr_exit_request_quit() != 1 ||
         !sr_thread_has_pending_callbacks(owner->uid))
         return EXITGAME_NO_REQUEST;
+    if (getenv("SR_TEST_EXITGAME_INTERRUPT")) s_cur = -1;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = EXITGAME_POISON;   /* $a0 */
     cpu.r[5] = EXITGAME_POISON;   /* $a1 */
@@ -31365,6 +31444,16 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
            "sceKernelExitGame does not adopt a poisoned $a0 as the process result");
     expect(rc == 0,
            "a no-argument sceKernelExitGame yields a zero host process result");
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", "1");
+    rc = exit_game_spawn_child(self);
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", NULL);
+    expect(rc == EXITGAME_ATEXIT, "guest exit runs host atexit handlers");
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", "1");
+    hle_test_setenv("SR_TEST_EXITGAME_INTERRUPT", "1");
+    rc = exit_game_spawn_child(self);
+    hle_test_setenv("SR_TEST_EXITGAME_ATEXIT", NULL);
+    hle_test_setenv("SR_TEST_EXITGAME_INTERRUPT", NULL);
+    expect(rc == EXITGAME_ATEXIT, "interrupt guest exit runs host atexit handlers");
 }
 
 #define SYNTH_MOD_START       0x089a0000u
@@ -36603,11 +36692,14 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
     test_volatile_mem_output_preflight();
+    test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_storage_dialog_parameter_sizes();
+    test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();
