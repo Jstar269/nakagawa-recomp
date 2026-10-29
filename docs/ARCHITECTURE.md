@@ -727,9 +727,13 @@ Clock ownership:
   `sceUtilityGetSystemParamInt` reports as TIMEZONE and DAYLIGHTSAVINGS, so
   `sceRtcGetCurrentClockLocalTime`, the UTC/local conversions and the `gettimeofday` timezone
   record follow a setting a game writes through `sceReg` and can never disagree with the getter
-  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). The seed is the oracle
-  console's measured setting (-300 minutes, daylight saving on), not a factory default; the
-  60-minute daylight-saving shift is the setting's meaning, not a measurement. The
+  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). On the first run, when no
+  per-user registry overlay exists yet, the setting starts from the host's local time zone, which
+  the launcher passes as `SR_HOST_TIME_ZONE`, and is saved to the overlay at once; from then on it
+  is retained the way a console keeps its setting, and a later host change does not move it.
+  Without that variable the seed is the oracle console's measured setting (-300 minutes, daylight
+  saving on), not a factory default. The 60-minute daylight-saving shift is the setting's meaning,
+  not a measurement. The
   explicit-offset `sceRtcGetCurrentClock` path takes its offset from the caller.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
   domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
@@ -752,6 +756,8 @@ cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/11
 | Host work | Where it runs | What reaches the guest, and when |
 | --- | --- | --- |
 | On-screen keyboard text entry (`src/rt/osk_text_entry.c`) | A native worker thread, Windows input-box route only | It publishes an answer and writes no guest memory. The guest takes the answer only from its own `sceUtilityOsk*` update calls, so a paused guest takes nothing. The pause is also refused while the in-window keyboard is open. |
+| Diagnostic stream drain (`src/rt/debug.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, Windows only, started when stdout or stderr is redirected | Every 50 ms it writes the C runtime's buffered stdout and stderr text to the log. It reads no guest memory and writes nothing the guest reads, so a paused guest observes nothing. |
+| Preemption timer (`src/rt/sched.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, paced runs started by the driver | It sleeps until the earliest timed wait of a thread stronger than the running one runs out, then ends the running slice so the next yield point enters the scheduler. It reads no guest memory and writes only the slice counter, which the runtime thread resets at every switch, so a paused guest observes nothing. |
 | SDL audio output (`src/rt/audio_unavailable.c`) | SDL's audio device thread consumes the bound channel streams | The guest reads only the queue depth, on its own calls. A pause stashes each queue and puts back exactly that depth on resume. If the stash fails, the device is paused, so nothing is consumed (`audio-selftest`). |
 | Audio dump (`SR_AUDIODUMP`, postmix callback) | SDL's audio device thread | It writes the mixed output to a host WAV file and reads no guest memory. |
 | Asynchronous file I/O (`sceIoReadAsync` and related calls) | The runtime thread | A request completes in `io_async_dispatch_tick`, which runs at guest syscall entry and counts syscalls, not host time. A paused guest makes no syscalls. |
@@ -759,7 +765,7 @@ cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/11
 | GE rendering and readback (`src/rt/gpu_sdl3vk/ge_gpu.c`) | The host GPU | Results reach guest memory only through the read barrier the runtime thread takes before a guest read or a present. Its timing changes when bytes are copied, never what the guest reads. |
 
 Two source guards in `tools/test_sched_invariants.py` keep this table complete. One fails when a
-native thread creator appears outside the keyboard file. The other fails when a host callback
+native thread creator appears outside the keyboard, diagnostic-stream and scheduler files. The other fails when a host callback
 entry appears that is not listed above: SDL audio, timer, event-watch and dialog callbacks, OS
 thread pools, waits, timers, completion routines, and Media Foundation work queues. Before new
 host work is added, its row must say how a paused guest is kept from observing it.
@@ -792,6 +798,7 @@ the maintained references for exact behavior.
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
 | `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
 | `SR_FSDIR` | path | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root (default `fs/`) |
+| `SR_HOST_TIME_ZONE` | `<minutes>,<0\|1>` | The host's standard offset from UTC and whether daylight saving is on now, set by the launcher; adopted as the console's time zone only on the first run, when the registry overlay does not exist yet (#1382) |
 | `SR_SYSTEM_REGISTRY` | path | Per-user overlay file of the virtual PSP system registry that `sceRegFlush*` writes (default `registry/system.json` in the per-user data directory) |
 
 Many legacy Boolean diagnostics are enabled by **presence**, so setting them to the literal string

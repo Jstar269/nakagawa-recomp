@@ -245,7 +245,7 @@ class TestDocTruthInvariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
             doc = self._write_doc(
-                root, "ISSUES.md",
+                root, "docs/STATUS.md",
                 "46 title guest addresses across 59 sites in `src/rt/hle.c`.\n",
             )
             errors = lint_doc_truth(doc, root, hst_manifest_tracked=False)

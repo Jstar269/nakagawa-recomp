@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Tests for the fail-closed HLE registration manifest (tools/hle_manifest.py).
 
@@ -1218,9 +1219,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x469989ad": ("scePower_469989ad", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
-                "0x53b00e9a": ("sceKernelSetVTimerHandlerWide", "0x80020002"),
-                "0xd2d615ef": ("sceKernelCancelVTimerHandler", "0x80020002"),
-                "0xd8b299ae": ("sceKernelSetVTimerHandler", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
@@ -1309,18 +1307,28 @@ class MpegDirtyNotificationContractTests(unittest.TestCase):
                       "mpeg_avc_decode must scope full-buffer dirty notification strictly to clear_video_buffer")
 
     def test_h264_mf_convert_frame_dirty_notification_invariants(self) -> None:
+        # #1049: the picture may sit behind a swizzled VRAM mirror, so convert_frame builds each
+        # row in a host scratch row and hands it to sr_guest_copy_out, which prepares renderer-
+        # owned VRAM before and commits it after every physically contiguous piece it stores.
+        # convert_frame itself must therefore never form a host pointer into the guest buffer.
         h264_src = (ROOT / "src" / "rt" / "h264_mf.c").read_text(encoding="utf-8")
-        self.assertIn("uint64_t fullBytes = (uint64_t)(uint32_t)h * pitchBytes64;", h264_src,
-                      "convert_frame must compute full-buffer dirty bytes without signed overflow")
-        self.assertIn("if (w == frameWidth && fullBytes <= UINT32_MAX)", h264_src,
-                      "convert_frame must emit a single dirty call only for a representable contiguous span")
-        self.assertIn("sr_guest_vram_write_prepare_bytes(buffer, (uint32_t)totalBytes64);", h264_src,
-                      "convert_frame must preserve renderer-owned depth before direct host writes")
-        self.assertIn("sr_guest_vram_write_commit_bytes(buffer, (uint32_t)fullBytes);", h264_src,
-                      "convert_frame must report one contiguous full-buffer write")
-        self.assertIn("sr_guest_vram_write_commit_bytes(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
-                      "convert_frame must report exact per-row writes when w < frameWidth")
-
+        convert = h264_src[h264_src.index("static int convert_frame"):
+                           h264_src.index("/* Try to pull one decoded frame")]
+        self.assertIn("sr_guest_copy_out(buffer + (uint32_t)y * pitchBytes, row, rowBytes);", convert,
+                      "convert_frame must write each row through the piecewise guest write helper")
+        self.assertNotIn("SR_HOST(", convert,
+                         "convert_frame must not form a host pointer over a VRAM view")
+        self.assertNotIn("sr_guest_vram_write_commit_bytes", convert,
+                         "the write helper owns the per-piece commit")
+        recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        copy_out = recomp[recomp.index("static inline int sr_guest_copy_out"):
+                          recomp.index("/* Fill guest [dst, dst + size) with one byte value. */")]
+        self.assertLess(copy_out.index("sr_guest_vram_write_prepare_bytes(dst, run)"),
+                        copy_out.index("memcpy(SR_HOST(dst), in, run)"),
+                        "renderer-owned VRAM must be prepared before the piece is stored")
+        self.assertLess(copy_out.index("memcpy(SR_HOST(dst), in, run)"),
+                        copy_out.index("sr_guest_vram_write_commit_bytes(dst, run)"),
+                        "the dirty notification must follow the stored piece")
 
 
 CHAIN_SOURCE = """

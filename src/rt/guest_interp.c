@@ -680,7 +680,17 @@ static SrGuestInterpResult execute_noncontrol(
         }
         switch (funct) {
         case 0x00u: write_gpr(s, rd, read_gpr(s, rt) << shift); break;   /* sll */
-        case 0x02u: write_gpr(s, rd, read_gpr(s, rt) >> shift); break;   /* srl */
+        case 0x02u: /* srl; Allegrex rs=1 is the rotate rotr, other rs values are reserved */
+            if (rs == 1u) {
+                const uint32_t v = read_gpr(s, rt);
+                write_gpr(s, rd, shift == 0u ? v : (v >> shift) | (v << (32u - shift)));
+            } else if (rs == 0u) {
+                write_gpr(s, rd, read_gpr(s, rt) >> shift);
+            } else {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            break;
         case 0x03u: /* sra */
             write_gpr(s, rd, (uint32_t)(sr_u32_as_s32(read_gpr(s, rt)) >> shift));
             break;

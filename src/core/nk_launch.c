@@ -1370,6 +1370,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_font[NK_MAX_PATH + 16];
     char env_user_data_root[NK_MAX_PATH + 32];
     char env_game_title[NK_MAX_TITLE_LEN + 20];
+    char env_host_time_zone[48];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
     char env_modules[NK_MAX_PATH * 2 + 32];
@@ -1481,6 +1482,22 @@ NkResult nk_launch_start(NkLaunchSession *session) {
      * name another game. */
     snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
     envp[env_count++] = env_game_title;
+
+    /* The host's local time zone, which the runtime adopts as the console's time zone and
+     * daylight-saving setting on the first run only, when the per-user registry overlay does not
+     * exist yet (#1382, hle.c sreg_seed_host_time_zone). Empty when the host does not say, which
+     * also masks an inherited value; the runtime then keeps its measured seed. */
+    {
+        int zone_minutes = 0;
+        bool daylight = false;
+        if (nk_platform_local_time_zone(&zone_minutes, &daylight)) {
+            snprintf(env_host_time_zone, sizeof(env_host_time_zone), "SR_HOST_TIME_ZONE=%d,%d",
+                     zone_minutes, daylight ? 1 : 0);
+        } else {
+            snprintf(env_host_time_zone, sizeof(env_host_time_zone), "SR_HOST_TIME_ZONE=");
+        }
+        envp[env_count++] = env_host_time_zone;
+    }
 
     /* A setup transaction promotes already-decrypted support modules below
      * the selected game's private root. Tell the runtime's late-import loader
