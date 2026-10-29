@@ -13628,6 +13628,8 @@ static uint32_t h_DeleteVTimer(CpuState *s) {
  * the GE callbacks. Not measured, so the run stops by name: a NULL time pointer (the test
  * notes it crashes) and a SetVTimerHandler from inside the timer's own handler. */
 #define VTIMER_ZERO_ID 0x800201bfu
+/* The shortest reschedule a handler return gets (PSP-HLE-INTR-001, PSP-3000 6.6.1). */
+#define VTIMER_MIN_DELAY_US 100u
 
 static uint32_t s_vtimer_in_handler;   /* uid whose handler is running, else 0 */
 
@@ -13757,8 +13759,10 @@ static void vtimer_service_one(void) {
     s_vtimer_in_handler = 0u;
     t = vtimer_lookup(uid);
     if (!t || t->handler != handler || t->schedule != scheduled) return;
+    /* A return below 100 us reschedules 100 us on (PSP-HLE-INTR-001, vtimer-ret-1us: returns
+     * of 1 gave scheduled times 10000, 10100, 10200, 10300, 10400). */
     if (delay == 0u) t->handler = 0u;
-    else t->schedule = scheduled + delay;
+    else t->schedule = scheduled + (delay < VTIMER_MIN_DELAY_US ? VTIMER_MIN_DELAY_US : delay);
 }
 
 static uint32_t h_GetVTimerTime(CpuState *s) {

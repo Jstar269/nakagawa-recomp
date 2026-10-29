@@ -1260,6 +1260,38 @@ static void test_intc_poll_reports_none(void) {
           "poll must not consume or mask the pending source");
 }
 
+/* PSP-INTR-CAUSE-001 (PSP-3000 6.6.1, 2026-10-29): kernel-mode reads inside a
+ * sceKernelCpuSuspendIntr window. Cause read 0x90000020 (BD, CE=1, ExcCode SYS: the read ran
+ * in the syscall handler of an import stub's delay-slot syscall) and then 0x90000420 while an
+ * interrupt source was pending, with Status 0x00088600 (IE clear); 200 us after the resume
+ * (Status 0x00088601) it read 0x90000020 again. With the measured line, the controller model
+ * gives the guest exactly those words: the pending source shows on IP2 whatever Status.IE
+ * says, and only IP2 changes. Source number and count are fixture configuration. */
+static void test_hw_psp_intr_cause_ip2_while_suspended(void) {
+    CpuState s;
+    SrIntcConfig config;
+    fresh_state(&s);
+    config.source_count = 1u;
+    config.cpu_ip_bit = SR_INTC_PSP_CPU_IP_BIT;
+    CHECK(SR_INTC_PSP_CPU_IP_BIT == 2u, "the measured INTC line is IP2");
+    CHECK(sr_intc_init(&config) == 0, "the measured line must be a valid configuration");
+    CHECK(sr_intc_set_enable_mask(0x1u) == 0, "enable the fixture source");
+    s.cop0[SR_CP0_CAUSE] = 0x90000020u;
+    s.cop0[SR_CP0_STATUS] = 0x00088600u;
+    CHECK(intc_guest_cause(&s) == 0x90000020u,
+          "suspended, nothing pending: Cause reads 0x90000020 (got 0x%08x)", s.r[6]);
+    CHECK(sr_intc_raise(0u) == 0, "a source becomes pending");
+    CHECK(intc_guest_cause(&s) == 0x90000420u,
+          "suspended, source pending: Cause reads 0x90000420 (got 0x%08x)", s.r[6]);
+    CHECK(intc_guest_cause(&s) == 0x90000420u,
+          "the pending line stays visible on a later read (got 0x%08x)", s.r[6]);
+    s.cop0[SR_CP0_STATUS] = 0x00088601u;   /* resumed */
+    CHECK(sr_intc_clear(0u) == 0, "the source is serviced");
+    CHECK(intc_guest_cause(&s) == 0x90000020u,
+          "resumed and serviced: Cause reads 0x90000020 again (got 0x%08x)", s.r[6]);
+    sr_intc_reset();
+}
+
 /* User-mode COP0 access traps; unsupported encodings raise RI. */
 static void test_cop0_traps(void) {
     CpuState s;
@@ -2742,6 +2774,7 @@ int main(int argc, char **argv) {
     test_intc_masked_pending_retention();
     test_intc_cause_guest_writes();
     test_intc_poll_reports_none();
+    test_hw_psp_intr_cause_ip2_while_suspended();
     test_intc_cause_aot_interp_parity();
     test_llsc_measured_windows();
     sr_cpu_lle_reset_config();

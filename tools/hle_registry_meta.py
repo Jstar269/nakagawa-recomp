@@ -170,14 +170,16 @@ HANDLER_METADATA = {
         "limitation": "reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code",
     },
     # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
-    # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
-    # code and "a non-zero handler return reschedules"; the rest is project-defined.
+    # scheduler's interrupt-service step.  The measured cells are the unknown-alarm-id code
+    # and the reschedule rule of PSP-HLE-INTR-001 (a non-zero return counts from the call's
+    # scheduled time); the rest is project-defined.
     "h_SetAlarm": {
         "status": "partial",
-        "limitation": "the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented",
+        "limitation": "the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after the call's scheduled time, as measured (PSP-HLE-INTR-001), so a late call owes the scheduled points it fell behind; whether a return below 100 us is raised to 100 us, as a VTimer handler return is, is not measured; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument",
             "src/rt/hle_thread_selftest.c:test_alarm_rearm_by_return_value",
+            "src/rt/sched_selftest.c:test_alarm_rearm_counts_from_the_scheduled_time",
             "src/rt/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules",
             "src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline",
             "src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context",

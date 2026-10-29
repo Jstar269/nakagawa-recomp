@@ -1961,11 +1961,20 @@ static int scheduler_alarm_due_slot(void) {
 
 /* Run the handler of the due alarm in `slot` as one interrupt episode on the interrupted
  * register file, then apply its return value.  Called only from the interrupt-service
- * loop, so CPU interrupts are enabled and no other interrupt handler is active. */
+ * loop, so CPU interrupts are enabled and no other interrupt handler is active.
+ *
+ * A non-zero return is the delay to the next call counted from this call's SCHEDULED
+ * time, not from when it ran (PSP-HLE-INTR-001, alarm-ret-20ms: 20000 us returns gave calls
+ * at 10046, 30049, 50053, 70046, 90047 and 110048 us, on the scheduled grid with no drift).
+ * A late call therefore owes the calls whose scheduled times it fell behind, one per
+ * service-loop pass, as the PSP does (alarm-ret-1us: calls about 215 us apart, each behind
+ * its schedule).  Whether a return below 100 us is raised to 100 us, as the VTimer handler
+ * return is, cannot be seen in alarm call times and is not measured: the return is used as
+ * returned. */
 static void scheduler_alarm_deliver(int slot) {
     SchedAlarm *a = &s_alarms[slot];
     const uint32_t uid = a->uid, handler = a->handler, common = a->common;
-    const uint64_t delivered_at = s_vtime_us;
+    const uint64_t scheduled = a->deadline;
     a->deadline = SCHED_WAIT_FOREVER;     /* not pending while its own handler runs */
 
     CpuState save;
@@ -1999,7 +2008,7 @@ static void scheduler_alarm_deliver(int slot) {
         s_alarm_live--;
         return;
     }
-    a->deadline = period > UINT64_MAX - delivered_at ? UINT64_MAX : delivered_at + period;
+    a->deadline = period > UINT64_MAX - scheduled ? UINT64_MAX : scheduled + period;
 }
 
 /* The interrupt-service loop's alarm step: deliver the most overdue alarm.  Returns 1

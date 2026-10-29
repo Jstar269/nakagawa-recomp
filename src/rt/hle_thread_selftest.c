@@ -36264,6 +36264,45 @@ static void test_vtimer_handler_catches_up_and_refuses_cancel_inside(void) {
     s_pace_on = saved_pace;
 }
 
+/* PSP-HLE-INTR-001, vtimer-ret-1us (PSP-3000 6.6.1, 2026-10-29): a handler scheduled at 10000 us
+ * that returned 1 four times and then 0 was called with scheduled times 10000, 10100, 10200,
+ * 10300 and 10400: a return below 100 us reschedules 100 us on. vtimer-ret-mixed (returns 5000,
+ * 30000, 1000, 0) gave 10000, 15000, 45000, 46000, so returns of 100 us and more are used as
+ * returned. */
+static void test_vtimer_handler_return_below_100us_reschedules_100us_on(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-min");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    for (unsigned i = 0; i < 4u; i++) s_vth_returns[i] = 1u;
+    s_vth_returns[4] = 0u;
+    expect(vth_set(vt, 10000u, VTH_ENTRY, 0u) == 0u, "SetVTimerHandler returns 0");
+    for (unsigned i = 0; i < 5u; i++) vth_run_until(2000000u + 10000u + 100u * i);
+    expect(s_vth_calls == 5u, "one call per 100 us scheduled step, five in all");
+    expect(s_vth_sched[0] == 10000u && s_vth_sched[1] == 10100u && s_vth_sched[2] == 10200u &&
+               s_vth_sched[3] == 10300u && s_vth_sched[4] == 10400u,
+           "a return of 1 reschedules 100 us after the scheduled time");
+    vth_run_until(2100000u);
+    unsigned own = 0;   /* a timer an earlier test left running may also fire here */
+    for (unsigned i = 0; i < s_vth_calls && i < 8u; i++) own += s_vth_uid[i] == vt;
+    expect(own == 5u, "the zero return ended the series");
+
+    vth_fixture();
+    vt = vt_create_named("vth-mixed");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    s_vth_returns[0] = 5000u;
+    s_vth_returns[1] = 30000u;
+    s_vth_returns[2] = 1000u;
+    s_vth_returns[3] = 0u;
+    expect(vth_set(vt, 10000u, VTH_ENTRY, 0u) == 0u, "SetVTimerHandler returns 0");
+    vth_run_until(2046000u);
+    expect(s_vth_calls == 4u && s_vth_uid[3] == vt && s_vth_sched[0] == 10000u &&
+               s_vth_sched[1] == 15000u && s_vth_sched[2] == 45000u && s_vth_sched[3] == 46000u,
+           "returns of 100 us and more count from the scheduled time as returned");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
 #ifdef SR_HLE_AOT_BOUNDARY_TEST
 /* This is the same wrapper emitted by emit_checked_body_call: set the linked
  * resume address, establish its explicit return boundary, call the native body,
@@ -37295,6 +37334,7 @@ static int hle_selftest_main(int argc, char **argv) {
         test_vtimer_handler_registration_and_errors();
         test_vtimer_handler_runs_at_its_schedule_and_reschedules();
         test_vtimer_handler_catches_up_and_refuses_cancel_inside();
+        test_vtimer_handler_return_below_100us_reschedules_100us_on();
         fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
@@ -37471,6 +37511,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_handler_registration_and_errors();
     test_vtimer_handler_runs_at_its_schedule_and_reschedules();
     test_vtimer_handler_catches_up_and_refuses_cancel_inside();
+    test_vtimer_handler_return_below_100us_reschedules_100us_on();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_threadman_id_list();

@@ -3111,6 +3111,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
                 "PSP-TRACE-001",
+                # The 2026-10-29 acceptance-eligible #325 runs: hle-intr-cells of 77a1a5e3 and
+                # intr-cause of 2c199df8.
+                "PSP-HLE-INTR-001", "PSP-INTR-CAUSE-001",
             },
         )
         self.assertEqual(
@@ -6628,11 +6631,21 @@ class HleIssuesProbeTests(unittest.TestCase):
                 self.assertEqual(sum(1 for test in self.manifest["tests"] if test["id"] == test_id), 1)
                 row = by_id[test_id]
                 self.assertEqual(row["status"], "implemented")
-                self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-                for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
-                    self.assertNotIn(absent, row)
-                self.assertIn("No acceptance-eligible capture exists",
-                              row["evidence_note"])
+                if case == "hle-intr-cells":
+                    # Measured by the 2026-10-29 run of 77a1a5e3 (boot 66); everything but the
+                    # done record is cited.
+                    self.assertEqual(row["hardware_evidence"], "MEASURED")
+                    self.assertIn("77a1a5e3", row["measurement_note"])
+                    self.assertIn("acceptance-eligible with 0 blockers", row["measurement_note"])
+                    self.assertEqual(row["uncited_cases"], [f"{case}-done"])
+                    self.assertEqual(row["evidence_cases"], row["case_ids"][:-1])
+                    hle_manifest.measured_evidence_section(row)
+                else:
+                    self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+                    for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
+                        self.assertNotIn(absent, row)
+                    self.assertIn("No acceptance-eligible capture exists",
+                                  row["evidence_note"])
                 self.assertIn("not in the campaign queue", row["evidence_note"])
                 self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
                 self.assertEqual(row["prx"], f"{stem}.prx")
@@ -6779,9 +6792,14 @@ class HleIssuesProbeTests(unittest.TestCase):
         readme = (self.fixture / "README.md").read_text(encoding="utf-8")
         for case, _cid, _stem, _macro, test_id, _log in self.CASES:
             with self.subTest(case=case):
-                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
-                              "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
-                              "single launch, not in the campaign queue) |", hardware)
+                if case == "hle-intr-cells":
+                    self.assertIn(f"| `{case}` | `{test_id}` | `MEASURED` (2026-10-29, `77a1a5e3`, "
+                                  "boot 66; observed earlier from `da97b2c0` without a runner "
+                                  "envelope; single launch, not in the campaign queue) |", hardware)
+                else:
+                    self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
+                                  "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
+                                  "single launch, not in the campaign queue) |", hardware)
                 self.assertIn(f"| `{case}` | `{test_id}` |", readme)
         self.assertIn("probe_hle_issues.c", readme)
 
@@ -7549,6 +7567,56 @@ class IntrCauseProbeTests(unittest.TestCase):
                   "sceKernelWaitThreadEnd", "sceKernelWakeupThread"}
         calls = set(re.findall(r"\b((?:sce|ku|sctrl)\w+)\s*\(", self.section))
         self.assertEqual(listed, shared | calls)
+
+
+class IntrCellsRuntimeContractTests(unittest.TestCase):
+    """The runtime follows the PSP-HLE-INTR-001 handler-return cells (#325): an alarm's non-zero
+    return counts from the call's scheduled time, and a VTimer return below 100 us reschedules
+    100 us on. The behaviour is asserted natively by the selftests named here; these pin the
+    source so a revert to the delivery-time rule or a dropped minimum fails here as well."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.sched = _c_code((root / "src" / "rt" / "sched.c").read_text(encoding="utf-8"))
+        cls.hle = _c_code((root / "src" / "rt" / "hle.c").read_text(encoding="utf-8"))
+        cls.sched_selftest = (root / "src" / "rt" / "sched_selftest.c").read_text(encoding="utf-8")
+        cls.hle_selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _body(code: str, signature: str) -> str:
+        start = code.index(signature)
+        brace = code.index("{", start)
+        return code[brace:_c_close(code, brace) + 1]
+
+    def test_alarm_reschedules_from_the_scheduled_time(self) -> None:
+        body = self._body(self.sched, "static void scheduler_alarm_deliver(int slot)")
+        self.assertIn("const uint64_t scheduled = a->deadline;", body)
+        self.assertLess(body.index("const uint64_t scheduled = a->deadline;"),
+                        body.index("a->deadline = SCHED_WAIT_FOREVER;"))
+        self.assertIn("a->deadline = period > UINT64_MAX - scheduled ? UINT64_MAX : scheduled + period;",
+                      body)
+        self.assertNotIn("s_vtime_us + period", body)
+        self.assertNotIn("delivered_at", body)
+
+    def test_vtimer_return_below_100us_reschedules_100us_on(self) -> None:
+        self.assertIn("#define VTIMER_MIN_DELAY_US 100u", self.hle)
+        body = self._body(self.hle, "static void vtimer_service_one(void)")
+        self.assertIn("t->schedule = scheduled + (delay < VTIMER_MIN_DELAY_US ? VTIMER_MIN_DELAY_US : delay);",
+                      body)
+
+    def test_selftests_carry_the_measured_cells_and_run(self) -> None:
+        self.assertIn("static const uint64_t measured_calls[6] = {10046u, 30049u, 50053u, 70046u, "
+                      "90047u, 110048u};", self.sched_selftest)
+        self.assertIn("    test_alarm_rearm_counts_from_the_scheduled_time();\n", self.sched_selftest)
+        self.assertNotIn("relative_to_delivery", self.sched_selftest)
+        self.assertIn("s_vth_sched[0] == 10000u && s_vth_sched[1] == 10100u && s_vth_sched[2] == 10200u",
+                      self.hle_selftest)
+        self.assertIn("s_vth_sched[1] == 15000u && s_vth_sched[2] == 45000u && s_vth_sched[3] == 46000u",
+                      self.hle_selftest)
+        # Registered in the full run and in the --vtimer subset.
+        self.assertEqual(self.hle_selftest.count(
+            "test_vtimer_handler_return_below_100us_reschedules_100us_on();\n"), 2)
 
 
 class GeSampleProbeTests(unittest.TestCase):
