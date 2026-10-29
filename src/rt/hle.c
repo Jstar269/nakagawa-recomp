@@ -9671,6 +9671,22 @@ static uint32_t h_FontOpen(CpuState *s) {
         fprintf(stderr, "h_FontOpen: lib=0x%08x index=%u mode=%u -> font=0x%08x\n", A0, A1, A2, fh);
     return fh;
 }
+/* Reads via the same VFS as sceIoOpen, defined with the descriptor implementation below. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size);
+static uint32_t h_FontOpenUserFile(CpuState *s) {
+    if (!A3 || !sr_guest_span_writable(A3, 4u)) return SR_FONT_ERROR_INVALID_ARG;
+    if (!A1) { MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG); return 0; }
+    SrFontLib lib;
+    if (!fontlib_snapshot(A0, &lib)) { MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    /* Mode 0 uses guest file callbacks, which are not implemented here. */
+    if (A2 != 1u) { MEM_W32(A3, 0x80010086u); return 0; }
+    uint8_t *bytes = NULL;
+    uint32_t size = 0, error = font_read_user_file(A1, &bytes, &size);
+    if (error) { MEM_W32(A3, error); return 0; }
+    PGF *owned = pgf_open_memory(bytes, size);
+    free(bytes);
+    return font_open_common(s, A0, 0, A2, owned, owned, NULL, A3);
+}
 static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
     font_load();
@@ -17235,6 +17251,31 @@ static uint32_t h_IoOpen(CpuState *s) {
     if (rc != 0u) return rc;
     return h_io_open_path(path, A1, -1);
 }
+/* Read an entire user font through the descriptor's actual backing, including ISO and archives. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size) {
+    char path[512];
+    if (io_guest_path(guest_path, path, sizeof(path)) != 0u) return SR_FONT_ERROR_INVALID_ARG;
+    uint32_t fd = h_io_open_path(path, 1u, -1);
+    if ((int32_t)fd < 0) return 0x80460005u; /* handler open failed */
+    Fd *f = &s_fds[fd];
+    uint32_t error = 0u, n = f->size;
+    uint8_t *data = NULL;
+    if (f->kind != FD_KIND_FILE || n < 16u || n > 16u * 1024u * 1024u) error = SR_FONT_ERROR_INVALID_DATA;
+    else if (!(data = (uint8_t *)malloc(n))) error = SR_FONT_ERROR_OOM;
+    else if (f->archive_vfs) {
+        SrArchiveFile file = { f->archive_mount, f->archive_entry, f->size, -1 };
+        size_t got = 0;
+        if (sr_archive_vfs_read(f->archive_vfs, &file, 0, data, n, &got) != NK_OK || got != n)
+            error = 0x80460005u;
+    } else if (f->host) {
+        if (fseek(f->host, 0, SEEK_SET) != 0 || fread(data, 1, n, f->host) != n) error = 0x80460005u;
+    } else if (iso_read(f->lba, 0, data, n) != (int)n) error = 0x80460005u;
+    hle_fd_release(f, 0);
+    if (error) { free(data); return error; }
+    *bytes = data; *size = n;
+    return 0;
+}
+
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
@@ -27781,6 +27822,7 @@ static void hle_register_font_handlers(void) {
     sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+    sr_hle_register(0x57fcb733, "sceFontOpenUserFile", h_FontOpenUserFile);
 }
 
 static void hle_register_psmf_player_handlers(void) {

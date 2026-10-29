@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 14 |
-| `ppsspp-derived` | 104 | 90 |
+| `ppsspp-derived` | 105 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 280 | 200 |
-| `unverified` | 192 | 51 |
-| total | 640 | 355 |
+| `unverified` | 194 | 51 |
+| total | 643 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -287,6 +287,7 @@ belongs to without the census's own grouping.
 | `0x56c039b5` | `sceKernelCreateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x574b6fbc` | `sceFontDoneLib` | font | `unverified` | no recorded evidence |
 | `0x57641a81` | `sceRegCreateKey` | system | `synthetic` | HLE selftest dispatch |
+| `0x57fcb733` | `sceFontOpenUserFile` | font | `unverified` | no recorded evidence |
 | `0x58b1f937` | `sceKernelPollSema` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x58b83577` | `scePsmfPlayerSetPsmfCB` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x591a4aa2` | `sceMpegUnRegistStream` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -376,6 +377,7 @@ belongs to without the census's own grouping.
 | `0x7c41f2c2` | `sceKernelSendMsgPipeCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x7cff8cf3` | `_sceKernelLockLwMutex` | kernel_sync | `unverified` | no recorded evidence |
 | `0x7db31251` | `sceAtracAddStreamData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
+| `0x7de6711b` | `sceRtcFormatRFC2822LocalTime` | rtc | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x7e65b999` | `sceKernelCancelAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
 | `0x7e69eda4` | `sceHprmIsHeadphoneExist` | input | `hardware-measured` | PSP oracle PSP-HLE-HPRM-001 |
 | `0x7ed29e40` | `sceRtcSetTick` | rtc | `synthetic` | HLE selftest dispatch |
@@ -491,6 +493,7 @@ belongs to without the census's own grouping.
 | `0xa7144800` | `sceCtrlSetIdleCancelThreshold` | input | `synthetic` | HLE selftest dispatch |
 | `0xa780cf7e` | `sceMpegMallocAvcEsBuf` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xa834319d` | `sceFontOpen` | font | `unverified` | no recorded evidence |
+| `0xa85880d0` | `scePowerCheckWlanCoexistenceClock` | power | `unverified` | generic success handler; performs none of the API contract |
 | `0xa8e8c846` | `sceKernelReferMbxStatus` | kernel_sync | `hardware-measured` | PSP oracle PSP-KERNEL-001 |
 | `0xa9c2cb9a` | `sceKernelReferMutexStatus` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0xaa73c935` | `sceKernelExitThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |

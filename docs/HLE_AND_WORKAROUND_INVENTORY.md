@@ -51,11 +51,15 @@ measured here; later models can report 1. The runtime does not yet select a mode
 invalid-address result are **derived** from PPSSPP revision
 `7fab97c05f9568b17ac79c235b945f568eaf6384`; PPSSPP marks the error as untested.
 
+`sceFontOpenUserFile` supports mode 1 through the VFS; mode 0 guest callbacks
+are refused with `0x80010086`. Error choices are **derived** from PPSSPP revision
+`7fab97c05f9568b17ac79c235b945f568eaf6384`; callback refusal is runtime policy.
+
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **642** (dedicated **534**, fake_success **5**, controlled_unsupported **103**).
-Semantic handler census: **513** handlers across **25** API families, covering **540** handler-associated NID registrations.
+Registered NIDs: **643** (dedicated **535**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **514** handlers across **25** API families, covering **541** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -63,7 +67,7 @@ Semantic handler census: **513** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 325 | 337 |
+| `unreviewed` | 326 | 338 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -74,7 +78,7 @@ Semantic handler census: **513** handlers across **25** API families, covering *
 | `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
+| `sceFont` | 0 | 0 | 0 | 0 | 10 | 10 | 10 |
 | `sceGe` | 2 | 6 | 0 | 0 | 6 | 14 | 14 |
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
@@ -92,7 +96,7 @@ Semantic handler census: **513** handlers across **25** API families, covering *
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **325** | **513** | **540** |
+| **Total** | **13** | **172** | **1** | **2** | **326** | **514** | **541** |
 
 #### Complete Handlers (Evidence-Backed)
 

@@ -35427,6 +35427,28 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
                MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
            "sceFontNewLib refuses an allocator block overlapping a live library and leaves it intact");
 
+    /* File opening must use the same flash0 VFS fixture as the registry. */
+    expect(sr_hle_test_is_registered(0x57fcb733u), "sceFontOpenUserFile is registered");
+    if (sr_hle_test_is_registered(0x57fcb733u)) {
+        const char *path = "flash0:/font/ltn0.pgf";
+        const uint32_t path_addr = FLT_PARAMS + 0x1000u;
+        for (size_t i = 0; i <= strlen(path); i++) MEM_W8(path_addr + (uint32_t)i, path[i]);
+        s_flt_alloc_ret = FLT_FONT;
+        uint32_t file_font = flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR);
+        expect(file_font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "sceFontOpenUserFile opens a VFS font");
+        if (file_font) expect(flt_call(FLT_NID_CLOSE, file_font, 0u, 0u, 0u) == 0u, "close user file font");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, 0u, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+               "user file rejects a null name");
+        expect(flt_call(0x57fcb733u, 0u, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+               "user file rejects an invalid library");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 0u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80010086u,
+               "user file refuses unimplemented callback mode");
+        const char *missing = "flash0:/font/missing.pgf";
+        for (size_t i = 0; i <= strlen(missing); i++) MEM_W8(path_addr + (uint32_t)i, missing[i]);
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80460005u,
+               "user file reports a missing VFS file");
+    }
+
     s_flt_alloc_ret = FLT_LIB_A + 0x20u;
     expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
                MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(FLT_LIB_A + 0x14u) == 0u,

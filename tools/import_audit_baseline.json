@@ -1407,6 +1407,12 @@
     "name": "sceRegCreateKey",
     "status": "partial"
   },
+  "0x57fcb733": {
+    "classification": "dedicated",
+    "handler": "h_FontOpenUserFile",
+    "name": "sceFontOpenUserFile",
+    "status": "unreviewed"
+  },
   "0x58b1f937": {
     "classification": "dedicated",
     "handler": "h_PollSema",
