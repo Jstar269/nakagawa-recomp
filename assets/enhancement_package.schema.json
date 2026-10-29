@@ -180,9 +180,37 @@
               "probability_per_update_x0.5",
               "gate_30hz",
               "vblank_wait_2_to_1",
-              "retention_m_to_sqrt(m)"
+              "retention_m_to_sqrt(m)",
+              "accel_x0.25",
+              "launch_velocity_x0.5",
+              "offset_x2",
+              "window_start_x2"
             ],
             "description": "Declarative frame-rate rescale transform class."
+          },
+          "operand": {
+            "type": "string",
+            "enum": [
+              "f64_high"
+            ],
+            "description": "What the site's lui builds when its encoding cannot say: f64_high is the upper word of a double (power-of-two scales only)."
+          },
+          "acceleration_site": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$",
+            "description": "launch_velocity_x0.5 only: the accel_x0.25 site of the per-update acceleration; that site must pin its whole float (word_count 2 or low_insn_offset)."
+          },
+          "low_insn_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65536,
+            "multipleOf": 4,
+            "description": "For a lone lui of a float: the offset of the ori that completes it, read (not rewritten) to know the whole value."
+          },
+          "low_stock_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 of the stock word at low_insn_offset."
           }
         }
       }
@@ -280,7 +308,8 @@
               "step_x0.5",
               "probability_per_update_x0.5",
               "decay_k_to_1-sqrt(1-k)",
-              "retention_m_to_sqrt(m)"
+              "retention_m_to_sqrt(m)",
+              "accel_x0.25"
             ],
             "description": "Rescale applied to every element."
           }
@@ -372,7 +401,8 @@
                     "step_x0.5",
                     "probability_per_update_x0.5",
                     "decay_k_to_1-sqrt(1-k)",
-                    "retention_m_to_sqrt(m)"
+                    "retention_m_to_sqrt(m)",
+                    "accel_x0.25"
                   ]
                 }
               }

@@ -193,6 +193,12 @@ Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, 
 | `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
 | `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$ | $k \to 1 - \sqrt{1-k}$, rounded to the upper half |
 | `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$ | $m \to \sqrt{m}$, rounded to the upper half |
+| `accel_x0.25` | `lui` of a float (or a `lui`/`ori` pair) | the per-update acceleration is divided by 4 (two exponent steps on a lone `lui`) |
+| `launch_velocity_x0.5` | a `lui`/`ori` float pair with `acceleration_site` | the launch velocity $v_0 \to v_0/2 + g/8$, where $g$ is the stock value of the named `accel_x0.25` site |
+| `offset_x2` | `addi`/`addiu` with a nonzero immediate, also when the destination is a source | an additive offset counted in updates (a lookahead, a delay added to a base) doubles: $n \to 2n$ |
+| `window_start_x2` | `addi`/`addiu` with an immediate of $-2$ or less | the start of a window that ends one before a per-update counter: $k \to 2k+1$, so the window spans twice as many updates |
+
+A semi-implicit Euler motion (`v += g`, then `x += v`, once per update) reaches $x_n = n v_0 + g\,n(n+1)/2$. With $g/4$ per 60 Hz update and $v_0/2 + g/8$ at launch it reaches the same $x$ at every second update, which is what `accel_x0.25` and `launch_velocity_x0.5` declare together. The acceleration site must pin its whole float: a two-word site, or `low_insn_offset` and `low_stock_digest` naming the `ori` that completes a lone `lui` (read, never rewritten). A site with `operand: f64_high` is the `lui` of a double's upper word: `count_x2`, `step_x0.5`, `probability_per_update_x0.5` and `accel_x0.25` step its 11-bit exponent exactly, and other transforms refuse it.
 
 The transforms scale the operand the site produces; they do not guess its role. A constant that multiplies or bounds a random roll (`rand() % 100`, `rand * 100.0f < p`) halves the per-update probability when it is doubled, so its site declares `count_x2`, not `probability_per_update_x0.5`. A `swc1` site stores a scaled copy of its register and never writes the register, so a store that faults under `--lle-cpu` leaves it unchanged.
 

@@ -52,9 +52,11 @@ from enhancement_package import (
     load_package,
     plan_data_value,
     plan_float_pair_rewrite,
+    plan_site_rewrite,
     transform_data_file,
     validate_package,
     verify_and_resolve_data_sites,
+    verify_and_resolve_sites,
 )
 from nk_core import package_cache
 
@@ -1353,6 +1355,110 @@ class TestEnhancementDataTransforms(unittest.TestCase):
                                "stock_digest": "b" * 64, "transform": "count_x2"}],
                     "data_files": [entry],
                 })
+
+
+def _f32_of(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+
+
+def _bits_of(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
+    """offset_x2, window_start_x2, accel_x0.25, launch_velocity_x0.5 and f64_high."""
+
+    def _plan(self, transform: str, word: int, **extra: Any) -> dict[str, Any]:
+        return plan_site_rewrite(dict({"id": "S", "transform": transform}, **extra), word)
+
+    def test_offsets_and_windows(self) -> None:
+        # addiu v0,v0,2 (a lookahead D + 2): offset_x2 doubles the term even though rt == rs.
+        self.assertEqual(self._plan("offset_x2", 0x24420002)["word"], 0x24420004)
+        self.assertEqual(self._plan("offset_x2", 0x2442FFFD)["word"], 0x2442FFFA)  # -3 -> -6
+        # addiu v1,a1,-4 (window head-4 .. head-1, 3 updates) -> -7 (6 updates).
+        self.assertEqual(self._plan("window_start_x2", 0x24A3FFFC)["word"], 0x24A3FFF9)
+        for transform, word, why in (
+            ("offset_x2", 0x24420000, "nonzero"),
+            ("offset_x2", 0x28420002, "addi/addiu"),          # slti
+            ("window_start_x2", 0x24A3FFFF, "-2 or less"),     # -1 has no span
+            ("window_start_x2", 0x24A30004, "-2 or less"),
+        ):
+            with self.subTest(transform=transform, word=hex(word)):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    self._plan(transform, word)
+                self.assertIn(why, str(ctx.exception))
+
+    def test_accel_and_double_upper_words(self) -> None:
+        # lui v0,0x3d05 (the upper half of 0.0326667): two exponent steps are exact.
+        word = self._plan("accel_x0.25", 0x3C023D05)["word"]
+        self.assertEqual(_f32_of((word & 0xFFFF) << 16), _f32_of(0x3D050000) / 4)
+        with self.assertRaises(EnhancementPackageError):
+            self._plan("accel_x0.25", 0x24020002)
+        # lui a0,0x4011 is the upper word of the double 4.25: halved is 2.125 (0x4001...).
+        hi = self._plan("step_x0.5", 0x3C044011, operand="f64_high")["word"] & 0xFFFF
+        self.assertEqual(hi, 0x4001)
+        hi = self._plan("count_x2", 0x3C04C011, operand="f64_high")["word"] & 0xFFFF  # -4.25 -> -8.5
+        self.assertEqual(hi, 0xC021)
+        self.assertEqual(struct.unpack(">d", bytes.fromhex("4021000000000000"))[0], 8.5)
+        with self.assertRaises(EnhancementPackageError):
+            self._plan("decay_k_to_1-sqrt(1-k)", 0x3C043FE0, operand="f64_high")
+
+    def test_launch_velocity_matches_the_30hz_arc_every_second_update(self) -> None:
+        """v0' = v0/2 + g/8 with g' = g/4 puts a semi-implicit Euler arc on the same points."""
+        v0, g = _f32_of(0xBE99999A), _f32_of(0x3D05CD7C)   # -0.3 and 0.032666668
+        words = {
+            0x1000: 0x3C02BE99, 0x1004: 0x3442999A,       # lui/ori v0 = v0
+            0x1100: 0x3C023D05, 0x1140: 0x3442CD7C,       # lui ... ori (not adjacent) = g
+        }
+        pkg = {
+            "schema_version": 1, "id": "synth.jump", "display_name": "Synthetic jump", "version": "1.0.0",
+            "category": "timing_frame_presentation", "target_title_id": "synthetic-allegrex-v1",
+            "game_version": "1.00", "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "No random rolls in this fixture."},
+            "sites": [
+                {"id": "V0", "function": "jump", "insn_offset": 0, "word_count": 2,
+                 "stock_digest": compute_stock_words_digest([words[0x1000], words[0x1004]]),
+                 "transform": "launch_velocity_x0.5", "acceleration_site": "G"},
+                {"id": "G", "function": "jump", "insn_offset": 0x100,
+                 "stock_digest": compute_stock_words_digest([words[0x1100]]),
+                 "low_insn_offset": 0x140, "low_stock_digest": compute_stock_words_digest([words[0x1140]]),
+                 "transform": "accel_x0.25"},
+            ],
+        }
+        resolved = verify_and_resolve_sites(
+            pkg, executable_sha256="a" * 64, symbol_to_addr={"jump": 0x1000},
+            read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+        new_v0 = _f32_of(((resolved[0x1000]["rewrite"]["word"] & 0xFFFF) << 16)
+                         | (resolved[0x1004]["rewrite"]["word"] & 0xFFFF))
+        new_g = _f32_of((resolved[0x1100]["rewrite"]["word"] & 0xFFFF) << 16 | 0xCD7C)
+        self.assertEqual(new_v0, _f32_of(_bits_of(v0 / 2 + g / 8)))
+        self.assertNotIn(0x1140, resolved)   # the pinned low word is read, never rewritten
+
+        def arc(v: float, a: float, steps: int) -> list[float]:
+            y, out = 0.0, []
+            for _ in range(steps):
+                v += a
+                y += v
+                out.append(y)
+            return out
+        stock, enhanced = arc(v0, g, 20), arc(new_v0, new_g, 40)
+        for n in range(20):
+            self.assertAlmostEqual(stock[n], enhanced[2 * n + 1], places=5)
+
+        no_pin = copy.deepcopy(pkg)
+        del no_pin["sites"][1]["low_insn_offset"], no_pin["sites"][1]["low_stock_digest"]
+        with self.assertRaisesRegex(EnhancementPackageError, "does not pin its whole float"):
+            verify_and_resolve_sites(
+                no_pin, executable_sha256="a" * 64, symbol_to_addr={"jump": 0x1000},
+                read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+        wrong = copy.deepcopy(pkg)
+        wrong["sites"][1]["transform"] = "step_x0.5"
+        with self.assertRaisesRegex(EnhancementPackageError, "must be an accel_x0.25 site"):
+            validate_package(wrong)
+        missing = copy.deepcopy(pkg)
+        del missing["sites"][0]["acceleration_site"]
+        with self.assertRaisesRegex(EnhancementPackageError, "needs acceleration_site"):
+            validate_package(missing)
 
 
 class TestEnhancementBuildPackageWiring(unittest.TestCase):

@@ -67,6 +67,16 @@ SITE_TRANSFORMS = frozenset({
     "gate_30hz",
     "vblank_wait_2_to_1",
     "retention_m_to_sqrt(m)",
+    "accel_x0.25",
+    "launch_velocity_x0.5",
+    "offset_x2",
+    "window_start_x2",
+})
+
+# What a site's instruction builds, when its encoding alone cannot say: the upper
+# word of a double is built by a lui like a float, with a different exponent field.
+SITE_OPERANDS = frozenset({
+    "f64_high",
 })
 
 RNG_POLICY_MODES = frozenset({
@@ -147,6 +157,7 @@ DATA_TRANSFORMS = frozenset({
     "probability_per_update_x0.5",
     "decay_k_to_1-sqrt(1-k)",
     "retention_m_to_sqrt(m)",
+    "accel_x0.25",
 })
 
 # A data file: a file the title reads from its disc, rewritten when it is opened.
@@ -187,6 +198,10 @@ SITE_KEYS = frozenset({
     "stock_digest",
     "word_count",
     "transform",
+    "operand",
+    "acceleration_site",
+    "low_insn_offset",
+    "low_stock_digest",
 })
 
 # The instruction where one logic update of the title begins: it runs exactly once per update.
@@ -567,6 +582,19 @@ def validate_package(data: Any) -> dict[str, Any]:
                     tf_path,
                     f"Unknown site transform: {transform!r}; must be one of {sorted(SITE_TRANSFORMS)}",
                 )
+            _validate_site_extras(site, site_path)
+
+        site_ids = {site["id"] for site in sites}
+        for idx, site in enumerate(sites):
+            accel = site.get("acceleration_site")
+            if accel is not None:
+                if accel not in site_ids or accel == site["id"]:
+                    fail(f"sites[{idx}].acceleration_site",
+                         f"acceleration_site {accel!r} must name another site of this package")
+                target = next(s for s in sites if s["id"] == accel)
+                if target["transform"] != "accel_x0.25":
+                    fail(f"sites[{idx}].acceleration_site",
+                         f"acceleration_site {accel!r} must be an accel_x0.25 site")
 
         # Validate update_boundary: where one logic update begins. Gated sites run on
         # alternate updates counted there, so a package that gates must declare it.
@@ -596,6 +624,37 @@ def validate_package(data: Any) -> dict[str, Any]:
             _validate_data_files(data["data_files"])
 
     return data
+
+
+def _validate_site_extras(site: Mapping[str, Any], path: str) -> None:
+    """The optional site fields: operand, acceleration_site and a pinned low word."""
+    transform = site["transform"]
+    if "operand" in site:
+        if site["operand"] not in SITE_OPERANDS:
+            fail(f"{path}.operand", f"Unknown operand {site['operand']!r}; must be one of {sorted(SITE_OPERANDS)}")
+        if site["word_count"] != 1:
+            fail(f"{path}.operand", "operand f64_high names one lui word")
+    if transform == "launch_velocity_x0.5":
+        if "acceleration_site" not in site:
+            fail(path, "launch_velocity_x0.5 needs acceleration_site, the site of its per-update acceleration")
+        if not isinstance(site["acceleration_site"], str):
+            fail(f"{path}.acceleration_site", "acceleration_site must be a site id")
+        if site["word_count"] != 2:
+            fail(f"{path}.word_count", "launch_velocity_x0.5 rewrites a lui/ori float pair (word_count 2)")
+    elif "acceleration_site" in site:
+        fail(f"{path}.acceleration_site", "acceleration_site belongs only to launch_velocity_x0.5")
+    if ("low_insn_offset" in site) != ("low_stock_digest" in site):
+        fail(path, "low_insn_offset and low_stock_digest go together")
+    if "low_insn_offset" in site:
+        low = site["low_insn_offset"]
+        if (not isinstance(low, int) or isinstance(low, bool) or not 0 <= low <= 65536 or low % 4
+                or low == site["insn_offset"]):
+            fail(f"{path}.low_insn_offset", "low_insn_offset must be another 4-byte-aligned offset in [0, 65536]")
+        digest = site["low_stock_digest"]
+        if not isinstance(digest, str) or not SHA256_HEX_RE.match(digest):
+            fail(f"{path}.low_stock_digest", "low_stock_digest must be a 64-character lowercase hex SHA-256 digest")
+        if site["word_count"] != 1:
+            fail(f"{path}.low_insn_offset", "a pinned low word completes a lone lui (word_count 1)")
 
 
 def _check_id(value: Any, path: str, seen: set[str], role: str) -> None:
@@ -829,6 +888,9 @@ def verify_and_resolve_sites(
     known_set = set(int(a) for a in known_functions)
     resolved_by_addr: dict[int, dict[str, Any]] = {}
     unresolved_fn_cache: dict[str, int] = {}
+    # Whole float values of lui/ori sites, by site id, for a launch velocity's acceleration.
+    stock_values: dict[str, float] = {}
+    pending: list[tuple[Mapping[str, Any], str, int, int, list[int]]] = []
 
     for idx, site in enumerate(validated["sites"]):
         site_path = f"sites[{idx}]({site['id']})"
@@ -853,15 +915,34 @@ def verify_and_resolve_sites(
             )
 
         stock_words = [int(w) & 0xFFFFFFFF for w in words]
-        if word_count == 1:
-            rewrites = [plan_site_rewrite(site, stock_words[0])]
+        if "low_insn_offset" in site:
+            _low_addr, low_words = _read_verified_words(
+                fn_name, fn_addr, int(site["low_insn_offset"]), 1, site["low_stock_digest"],
+                f"{site_path}.low", read_words_fn, known_set,
+            )
+            stock_values[site["id"]] = _lui_ori_value(site, stock_words[0], int(low_words[0]) & 0xFFFFFFFF)
         elif word_count == 2:
-            rewrites = plan_float_pair_rewrite(site, stock_words[0], stock_words[1])
-        else:
+            stock_values[site["id"]] = _lui_ori_value(site, stock_words[0], stock_words[1])
+        if word_count not in (1, 2):
             fail(
                 f"{site_path}.word_count",
                 "Only one-word sites and lui/ori float pairs have a defined rewrite (fail-closed refusal)",
             )
+        pending.append((site, site_path, fn_addr, site_addr, stock_words))
+
+    for site, site_path, fn_addr, site_addr, stock_words in pending:
+        if site["transform"] == "launch_velocity_x0.5":
+            accel = site["acceleration_site"]
+            if accel not in stock_values:
+                fail(f"{site_path}.acceleration_site",
+                     f"acceleration site {accel!r} does not pin its whole float: give it word_count 2 "
+                     f"or low_insn_offset (fail-closed refusal)")
+            rewrites = plan_float_pair_rewrite(site, stock_words[0], stock_words[1],
+                                               acceleration=stock_values[accel])
+        elif len(stock_words) == 1:
+            rewrites = [plan_site_rewrite(site, stock_words[0])]
+        else:
+            rewrites = plan_float_pair_rewrite(site, stock_words[0], stock_words[1])
         for word_index, rewrite in enumerate(rewrites):
             word_addr = site_addr + 4 * word_index
             if word_addr in resolved_by_addr:
@@ -1009,6 +1090,8 @@ def _scale_value(transform: str, value: float) -> float:
         return value * 2
     if transform in ("step_x0.5", "probability_per_update_x0.5"):
         return value / 2
+    if transform == "accel_x0.25":
+        return value / 4
     if not 0.0 < value < 1.0:
         raise ValueError(f"{value!r} is outside (0, 1)")
     if transform == "decay_k_to_1-sqrt(1-k)":
@@ -1028,7 +1111,7 @@ def plan_data_value(transform: str, dtype: str, raw: bytes) -> bytes:
         if not math.isfinite(struct.unpack(fmt, out)[0]):
             raise ValueError(f"float {value!r} overflows when rescaled")
         return out
-    if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5"):
+    if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5", "accel_x0.25"):
         raise ValueError(f"{transform} needs a float, not {dtype}")
     scaled = _scale_value(transform, value)
     if scaled != int(scaled):
@@ -1096,7 +1179,7 @@ def _rescale_csv_number(transform: str, text: bytes) -> bytes:
     sign, whole, frac = m.group(1), m.group(2), m.group(3)
     if frac is None:
         value = int(sign + whole)
-        if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5"):
+        if transform not in ("count_x2", "step_x0.5", "probability_per_update_x0.5", "accel_x0.25"):
             raise ValueError(f"{transform} needs a decimal cell, not the integer {value}")
         scaled = _scale_value(transform, value)
         if scaled != int(scaled):
@@ -1212,7 +1295,18 @@ def _with_imm(w: int, imm: int) -> int:
     return (w & 0xFFFF0000) | (imm & 0xFFFF)
 
 
-def plan_float_pair_rewrite(site: Mapping[str, Any], w0: int, w1: int) -> list[dict[str, Any]]:
+def _lui_ori_value(site: Mapping[str, Any], lui: int, ori: int) -> float:
+    """The float a lui and an ori of the same register build, checked fail-closed."""
+    rt = (lui >> 16) & 0x1F
+    if (lui >> 26) != 0x0F or (lui >> 21) & 0x1F or rt == 0:
+        _refuse(site, lui, "the float starts with lui")
+    if (ori >> 26) != 0x0D or (ori >> 21) & 0x1F != rt or (ori >> 16) & 0x1F != rt:
+        _refuse(site, ori, "the float ends with ori of the lui's register")
+    return _f32(((lui & 0xFFFF) << 16) | (ori & 0xFFFF))
+
+
+def plan_float_pair_rewrite(site: Mapping[str, Any], w0: int, w1: int,
+                            acceleration: float | None = None) -> list[dict[str, Any]]:
     """The rewrite of a float constant built by ``lui rt, hi`` then ``ori rt, rt, lo``.
 
     The two words name the whole 32-bit value, so a scaling transform rewrites it
@@ -1226,15 +1320,22 @@ def plan_float_pair_rewrite(site: Mapping[str, Any], w0: int, w1: int) -> list[d
     if (w1 >> 26) != 0x0D or (w1 >> 21) & 0x1F != rt or (w1 >> 16) & 0x1F != rt:
         _refuse(site, w1, "a two-word site ends with ori of the lui's register")
     tf = site["transform"]
-    if tf not in DATA_TRANSFORMS:
+    if tf not in DATA_TRANSFORMS and tf != "launch_velocity_x0.5":
         _refuse(site, w0, "a float pair takes a scaling transform")
     value = _f32(((w0 & 0xFFFF) << 16) | (w1 & 0xFFFF))
     if not math.isfinite(value):
         _refuse(site, w0, f"float constant {value!r} is not finite")
-    try:
-        new_value = _scale_value(tf, value)
-    except ValueError as exc:
-        _refuse(site, w0, str(exc))
+    if tf == "launch_velocity_x0.5":
+        # Semi-implicit Euler (v += g; x += v once per update): y_n = n*v0 + g*n(n+1)/2.
+        # With g/4 per 60 Hz update, y matches at every second update when v0' = v0/2 + g/8.
+        if acceleration is None or not math.isfinite(acceleration):
+            _refuse(site, w0, "launch_velocity_x0.5 needs the stock acceleration")
+        new_value = value / 2 + acceleration / 8
+    else:
+        try:
+            new_value = _scale_value(tf, value)
+        except ValueError as exc:
+            _refuse(site, w0, str(exc))
     bits = _f32_bits(new_value)
     if not math.isfinite(_f32(bits)):
         _refuse(site, w0, f"float constant {value!r} overflows when rescaled")
@@ -1278,6 +1379,43 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         if op in _IMM_ARITH_OPS + (0x0D,) and simm16 == 2:
             return {"kind": "word", "word": _with_imm(w, 1)}
         _refuse(site, w, "expects an immediate of 2")
+
+    if site.get("operand") == "f64_high":
+        # The upper word of a double: sign, 11-bit exponent (bits 4..14 of the lui
+        # immediate), top of the fraction. A power-of-two scale is an exponent step.
+        steps = {"count_x2": 1, "step_x0.5": -1, "probability_per_update_x0.5": -1, "accel_x0.25": -2}
+        if op != 0x0F or tf not in steps:
+            _refuse(site, w, "f64_high takes the lui of a double and a power-of-two scale")
+        exponent = (imm16 >> 4) & 0x7FF
+        new_exponent = exponent + steps[tf]
+        if exponent == 0 or exponent == 0x7FF or not 1 <= new_exponent <= 0x7FE:
+            _refuse(site, w, "lui value is not a normal double's upper word")
+        return {"kind": "word", "word": _with_imm(w, (imm16 & 0x800F) | (new_exponent << 4))}
+
+    if tf == "offset_x2":
+        # An additive offset counted in updates (base + n, not an accumulator): n -> 2n.
+        if op not in (0x08, 0x09) or simm16 == 0 or not -0x8000 <= 2 * simm16 <= 0x7FFF:
+            _refuse(site, w, "offset_x2 doubles the nonzero immediate of an addi/addiu")
+        return {"kind": "word", "word": _with_imm(w, 2 * simm16)}
+
+    if tf == "window_start_x2":
+        # A window from head + k to head - 1 spans -k - 1 updates; twice that span
+        # starts at head + 2k + 1.
+        if op not in (0x08, 0x09) or simm16 > -2 or 2 * simm16 + 1 < -0x8000:
+            _refuse(site, w, "window_start_x2 takes an addi/addiu of an offset of -2 or less")
+        return {"kind": "word", "word": _with_imm(w, 2 * simm16 + 1)}
+
+    if tf == "accel_x0.25":
+        # A lone lui of a float: two exponent steps are an exact x0.25.
+        if op != 0x0F:
+            _refuse(site, w, "accel_x0.25 takes the lui of a float (or a lui/ori pair)")
+        exponent = (imm16 >> 7) & 0xFF
+        if not 3 <= exponent <= 254:
+            _refuse(site, w, "lui value is not a normal float constant")
+        return {"kind": "word", "word": _with_imm(w, imm16 - 0x100)}
+
+    if tf == "launch_velocity_x0.5":
+        _refuse(site, w, "launch_velocity_x0.5 rewrites a lui/ori float pair")
 
     if tf == "gate_30hz":
         if is_jal or is_jalr:
