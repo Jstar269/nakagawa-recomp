@@ -1980,6 +1980,7 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     sr_module_code_reset();
 }
 
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -2047,6 +2048,28 @@ static void test_runtime_placed_modules(void) {
     expect(sr_hle_resolve_late_import(RT_EXPORT_NID) == base + RT_QUERY &&
                sr_hle_test_started_export(RT_EXPORT_NID) == 0u,
            "runtime placement: exports resolve at the placed address, not linked before start");
+    {
+        /* sceKernelQueryModuleInfo answers a module the runtime placed from the record taken
+         * at placement: segments, gp and text address at the placed base, and the sizes of a
+         * section-less PRX from its program headers (uOFW loadelf.c CheckElfSection). */
+        const uint32_t QBUF = 0x09000000u;
+        CpuState q;
+        const int caller = s_cur;
+        TCB *qt = fixture_thread(0x5152u, TH_RUNNING, 32);
+        qt->started = 1;
+        s_cur = (int)(qt - s_tcb);
+        memset(SR_HOST(QBUF), 0xa5, 96u);
+        MEM_W32(QBUF, 96u);
+        memset(&q, 0, sizeof(q)); q.r[4] = uid; q.r[5] = QBUF;
+        expect(sr_syscall(&q, 0x748cbed9u) == 0u && MEM_R8(QBUF + 4u) == 1u &&
+                   MEM_R32(QBUF + 8u) == base && MEM_R32(QBUF + 24u) == RT_MEM_SPAN &&
+                   MEM_R32(QBUF + 44u) == base + RT_GP_LINK && MEM_R32(QBUF + 48u) == base &&
+                   MEM_R32(QBUF + 52u) == RT_FILE_SPAN && MEM_R32(QBUF + 56u) == 0u &&
+                   MEM_R32(QBUF + 60u) == RT_MEM_SPAN - RT_FILE_SPAN &&
+                   memcmp(SR_HOST(QBUF + 68u), "rtplaced", 9) == 0,
+               "runtime placement: QueryModuleInfo answers the placed module's record");
+        s_cur = caller;
+    }
 
     /* One translation binds one image: a second instance is a named boundary. */
     uint32_t heap_before = sr_hle_test_partition_heap_ptr();
@@ -26820,7 +26843,7 @@ static void test_query_module_info_answers_main_module_record(void) {
     const uint32_t late = sr_hle_test_register_module("late_q.prx", 0x08a10070u, 0u);
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = late; cpu.r[5] = BUF;
     expect(late != 0u && sr_syscall(&cpu, NID_QUERY) == 0x80020002u,
-           "a loaded module without a full record is refused by name");
+           "a loaded module the runtime did not place itself is refused by name");
 
     sr_main_module_register(NULL);
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
