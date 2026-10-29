@@ -828,6 +828,13 @@ static SrGuestInterpResult execute_noncontrol(
         const int move_shape = (opcode & 0x7ffu) == 0u;
         if (fmt == 0x00u && move_shape) {         /* mfc1 rt, fs */
             write_gpr(s, ft, s->fi[fs]);
+        } else if (fmt == 0x02u && move_shape) {  /* cfc1 */
+            write_gpr(s, ft, fs == 31u ? s->fcr31 : (fs == 0u ? 0x00003351u : 0u));
+        } else if (fmt == 0x06u && move_shape) {  /* ctc1 */
+            if (fs == 31u) {
+                s->fcr31 = read_gpr(s, ft) & ~0xfe000000u;
+                s->fpcond = (s->fcr31 >> 23) & 1u;
+            }
         } else if (fmt == 0x04u && move_shape) {  /* mtc1 rt, fs */
             s->fi[fs] = read_gpr(s, ft);
         } else if (fmt == 0x10u && funct == 0x06u && ft == 0u) { /* mov.s fd,fs */
@@ -838,6 +845,18 @@ static SrGuestInterpResult execute_noncontrol(
         } else if (fmt == 0x10u && funct == 0x00u) {   /* add.s */
             SR_NAN_TRAP_STORE_F2(pc, "add.s", fd, fs, ft,
                                  sr_fpu_add_s(s->f[fs], s->f[ft], s->fcr31));
+        } else if (fmt == 0x10u && funct == 0x01u) {   /* sub.s */
+            SR_NAN_TRAP_STORE_F2(pc, "sub.s", fd, fs, ft,
+                                 sr_fpu_sub_s(s->f[fs], s->f[ft], s->fcr31));
+        } else if (fmt == 0x10u && funct == 0x03u) {   /* div.s */
+            SR_NAN_TRAP_STORE_F2(pc, "div.s", fd, fs, ft,
+                                 sr_fpu_div_s(s->f[fs], s->f[ft], s->fcr31));
+        } else if (fmt == 0x10u && funct == 0x04u) {   /* sqrt.s */
+            SR_NAN_TRAP_STORE_F1(pc, "sqrt.s", fd, fs, sqrtf(s->f[fs]));
+        } else if (fmt == 0x10u && funct == 0x05u) {   /* abs.s */
+            SR_NAN_TRAP_STORE_F1(pc, "abs.s", fd, fs, fabsf(s->f[fs]));
+        } else if (fmt == 0x10u && funct == 0x07u) {   /* neg.s */
+            SR_NAN_TRAP_STORE_F1(pc, "neg.s", fd, fs, -s->f[fs]);
         } else if (fmt == 0x10u && funct == 0x02u) {   /* mul.s */
             /* Classify the inf*0 case from RAW bits, exactly as the generated
              * code does: a floating precheck would itself be a guest-sensitive
@@ -853,7 +872,7 @@ static SrGuestInterpResult execute_noncontrol(
                 SR_NAN_TRAP_STORE_F2(pc, "mul.s", fd, fs, ft,
                                      sr_fpu_mul_s(s->f[fs], s->f[ft], s->fcr31));
             }
-        } else if (fmt == 0x10u && funct == 0x24u) {   /* cvt.w.s */
+        } else if (fmt == 0x10u && (funct == 0x24u || (funct >= 0x0cu && funct <= 0x0fu))) { /* word conversions */
             s->fi[fd] = sr_fpu_to_word(s->f[fs], funct, s->fcr31);
         } else if (fmt == 0x10u && funct >= 0x30u) {   /* c.cond.s */
             s->fpcond = sr_fpu_condition_s(funct & 0x0fu, s->fi[fs], s->fi[ft]);

@@ -97,6 +97,10 @@ EXPECTED_FORMS = frozenset(
         ("special", 0x26),  # xor
         ("special", 0x2A),  # slt
         ("special", 0x2B),  # sltu
+        ("cop1", 0x02, 0x00),  # cfc1
+        ("cop1", 0x06, 0x00),  # ctc1
+        *( ("cop1", 0x10, fn) for fn in (0x01, 0x03, 0x04, 0x05, 0x07,
+                                              0x0c, 0x0d, 0x0e, 0x0f) ),
         ("cop1", 0x00, 0x00),  # mfc1
         ("cop1", 0x04, 0x00),  # mtc1
         ("cop1_branch",),  # bc1f/t and likely forms share a branch group
@@ -164,19 +168,11 @@ class FpuOracleStructureTests(unittest.TestCase):
         self.assertIn(cvt_sw, words)
         self.assertLess(words.index(mtc1), words.index(cvt_sw))
 
-    def test_aot_oracle_cell_is_not_claimed_by_the_two_lane_interpreter(self):
+    def test_scalar_oracle_and_interpreter_cells_are_distinct(self):
         self.assertIn("fpu_aot", cosim.AOT_ORACLE_ONLY_CELLS)
-        self.assertIn("fpu_aot", cosim.NON_ENTRY_CELLS)
-        layout = cosim.cell_layout()
-        for name, (_offset, words) in layout.items():
-            if name in cosim.AOT_ORACLE_ONLY_CELLS:
-                continue
-            for word in words:
-                self.assertNotEqual(
-                    cosim.decode_form(word),
-                    ("cop1", 0x10, 0x04),
-                    f"{name} executes sqrt.s outside the AOT-only oracle",
-                )
+        self.assertNotIn("fpu_interp", cosim.NON_ENTRY_CELLS)
+        self.assertIn(("cop1", 0x10, 0x04),
+                      {cosim.decode_form(w) for w in cosim.cell_layout()["fpu_interp"][1]})
 
 
 @unittest.skipUnless(shutil.which("gcc"), "gcc is required for the C.cond truth-table regression")

@@ -247,9 +247,9 @@ checks all sixteen `c.cond.s` predicates through FCC0 and `bc1f`, and `bitops`
 checks `cvt.s.w` in the unsigned-to-float idiom. The two-tier `branch_likely`
 cell also executes `bc1tl`/`bc1fl`. These cells run the project-owned AOT and
 interpreter implementations over the same guest words.
-The oracle adds AOT-only coverage for `sub.s`, `div.s`, unary operations and
-rounding/ceiling/floor forms, and the independent reference values for `cvt.s.w`
-and the comparisons.
+The two-tier `fpu_interp` cell also covers `sub.s`, `div.s`, unary and word
+conversion forms, and FCR31 control moves. The independent reference oracle
+checks a wider corpus of scalar operands, rounding modes and comparisons.
 There is no scalar FPU madd/msub implementation to claim: the similarly named
 instructions in the fixture are integer HI/LO `madd`/`msub`.
 

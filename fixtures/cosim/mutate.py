@@ -100,6 +100,12 @@ class Mutant:
 
 MUTANTS: tuple[Mutant, ...] = (
     Mutant(
+        "sub-s-adds",
+        "sub.s incorrectly adds its operands",
+        [("sr_fpu_sub_s(s->f[fs], s->f[ft], s->fcr31)",
+          "sr_fpu_add_s(s->f[fs], s->f[ft], s->fcr31)", 1)],
+    ),
+    Mutant(
         "skip-delay-slot",
         "skip delay slot",
         [(
