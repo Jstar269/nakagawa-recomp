@@ -2921,6 +2921,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "supported": meta.is_supported,
         "matched_profile": meta.matched_profile.id if meta.matched_profile else None,
         "profile_validation": profile_validation,
+        "format_warnings": list(meta.container_metadata.get("format_warnings", [])),
         "compatibility_preflight": preflight,
     }
     if args.json:
@@ -2935,6 +2936,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
         if profile_validation:
             print(f"Profile validation: {profile_validation}")
+        for warning in payload["format_warnings"]:
+            print(f"Disc format note: {warning}")
         if preflight.get("modified_dump_cfw_loader"):
             print(f"Game executable: {preflight['selected_executable_source']}")
             print(f"Analysis input: {preflight['selected_executable'] or 'none'}")

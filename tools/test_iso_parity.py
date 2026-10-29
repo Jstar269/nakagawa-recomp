@@ -1613,6 +1613,139 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("DISC_ID"), "TEST00001")
         self.assertEqual(c_meta.get("TITLE"), "Identity Fixture")
 
+    def _assert_disc_sfo_ok(self, iso_file: Path, metadata) -> None:
+        runtime_root = self.temp_dir / "runtime-root"
+        runtime_root.mkdir(exist_ok=True)
+        preflight = inspect_compatibility_preflight(
+            iso_file, metadata=metadata, runtime_root=runtime_root
+        )
+        checks = {check["code"]: check for check in preflight["checks"]}
+        self.assertEqual(checks["DISC_SFO"]["status"], "OK", checks["DISC_SFO"])
+
+    def test_sfo_utf8_string_ends_at_its_first_nul_parity(self) -> None:
+        # Format 0x0204 is a NUL-terminated string. A title written over a longer
+        # one keeps the old tail (here a cut multi-byte character) after the NUL.
+        iso_file = self.temp_dir / "sfo-after-nul.iso"
+        sfo = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("DISC_VERSION", 0x0204, b"1.00\0"),
+            ("TITLE", 0x0204, b"Translated Title\0\x81\xaa\xe3\x81\x84\0"),
+            ("PSP_SYSTEM_VER", 0x0204, b"4.05\0\x04"),
+        ])
+        create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+
+        py_meta = inspect_iso(iso_file)
+        self.assertEqual(py_meta.title, "Translated Title")
+        self.assertEqual(py_meta.param_sfo_facts["PSP_SYSTEM_VER"], "4.05")
+        warnings = py_meta.container_metadata["format_warnings"]
+        self.assertTrue(
+            any("'TITLE'" in note and "81aae3818400" in note for note in warnings), warnings
+        )
+        self._assert_disc_sfo_ok(iso_file, py_meta)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(c_meta.get("RESULT"), "OK", c_meta)
+        self.assertEqual(c_meta.get("TITLE"), "Translated Title")
+
+    def test_sfo_title_that_is_not_utf8_is_shown_with_replacements_parity(self) -> None:
+        # A single-byte code page dash, then cut and ill-formed sequences: each
+        # ill-formed run becomes one U+FFFD and the raw bytes stay in the note.
+        iso_file = self.temp_dir / "sfo-title-not-utf8.iso"
+        raw_title = (
+            b"Fixture \x96 Edition A\xe3\x81B\xf0\x9f\x98C\xed\xa0\x80D\xff"
+        )
+        sfo = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("DISC_VERSION", 0x0204, b"1.00\0"),
+            ("TITLE", 0x0204, raw_title + b"\0"),
+        ])
+        create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+
+        expected = raw_title.decode("utf-8", errors="replace")
+        self.assertEqual(expected.count("�"), 7)
+        py_meta = inspect_iso(iso_file)
+        self.assertEqual(py_meta.disc_id, "TEST00001")
+        self.assertEqual(py_meta.title, expected)
+        warnings = py_meta.container_metadata["format_warnings"]
+        self.assertTrue(
+            any("'TITLE'" in note and raw_title.hex() in note for note in warnings), warnings
+        )
+        self._assert_disc_sfo_ok(iso_file, py_meta)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(c_meta.get("RESULT"), "OK", c_meta)
+        self.assertEqual(c_meta.get("TITLE"), expected)
+
+    def test_sfo_disc_id_and_version_are_never_repaired_parity(self) -> None:
+        for key, value in (("DISC_VERSION", b"1.0\xff\0"), ("DISC_ID", b"TEST0000\xb9\0")):
+            with self.subTest(key=key):
+                iso_file = self.temp_dir / f"sfo-bad-{key.lower()}.iso"
+                values = {"DISC_ID": b"TEST00001\0", "DISC_VERSION": b"1.00\0", key: value}
+                sfo = build_custom_param_sfo([
+                    ("DISC_ID", 0x0204, values["DISC_ID"]),
+                    ("DISC_VERSION", 0x0204, values["DISC_VERSION"]),
+                    ("TITLE", 0x0204, b"Exact Identity\0"),
+                ])
+                create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+                with self.assertRaisesRegex(IsoInspectionError, f"'{key}' is not valid UTF-8"):
+                    inspect_iso(iso_file)
+                c_meta = self._run_native_inspect(iso_file)
+                self.assertTrue(c_meta.get("RESULT", "").startswith("ERROR"), c_meta)
+
+    def test_sfo_value_past_the_end_is_skipped_unless_identity_parity(self) -> None:
+        # A rewritten PARAM.SFO can be shorter than its own index table says; the
+        # last value (USE_USB) then lies past the end of the file.
+        entries = [
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("DISC_VERSION", 0x0204, b"1.00\0"),
+            ("TITLE", 0x0204, b"Short File\0"),
+            ("USE_USB", 0x0404, struct.pack("<I", 0)),
+        ]
+        for index, key in ((3, "USE_USB"), (2, "TITLE")):
+            with self.subTest(key=key):
+                iso_file = self.temp_dir / f"sfo-{key.lower()}-past-end.iso"
+                sfo = bytearray(build_custom_param_sfo(entries))
+                struct.pack_into("<I", sfo, 20 + index * 16 + 12, 0x1000)
+                create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=bytes(sfo))
+                c_meta = self._run_native_inspect(iso_file)
+                if key == "TITLE":
+                    with self.assertRaisesRegex(IsoInspectionError, "outside the data table"):
+                        inspect_iso(iso_file)
+                    self.assertTrue(c_meta.get("RESULT", "").startswith("ERROR"), c_meta)
+                    continue
+                py_meta = inspect_iso(iso_file)
+                self.assertEqual((py_meta.disc_id, py_meta.title), ("TEST00001", "Short File"))
+                warnings = py_meta.container_metadata["format_warnings"]
+                self.assertTrue(any("'USE_USB'" in note for note in warnings), warnings)
+                self._assert_disc_sfo_ok(iso_file, py_meta)
+                self.assertEqual(c_meta.get("RESULT"), "OK", c_meta)
+                self.assertEqual(c_meta.get("DISC_ID"), "TEST00001")
+                self.assertEqual(c_meta.get("TITLE"), "Short File")
+
+    def test_pvd_root_record_is_located_by_its_fixed_fields_parity(self) -> None:
+        # ECMA-119 fixes the PVD root record at 34 bytes; a rebuilt image may copy
+        # the length byte of a longer (system-use extended) record and no identifier.
+        iso_file = self.temp_dir / "pvd-root-record.iso"
+        create_test_iso(iso_file, disc_id="TEST00001", title="Root Record")
+        image = bytearray(iso_file.read_bytes())
+        pvd = 16 * 2048
+        image[pvd + 156] = 48
+        image[pvd + 188] = 0
+        iso_file.write_bytes(bytes(image))
+
+        py_meta = inspect_iso(iso_file)
+        self.assertEqual((py_meta.disc_id, py_meta.title), ("TEST00001", "Root Record"))
+        warnings = py_meta.container_metadata["format_warnings"]
+        self.assertTrue(any("length byte 48" in note for note in warnings), warnings)
+        self._assert_disc_sfo_ok(iso_file, py_meta)
+        self.assertIsNotNone(iso_inspect.list_iso_directory(iso_file, ("PSP_GAME",)))
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(c_meta.get("RESULT"), "OK", c_meta)
+        self.assertEqual(c_meta.get("DISC_ID"), "TEST00001")
+
+    def test_standard_disc_carries_no_format_warnings(self) -> None:
+        iso_file = self.temp_dir / "standard.iso"
+        create_test_iso(iso_file, disc_id="TEST00001", title="Standard Disc")
+        self.assertNotIn("format_warnings", inspect_iso(iso_file).container_metadata)
+
     def test_cli_inspect_shows_structured_compatibility_preflight(self) -> None:
         iso_file = self.temp_dir / "cli-preflight.iso"
         runtime_root = self.temp_dir / "empty-runtime-root"

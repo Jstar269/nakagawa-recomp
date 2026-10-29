@@ -664,35 +664,72 @@ static bool sfo_key_is_identity(const char *key) {
         || strcmp(key, "DISC_VERSION") == 0;
 }
 
+/* The UTF-8 sequence at data[index] (Unicode table 3-7). Returns the bytes it spans
+ * and sets *valid. An ill-formed sequence spans its maximal subpart: the lead byte
+ * and the continuation bytes that were still acceptable, at least one byte. That is
+ * the unit one U+FFFD replaces, as Python's decoder does. */
+static size_t sfo_utf8_sequence(const uint8_t *data, size_t size, size_t index, bool *valid) {
+    uint8_t first = data[index];
+    uint8_t low = 0x80u;
+    uint8_t high = 0xbfu;
+    size_t needed;
+    *valid = false;
+    if (first <= 0x7fu) {
+        *valid = true;
+        return 1;
+    }
+    if (first >= 0xc2u && first <= 0xdfu) {
+        needed = 1;
+    } else if (first >= 0xe0u && first <= 0xefu) {
+        needed = 2;
+        if (first == 0xe0u) low = 0xa0u;
+        if (first == 0xedu) high = 0x9fu;
+    } else if (first >= 0xf0u && first <= 0xf4u) {
+        needed = 3;
+        if (first == 0xf0u) low = 0x90u;
+        if (first == 0xf4u) high = 0x8fu;
+    } else {
+        return 1;
+    }
+    size_t taken = 1;
+    for (size_t step = 0; step < needed; step++) {
+        if (index + taken >= size) return taken;
+        uint8_t next = data[index + taken];
+        if (next < (step == 0 ? low : 0x80u) || next > (step == 0 ? high : 0xbfu)) return taken;
+        taken++;
+    }
+    *valid = true;
+    return taken;
+}
+
 static bool sfo_utf8_valid(const uint8_t *data, size_t size) {
     size_t index = 0;
     while (index < size) {
-        uint8_t first = data[index++];
-        if (first <= 0x7fu) continue;
-        if (first >= 0xc2u && first <= 0xdfu) {
-            if (index >= size || (data[index] & 0xc0u) != 0x80u) return false;
-            index++;
-            continue;
-        }
-        if (first >= 0xe0u && first <= 0xefu) {
-            if (index + 1 >= size || (data[index] & 0xc0u) != 0x80u ||
-                (data[index + 1] & 0xc0u) != 0x80u) return false;
-            if ((first == 0xe0u && data[index] < 0xa0u) ||
-                (first == 0xedu && data[index] >= 0xa0u)) return false;
-            index += 2;
-            continue;
-        }
-        if (first >= 0xf0u && first <= 0xf4u) {
-            if (index + 2 >= size || (data[index] & 0xc0u) != 0x80u ||
-                (data[index + 1] & 0xc0u) != 0x80u ||
-                (data[index + 2] & 0xc0u) != 0x80u) return false;
-            if ((first == 0xf0u && data[index] < 0x90u) ||
-                (first == 0xf4u && data[index] >= 0x90u)) return false;
-            index += 3;
-            continue;
-        }
-        return false;
+        bool valid;
+        index += sfo_utf8_sequence(data, size, index, &valid);
+        if (!valid) return false;
     }
+    return true;
+}
+
+/* Copies a display string as UTF-8, each ill-formed subsequence replaced by U+FFFD.
+ * False when the result and its NUL do not fit in dest_size bytes. */
+static bool sfo_utf8_display_copy(const uint8_t *data, size_t size, char *dest,
+                                  size_t dest_size) {
+    static const uint8_t replacement[3] = { 0xefu, 0xbfu, 0xbdu };
+    size_t out = 0;
+    size_t index = 0;
+    while (index < size) {
+        bool valid;
+        size_t span = sfo_utf8_sequence(data, size, index, &valid);
+        const uint8_t *bytes = valid ? data + index : replacement;
+        size_t count = valid ? span : sizeof(replacement);
+        if (count >= dest_size - out) return false;
+        memcpy(dest + out, bytes, count);
+        out += count;
+        index += span;
+    }
+    dest[out] = '\0';
     return true;
 }
 
@@ -749,9 +786,17 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         while (key_len < key_limit && key[key_len] != '\0') key_len++;
         if (key_len == key_limit) return false;
 
-        if (data_off > sfo_size - data_table_off) return false;
+        /* A value that lies past the end of the file cannot be read. For DISC_ID,
+         * TITLE and DISC_VERSION that refuses the SFO; another key is left unread,
+         * since the disc's identity does not depend on it (parse_param_sfo in
+         * tools/nk_core/iso_inspect.py notes it). */
+        if (data_off > sfo_size - data_table_off ||
+            data_len > sfo_size - data_table_off - data_off) {
+            if (sfo_key_is_identity(key)) return false;
+            continue;
+        }
         size_t abs_data_off = (size_t)data_table_off + data_off;
-        if (data_len > sfo_size - abs_data_off || max_len < data_len) return false;
+        if (max_len < data_len) return false;
         const uint8_t *raw_value = &sfo[abs_data_off];
 
         if (sfo_key_is_identity(key) && data_fmt != SFO_FMT_UTF8 &&
@@ -765,29 +810,39 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         size_t value_len = data_fmt == SFO_FMT_UTF8 ||
             data_fmt == SFO_FMT_UTF8_SPECIAL ? (size_t)data_len : 0;
         if (data_fmt == SFO_FMT_UTF8) {
-            while (value_len > 0 && raw_value[value_len - 1] == 0) value_len--;
+            /* A NUL-terminated string ends at its first NUL; bytes after it are not
+             * part of the value. */
+            const uint8_t *terminator = (const uint8_t *)memchr(raw_value, 0, value_len);
+            if (terminator) value_len = (size_t)(terminator - raw_value);
         }
-        if ((data_fmt == SFO_FMT_UTF8 || data_fmt == SFO_FMT_UTF8_SPECIAL) &&
-            !sfo_utf8_valid(raw_value, value_len)) {
+        /* DISC_ID and DISC_VERSION name the disc exactly and are never repaired.
+         * TITLE is shown to a person: ill-formed UTF-8 there is shown as U+FFFD. */
+        bool exact_text = strcmp(key, "DISC_ID") == 0 || strcmp(key, "DISC_VERSION") == 0;
+        if (exact_text && !sfo_utf8_valid(raw_value, value_len)) {
             snprintf(meta->error_message, sizeof(meta->error_message),
                 "SFO key '%.32s' is not valid UTF-8", key);
             return false;
         }
         if (data_fmt == SFO_FMT_UINT32 && data_len < 4) return false;
-        bool stored_value = strcmp(key, "DISC_ID") == 0 ||
-            strcmp(key, "TITLE") == 0 || strcmp(key, "DISC_VERSION") == 0;
-        if (value_len >= sizeof(meta->title_name)) {
-            if (stored_value) {
+        bool is_title = strcmp(key, "TITLE") == 0;
+        if (!exact_text && !is_title) continue;
+
+        char value[NK_MAX_TITLE_LEN];
+        if (is_title) {
+            if (!sfo_utf8_display_copy(raw_value, value_len, value, sizeof(value))) {
                 snprintf(meta->error_message, sizeof(meta->error_message),
                     "SFO key '%.32s' is too long", key);
                 return false;
             }
-            continue;
+        } else {
+            if (value_len >= sizeof(value)) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "SFO key '%.32s' is too long", key);
+                return false;
+            }
+            if (value_len > 0) memcpy(value, raw_value, value_len);
+            value[value_len] = '\0';
         }
-
-        char value[NK_MAX_TITLE_LEN];
-        if (value_len > 0) memcpy(value, raw_value, value_len);
-        value[value_len] = '\0';
 
         if (strcmp(key, "DISC_ID") == 0) {
             if (!sfo_disc_id_valid(value)) {
