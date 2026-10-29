@@ -266,6 +266,10 @@ static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
     return true;
 }
 
+bool player_ui_nk_built_with_launcher(void) {
+    return nk_ui_sdlr_available() && nk_ui_ttf_available();
+}
+
 PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
                                 char *error, size_t error_size) {
     PlayerUiNk *player;
