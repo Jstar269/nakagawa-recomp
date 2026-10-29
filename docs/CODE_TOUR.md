@@ -26,6 +26,8 @@ The player starts in `main()` in `src/player/main.c`. It loads the user's librar
 (`player_app_init` and friends in `src/player/player_state.c`), opens the window, and runs the
 event loop. The library and title screens are drawn by the newer UI in `src/player/ui/`
 (`player_ui_nk_render`); other screens by `ui_render_frame()` in `src/player/ui_renderer.c`.
+The code in `main.c` under `NK_PLAYER_UI_REGRESSION_TEST` is for the UI regression tests only; their
+scripted-event harness is `src/player/player_ui_test.c`, which only the UI-test player build links.
 
 When the user picks a disc image, the player inspects it with `src/core/nk_iso.c`:
 `nk_iso_inspect()` reads `PARAM.SFO` for the disc ID and title, and
