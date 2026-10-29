@@ -196,6 +196,7 @@ int      sr_hle_register_late_import(uint32_t nid, uint32_t target) { (void)nid;
 /* --- GE stubs (ge.c / gpu_sdl3vk) --- */
 uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t ge_run_list(uint32_t addr, int resume) { (void)addr; (void)resume; return 0u; }
+uint32_t ge_last_finish_id(void) { return 0u; }
 uint32_t ge_framebuffer(void) { return 0u; }
 uint32_t g_ge_stall_addr = 0;
 typedef struct GeGpuHooks GeGpuHooks;
@@ -331,7 +332,7 @@ void     f_00304290(void *s) { (void)s; }
 
 /* --- GE / vblank stubs (dead on microtest path) --- */
 uint32_t g_frame_prims = 0u;
-uint32_t sr_vblank_handler(void) { return 0u; }
+int      sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg) { (void)no; (void)handler; (void)arg; return -1; }
 int      sr_vblank_dispatch_registered(void) { return 0; }
 void     sr_vblank_tick(void) {}
 void     sr_vblank_nop(void) {}

@@ -1003,6 +1003,7 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREREQ_ABOUT:
             return app->prerequisites.item_count > 0 ? 2 : 1;
         case VIEW_CONFIRM_REMOVE_TOOLS:
+        case VIEW_CONFIRM_FACTORY_RESET: /* keep everything, reset */
             return 2;
         case VIEW_INSPECTING:
             return 1;
@@ -1121,6 +1122,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->online_reports = true;
     settings->share_system_libraries = true;
     settings->check_updates_at_start = false;
+    settings->picker_folder[0] = '\0';
     settings->developer_mode = false;
     settings->experimental_60hz = false;
 }
@@ -1354,6 +1356,13 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.check_updates_at_start = update_val;
     }
 
+    /* A folder that no longer fits is dropped, not cut short. */
+    const char *picker_folder = nk_json_get_string(nk_json_obj_get(root, "picker_folder"));
+    if (picker_folder && strlen(picker_folder) < sizeof(app->settings.picker_folder)) {
+        snprintf(app->settings.picker_folder, sizeof(app->settings.picker_folder), "%s",
+                 picker_folder);
+    }
+
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
     bool sounds_val = false;
     if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
@@ -1371,6 +1380,67 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     nk_json_free(root);
     app->settings_notice[0] = '\0';
     return NK_OK;
+}
+
+/* Writes `"key": "value",` with the value escaped for JSON, as the library
+ * file does: a Windows folder is full of backslashes. */
+static void player_settings_write_string(FILE *f, const char *key, const char *value) {
+    fprintf(f, "  \"%s\": \"", key);
+    for (size_t i = 0; value && value[i]; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if (c == '\"' || c == '\\') {
+            fputc('\\', f);
+            fputc((int)c, f);
+        } else if (c < 0x20) {
+            fprintf(f, "\\u%04x", (unsigned)c);
+        } else {
+            fputc((int)c, f);
+        }
+    }
+    fputs("\",\n", f);
+}
+
+bool player_app_picker_start_folder(const PlayerApp *app, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (app && app->settings.picker_folder[0] &&
+        nk_platform_dir_exists(app->settings.picker_folder) &&
+        strlen(app->settings.picker_folder) < out_size) {
+        snprintf(out, out_size, "%s", app->settings.picker_folder);
+        return true;
+    }
+    return nk_platform_get_desktop_dir(out, out_size);
+}
+
+bool player_path_parent_folder(const char *path, char *out, size_t out_size) {
+    if (!out || out_size < 4) return false;
+    out[0] = '\0';
+    if (!path || !path[0]) return false;
+    size_t length = strlen(path);
+    while (length > 0 && path[length - 1] != '/' && path[length - 1] != '\\') --length;
+    if (length == 0) return false;
+    /* Keep the root's separator: "/" stays "/", and "C:\" stays "C:\" because
+       "C:" alone is the drive's current folder, not its root. */
+    size_t keep = length - 1u;
+    if (keep == 0 || (keep == 2 && path[1] == ':')) keep = length;
+    if (keep >= out_size) return false;
+    memcpy(out, path, keep);
+    out[keep] = '\0';
+    return true;
+}
+
+void player_app_remember_picker_folder(PlayerApp *app, const char *picked, bool is_folder) {
+    if (!app || !picked || !picked[0]) return;
+    char folder[sizeof(app->settings.picker_folder)];
+    if (is_folder) {
+        if (strlen(picked) >= sizeof(folder)) return;
+        snprintf(folder, sizeof(folder), "%s", picked);
+    } else if (!player_path_parent_folder(picked, folder, sizeof(folder))) {
+        return;
+    }
+    if (strcmp(folder, app->settings.picker_folder) == 0) return;
+    snprintf(app->settings.picker_folder, sizeof(app->settings.picker_folder), "%s", folder);
+    (void)player_app_save_settings(app, NULL);
 }
 
 NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
@@ -1449,6 +1519,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
             app->settings.share_system_libraries ? "true" : "false");
     fprintf(f, "  \"check_updates_at_start\": %s,\n",
             app->settings.check_updates_at_start ? "true" : "false");
+    player_settings_write_string(f, "picker_folder", app->settings.picker_folder);
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -2481,21 +2552,41 @@ size_t player_app_format_error_report(const PlayerApp *app, const char *version,
     player_report_append(raw, sizeof(raw), &used, "Reason: ", error->boundary_text);
     player_report_append(raw, sizeof(raw), &used, "Details: ", error->details);
     player_report_append(raw, sizeof(raw), &used, "Log file: ", error->log_file_path);
-    /* The runtime's boot events reach the developer log as "[runtime] BOOT_EVENT ...";
-       the last few say how far the game got. */
-    static const char event_prefix[] = "[runtime] ";
-    size_t events[8];
+    /* The last few boot events say how far the game got. They come from this
+       error's own run log (logs/game-<disc>-last.txt, #1303), never from the
+       developer log: that log spans every launch of the session and holds only
+       the first lines of each run, so a run whose events came later showed the
+       previous game's events instead. */
+    char events[8][PLAYER_DEV_LOG_LINE_MAX];
     size_t event_count = 0;
-    for (size_t i = player_dev_log_count(app); i > 0 && event_count < 8u; i--) {
-        const char *line = player_dev_log_line(app, i - 1u);
-        if (line && strncmp(line, "[runtime] BOOT_EVENT ", 21) == 0) events[event_count++] = i - 1u;
+    size_t event_next = 0;
+    FILE *run_log = error->log_file_path[0]
+        ? nk_fopen_utf8(error->log_file_path, "rb") : NULL;
+    if (run_log) {
+        static const char event_prefix[] = "BOOT_EVENT ";
+        char chunk[PLAYER_DEV_LOG_LINE_MAX];
+        bool at_line_start = true;
+        while (fgets(chunk, sizeof(chunk), run_log)) {
+            size_t len = strlen(chunk);
+            bool line_ends = len > 0 && chunk[len - 1] == '\n';
+            if (at_line_start && strncmp(chunk, event_prefix, sizeof(event_prefix) - 1u) == 0) {
+                while (len > 0 && (chunk[len - 1] == '\n' || chunk[len - 1] == '\r')) {
+                    chunk[--len] = '\0';
+                }
+                /* Keep the last eight: a ring, read back oldest first. */
+                memcpy(events[event_next], chunk, len + 1u);
+                event_next = (event_next + 1u) % 8u;
+                if (event_count < 8u) ++event_count;
+            }
+            at_line_start = line_ends;
+        }
+        fclose(run_log);
     }
     if (event_count > 0) {
         player_report_append(raw, sizeof(raw), &used, "", "Last boot events:");
-        while (event_count > 0) {
+        for (size_t i = 0; i < event_count; ++i) {
             player_report_append(raw, sizeof(raw), &used, "  ",
-                                 player_dev_log_line(app, events[--event_count]) +
-                                     sizeof(event_prefix) - 1u);
+                                 events[(event_next + 8u - event_count + i) % 8u]);
         }
     }
     const char *profile = NULL;
@@ -2831,6 +2922,8 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
     snprintf(work->ui_root, sizeof(work->ui_root), "%s", app->install_root);
+    memcpy(work->launcher_display_bounds, app->launcher_display_bounds,
+           sizeof(work->launcher_display_bounds));
     /* The boot-event marker and the input mapping are written here, on the
        thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
@@ -2915,6 +3008,8 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     }
     session->config.headless_accept_presented_frames =
         work->headless_accept_presented_frames;
+    memcpy(session->config.launcher_display_bounds, work->launcher_display_bounds,
+           sizeof(session->config.launcher_display_bounds));
     session->config.gui_mode = !work->launch_headless ||
         work->headless_accept_presented_frames > 0u;
     if (work->boot_event_file_path[0]) {
@@ -3958,6 +4053,123 @@ void player_app_remove_prerequisites(PlayerApp *app) {
                          "Downloaded Build Tools Could Not Be Removed",
                          message[0] ? message : "Close applications using the tools and retry.",
                          "Return to Settings", VIEW_SETTINGS);
+}
+
+/* True when `path` is `root` or lies inside it. */
+static bool player_path_within(const char *path, const char *root) {
+    size_t n = strlen(root);
+    while (n > 0 && (root[n - 1] == '/' || root[n - 1] == '\\')) --n;
+    if (n == 0 || strlen(path) < n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        char a = path[i];
+        char b = root[i];
+#if defined(_WIN32) || defined(_WIN64)
+        if (a == '/') a = '\\';
+        if (b == '/') b = '\\';
+        if (tolower((unsigned char)a) != tolower((unsigned char)b)) return false;
+#else
+        if (a != b) return false;
+#endif
+    }
+    return path[n] == '\0' || path[n] == '/' || path[n] == '\\';
+}
+
+size_t player_app_factory_reset_folders(const PlayerApp *app, char out[][NK_MAX_PATH],
+                                        size_t cap) {
+    static const NkPathType types[] = {
+        NK_PATH_CONFIG, NK_PATH_DATA, NK_PATH_CACHE, NK_PATH_SAVES
+    };
+    char found[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH];
+    size_t count = 0;
+    /* Resolved, never created: looking does not make a folder to move. */
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
+        if (nk_platform_resolve_path(types[i], found[count], sizeof(found[count])) &&
+            nk_platform_dir_exists(found[count])) {
+            ++count;
+        }
+    }
+    if (app && app->runtime_root[0] && nk_platform_dir_exists(app->runtime_root) &&
+        strlen(app->runtime_root) < sizeof(found[count])) {
+        snprintf(found[count], sizeof(found[count]), "%s", app->runtime_root);
+        ++count;
+    }
+    /* Only the outermost folders move: a folder inside another (saves inside
+       data on Linux, a runtime root inside the data folder) goes with it. */
+    size_t kept = 0;
+    for (size_t i = 0; i < count; ++i) {
+        bool inner = false;
+        for (size_t j = 0; j < count && !inner; ++j) {
+            if (i == j) continue;
+            bool same = player_path_within(found[i], found[j]) &&
+                        player_path_within(found[j], found[i]);
+            inner = same ? j < i : player_path_within(found[i], found[j]);
+        }
+        if (inner) continue;
+        if (out && kept < cap) snprintf(out[kept], NK_MAX_PATH, "%s", found[i]);
+        ++kept;
+    }
+    return kept < cap ? kept : cap;
+}
+
+bool player_app_factory_reset(PlayerApp *app, const char *stamp) {
+    if (!app || !stamp || !stamp[0]) return false;
+    if (app->is_game_running || app->launch_pending || app->build_session.is_building ||
+        app->prerequisite_job_started || app->prerequisite_fetcher_started ||
+        app->update.phase == PLAYER_UPDATE_CHECKING ||
+        app->update.phase == PLAYER_UPDATE_DOWNLOADING ||
+        app->update.phase == PLAYER_UPDATE_INSTALLING) {
+        player_app_set_error(app, "FACTORY_RESET_BUSY", "Factory Reset Has to Wait",
+                             "Stop the game, and let any build, tool download or update "
+                             "finish, then reset again. Nothing was moved.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    char folders[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH];
+    char moved[PLAYER_FACTORY_RESET_FOLDERS][NK_MAX_PATH + 64];
+    size_t count = player_app_factory_reset_folders(app, folders, PLAYER_FACTORY_RESET_FOLDERS);
+    for (size_t i = 0; i < count; ++i) {
+        /* A backup from an earlier reset in the same second keeps its name. */
+        int written = snprintf(moved[i], sizeof(moved[i]), "%s-backup-%s", folders[i], stamp);
+        for (int n = 2; written > 0 && (size_t)written < sizeof(moved[i]) && n < 100 &&
+                        (nk_platform_dir_exists(moved[i]) || nk_platform_file_exists(moved[i]));
+             ++n) {
+            written = snprintf(moved[i], sizeof(moved[i]), "%s-backup-%s-%d", folders[i],
+                               stamp, n);
+        }
+        bool renamed = written > 0 && (size_t)written < sizeof(moved[i]) &&
+                       !nk_platform_dir_exists(moved[i]) &&
+                       nk_rename_utf8(folders[i], moved[i]) == 0;
+        if (!renamed) {
+            int os_error = errno;
+#if defined(_WIN32) || defined(_WIN64)
+            os_error = (int)GetLastError();
+#endif
+            char reason[160] = "";
+            (void)nk_platform_describe_os_error(os_error, reason, sizeof(reason));
+            /* Put back what already moved, newest first. */
+            bool restored = true;
+            for (size_t j = i; j > 0; --j) {
+                if (nk_rename_utf8(moved[j - 1], folders[j - 1]) != 0) restored = false;
+            }
+            char message[PLAYER_ERROR_DETAILS_MAX];
+            snprintf(message, sizeof(message),
+                     "%s could not be moved aside%s%s. A program may be using a file in it: "
+                     "close it and reset again. %s",
+                     folders[i], reason[0] ? ": " : "", reason,
+                     restored ? "Nothing was moved."
+                              : "Some folders could not be put back; their names end in "
+                                "\"-backup-\" and the date.");
+            player_dev_log_add(app, "settings", "factory reset stopped at %s (%s)", folders[i],
+                               reason[0] ? reason : "rename failed");
+            player_app_set_error(app, "FACTORY_RESET_FAILED", "Factory Reset Didn't Finish",
+                                 message, "Return to Settings", VIEW_SETTINGS);
+            return false;
+        }
+        printf("[PLAYER] Factory reset: moved %s to %s\n", folders[i], moved[i]);
+    }
+    app->factory_reset_done = true;
+    app->should_quit = true;
+    return true;
 }
 
 void player_app_clear_shared_library_cache(PlayerApp *app) {

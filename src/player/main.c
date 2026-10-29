@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "setup_staging.h"
 #include "nk_platform.h"
@@ -223,6 +224,7 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
     }
     const char *selected_path = filelist[0];
     printf("[PLAYER] ISO Selected: %s\n", selected_path);
+    player_app_remember_picker_folder(app, selected_path, false);
     if (player_path_is_pbp_package(selected_path)) {
         player_take_picked_package(app, selected_path);
         return;
@@ -230,26 +232,46 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
     player_take_picked_disc(app, selected_path);
 }
 
+/* Where a picker opens (player_app_picker_start_folder). SDL keeps reading
+   the filters, and may read this, until the dialog's callback runs, so
+   neither lives on the stack. */
+static char s_picker_start[NK_MAX_PATH];
+
+static const char *player_picker_start(const PlayerApp *app) {
+    return player_app_picker_start_folder(app, s_picker_start, sizeof(s_picker_start))
+        ? s_picker_start : NULL;
+}
+
 static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
-    SDL_DialogFileFilter filters[] = {
+    static const SDL_DialogFileFilter filters[] = {
         { "PSP Disc Images and PSN Packages (*.iso, EBOOT.PBP)", "iso;pbp" },
         { "All Files (*.*)", "*" }
     };
-    SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
+    SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2,
+                           player_picker_start(app), false);
 }
 
-/* The Fonts & System step's folder choice. A cancelled dialog arrives with no entry and
-   changes nothing; a chosen folder is read once by the font import. */
-static void on_font_folder_dialog_callback(void *userdata, const char *const *filelist, int filter) {
+/* The PSP fonts import. The picker shows the .pgf files themselves, which a
+   folder picker hides, so the user can see they are in the right folder; any
+   one of them names the folder the import reads. A cancelled dialog arrives
+   with no entry and changes nothing. */
+static void on_font_files_dialog_callback(void *userdata, const char *const *filelist, int filter) {
     PlayerApp *app = (PlayerApp *)userdata;
+    char folder[NK_MAX_PATH];
     (void)filter;
     if (!app) return;
     if (!filelist || !filelist[0]) return;
-    (void)player_app_fonts_import_folder(app, filelist[0]);
+    if (!player_path_parent_folder(filelist[0], folder, sizeof(folder))) return;
+    player_app_remember_picker_folder(app, folder, true);
+    (void)player_app_fonts_import_folder(app, folder);
 }
 
 static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
-    SDL_ShowOpenFolderDialog(on_font_folder_dialog_callback, app, window, NULL, false);
+    static const SDL_DialogFileFilter filters[] = {
+        { "PSP fonts (*.pgf)", "pgf" }
+    };
+    SDL_ShowOpenFileDialog(on_font_files_dialog_callback, app, window, filters, 1,
+                           player_picker_start(app), true);
 }
 
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
@@ -280,6 +302,27 @@ static float player_display_content_scale(SDL_DisplayID display) {
     float scale = SDL_GetDisplayContentScale(display);
     if (scale < 1.0f || scale > 3.0f) scale = 1.0f;
     return scale;
+}
+
+/* Records the desktop bounds of the display that holds the launcher window, read
+ * just before a launch so the game window opens on that display (the runtime gets
+ * them as SR_LAUNCHER_DISPLAY_BOUNDS). The child cannot use our SDL_DisplayID: IDs
+ * are per process. Unknown bounds are left zero and the game uses the primary. */
+static void player_note_launcher_display(PlayerApp *app, SDL_Window *window) {
+    if (!app) return;
+    memset(app->launcher_display_bounds, 0, sizeof(app->launcher_display_bounds));
+    SDL_DisplayID display = window ? SDL_GetDisplayForWindow(window) : 0;
+    SDL_Rect bounds;
+    if (!display || !SDL_GetDisplayBounds(display, &bounds) || bounds.w <= 0 ||
+        bounds.h <= 0) {
+        fprintf(stderr, "[PLAYER] Launcher display unknown (%s); the game opens on the "
+                        "primary display.\n", SDL_GetError());
+        return;
+    }
+    app->launcher_display_bounds[0] = bounds.x;
+    app->launcher_display_bounds[1] = bounds.y;
+    app->launcher_display_bounds[2] = bounds.w;
+    app->launcher_display_bounds[3] = bounds.h;
 }
 
 static PlayerWindowFrame player_estimated_window_frame(float content_scale) {
@@ -618,6 +661,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
+                       app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -781,6 +825,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
+                       app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -1406,6 +1451,11 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             (void)player_app_request_license_folder(app);
             break;
         case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET:
+            player_app_set_view(app, VIEW_CONFIRM_FACTORY_RESET);
+            break;
+        /* The event loop runs the reset: it owns the background jobs. */
+        case PLAYER_UI_SETTINGS_FACTORY_RESET: app->request_factory_reset = true; break;
         case PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE: player_app_set_view(app, VIEW_BUILD_CACHE); break;
         case PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES:
             player_app_toggle_share_system_libraries(app);
@@ -1796,7 +1846,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_about", VIEW_PREREQ_ABOUT },
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
         { "build_cache", VIEW_BUILD_CACHE },
-        { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES }
+        { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES },
+        { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -2217,6 +2268,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PSP_FONTS: return "psp_fonts";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_UPDATES: return "updates";
+    case VIEW_CONFIRM_FACTORY_RESET: return "confirm_factory_reset";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
@@ -3938,6 +3990,31 @@ static void player_update_prerequisite_operation(PlayerApp *app) {
     }
 }
 
+/* After a factory reset: a fresh copy of this player, started on its own so
+ * that it outlives this process (nk_platform_spawn_process ties a child to
+ * its parent's job). It finds no user data and opens on a first run. False
+ * where this program's own path is unknown, or the start failed. */
+static bool player_start_fresh_copy(void) {
+    char exe[NK_MAX_PATH];
+    if (!nk_platform_get_executable_path(exe, sizeof(exe))) return false;
+    const char *args[] = { exe, NULL };
+    SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) return false;
+    (void)SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    (void)SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    /* A launcher started from a terminal keeps writing there, and one started
+       from the desktop finds no streams and opens player-output.txt itself. */
+    (void)SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER,
+                                SDL_PROCESS_STDIO_INHERITED);
+    (void)SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER,
+                                SDL_PROCESS_STDIO_INHERITED);
+    SDL_Process *process = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!process) return false;
+    SDL_DestroyProcess(process);
+    return true;
+}
+
 #if defined(_WIN32) || defined(_WIN64)
 /* The Windows player is a GUI-subsystem program (-mwindows, CMake WIN32_EXECUTABLE), so a
  * double-click starts with no console window. A process that already has standard handles, one
@@ -4706,6 +4783,8 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "updates") == 0) {
             player_app_set_view(&app, VIEW_UPDATES);
+        } else if (strcmp(test_view, "factory-reset") == 0) {
+            player_app_set_view(&app, VIEW_CONFIRM_FACTORY_RESET);
         } else if (strcmp(test_view, "psp-fonts") == 0) {
             player_app_refresh_font_status(&app);
             player_app_set_view(&app, VIEW_PSP_FONTS);
@@ -4832,16 +4911,30 @@ int main(int argc, char *argv[]) {
             /* The cards a finished game session shows (#1282), from a synthetic
                stop of the first library game. */
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "";
-            player_dev_log_add(&app, "runtime",
-                               "BOOT_EVENT phase=stop reason=semantic-boundary "
-                               "boundary=unsupported-import-scenetadhocinit issue=308");
+            static const char stop_event[] =
+                "BOOT_EVENT phase=stop reason=semantic-boundary "
+                "boundary=unsupported-import-scenetadhocinit issue=308";
+            player_dev_log_add(&app, "runtime", "%s", stop_event);
+            /* The run's output, kept as logs/game-<disc>-last.txt as a real
+               stop keeps it (#1303); the report reads its boot events there. */
+            char logs_dir[NK_MAX_PATH];
+            char run_log[NK_MAX_PATH + 64] = "";
+            if (disc[0] && nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)) &&
+                snprintf(run_log, sizeof(run_log), "%s%cgame-%s-last.txt", logs_dir,
+                         nk_platform_path_separator(), disc) < (int)sizeof(run_log)) {
+                FILE *log = nk_fopen_utf8(run_log, "wb");
+                if (!log || fprintf(log, "synthetic runtime output\n%s\n", stop_event) < 0) {
+                    run_log[0] = '\0';
+                }
+                if (log && fclose(log) != 0) run_log[0] = '\0';
+            }
             player_app_set_game_stop_error(&app, ui_test_error_code,
                                            "unsupported-import-scenetadhocinit", 308u,
                                            strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0
                                                ? 3 : 9,
                                            strcmp(ui_test_error_code,
                                                   "RUNTIME_PREMATURE_EXIT") == 0 ? 120u : 9000u,
-                                           disc, NULL);
+                                           disc, run_log[0] ? run_log : NULL);
         } else if (strcmp(ui_test_error_code, "PACKAGE_BUILD_REFUSED") == 0) {
             /* A preflight refusal (#1286): the build never started. */
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
@@ -5091,8 +5184,8 @@ int main(int argc, char *argv[]) {
         player_ui_nk_test_report_compatibility();
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_UPDATES. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_UPDATES; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_CONFIRM_FACTORY_RESET. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_CONFIRM_FACTORY_RESET; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -5995,7 +6088,29 @@ int main(int argc, char *argv[]) {
         if (app.request_launch) {
             app.request_launch = false;
             if (!launch_job) {
+                player_note_launcher_display(&app, window);
                 launch_job = player_launch_job_start(&app, app.request_launch_index);
+            }
+        }
+        if (app.request_factory_reset) {
+            app.request_factory_reset = false;
+            /* A finished staging or PSN job stays allocated until the next one. */
+            if (launch_job || package_status_job || s_update_job ||
+                (staging_job && !staging_job->completion_handled) ||
+                (psn_job && !psn_job->completion_handled)) {
+                /* A worker may still have a file in the user data open. */
+                player_app_set_error(&app, "FACTORY_RESET_BUSY", "Factory Reset Has to Wait",
+                                     "Nakagawa Recomp is still checking or setting up a "
+                                     "game. Wait a moment, then reset again. Nothing was "
+                                     "moved.", "Return to Settings", VIEW_SETTINGS);
+            } else {
+                char stamp[32];
+                time_t now = time(NULL);
+                struct tm *local = localtime(&now);
+                if (!local || strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local) == 0) {
+                    snprintf(stamp, sizeof(stamp), "%lld", (long long)now);
+                }
+                (void)player_app_factory_reset(&app, stamp);
             }
         }
         if (app.request_package_status_retry) {
@@ -6041,7 +6156,9 @@ int main(int argc, char *argv[]) {
         player_app_stop_game(&app);
     }
 
-    if (interactive_window) {
+    /* After a factory reset nothing is saved: the settings would bring the
+       config folder back. */
+    if (interactive_window && !app.factory_reset_done) {
         player_capture_window_settings(&app, window);
         player_app_save_settings(&app, NULL);
     }
@@ -6098,6 +6215,21 @@ int main(int argc, char *argv[]) {
     ui_font_shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    if (app.factory_reset_done) {
+        bool start_copy = interactive_window;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (ui_test_mode) {
+            puts("[PLAYER_UI_TEST] factory_reset restart=skipped");
+            start_copy = false;
+        }
+#endif
+        if (start_copy && !player_start_fresh_copy()) {
+            fprintf(stderr, "[PLAYER] Factory reset is done, but a new copy of the player could "
+                            "not be started (%s). Start it again to set it up.\n", SDL_GetError());
+            (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Factory reset is done",
+                                           "Start Nakagawa Recomp again to set it up.", NULL);
+        }
+    }
     SDL_Quit();
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (ui_test_mode && ui_test_failed) return 1;
