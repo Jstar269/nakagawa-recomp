@@ -2353,6 +2353,8 @@ static void read_fb_px(int x, int y, int *r, int *g, int *b, int *a) {
     else                     unpack_color(ge_fb_load(ge_fb_addr() + off*2, 0), ge.fbfmt&3, r,g,b,a);
 }
 
+/* One blend factor, 0..255 except the doubled alphas: 2a runs to 510 and 255 - 2a goes
+ * negative, unclamped (PSP-GE-RASTER-001 b-2sa-2isa, b-2isa-2sa, b-2da-2ida). */
 static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int dr, int dg, int db, int da, int srcSide) {
     int sv = chan==0?sr:(chan==1?sg:sb), dv = chan==0?dr:(chan==1?dg:db);
     int fixedA = chan==0?(ge.blend_fixa&0xFF):(chan==1?((ge.blend_fixa>>8)&0xFF):((ge.blend_fixa>>16)&0xFF));
@@ -2361,20 +2363,29 @@ static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int
         case 0: return srcSide?dv:sv;    case 1: return 255-(srcSide?dv:sv);
         case 2: return sa;               case 3: return 255-sa;
         case 4: return da;               case 5: return 255-da;
-        case 6: return clamp8(sa*2);     case 7: return clamp8(255-sa*2);
-        case 8: return clamp8(da*2);     case 9: return clamp8(255-da*2);
+        case 6: return sa*2;             case 7: return 255-sa*2;
+        case 8: return da*2;             case 9: return 255-da*2;
         case 10: default: return srcSide?fixedA:fixedB;
     }
 }
 
+/* A colour times a blend factor as the PSP rounds it: (2v + 1)(2f + 1) / 1024, each product
+ * on its own, before the equation (PSP-GE-RASTER-001: exact for every factor in 0..255 across
+ * the blend cells). A negative doubled-alpha product truncates toward zero; that case is the
+ * nearest fit, not an exact one (the b-2*a cells stay known deviations). */
+static int blend_mul(int v, int f) {
+    return ((2*v + 1) * (2*f + 1)) / 1024;
+}
+
 static int blend_chan(int s, int d, int sf, int df, int eq) {
-    int sv=s*sf/255, dv=d*df/255;
+    int sv=blend_mul(s,sf), dv=blend_mul(d,df);
     switch (eq&7) {
         case 1: return clamp8(sv-dv); case 2: return clamp8(dv-sv);
-        /* min/max/absdiff ignore the blend factors on the PSP (PPSSPP
-         * Rasterizer.cpp AlphaBlendingResult operates on the raw source/dst). */
+        /* min/max/absdiff ignore the blend factors on the PSP. */
         case 3: return s<d?s:d;       case 4: return s>d?s:d;
         case 5: return abs(s-d);
+        /* Equations 6 and 7 pass the source colour through (PSP-GE-RASTER-001 b-eq6, b-eq7). */
+        case 6: case 7: return s;
         case 0: default: return clamp8(sv+dv);
     }
 }
@@ -4013,7 +4024,13 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         }
         int wc = (ge.clear_mode & 0x100) != 0, wa = (ge.clear_mode & 0x200) != 0;
         if (!wc && !wa) return;
-        if (wc && wa) { fill_rect_clear_fast(xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a); return; }
+        /* Clear mode still dithers and still honours the pixel masks (PSP-GE-RASTER-001
+         * clr-ca-dth565, clr-ca-dth8888, clr-ca-msk); only an unmasked, undithered full
+         * clear writes one constant value. */
+        if (wc && wa && !ge.dither_enable && fb_write_mask_native() == 0u) {
+            fill_rect_clear_fast(xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a);
+            return;
+        }
         for (int y=ya; y<yb; y++) for (int x=xa; x<xb; x++)
             put_px_rgba(x, y, p1->r, p1->g, p1->b, p1->a);
         return;

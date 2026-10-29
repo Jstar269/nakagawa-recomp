@@ -462,7 +462,9 @@ static int hle_run(void)
  * are 0 and whose window holds gr_dst() before the list runs. The base state turns every
  * per-fragment unit off and selects a 16x4 texture drawn 1:1 by a through-mode sprite with
  * REPLACE/RGBA, so a sprite's source colour is the texel; a cell's words then change only
- * what it measures. The result is the window's 64 pixels (16-bit formats zero-extended). */
+ * what it measures. Transform-mode cells (GR_K_FOG, GR_K_XTRI) use identity world and view
+ * matrices and a viewport that maps view x, y back to window pixels. The result is the
+ * window's 64 pixels (16-bit formats zero-extended). */
 
 #define GR_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
 #define GR_ZB_OFFSET 0x00110000u   /* VRAM-relative depth buffer, stride 64 */
@@ -481,8 +483,10 @@ static int hle_run(void)
 #define GR_RED 0xff0000ffu
 #define GR_GREEN 0xff00ff00u
 
-enum { GR_K_SPRITE, GR_K_ZSPRITE, GR_K_TRI, GR_K_WRAP, GR_K_CLEAR, GR_K_FOG };
-enum { GR_T_8888, GR_T_5650, GR_T_5551, GR_T_4444, GR_T_CLUT8, GR_T_CLUT4, GR_T_COUNT };
+enum { GR_K_SPRITE, GR_K_ZSPRITE, GR_K_TRI, GR_K_WRAP, GR_K_CLEAR, GR_K_FOG, GR_K_XTRI,
+       GR_K_LINE, GR_K_POINT };
+enum { GR_T_8888, GR_T_5650, GR_T_5551, GR_T_4444, GR_T_CLUT8, GR_T_CLUT4, GR_T_CLUT4W,
+       GR_T_COUNT };
 enum { GR_D_PATTERN, GR_D_WHITE };
 
 /* kind: what is drawn (GR_K_*); psm: framebuffer format; tex: source texture (GR_T_*);
@@ -495,7 +499,7 @@ struct gr_cell {
     uint32_t w[6];
 };
 
-#define GR_CELL_COUNT 166u
+#define GR_CELL_COUNT 175u
 static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"b-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe040c0ffu, 0xe17f3f01u}},
@@ -518,6 +522,8 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"b5551-sa-isa", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b4444-sa-isa", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
     {"b565-da-ida", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b5551-da-ida", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b4444-da-ida", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
     {"at-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8000u}},
     {"at-f1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8001u}},
     {"at-f2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8002u}},
@@ -605,6 +611,7 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"tx-c8-5551", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff01u}},
     {"tx-c4-4444", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
     {"tx-c4-off3", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc503ff03u}},
+    {"tx-c4-bw48", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
     {"wr-c-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u}},
     {"wr-w-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u}},
     {"wr-uw-vc", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000100u}},
@@ -621,6 +628,10 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"e-tri5", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 5u, 0x9aff7f20u, {0x1e000000u}},
     {"e-tri6", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 6u, 0x9aff7f20u, {0x1e000000u}},
     {"e-tri7", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 7u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line0", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line1", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line2", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-points", GR_K_POINT, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
     {"fmt-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
     {"fmt-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
     {"fmt-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
@@ -660,6 +671,8 @@ static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
     {"clr-ca-blend", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x21000001u, 0xdf000032u}},
     {"clr-ca-atest", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x22000001u, 0xdb000000u}},
     {"clr-a-4444", GR_K_CLEAR, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000201u}},
+    {"xf-tri", GR_K_XTRI, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"xf-plain", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
     {"fog-a", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf8040c0u, 0xcdc08000u, 0xce3c9249u}},
     {"fog-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf0080ffu, 0xcd000000u, 0xce3c8080u}},
     {"fog-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
@@ -681,6 +694,19 @@ static const float gr_tris[8][12] = {
     {0.0f, 0.0f, 7.5f, 0.0f, 7.5f, 4.0f, 7.5f, 0.0f, 16.0f, 4.0f, 7.5f, 4.0f},
     {0.0f, 2.0f, 8.0f, 0.0f, 16.0f, 2.0f, 0.0f, 2.0f, 16.0f, 2.0f, 8.0f, 4.0f},
     {0.0f, 0.0f, 0.0f, 4.0f, 16.0f, 0.0f, 16.0f, 0.0f, 0.0f, 4.0f, 16.0f, 4.0f},
+};
+
+/* GR_K_LINE: two lines (red, then green), x/y of both ends relative to the window origin. */
+static const float gr_lines[3][8] = {
+    {0.0f, 0.0f, 16.0f, 0.0f, 0.5f, 2.5f, 15.5f, 2.5f},
+    {0.0f, 0.0f, 15.0f, 3.0f, 2.0f, 3.5f, 13.0f, 0.5f},
+    {3.25f, 0.0f, 3.25f, 4.0f, 10.75f, 0.5f, 12.5f, 3.75f},
+};
+
+/* GR_K_POINT: eight points, alternately red and green. */
+static const float gr_points[16] = {
+    0.0f, 0.0f, 2.5f, 0.0f, 4.25f, 1.0f, 6.75f, 1.5f,
+    8.0f, 2.0f, 10.5f, 2.5f, 12.375f, 3.0f, 14.625f, 3.625f,
 };
 
 /* Pattern byte `i` of stream `seed`: in every stream eight indices carry the edge values,
@@ -731,7 +757,8 @@ static uint32_t gr_depth(uint32_t i)
     return ((uint32_t)gr_byte(40u, i) << 8) | gr_byte(41u, i);
 }
 
-/* Texture t's bytes (16x4 texels, buffer width 16); returns the byte count. */
+/* Texture t's bytes (16x4 texels; buffer width 16, or 48 for GR_T_CLUT4W); returns the byte
+   count. */
 static uint32_t gr_texture(uint32_t t, uint8_t *out)
 {
     uint32_t n = 0;
@@ -747,6 +774,9 @@ static uint32_t gr_texture(uint32_t t, uint8_t *out)
             if (i < GR_N / 2u) {
                 out[n++] = gr_byte(18u, i);
             }
+        } else if (t == GR_T_CLUT4W) {
+            out[n++] = gr_byte(44u, i);
+            out[n++] = gr_byte(45u, i);
         } else {
             out[n++] = gr_byte(21u + t, i);
             out[n++] = gr_byte(25u + t, i);
@@ -785,6 +815,18 @@ static uint32_t gr_tvtx(uint32_t *out, float u, float v, uint32_t col, float x, 
     return 6u;
 }
 
+/* One transform-mode vertex: 8888 colour; float x, y, z (vertex type 0x19c). The x, y
+   given in window pixels become the view-space x, y that the GR_K_FOG viewport maps back
+   to those pixels: x = 32 + 32 * X and y = 16 + 16 * Y on the 64x32 buffer. */
+static uint32_t gr_xvtx(uint32_t *out, uint32_t col, float x, float y, float z)
+{
+    out[0] = col;
+    out[1] = gr_fbits((x - 32.0f) / 32.0f);
+    out[2] = gr_fbits((y - 16.0f) / 16.0f);
+    out[3] = gr_fbits(z);
+    return 4u;
+}
+
 /* The cell's vertex words; returns the count. */
 static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
 {
@@ -792,7 +834,7 @@ static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
     const float x1 = x0 + (float)GR_WW, y1 = y0 + (float)GR_WH;
     uint32_t n = 0;
     if (c->kind == GR_K_ZSPRITE || c->kind == GR_K_FOG) {
-        /* One 1x1 sprite per window pixel: a depth in clear mode, or a fogged colour. */
+        /* One 1x1 sprite per window pixel: a depth in clear mode, or a colour at view z = i. */
         for (uint32_t i = 0; i < GR_N; i++) {
             const float x = x0 + (float)(i % GR_WW), y = y0 + (float)(i / GR_WW);
             if (c->kind == GR_K_ZSPRITE) {
@@ -800,20 +842,27 @@ static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
                 n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x, y, z);
                 n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x + 1.0f, y + 1.0f, z);
             } else {
-                /* Transform mode: colour, x, y, z (vertex type 0x19c) at view z = i. */
-                for (uint32_t k = 0; k < 2u; k++) {
-                    out[n++] = gr_rgba(1u, i);
-                    out[n++] = gr_fbits(x + (float)k);
-                    out[n++] = gr_fbits(y + (float)k);
-                    out[n++] = gr_fbits((float)i);
-                }
+                n += gr_xvtx(out + n, gr_rgba(1u, i), x, y, (float)i);
+                n += gr_xvtx(out + n, gr_rgba(1u, i), x + 1.0f, y + 1.0f, (float)i);
             }
         }
     }
-    if (c->kind == GR_K_TRI) {
+    if (c->kind == GR_K_TRI || c->kind == GR_K_XTRI) {
         for (uint32_t k = 0; k < 6u; k++) {
-            n += gr_tvtx(out + n, 0.0f, 0.0f, k < 3u ? GR_RED : GR_GREEN,
-                         x0 + gr_tris[c->arg][2u * k], y0 + gr_tris[c->arg][2u * k + 1u], GR_Z);
+            const uint32_t col = k < 3u ? GR_RED : GR_GREEN;
+            const float x = x0 + gr_tris[c->arg][2u * k], y = y0 + gr_tris[c->arg][2u * k + 1u];
+            n += c->kind == GR_K_TRI ? gr_tvtx(out + n, 0.0f, 0.0f, col, x, y, GR_Z)
+                                     : gr_xvtx(out + n, col, x, y, 0.0f);
+        }
+    } else if (c->kind == GR_K_LINE) {
+        for (uint32_t k = 0; k < 4u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, k < 2u ? GR_RED : GR_GREEN,
+                         x0 + gr_lines[c->arg][2u * k], y0 + gr_lines[c->arg][2u * k + 1u], GR_Z);
+        }
+    } else if (c->kind == GR_K_POINT) {
+        for (uint32_t k = 0; k < 8u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, (k & 1u) ? GR_GREEN : GR_RED,
+                         x0 + gr_points[2u * k], y0 + gr_points[2u * k + 1u], GR_Z);
         }
     } else if (c->kind == GR_K_WRAP) {
         const float *uv = gr_wrap_uv[c->arg];
@@ -889,7 +938,7 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
     GR_W(0xc2, 0);
     GR_W(0xc3, 3);
     GR_W(0xa0, t);
-    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | GR_WW);
+    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | (c->tex == GR_T_CLUT4W ? 48u : GR_WW));
     GR_W(0xb8, (2u << 8) | 4u); /* 16x4 */
     GR_W(0xc6, 0);              /* nearest */
     GR_W(0xc7, 0x101u);         /* clamp u and v */
@@ -900,7 +949,7 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
     GR_W(0x49, gr_fbits(1.0f) >> 8);
     GR_W(0x4a, 0);
     GR_W(0x4b, 0);
-    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4) {
+    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4 || c->tex == GR_T_CLUT4W) {
         GR_W(0xb0, clut);
         GR_W(0xb1, (clut >> 8) & 0x000f0000u);
         GR_W(0xc5, 0x00ff03u);
@@ -920,7 +969,7 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
     for (uint32_t i = 0; i < 6u && c->w[i] != 0u; i++) {
         out[n++] = c->w[i];
     }
-    if (c->kind == GR_K_FOG) {
+    if (c->kind == GR_K_FOG || c->kind == GR_K_XTRI) {
         GR_W(0x3a, 0);
         for (uint32_t i = 0; i < 12u; i++) {
             GR_W(0x3b, gr_fbits(ident43[i]) >> 8);
@@ -933,18 +982,26 @@ static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *t
         for (uint32_t i = 0; i < 16u; i++) {
             GR_W(0x3f, gr_fbits(proj[i]) >> 8);
         }
-        GR_W(0x42, gr_fbits(1.0f) >> 8);
-        GR_W(0x43, gr_fbits(1.0f) >> 8);
+        GR_W(0x42, gr_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+        GR_W(0x43, gr_fbits(16.0f) >> 8);
         GR_W(0x44, 0);
         GR_W(0x45, gr_fbits(2048.0f) >> 8);
         GR_W(0x46, gr_fbits(2048.0f) >> 8);
         GR_W(0x47, gr_fbits(32768.0f) >> 8);
-        GR_W(0x4c, 2048u << 4);
-        GR_W(0x4d, 2048u << 4);
+        GR_W(0x4c, (2048u - 32u) << 4);
+        GR_W(0x4d, (2048u - 16u) << 4);
         GR_W(0x12, 0x0000019cu);  /* transform, 8888 colour, float position */
-        GR_W(0x04, (6u << 16) | (2u * GR_N));
+        if (c->kind == GR_K_FOG) {
+            GR_W(0x04, (6u << 16) | (2u * GR_N));
+        } else {
+            GR_W(0x04, (3u << 16) | 6u);
+        }
     } else if (c->kind == GR_K_TRI) {
         GR_W(0x04, (3u << 16) | 6u);
+    } else if (c->kind == GR_K_LINE) {
+        GR_W(0x04, (1u << 16) | 4u);
+    } else if (c->kind == GR_K_POINT) {
+        GR_W(0x04, 8u);
     } else {
         GR_W(0x04, (6u << 16) | 2u);
     }
