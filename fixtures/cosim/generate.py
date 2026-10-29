@@ -637,12 +637,17 @@ def _cell_nonlocal_mid() -> list[int]:
 
 
 def _cell_nonlocal_exit() -> list[int]:
-    """Return for the middle function: restore its $ra and $sp, return to its caller."""
+    """Return for the middle function: restore its $ra and $sp, return to its caller.
+
+    The pop precedes the `jr`, so a lane that skips delay slots still returns with
+    the middle frame released and diverges by value instead of looping.
+    """
     return [
         _i(0x09, V0, V0, 0x10),             # 0x00 addiu v0, v0, 0x10
         _i(0x23, SP, RA, 12),               # 0x04 lw    ra, 12(sp) (the middle frame's $ra)
-        JR_RA,                              # 0x08
-        _i(0x09, SP, SP, 16),               # 0x0c addiu sp, sp, 16 (pops the middle frame)
+        _i(0x09, SP, SP, 16),               # 0x08 addiu sp, sp, 16 (pops the middle frame)
+        JR_RA,                              # 0x0c
+        NOP,                                # 0x10
     ]
 
 
