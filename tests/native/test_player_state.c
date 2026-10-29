@@ -214,6 +214,24 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+/* The whole file as a NUL-terminated string; the caller frees it. */
+static char *read_text_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    char *text;
+    long length;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length >= 0);
+    rewind(file);
+    text = (char *)malloc((size_t)length + 1u);
+    assert(text != NULL);
+    assert(fread(text, 1, (size_t)length, file) == (size_t)length);
+    text[length] = '\0';
+    fclose(file);
+    return text;
+}
+
 #define TEST_ISO_SECTOR_BYTES 2048u
 #define TEST_ISO_MAX_NODES 2048u
 #define TEST_ISO_MODULE_BYTES 128u
@@ -4308,6 +4326,10 @@ int main(int argc, char **argv) {
         assert(wiz->active_view == VIEW_SETUP_WIZARD);
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         assert(wiz->focus_index == 0);
+        /* The Game step draws the status line as the reason no disc is chosen:
+           a new wizard has nothing to report (the walkthrough saw a welcome
+           sentence there in the warning colour). */
+        assert(wiz->wizard.status_message[0] == '\0');
 
         player_app_wizard_next(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
@@ -4563,8 +4585,9 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_OK);
         check = find_preflight_check(&wiz->wizard.preflight, "DATA_ROOT");
         assert(check && check->status == PREFLIGHT_OK);
+        /* Project fonts only: every font is served, none is the user's own (#1300). */
         check = find_preflight_check(&wiz->wizard.preflight, "SYSTEM_FONTS");
-        assert(check && check->status == PREFLIGHT_OK);
+        assert(check && check->status == PREFLIGHT_SYNTHETIC);
 
         /* A refused local title profile remains identifiable by its declared
            disc ID, so the player can show the same refusal beside the card. */
@@ -5398,6 +5421,7 @@ int main(int argc, char **argv) {
 
         assert(player_app_fonts_import_folder(font_app, source_dir) == false);
         assert(strstr(font_app->wizard.font_message, "No font was imported") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_WARNING);
         snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
         remove(path);
         snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
@@ -5411,6 +5435,7 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
         assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_DONE);
         assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "your imported font") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
@@ -5433,12 +5458,16 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* The Korean font is the project's stand-in: Synthetic, not OK (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+            assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
+            assert(!player_preflight_check_blocks(fcheck));
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
             assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
+        assert(font_app->wizard.font_message_kind == PLAYER_NOTE_DONE);
 
         /* 14g: a slot file that cannot be deleted keeps its manifest entry. The Japanese file is
            replaced by a directory holding a file, so the delete fails for a reason other than the
@@ -5482,6 +5511,7 @@ int main(int argc, char **argv) {
                removed, and the message names the Japanese file that stayed. */
             assert(!player_app_fonts_remove_imports(font_app));
             assert(strstr(font_app->wizard.font_message, "Could not remove the imported fonts") != NULL);
+            assert(font_app->wizard.font_message_kind == PLAYER_NOTE_ERROR);
             assert(strstr(font_app->wizard.font_message, "Japanese") != NULL);
             snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
             assert(!nk_platform_file_exists(path));
@@ -5749,7 +5779,8 @@ int main(int argc, char **argv) {
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
-            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            /* One Latin file stands in for the sixteen Latin fonts: Synthetic (#1300). */
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
             assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
@@ -5846,10 +5877,10 @@ int main(int argc, char **argv) {
                       "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
                       "Korean font. Games that ask for them get a stand-in font that looks "
                       "different; for 8 of the 16 Latin fonts and the Korean font they get no "
-                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
+                      "font at all. Import them from your own PSP in Settings, PSP fonts.") == 0);
 
-        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
-           it still names the fonts a game gets a stand-in for. */
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is
+           Synthetic (#1300), and it names the fonts a game gets a stand-in for. */
         snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
         assert(nk_platform_mkdir_p(path));
         snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
@@ -5858,27 +5889,29 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
+        assert(strcmp(player_preflight_status_word(fcheck), "Synthetic") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
                       "Korean font. Games that ask for them get a stand-in font that looks "
-                      "different. Import them from your own PSP in the setup wizard.") == 0);
+                      "different. Import them from your own PSP in Settings, PSP fonts.") == 0);
 
         /* 3. Every Latin file imported: only the Korean font is named. */
         assert(player_app_fonts_import_folder(missing_app, rest));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_SYNTHETIC);
         assert(strcmp(player_preflight_plain_message(fcheck),
                       "This PSP system font was not found: the Korean font. Games that ask for it "
                       "get a stand-in font that looks different. Import it from your own PSP in "
-                      "the setup wizard.") == 0);
+                      "Settings, PSP fonts.") == 0);
 
         /* 4. Every font is the user's own: nothing is named. */
         assert(player_app_fonts_import_folder(missing_app, korean));
         player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_status_word(fcheck), "Ready") == 0);
         assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
 
         free(missing_app);
@@ -6395,8 +6428,7 @@ int main(int argc, char **argv) {
            default, and none of them moves network_mode off offline. */
         player_app_init(s_app2);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(s_app2->settings.online_news && s_app2->settings.online_reports);
         s_app2->settings.online_mode = true;
         s_app2->settings.online_news = false;
         s_app2->settings.developer_mode = true;
@@ -6404,8 +6436,7 @@ int main(int argc, char **argv) {
         player_app_init(s_app2);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(!s_app2->settings.online_news && s_app2->settings.online_reports);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
         write_text_file(test_settings_path,
                         "{\"schema_version\": 2, \"network_mode\": \"online\", "
@@ -6414,6 +6445,41 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
+        /* Check for updates at start (AGENTS.md section 5): off by default and
+           after a reset, saved and read back once the user turns it on, and a
+           value that is not a boolean keeps it off. */
+        player_app_init(s_app2);
+        assert(!s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "\"check_updates_at_start\": false") != NULL);
+            free(saved);
+        }
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        s_app2->settings_path[0] = '\0';
+        player_app_toggle_update_check_at_start(s_app2);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"check_updates_at_start\": \"yes\"}");
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        /* The retired online-mode "Update check" part is no longer written. */
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "online_updates") == NULL);
+            free(saved);
+        }
 
         remove(test_settings_path);
         free(s_app);
@@ -6474,7 +6540,7 @@ int main(int argc, char **argv) {
         dev->active_view = VIEW_ONLINE_SETTINGS;
         assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
         dev->settings.online_mode = true;
-        assert(player_app_focus_count(dev) == 7);
+        assert(player_app_focus_count(dev) == 6); /* + news, reports */
 
         /* The wizard step: Welcome -> Options -> Select game, and skipping
            turns both off. Every first run passes through it: it needs no game. */

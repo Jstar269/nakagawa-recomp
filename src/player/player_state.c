@@ -1024,9 +1024,9 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_BUILD_CACHE:
             return 4; /* share switch, clear cache, remove tools, back */
         case VIEW_ONLINE_SETTINGS:
-            /* online switch (+ updates, news, reports while it is on), developer
+            /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */
-            return 1 + (app->settings.online_mode ? 3 : 0) + 1 +
+            return 1 + (app->settings.online_mode ? 2 : 0) + 1 +
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
@@ -1117,10 +1117,10 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->controller_connected = false;
     settings->network_mode = NK_NETWORK_MODE_OFFLINE;
     settings->online_mode = false;
-    settings->online_updates = true;
     settings->online_news = true;
     settings->online_reports = true;
     settings->share_system_libraries = true;
+    settings->check_updates_at_start = false;
     settings->developer_mode = false;
     settings->experimental_60hz = false;
 }
@@ -1322,13 +1322,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[6] = {"online_mode", "online_updates", "online_news",
-                                            "online_reports", "developer_mode",
-                                            "experimental_60hz"};
-        bool *fields[6] = {&app->settings.online_mode, &app->settings.online_updates,
-                           &app->settings.online_news, &app->settings.online_reports,
-                           &app->settings.developer_mode, &app->settings.experimental_60hz};
-        for (int k = 0; k < 6; ++k) {
+        static const char *const keys[5] = {"online_mode", "online_news", "online_reports",
+                                            "developer_mode", "experimental_60hz"};
+        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_news,
+                           &app->settings.online_reports, &app->settings.developer_mode,
+                           &app->settings.experimental_60hz};
+        for (int k = 0; k < 5; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
@@ -1345,6 +1344,14 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     bool share_val = true;
     if (share_node && nk_json_get_bool(share_node, &share_val)) {
         app->settings.share_system_libraries = share_val;
+    }
+
+    /* Off unless the file says true: a missing or non-boolean value keeps the
+       check at start off. */
+    NkJsonNode *update_node = nk_json_obj_get(root, "check_updates_at_start");
+    bool update_val = false;
+    if (update_node && nk_json_get_bool(update_node, &update_val)) {
+        app->settings.check_updates_at_start = update_val;
     }
 
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
@@ -1431,7 +1438,6 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"network_mode\": \"offline\",\n");
     fprintf(f, "  \"online_mode\": %s,\n", app->settings.online_mode ? "true" : "false");
-    fprintf(f, "  \"online_updates\": %s,\n", app->settings.online_updates ? "true" : "false");
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
@@ -1441,6 +1447,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
             app->settings.share_system_libraries ? "true" : "false");
+    fprintf(f, "  \"check_updates_at_start\": %s,\n",
+            app->settings.check_updates_at_start ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1899,6 +1907,14 @@ bool player_app_experimental_60hz_active(const PlayerApp *app) {
     return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
 }
 
+void player_app_toggle_update_check_at_start(PlayerApp *app) {
+    if (!app) return;
+    app->settings.check_updates_at_start = !app->settings.check_updates_at_start;
+    player_dev_log_add(app, "settings", "check for updates at start %s",
+                       app->settings.check_updates_at_start ? "on" : "off");
+    maybe_persist_settings(app);
+}
+
 void player_app_toggle_share_system_libraries(PlayerApp *app) {
     if (!app) return;
     app->settings.share_system_libraries = !app->settings.share_system_libraries;
@@ -1916,9 +1932,8 @@ void player_app_set_online_mode(PlayerApp *app, bool on) {
 void player_app_toggle_online_feature(PlayerApp *app, int feature) {
     bool *field;
     if (!app) return;
-    field = feature == 0 ? &app->settings.online_updates
-          : feature == 1 ? &app->settings.online_news
-          : feature == 2 ? &app->settings.online_reports : NULL;
+    field = feature == 0 ? &app->settings.online_news
+          : feature == 1 ? &app->settings.online_reports : NULL;
     if (!field) return;
     *field = !*field;
     maybe_persist_settings(app);
@@ -4121,8 +4136,8 @@ void player_app_start_setup_wizard(PlayerApp *app) {
     app->wizard.step = WIZARD_STEP_WELCOME;
     app->wizard.extraction_result = NK_OK;
     app->wizard.iso_selected = (app->inspecting_game.iso_path[0] != '\0');
-    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-             "Welcome to the Nakagawa Recomp First-Time Setup Wizard.");
+    /* The status line stays empty until something happens: the Game step
+       draws it as the reason no disc is chosen. */
     app->active_view = VIEW_SETUP_WIZARD;
     app->focus_index = 0;
 }
@@ -4390,7 +4405,8 @@ const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
     }
     if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
     if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
-        return check->status == PREFLIGHT_INVALID ? "Can't read" : "Some missing";
+        if (check->status == PREFLIGHT_INVALID) return "Can't read";
+        return check->status == PREFLIGHT_SYNTHETIC ? "Synthetic" : "Some missing";
     }
     switch (check->status) {
         case PREFLIGHT_MISSING: return "Needed";
@@ -4446,8 +4462,13 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
     } else if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
         if (ok) return "PSP system fonts found.";
         if (check->status == PREFLIGHT_INVALID) {
-            return "Your imported PSP fonts can't be read. You can import them again in the "
-                   "setup wizard.";
+            return "Your imported PSP fonts can't be read. You can import them again in "
+                   "Settings, PSP fonts.";
+        }
+        if (check->status == PREFLIGHT_SYNTHETIC) {
+            return "Every PSP system font has a stand-in, but some are not your PSP's own, so "
+                   "some text may look different. You can import your PSP's own fonts in "
+                   "Settings, PSP fonts.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
                "You can import your PSP's own fonts in Settings, PSP fonts.";
@@ -5583,7 +5604,7 @@ static void player_font_missing_sentence(char *out, size_t out_len,
         player_font_append(out, out_len, ". ");
     }
     player_font_append(out, out_len, one ? "Import it" : "Import them");
-    player_font_append(out, out_len, " from your own PSP in the setup wizard.");
+    player_font_append(out, out_len, " from your own PSP in Settings, PSP fonts.");
 }
 
 void player_app_refresh_font_status(PlayerApp *app) {
@@ -5623,12 +5644,14 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
     if (!app) return false;
     if (!folder || !*folder) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
+        app->wizard.font_message_kind = PLAYER_NOTE_NEUTRAL;
         return false;
     }
     if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
     if (!nk_font_import_folder(root, folder, NULL, &result, error, sizeof(error))) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Import stopped: %s.", error);
+        app->wizard.font_message_kind = PLAYER_NOTE_ERROR;
         player_app_refresh_font_status(app);
         return false;
     }
@@ -5646,9 +5669,11 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
         }
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "No font was imported: %.400s.", reason);
+        app->wizard.font_message_kind = PLAYER_NOTE_WARNING;
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Imported %d PSP font file(s) into the player's font cache.", result.imported_count);
+        app->wizard.font_message_kind = PLAYER_NOTE_DONE;
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
@@ -5666,12 +5691,15 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     if (removed < 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Could not remove the imported fonts: %s.", error);
+        app->wizard.font_message_kind = PLAYER_NOTE_ERROR;
     } else if (removed == 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "No imported PSP font to remove.");
+        app->wizard.font_message_kind = PLAYER_NOTE_NEUTRAL;
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Removed %d imported PSP font file(s). Project fonts, if any, are unchanged.", removed);
+        app->wizard.font_message_kind = PLAYER_NOTE_DONE;
     }
     player_app_refresh_font_status(app);
     return removed >= 0;
@@ -5913,12 +5941,16 @@ static void player_build_compatibility_preflight_for_game(
             player_font_append(summary, sizeof(summary), " ");
         }
         player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_KOREAN].detail);
-        player_preflight_add(preflight, "SYSTEM_FONTS",
-                             every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
-                             summary, font_issues, every_slot ? 0 : 1);
         {
+            /* Every font served but one not the user's own is Synthetic, not OK (#1300):
+               the sentence names the fonts that are stand-ins. */
             char missing[sizeof(preflight->checks[0].plain)];
+            PlayerPreflightStatus font_preflight;
             player_font_missing_sentence(missing, sizeof(missing), states, latin_states);
+            font_preflight = !every_slot ? PREFLIGHT_MISSING
+                : missing[0] ? PREFLIGHT_SYNTHETIC : PREFLIGHT_OK;
+            player_preflight_add(preflight, "SYSTEM_FONTS", font_preflight, summary, font_issues,
+                                 font_preflight == PREFLIGHT_OK ? 0 : 1);
             if (missing[0]) player_preflight_set_plain(preflight, "%s", missing);
         }
     }

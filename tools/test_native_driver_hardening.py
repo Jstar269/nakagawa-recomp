@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Malformed-input regression tests for the native runtime driver (src/rt/driver.c)."""
 
@@ -124,6 +124,7 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     return 0x0a000010u;
 }}
 void sched_init(CpuState *cpu) {{ s_cpu = cpu; }}
+void sched_preempt_timer_start(void) {{}}
 /* sceKernelLoadExec restart seam (driver.c --sched loop). This harness never queues a
  * LoadExec request, so take reports none and the loop ends; the rest are reachable only
  * after a taken request and refuse instead of pretending a replacement program booted. */

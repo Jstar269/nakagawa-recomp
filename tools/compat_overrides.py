@@ -52,7 +52,7 @@ Categories (pick exactly one per entry):
                                   wrong.
 
 Every entry's `test` field names the regression test that pins it, or "none" if
-it does not have one yet (a real gap -- see ISSUES.md, not silently swept in).
+it does not have one yet (a real gap, recorded here rather than silently swept in).
 For a `temporary_compatibility_patch` that gap is a CI failure: the debt gate in
 tools/test_compat_manifest.py also requires a live `owner_issue` and an explicit
 `retirement` condition, and only its reviewed allowlist can waive the test.
@@ -381,8 +381,11 @@ SCHEDULER_HOOKS = [
                  "binding once the guest's reent bring-up needs no host participation.",
          test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)",
          owner_issue="#363",
-         retirement="retire together with the launcher binding once the guest's reent bring-up "
-                    "needs no host participation"),
+         retirement="retired (2026-10-28): a PSP-3000 measurement (docs/HARDWARE_ORACLE.md "
+                    "PSP-THREAD-K0-001) shows the kernel hands every new thread a k0 block with "
+                    "k0+4 == 0, also over a dirtied stack. sched.c now builds that block and no "
+                    "longer copies a launcher reent into any thread; the title's own libc keeps "
+                    "its per-thread state."),
 ]
 
 # HST-only guest Newlib reent bindings. The two entries (0x002cf338 master reent fallback
@@ -698,8 +701,8 @@ def all_documented_addresses() -> "set[int]":
 #: reader reaches first.
 AGGREGATE_COLLECTIONS = frozenset({"OVERRIDES"})
 
-#: An owner must LEAD with a live GitHub issue number.  An ISSUES.md anchor
-#: such as "ISSUES.md #5.1" is a documentation pointer, not an owner, and does
+#: An owner must LEAD with a live GitHub issue number.  A status-page anchor
+#: such as "docs/STATUS.md #5.1" is a documentation pointer, not an owner, and does
 #: not satisfy it.
 OWNER_ISSUE_RE = re.compile(r"#\d+\b")
 

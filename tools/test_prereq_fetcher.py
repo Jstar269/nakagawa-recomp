@@ -1185,11 +1185,13 @@ class TestPrerequisiteFetcher(unittest.TestCase):
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Offline by default (AGENTS.md section 5): the shipped player, runtime and
-# their Python helpers reach the network only through these files, both of
-# them the consented, pinned prerequisite download. prereq_fetcher.py also
-# serves the maintainer's release staging (--bundle-dest and --source-archive,
-# #1285) from the same pinned hosts; the player never passes those options, and a
-# release that carries prereqs/ makes no download at all. A new egress needs a
+# their Python helpers reach the network only through these files. Both serve
+# the consented, pinned prerequisite download; package_builder.c's WinHTTP
+# transport also carries the user-started update check (owner decision
+# 2026-10-28, see UPDATE_CHECK_HOSTS below). prereq_fetcher.py also serves the
+# maintainer's release staging (--bundle-dest and --source-archive, #1285) from
+# the same pinned hosts; the player never passes those options, and a release
+# that carries prereqs/ makes no download at all. A new egress needs a
 # maintainer decision, a "Network use" entry in docs/SETUP.md, and a line here.
 NETWORK_EGRESS_ALLOWLIST = frozenset({
     "src/player/package_builder.c",
@@ -1206,6 +1208,20 @@ PREREQUISITE_HOSTS = frozenset({"www.python.org", "repo.msys2.org"})
 RELEASE_SOURCE_HOSTS = frozenset({
     "github.com", "release-assets.githubusercontent.com", "codeload.github.com",
     "www.sqlite.org", "sourceware.org", "www.bytereef.org",
+})
+
+# Check for updates (owner decision 2026-10-28): the player asks GitHub's Releases API
+# for this repository only, then, on a second click, fetches that release's Windows
+# ZIP and its .sha256 file. These are its only hosts; docs/SETUP.md lists them under
+# "Network use". src/player/update_check.h holds the same list.
+UPDATE_CHECK_REPOSITORY = "Jstar269/nakagawa-recomp"
+UPDATE_CHECK_HOSTS = frozenset({
+    "api.github.com", "github.com", "release-assets.githubusercontent.com",
+})
+# The only shipped callers of the native transport: the prerequisite bootstrap (in
+# package_builder.c itself) and the update check. Another caller is a new egress.
+NATIVE_TRANSPORT_CALLERS = frozenset({
+    "src/player/package_builder.c", "src/player/update_check.c",
 })
 
 # Shipped code: everything under src/ and the Python the player runs. Maintainer
@@ -1255,6 +1271,41 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
         setup = (REPO_ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
         for host in sorted(PREREQUISITE_HOSTS | RELEASE_SOURCE_HOSTS):
             self.assertIn(f"`{host}`", setup)
+
+    def test_update_check_reaches_only_its_documented_github_hosts(self) -> None:
+        header = (REPO_ROOT / "src" / "player" / "update_check.h").read_text(encoding="utf-8")
+
+        def macro(name: str) -> str:
+            # A macro is string literals, possibly joined with NK_UPDATE_REPOSITORY.
+            match = re.search(rf"#define {name}\s+((?:[^\n]*\\\n)*[^\n]*)", header)
+            self.assertIsNotNone(match, name)
+            value = match.group(1).replace("\\\n", " ")
+            value = value.replace("NK_UPDATE_REPOSITORY", f'"{UPDATE_CHECK_REPOSITORY}"')
+            return "".join(re.findall(r'"([^"]*)"', value))
+
+        self.assertEqual(macro("NK_UPDATE_REPOSITORY"), UPDATE_CHECK_REPOSITORY)
+        hosts = set(macro("NK_UPDATE_API_HOSTS").split(";")) | set(
+            macro("NK_UPDATE_DOWNLOAD_HOSTS").split(";"))
+        self.assertEqual(hosts, UPDATE_CHECK_HOSTS)
+        for name in ("NK_UPDATE_RELEASES_URL", "NK_UPDATE_RELEASE_PAGE_PREFIX",
+                     "NK_UPDATE_DOWNLOAD_PREFIX"):
+            url = urlsplit(macro(name))
+            with self.subTest(macro=name):
+                self.assertEqual(url.scheme, "https")
+                self.assertIn(url.hostname, UPDATE_CHECK_HOSTS)
+                self.assertIn(f"/{UPDATE_CHECK_REPOSITORY}/", url.path)
+        setup = (REPO_ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
+        for host in sorted(UPDATE_CHECK_HOSTS):
+            self.assertIn(f"`{host}`", setup)
+
+    def test_only_the_known_callers_use_the_native_transport(self) -> None:
+        callers = set()
+        for path in sorted((REPO_ROOT / "src").rglob("*.c")):
+            if "package_builder_native_transport" in path.read_text(encoding="utf-8",
+                                                                     errors="replace"):
+                callers.add(path.relative_to(REPO_ROOT).as_posix())
+        self.assertEqual(callers, NATIVE_TRANSPORT_CALLERS,
+                         "a new caller of the native transport is a new egress (AGENTS.md section 5)")
 
     def test_allowlisted_downloaders_still_exist(self) -> None:
         for rel in sorted(NETWORK_EGRESS_ALLOWLIST):

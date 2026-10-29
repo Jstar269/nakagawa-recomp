@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -1080,7 +1081,8 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
  * LANGUAGE, BUTTON_PREFERENCE, DATE_FORMAT, TIME_FORMAT and DAYLIGHTSAVINGS from the read-only
  * registry enumeration of 2026-10-09, and ADHOC_CHANNEL, TIMEZONE and LOCK_PARENTAL_LEVEL through
  * sceUtilityGetSystemParamInt on 2026-10-10 (hle-sysparam). WLAN_POWERSAVE is an unmeasured
- * project default. */
+ * project default. On the first run TIMEZONE and DAYLIGHTSAVINGS start from the host's local time
+ * zone instead, when the launcher passes it (sreg_seed_host_time_zone). */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
         case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
@@ -2106,6 +2108,59 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
     return 1;
 }
 
+static uint32_t sreg_persist(const char *caller);
+
+/* Parses SR_HOST_TIME_ZONE, "<minutes from UTC>,<0|1>" (the standard offset and whether daylight
+ * saving is on now), as the launcher writes it from the host's local time zone (nk_launch.c).
+ * Returns 0 for anything else: a zone must be a whole quarter hour within UTC-12:00..UTC+14:00. */
+static int sreg_parse_host_time_zone(const char *text, int32_t *zone_out, uint32_t *daylight_out) {
+    char *end = NULL;
+    long zone;
+    if (!text || !*text) return 0;
+    errno = 0;
+    zone = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != ',' || (end[1] != '0' && end[1] != '1') || end[2] != '\0')
+        return 0;
+    if (zone < -720 || zone > 840 || zone % 15 != 0) return 0;
+    *zone_out = (int32_t)zone;
+    *daylight_out = end[1] == '1' ? 1u : 0u;
+    return 1;
+}
+
+/* First run (#1382): with no per-user overlay yet, the console's time zone and daylight-saving
+ * setting start from the host's local time zone instead of the oracle console's measured -300 and
+ * SAVING, and are saved to the overlay at once, so they are retained from then on the way a
+ * console keeps its setting: a later change on the host does not move them, and a game or the
+ * user can still change them through sceReg. Without SR_HOST_TIME_ZONE (a bare runtime, the
+ * selftests) or with a malformed value, the measured seed stays. */
+static void sreg_seed_host_time_zone(void) {
+    char *env = NULL;
+    int present = 0;
+    int32_t zone;
+    uint32_t daylight;
+    int zone_node, daylight_node;
+    if (!sr_utf8_env_alloc(L"SR_HOST_TIME_ZONE", &env, &present) || !present) {
+        free(env);
+        return;
+    }
+    if (!sreg_parse_host_time_zone(env, &zone, &daylight)) {
+        fprintf(stderr, "system profile: ignoring SR_HOST_TIME_ZONE \"%.32s\" (want <minutes>,<0|1>); "
+                        "the time zone keeps its seed\n", env ? env : "");
+        free(env);
+        return;
+    }
+    free(env);
+    zone_node = sreg_find_path("/CONFIG/DATE/time_zone_offset");
+    daylight_node = sreg_find_path("/CONFIG/DATE/summer_time");
+    if (zone_node < 0 || daylight_node < 0) return;
+    sreg_put_le32(s_sreg_nodes[zone_node].value, (uint32_t)zone);
+    sreg_put_le32(s_sreg_nodes[daylight_node].value, daylight);
+    s_sreg_dirty = 1;
+    fprintf(stderr, "system profile: time zone %+d min from UTC, daylight saving %s, from the host's "
+                    "local time zone on first run\n", (int)zone, daylight ? "on" : "off");
+    (void)sreg_persist("system profile");
+}
+
 /* Load the defaults and the per-user overlay once per process. */
 static void sreg_ensure_loaded(void) {
     char *path, *text = NULL;
@@ -2142,6 +2197,7 @@ static void sreg_ensure_loaded(void) {
     s_sreg_dirty = 0;
     free(text);
     free(path);
+    if (got == 0) sreg_seed_host_time_zone();
 }
 
 typedef struct {
@@ -3508,7 +3564,6 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
  * exposes the requested span and uses 16-byte chunks, the smallest conservative
  * alignment for guest allocations. */
 #define VPL_MAX 16
-#define VPL_MAX_ALLOCS 128
 #define VPL_MAX_WAITERS 64
 #define VPL_ALIGN 16u
 /* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): an unknown VPL id
@@ -3518,30 +3573,56 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
  * code. */
 #define VPL_EXHAUSTED 0x800200d9u
 typedef struct { uint32_t addr, size; } VplSpan;
-typedef struct { uint32_t addr, size; int used; } VplAlloc;
+typedef struct { uint32_t addr, size; } VplAlloc;
 typedef struct { uint32_t thread_uid; uint32_t size; } VplWaiter;
+/* The free spans (sorted by address) and the live blocks are host arrays that grow on
+ * demand. A PSP keeps a block's header inside the pool, so only the pool's own bytes bound
+ * how many blocks it holds; every block here is at least VPL_ALIGN bytes, which bounds
+ * both arrays by size / VPL_ALIGN + 1. A fixed table made the 129th live block of a pool
+ * with free space read as exhausted, and a blocking AllocateVpl then never returned. */
 typedef struct {
     uint32_t base, size, block_uid;
     uint32_t attr;
     int used;
-    VplSpan free[VPL_MAX_ALLOCS];
-    int nfree;
-    VplAlloc allocs[VPL_MAX_ALLOCS];
+    VplSpan *free;
+    int nfree, free_cap;
+    VplAlloc *allocs;
+    int nallocs, allocs_cap;
     VplWaiter waiters[VPL_MAX_WAITERS];
     int nwaiters;
 } VplPool;
 static VplPool s_vpls[VPL_MAX];
 
+/* Grow a pool array to hold `need` entries. A host that cannot provide them stops the run
+ * by name: refusing the guest would report a full pool that is not full. */
+static void *vpl_reserve(void *items, int *cap, int need, size_t item_size) {
+    if (need <= *cap) return items;
+    int grown = *cap ? *cap : 16;
+    while (grown < need) grown *= 2;
+    void *next = realloc(items, (size_t)grown * item_size);
+    if (!next) {
+        fprintf(stderr, "VPL: host allocation of %d entries failed\n", grown);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, (uint32_t)grown, (uint32_t)item_size);
+        abort();
+    }
+    *cap = grown;
+    return next;
+}
+
+static void vpl_release(VplPool *p) {
+    free(p->free);
+    free(p->allocs);
+    memset(p, 0, sizeof *p);
+}
+
 static void vpl_insert_free(VplPool *p, uint32_t addr, uint32_t size) {
     int i = 0;
     while (i < p->nfree && p->free[i].addr < addr) i++;
-    if (p->nfree < VPL_MAX_ALLOCS) {
-        for (int j = p->nfree; j > i; --j) p->free[j] = p->free[j - 1];
-        p->free[i] = (VplSpan){addr, size};
-        p->nfree++;
-    }
-    /* Coalesce all touching neighbors; the free-list capacity is intentionally
-     * bounded and is UNMEASURED relative to firmware's kernel object limits. */
+    p->free = vpl_reserve(p->free, &p->free_cap, p->nfree + 1, sizeof *p->free);
+    memmove(&p->free[i + 1], &p->free[i], (size_t)(p->nfree - i) * sizeof *p->free);
+    p->free[i] = (VplSpan){addr, size};
+    p->nfree++;
+    /* Coalesce all touching neighbors. */
     for (i = 0; i + 1 < p->nfree;) {
         if (p->free[i].addr + p->free[i].size == p->free[i + 1].addr) {
             p->free[i].size += p->free[i + 1].size;
@@ -3582,10 +3663,10 @@ static uint32_t h_CreateVpl(CpuState *s) {
     for (int i = 0; i < VPL_MAX; ++i) {
         if (!s_vpls[i].used) {
             VplPool *p = &s_vpls[i];
-            memset(p, 0, sizeof *p);
+            vpl_release(p);
             p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
             p->attr = A2;
-            p->free[0] = (VplSpan){base, size}; p->nfree = 1;
+            vpl_insert_free(p, base, size);
             return (uint32_t)(0x600 + i);
         }
     }
@@ -3600,22 +3681,20 @@ static VplPool *vpl_lookup(uint32_t uid) {
 
 static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t *addr_out) {
     if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (request > p->size) return VPL_EXHAUSTED; /* also keeps the rounding below from wrapping */
     uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
     for (int i = 0; i < p->nfree; ++i) {
         if (p->free[i].size >= need) {
             uint32_t addr = p->free[i].addr;
+            p->allocs = vpl_reserve(p->allocs, &p->allocs_cap, p->nallocs + 1, sizeof *p->allocs);
+            p->allocs[p->nallocs++] = (VplAlloc){addr, need};
             p->free[i].addr += need; p->free[i].size -= need;
             if (!p->free[i].size) {
                 for (int j = i; j + 1 < p->nfree; ++j) p->free[j] = p->free[j + 1];
                 --p->nfree;
             }
-            for (int j = 0; j < VPL_MAX_ALLOCS; ++j) if (!p->allocs[j].used) {
-                p->allocs[j] = (VplAlloc){addr, need, 1};
-                *addr_out = addr;
-                return 0;
-            }
-            vpl_insert_free(p, addr, need);
-            return VPL_EXHAUSTED;
+            *addr_out = addr;
+            return 0;
         }
     }
     return VPL_EXHAUSTED;
@@ -3756,9 +3835,9 @@ static uint32_t h_FreeVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t addr = A1;
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
-    for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
+    for (int i = 0; i < p->nallocs; ++i) if (p->allocs[i].addr == addr) {
         vpl_insert_free(p, addr, p->allocs[i].size);
-        p->allocs[i].used = 0;
+        p->allocs[i] = p->allocs[--p->nallocs];
         /* Waiter order: semaphores in hle.c do not handle attr for priority/FIFO queuing;
          * per task instruction, default to FIFO order and document.
          * Wake one waiter. */
@@ -3786,7 +3865,7 @@ static uint32_t h_DeleteVpl(CpuState *s) {
         sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
         sched_preempt();
     }
-    memset(p, 0, sizeof *p);
+    vpl_release(p);
     return free_block(block_uid); /* exactly once; unknown/double delete frees nothing */
 }
 
@@ -6917,18 +6996,7 @@ static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSM
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode);
 
-/* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
- *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
- *  (2) the launcher thread (uid 0x110 / 0x111) after the worker dissolves
- *  (3) the VBLANK handler inside engine_Shutdown: it calls sceKernelExitGame(0), which on
- *      a real PSP terminates the process and never returns. We must NOT return from this
- *      syscall when invoked from interrupt context (cur_uid==0): sched_thread_sleep() is
- *      a no-op there, the call falls through back into the callback body, the body
- *      reaches ExitGame again, and the recomp arms an infinite countdown of redundant
- *      GAMELOG messages per vblank (smoke_*.err saw 9497 ExitGames in one run from a
- *      single chain ending at the same PC). Behavioural fix: interrupt-context ExitGame
- *      is a host-process _exit. Thread-context ExitGame stays a thread sleep so the
- *      worker / launcher can be observed across subsequent yields. */
+/* sceKernelExitGame terminates the guest process in thread and interrupt contexts. */
 static uint32_t h_ExitGame(CpuState *s) {
     /* sceKernelExitGame takes no argument (PSPSDK psploadexec.h declares
      * `void sceKernelExitGame(void)`; PPSSPP registers NID 0x05572a5f with the
@@ -7001,13 +7069,9 @@ static uint32_t h_ExitGame(CpuState *s) {
         fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
                 s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
         fflush(stderr);
-        /* Give the host a chance to drain. Without this, stdio buffers get truncated by
-         * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
-        sr_host_sleep_ms(50);
-        fflush(NULL);
-        _exit(code);
+        exit(code);
     }
-    sr_trace_close(); fflush(NULL); sr_host_sleep_ms(50); _exit(code);
+    exit(code);
     return code; /* unreachable, keeps the handler signature honest */
 }
 
@@ -12223,9 +12287,36 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
-UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
-UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
-UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
+/* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
+static uint32_t h_NetDialogInit(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x38u && size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
+    return utility_dialog_init(&s_net_dialog, A0);
+}
+static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
+static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_net_dialog); }
+static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
+/* PSPAutotests utility/dialog/sizes lists the storage dialog versions. */
+static uint32_t utility_storage_init(UtilityDialog *d, uint32_t param) {
+    if (!param || !sr_guest_span_readable(param, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(param);
+    int valid = d->kind == UTILITY_GAMEDATA ? (size == 0x590u || size == 0x598u) :
+        (size == 0x50u || size == 0x54u || size == 0x64u);
+    if (!valid || !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size))
+        return 0x80110004u;
+    return utility_dialog_init(d, param);
+}
+static uint32_t h_GamedataDialogInit(CpuState *s) { return utility_storage_init(&s_gamedata_dialog, A0); }
+static uint32_t h_GamedataDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_gamedata_dialog); }
+static uint32_t h_SharingDialogInit(CpuState *s) { return utility_storage_init(&s_sharing_dialog, A0); }
+static uint32_t h_SharingDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_sharing_dialog); }
+static uint32_t h_SharingDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_sharing_dialog); }
+static uint32_t h_SharingDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_sharing_dialog); }
 
 /* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
  * box (osk_win.c) or, for automation, from a scripted answer.
@@ -12439,7 +12530,13 @@ static int osk_collect(void) {
 /* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
  * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
+    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. Check the
+     * size word first, then the entire version before retaining the guest address. */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {
@@ -23449,7 +23546,7 @@ void sr_hle_test_sas_reset(void) { hle_sas_guest_reset(); }
 #endif
 
 /* SR_SASLOG: decay-gated trace of KeyOn events and SAS mixer active-voice counts, to determine
- * whether the game ever keys on a SAS voice during the silent-PCM window (ISSUES.md P1). */
+ * whether the game ever keys on a SAS voice during the silent-PCM window. */
 static int sas_log_on(void) {
     static int on = -1;
     if (on < 0) on = getenv("SR_SASLOG") != NULL;
@@ -28239,6 +28336,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
         free(s_fpls[i].allocated);
     }
     memset(s_fpls, 0, sizeof(s_fpls));
+    for (unsigned i = 0; i < VPL_MAX; i++) vpl_release(&s_vpls[i]);
     memset(s_sync, 0, sizeof(s_sync));
     memset(s_mbx, 0, sizeof(s_mbx));
     mutex_reset_all();
