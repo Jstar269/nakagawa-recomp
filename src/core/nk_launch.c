@@ -13,6 +13,7 @@
 
 #include "nk_launch.h"
 #include "nk_font_slots.h"
+#include "nk_psp_start_entry.h"
 #include "generated/nk_title_catalog.h"
 #include "../rt/recomp.h"
 #include <stdio.h>
@@ -39,6 +40,13 @@ static uint16_t launch_read_u16(const uint8_t *p) {
 static uint32_t launch_read_u32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* NkPspImageRead over an open staged file. */
+static bool launch_file_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {
+    FILE *file = (FILE *)context;
+    return nk_fseek64(file, (int64_t)offset, SEEK_SET) == 0 &&
+           fread(dst, 1, bytes, file) == bytes;
 }
 
 static void launch_error(char *error_message, size_t error_message_size,
@@ -670,7 +678,15 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
         return NK_ERROR_INVALID_EXECUTABLE;
     }
 
-    uint32_t entry_point = launch_read_u32(header + 24);
+    /* The PSP starts the executable at its module_start export, not at e_entry
+       (nk_psp_start_entry.h); the title manifest records that start entry. */
+    uint32_t entry_point = 0;
+    if (nk_psp_start_entry(launch_file_read, file, (uint64_t)raw_size, &entry_point) != NULL) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged ELF module info or export table is outside the file");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
     uint32_t program_header_offset = launch_read_u32(header + 28);
     uint16_t program_header_size = launch_read_u16(header + 42);
     uint16_t program_header_count = launch_read_u16(header + 44);

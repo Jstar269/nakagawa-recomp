@@ -988,20 +988,25 @@ def write_experimental_profile(
                 raise IsoInspectionError(
                     "experimental import needs a user-supplied load binding for unsupported relocatable ELF input"
                 )
-            executable_entry = struct.unpack_from("<I", header, 24)[0]
+            def read_executable(offset: int, count: int) -> bytes:
+                if uses_decrypted_eboot:
+                    stream.seek(offset)
+                    return stream.read(count)
+                return _read_iso_extent(
+                    stream, file_size, lba, size, offset, count
+                )
+
+            # The PSP starts the executable at its module_start export, not at e_entry.
+            executable_entry, start_violation = _elf32_psp_start_entry(read_executable, size)
+            if start_violation is not None:
+                raise IsoInspectionError(
+                    f"selected executable's start entry cannot be read ({start_violation})"
+                )
             if e_type in (3, 0xFFA0):
                 executable_load_address = PSP_DEFAULT_MAIN_LOAD_ADDRESS
                 executable_entry_rebase = PSP_DEFAULT_MAIN_LOAD_ADDRESS
                 executable_load_evidence = "documented-psp-default"
             elif e_type == 2:
-                def read_executable(offset: int, count: int) -> bytes:
-                    if uses_decrypted_eboot:
-                        stream.seek(offset)
-                        return stream.read(count)
-                    return _read_iso_extent(
-                        stream, file_size, lba, size, offset, count
-                    )
-
                 _elf_type, load_start, load_end = _elf32_load_span_from_reader(
                     read_executable, size
                 )
@@ -1270,6 +1275,92 @@ def _image_read(read, offset: int, count: int) -> bytes | None:
     return data
 
 
+PSP_NID_MODULE_START = 0xD632ACDB
+PSP_NID_MODULE_BOOTSTART = 0xD3744BE0
+_START_ENTRY_MAX_LIBRARIES = 256
+_START_ENTRY_MAX_EXPORTS = 4096
+
+
+def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
+    """Where the PSP starts an executable, in its own (link) address space.
+
+    Python mirror of nk_psp_start_entry in src/core/nk_psp_start_entry.h (that header
+    documents the rule and its uofw reference); tools/test_iso_parity.py keeps the two in
+    agreement. The module manager enters the syslib module_start export, else
+    module_bootstart, else e_entry. Returns ``(entry, None)``, or ``(e_entry, rule)``
+    naming the first rule the image breaks.
+    """
+    header = _image_read(read, 0, 52) if image_size >= 52 else None
+    if header is None:
+        return 0, "header-truncated"
+    e_entry, phoff = struct.unpack_from("<II", header, 24)
+    phentsize, phnum = struct.unpack_from("<HH", header, 42)
+    if phentsize != 32 or not 1 <= phnum <= 128 or phoff + 32 * phnum > image_size:
+        return e_entry, "program-table-bounds"
+    table = _image_read(read, phoff, 32 * phnum)
+    if table is None:
+        return e_entry, "image-read-failed"
+    loads = [
+        struct.unpack_from("<8I", table, 32 * index)
+        for index in range(phnum)
+        if struct.unpack_from("<I", table, 32 * index)[0] == 1
+    ]
+    if not loads:
+        return e_entry, None
+    p_vaddr, p_paddr = loads[0][2], loads[0][3]
+    if p_paddr == p_vaddr:
+        return e_entry, None  # no module info: the ELF entry
+
+    def mapped(address: int, count: int) -> int | None:
+        for _type, p_offset, vaddr, _paddr, p_filesz, *_rest in loads:
+            if vaddr <= address and address - vaddr + count <= p_filesz:
+                return p_offset + address - vaddr
+        return None
+
+    info_offset = p_paddr & 0x1FFFFFFF
+    info = _image_read(read, info_offset, 52) if info_offset + 52 <= image_size else None
+    if info is None:
+        return e_entry, "module-info-range"
+    ent_top, ent_end = struct.unpack_from("<II", info, 36)
+    if ent_end < ent_top:
+        return e_entry, "module-exports-range"
+    found: dict[int, int] = {}
+    cursor = ent_top
+    library = 0
+    while cursor < ent_end:
+        offset = mapped(cursor, 16)
+        record = _image_read(read, offset, 16) if offset is not None else None
+        if library >= _START_ENTRY_MAX_LIBRARIES or ent_end - cursor < 16 or record is None:
+            return e_entry, "module-exports-range"
+        library += 1
+        name, _version, _attr, words, variables, functions, table_address = struct.unpack(
+            "<IHHBBHI", record
+        )
+        if words < 4:
+            return e_entry, "module-exports-range"
+        if name == 0 and functions:
+            # syslib: the module manager reads the first one it finds.
+            total = functions + variables
+            table_offset = mapped(table_address, 8 * total)
+            if total > _START_ENTRY_MAX_EXPORTS or table_offset is None:
+                return e_entry, "module-exports-range"
+            exports = _image_read(read, table_offset, 8 * total)
+            if exports is None:
+                return e_entry, "image-read-failed"
+            for index in range(functions):
+                nid = struct.unpack_from("<I", exports, 4 * index)[0]
+                if nid in (PSP_NID_MODULE_START, PSP_NID_MODULE_BOOTSTART):
+                    found.setdefault(nid, struct.unpack_from("<I", exports, 4 * (total + index))[0])
+            break
+        if cursor + 4 * words > ent_end:
+            return e_entry, "module-exports-range"
+        cursor += 4 * words
+    for nid in (PSP_NID_MODULE_START, PSP_NID_MODULE_BOOTSTART):
+        if nid in found:
+            return found[nid], None
+    return e_entry, None
+
+
 def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str | None:
     """The PSP ELF32/MIPS image layout rule. Returns None when usable, else the name
     of the first rule the image breaks.
@@ -1290,7 +1381,7 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
     if header[:4] != b"\x7fELF" or header[4:7] != b"\x01\x01\x01":
         return "header-magic"
     e_type, machine, version = struct.unpack_from("<HHI", header, 16)
-    entry, phoff, shoff = struct.unpack_from("<III", header, 24)
+    _e_entry, phoff, shoff = struct.unpack_from("<III", header, 24)
     ehsize, phentsize, phnum, shentsize, shnum = struct.unpack_from("<HHHHH", header, 40)
     # The analyzer takes relocatable (1), executable (2), shared (3) and PSP PRX (0xFFA0).
     if e_type not in (1, 2, 3, 0xFFA0) or machine != 8 or version != 1 or ehsize != 52:
@@ -1309,7 +1400,6 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
         return "image-read-failed"
 
     have_load = False
-    entry_executable = False
     code_segment = False
     spans: list[tuple[int, int]] = []
     for index in range(phnum):
@@ -1330,8 +1420,6 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
         spans.append((p_vaddr, memory_end))
         have_load = True
         executable = bool(p_flags & 1)
-        if executable and p_vaddr <= entry < memory_end:
-            entry_executable = True
         if executable and p_filesz > 0:
             code_segment = True
     if not have_load:
@@ -1343,6 +1431,17 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
             return "segment-overlap"
     if module and e_type == 0xFFA0:
         return None if code_segment else "no-code-segment"
+    # The PSP starts an executable at its module_start export, not at e_entry
+    # (_elf32_psp_start_entry); that is the address that must be executable.
+    entry, start_violation = _elf32_psp_start_entry(read, image_size)
+    if start_violation is not None:
+        return start_violation
+    entry_executable = any(
+        p_type == 1 and p_flags & 1 and p_vaddr <= entry < p_vaddr + p_memsz
+        for p_type, _offset, p_vaddr, _paddr, _filesz, p_memsz, p_flags, _align in (
+            struct.unpack_from("<8I", table, index * phentsize) for index in range(phnum)
+        )
+    )
     return None if entry_executable else "entry-not-executable"
 
 

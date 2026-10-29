@@ -468,6 +468,42 @@ def build_plain_mips_elf(
     return bytes(elf)
 
 
+MODULE_START_NID = 0xD632ACDB
+MODULE_BOOTSTART_NID = 0xD3744BE0
+
+
+def build_module_start_elf(
+    *, entry: int = 0, exports: tuple[tuple[int, int], ...] | None = None,
+    p_flags: int = 5, info_offset: int | None = None, ent_end_extra: int = 0,
+) -> bytes:
+    """A fixed ET_EXEC whose first PT_LOAD's p_paddr names its SceModuleInfo.
+
+    The segment at 0x08804000 holds four code words, the module info record, one
+    syslib export record and its table. ``exports`` lists syslib (NID, segment offset)
+    function pairs; by default module_start at the second code word.
+    """
+    vaddr, seg_off = 0x08804000, 0x60
+    exports = ((MODULE_START_NID, 0x4),) if exports is None else exports
+    segment = bytearray(0x90)
+    struct.pack_into("<4I", segment, 0, 0x27BDFFF0, 0x27BDFFF0, 0x03E00008, 0x27BD0010)
+    info, record, table = 0x10, 0x48, 0x58
+    struct.pack_into("<HBB28sIIIII", segment, info, 0, 1, 1, b"start-entry-fixture",
+                     0, vaddr + record, vaddr + record + 16 + ent_end_extra, 0, 0)
+    struct.pack_into("<IHHBBHI", segment, record, 0, 0, 0x8000, 4, 0, len(exports), vaddr + table)
+    for index, (nid, address) in enumerate(exports):
+        struct.pack_into("<I", segment, table + 4 * index, nid)
+        struct.pack_into("<I", segment, table + 4 * (len(exports) + index), vaddr + address)
+    elf = bytearray(seg_off) + segment
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 2, 8, 1)
+    struct.pack_into("<III", elf, 24, entry, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
+    paddr = seg_off + info if info_offset is None else info_offset
+    struct.pack_into("<8I", elf, 52, 1, seg_off, vaddr, paddr, len(segment), len(segment),
+                     p_flags, 16)
+    return bytes(elf)
+
+
 def build_psp_container() -> bytes:
     container = bytearray(0x80)
     container[:4] = b"~PSP"
@@ -586,6 +622,7 @@ class IsoParityTests(unittest.TestCase):
 #include <string.h>
 #include <assert.h>
 #include "nk_iso.h"
+#include "nk_psp_start_entry.h"
 #include "nk_library.h"
 #include "nk_title_manifest.h"
 #if {1 if has_launch else 0}
@@ -634,6 +671,22 @@ int main(int argc, char **argv) {{
             harness_file_read, image, (uint64_t)image_size, strcmp(argv[3], "1") == 0);
         fclose(image);
         printf("ELF_LAYOUT:%s\\n", rule ? rule : "USABLE");
+        return 0;
+    }}
+
+    if (strcmp(mode, "start_entry") == 0) {{
+        /* start_entry <file>: where the PSP starts this executable (nk_psp_start_entry.h). */
+        if (argc < 3) return 1;
+        FILE *image = fopen(argv[2], "rb");
+        if (!image) return 2;
+        if (fseek(image, 0, SEEK_END) != 0) {{ fclose(image); return 2; }}
+        long image_size = ftell(image);
+        if (image_size < 0) {{ fclose(image); return 2; }}
+        uint32_t entry = 0;
+        const char *rule = nk_psp_start_entry(harness_file_read, image, (uint64_t)image_size,
+                                              &entry);
+        fclose(image);
+        printf("START_ENTRY:%s:%08x\\n", rule ? rule : "OK", entry);
         return 0;
     }}
 
@@ -1201,6 +1254,18 @@ int main(int argc, char **argv) {{
                 vaddr1=0, memsz1=0x2000, vaddr2=0x1000, memsz2=0x2000), True, "segment-overlap"),
             ("entry-not-executable", build_plain_mips_elf(2, p_flags=4), False,
              "entry-not-executable"),
+            # The PSP starts an executable at its module_start export (uofw StartModule).
+            ("module-start-entry", build_module_start_elf(entry=0), False, None),
+            ("module-bootstart-entry", build_module_start_elf(
+                entry=0, exports=((MODULE_BOOTSTART_NID, 0x4),)), False, None),
+            ("module-start-not-executable", build_module_start_elf(entry=0, p_flags=6), False,
+             "entry-not-executable"),
+            ("null-entry-without-start-export", build_module_start_elf(
+                entry=0, exports=((0xCEE8593C, 0x8),)), False, "entry-not-executable"),
+            ("module-info-range", build_module_start_elf(entry=0, info_offset=0x1000), False,
+             "module-info-range"),
+            ("module-exports-range", build_module_start_elf(
+                entry=0, exports=(), ent_end_extra=0x1000), False, "module-exports-range"),
             ("prx-without-code-segment", build_plain_mips_elf(
                 0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_flags=4), True, "no-code-segment"),
             ("prx-code-without-file-bytes", build_plain_mips_elf(
@@ -1234,6 +1299,42 @@ int main(int argc, char **argv) {{
                 self.assertEqual(python_rule, expected, "python layout rule")
                 self.assertEqual(self._run_native_elf_layout(path, module), expected,
                                  "native layout rule")
+
+    def test_start_entry_is_shared_by_python_and_c(self) -> None:
+        # module_start wins over e_entry, then module_bootstart, then e_entry; an image with
+        # no module info (p_paddr == p_vaddr) starts at e_entry.
+        cases = [
+            ("module-start-over-e-entry", build_module_start_elf(entry=0x08804008),
+             0x08804004, None),
+            ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
+                (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
+            ("bootstart-without-start", build_module_start_elf(
+                entry=0x08804008, exports=((MODULE_BOOTSTART_NID, 0xC),)), 0x0880400C, None),
+            ("e-entry-without-exports", build_module_start_elf(
+                entry=0x08804008, exports=((0xCEE8593C, 0x8),)), 0x08804008, None),
+            ("no-module-info", build_plain_mips_elf(2), 0x08800000, None),
+            ("module-info-range", build_module_start_elf(entry=0, info_offset=0x1000),
+             0, "module-info-range"),
+        ]
+        for name, image, expected_entry, expected_rule in cases:
+            with self.subTest(case=name):
+                path = self.temp_dir / f"start-{name}.elf"
+                path.write_bytes(image)
+                with path.open("rb") as stream:
+                    def read(offset: int, count: int) -> bytes:
+                        stream.seek(offset)
+                        return stream.read(count)
+                    entry, rule = iso_inspect._elf32_psp_start_entry(read, len(image))
+                self.assertEqual((entry, rule), (expected_entry, expected_rule), "python")
+                result = subprocess.run(
+                    [str(self.exe_path), "start_entry", str(path)],
+                    capture_output=True, text=True, encoding="utf-8", errors="strict",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = next(line for line in result.stdout.splitlines()
+                              if line.startswith("START_ENTRY:"))
+                self.assertEqual(
+                    native, f"START_ENTRY:{expected_rule or 'OK'}:{expected_entry:08x}", "native")
 
     def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
         iso_file = self.temp_dir / "usrdir-plain-prx.iso"

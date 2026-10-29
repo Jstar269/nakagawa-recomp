@@ -632,6 +632,43 @@ static void write_bytes(const char *path, const void *data, size_t size) {
     assert(fclose(f) == 0);
 }
 
+/* write_valid_elf, plus a SceModuleInfo the first PT_LOAD's p_paddr names and a syslib
+ * export table whose module_start is base + 4: the PSP starts the image there, not at
+ * `entry` (src/core/nk_psp_start_entry.h). */
+static void write_module_start_elf(const char *path, uint32_t base, uint32_t entry) {
+    uint8_t image[0x100] = { 0 };
+    memcpy(image, "\x7f" "ELF", 4);
+    image[4] = 1;
+    image[5] = 1;
+    image[6] = 1;
+    write_le16(image + 16, 2);
+    write_le16(image + 18, 8);
+    write_le32(image + 20, 1);
+    write_le32(image + 24, entry);
+    write_le32(image + 28, 52);
+    write_le16(image + 40, 52);
+    write_le16(image + 42, 32);
+    write_le16(image + 44, 1);
+    write_le32(image + 52 + 0, 1);       /* PT_LOAD */
+    write_le32(image + 52 + 4, 0x80);    /* offset */
+    write_le32(image + 52 + 8, base);    /* vaddr */
+    write_le32(image + 52 + 12, 0x80 + 0x10); /* paddr: the module info's file offset */
+    write_le32(image + 52 + 16, 0x80);   /* filesz */
+    write_le32(image + 52 + 20, 0x80);   /* memsz */
+    write_le32(image + 52 + 24, 5);      /* PF_R | PF_X */
+    write_le32(image + 52 + 28, 16);
+    uint8_t *segment = image + 0x80;
+    write_le32(segment + 0x10 + 36, base + 0x48);       /* ent_top */
+    write_le32(segment + 0x10 + 40, base + 0x58);       /* ent_end */
+    write_le16(segment + 0x48 + 6, 0x8000);             /* syslib attribute */
+    segment[0x48 + 8] = 4;                              /* record length in words */
+    write_le16(segment + 0x48 + 10, 1);                 /* one function export */
+    write_le32(segment + 0x48 + 12, base + 0x60);       /* export table */
+    write_le32(segment + 0x60, 0xD632ACDBu);            /* module_start NID */
+    write_le32(segment + 0x64, base + 4);               /* its address */
+    write_bytes(path, image, sizeof(image));
+}
+
 static void write_valid_elf(const char *path, uint32_t base, uint32_t entry) {
     uint8_t image[0x100] = { 0 };
     memcpy(image, "\x7f" "ELF", 4);
@@ -1820,6 +1857,23 @@ int main(int argc, char **argv) {
     write_valid_elf(staged_eboot, staged_entry->executable_base, staged_entry->executable_base);
     assert(nk_launch_validate_staged_executable(&game,
                                                 &entry0,
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) != NK_OK);
+    assert(strstr(staged_error, "entry point does not match") != NULL);
+
+    /* e_entry 0 with a module_start export: the PSP starts the image at module_start. */
+    NkTitleEntry start_entry = *staged_entry;
+    start_entry.executable_entry = staged_entry->executable_base + 4u;
+    start_entry.has_executable_entry = true;
+    write_module_start_elf(staged_eboot, staged_entry->executable_base, 0);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                &start_entry,
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) == NK_OK);
+    assert(staged_info.entry_in_executable_segment == true);
+    start_entry.executable_entry = 0;
+    assert(nk_launch_validate_staged_executable(&game,
+                                                &start_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) != NK_OK);
     assert(strstr(staged_error, "entry point does not match") != NULL);
