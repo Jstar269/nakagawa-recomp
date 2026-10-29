@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **638** (dedicated **531**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **510** handlers across **25** API families, covering **537** handler-associated NID registrations.
+Registered NIDs: **640** (dedicated **533**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **510** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 322 | 334 |
+| `unreviewed` | 324 | 336 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -77,14 +77,14 @@ Semantic handler census: **510** handlers across **25** API families, covering *
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
-| `scePsmf` | 0 | 3 | 0 | 0 | 12 | 15 | 15 |
+| `scePsmf` | 0 | 3 | 0 | 0 | 14 | 17 | 17 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **322** | **510** | **537** |
+| **Total** | **13** | **172** | **1** | **2** | **324** | **512** | **539** |
 
 #### Complete Handlers (Evidence-Backed)
 
