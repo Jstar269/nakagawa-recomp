@@ -184,6 +184,13 @@ class NativeHostBackendTests(unittest.TestCase):
                 "reporting SKIP rather than passing without having run it"
             )
 
+        # The harnesses write their scratch files under SR_SELFTEST_BUILD_ROOT, the
+        # checkout's build/ by default. A fresh checkout has no build/ until something
+        # makes it, so these failed whenever their CI shard ran no earlier test that did.
+        # A temporary root would not do: the error report redacts the user's profile,
+        # and the temp directory sits inside it.
+        (ROOT / "build").mkdir(exist_ok=True)
+
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
         cls._objects: dict[str, Path] = {}
         common_sources = [*CORE_SOURCES, PLATFORM_SRC, "src/rt/pgf_public.c", "src/core/nk_pgf_host.c"]
