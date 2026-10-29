@@ -5601,16 +5601,20 @@ static bool player_module_name_is_executable(const char *name,
             player_name_equals_ignore_case(name, selected_name));
 }
 
+/* One to four segments, each and all together within 64 MiB, at least one not
+ * empty. A segment may be empty: small user libraries declare a data segment of
+ * size 0 when they have no data. Mirrors _prx_container_header_supported in
+ * tools/nk_core/iso_inspect.py. */
 static bool player_prx_header_supported(const unsigned char *header,
                                         uint32_t header_size) {
     if (header_size < 0x64 || header[0x27] < 1 || header[0x27] > 4) return false;
     uint32_t total = 0;
     for (uint32_t i = 0; i < header[0x27]; i++) {
         uint32_t value = player_read_le32(header + 0x54 + i * 4);
-        if (value == 0 || value > 64u * 1024u * 1024u) return false;
+        if (value > 64u * 1024u * 1024u) return false;
         total += value;
     }
-    return total <= 64u * 1024u * 1024u;
+    return total > 0 && total <= 64u * 1024u * 1024u;
 }
 
 /* The shared PSP ELF32/MIPS layout rule (nk_iso.c) for a module still inside the ISO. */

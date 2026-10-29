@@ -1101,6 +1101,79 @@ int main(int argc, char **argv) {{
             )
         self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
 
+    def test_container_with_an_empty_data_segment_is_an_encrypted_module(self) -> None:
+        # Small user libraries declare two segments in their ~PSP header, the second
+        # (data) of size 0 when they have no data. That is a container the decryption
+        # step opens; only a header whose segments are all empty is refused.
+        def container(sizes: tuple[int, ...]) -> bytes:
+            header = bytearray(0x150)
+            header[:4] = b"~PSP"
+            header[0x27] = len(sizes)
+            struct.pack_into(f"<{len(sizes)}I", header, 0x54, *sizes)
+            return bytes(header)
+
+        iso_file = self.temp_dir / "empty-data-segment.iso"
+        create_test_iso_with_module_tree(iso_file, {
+            "PSP_GAME/USRDIR/module/auth/lib_authorized.prx": container((0x118, 0)),
+            "PSP_GAME/USRDIR/module/auth/empty.prx": container((0, 0)),
+        })
+        self.assertTrue(iso_inspect._prx_container_header_supported(container((0x118, 0))))
+        self.assertFalse(iso_inspect._prx_container_header_supported(container((0, 0))))
+        self.assertEqual(
+            [(c["name"], c["kind"]) for c in list_disc_module_candidates(iso_file)],
+            [("lib_authorized.prx", "encrypted")],
+        )
+        kinds = {c["name"]: c["kind"]
+                 for c in nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")}
+        self.assertEqual(kinds, {"lib_authorized.prx": "encrypted-prx", "empty.prx": "unsupported"})
+
+    def test_pbp_container_named_like_a_module_is_left_out_by_name(self) -> None:
+        # A PBP (an EBOOT image for LoadExec or the game-sharing utility) named .prx is
+        # not a module the kernel's module loader takes: it is left out by name, not a
+        # format stop. A file that only starts with the magic is still unsupported.
+        pbp = bytearray(0x200)
+        pbp[:8] = b"\0PBP\x00\x00\x01\x00"
+        struct.pack_into("<8I", pbp, 8, 40, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x200)
+        pbp[0x100:0x104] = b"~PSP"
+        broken = bytes(pbp[:8]) + struct.pack("<8I", 40, 0x300, 0, 0, 0, 0, 0, 0) + bytes(0x60)
+        work = self.temp_dir / "pbp-module"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "pbp.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/share/gs_one.prx": bytes(pbp)}, disc_id="TEST00085",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [("gs_one.prx", "pbp-container")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00085", candidates, selected, {},
+        )
+        self.assertEqual((declared, staged), ([], None))
+        self.assertEqual([item["name"] for item in deferred], ["gs_one.prx"])
+        self.assertIn("PBP executable container", deferred[0]["reason"])
+
+        broken_iso = work / "broken-pbp.iso"
+        create_test_iso_with_module_tree(
+            broken_iso, {"PSP_GAME/USRDIR/share/gs_two.prx": broken}, disc_id="TEST00086",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(broken_iso, "EBOOT.BIN")
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+
+    def test_fixed_address_overlay_elf_type_is_named(self) -> None:
+        # ELF type 0xFFA8: one segment at a fixed link address, no entry point, no module
+        # information; the game copies it into place itself. The import does not
+        # translate that form yet and says so, instead of a bare header rule.
+        overlay = build_plain_mips_elf(0xFFA8, vaddr=0x089AC2F0, entry=0, p_flags=7)
+        iso_file = self.temp_dir / "fixed-overlay.iso"
+        create_test_iso_with_module_tree(iso_file, {"PSP_GAME/USRDIR/stage.elf": overlay})
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("ELF type 0xFFA8", candidates[0]["reason"])
+        self.assertIn("does not translate that overlay form yet", candidates[0]["reason"])
+
     def test_code_overlay_is_found_by_its_magic_and_declared_runtime_placed(self) -> None:
         # A game's own code overlays (MWo3) are found by their magic whatever their file
         # name, staged as they are, and declared runtime-placed so the build translates
@@ -1168,7 +1241,21 @@ int main(int argc, char **argv) {{
 
         executable = build_plain_mips_elf(2)
         prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+
+        def with_null_program_headers(image: bytes, total: int) -> bytes:
+            # The first PT_LOAD stays; PT_NULL entries follow it, then the segment bytes.
+            out = bytearray(image[:52])
+            struct.pack_into("<H", out, 44, total)
+            data_offset = 52 + 32 * total
+            load = bytearray(image[52:84])
+            struct.pack_into("<I", load, 4, data_offset)
+            out += load + bytes(32 * (total - 1)) + image[84:]
+            return bytes(out)
+
         return [
+            ("many-program-headers", with_null_program_headers(executable, 182), False, None),
+            ("fixed-overlay-type", patched(executable, [("<H", 16, 0xFFA8)]), True,
+             "header-fields"),
             ("usable-executable", executable, False, None),
             ("usable-prx-module", prx, True, None),
             ("non-congruent-prx-module", patched(prx, [("<I", 52 + 28, 0x10)]), True, None),

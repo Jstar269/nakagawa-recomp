@@ -281,7 +281,8 @@ def _elf32_load_span_from_reader(read, file_size: int) -> tuple[int, int, int]:
             "ELF32 load binding needs a supported MIPS program-header table",
             boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
         )
-    if not 1 <= phnum <= 128 or phoff < ehsize:
+    # e_phnum is 16 bits; the table must also lie inside the image (checked next).
+    if phnum == 0 or phoff < ehsize:
         raise IsoInspectionError(
             "ELF32 load binding has an unsupported program-header count",
             boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
@@ -1295,7 +1296,9 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
     # The analyzer takes relocatable (1), executable (2), shared (3) and PSP PRX (0xFFA0).
     if e_type not in (1, 2, 3, 0xFFA0) or machine != 8 or version != 1 or ehsize != 52:
         return "header-fields"
-    if phentsize != 32 or not 1 <= phnum <= 128 or phoff < ehsize:
+    # e_phnum is 16 bits and the table must lie inside the image: no smaller cap
+    # (a separate executable on a disc can carry well over a hundred entries).
+    if phentsize != 32 or phnum == 0 or phoff < ehsize:
         return "program-table-fields"
     if phoff + phentsize * phnum > image_size:
         return "program-table-bounds"
@@ -1461,12 +1464,18 @@ def walk_disc_module_entries(
 
 
 def _prx_container_header_supported(header: bytes) -> bool:
-    """The bounded ``~PSP`` shape the container decoder can accept."""
+    """The bounded ``~PSP`` shape the container decoder can accept.
+
+    One to four segments, each and all together within the executable bound, and
+    at least one that is not empty. A segment may be empty: small user libraries
+    declare a second (data) segment of size 0 when they have no data. Mirrored by
+    player_prx_header_supported in src/player/player_state.c.
+    """
     if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
         return False
     sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
-    return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
-        sum(sizes) <= MAX_EXECUTABLE_BYTES
+    return all(value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
+        0 < sum(sizes) <= MAX_EXECUTABLE_BYTES
 
 
 def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
