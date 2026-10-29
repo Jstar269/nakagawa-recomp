@@ -2573,5 +2573,34 @@ class BinaryHeuristicTests(unittest.TestCase):
         self.assertTrue(0 < flagged < len(samples), "the samples must exercise both verdicts")
 
 
+class AndroidTreeMetadataTests(unittest.TestCase):
+    """#360: the Android host target's Gradle, Java, XML and properties files are
+    project sources, so their notice metadata is project-authored rather than
+    "unclassified". Publication itself is still the policy's decision: the
+    metadata never makes a path public."""
+
+    PATHS = (
+        "android/app/build.gradle.kts",
+        "android/app/deps.cmake",
+        "android/app/src/main/AndroidManifest.xml",
+        "android/app/src/main/java/io/github/jstar269/nakagawa/TitleActivity.java",
+        "android/app/src/main/res/values/strings.xml",
+        "android/gradle.properties",
+        "android/gradle/wrapper/gradle-wrapper.properties",
+    )
+
+    def test_android_sources_are_project_authored(self):
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                prov, _lic, _notice, _gen, disp, public = publish_audit._default_provenance(path, None)
+                self.assertEqual(prov, "project_authored")
+                self.assertEqual(disp, "included")
+                self.assertFalse(public, "metadata alone must never make a path public")
+
+    def test_unknown_top_level_files_stay_unclassified(self):
+        prov, *_rest = publish_audit._default_provenance("elsewhere/app/build.gradle.kts", None)
+        self.assertEqual(prov, "unclassified")
+
+
 if __name__ == "__main__":
     unittest.main()
