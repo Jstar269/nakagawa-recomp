@@ -274,6 +274,17 @@ static uint32_t load_elf(const uint8_t *elf, size_t len) {
         }
     }
 
+    /* The PSP starts the executable at its module_start export, not at e_entry
+     * (sr_prx_start_entry in prx_loader.h). Resolved before guest RAM changes, so
+     * an image whose start entry cannot be read loads nothing. */
+    DriverElfImage image = { elf, len };
+    uint32_t start = e_entry;
+    const char *violation = sr_prx_start_entry(driver_elf_read, &image, len, &start);
+    if (violation) {
+        fprintf(stderr, "ELF start entry cannot be read: %s\n", violation);
+        exit(2);
+    }
+
     /* Pass 2: Load validated segments */
     sr_mem_init();
     for (uint16_t i = 0; i < phnum; i++) {
@@ -285,15 +296,6 @@ static uint32_t load_elf(const uint8_t *elf, size_t len) {
         uint32_t p_filesz = rd32(ph + 16);
         if (p_type == 1 && p_filesz) /* PT_LOAD */
             sr_load_segment(p_vaddr, elf + p_off, p_filesz);
-    }
-    /* The PSP starts the executable at its module_start export, not at e_entry
-     * (sr_prx_start_entry in prx_loader.h). */
-    DriverElfImage image = { elf, len };
-    uint32_t start = e_entry;
-    const char *violation = sr_prx_start_entry(driver_elf_read, &image, len, &start);
-    if (violation) {
-        fprintf(stderr, "ELF start entry cannot be read: %s\n", violation);
-        exit(2);
     }
     return start;
 }

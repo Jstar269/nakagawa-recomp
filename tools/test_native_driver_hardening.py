@@ -312,15 +312,32 @@ int main(int argc, char **argv) {{
     }}
 
     if (strcmp(mode, "elf_valid") == 0) {{
+        /* p_paddr == p_vaddr: no module info, so the PSP starts at e_entry. */
         uint8_t elf[88]; make_base_elf(elf, sizeof(elf));
         wr32(elf, 28, 52); wr16(elf, 42, 32); wr16(elf, 44, 1);
-        wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 68, 4); wr32(elf, 72, 8);
+        wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 64, 0x08000010u);
+        wr32(elf, 68, 4); wr32(elf, 72, 8);
         elf[84]=0xAA; elf[85]=0xBB; elf[86]=0xCC; elf[87]=0xDD;
         uint32_t entry = load_elf(elf, sizeof(elf));
         if (entry != 0x08000010u) return 20;
         if (g_mock_ram[0x08000010] != 0xAA || g_mock_ram[0x08000011] != 0xBB ||
             g_mock_ram[0x08000012] != 0xCC || g_mock_ram[0x08000013] != 0xDD) return 21;
         return 0;
+    }}
+
+    if (strcmp(mode, "elf_start_entry_refused") == 0) {{
+        /* p_paddr 0 names module info at file offset 0, the ELF header itself: its
+         * export range is not file data, so the start entry is refused before any
+         * guest RAM changes. */
+        g_mem_init_calls = 0;
+        g_segment_loads = 0;
+        g_check_all_or_nothing = 1;
+        atexit(check_all_or_nothing_on_exit);
+        uint8_t elf[88]; make_base_elf(elf, sizeof(elf));
+        wr32(elf, 28, 52); wr16(elf, 40, 52); wr16(elf, 42, 32); wr16(elf, 44, 1);
+        wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 68, 4); wr32(elf, 72, 8);
+        load_elf(elf, sizeof(elf));
+        return 31;
     }}
 
     if (strcmp(mode, "elf_all_or_nothing") == 0) {{
@@ -582,9 +599,12 @@ int main(int argc, char **argv) {{
                 "elf_guest_boundary",
                 "elf_near_uint32_max",
                 "elf_all_or_nothing",
+                "elf_start_entry_refused",
             ):
                 result = subprocess.run([str(exe), mode], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 2, f"{mode} expected exit code 2, got {result.returncode}.\nStderr: {result.stderr}\nStdout: {result.stdout}")
+                self.assertEqual("ELF start entry cannot be read" in result.stderr,
+                                 mode == "elf_start_entry_refused", f"{mode}: {result.stderr}")
 
             # 6. Valid --image load
             valid_img = subprocess.run([str(exe), "image_valid", str(sample_img)], capture_output=True, text=True)
