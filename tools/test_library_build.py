@@ -110,11 +110,11 @@ class LibraryBuildTests(unittest.TestCase):
         return log.read_text(encoding="utf-8").split() if log.is_file() else []
 
     def test_every_disc_gets_a_record_and_one_failure_never_stops_the_batch(self) -> None:
-        self.disc("ok-ulus00001.iso", "ULUS00001")
-        self.disc("A folder/fail-ulus00002.iso", "ULUS00002")
-        self.disc("crash-ulus00003.iso", "ULUS00003")
-        self.disc("ok-ulus00004.iso", "ULUS00004")
-        (self.discs / "ok-ulus00001.png").write_bytes(b"art")
+        self.disc("ok-test70001.iso", "TEST70001")
+        self.disc("A folder/fail-test70002.iso", "TEST70002")
+        self.disc("crash-test70003.iso", "TEST70003")
+        self.disc("ok-test70004.iso", "TEST70004")
+        (self.discs / "ok-test70001.png").write_bytes(b"art")
         (self.discs / "A folder" / "DATA.EDAT").write_bytes(b"licence")
         (self.discs / "notes").write_bytes(b"")
         result = self.build().run()
@@ -122,18 +122,18 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertEqual(result["counts"], {"BUILD_FAILED": 1, "BUILT": 2, "NO_REPORT": 1})
         self.assertEqual(result["skipped_files"], {"(none)": 1, ".edat": 1, ".png": 1})
         records = self.by_source(result)
-        built = records["ok-ulus00001.iso"]
-        self.assertEqual((built["disc_id"], built["title"]), ("ULUS00001", "Title ULUS00001"))
+        built = records["ok-test70001.iso"]
+        self.assertEqual((built["disc_id"], built["title"]), ("TEST70001", "Title TEST70001"))
         self.assertEqual(built["package_bytes"], 2048)
         self.assertEqual(built["unsupported_imports"], ["sceUsb:sceUsbDeactivate"])
         self.assertEqual(built["decrypt"], {"status": "PASS", "modules": 2, "encrypted_modules": 1})
         self.assertEqual(built["launch"]["exit_classification"], "EXITED_NONZERO")
         self.assertEqual(built["launch"]["runtime_output_kind"], "UNIMPLEMENTED_IMPORT")
-        failed = records["A folder/fail-ulus00002.iso"]
+        failed = records["A folder/fail-test70002.iso"]
         self.assertEqual((failed["outcome"], failed["failed_stage"], failed["failure_class"]),
                          ("BUILD_FAILED", "compile", "COMPILE_FAILED"))
         self.assertIsNone(failed["package_bytes"])
-        self.assertEqual(records["crash-ulus00003.iso"]["exit_code"], 3)
+        self.assertEqual(records["crash-test70003.iso"]["exit_code"], 3)
         # The same record in the data folder, and a readable summary beside it.
         self.assertEqual(self.manifest(self.data)["counts"], result["counts"])
         markdown = (self.reports / "library-build.md").read_text(encoding="utf-8")
@@ -142,54 +142,54 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertIn("`sceUsb:sceUsbDeactivate`", markdown)
 
     def test_a_disc_id_seen_before_is_a_duplicate_and_builds_once(self) -> None:
-        self.disc("a/ok-ulus00010.iso", "ULUS00010")
-        self.disc("b/ok-ulus00010.iso", "ULUS00010")
+        self.disc("a/ok-test70010.iso", "TEST70010")
+        self.disc("b/ok-test70010.iso", "TEST70010")
         result = self.build().run()
         records = self.by_source(result)
-        self.assertEqual(records["a/ok-ulus00010.iso"]["outcome"], "BUILT")
-        self.assertEqual(records["b/ok-ulus00010.iso"]["outcome"], "DUPLICATE")
-        self.assertEqual(records["b/ok-ulus00010.iso"]["duplicate_of"], "a/ok-ulus00010.iso")
-        self.assertEqual(self.calls(), ["ok-ulus00010"])
+        self.assertEqual(records["a/ok-test70010.iso"]["outcome"], "BUILT")
+        self.assertEqual(records["b/ok-test70010.iso"]["outcome"], "DUPLICATE")
+        self.assertEqual(records["b/ok-test70010.iso"]["duplicate_of"], "a/ok-test70010.iso")
+        self.assertEqual(self.calls(), ["ok-test70010"])
 
     def test_a_stopped_run_resumes_and_redoes_only_what_did_not_end(self) -> None:
-        self.disc("ok-ulus00020.iso", "ULUS00020")
-        self.disc("fail-ulus00021.iso", "ULUS00021")
-        self.disc("ok-ulus00022.iso", "ULUS00022")
+        self.disc("ok-test70020.iso", "TEST70020")
+        self.disc("fail-test70021.iso", "TEST70021")
+        self.disc("ok-test70022.iso", "TEST70022")
         self.build(jobs=1).run()
         self.assertEqual(len(self.calls()), 3)
 
         # A run cut off mid-title left it RUNNING; a resume redoes that one only.
         manifest = self.manifest()
         for record in manifest["titles"]:
-            if record["source"] == "ok-ulus00022.iso":
+            if record["source"] == "ok-test70022.iso":
                 record["outcome"] = "RUNNING"
         (self.reports / "library-build.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.data / "library-build.json").unlink()
         self.build(jobs=1).run()
-        self.assertEqual(self.calls()[3:], ["ok-ulus00022"])
+        self.assertEqual(self.calls()[3:], ["ok-test70022"])
 
         # A changed disc builds again; --retry-failed builds the failure again too.
-        disc = self.discs / "ok-ulus00020.iso"
+        disc = self.discs / "ok-test70020.iso"
         disc.write_bytes(disc.read_bytes() + b"\0" * 2048)
         self.build(jobs=1, retry_failed=True).run()
-        self.assertEqual(sorted(self.calls()[4:]), ["fail-ulus00021", "ok-ulus00020"])
+        self.assertEqual(sorted(self.calls()[4:]), ["fail-test70021", "ok-test70020"])
         self.assertEqual(self.manifest()["counts"], {"BUILD_FAILED": 1, "BUILT": 2})
 
     def test_a_title_over_its_time_budget_is_stopped_and_recorded(self) -> None:
-        self.disc("slow-ulus00030.iso", "ULUS00030")
-        self.disc("ok-ulus00031.iso", "ULUS00031")
+        self.disc("slow-test70030.iso", "TEST70030")
+        self.disc("ok-test70031.iso", "TEST70031")
         started = time.monotonic()
         result = self.build(title_timeout_seconds=3).run()
         self.assertLess(time.monotonic() - started, 50)
         records = self.by_source(result)
-        slow = records["slow-ulus00030.iso"]
+        slow = records["slow-test70030.iso"]
         self.assertEqual((slow["outcome"], slow["failed_stage"], slow["failure_class"]),
                          ("TIMED_OUT", "compile", "TITLE_TIME_BUDGET"))
-        self.assertEqual(records["ok-ulus00031.iso"]["outcome"], "BUILT")
+        self.assertEqual(records["ok-test70031.iso"]["outcome"], "BUILT")
 
     def test_stop_ends_the_run_and_pause_holds_new_titles(self) -> None:
         for index in range(3):
-            self.disc(f"ok-ulus0004{index}.iso", f"ULUS0004{index}")
+            self.disc(f"ok-test7004{index}.iso", f"TEST7004{index}")
         self.work.mkdir()
         (self.work / "STOP").write_text("", encoding="utf-8")
         result = self.build(jobs=1).run()
@@ -217,7 +217,7 @@ class LibraryBuildTests(unittest.TestCase):
 
     def test_the_real_bringup_command_builds_into_the_shared_folder(self) -> None:
         command = library_build.bringup_command(
-            Path("disc.iso"), self.data, self.work / "ULUS00001", 30)
+            Path("disc.iso"), self.data, self.work / "TEST70001", 30)
         self.assertEqual(command[1:4], [str(library_build.NK_CLI), "bringup", "disc.iso"])
         self.assertEqual(command[command.index("--user-data-root") + 1], str(self.data))
         self.assertEqual(command[command.index("--launch-timeout") + 1], "30")
