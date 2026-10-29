@@ -2088,6 +2088,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         }
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
      * inside this span, and before dispatch_after_aot looks for
@@ -2099,6 +2100,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         else sr_tail_drain_segment(s);
     }
     if (owns_return_boundary) (void)sr_aot_return_boundary_end(s);
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
 }
 

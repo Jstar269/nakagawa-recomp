@@ -72,6 +72,12 @@ class TestGateStatusVocabulary(unittest.TestCase):
         self.assertEqual(contrib_check.c_gate(["docs/a.md"]).status, contrib_check.NOT_RUN)
         self.assertEqual(contrib_check.markdown_gate(["tools/a.py"]).status, contrib_check.NOT_RUN)
         self.assertEqual(contrib_check.ruff_gate([]).status, contrib_check.NOT_RUN)
+        self.assertEqual(contrib_check.purity_gate(["docs/a.md"]).status, contrib_check.NOT_RUN)
+
+    def test_a_runtime_change_runs_the_core_purity_gate(self) -> None:
+        gate = contrib_check.purity_gate(["src/rt/hle.c"])
+        self.assertEqual(gate.name, "core-purity")
+        self.assertEqual(gate.status, contrib_check.PASS, gate.detail)
 
     def test_a_missing_tool_is_skipped_rather_than_passed(self) -> None:
         with mock.patch.object(contrib_check.shutil, "which", return_value=None):
