@@ -68,6 +68,8 @@ void sr_heap_note_bulk_write(uint32_t a, uint32_t w, uint32_t p)
     { (void)a; (void)w; (void)p; }
 uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
+/* src/rt/hle.c supplies the host Memory Stick free space; these cases do not size it. */
+int sr_hle_memstick_free_bytes(uint64_t *free_bytes) { *free_bytes = 0; return 0; }
 
 #ifdef ORDER_INSTRUMENTED
 static int g_write_open_count;

@@ -18,7 +18,7 @@
  * Implemented modes: AUTOLOAD/LOAD/LISTLOAD read the data file back into dataBuf;
  * AUTOSAVE/SAVE/LISTSAVE write dataBuf plus PARAM.SFO and the icon/pic/snd blobs;
  * LIST enumerates this game's save directories; FILES lists a save's files; SIZES /
- * GETSIZE report a roomy fake memory stick; the DELETE family removes a save directory.
+ * GETSIZE report the host Memory Stick's free space; the DELETE family removes a save directory.
  */
 
 /* vfs_contained.h comes FIRST on purpose: on a strict-ISO POSIX build it must
@@ -132,8 +132,21 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
  * successful load -- "PSP always responds this and this unlocks some games". */
 #define SDP_bind 0x34
 
-#define CLUSTER 0x8000u          /* 32 KB "memory stick" cluster */
-#define FREE_CLUSTERS 0x4000u    /* pretend 512 MB free */
+/* The savedata utility counts the Memory Stick in 32 KiB sectors: on a PSP a
+ * GETSIZE reports sectorSize 0x8000 (pspautotests tests/utility/savedata/
+ * getsize.expected, revision 2ed7c9c5). */
+#define CLUSTER 0x8000u
+
+/* Host-volume failures. Neither code is measured on a PSP; the names and values
+ * are PPSSPP's (Core/HLE/ErrorCodes.h). SIZES (8) uses its own family's access
+ * error; GETSIZE (22) belongs to the MAKEDATA/READDATA/WRITEDATA family, which
+ * has no access error, so it reports the stick as unavailable. */
+#define ERR_SIZES_ACCESS_ERROR_UNMEASURED 0x801103C5u
+#define ERR_RW_NO_MEMSTICK_UNMEASURED     0x80110321u
+
+/* src/rt/hle.c: free bytes of the host-backed Memory Stick, clamped as the
+ * capacity devctl clamps them (never above UINT32_MAX). 0 = query failed. */
+int sr_hle_memstick_free_bytes(uint64_t *free_bytes);
 
 /* PPSSPP's savedata model keeps file-list requests within 99 entries.  The
  * PSP GETSIZE structure has no separate array-capacity field, so this existing
@@ -1186,13 +1199,52 @@ static uint32_t do_files(uint32_t param, const char *game, const char *save) {
     return 0;
 }
 
+/* The utility's size text: divide by 1024 through B, KB, MB and GB until the
+ * value is below 1024, then "<n> <unit>" ("1 GB" on the PSP in getsize.expected).
+ * Free space rounds down; needed and overwrite space round up. */
+static void savedata_space_text(uint64_t bytes, int round_up, char *out, size_t cap) {
+    static const char *const units[] = { "B", "KB", "MB", "GB" };
+    for (size_t i = 0; i < sizeof(units) / sizeof(units[0]); i++) {
+        if (bytes < 1024u) {
+            snprintf(out, cap, "%" PRIu64 " %s", bytes, units[i]);
+            return;
+        }
+        bytes = round_up ? bytes / 1024u + (bytes % 1024u != 0u) : bytes / 1024u;
+    }
+    snprintf(out, cap, "%" PRIu64 " TB", bytes);
+}
+
+/* Free space of the host-backed Memory Stick in whole 32 KiB sectors. Every
+ * free figure a game sees (sectors, KB, text) and the GETSIZE shortfall are
+ * derived from this one sector-aligned byte count, so they always agree. */
+typedef struct {
+    uint32_t sectors;
+    uint32_t kb;
+    uint64_t bytes;
+    char text[24];
+} SavedataFree;
+
+static int savedata_free_space(SavedataFree *f) {
+    uint64_t host_free = 0;
+    if (!f || !sr_hle_memstick_free_bytes(&host_free)) return 0;
+    uint64_t sectors = host_free / CLUSTER;
+    if (sectors > UINT32_MAX / (CLUSTER / 0x400u)) sectors = UINT32_MAX / (CLUSTER / 0x400u);
+    f->sectors = (uint32_t)sectors;
+    f->kb = f->sectors * (CLUSTER / 0x400u);
+    f->bytes = sectors * CLUSTER;
+    savedata_space_text(f->bytes, 0, f->text, sizeof(f->text));
+    return 1;
+}
+
 static uint32_t do_sizes(uint32_t param, const char *game) {
     uint32_t msFree = MEM_R32(param + SDP_msFree);
     if (msFree) {
+        SavedataFree fr;
+        if (!savedata_free_space(&fr)) return ERR_SIZES_ACCESS_ERROR_UNMEASURED;
         MEM_W32(msFree + 0, CLUSTER);
-        MEM_W32(msFree + 4, FREE_CLUSTERS);
-        MEM_W32(msFree + 8, FREE_CLUSTERS * (CLUSTER / 0x400));
-        wr_fixed(msFree + 12, "512 MB", 8);
+        MEM_W32(msFree + 4, fr.sectors);
+        MEM_W32(msFree + 8, fr.kb);
+        wr_fixed(msFree + 12, fr.text, 8);
     }
     int sizes_no_data = 0;
     uint32_t msData = MEM_R32(param + SDP_msData);
@@ -1264,20 +1316,61 @@ static int validate_getsize_entries(uint32_t count, uint32_t entries, uint32_t *
     return 1;
 }
 
-static int getsize_add_entry(uint64_t *needed, uint32_t entries, uint32_t index) {
+/* One sizeInfo entry (PspUtilitySavedataSizeEntry: u64 size, char name[16]). */
+static int getsize_entry(uint32_t entries, uint32_t index, uint64_t *size, char *name, int name_cap) {
     uint32_t offset, entry;
-    if (!needed || !sr_size_mul_ok(index, SAVEDATA_SIZE_ENTRY_BYTES, &offset) ||
+    if (!size || !name || !sr_size_mul_ok(index, SAVEDATA_SIZE_ENTRY_BYTES, &offset) ||
         !sr_size_add_ok(entries, offset, &entry)) return 0;
-    uint64_t size = MEM_R32(entry) | ((uint64_t)MEM_R32(entry + 4) << 32);
-    if (size > UINT64_MAX - (uint64_t)(CLUSTER - 1u)) return 0;
-    uint64_t rounded = ((size + (uint64_t)(CLUSTER - 1u)) / CLUSTER) * CLUSTER;
-    if (rounded > UINT64_MAX - *needed) return 0;
-    *needed += rounded;
+    *size = MEM_R32(entry) | ((uint64_t)MEM_R32(entry + 4) << 32);
+    rd_cstr(entry + 8, name, name_cap);
     return 1;
 }
 
-/* GETSIZE (22): free/needed space for the sizeInfo block. */
-static uint32_t do_getsize(uint32_t param) {
+/* Bytes the named file already occupies in the save directory (0 when the save
+ * or the file does not exist): the part of a write that replaces old data. */
+static uint64_t getsize_existing_bytes(const char *dir, const char *name) {
+    char path[PATH_MAX];
+    struct stat st;
+    if (!name[0] || savedata_is_stage_name(name) || !path_join(path, sizeof(path), dir, name))
+        return 0;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) return 0;
+    return (uint64_t)st.st_size;
+}
+
+static int getsize_sum_entries(uint32_t count, uint32_t entries, uint64_t per_entry_extra,
+                               const char *dir, uint64_t *write_bytes, uint64_t *overwrite_bytes) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t size = 0;
+        char name[17];
+        if (!getsize_entry(entries, i, &size, name, (int)sizeof(name))) return 0;
+        if (size > UINT64_MAX - per_entry_extra) return 0;
+        size += per_entry_extra;
+        if (size > UINT64_MAX - *write_bytes) return 0;
+        *write_bytes += size;
+        uint64_t existing = getsize_existing_bytes(dir, name);
+        if (existing > UINT64_MAX - *overwrite_bytes) return 0;
+        *overwrite_bytes += existing;
+    }
+    return 1;
+}
+
+/* KB for the 32-bit sizeInfo fields, rounded up. A shortfall beyond 4 TiB is
+ * not representable there and saturates at the field's maximum. */
+static uint32_t getsize_kb_round_up(uint64_t bytes) {
+    uint64_t kb = bytes / 0x400u + (bytes % 0x400u != 0u);
+    return kb > UINT32_MAX ? UINT32_MAX : (uint32_t)kb;
+}
+
+/* GETSIZE (22): free space, and how much MORE space a save of the listed files
+ * needs. On a PSP (pspautotests tests/utility/savedata/getsize.expected,
+ * revision 2ed7c9c5), a zero-filled sizeInfo with no entries for a save that
+ * does not exist changes only sectorSize, freeSectors, freeKB and freeString,
+ * and the result is 0: neededKB and overwriteKB are a shortfall, 0 when the
+ * data fits, never the size of the data. The entry arithmetic follows PPSSPP's
+ * SavedataParam::GetSize as a behaviour reference: each secure file adds 16
+ * bytes, files already in the save count as overwritable, and the needed and
+ * overwrite strings are written only when there is a shortfall. */
+static uint32_t do_getsize(uint32_t param, const char *game, const char *save) {
     uint32_t si = MEM_R32(param + SDP_sizeInfo);
     if (!si) return 0;
     if (!sr_guest_span_readable(si, SAVEDATA_SIZE_INFO_BYTES) ||
@@ -1287,23 +1380,34 @@ static uint32_t do_getsize(uint32_t param) {
     uint32_t secSpan = 0, normSpan = 0;
     if (!validate_getsize_entries(nSec, pSec, &secSpan) ||
         !validate_getsize_entries(nNorm, pNorm, &normSpan)) return 0x80110381u;
-    uint64_t needed = CLUSTER + CLUSTER;                    /* dir record + SFO */
     (void)secSpan;
     (void)normSpan;
-    for (uint32_t i = 0; i < nSec; i++) {
-        if (!getsize_add_entry(&needed, pSec, i)) return 0x80110381u;
-    }
-    for (uint32_t i = 0; i < nNorm; i++) {
-        if (!getsize_add_entry(&needed, pNorm, i)) return 0x80110381u;
-    }
+    char dir[PATH_MAX];
+    save_dir(dir, sizeof(dir), game, save);
+    uint64_t write_bytes = 0, overwrite_bytes = 0;
+    if (!getsize_sum_entries(nSec, pSec, 0x10u, dir, &write_bytes, &overwrite_bytes) ||
+        !getsize_sum_entries(nNorm, pNorm, 0u, dir, &write_bytes, &overwrite_bytes))
+        return 0x80110381u;
+    SavedataFree fr;
+    if (!savedata_free_space(&fr)) return ERR_RW_NO_MEMSTICK_UNMEASURED;
     MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
-    MEM_W32(si + 20, FREE_CLUSTERS);                        /* freeSectors */
-    MEM_W32(si + 24, FREE_CLUSTERS * (CLUSTER / 0x400));    /* freeKB */
-    wr_fixed(si + 28, "512 MB", 8);
-    MEM_W32(si + 36, (uint32_t)(needed / 0x400));           /* neededKB */
-    wr_fixed(si + 40, "", 8);
-    MEM_W32(si + 48, (uint32_t)(needed / 0x400));           /* overwriteKB */
-    wr_fixed(si + 52, "", 8);
+    MEM_W32(si + 20, fr.sectors);                           /* freeSectors */
+    MEM_W32(si + 24, fr.kb);                                /* freeKB */
+    wr_fixed(si + 28, fr.text, 8);                          /* freeString */
+    if (overwrite_bytes >= write_bytes || write_bytes - overwrite_bytes < fr.bytes) {
+        MEM_W32(si + 36, 0);                                /* neededKB */
+        MEM_W32(si + 48, 0);                                /* overwriteKB */
+        return 0;
+    }
+    char text[24];
+    uint64_t needed = write_bytes - fr.bytes;
+    MEM_W32(si + 36, getsize_kb_round_up(needed));
+    savedata_space_text(needed, 1, text, sizeof(text));
+    wr_fixed(si + 40, text, 8);                             /* neededString */
+    uint64_t overwrite = needed > overwrite_bytes ? needed - overwrite_bytes : 0;
+    MEM_W32(si + 48, getsize_kb_round_up(overwrite));
+    savedata_space_text(overwrite, 1, text, sizeof(text));
+    wr_fixed(si + 52, text, 8);                             /* overwriteString */
     return 0;
 }
 
@@ -1392,7 +1496,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_SIZES:
             return do_sizes(param, game);
         case SD_GETSIZE:
-            return do_getsize(param);
+            return do_getsize(param, game, save);
         default:
             if (sdlog()) fprintf(stderr, "savedata: UNHANDLED mode=%" PRIu32 "\n", mode);
             return 0;
