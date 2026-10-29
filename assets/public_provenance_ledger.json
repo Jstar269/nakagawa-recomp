@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ed3c76a8ce14e092e55d567d63ba3c8d947d378925c0dfd9397eedaf3dfb6eb6"
+      "sha256": "1e92dedaa40d11ebee2dc2bebd027e5c730df78c44d6c1c8a34b71362aefb54c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b3701c4b9448548cfe4626ea9b9cf096f53d34eab5e964b3ad7440d68254382"
+      "sha256": "cfe7392ea68fdeb0eef29c5d23f8de69cfa8729711b19d4946056b1ad2e0f231"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1813,7 +1813,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b91eb0b73d5fe8aa64b6b7de256138678db505a81d0268daf76c897a218bd2d2"
+      "sha256": "4d2d2ff53b964b32dc2ab2c9c02841bf5fff6367e84afe9460d7bbc17a1446bb"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
