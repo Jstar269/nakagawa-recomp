@@ -1420,8 +1420,20 @@
       {
         "id": "PSP-VFPU-SORT-001",
         "status": "implemented",
-        "hardware_evidence": "NOT_RUN",
-        "evidence_note": "No hardware capture exists: this probe has not been run on a PSP. It is built from fixtures/psp_oracle/probe_hle_issues.c as vfpu_sort.prx and runs as a single launch, not in the campaign queue. Its stream is a strict golden sequence of 576 records and the done record; PASS means the instruction result was recorded, and the parser compares no value.",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "srt1-p0-*",
+          "srt2-p0-*",
+          "srt3-p0-*",
+          "srt4-p0-*",
+          "srt1-p1-*",
+          "srt2-p1-*",
+          "srt3-p1-*",
+          "srt4-p1-*",
+          "vfpu-sort-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 72) of commit 9171f055, the commit that added this probe, case vfpu-sort after the transport-write preflight: 576 records and the done record (out0 576), all PASS, acceptance-eligible with 0 blockers, both passes identical. Cited: the raw C200 words, the changed-word census and VFPU_CC of every cell. PASS means the instruction result was recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
         "group": "cpu",
         "source": "fixtures/psp_oracle/probe_hle_issues.c",
         "prx": "vfpu_sort.prx",

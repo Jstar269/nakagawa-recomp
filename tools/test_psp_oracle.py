@@ -3109,6 +3109,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VFPU-FORMS-001",
                 # The 2026-10-29 acceptance-eligible vfpu-funnel run of 8d0f75ad (#326).
                 "PSP-VFPU-FUNNEL-001",
+                # The 2026-10-29 acceptance-eligible vfpu-sort run of 9171f055 (#326).
+                "PSP-VFPU-SORT-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
@@ -7644,15 +7646,16 @@ class VfpuSortProbeTests(unittest.TestCase):
         self.assertEqual(words[8], [0x3f800000, 0x7fc00000, 0x7fc00000, 0x3f800000])
         self.assertEqual(len({tuple(item) for item in words}), len(words))
 
-    def test_manifest_row_is_a_single_launch_not_run_case(self) -> None:
+    def test_manifest_row_is_a_single_launch_measured_sort_case(self) -> None:
         self.assertEqual(len(self.rows), 1)
         row = self.rows[0]
         self.assertEqual(row["prx"], "vfpu_sort.prx")
         self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
         self.assertEqual(row["diagnostic_case_ids"], ["vfpu-sort"])
         self.assertEqual(row["issues"], [326])
-        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-        self.assertNotIn("evidence_cases", row)
+        # The 2026-10-29 acceptance-eligible PSP-3000 run of 9171f055 cites every cell.
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
 
 
 class GeSampleProbeTests(unittest.TestCase):

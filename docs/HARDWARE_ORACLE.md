@@ -772,6 +772,31 @@ One console is one data point; see §11. Nothing here closes issue #70
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
 
+- **PSP-3000 single-case run of the `vfpu-sort` probe on commit `9171f055` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `9171f055` is the commit that adds the probe (case 120 in
+  `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 576 records and the done record, all PASS. Both passes in the launch returned the same words.
+  The row cites only the cells named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `9171f055`) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-SORT-001` | `srt1-p0-*`, `srt2-p0-*`, `srt3-p0-*`, `srt4-p0-*`, `srt1-p1-*`, `srt2-p1-*`, `srt3-p1-*`, `srt4-p1-*`, `vfpu-sort-done` | Anything the words do not show: the probe compares no value, and PASS records only that the instruction ran | MEASURED (`vfpu-sort`) |
+
+  What the cells establish, for these exact words only (issue #326). Each cell loads the whole register file
+  (word i = `0x3F800000 | i << 16`), presets VFPU_CC to `0x15`, places four operands in C000, runs one word and
+  stores the register file again. No form wrote VFPU_CC or any register outside C200.
+  - *Operands.* Lane i compares S[i] (C000 under the user S prefix) with the raw C000 lane T selected by the
+    form, the user prefix not applied to it, as for `vbfy`: T = (y, x, w, z) for `vsrt1` and `vsrt3`, (w, z, y, x)
+    for `vsrt2` and `vsrt4`. `vsrt1` takes (min, max, min, max), `vsrt2` (min, min, max, max), `vsrt3` (max,
+    min, max, min), `vsrt4` (max, max, min, min). Under negate-all, `vsrt1` of (1, 2, 3, 4) is (-1, 1, -3, 3).
+  - *Order.* The compare is the sign-magnitude order `vscmp` follows (PSP-VFPU-CMP-001), after a denormal counts
+    as a zero of its sign: a NaN with a clear sign bit is above +inf, one with a set sign bit below -inf, and NaNs
+    order by payload. The result is the winner's raw word, NaN payloads and denormals included.
+  - *Ties.* On equal keys `min` returns S and `max` returns T: min(+0, -0) is +0, max(-0, +0) is +0, and a
+    denormal against a zero of the same sign keeps whichever word the rule picks.
+
 - **PSP-3000 single-case run of the `vfpu-funnel` probe on commit `8d0f75ad` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `8d0f75ad` is the commit that adds the probe (case 118 in
   `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
@@ -2681,7 +2706,7 @@ not expected PSP values.
 | `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `vfpu-funnel` | `PSP-VFPU-FUNNEL-001` | `MEASURED` (2026-10-29, `8d0f75ad`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vfad.p/.t/.q` and `vavg.p/.t/.q` of C000 into S200 over 26 operand sets (summation-order, cancellation, signed-zero, infinity, NaN, denormal, overflow and divide-by-3 cases), under no S prefix and two S prefixes, with VFPU_CC and a changed-word census. 936 result records. |
-| `vfpu-sort` | `PSP-VFPU-SORT-001` | `NOT_RUN` (not yet run; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vsrt1.q`, `vsrt2.q`, `vsrt3.q` and `vsrt4.q` of C000 into C200 over 24 operand sets (ordinary orders, equal values, signed zeros, NaNs against numbers in several lane positions, infinities, denormals, neighbouring floats), under no S prefix and two S prefixes, with VFPU_CC and a changed-word census. 576 result records. |
+| `vfpu-sort` | `PSP-VFPU-SORT-001` | `MEASURED` (2026-10-29, `9171f055`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vsrt1.q`, `vsrt2.q`, `vsrt3.q` and `vsrt4.q` of C000 into C200 over 24 operand sets (ordinary orders, equal values, signed zeros, NaNs against numbers in several lane positions, infinities, denormals, neighbouring floats), under no S prefix and two S prefixes, with VFPU_CC and a changed-word census. 576 result records. |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 

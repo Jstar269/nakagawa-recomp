@@ -595,6 +595,43 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 VFPU_NAN1(op9 == 2 ? "vbfy1" : "vbfy2", (const float *)d, n, sv, n);
                 vwrite_bits(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
             }
+            if ((op9 == 0 || op9 == 1 || op9 == 8 || op9 == 9) && n == 4) {
+                /* vsrt1 (0), vsrt2 (1), vsrt3 (8), vsrt4 (9), .q only: as PSP-VFPU-SORT-001
+                 * measured (2026-10-29, issue #326: 576 cells, 24 operand sets, three S
+                 * prefixes, two identical passes), lane i is min or max of S[i] (vs under
+                 * the user S prefix) and the RAW vs lane tsw[i], the user prefix not
+                 * applied to it, as for vbfy. The compare is vscmp's sign-magnitude order
+                 * after a denormal counts as a zero of its sign (vfpu_daz); the result is the
+                 * raw word of the winner, NaNs and denormals included. On equal keys min
+                 * returns S and max returns T, so min(+0, -0) is +0 and max(-0, +0) is +0.
+                 * Measured S prefixes: none, negate-all and wzyx with lanes 0/2 negated;
+                 * abs and constant lanes and T or D prefixes are UNMEASURED and refused.
+                 * VFPU_CC is not written. */
+                static const uint8_t tsw_pair[4] = {1, 0, 3, 2}, tsw_rev[4] = {3, 2, 1, 0};
+                static const uint8_t min_lane[4][4] = {
+                    {1, 0, 1, 0}, {1, 1, 0, 0}, {0, 1, 0, 1}, {0, 0, 1, 1},
+                };
+                const int form = op9 == 0 ? 0 : op9 == 1 ? 1 : op9 == 8 ? 2 : 3;
+                const uint8_t *tsw = (form & 1) ? tsw_rev : tsw_pair;
+                const uint32_t sp = s->vfpuCtrl[0];
+                uint32_t raw[4], sv[4], d[4];
+                if (s->vfpuCtrl[1] != 0xe4u || s->vfpuCtrl[2] != 0u || ((sp >> 8) & 0xffu))
+                    return SR_VFPU_OTHER;
+                vreg_idx(vs, 4, si);
+                for (int i = 0; i < 4; i++) raw[i] = s->vi[si[i]];
+                for (int i = 0; i < 4; i++)
+                    sv[i] = raw[(sp >> (2 * i)) & 3u] ^ (((sp >> (16 + i)) & 1u) << 31);
+                for (int i = 0; i < 4; i++) {
+                    const uint32_t a = sv[i], b = raw[tsw[i]];
+                    const uint32_t fa = vfpu_daz(a), fb = vfpu_daz(b);
+                    const int64_t ka = (fa >> 31) ? -(int64_t)(fa & 0x7fffffffu) : (int64_t)(fa & 0x7fffffffu);
+                    const int64_t kb = (fb >> 31) ? -(int64_t)(fb & 0x7fffffffu) : (int64_t)(fb & 0x7fffffffu);
+                    d[i] = min_lane[form][i] ? (kb < ka ? b : a) : (ka > kb ? a : b);
+                }
+                vreg_idx(vd, 4, di);
+                for (int i = 0; i < 4; i++) s->vi[di[i]] = d[i];
+                eat_prefix(s); return SR_VFPU_COMPUTE;
+            }
             if ((op9 == 6 || op9 == 7) && n >= 2) {
                 /* vfad (6) and vavg (7) at .p/.t/.q: d = the VFPU dot adder over S and a T
                  * of 1.0 (vfad) or 1/n (vavg: 0.5, 0x3eaaaaab, 0.25), as PSP-VFPU-FUNNEL-001

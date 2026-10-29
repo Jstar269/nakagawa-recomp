@@ -1469,6 +1469,10 @@ def _vfpu_forms_effect(addr, w, jump, sel, n):
 _VFPU9_INTERP_ROUTED = {
     0x02: ("vbfy1", (2, 4)),
     0x03: ("vbfy2", (4,)),
+    0x00: ("vsrt1", (4,)),
+    0x01: ("vsrt2", (4,)),
+    0x08: ("vsrt3", (4,)),
+    0x09: ("vsrt4", (4,)),
     0x06: ("vfad", (2, 3, 4)),
     0x07: ("vavg", (2, 3, 4)),
     0x0A: ("vsgn", (1, 2, 3, 4)),
