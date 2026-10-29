@@ -282,6 +282,27 @@ static float player_display_content_scale(SDL_DisplayID display) {
     return scale;
 }
 
+/* Records the desktop bounds of the display that holds the launcher window, read
+ * just before a launch so the game window opens on that display (the runtime gets
+ * them as SR_LAUNCHER_DISPLAY_BOUNDS). The child cannot use our SDL_DisplayID: IDs
+ * are per process. Unknown bounds are left zero and the game uses the primary. */
+static void player_note_launcher_display(PlayerApp *app, SDL_Window *window) {
+    if (!app) return;
+    memset(app->launcher_display_bounds, 0, sizeof(app->launcher_display_bounds));
+    SDL_DisplayID display = window ? SDL_GetDisplayForWindow(window) : 0;
+    SDL_Rect bounds;
+    if (!display || !SDL_GetDisplayBounds(display, &bounds) || bounds.w <= 0 ||
+        bounds.h <= 0) {
+        fprintf(stderr, "[PLAYER] Launcher display unknown (%s); the game opens on the "
+                        "primary display.\n", SDL_GetError());
+        return;
+    }
+    app->launcher_display_bounds[0] = bounds.x;
+    app->launcher_display_bounds[1] = bounds.y;
+    app->launcher_display_bounds[2] = bounds.w;
+    app->launcher_display_bounds[3] = bounds.h;
+}
+
 static PlayerWindowFrame player_estimated_window_frame(float content_scale) {
     PlayerWindowFrame frame;
     frame.left = (int)(8.0f * content_scale + 0.999f);
@@ -5995,6 +6016,7 @@ int main(int argc, char *argv[]) {
         if (app.request_launch) {
             app.request_launch = false;
             if (!launch_job) {
+                player_note_launcher_display(&app, window);
                 launch_job = player_launch_job_start(&app, app.request_launch_index);
             }
         }

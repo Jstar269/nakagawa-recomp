@@ -1382,6 +1382,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_headless_accept_frames[64];
     char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
     char env_ui_root[NK_MAX_PATH + 16];
+    char env_launcher_display[96];
     char sep = nk_platform_path_separator();
 
     if (session->config.fps_cap == -1) {
@@ -1427,6 +1428,20 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_vsync;
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;
+    /* The display the game window opens on, windowed or fullscreen: the one that
+       holds the launcher window. Always exported, so an inherited value cannot
+       move the window; empty when the launcher does not know its display. */
+    {
+        const int *b = session->config.launcher_display_bounds;
+        if (b[2] > 0 && b[3] > 0) {
+            snprintf(env_launcher_display, sizeof(env_launcher_display),
+                     "SR_LAUNCHER_DISPLAY_BOUNDS=%d,%d,%d,%d", b[0], b[1], b[2], b[3]);
+        } else {
+            snprintf(env_launcher_display, sizeof(env_launcher_display),
+                     "SR_LAUNCHER_DISPLAY_BOUNDS=");
+        }
+        envp[env_count++] = env_launcher_display;
+    }
     envp[env_count++] = env_volume;
     /* Always set, so an inherited value cannot opt a launch in. */
     envp[env_count++] = session->config.experimental_60hz ? "SR_EXPERIMENTAL_60HZ=1" : "SR_EXPERIMENTAL_60HZ=0";
