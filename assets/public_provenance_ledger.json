@@ -2474,7 +2474,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e656cb8295c17825b1a573a42d892ba0ef979122d284d3b3718969e0edeceb1"
+      "sha256": "7d3dd776d29ef46d7195aaeb3c4dfbf2561895535dcc4eb27a9c71a9c0401484"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2483,7 +2483,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "4afaadb0d06f24c0e3ab180ea3040d819bcaffcbfeb64092797f927a49dea681"
+      "sha256": "20a81bc6fb1b89cca1f8a9567f6b2a2bbf743e69fe708a84fa66e65ee116c1d0"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -2645,7 +2645,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "faf173383ac2df167838853cfbbd2c7456178117bba760b99532875fdd9ff4d6"
+      "sha256": "5a5b4dc8876139aa19bf3c88c37de172a5a7a7a1d760fb802b8af24f9ff7ffb5"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -8933,7 +8933,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e4a10a048402db321c0f4f2872ac440119966325b4ad8d022570c9a04c101534"
+      "sha256": "926099fc0378e9a6efc6ae535a84026c753cb564f4d0c3ee27a8030d7c44d0a4"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8971,7 +8971,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0e21bccee765c994a1a9528232d0a81894155a4837bee2fa4b5b53b49b9cffc"
+      "sha256": "d52f49da7fe0efcd23774a755366279d2c02c1c1843874b976895dd5fda97565"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -15075,7 +15075,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e139a8898eedb7d2b405d28fdd1c383ab3b4dc2d68e7a9430bfb29efc7bfcb3"
+      "sha256": "66f39121cb7384f5a86701cf1bd99e98da86c967932ad7bff425da3c323f3c91"
     },
     {
       "path": "tools/test_psp_parsers.py",
