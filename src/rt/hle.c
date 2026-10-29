@@ -18029,6 +18029,37 @@ static int io_memstick_capacity(uint32_t info[5]) {
 }
 #endif /* _WIN32 */
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-only seam: mode 0 measures the host volume, mode 1 reports `bytes`,
+ * any other mode makes the query fail, so savedata's shortfall and
+ * host-failure paths can be driven without filling a real volume. */
+static int s_test_memstick_free_mode;
+static uint64_t s_test_memstick_free_bytes;
+void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes) {
+    s_test_memstick_free_mode = mode;
+    s_test_memstick_free_bytes = bytes;
+}
+#endif
+
+/* Free bytes of the host-backed Memory Stick, from the same measurement and
+ * 32-bit clamp as the capacity devctl above, so the value never exceeds
+ * UINT32_MAX. Savedata SIZES/GETSIZE re-express it in their own 32 KiB
+ * sectors. Returns 0 when the host volume cannot be queried. */
+int sr_hle_memstick_free_bytes(uint64_t *free_bytes) {
+    if (!free_bytes) return 0;
+#ifdef SR_HLE_THREAD_SELFTEST
+    if (s_test_memstick_free_mode == 1) {
+        *free_bytes = s_test_memstick_free_bytes;
+        return 1;
+    }
+    if (s_test_memstick_free_mode != 0) return 0;
+#endif
+    uint32_t info[5];
+    if (!io_memstick_capacity(info)) return 0;
+    *free_bytes = (uint64_t)info[1] * info[3] * info[4];
+    return 1;
+}
+
 static uint32_t h_IoDevctl(CpuState *s) {
     enum {
         IO_DEVCTL_GET_CAPACITY = 0x02425818u,
