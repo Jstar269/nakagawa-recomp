@@ -1429,7 +1429,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ed3c76a8ce14e092e55d567d63ba3c8d947d378925c0dfd9397eedaf3dfb6eb6"
+      "sha256": "bc40af1f26d204a5d29e6f31d892515f87b42d922c88a86a251f20beb2fbd5a8"
     },
     {
       "path": "docs/DCO_POLICY.md",
