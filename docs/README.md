@@ -205,7 +205,7 @@ Every substantial document carries one status.
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
-| `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite only, PSP-side runner unbuilt |
+| `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite and the one-command matrix; PSP-side framed runner unbuilt |
 | `PROVENANCE_MERGE_GATE.md` | CURRENT | Merge-path provenance control (observation mode) |
 | `PUBLICATION_READINESS.md` | CURRENT | Publication gates incl. the trusted refresh workflow |
 | `PUBLIC_SOURCE_PROFILE.md` | CURRENT | Include/exclude policy explanation |

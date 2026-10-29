@@ -22,15 +22,20 @@ failed their post-unload shell qualification and host0 round-trip, and the
 `HOST0_ROUNDTRIP_FAILED` at its host case timeout, followed by a transport loss
 ([PSP-UMDRAW-001](HARDWARE_ORACLE.md#psp-umdraw-001-raw-umd-read-probe)).
 Resident runner candidate: the Nakagawa Link resident PSP agent. Its source is
-not in this repository; this repository records it only as the watchdog armed
-around the 2026-10-24 `hle-issues-batch` and `hle-intr-cells` launches, which
-ran through a private PSPLink driver, with no runner envelope and no
-`transport-write` preflight, so neither is acceptance-eligible
+not in this repository. Its first recorded use, the 2026-10-24 `hle-issues-batch`
+and `hle-intr-cells` launches, ran through a private PSPLink driver with no
+runner envelope and no `transport-write` preflight, so neither is
+acceptance-eligible
 ([HARDWARE_ORACLE.md](HARDWARE_ORACLE.md#measured-to-date-index--exact-cells-only-do-not-generalize)).
-It is not adopted. Until its source is admitted and a host adapter speaks the
-v2 framing to it, the framed resident runner and the dual-path result protocol
-remain unbuilt here and every PSP case still runs through `run_psplink.py`
-(issue [#352](https://github.com/Jstar269/nakagawa-recomp/issues/352); see
+Later launches, such as the 2026-10-27 `ge-timing` runs, run `run_psplink.py`
+unchanged, each with its `transport-write` preflight, under the agent's
+watchdog and its private recover/probe host commands. The agent does not
+execute cases itself and does not speak the v2 framing, so it is not adopted as
+the framed resident runner. The framed runner and the stream-plus-mirror
+dual-path protocol remain unbuilt here, and every PSP case still runs through
+`run_psplink.py`. [`tools/psp_oracle/oracle_matrix.py`](#10-one-command-matrix)
+now builds, stages, qualifies and runs a multi-case matrix around that runner in
+one command (issue [#352](https://github.com/Jstar269/nakagawa-recomp/issues/352); see
 [What still requires a human / build order](#9-build-order-and-open-attestation)).
 This document extends, and defers to, the implemented scalar-probe subset
 described in [HARDWARE_ORACLE.md](HARDWARE_ORACLE.md) and
@@ -50,7 +55,7 @@ Current autonomy level, measured in the W1-psplink campaign on 2026-09-23:
 
 | Step | State |
 | --- | --- |
-| Probe build/hash/stage | The adapter accepts prebuilt source-owned PRXs from a host0 scratch directory; it does not build them. |
+| Probe build/hash/stage | The adapter accepts prebuilt source-owned PRXs from a host0 scratch directory; it does not build them. Since issue #352, `oracle_matrix.py` builds them from a clean clone of the declared commit, stages them and records their digests ([§10](#10-one-command-matrix)). |
 | Transport qualification | Live replies identified PSPLink v3.2.1 and firmware 6.6.1. In W1-psplink3 the first `ver` exited 1, the second passed, and the post-attach verification passed; each attempt is retained in recovery events. |
 | Case execution and unload | `model-profile` `ldstart` returned a UID and left its module loaded. `modstun`, then `modinfo` `Unknown module`, confirmed unload. PSP-B3 `ldstart` returned promptly while its main thread remained parked. |
 | Result capture | `model-profile` and W1-psplink3 `transport-write` produced no schema records or host0 result file. The live envelope ended `HOST0_ROUNDTRIP_FAILED`, was not acceptance-eligible, and did not run the optional smoke case. Raw model code remains `NOT_CAPTURED`. |
@@ -193,7 +198,7 @@ by the reference implementation in the test suite:
 | L0 | retry one protocol request | 1 retry, short timeout |
 | L1 | restart owned host usbhostfs_pc process; if it reports `waiting for device`, identify the PSPLink device from `usbipd list`, attach once when `Shared`, wait for `Connected to device`, and verify `pspsh -e ver` | 1 cycle and 1 attach attempt, then requalify from `WAIT_ATTACH` |
 | L2 | qualified PSPLink `reset`, followed by the same dynamic USB re-attach and `ver` check | 1 reset and 1 attach attempt; allowed only if SHELL_QUALIFY still answers |
-| L3 | standalone PSPLink relaunch boundary | not implemented by the scalar adapter; in the works under [issue #352](https://github.com/Jstar269/nakagawa-recomp/issues/352); not measured |
+| L3 | standalone PSPLink relaunch boundary | not implemented by the scalar adapter. The matrix ([§10](#10-one-command-matrix)) delegates it to its configured recover and probe commands (with Nakagawa Link: kill the case over the agent's file channel, then a PC-requested reset) and accepts the outcome only through the lock's device-state attestation; [issue #352](https://github.com/Jstar269/nakagawa-recomp/issues/352) |
 | L4 | declare `PHYSICAL_INTERVENTION_REQUIRED`, preserve all state, stop | final; looping is not recovery |
 
 Additional hard rules: never load a duplicate PSPLink user module (see
@@ -311,3 +316,70 @@ physical power intervention. The system says so plainly instead of looping.
    mapping already interprets raw value 3 as PSP-3000 generation 04g under
    `PSPSDK_PMODEL_ORDINAL_V1`; remaining cross-API distinctions are still in
    the works under issue #356. Measure each source first and generalize never.
+
+## 10. One-command matrix
+
+[`tools/psp_oracle/oracle_matrix.py`](../tools/psp_oracle/oracle_matrix.py)
+runs a bounded matrix of probe cases from one private plan, with no manual
+PSPLink commands in a healthy session:
+
+```powershell
+python tools/psp_oracle/oracle_matrix.py <private-matrix-plan.json> --dry-run     # validate only
+python tools/psp_oracle/oracle_matrix.py <private-matrix-plan.json> --build-only  # build and stage only
+python tools/psp_oracle/oracle_matrix.py <private-matrix-plan.json>               # build, stage, qualify, run
+```
+
+The plan (schema 1) names the matrix and lock session, the source commit (the
+clean checkout `HEAD`), the operator-declared model, the expected firmware, a
+host0 scratch directory under `fixtures/psp_oracle`, a private evidence
+directory, the ordered cases with their timeouts, and argv templates for the
+build shell, the PSPLink soft reset, the recover command, the probe command,
+and the runner's PSPSH and USBHostFS commands. A case may name a prebuilt PRX
+inside the plan directory instead, with its SHA-256 pinned, for example a
+resident-agent containment test probe.
+
+1. **Build and stage.** One shell script clones the repository, checks out the
+   exact commit, refuses a dirty tree, builds `transport-write` and each case
+   with its own build directory, and copies each PRX into host0. The host
+   re-hashes every staged PRX and refuses a digest that differs from the one
+   the build reported. The digests go into a checkpoint. A resumed matrix
+   refuses a staged PRX that has changed since.
+2. **One launch per boot.** Before each case the matrix runs the recover
+   command, issues one PSPLink soft reset, and runs the recover command again.
+   The hardware lock's device-state attestation must then name a qualified
+   boot newer than every boot the matrix has seen, including boots seen during
+   earlier launches. Otherwise the matrix stops in
+   `PHYSICAL_INTERVENTION_REQUIRED` before launching anything.
+3. **Launch.** The probe command runs `run_psplink.py` with `transport-write`
+   and the case, and a report path unique to the case and boot. With Nakagawa
+   Link this is the agent's guarded probe wrapper. Every reset and launch
+   re-checks the lock, and each launch and its outcome are appended to the
+   lock's `probes_run`.
+4. **Accept or reject.** A case is `ACCEPTED` only when the runner report was
+   written by this launch, names exactly `transport-write` and the case, and
+   every envelope carries the plan's source commit, the staged PRX digest, the
+   expected firmware and a host0 run window that starts after the launch, and
+   is acceptance-eligible. A report from an earlier launch, or an envelope from
+   another commit or PRX, is `REJECTED`. A launch the runner did not finish
+   cleanly is `NOT_ELIGIBLE`, with the reasons.
+5. **Contain.** A launch during which the device rebooted, or after which the
+   probe command had to recover the device (Nakagawa Link's exit 4), is
+   `CONTAINED`. Its evidence is never accepted, whatever its envelopes say, and
+   the next case still needs its own newer boot. More contained failures than
+   `max_contained_failures` (default 1, at most 4) end the matrix
+   (`CONTAINED_FAILURE_BUDGET_EXHAUSTED`). A launch the probe command could not
+   recover (exit 3), or one that outlived its wall-clock bound, ends it in
+   `PHYSICAL_INTERVENTION_REQUIRED`. The remaining cases stay `NOT_RUN`, and a
+   later run resumes at the next case without retrying the stopped one.
+
+Exit codes: 0 when every case is `ACCEPTED`, 2 for a refusal or any other
+outcome, 3 for `PHYSICAL_INTERVENTION_REQUIRED`. The report and checkpoint stay
+in the private evidence directory.
+
+What the matrix does not do: it runs no case itself, so per-case fault
+containment on the PSP is still the resident agent's and the runner's. It adds
+no second result channel; the runner's existing check, which disqualifies a
+case whose PSPSH stdout records disagree with its host0 records, is the only
+dual-path rule today. It never retries a semantic result, never writes the
+Memory Stick or flash, and never requests or simulates a power cycle. A power
+cycle is reported as `PHYSICAL_INTERVENTION_REQUIRED` for the maintainer.
