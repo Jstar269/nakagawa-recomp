@@ -77,6 +77,7 @@ struct NkUi {
     size_t custom_count;
     char frame_text[NK_UI_FRAME_TEXT_BYTES];
     size_t frame_text_used;
+    size_t (*display_text)(const char *in, char *out, size_t out_size);
     NkUiId ring_id;
     float ring_radius;
     const NkUiPromptImages *prompt_images;
@@ -290,6 +291,7 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     if (ui->text.measure == NULL) {
         ui->text = fixed;
     }
+    ui->display_text = config != NULL ? config->display_text : NULL;
     ui->viewport.pixel_w = 1;
     ui->viewport.pixel_h = 1;
     ui->viewport.display_scale = 1.0f;
@@ -550,6 +552,9 @@ void nk_ui_label(NkUi *ui, NkUiId id, const char *text, int font, int size_px) {
     if (ui == NULL || !ui->frame_open || text == NULL || size_px <= 0) {
         return;
     }
+    if (ui->display_text != NULL) {
+        text = nk_ui_frame_text(ui, text);
+    }
     length = strlen(text);
     if (!nk_ui_clay_text(ui->clay, id, text, length, font, size_px, ui->text_color)) {
         ui->frame_ok = false;
@@ -568,7 +573,12 @@ const char *nk_ui_frame_text(NkUi *ui, const char *text) {
         return "";
     }
     out = &ui->frame_text[ui->frame_text_used];
-    memcpy(out, text, length + 1u);
+    if (ui->display_text != NULL) {
+        /* The rewrite never grows its input, so length + 1 bytes hold it. */
+        length = ui->display_text(text, out, length + 1u);
+    } else {
+        memcpy(out, text, length + 1u);
+    }
     ui->frame_text_used += length + 1u;
     return out;
 }
@@ -597,6 +607,7 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
                              float max_width, int max_lines) {
     static const char ellipsis[] = "\xE2\x80\xA6";
     char out[2048]; /* a details box can carry a few install paths */
+    char shown[sizeof(out)];
     size_t length;
     size_t line_start = 0u;
     size_t cursor = 0u;
@@ -605,6 +616,12 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
     if (ui == NULL || text == NULL || style == NULL || max_lines < 1 ||
         !(max_width > 0.0f)) {
         return text != NULL ? text : "";
+    }
+    /* Measure the text as it will be drawn: a cut made before the display rules
+       ran could keep part of the profile folder they would have replaced. */
+    if (ui->display_text != NULL) {
+        (void)ui->display_text(text, shown, sizeof(shown));
+        text = shown;
     }
     length = strlen(text);
     if (length >= sizeof(out) - sizeof(ellipsis)) {
@@ -626,7 +643,7 @@ const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *st
     }
     if (cursor >= length && (line < max_lines ||
         nk_ui_measure_logical(ui, style, text + line_start, length - line_start) <= max_width)) {
-        return text;
+        return text == shown ? nk_ui_frame_text(ui, shown) : text;
     }
     /* Cut the last line back until it and the ellipsis fit. */
     used = cursor > line_start ? cursor : line_start;
