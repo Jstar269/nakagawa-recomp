@@ -1264,8 +1264,25 @@ static int batch_reads_dst(const Batch *b) {
 }
 
 /* Copy target `t` into the snapshot image in the open command buffer: the one copy recipe of
- * snapshot_refresh and submit_pending. */
+ * snapshot_refresh and submit_pending.
+ *
+ * When the snapshot already holds `t` and the dirty box accounts for everything drawn into it
+ * since (s_snap_dirty_gen is t's current render_gen), only that box is copied: outside it the
+ * snapshot already equals the target, so the result is the same image a full copy gives. Any
+ * other state copies the whole target. A full copy moves scale^2 times the guest frame; a
+ * title that blends against the destination a hundred times a frame spent its frame time on
+ * those copies at 3x and 4x. */
 static void snapshot_copy_record(Target *t) {
+    SnapRect r = { 0, 0, FB_W, FB_H };
+    if (s_snap_src == t && s_snap_tracked && s_snap_dirty_gen == t->render_gen &&
+        !snap_rect_empty(&s_snap_dirty)) {
+        r = s_snap_dirty;
+        if (r.x0 < 0) r.x0 = 0;
+        if (r.y0 < 0) r.y0 = 0;
+        if (r.x1 > FB_W) r.x1 = FB_W;
+        if (r.y1 > FB_H) r.y1 = FB_H;
+        if (snap_rect_empty(&r)) r = (SnapRect){ 0, 0, FB_W, FB_H };
+    }
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
@@ -1274,9 +1291,14 @@ static void snapshot_copy_record(Target *t) {
     ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ic.srcSubresource.layerCount = 1;
     ic.dstSubresource = ic.srcSubresource;
-    ic.extent.width = SCL_W; ic.extent.height = SCL_H; ic.extent.depth = 1;
+    ic.srcOffset.x = r.x0 * s_scale; ic.srcOffset.y = r.y0 * s_scale;
+    ic.dstOffset = ic.srcOffset;
+    ic.extent.width = (uint32_t)((r.x1 - r.x0) * s_scale);
+    ic.extent.height = (uint32_t)((r.y1 - r.y0) * s_scale);
+    ic.extent.depth = 1;
     vkCmdCopyImage(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    s_replay_stats.snapshot_copy_px += (unsigned long long)ic.extent.width * ic.extent.height;
     to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
@@ -6233,6 +6255,7 @@ static uint32_t submit_batch_prepare(const SubmitBatchShape *sh, uint32_t tex) {
 
 typedef struct SubmitBatchRun {
     unsigned long long ops, submits, waits, open, snapshots, uploads, wraps, fallbacks;
+    unsigned long long snapshot_px;        /* device pixels the snapshot copies moved */
     double submit_ms, wait_ms, wall_ms;
 } SubmitBatchRun;
 
@@ -6263,6 +6286,7 @@ static int submit_batch_run(const SubmitBatchShape *sh, uint32_t tex, uint32_t c
     s_submit_batch_ops = saved_cap;
 
     out->snapshots = after.snapshot_copies - before.snapshot_copies;
+    out->snapshot_px = after.snapshot_copy_px - before.snapshot_copy_px;
     out->uploads = after.upload_ring_reservations - before.upload_ring_reservations;
     out->wraps = after.upload_ring_wraps - before.upload_ring_wraps;
     out->fallbacks = after.upload_ring_fallbacks - before.upload_ring_fallbacks;
@@ -6335,6 +6359,17 @@ static int coherence_run_submit_batch(void) {
                             "fallbacks=%llu, want %u snapshots and >= %u uploads\n", cap,
                     run.snapshots, run.uploads, run.fallbacks, sh.blend_draws + sh.tail_draws,
                     sh.clut_draws + sh.rewrite_draws);
+            ok = 0;
+            break;
+        }
+        /* The overlapping blend draws find the snapshot holding this target with only the
+         * previous sprite dirty, so each copies that box, not the frame: the copies move less
+         * than one full frame apiece. Their frames still equal ge.c above. */
+        const unsigned long long full_px = (unsigned long long)SCL_W * SCL_H;
+        if (run.snapshot_px == 0u || run.snapshot_px >= run.snapshots * full_px) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u snapshot copies moved "
+                            "%llu px for %llu copies of %llu px: no dirty-box copy\n",
+                    cap, run.snapshot_px, run.snapshots, full_px);
             ok = 0;
             break;
         }
