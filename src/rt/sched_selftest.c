@@ -3268,6 +3268,129 @@ static void test_flight_recorder_does_not_perturb_scheduling(void) {
            "flight equivalence: recording does not change guest memory, thread state or counters");
 }
 
+/* ---- flight recorder terminal thread snapshot (#320, schema 6) ----------------------
+ *
+ * A thread that blocked long before the retained event window must still show what it
+ * waits on. Real scheduler threads park through the production block paths (an untimed
+ * object wait and a timed delay), a third is the live running thread, a fourth was never
+ * started and a fifth is deleted; the bundle the recorder writes at exit lists the four
+ * that exist with the values the scheduler holds. Both blocks here happen outside any
+ * import, so each records a null block_nid, never a stale one.
+ *
+ * MUTANT: drop sched_note_block(t) from sched_block_on -- the object waiter loses its
+ *   waited_us (and keeps no block record), and the exact entry below no longer matches. */
+enum {
+    FLIGHT_THREADS_OBJ = 0x46000002u,
+    FLIGHT_THREADS_OBJ_PC = 0x09100104u,
+    FLIGHT_THREADS_OBJ_RA = 0x09100208u,
+    FLIGHT_THREADS_DELAY_PC = 0x09100304u,
+    FLIGHT_THREADS_DELAY_RA = 0x09100408u,
+    FLIGHT_THREADS_LIVE_PC = 0x09100504u,
+    FLIGHT_THREADS_LIVE_RA = 0x09100608u
+};
+
+static uint32_t g_flight_threads_delay_uid;
+
+static void flight_threads_body(CpuState *s) {
+    if (s_tcb[s_cur].uid == g_flight_threads_delay_uid) {
+        s->pc = FLIGHT_THREADS_DELAY_PC;
+        s->r[31] = FLIGHT_THREADS_DELAY_RA;
+        sched_delay_current(5000u);
+    } else {
+        s->pc = FLIGHT_THREADS_OBJ_PC;
+        s->r[31] = FLIGHT_THREADS_OBJ_RA;
+        sched_block_on(FLIGHT_THREADS_OBJ);
+    }
+}
+
+static void test_flight_recorder_thread_snapshot(void) {
+    const char *output = "flight_recorder_sched_threads_selftest.json";
+    static char bundle[16384];
+    char needle[512];
+    FILE *file;
+    size_t size;
+
+    reset_sched();
+    s_vbl_next_us = UINT64_MAX;   /* keep the display source out of the clock */
+    g_test_body = flight_threads_body;
+    remove(output);
+    pause_test_set_env("SR_FLIGHT_OUTPUT", output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_SCHED, 64u);
+
+    uint32_t waiter = sched_create_thread(0x09100100u, 20, 0x10000u);
+    uint32_t delayer = sched_create_thread(0x09100300u, 30, 0x10000u);
+    uint32_t live = sched_create_thread(0x09100500u, 40, 0x10000u);
+    uint32_t dormant = sched_create_thread(0x09100700u, 50, 0x10000u);
+    uint32_t deleted = sched_create_thread(0x09100900u, 60, 0x10000u);
+    g_flight_threads_delay_uid = delayer;
+    sched_start_thread(waiter, 0, 0);
+    sched_start_thread(delayer, 0, 0);
+    sched_start_thread(live, 0, 0);
+    expect(sched_delete_thread(deleted) == 0u, "thread snapshot: the fifth thread is deleted");
+
+    s_vtime_us = 1000u;
+    run_one_slice((int)(tcb_by_uid(waiter) - s_tcb));
+    s_vtime_us = 1500u;
+    run_one_slice((int)(tcb_by_uid(delayer) - s_tcb));
+    expect(tcb_by_uid(waiter)->state == TH_WAIT_OBJ && tcb_by_uid(delayer)->state == TH_WAIT_DELAY,
+           "thread snapshot: one thread waits on an object and one on a delay");
+
+    /* The third thread is on the CPU when the bundle is written: its live registers count. */
+    TCB *running = tcb_by_uid(live);
+    s_vtime_us = 4000u;
+    s_cur = (int)(running - s_tcb);
+    running->state = TH_RUNNING;
+    s_cpu->pc = FLIGHT_THREADS_LIVE_PC;
+    s_cpu->r[31] = FLIGHT_THREADS_LIVE_RA;
+    sr_flight_exit(0u);
+    s_cur = -1;
+    running->state = TH_READY;
+
+    file = fopen(output, "rb");
+    size = file ? fread(bundle, 1u, sizeof(bundle) - 1u, file) : 0u;
+    if (file) fclose(file);
+    bundle[size] = '\0';
+    expect(size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
+           "thread snapshot: the bundle is schema 6");
+    expect(strstr(bundle, "\"threads\": [") != NULL, "thread snapshot: the bundle has a threads block");
+
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 20, \"state\": \"wait-object\", \"suspended\": false, "
+             "\"why\": \"object\", \"wait_type\": 3, \"wait_object\": %" PRIu32 ", \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 3000, \"deadline_us\": null}",
+             waiter, (uint32_t)FLIGHT_THREADS_OBJ, (uint32_t)FLIGHT_THREADS_OBJ_PC,
+             (uint32_t)FLIGHT_THREADS_OBJ_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the object waiter names its object, a null import and 3000 us waited");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 30, \"state\": \"wait-delay\", \"suspended\": false, "
+             "\"why\": \"delay\", \"wait_type\": 2, \"wait_object\": 0, \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": 2500, \"deadline_us\": 2500}",
+             delayer, (uint32_t)FLIGHT_THREADS_DELAY_PC, (uint32_t)FLIGHT_THREADS_DELAY_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the delayed thread has waited 2500 us with 2500 us left");
+    snprintf(needle, sizeof(needle),
+             "{\"uid\": %" PRIu32 ", \"priority\": 40, \"state\": \"running\", \"suspended\": false, "
+             "\"why\": \"none\", \"wait_type\": 0, \"wait_object\": 0, \"block_nid\": null, "
+             "\"pc\": %" PRIu32 ", \"ra\": %" PRIu32 ", \"waited_us\": null, \"deadline_us\": null}",
+             live, (uint32_t)FLIGHT_THREADS_LIVE_PC, (uint32_t)FLIGHT_THREADS_LIVE_RA);
+    expect(strstr(bundle, needle) != NULL,
+           "thread snapshot: the running thread reports the live pc and ra");
+    snprintf(needle, sizeof(needle), "{\"uid\": %" PRIu32 ", \"priority\": 50, \"state\": \"dormant\"",
+             dormant);
+    expect(strstr(bundle, needle) != NULL, "thread snapshot: a created, unstarted thread is dormant");
+    snprintf(needle, sizeof(needle), "{\"uid\": %" PRIu32 ",", deleted);
+    expect(strstr(bundle, needle) == NULL, "thread snapshot: a deleted thread is not listed");
+
+    sr_flight_test_disable();
+    pause_test_set_env("SR_FLIGHT_OUTPUT", NULL);
+    remove(output);
+    sched_terminate_thread(waiter);
+    sched_terminate_thread(delayer);
+    sched_terminate_thread(live);
+    g_test_body = NULL;
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 /* ---- PSP display-wait semantics -----------------------------------------------------
@@ -5015,6 +5138,7 @@ int main(int argc, char **argv) {
     test_liveness_sole_runnable_becomes_nonsole();
     test_liveness_bounded_long_run_starvation();
     test_flight_recorder_does_not_perturb_scheduling();
+    test_flight_recorder_thread_snapshot();
 
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();
