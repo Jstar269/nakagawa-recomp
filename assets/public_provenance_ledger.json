@@ -5898,7 +5898,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c5488a8ee45beeb102b6cb0177cf9b8b1a8982c85e7c77b38444efde38b90472"
+      "sha256": "69dd6f9f46be83e054d00a42e2bd88b309be62862b45af7d1fe90b14f28114a9"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
@@ -5950,7 +5950,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d98a721214ff25bb8a66b6ed32451b29add7a0f96f19889ff6ce5223f294f71d"
+      "sha256": "9eea123260d99e7f7eb8741013fde042a0fbf1e7d2860f86cd2f2babcc552afa"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
@@ -5963,7 +5963,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d9ff104a029965fb2fa012ce7261cf6373424824afaf98f184f16398f769c02e"
+      "sha256": "02916c5b7bce8f334afee1e2c3461191a879631730f89a6f2286839476e9d23a"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shaders/psp.vert",

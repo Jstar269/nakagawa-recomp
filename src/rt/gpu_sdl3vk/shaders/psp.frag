@@ -91,11 +91,22 @@ void main() {
              * texel i centred at i + 0.5 (PSP-GE-SAMPLE-001), which is Vulkan's own
              * convention: nearest returns floor(u), linear taps floor(u - 0.5) and the next
              * texel. The PSP truncates the linear weight frac(u - 0.5) to 1/16; snapping
-             * u - 0.5 down to a 1/16 step reproduces that, and leaves floor(u), so nearest
-             * is unchanged. */
+             * u - 0.5 down to a 1/16 step reproduces that. Nearest samples the centre of
+             * texel floor(u) instead: a coordinate exactly on a texel edge (u = 2x + 1 at
+             * half scale) picks either neighbour depending on the implementation's
+             * sub-texel rounding, and floor(u) + 0.5 stays inside floor(u / 2^L) at every
+             * mip level L.
+             *
+             * Both rules floor, so the interpolated coordinate is first rounded to 1/4096
+             * of a texel: a host's fp32 attribute interpolation can land an exact edge like
+             * u = 1.0 a few ulps below it (lavapipe does at the half-scale case's first
+             * pixel), and floor then takes the texel before. The rounding moves only values
+             * within 1/8192 of that lattice, far below the 1/16 weight step. */
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
-            uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
+            uv = floor(uv * 4096.0 + vec2(0.5)) / 4096.0;
+            if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
+            else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
             uv += pc.texsize.zw;
             vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             int  tf    = pc.cfg.x & 7;
