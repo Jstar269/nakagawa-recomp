@@ -1,0 +1,153 @@
+name: Trusted CI verdict
+
+# The merge-path CI gate (#373, #364). It posts one commit status, "Trusted CI
+# verdict", on a pull request's exact head, and the main ruleset is meant to
+# require that status (plus CodeQL) instead of the contexts below.
+#
+# Why: CI, OSV-Scanner and Dependency Review are pull_request workflows. Their
+# definitions come from the pull request's merge commit, so a candidate can keep
+# a required job's name and make it `exit 0`, or add a workflow with a job of the
+# same name. GitHub matches a required check by name plus the GitHub Actions
+# integration, which both jobs share. This workflow runs only the default
+# branch's copy (pull_request_target and workflow_run always do) and judges the
+# candidate's results with tools/ci_trust_verdict.py, which:
+#   * refuses a head that changes a workflow, an action or a CI tool, unless a
+#     maintainer applied the ci-change-approved label after that head arrived;
+#   * requires each intended job to exist once, to succeed, and to come from
+#     the intended workflow path and event at exactly this head;
+#   * refuses stale heads, results for other SHAs or pull requests, and any
+#     other producer of an intended context.
+#
+# Every line below assumes a hostile pull request author:
+#   * the checkout is the DEFAULT BRANCH, never base.ref or the head;
+#   * the candidate's objects are fetched as data and read with git ls-tree and
+#     git cat-file only. Nothing from the candidate is checked out or executed;
+#   * no pull request title, body or branch name is used. Event values go
+#     through env: and are validated before use;
+#   * each job gets only the permissions it needs, and actions are pinned to
+#     commit SHAs.
+#
+# The verdict job's own check run is named "Compute trusted CI verdict" on
+# purpose: the required context is the commit status alone, and the verifier
+# refuses any check run that uses the status's name.
+#
+# Re-triggers: a new head, a label change, and the completion of each workflow
+# that produces an intended context. The provenance attestation workflow is not
+# listed by name here (its verifier reserves that name in every other
+# workflow), so when it is the last to finish, dispatch this workflow by hand
+# (docs/CI.md, "Trusted CI verdict").
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_run:
+    workflows: ["CI", "OSV-Scanner", "Dependency Review"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request to judge again, by number.
+        required: true
+        type: string
+
+concurrency:
+  # One verdict at a time per head, never cancelled mid-post. A newer pending
+  # run replaces an older pending one, and every run reads GitHub's state afresh.
+  group: trusted-ci-verdict-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || inputs.pull_request_number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  clear_approval:
+    # The label approves one reviewed head. A push (or a reopen, which may
+    # carry commits pushed while closed) withdraws it before any verdict for
+    # the new head is computed.
+    name: Withdraw CI-change approval on a new head
+    if: >-
+      ${{ github.event_name == 'pull_request_target' &&
+          (github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+          contains(github.event.pull_request.labels.*.name, 'ci-change-approved') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove the ci-change-approved label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          case "${PR_NUMBER}" in
+            ''|*[!0-9]*) echo "pull request number is not numeric" >&2; exit 1 ;;
+          esac
+          labels="repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels"
+          if ! gh api --method DELETE "${labels}/ci-change-approved" > /dev/null; then
+            # Already gone (removed by hand meanwhile) is fine; still there is not.
+            if gh api "${labels}" --jq '.[].name' | grep -qx 'ci-change-approved'; then
+              echo "could not remove ci-change-approved; no verdict for this head" >&2
+              exit 1
+            fi
+          fi
+          echo "ci-change-approved removed from #${PR_NUMBER}: a maintainer re-applies it after reviewing the new head"
+
+  verdict:
+    name: Compute trusted CI verdict
+    needs: [clear_approval]
+    # Only heads proposed for the default branch, which is the only branch the
+    # ruleset protects. workflow_run runs of push or schedule events have no
+    # pull request to judge; the verifier also finds none and posts nothing.
+    if: >-
+      ${{ always() &&
+          (needs.clear_approval.result == 'success' || needs.clear_approval.result == 'skipped') &&
+          ((github.event_name == 'pull_request_target' &&
+            github.event.pull_request.base.ref == github.event.repository.default_branch) ||
+           (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+           github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Check out the trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # Full history: the verifier needs the merge base of the candidate.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+
+      # The verifier fetches refs/pull/N/head into a private ref as objects
+      # only, with no credentials, and posts the status itself.
+      - name: Judge the head and post the verdict
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          args=(--repository "${GITHUB_REPOSITORY}" --default-branch "${DEFAULT_BRANCH}"
+                --post --target-url "${RUN_URL}" --summary "${GITHUB_STEP_SUMMARY}")
+          if [ -n "${PR_NUMBER}" ]; then
+            case "${PR_NUMBER}" in
+              *[!0-9]*) echo "pull request number is not numeric" >&2; exit 1 ;;
+            esac
+            args+=(--pull-request "${PR_NUMBER}")
+          fi
+          if [ -n "${HEAD_SHA}" ]; then
+            args+=(--head-sha "${HEAD_SHA}")
+          fi
+          python tools/ci_trust_verdict.py "${args[@]}"
