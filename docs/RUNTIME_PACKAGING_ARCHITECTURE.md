@@ -208,7 +208,10 @@ byte-level detection would require hashing package contents on every lookup.
 same `input_hashes`, Python/planner/analyzer/codegen/Make versions, the compiler
 identity, runtime ABI, and deterministic coverage counts (`analyzed_functions`,
 `aot_entries`, callable/resume entries, fallbacks, and unsupported imports,
-instructions, and regions). `unsupported.imports`, `unsupported.instructions`,
+instructions, and regions). `coverage.static` is the total of the code generator's
+`<game>_recomp_coverage.json`: owned, unowned, translated and interpreter-only words and
+functions from the canonical CFG ([`DEBUGGING.md`](DEBUGGING.md#execution-share-and-static-coverage));
+it is `null` only for a generation stage that predates the report. `unsupported.imports`, `unsupported.instructions`,
 and `unsupported.regions` are always arrays. Each listed boundary includes a
 reason, status `in the works`, and its tracking issue: import coverage uses #71;
 unsupported Allegrex translation and AOT function regions use #118. Empty arrays

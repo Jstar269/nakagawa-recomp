@@ -693,7 +693,7 @@ static void test_cli_search_order_and_guidance(void) {
 static void test_toolchain_preflight(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 7: toolchain preflight\n");
     char tool[32];
-    char msg[512];
+    char msg[1024];
 
     assert(!package_builder_toolchain_missing(true, true, true,
                                               tool, sizeof(tool), msg, sizeof(msg)));
@@ -704,14 +704,34 @@ static void test_toolchain_preflight(void) {
                                              tool, sizeof(tool), msg, sizeof(msg)));
     assert(strcmp(tool, "gcc") == 0);
     assert(strstr(msg, "BUILD_TOOLCHAIN_MISSING") != NULL);
-    assert(strstr(msg, "pinned prerequisite consent card") != NULL);
     assert(strstr(msg, "gcc") != NULL);
     assert(strstr(msg, "PATH") != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    assert(strstr(msg, "pinned prerequisite consent card") != NULL);
+    assert(strstr(msg, "mingw-w64-ucrt-x86_64-gcc") != NULL);
+#else
+    /* No download exists off Windows (#306): the card points at the system's
+       packages and never at a consent card or an MSYS2 package. */
+    assert(strstr(msg, "pinned prerequisite consent card") == NULL);
+    assert(strstr(msg, "MSYS2") == NULL);
+    assert(strstr(msg, "build-essential") != NULL);
+    assert(strstr(msg, "downloads build tools only on Windows") != NULL);
+#endif
 
+    /* The make the preflight looks for is the one tools/title_codegen_plan.py
+       runs by default. */
+#if defined(_WIN32) || defined(_WIN64)
+    assert(strcmp(package_builder_make_tool_name(), "mingw32-make") == 0);
+#else
+    assert(strcmp(package_builder_make_tool_name(), "make") == 0);
+#endif
     assert(package_builder_toolchain_missing(true, true, false,
                                              tool, sizeof(tool), msg, sizeof(msg)));
-    assert(strcmp(tool, "mingw32-make") == 0);
-    assert(strstr(msg, "mingw32-make") != NULL);
+    assert(strcmp(tool, package_builder_make_tool_name()) == 0);
+    assert(strstr(msg, package_builder_make_tool_name()) != NULL);
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(strstr(msg, "mingw32-make") == NULL);
+#endif
 
     assert(package_builder_toolchain_missing(false, true, true,
                                              tool, sizeof(tool), msg, sizeof(msg)));
@@ -726,6 +746,42 @@ static void test_toolchain_preflight(void) {
     /* PATH lookup refuses a name that cannot exist anywhere. */
     char found[NK_MAX_PATH];
     assert(!package_builder_find_tool("nk_no_such_tool_zz9", found, sizeof(found)));
+
+#if !defined(_WIN32) && !defined(_WIN64)
+    /* Off Windows the per-user prerequisites folder holds no download, and the
+       build child never gets it on PATH, so a tool there must not satisfy the
+       preflight: only PATH counts. */
+    {
+        char root[NK_MAX_PATH];
+        char bin[NK_MAX_PATH + 64];
+        char planted[NK_MAX_PATH + 96];
+        char path_dir[NK_MAX_PATH + 64];
+        char *saved_path = getenv("PATH") ? strdup(getenv("PATH")) : NULL;
+        int n = snprintf(root, sizeof(root), "%s/toolchain-root", native_test_get_root());
+        assert(n > 0 && (size_t)n < sizeof(root));
+        snprintf(bin, sizeof(bin), "%s/prerequisites/msys64/ucrt64/bin", root);
+        assert(nk_platform_mkdir_p(bin));
+        snprintf(planted, sizeof(planted), "%s/nk_planted_tool_zz9", bin);
+        FILE *f = fopen(planted, "wb");
+        assert(f != NULL);
+        assert(fclose(f) == 0);
+        snprintf(path_dir, sizeof(path_dir), "%s/empty-path", root);
+        assert(nk_platform_mkdir_p(path_dir));
+        nk_tb_set_env("PATH", path_dir);
+        assert(!package_builder_find_tool_in_root("nk_planted_tool_zz9", root,
+                                                  found, sizeof(found)));
+        /* The same tool on PATH is found. */
+        snprintf(planted, sizeof(planted), "%s/nk_planted_tool_zz9", path_dir);
+        f = fopen(planted, "wb");
+        assert(f != NULL);
+        assert(fclose(f) == 0);
+        assert(package_builder_find_tool_in_root("nk_planted_tool_zz9", root,
+                                                 found, sizeof(found)));
+        assert(strstr(found, "empty-path") != NULL);
+        nk_tb_set_env("PATH", saved_path);
+        free(saved_path);
+    }
+#endif
 }
 
 static void test_pinned_prerequisite_manifest(void) {
