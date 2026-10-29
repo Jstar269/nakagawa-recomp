@@ -503,6 +503,10 @@ typedef struct PlayerApp {
     bool launch_headless;
     uint32_t headless_accept_presented_frames;
     uint32_t headless_launch_timeout_ms;
+    /* Desktop bounds (x, y, w, h) of the display that holds the launcher window,
+       refreshed by main.c before each launch so the game window opens there.
+       A width of 0 means unknown (no window yet): the game uses the primary display. */
+    int launcher_display_bounds[4];
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -979,6 +983,7 @@ typedef struct {
     char boot_event_file_path[MAX_PATH_LEN];
     char input_profile_path[NK_MAX_PATH];
     char ui_root[MAX_PATH_LEN];
+    int launcher_display_bounds[4];
     /* Results, written by player_launch_work_run. */
     PlayerLaunchStep failed_step;
     NkResult result;

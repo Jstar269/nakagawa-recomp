@@ -2901,6 +2901,8 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
     snprintf(work->ui_root, sizeof(work->ui_root), "%s", app->install_root);
+    memcpy(work->launcher_display_bounds, app->launcher_display_bounds,
+           sizeof(work->launcher_display_bounds));
     /* The boot-event marker and the input mapping are written here, on the
        thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
@@ -2985,6 +2987,8 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     }
     session->config.headless_accept_presented_frames =
         work->headless_accept_presented_frames;
+    memcpy(session->config.launcher_display_bounds, work->launcher_display_bounds,
+           sizeof(session->config.launcher_display_bounds));
     session->config.gui_mode = !work->launch_headless ||
         work->headless_accept_presented_frames > 0u;
     if (work->boot_event_file_path[0]) {
