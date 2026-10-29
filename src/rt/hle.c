@@ -22721,8 +22721,15 @@ unsigned sr_hle_test_ge_finish_reports(int reset) {
 #endif
 
 /* Run the guest's registered finish callback for a completed display list, or log why
- * none ran. The runtime advances no title counter of its own here. */
-static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
+ * none ran. The runtime advances no title counter of its own here.
+ *
+ * The callback is called as finish_func(id, arg) (PSPSDK pspge.h PspGeCallback), where id is
+ * the 16-bit argument of the list's FINISH command, not the queue ID: libpspgu's callbackFin
+ * passes id & 0xffff on as sceGuFinishId's id. The PSP hands a SIGNAL's argument to the signal
+ * callback the same way (PSP-GE-TIMING-001 c4, measured on a PSP-3000); the FINISH id itself
+ * is UNMEASURED. A title that marks one kind of frame with its own FINISH id waited forever
+ * for a callback that, given the queue ID, never saw it. */
+static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t finish_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
     /* sceGeListEnQueue's callback ID is a signed int, and a negative one (the SDK's -1) is a
      * list enqueued with no callback, so there is nothing to run and nothing to report. */
@@ -22742,9 +22749,9 @@ static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uin
         return;
     }
     if (ge_log_on())
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u list=0x%08x fn=0x%08x arg=0x%08x\n",
-                cbid, list_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
-    ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u id=0x%04x fn=0x%08x arg=0x%08x\n",
+                cbid, finish_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
+    ge_call_guest(s, cb->finish_func, finish_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: callback fn=0x%08x returned\n", cb->finish_func);
 }
@@ -22812,6 +22819,7 @@ typedef struct {
     uint32_t cbarg;
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
+    uint32_t finish_id; // the 16-bit argument of the FINISH that ended it: the callback's id
     uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
     uint64_t finish_seq; // GE_LIST_DRAWING: completion order between equal times
 } GeListInfo;
@@ -22893,6 +22901,7 @@ static void ge_timing_charge_run(void) {
 static void ge_list_reached_end(CpuState *s, int slot) {
     GeListInfo *l = &s_ge_lists[slot];
     l->executed = 1;
+    l->finish_id = ge_last_finish_id();
     if (ge_timing_on()) {
         l->status = GE_LIST_DRAWING;
         l->done_us = (s_ge_busy_until_ns + 999u) / 1000u;
@@ -22904,7 +22913,7 @@ static void ge_list_reached_end(CpuState *s, int slot) {
         return;
     }
     l->status = GE_LIST_COMPLETED;
-    ge_finish_callback(s, l->cbid, l->uid, l->cbarg);
+    ge_finish_callback(s, l->cbid, l->finish_id, l->cbarg);
 }
 
 /* Scheduler hook: the earliest completion time of a drawing list, else UINT64_MAX. */
@@ -22937,7 +22946,7 @@ static void ge_timing_service_due(void) {
         if (ge_log_on())
             fprintf(stderr, "GE_TIMING: list_id=0x%08x completed at %llu us (modelled %llu us)\n",
                     l->uid, (unsigned long long)now, (unsigned long long)l->done_us);
-        ge_finish_callback(s_cpu, l->cbid, l->uid, l->cbarg);
+        ge_finish_callback(s_cpu, l->cbid, l->finish_id, l->cbarg);
     }
 }
 

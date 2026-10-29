@@ -196,6 +196,7 @@ int      sr_hle_register_late_import(uint32_t nid, uint32_t target) { (void)nid;
 /* --- GE stubs (ge.c / gpu_sdl3vk) --- */
 uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t ge_run_list(uint32_t addr, int resume) { (void)addr; (void)resume; return 0u; }
+uint32_t ge_last_finish_id(void) { return 0u; }
 uint32_t ge_framebuffer(void) { return 0u; }
 uint32_t g_ge_stall_addr = 0;
 typedef struct GeGpuHooks GeGpuHooks;

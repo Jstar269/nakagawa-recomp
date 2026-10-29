@@ -19948,7 +19948,7 @@ enum {
 };
 static unsigned s_ge_tim_calls;
 static uint64_t s_ge_tim_fired_at[4];
-static uint32_t s_ge_tim_list[4];
+static uint32_t s_ge_tim_id[4];   /* the callback's id (a0): the list's FINISH argument */
 static uint32_t s_ge_tim_arg;
 static int s_ge_tim_intr_ctx;
 static uint32_t s_ge_tim_cbid;
@@ -19956,7 +19956,7 @@ static uint32_t s_ge_tim_cbid;
 static void ge_tim_finish_fn(CpuState *cpu) {
     if (s_ge_tim_calls < 4u) {
         s_ge_tim_fired_at[s_ge_tim_calls] = s_vtime_us;
-        s_ge_tim_list[s_ge_tim_calls] = cpu->r[4];
+        s_ge_tim_id[s_ge_tim_calls] = cpu->r[4];
     }
     s_ge_tim_calls++;
     s_ge_tim_arg = cpu->r[5];
@@ -19964,9 +19964,13 @@ static void ge_tim_finish_fn(CpuState *cpu) {
     cpu->r[2] = 0u;
 }
 
+/* Each test list ends in a FINISH whose id names the list's address, so a callback says which
+ * list it completed. */
+static uint32_t ge_tim_finish_id(uint32_t base) { return (base >> 8) & 0xffffu; }
+
 static void ge_tim_write_list(uint32_t base, unsigned nops) {
     for (unsigned i = 0; i < nops; i++) MEM_W32(base + 4u * i, 0x00000000u); /* NOP */
-    MEM_W32(base + 4u * nops, 0x0f000000u);       /* FINISH */
+    MEM_W32(base + 4u * nops, 0x0f000000u | ge_tim_finish_id(base));  /* FINISH id */
     MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
 }
 
@@ -20011,7 +20015,7 @@ static void ge_tim_setup(void) {
     sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
     s_ge_tim_calls = 0;
     memset(s_ge_tim_fired_at, 0, sizeof(s_ge_tim_fired_at));
-    memset(s_ge_tim_list, 0, sizeof(s_ge_tim_list));
+    memset(s_ge_tim_id, 0, sizeof(s_ge_tim_id));
     s_ge_tim_arg = 0;
     s_ge_tim_intr_ctx = 0;
     MEM_W32(GE_TIM_INFO + 0u, 0u);                 /* signal func */
@@ -20034,6 +20038,9 @@ static void ge_tim_teardown(void) {
     sr_test_guest_fn_reset();
 }
 
+/* The FINISH id of the list the GE ran last, read back from ge.c. */
+static uint32_t ge_tim_last_finish_id(void) { return ge_last_finish_id(); }
+
 /* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
  * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
 static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
@@ -20052,7 +20059,8 @@ static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, 
     scheduler_service_pending();
     snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
              (unsigned long long)(due - enq));
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due &&
+           s_ge_tim_id[0] == ge_tim_last_finish_id(), msg);
 }
 
 /* A display-list builder for the measured-cell lists. */
@@ -20169,8 +20177,25 @@ static void test_ge_completion_timing(void) {
     ge_tim_write_list(GE_TIM_DL, 0u);
     memset(&cpu, 0, sizeof(cpu));
     uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing off: the finish callback runs inside sceGeListEnQueue");
+    /* finish_func(id, arg): id is the FINISH command's 16-bit argument, as libpspgu's
+     * sceGuFinishId(0xffff) sets it, never the queue ID. Bits 16..23 of the payload are not
+     * part of it. A title that marks a skipped frame this way waits on that id. */
+    MEM_W32(GE_TIM_DL2, 0x0f12ffffu);              /* FINISH, payload 0x12ffff */
+    MEM_W32(GE_TIM_DL2 + 4u, 0x0c000000u);         /* END */
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    uint32_t qid_ff = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0xffffu && qid_ff != 0xffffu,
+           "GE finish: the callback's id is the FINISH argument's low 16 bits, not the queue ID");
+    expect(s_ge_tim_arg == GE_TIM_FINISH_ARG,
+           "GE finish: the callback's second argument is its registered argument");
+    MEM_W32(GE_TIM_DL2, 0x0c000000u);              /* END with no FINISH */
+    s_ge_tim_calls = 0;
+    (void)ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0u,
+           "GE finish: a list that ran no FINISH does not inherit the previous list's id");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
            "GE timing off: the syncs read the list as complete at once");
@@ -20199,7 +20224,8 @@ static void test_ge_completion_timing(void) {
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
            "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u &&
+           s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the empty list's finish callback runs at 15 us");
     expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
            "GE timing: the callback runs in interrupt context with its registered argument");
@@ -20213,11 +20239,13 @@ static void test_ge_completion_timing(void) {
     /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
     s_ge_tim_calls = 0;
     s_vtime_us = 60000u;
+    ge_tim_write_list(GE_TIM_DL2, 0u);
     uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    (void)qa;
     s_vtime_us = 60015u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the first list completes after its own 15 us");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
            "GE timing: the second list is still drawing behind it");
@@ -20226,7 +20254,8 @@ static void test_ge_completion_timing(void) {
     expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
     s_vtime_us = 60030u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+    expect(s_ge_tim_calls == 2u && s_ge_tim_id[1] == ge_tim_finish_id(GE_TIM_DL2) &&
+           s_ge_tim_fired_at[1] == 60030u,
            "GE timing: the second list completes 15 us after the first");
 
     /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
