@@ -2079,6 +2079,9 @@ typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
 int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
 uint32_t sched_thread_stack_free_size(uint32_t uid);  /* sceKernelGetThreadStackFreeSize */
+/* High user-partition blocks, carved from the top of the thread-stack arena (sched.c). */
+int      sched_partition_alloc_high(uint32_t size, uint32_t ceiling, uint32_t *base_out);
+void     sched_partition_release_high(uint32_t base, uint32_t size);
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);

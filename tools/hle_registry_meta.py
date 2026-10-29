@@ -195,7 +195,12 @@ HANDLER_METADATA = {
     },
     "h_AllocMemoryBlock": {
         "status": "partial",
-        "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias",
+            "PSPAutotests tests/sysmem/memblock.expected (2ed7c9c5, recorded on a PSP): names, types, sizes, option sizes and type-1 placement deltas",
+            "uOFW src/kd/sysmem/memblock.c (MIT): validation order and the AllocPartitionMemory call",
+        ],
+        "limitation": "types 0 (Low, the partition's bump and free-list path) and 1 (High, from the top of the arena thread stacks share, 0x100 granularity) allocate, and the type, size, option-size and NULL-name codes are pspautotests-recorded; the code for an unmapped name or option pointer is uOFW's 0x800200D3, not measured; memory-block UIDs are separate from partition-block UIDs here, while the PSP shares them (memblock.expected Partition usage)",
     },
     "h_GetMemoryBlockAddr": {
         "status": "partial",

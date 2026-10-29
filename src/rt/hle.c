@@ -650,7 +650,9 @@ static void user_partition_init(void) {
 /* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
  * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
  * writes malloc chunk metadata at the start of its UserSbrk block. */
-typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
+/* `high` marks a High block (sceKernelAllocMemoryBlock placement 1): it lives in the top-down
+ * arena the thread stacks share (sched_partition_alloc_high) and goes back there when freed. */
+typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
@@ -672,11 +674,14 @@ static uint32_t user_partition_ceiling(void) {
  * [0x082f0000, SR_NESTED_FRAME_END). A partition based below them (an image linked at a
  * low address) ends there, so no allocation is ever placed over a runtime stack. */
 #define USER_PARTITION_RUNTIME_STACKS_BASE 0x082f0000u   /* sched.c SR_VBLANK_STACK_BASE */
+static uint32_t partition_high_floor_above(uint32_t addr);
 static uint32_t user_partition_top(void) {
     uint32_t ceiling = user_partition_ceiling();
     if (s_heap_base < SR_NESTED_FRAME_END && ceiling > USER_PARTITION_RUNTIME_STACKS_BASE)
         ceiling = USER_PARTITION_RUNTIME_STACKS_BASE;
     uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
+    uint32_t high = partition_high_floor_above(s_heap_base);
+    if (high < floor) floor = high;
     return floor < ceiling ? floor : ceiling;
 }
 
@@ -878,8 +883,60 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].slot_size = slot_size;
         s_blocks[slot].prev      = prev;
         s_blocks[slot].next      = next;
+        s_blocks[slot].high      = 0;
     }
 
+    return uid;
+}
+
+/* Lowest live High block at or above addr, UINT32_MAX when none. */
+static uint32_t partition_high_floor_above(uint32_t addr) {
+    uint32_t floor = UINT32_MAX;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid != 0u && s_blocks[i].high && s_blocks[i].addr >= addr &&
+            s_blocks[i].addr < floor)
+            floor = s_blocks[i].addr;
+    return floor;
+}
+
+/* A High block (PSP_SMEM_High): the highest free address range that holds it, taken from the top
+ * of the arena the thread stacks share, as a PSP takes both from the top of the user partition.
+ * Sizes round up to the partition's 0x100-byte granularity: pspautotests sysmem/memblock.expected
+ * (2ed7c9c5) records two consecutive placement-1 blocks 0x100 apart for sizes 1 to 0x100, 0x200
+ * for 0x101, 0x1100 for 0x1001 and 0x10100 for 0x10001, the second below the first. Returns the
+ * block UID, or 0xFFFFFFFFu when no range holds it. */
+/* High blocks come from the stack arena, which lies above kernel RAM; a partition based below the
+ * runtime's stacks (an image linked low) ends under that arena, so it has no modelled High region
+ * and its callers stop by name. */
+static int partition_high_modelled(void) {
+    user_partition_init();
+    return s_heap_base >= SR_NESTED_FRAME_END;
+}
+
+static uint32_t alloc_block_high(uint32_t size) {
+    user_partition_init();
+    if (!partition_high_modelled()) return 0xFFFFFFFFu;
+    if (size == 0u || size > UINT32_MAX - 0xffu) return 0xFFFFFFFFu;
+    uint32_t slot_size = (size + 0xffu) & ~0xffu;
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid == 0u) { slot = i; break; }
+    if (slot < 0) {
+        if (s_nblocks >= HLE_MAX_PARTITION_BLOCKS) return 0xFFFFFFFFu;
+        slot = s_nblocks;
+    }
+    uint32_t addr = 0u;
+    if (!sched_partition_alloc_high(slot_size, user_partition_ceiling(), &addr)) return 0xFFFFFFFFu;
+    if (slot == s_nblocks) s_nblocks++;
+    sr_last_alloc_addr = addr;
+    uint32_t uid = sr_alloc_uid();
+    s_blocks[slot].uid       = uid;
+    s_blocks[slot].addr      = addr;
+    s_blocks[slot].size      = size;
+    s_blocks[slot].slot_size = slot_size;
+    s_blocks[slot].prev      = 0xFFFFFFFFu;
+    s_blocks[slot].next      = 0u;
+    s_blocks[slot].high      = 1;
     return uid;
 }
 
@@ -1037,6 +1094,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].slot_size = eff;
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
+    s_blocks[slot].high      = 0;
 
     return uid;
 }
@@ -2982,6 +3040,8 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
+#define HLE_KERNEL_ERROR_ERROR 0x80020001u          /* SCE_KERNEL_ERROR_ERROR */
+#define HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT 0x800200d2u /* SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT */
 
 static void hle_record_unsupported_import_stop(uint32_t, const char *);
 
@@ -3095,13 +3155,16 @@ static uint32_t free_block(uint32_t uid) {
              * and adjacent blocks are coalesced. */
             uint32_t addr = s_blocks[i].addr;
             uint32_t slot_sz = s_blocks[i].slot_size;
+            int high = s_blocks[i].high;
             s_blocks[i].uid = 0;                  /* slot now free */
             s_blocks[i].addr = 0;
             s_blocks[i].size = 0;
             s_blocks[i].slot_size = 0;
             s_blocks[i].prev = 0;
             s_blocks[i].next = 0;
-            partition_free_block(addr, slot_sz);
+            s_blocks[i].high = 0;
+            if (high) sched_partition_release_high(addr, slot_sz);
+            else partition_free_block(addr, slot_sz);
             if (getenv("SR_ALLOC_TRACE")) {
                 fprintf(stderr, "FreePartitionMemory: uid=0x%x addr=0x%08x marked free\n", uid, addr);
             }
@@ -3123,9 +3186,17 @@ static HleMemoryBlock *memory_block_find(uint32_t uid) {
     return NULL;
 }
 
-/* This handler models the documented main-user-partition Low placement with
- * the existing tracked partition allocator. Other valid placement policies
- * remain a named boundary until the allocator models their address ordering. */
+/* sceKernelAllocMemoryBlock(name, type, size, SceKernelMemoryBlockAllocOption *opt): a block of
+ * the main user partition. Measured on a PSP by pspautotests tests/sysmem/memblock.expected
+ * (2ed7c9c5): type 0 and 1 allocate; -1, 2..5 and every larger type return 0x800200D8; size 0 and
+ * 0xFFFFFFFF return 0x800200D9; an option block whose size word is anything but 4 (-1, 0..3, 5,
+ * 0x11 and larger) returns 0x800200D2, and 4 allocates; a NULL name returns 0x80020001, while an
+ * empty name and one longer than the 31-byte name field allocate. uOFW src/kd/sysmem/memblock.c
+ * (MIT) gives the same order: the name and option pointers, then the option size, then the type,
+ * then sceKernelAllocPartitionMemory(2, name, type, size, 0), whose type 0 is Low and 1 is High.
+ * Type 0 is the partition's Low path; type 1 (High) comes from the top of the arena the thread
+ * stacks share (alloc_block_high). Which code an unmapped name or option pointer returns is not
+ * measured; the pointer check returns uOFW's 0x800200D3. */
 static uint32_t h_AllocMemoryBlock(CpuState *s) {
     (void)s;
     uint32_t kind = A1;
@@ -3135,23 +3206,26 @@ static uint32_t h_AllocMemoryBlock(CpuState *s) {
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A3 && !sr_guest_span_readable(A3, 4u))
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A3) {
-        uint32_t options_size = MEM_R32(A3);
-        if (options_size < 4u) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
-        if (options_size > 4u) {
-            if (!sr_guest_span_readable(A3, options_size))
-                return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
-                                       "option extensions (%u bytes) are not supported yet",
-                                       options_size);
-        }
-    }
-    if (kind > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (A3 && MEM_R32(A3) != 4u) return HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT;
+    if (kind >= 2u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (!A0) return HLE_KERNEL_ERROR_ERROR;
     if (size == 0u || size > UINT32_MAX - 0xffu)
-        return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
-    if (kind != 0u) {
-        return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
-                                   "placement kind %u is not supported yet", kind);
+        return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    if (kind == 1u) {
+        if (!partition_high_modelled())
+            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                       "type 1 in a partition based below the runtime stacks is not modelled");
+        int high_slot = -1;
+        for (int i = 0; i < HLE_MAX_MEMORY_BLOCKS; i++) {
+            if (s_memory_blocks[i].uid == 0u) { high_slot = i; break; }
+        }
+        if (high_slot < 0) return HLE_KERNEL_ERROR_NO_MEMORY;
+        uint32_t high_backing = alloc_block_high(size);
+        if (high_backing == 0xffffffffu) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+        uint32_t high_uid = sr_alloc_uid();
+        s_memory_blocks[high_slot].uid = high_uid;
+        s_memory_blocks[high_slot].backing_uid = high_backing;
+        return high_uid;
     }
 
     int slot = -1;
@@ -5189,6 +5263,7 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
 #define GUEST_MODULE_OPTION_BYTES 20u
 #define GUEST_MODULE_PARTITION_USER 2u
 #define GUEST_MODULE_POSITION_LOW 0u
+#define GUEST_MODULE_POSITION_HIGH 1u
 /* The user partition hands out 256-byte slots (alloc_block). */
 #define GUEST_MODULE_PARTITION_GRANULE 0x100u
 
@@ -5315,9 +5390,9 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
                  "partition is modelled", opt.mpidtext, opt.mpiddata);
         return guest_module_boundary("guest-module-partition-unsupported", file, detail);
     }
-    if (opt.position != GUEST_MODULE_POSITION_LOW) {
-        snprintf(detail, sizeof(detail), "requested placement position %u; only Low placement "
-                 "is modelled", opt.position);
+    if (opt.position != GUEST_MODULE_POSITION_LOW && opt.position != GUEST_MODULE_POSITION_HIGH) {
+        snprintf(detail, sizeof(detail), "requested placement position %u; only Low and High "
+                 "placement are modelled", opt.position);
         return guest_module_boundary("guest-module-placement-unsupported", file, detail);
     }
 
@@ -5389,15 +5464,27 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
                                      "every resident-image slot is live");
     }
 
-    /* Memory, as the kernel's loader takes it: the lowest free user-partition range that
-     * holds the whole image (PSP_SMEM_Low). A relocatable image is aligned inside its
-     * block, which carries the slack an alignment above the partition granule needs; a
-     * fixed-address image owns exactly its link range. The status the guest sees when the
+    /* Memory, as the kernel's loader takes it: for a relocatable module, the lowest free
+     * user-partition range that holds the whole image (PSP_SMEM_Low), or with load option
+     * position 1 the highest (PSP_SMEM_High, alloc_block_high); uOFW src/kd/modulemgr/modulemgr.c
+     * (MIT) allocates a PRX body with the option's position as the block type. A relocatable
+     * image is aligned inside its block, which carries the slack an alignment above the
+     * partition granule needs; where inside that block the PSP's aligned High variant puts the
+     * image is not measured. A fixed-address image owns exactly its link range whatever the
+     * position, as uOFW's ELF path allocates by address. The status the guest sees when the
      * partition cannot hold the image is SCE_KERNEL_ERROR_NO_MEMORY (unmeasured). */
     uint32_t alloc_uid;
     uint32_t image = 0;
     if (code->relocatable) {
-        alloc_uid = alloc_block(span + (align - GUEST_MODULE_PARTITION_GRANULE));
+        uint32_t padded = span + (align - GUEST_MODULE_PARTITION_GRANULE);
+        if (opt.position == GUEST_MODULE_POSITION_HIGH && !partition_high_modelled()) {
+            free(bytes);
+            return guest_module_boundary("guest-module-placement-unsupported", file,
+                                         "High placement in a partition based below the runtime "
+                                         "stacks is not modelled");
+        }
+        alloc_uid = opt.position == GUEST_MODULE_POSITION_HIGH ? alloc_block_high(padded)
+                                                               : alloc_block(padded);
         if (alloc_uid != 0xFFFFFFFFu) {
             uint32_t block = block_addr(alloc_uid);
             image = (block + align - 1u) & ~(align - 1u);

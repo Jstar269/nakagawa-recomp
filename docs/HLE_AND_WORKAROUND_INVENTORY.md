@@ -335,7 +335,10 @@ Semantic handler census: **512** handlers across **25** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_AllocMemoryBlock`** (`sceKernel`): `sceKernelAllocMemoryBlock` (0xfe707fdf)
-  - Limitation: models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured
+  - Limitation: types 0 (Low, the partition's bump and free-list path) and 1 (High, from the top of the arena thread stacks share, 0x100 granularity) allocate, and the type, size, option-size and NULL-name codes are pspautotests-recorded; the code for an unmapped name or option pointer is uOFW's 0x800200D3, not measured; memory-block UIDs are separate from partition-block UIDs here, while the PSP shares them (memblock.expected Partition usage)
+  - Evidence: src/rt/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias
+  - Evidence: PSPAutotests tests/sysmem/memblock.expected (2ed7c9c5, recorded on a PSP): names, types, sizes, option sizes and type-1 placement deltas
+  - Evidence: uOFW src/kd/sysmem/memblock.c (MIT): validation order and the AllocPartitionMemory call
 - **`h_AllocateFpl`** (`sceKernel`): `sceKernelAllocateFpl` (0xd979e9bf)
   - Limitation: ordinary allocation, one finite timeout, one-waiter hand-off, delete wake, and measured block/status layout are covered; invalid output pointers, negative timeout handling, and multiple-waiter ordering are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 FPL cells)

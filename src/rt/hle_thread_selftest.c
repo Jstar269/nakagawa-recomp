@@ -2132,12 +2132,23 @@ static void test_runtime_placed_modules(void) {
            "runtime placement: a partition other than the user partition fails closed by name");
     MEM_W32(RT_OPTION_ADDR + 4u, 2u);
     MEM_W8(RT_OPTION_ADDR + 16u, 1u);
+    /* Position 1 is High (uOFW modulemgr.c). This fixture's partition is based low, below the
+     * runtime stacks, where no High region is modelled, so it fails closed by name; the High
+     * allocator itself is covered by the memory-block test. */
+    rt_capture_begin();
+    refused = rt_load(alpha_guest, RT_OPTION_ADDR);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-placement-unsupported module=rt-alpha.prx") != NULL &&
+               strstr(out, "below the runtime stacks") != NULL,
+           "runtime placement: High placement in a low-based partition fails closed by name");
+    MEM_W8(RT_OPTION_ADDR + 16u, 3u);
     rt_capture_begin();
     refused = rt_load(alpha_guest, RT_OPTION_ADDR);
     out = rt_capture_end();
     expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
                strstr(out, "guest-module-placement-unsupported module=rt-alpha.prx") != NULL,
-           "runtime placement: High placement fails closed by name");
+           "runtime placement: a position other than Low and High fails closed by name");
     MEM_W32(RT_OPTION_ADDR + 0u, 16u);   /* `position` lies past the declared size */
     uid = rt_load(alpha_guest, RT_OPTION_ADDR);
     expect(uid != 0u && (uid & 0x80000000u) == 0u &&
@@ -26427,15 +26438,49 @@ static void test_td23_guest_pointer_validation(void) {
            "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
+/* sceKernelAllocMemoryBlock against pspautotests tests/sysmem/memblock.expected (2ed7c9c5, recorded
+ * on a PSP) and uOFW src/kd/sysmem/memblock.c: types 0 and 1 allocate and every other type returns
+ * 0x800200D8; size 0 and 0xFFFFFFFF return 0x800200D9; an option size other than 4 returns
+ * 0x800200D2; a NULL name returns 0x80020001; type 1 (High) blocks sit at the top, each further
+ * one just below the last at 0x100-byte granularity. Before this change type 1 stopped the run,
+ * NULL names were accepted and the size and option codes were 0x800201BC or a stop. */
+static uint32_t memblock_alloc(uint32_t name, uint32_t type, uint32_t size, uint32_t opt) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = name; cpu.r[5] = type; cpu.r[6] = size; cpu.r[7] = opt;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
+}
+
+static uint32_t memblock_addr(uint32_t uid, uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid; cpu.r[5] = out;
+    MEM_W32(out, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u ? MEM_R32(out) : 0u;
+}
+
+static uint32_t memblock_free(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK);
+}
+
 static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_compiled_sdk_version(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
     const uint32_t options = 0x00280000u;
     const uint32_t addr_out = 0x00280004u;
+    const uint32_t name = 0x00280010u;
+    const uint32_t long_name = 0x00280020u;
     reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
     sr_hle_test_partition_reset();
     sr_hle_init();
     MEM_W32(options, 4u);
+    title_hle_write_cstr(name, "test");
+    title_hle_write_cstr(long_name, "123456789012345678901234567890123456789012345678901234567890");
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -26443,106 +26488,102 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
            "sceKernelFreeMemoryBlock rejects UID zero as unknown");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;          /* name is debug-only and may be NULL */
-    cpu.r[5] = 0u;          /* PSP_SMEM_Low */
-    cpu.r[6] = 0x240u;
-    cpu.r[7] = options;
-    uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
-    expect(uid != 0u && uid < 0x80000000u,
-           "sceKernelAllocMemoryBlock allocates its documented Low placement");
+    uint32_t uid = memblock_alloc(name, 0u, 0x240u, options);
+    expect(uid != 0u && uid < 0x80000000u, "sceKernelAllocMemoryBlock type 0 allocates (Low)");
     if (uid != 0u && uid < 0x80000000u) {
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        cpu.r[5] = addr_out;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u &&
-                   MEM_R32(addr_out) != 0u,
-               "sceKernelGetMemoryBlockAddr writes the allocated guest address");
-
+        expect(memblock_addr(uid, addr_out) != 0u, "sceKernelGetMemoryBlockAddr writes the allocated guest address");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = uid;
         cpu.r[5] = 0x0bffffffu; /* 4-byte output crosses the guest-memory boundary */
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200d3u,
                "sceKernelGetMemoryBlockAddr rejects an invalid output span");
-
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0u,
-               "sceKernelFreeMemoryBlock releases its allocation");
+        expect(memblock_free(uid) == 0u, "sceKernelFreeMemoryBlock releases its allocation");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = uid;
         cpu.r[5] = addr_out;
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200cbu,
                "sceKernelGetMemoryBlockAddr rejects a freed UID");
-
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
-               "sceKernelFreeMemoryBlock rejects a freed UID");
+        expect(memblock_free(uid) == 0x800200cbu, "sceKernelFreeMemoryBlock rejects a freed UID");
     }
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 1u;          /* valid PSP_SMEM_High, not modeled yet */
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
-           "sceKernelAllocMemoryBlock refuses valid placement kinds without modeled semantics");
+    /* Names: NULL fails with 0x80020001; empty and longer than the name field allocate. */
+    expect(memblock_alloc(0u, 1u, 0x100u, 0u) == 0x80020001u, "a NULL name returns 0x80020001");
+    title_hle_write_cstr(addr_out, "");
+    uint32_t blank = memblock_alloc(addr_out, 1u, 0x100u, 0u);
+    uint32_t longer = memblock_alloc(long_name, 1u, 0x100u, 0u);
+    expect(blank < 0x80000000u && longer < 0x80000000u && memblock_free(blank) == 0u &&
+               memblock_free(longer) == 0u,
+           "an empty name and a 60-byte name allocate");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 5u;          /* outside the documented kind enum */
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d8u,
-           "sceKernelAllocMemoryBlock reports ILLEGAL_MEMBLOCKTYPE for an unknown kind");
+    /* Types: only 0 and 1. */
+    static const uint32_t bad_types[] = {0xffffffffu, 2u, 3u, 4u, 5u, 0x11u, 0x101u, 0x10000001u};
+    int types_ok = 1;
+    for (size_t i = 0; i < sizeof(bad_types) / sizeof(bad_types[0]); i++)
+        if (memblock_alloc(name, bad_types[i], 0x100u, 0u) != 0x800200d8u) types_ok = 0;
+    expect(types_ok, "types -1 and 2 upward return 0x800200D8");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = 0xfffffffcu;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
-           "sceKernelAllocMemoryBlock rejects an unreadable options span");
+    /* Sizes: 0 and -1 fail with 0x800200D9. */
+    expect(memblock_alloc(name, 1u, 0u, 0u) == 0x800200d9u &&
+               memblock_alloc(name, 1u, 0xffffffffu, 0u) == 0x800200d9u,
+           "size 0 and 0xFFFFFFFF return 0x800200D9");
 
-    MEM_W32(options, 0u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800201bcu,
-           "sceKernelAllocMemoryBlock rejects an undersized options header");
+    /* Option sizes: only 4. */
+    static const uint32_t bad_opts[] = {0xffffffffu, 0u, 1u, 2u, 3u, 5u, 0x11u, 0x10000001u};
+    int opts_ok = 1;
+    for (size_t i = 0; i < sizeof(bad_opts) / sizeof(bad_opts[0]); i++) {
+        MEM_W32(options, bad_opts[i]);
+        if (memblock_alloc(name, 1u, 0x100u, options) != 0x800200d2u) opts_ok = 0;
+    }
+    MEM_W32(options, 4u);
+    uint32_t opt4 = memblock_alloc(name, 1u, 0x100u, options);
+    expect(opts_ok && opt4 < 0x80000000u && memblock_free(opt4) == 0u,
+           "an option size other than 4 returns 0x800200D2 and 4 allocates");
+    expect(memblock_alloc(name, 0u, 0x100u, 0xfffffffcu) == 0x800200d3u,
+           "an unreadable option block returns 0x800200D3");
 
-    MEM_W32(options, 8u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    uint32_t alloc_stops = sr_hle_test_unmodelled_stops();
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == alloc_stops + 1u,
-           "sceKernelAllocMemoryBlock stops the run by name on unmodeled options extensions");
-
-    MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = 0x0bfffffcu;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
-           "sceKernelAllocMemoryBlock rejects an incomplete declared options span");
+    /* High: each block of size N lands round_up(N, 0x100) below a 0x100-byte one just placed. */
+    static const struct { uint32_t size, delta; } deltas[] = {
+        {1u, 0x100u}, {5u, 0x100u}, {0x11u, 0x100u}, {0x101u, 0x200u}, {0x1001u, 0x1100u},
+        {0x10001u, 0x10100u},
+    };
+    int deltas_ok = 1;
+    uint32_t high_uids[2 * 6];
+    size_t nhigh = 0;
+    uint32_t top_before = sr_hle_test_partition_bump_top();
+    for (size_t i = 0; i < sizeof(deltas) / sizeof(deltas[0]); i++) {
+        uint32_t u1 = memblock_alloc(name, 1u, 0x100u, 0u);
+        uint32_t u2 = memblock_alloc(name, 1u, deltas[i].size, 0u);
+        if (u1 >= 0x80000000u || u2 >= 0x80000000u) { deltas_ok = 0; continue; }
+        high_uids[nhigh++] = u1;
+        high_uids[nhigh++] = u2;
+        uint32_t a1 = memblock_addr(u1, addr_out), a2 = memblock_addr(u2, addr_out);
+        if (a1 - a2 != deltas[i].delta || (a2 & 0xffu) != 0u) deltas_ok = 0;
+    }
+    expect(deltas_ok, "type 1 blocks stack downward at 0x100-byte granularity (sizes 1..0x10001)");
+    uint32_t lowest = memblock_addr(high_uids[nhigh - 1u], addr_out);
+    expect(sr_hle_test_partition_bump_top() == lowest && lowest < top_before,
+           "Low allocations and the free sizes now stop at the lowest High block");
+    uint32_t low = memblock_alloc(name, 0u, 0x100u, 0u);
+    uint32_t low_addr = memblock_addr(low, addr_out);
+    expect(low < 0x80000000u && low_addr + 0x100u <= lowest, "a Low block still comes from the bottom");
+    int freed_ok = memblock_free(low) == 0u;
+    for (size_t i = 0; i < nhigh; i++)
+        if (memblock_free(high_uids[i]) != 0u) freed_ok = 0;
+    expect(freed_ok && sr_hle_test_partition_bump_top() == top_before,
+           "freeing every High block gives the top of the partition back");
+    uint32_t again = memblock_alloc(name, 1u, 0x100u, 0u);
+    expect(again < 0x80000000u && memblock_addr(again, addr_out) + 0x100u == top_before &&
+               memblock_free(again) == 0u,
+           "a High block after the frees lands at the top again");
 
     sr_hle_test_partition_reset();
     MEM_W32(options, 4u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0xffffff00u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d9u,
+    expect(memblock_alloc(name, 0u, 0xffffff00u, options) == 0x800200d9u,
            "sceKernelAllocMemoryBlock returns MEMBLOCK_ALLOC_FAILED when partition space is exhausted");
+    expect(memblock_alloc(name, 1u, 0xffffff00u, options) == 0x800200d9u,
+           "a High block larger than the arena returns MEMBLOCK_ALLOC_FAILED");
+    s_fixture_loaded_end = 0x00400000u;
+    sr_hle_test_partition_reset();
 
     const uint32_t sdk_version = 0x03070000u;
     memset(&cpu, 0, sizeof(cpu));
