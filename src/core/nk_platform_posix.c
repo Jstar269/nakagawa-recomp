@@ -406,6 +406,26 @@ bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
     return resolve_posix_path(NK_PATH_DATA, out_path, max_len);
 }
 
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len) {
+    return resolve_posix_path(type, out_path, max_len);
+}
+
+bool nk_platform_get_executable_path(char *out_path, size_t max_len) {
+    if (!out_path || max_len < 2) return false;
+    out_path[0] = '\0';
+#if defined(__linux__)
+    ssize_t length = readlink("/proc/self/exe", out_path, max_len - 1u);
+    if (length <= 0 || (size_t)length >= max_len - 1u) {
+        out_path[0] = '\0';
+        return false;
+    }
+    out_path[length] = '\0';
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
 }
@@ -413,6 +433,19 @@ bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
 bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len) {
     (void)out_path;
     (void)max_len;
+    return false;
+}
+
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    const char *home = getenv("HOME");
+    if (!home || !*home) return false;
+    int written = snprintf(out_path, max_len, "%s/Desktop", home);
+    if (written > 0 && (size_t)written < max_len && nk_platform_dir_exists(out_path)) return true;
+    written = snprintf(out_path, max_len, "%s", home);
+    if (written > 0 && (size_t)written < max_len && nk_platform_dir_exists(out_path)) return true;
+    out_path[0] = '\0';
     return false;
 }
 

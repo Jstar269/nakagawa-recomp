@@ -4897,6 +4897,11 @@ static void ge_note_unhandled_cmd(uint32_t cmd, uint32_t op) {
 }
 
 unsigned long g_ge_list_sig=0, g_ge_prim_count=0;
+/* The 16-bit argument of the FINISH command the last list ran (sceGuFinishId's id). The GE
+ * hands it to the finish callback as that callback's id, as it hands a SIGNAL's to the signal
+ * callback (PSP-GE-TIMING-001 c4: id 0x5a5 for SIGNAL 0x5a5). 0 when no FINISH ran. */
+static uint32_t s_ge_finish_id;
+uint32_t ge_last_finish_id(void) { return s_ge_finish_id; }
 /* Per-list write accounting for SR_GEWATCH: shows whether a list that cleared a buffer
  * also drew non-black content into it, and which buffer it targeted. */
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
@@ -4904,6 +4909,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume);
 
 uint32_t ge_run_list(uint32_t addr, int resume) {
     uint64_t perf_started = sr_perf_now_ns();
+    if (!resume) s_ge_finish_id = 0u;   /* a new list has run no FINISH yet */
     ge_cpu_profile_configure();
 #ifdef SR_GE_FRONTEND_PROFILE
     int frontend_profile_active = sr_perf_enabled && s_cpu_profile;
@@ -5492,6 +5498,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 pending_signal=1; pending_signal_op=op; break;
             case GE_FINISH:
                 s_ge_run_tail_words++;   /* FINISH and the END after it are part of T0 */
+                s_ge_finish_id = data & 0xFFFFu;
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
                                      list_addr, addr - 4u, data, 0u);
