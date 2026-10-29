@@ -13,7 +13,11 @@
 # The publication boundary is therefore enforced by:
 #   1. a mandatory pull request for the default branch (no direct pushes);
 #   2. required status checks that must pass before merge, including the
-#      publication/hygiene gate;
+#      publication/hygiene gate. "Required" means produced by the trusted gate:
+#      the Trusted CI verdict workflow (.github/workflows/ci-trust-verdict.yml,
+#      docs/CI.md) judges each job by its producer at the exact head, and a
+#      change to a workflow or CI tool needs the ci-change-approved label on
+#      that head. It is enforcing once the ruleset requires it (#373);
 #   3. the fail-closed canonical policy in assets/public_source_profile.json,
 #      which rejects unknown and excluded paths mechanically.
 #
@@ -45,6 +49,10 @@
 /.github/workflows/                     @Jstar269
 /.github/CODEOWNERS                     @Jstar269
 /.pre-commit-config.yaml                @Jstar269
+/tools/ci_paths.py                      @Jstar269
+/tools/ci_required.py                   @Jstar269
+/tools/ci_test_shards.py                @Jstar269
+/tools/ci_trust_verdict.py              @Jstar269
 
 # Licence, notice and provenance surface.
 /LICENSE                                @Jstar269
