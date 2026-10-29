@@ -233,7 +233,8 @@ instead of pretending it worked or crashing without a word.
   the game; the player then shows that the game stopped early instead of a
   frozen screen. Manifests that still set `libfont_ready_flag_addr`
   fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field and let the game's
-  own startup run. Checking that startup with real games is in the works
+  own startup run. A game that loads its `libfont.prx` by a path relative to
+  its data directory gets the translated copy too
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
   project's open-font converter is finished
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
