@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3137a92341c78613baebbce0f610df70423c9c957d3516a972829b52913dea6e"
+      "sha256": "173b6d389c037042722db4d5afdcd83026aa357a066b8c8a9b551219bd16d7d1"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -9372,7 +9372,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a38abe85ad2a20a72c4395a63d687565a5f58ae1453e8ec2e7226780e9c6f30"
+      "sha256": "441593a9754bf1ae71a38de7e581054ebb2ce0f4f04db5e06c6353c0291e6990"
     },
     {
       "path": "src/rt/perf.h",
@@ -14775,7 +14775,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7920cd531d977f8c10d7ceec7a1e7973209ab75a23a5a3bf8019fba5136eec71"
+      "sha256": "2af23140405f8f7d7318a9d9bf8c430bdb5ebc9051f32001dd2cbb686eca68ff"
     },
     {
       "path": "tools/test_pgf_validate_parity.py",
