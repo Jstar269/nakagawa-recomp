@@ -379,6 +379,7 @@
     "fixtures/psp_oracle/libfont_imports.S",
     "fixtures/psp_oracle/mutex_imports.S",
     "fixtures/psp_oracle/probe.c",
+    "fixtures/psp_oracle/probe_dmac_timing.c",
     "fixtures/psp_oracle/probe_exception_a1.c",
     "fixtures/psp_oracle/probe_exception_a2.c",
     "fixtures/psp_oracle/probe_exception_a3.c",
