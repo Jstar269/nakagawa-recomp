@@ -1726,7 +1726,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "cf575886a7c9305a39730c1281da0963bbe228a40f45236867281cfd98850b00"
+      "sha256": "06d5cc7a2e81b91fdec0493bf0443dba157101d46acab8fdbde59844f482c9fb"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
