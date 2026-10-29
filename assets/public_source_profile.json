@@ -505,6 +505,8 @@
     "src/player/package_builder.h",
     "src/player/player_state.c",
     "src/player/player_state.h",
+    "src/player/player_ui_test.c",
+    "src/player/player_ui_test.h",
     "src/player/setup_staging.c",
     "src/player/setup_staging.h",
     "src/player/ui/player_ui_art.c",
