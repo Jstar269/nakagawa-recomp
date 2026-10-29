@@ -2,11 +2,17 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 /* Check for updates (src/player/update_check.c): version order, the release
- * list, checksums, the download's verification and the install folder. Every
- * answer comes from a fake transport; nothing here touches the internet
- * (AGENTS.md section 5). fixtures/update_check/github_releases_20261028.json is
- * the public Releases API answer for this repository, recorded on 2026-10-28
- * with its author and uploader objects removed. */
+ * list, checksums and their minisign signatures, the download's verification and
+ * the install folder. Every answer comes from a fake transport; nothing here
+ * touches the internet (AGENTS.md section 5).
+ * fixtures/update_check/github_releases_20261028.json is the public Releases API
+ * answer for this repository, recorded on 2026-10-28 with its author and uploader
+ * objects removed.
+ *
+ * Signatures here are made with a TEST-ONLY key that this file derives at run
+ * time from a fixed label (test_key below), so no key is stored anywhere; it is
+ * not the update-signing key and verifies nothing outside this test. Real
+ * minisign output is checked in tests/native/test_nk_sig.c. */
 
 #if !defined(_WIN32) && !defined(_WIN64)
 #define _POSIX_C_SOURCE 200809L
@@ -15,6 +21,8 @@
 #include "update_check.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
+#include "monocypher.h"
+#include "monocypher-ed25519.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -28,6 +36,78 @@
 /* The v0.0.1 ZIP's published .sha256 asset, byte for byte. */
 static const char k_recorded_checksum[] =
     RECORDED_ZIP_SHA256 "  nakagawa-recomp-0.0.1-windows-x64.zip\r\n";
+
+/* ---- minisign signatures by a TEST-ONLY key --------------------------------------- */
+
+typedef struct {
+    NkMinisignKey key;           /* what the player is given to check with */
+    uint8_t secret[64];          /* Monocypher's Ed25519 secret key: seed, public key */
+} TestSigner;
+
+/* A key pair derived from a label: BLAKE2b-256 of the label is the Ed25519 seed,
+   and the first 8 bytes of BLAKE2b-512 of it are the key ID. */
+static TestSigner test_key(const char *label) {
+    TestSigner signer;
+    uint8_t seed[32];
+    uint8_t id[64];
+    crypto_blake2b(seed, sizeof(seed), (const uint8_t *)label, strlen(label));
+    crypto_blake2b(id, sizeof(id), (const uint8_t *)label, strlen(label));
+    memcpy(signer.key.key_id, id, sizeof(signer.key.key_id));
+    crypto_ed25519_key_pair(signer.secret, signer.key.public_key, seed);   /* wipes seed */
+    return signer;
+}
+
+static void base64(const uint8_t *data, size_t size, char *out) {
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t used = 0;
+    for (size_t i = 0; i < size; i += 3) {
+        uint32_t bits = (uint32_t)data[i] << 16;
+        if (i + 1 < size) bits |= (uint32_t)data[i + 1] << 8;
+        if (i + 2 < size) bits |= data[i + 2];
+        out[used++] = alphabet[(bits >> 18) & 63u];
+        out[used++] = alphabet[(bits >> 12) & 63u];
+        out[used++] = i + 1 < size ? alphabet[(bits >> 6) & 63u] : '=';
+        out[used++] = i + 2 < size ? alphabet[bits & 63u] : '=';
+    }
+    out[used] = '\0';
+}
+
+/* The .minisig `minisign -S` writes for message, "ED" (prehashed) unless legacy. */
+static void sign_minisig(const TestSigner *signer, const char *message, size_t length,
+                         bool legacy, const char *trusted_comment, char *out, size_t out_size) {
+    uint8_t sig[74];
+    uint8_t digest[64];
+    uint8_t global[64];
+    uint8_t signed_comment[64 + 256];
+    char sig_text[104];
+    char global_text[92];
+    size_t comment_length = strlen(trusted_comment);
+    assert(comment_length <= 256);
+    memcpy(sig, legacy ? "Ed" : "ED", 2);
+    memcpy(sig + 2, signer->key.key_id, 8);
+    if (legacy) {
+        crypto_ed25519_sign(sig + 10, signer->secret, (const uint8_t *)message, length);
+    } else {
+        crypto_blake2b(digest, sizeof(digest), (const uint8_t *)message, length);
+        crypto_ed25519_sign(sig + 10, signer->secret, digest, sizeof(digest));
+    }
+    memcpy(signed_comment, sig + 10, 64);
+    memcpy(signed_comment + 64, trusted_comment, comment_length);
+    crypto_ed25519_sign(global, signer->secret, signed_comment, 64 + comment_length);
+    base64(sig, sizeof(sig), sig_text);
+    base64(global, sizeof(global), global_text);
+    assert((size_t)snprintf(out, out_size,
+                            "untrusted comment: signature from minisign secret key\n%s\n"
+                            "trusted comment: %s\n%s\n",
+                            sig_text, trusted_comment, global_text) < out_size);
+}
+
+static const char k_good_checksum[] =   /* SHA-256 of "hello" */
+    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    "  nakagawa-recomp-0.0.2-windows-x64.zip\r\n";
+#define TEST_TRUSTED_COMMENT "nakagawa-recomp 0.0.2 windows-x64 zip checksum"
+#define TEST_SIGNER_LABEL "Nakagawa Recomp TEST-ONLY update signing key; never for releases"
 
 /* ---- A fake transport: each URL answers with fixed bytes ------------------------ */
 
@@ -182,6 +262,8 @@ static void test_recorded_release_list(void) {
     assert(release.zip_size == 284758051u);
     assert(strcmp(release.zip_digest, RECORDED_ZIP_SHA256) == 0);
     assert(release.checksum_size == 105u);
+    /* v0.0.1 shipped before release signing: no signature, so no download. */
+    assert(!release.has_signature && release.signature_url[0] == '\0');
     /* The notes are the first two paragraphs as plain text: the quoted notice
        without its [!IMPORTANT] marker, bold or link, then the first paragraph. */
     {
@@ -264,6 +346,28 @@ static void test_synthetic_release_lists(void) {
                   "\"browser_download_url\":\"" DOWNLOAD "v1.0.0/nakagawa-recomp-1.0.0-"
                   "windows-x64.zip.sha256\"}]}]", &release, &error));
     assert(strcmp(error.code, "UPDATE_ANSWER_UNEXPECTED") == 0);
+    /* The checksum's signature: read beside it, and size-capped and bound to this
+       repository like it. */
+    assert(parse("[{\"tag_name\":\"v1.0.0\",\"html_url\":\"" PAGE "v1.0.0\",\"assets\":"
+                 "[{\"name\":\"nakagawa-recomp-1.0.0-windows-x64.zip.sha256.minisig\",\"size\":"
+                 "330,\"browser_download_url\":\"" DOWNLOAD "v1.0.0/nakagawa-recomp-1.0.0-"
+                 "windows-x64.zip.sha256.minisig\"},{\"name\":\"nakagawa-recomp-0.9.0-"
+                 "windows-x64.zip.sha256.minisig\",\"size\":330,\"browser_download_url\":\""
+                 DOWNLOAD "v1.0.0/nakagawa-recomp-0.9.0-windows-x64.zip.sha256.minisig\"}]}]",
+                 &release, &error));
+    assert(release.has_signature && release.signature_size == 330u);
+    assert(strcmp(release.signature_url, DOWNLOAD "v1.0.0/nakagawa-recomp-1.0.0-windows-x64.zip"
+                                         ".sha256.minisig") == 0);
+    assert(!parse("[{\"tag_name\":\"v1.0.0\",\"html_url\":\"" PAGE "v1.0.0\",\"assets\":"
+                  "[{\"name\":\"nakagawa-recomp-1.0.0-windows-x64.zip.sha256.minisig\",\"size\":"
+                  "4097,\"browser_download_url\":\"" DOWNLOAD "v1.0.0/nakagawa-recomp-1.0.0-"
+                  "windows-x64.zip.sha256.minisig\"}]}]", &release, &error));
+    assert(strcmp(error.code, "UPDATE_ANSWER_UNEXPECTED") == 0);
+    assert(!parse("[{\"tag_name\":\"v1.0.0\",\"html_url\":\"" PAGE "v1.0.0\",\"assets\":"
+                  "[{\"name\":\"nakagawa-recomp-1.0.0-windows-x64.zip.sha256.minisig\",\"size\":"
+                  "330,\"browser_download_url\":\"" DOWNLOAD "v0.9.0/nakagawa-recomp-1.0.0-"
+                  "windows-x64.zip.sha256.minisig\"}]}]", &release, &error));
+    assert(strcmp(error.code, "UPDATE_ANSWER_UNEXPECTED") == 0);
     assert(!parse("[]", &release, &error) && strcmp(error.code, "UPDATE_NO_RELEASES") == 0);
     assert(!parse("{\"message\":\"API rate limit exceeded\"}", &release, &error));
     assert(strcmp(error.code, "UPDATE_ANSWER_UNREADABLE") == 0);
@@ -286,9 +390,22 @@ static void test_short_notes(void) {
     printf("[UPDATE_CHECK_TEST] short notes: PASS\n");
 }
 
-/* ---- Checksums ------------------------------------------------------------------- */
+/* ---- Checksums and signatures ---------------------------------------------------- */
+
+/* nk_update_expected_sha256 on checksum signed by signer (prehashed, the minisign
+   default), as a release with both files would serve them. */
+static bool expected_signed(const NkUpdateRelease *release, const TestSigner *signer,
+                            const NkMinisignKey *key, const char *checksum, char sha[65],
+                            NkUpdateError *error) {
+    char minisig[512];
+    sign_minisig(signer, checksum, strlen(checksum), false, TEST_TRUSTED_COMMENT, minisig,
+                 sizeof(minisig));
+    return nk_update_expected_sha256(release, key, checksum, strlen(checksum), minisig,
+                                     strlen(minisig), sha, error);
+}
 
 static void test_checksums(void) {
+    TestSigner signer = test_key(TEST_SIGNER_LABEL);
     NkUpdateRelease release;
     NkUpdateError error;
     char sha[65];
@@ -296,11 +413,11 @@ static void test_checksums(void) {
     memset(&release, 0, sizeof(release));
     snprintf(release.zip_name, sizeof(release.zip_name), "%s", name);
     release.has_zip = true;
+    release.has_checksum = true;
+    release.has_signature = true;
     /* Good: the recorded file, also with an upper-case digest, a byte-order mark,
        a binary-mode star and a bare LF. */
-    release.has_checksum = true;
-    assert(nk_update_expected_sha256(&release, k_recorded_checksum, strlen(k_recorded_checksum),
-                                     sha, &error));
+    assert(expected_signed(&release, &signer, &signer.key, k_recorded_checksum, sha, &error));
     assert(strcmp(sha, RECORDED_ZIP_SHA256) == 0);
     {
         static const char variant[] = "\xEF\xBB\xBF" "032AFCE5B9B4713E6C4FA065C299F72AB732F599"
@@ -308,38 +425,183 @@ static void test_checksums(void) {
                                       "windows-x64.zip\n";
         assert(nk_update_parse_checksum(variant, strlen(variant), name, sha, &error));
         assert(strcmp(sha, RECORDED_ZIP_SHA256) == 0);
+        assert(expected_signed(&release, &signer, &signer.key, variant, sha, &error));
+        assert(strcmp(sha, RECORDED_ZIP_SHA256) == 0);
     }
     /* GitHub's digest agrees: good. */
     snprintf(release.zip_digest, sizeof(release.zip_digest), "%s", RECORDED_ZIP_SHA256);
-    assert(nk_update_expected_sha256(&release, k_recorded_checksum, strlen(k_recorded_checksum),
-                                     sha, &error));
-    /* Bad: GitHub's digest disagrees with the checksum file. */
+    assert(expected_signed(&release, &signer, &signer.key, k_recorded_checksum, sha, &error));
+    /* Bad: GitHub's digest disagrees with the signed checksum file. */
     release.zip_digest[0] = 'f';
-    assert(!nk_update_expected_sha256(&release, k_recorded_checksum,
-                                      strlen(k_recorded_checksum), sha, &error));
+    assert(!expected_signed(&release, &signer, &signer.key, k_recorded_checksum, sha, &error));
     assert(strcmp(error.code, "UPDATE_CHECKSUM_CONFLICT") == 0 && sha[0] == '\0');
     release.zip_digest[0] = '\0';
-    /* Bad: another file's checksum, two files, a short digest, no name. */
+    /* Bad, even when validly signed: two files, a short digest, no name. */
     {
         static const char *const bad[] = {
-            RECORDED_ZIP_SHA256 "  nakagawa-recomp-0.0.2-windows-x64.zip\n",
             RECORDED_ZIP_SHA256 "  nakagawa-recomp-0.0.1-windows-x64.zip\n"
             RECORDED_ZIP_SHA256 "  other.zip\n",
             "032afce5  nakagawa-recomp-0.0.1-windows-x64.zip\n",
             RECORDED_ZIP_SHA256 "\n",
             RECORDED_ZIP_SHA256 "nakagawa-recomp-0.0.1-windows-x64.zip\n",
+            RECORDED_ZIP_SHA256 "  \n",
             "",
         };
         for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-            assert(!nk_update_expected_sha256(&release, bad[i], strlen(bad[i]), sha, &error));
+            assert(!expected_signed(&release, &signer, &signer.key, bad[i], sha, &error));
             assert(strcmp(error.code, "UPDATE_CHECKSUM_INVALID") == 0 && sha[0] == '\0');
         }
     }
+    /* Bad: another file's checksum, even validly signed. */
+    {
+        static const char other[] = RECORDED_ZIP_SHA256 "  nakagawa-recomp-0.0.2-windows-x64.zip\n";
+        assert(!nk_update_parse_checksum(other, strlen(other), name, sha, &error));
+        assert(strcmp(error.code, "UPDATE_CHECKSUM_WRONG_FILE") == 0 && sha[0] == '\0');
+    }
     /* Missing: no checksum file in the release. */
     release.has_checksum = false;
-    assert(!nk_update_expected_sha256(&release, NULL, 0, sha, &error));
+    assert(!nk_update_expected_sha256(&release, &signer.key, NULL, 0, NULL, 0, sha, &error));
     assert(strcmp(error.code, "UPDATE_CHECKSUM_MISSING") == 0);
     printf("[UPDATE_CHECK_TEST] checksums: PASS\n");
+}
+
+/* The signature decides before anything in the checksum file is read. */
+static void test_signatures(void) {
+    TestSigner signer = test_key(TEST_SIGNER_LABEL);
+    TestSigner stranger = test_key("another TEST-ONLY key, as a stranger would sign with");
+    NkUpdateRelease release;
+    NkUpdateError error;
+    NkMinisignKey key = signer.key;
+    char sha[65];
+    char minisig[512];
+    const size_t good_length = strlen(k_good_checksum);
+    memset(&release, 0, sizeof(release));
+    snprintf(release.tag, sizeof(release.tag), "v0.0.2");
+    snprintf(release.zip_name, sizeof(release.zip_name), "nakagawa-recomp-0.0.2-windows-x64.zip");
+    release.has_zip = true;
+    release.has_checksum = true;
+    release.has_signature = true;
+
+    /* Good: the prehashed form (minisign's default) and the legacy form. */
+    for (int legacy = 0; legacy < 2; legacy++) {
+        sign_minisig(&signer, k_good_checksum, good_length, legacy != 0, TEST_TRUSTED_COMMENT,
+                     minisig, sizeof(minisig));
+        assert(nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, minisig,
+                                         strlen(minisig), sha, &error));
+        assert(strncmp(sha, k_good_checksum, 64) == 0 && error.code[0] == '\0');
+    }
+    sign_minisig(&signer, k_good_checksum, good_length, false, TEST_TRUSTED_COMMENT, minisig,
+                 sizeof(minisig));
+
+    /* A tampered checksum file: one digit, or one byte added. */
+    {
+        char tampered[sizeof(k_good_checksum) + 1];
+        memcpy(tampered, k_good_checksum, sizeof(k_good_checksum));
+        tampered[0] = '3';
+        assert(!nk_update_expected_sha256(&release, &key, tampered, good_length, minisig,
+                                          strlen(minisig), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0 && sha[0] == '\0');
+        memcpy(tampered, k_good_checksum, sizeof(k_good_checksum));
+        tampered[good_length] = '\n';
+        assert(!nk_update_expected_sha256(&release, &key, tampered, good_length + 1, minisig,
+                                          strlen(minisig), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0);
+    }
+    /* A tampered trusted comment: the global signature no longer matches. */
+    {
+        char tampered[512];
+        char *at;
+        snprintf(tampered, sizeof(tampered), "%s", minisig);
+        at = strstr(tampered, "0.0.2 windows");
+        assert(at);
+        at[4] = '3';
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, tampered,
+                                          strlen(tampered), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0);
+    }
+    /* Signed by another key: its key ID is not this player's. */
+    {
+        char other[512];
+        sign_minisig(&stranger, k_good_checksum, good_length, false, TEST_TRUSTED_COMMENT, other,
+                     sizeof(other));
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, other,
+                                          strlen(other), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_UNKNOWN_KEY") == 0);
+        assert(strstr(error.message, "release page") != NULL);
+        /* The stranger copies this key's ID: the signature itself still fails. */
+        memcpy(stranger.key.key_id, signer.key.key_id, sizeof(stranger.key.key_id));
+        sign_minisig(&stranger, k_good_checksum, good_length, false, TEST_TRUSTED_COMMENT, other,
+                     sizeof(other));
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, other,
+                                          strlen(other), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0);
+        /* The player holding another public key under the same ID: fails too. */
+        {
+            NkMinisignKey wrong = key;
+            wrong.public_key[0] ^= 0x40u;
+            assert(!nk_update_expected_sha256(&release, &wrong, k_good_checksum, good_length,
+                                              minisig, strlen(minisig), sha, &error));
+            assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0);
+        }
+    }
+    /* Truncated or garbled signature files. */
+    {
+        char garbled[512];
+        size_t length = strlen(minisig);
+        for (size_t cut = 0; cut + 1 < length; cut += 5) {
+            assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length,
+                                              minisig, cut, sha, &error));
+            assert(strncmp(error.code, "UPDATE_SIGNATURE_", 17) == 0 && sha[0] == '\0');
+        }
+        snprintf(garbled, sizeof(garbled), "%s", minisig);
+        garbled[strlen("untrusted comment: signature from minisign secret key\n") + 20] = '#';
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, garbled,
+                                          strlen(garbled), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_UNREADABLE") == 0);
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length,
+                                          k_good_checksum, good_length, sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_UNREADABLE") == 0);
+        assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, "", 0,
+                                          sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_UNREADABLE") == 0);
+    }
+    /* No signature in the release. */
+    release.has_signature = false;
+    assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, NULL, 0, sha,
+                                      &error));
+    assert(strcmp(error.code, "UPDATE_SIGNATURE_MISSING") == 0);
+    assert(strcmp(error.title, "Release Not Signed") == 0);
+    release.has_signature = true;
+    /* A build with no key: nothing is trusted, whatever the files say. */
+    assert(!nk_update_expected_sha256(&release, NULL, k_good_checksum, good_length, minisig,
+                                      strlen(minisig), sha, &error));
+    assert(strcmp(error.code, "UPDATE_NO_SIGNING_KEY") == 0 && sha[0] == '\0');
+    assert(strstr(error.message, "release page") != NULL);
+#ifdef NK_UPDATE_SIGNING_KEY
+    /* The key the build embedded from assets/update_signing_key.pub reads back. */
+    assert(nk_update_builtin_signing_key(&key));
+#else
+    assert(!nk_update_builtin_signing_key(&key));
+#endif
+
+    /* Rollback or swap: the validly signed checksum of v0.0.1 served as v0.0.2's.
+       The signature is good, but the checksum names v0.0.1's ZIP, and the ZIP's
+       name is what carries the version. */
+    {
+        char old_minisig[512];
+        sign_minisig(&signer, k_recorded_checksum, strlen(k_recorded_checksum), false,
+                     "nakagawa-recomp 0.0.1 windows-x64 zip checksum", old_minisig,
+                     sizeof(old_minisig));
+        assert(!nk_update_expected_sha256(&release, &signer.key, k_recorded_checksum,
+                                          strlen(k_recorded_checksum), old_minisig,
+                                          strlen(old_minisig), sha, &error));
+        assert(strcmp(error.code, "UPDATE_CHECKSUM_WRONG_FILE") == 0 && sha[0] == '\0');
+        /* Or v0.0.1's signature beside v0.0.2's checksum file: not its signature. */
+        assert(!nk_update_expected_sha256(&release, &signer.key, k_good_checksum, good_length,
+                                          old_minisig, strlen(old_minisig), sha, &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0);
+    }
+    printf("[UPDATE_CHECK_TEST] signatures: PASS\n");
 }
 
 /* ---- The network answers --------------------------------------------------------- */
@@ -391,52 +653,74 @@ static NkUpdateRelease synthetic_release(void) {
              DOWNLOAD "v0.0.2/nakagawa-recomp-0.0.2-windows-x64.zip");
     snprintf(release.checksum_url, sizeof(release.checksum_url),
              DOWNLOAD "v0.0.2/nakagawa-recomp-0.0.2-windows-x64.zip.sha256");
+    snprintf(release.signature_url, sizeof(release.signature_url),
+             DOWNLOAD "v0.0.2/nakagawa-recomp-0.0.2-windows-x64.zip.sha256.minisig");
     release.has_zip = true;
     release.has_checksum = true;
+    release.has_signature = true;
     release.zip_size = 5;
     release.checksum_size = 105;
+    release.signature_size = 300;
     return release;
 }
 
 static void test_download(void) {
-    /* SHA-256 of "hello". */
-    static const char good[] = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-                               "  nakagawa-recomp-0.0.2-windows-x64.zip\r\n";
     static const char wrong[] = "0000000000000000000000000000000000000000000000000000000000000000"
                                 "  nakagawa-recomp-0.0.2-windows-x64.zip\r\n";
+    TestSigner signer = test_key(TEST_SIGNER_LABEL);
     NkUpdateRelease release = synthetic_release();
     NkUpdateError error;
+    char good_sig[512];
+    char wrong_sig[512];
     char downloads[NATIVE_TEST_PATH_MAX];
     char zip[NATIVE_TEST_PATH_MAX + 64];
     char expected_zip[NATIVE_TEST_PATH_MAX + 192];
     FakeNet net;
+    sign_minisig(&signer, k_good_checksum, strlen(k_good_checksum), false, TEST_TRUSTED_COMMENT,
+                 good_sig, sizeof(good_sig));
+    sign_minisig(&signer, wrong, strlen(wrong), false, TEST_TRUSTED_COMMENT, wrong_sig,
+                 sizeof(wrong_sig));
     snprintf(downloads, sizeof(downloads), "%s%cdownloads", native_test_get_root(),
              nk_platform_path_separator());
     snprintf(expected_zip, sizeof(expected_zip), "%s%c%s", downloads,
              nk_platform_path_separator(), release.zip_name);
 
-    /* Missing checksum file: nothing is requested at all. */
+    /* Missing checksum file, missing signature, or a build with no key: nothing
+       is requested at all. */
     memset(&net, 0, sizeof(net));
     release.has_checksum = false;
-    assert(!nk_update_download(fake_open, &net, &release, downloads, NULL, NULL, zip,
-                               sizeof(zip), &error));
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
     assert(strcmp(error.code, "UPDATE_CHECKSUM_MISSING") == 0 && net.request_count == 0);
     assert(zip[0] == '\0' && !nk_platform_file_exists(expected_zip));
     release.has_checksum = true;
+    release.has_signature = false;
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
+    assert(strcmp(error.code, "UPDATE_SIGNATURE_MISSING") == 0 && net.request_count == 0);
+    release.has_signature = true;
+    assert(!nk_update_download(fake_open, &net, &release, NULL, downloads, NULL, NULL, zip,
+                               sizeof(zip), &error));
+    assert(strcmp(error.code, "UPDATE_NO_SIGNING_KEY") == 0 && net.request_count == 0);
+    assert(zip[0] == '\0' && !nk_platform_file_exists(expected_zip));
 
-    /* Good: the checksum file first, then the ZIP from the download hosts. */
+    /* Good: the checksum file and its signature first, then the ZIP, all from the
+       download hosts. */
     memset(&net, 0, sizeof(net));
-    add_answer(&net, release.checksum_url, good, strlen(good));
+    add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
+    add_answer(&net, release.signature_url, good_sig, strlen(good_sig));
     add_answer(&net, release.zip_url, "hello", 5);
-    net.answers[1].final_url = "https://release-assets.githubusercontent.com/asset";
+    net.answers[2].final_url = "https://release-assets.githubusercontent.com/asset";
     {
-        bool ok = nk_update_download(fake_open, &net, &release, downloads, NULL, NULL, zip,
-                                     sizeof(zip), &error);
-        assert(net.request_count == 2);
+        bool ok = nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL,
+                                     NULL, zip, sizeof(zip), &error);
+        assert(net.request_count == 3);
         assert(strcmp(net.requested[0], release.checksum_url) == 0);
-        assert(strcmp(net.requested[1], release.zip_url) == 0);
-        assert(strcmp(net.hosts[0], "github.com;release-assets.githubusercontent.com") == 0);
-        assert(strcmp(net.hosts[1], "github.com;release-assets.githubusercontent.com") == 0);
+        assert(strcmp(net.requested[1], release.signature_url) == 0);
+        assert(strcmp(net.requested[2], release.zip_url) == 0);
+        for (size_t i = 0; i < 3; i++) {
+            assert(strcmp(net.hosts[i], "github.com;release-assets.githubusercontent.com") == 0);
+        }
 #if defined(_WIN32) || defined(_WIN64)
         assert(ok && strcmp(zip, expected_zip) == 0);
         {
@@ -454,13 +738,61 @@ static void test_download(void) {
 #endif
     }
 
-    /* Bad: the body doesn't match the published checksum. The earlier download of
-       the same version is replaced, never trusted, and nothing is left. */
+    /* A tampered checksum file under a good signature: stop before the ZIP. */
     memset(&net, 0, sizeof(net));
     add_answer(&net, release.checksum_url, wrong, strlen(wrong));
+    add_answer(&net, release.signature_url, good_sig, strlen(good_sig));
     add_answer(&net, release.zip_url, "hello", 5);
-    assert(!nk_update_download(fake_open, &net, &release, downloads, NULL, NULL, zip,
-                               sizeof(zip), &error));
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
+    assert(strcmp(error.code, "UPDATE_SIGNATURE_INVALID") == 0 && net.request_count == 2);
+    assert(zip[0] == '\0');
+
+    /* Signed with another key: stop before the ZIP. */
+    {
+        TestSigner stranger = test_key("another TEST-ONLY key, as a stranger would sign with");
+        char stranger_sig[512];
+        sign_minisig(&stranger, k_good_checksum, strlen(k_good_checksum), false,
+                     TEST_TRUSTED_COMMENT, stranger_sig, sizeof(stranger_sig));
+        memset(&net, 0, sizeof(net));
+        add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
+        add_answer(&net, release.signature_url, stranger_sig, strlen(stranger_sig));
+        add_answer(&net, release.zip_url, "hello", 5);
+        assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                                   zip, sizeof(zip), &error));
+        assert(strcmp(error.code, "UPDATE_SIGNATURE_UNKNOWN_KEY") == 0 && net.request_count == 2);
+    }
+
+    /* The .minisig listed but gone (offline at it): no ZIP is asked for. */
+    memset(&net, 0, sizeof(net));
+    add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
+    add_answer(&net, release.zip_url, "hello", 5);
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
+    assert(strcmp(error.code, "UPDATE_OFFLINE") == 0 && net.request_count == 2);
+
+    /* A .minisig larger than any signature: refused unread. */
+    {
+        size_t size = NK_UPDATE_MAX_SIGNATURE_BYTES + 1u;
+        unsigned char *huge = (unsigned char *)calloc(size, 1);
+        assert(huge);
+        memset(&net, 0, sizeof(net));
+        add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
+        add_answer(&net, release.signature_url, huge, size);
+        assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                                   zip, sizeof(zip), &error));
+        assert(strcmp(error.code, "UPDATE_ANSWER_TOO_LARGE") == 0 && net.request_count == 2);
+        free(huge);
+    }
+
+    /* Bad: a validly signed checksum the body doesn't match. The earlier download
+       of the same version is replaced, never trusted, and nothing is left. */
+    memset(&net, 0, sizeof(net));
+    add_answer(&net, release.checksum_url, wrong, strlen(wrong));
+    add_answer(&net, release.signature_url, wrong_sig, strlen(wrong_sig));
+    add_answer(&net, release.zip_url, "hello", 5);
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
 #if defined(_WIN32) || defined(_WIN64)
     assert(strcmp(error.code, "UPDATE_HASH_MISMATCH") == 0);
 #else
@@ -473,18 +805,26 @@ static void test_download(void) {
         assert(!nk_platform_file_exists(partial));
     }
 
-    /* The checksum file redirected off GitHub: stop before the ZIP. */
+    /* The checksum file redirected off GitHub: stop before the signature. */
     memset(&net, 0, sizeof(net));
-    add_answer(&net, release.checksum_url, good, strlen(good));
+    add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
     net.answers[0].final_url = "https://example.com/sums";
-    assert(!nk_update_download(fake_open, &net, &release, downloads, NULL, NULL, zip,
-                               sizeof(zip), &error));
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
     assert(strcmp(error.code, "UPDATE_REDIRECT_REJECTED") == 0 && net.request_count == 1);
+    /* The signature redirected off GitHub: stop before the ZIP. */
+    memset(&net, 0, sizeof(net));
+    add_answer(&net, release.checksum_url, k_good_checksum, strlen(k_good_checksum));
+    add_answer(&net, release.signature_url, good_sig, strlen(good_sig));
+    net.answers[1].final_url = "https://example.com/sig";
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
+    assert(strcmp(error.code, "UPDATE_REDIRECT_REJECTED") == 0 && net.request_count == 2);
 
     /* Offline at the checksum: the clear offline card. */
     memset(&net, 0, sizeof(net));
-    assert(!nk_update_download(fake_open, &net, &release, downloads, NULL, NULL, zip,
-                               sizeof(zip), &error));
+    assert(!nk_update_download(fake_open, &net, &release, &signer.key, downloads, NULL, NULL,
+                               zip, sizeof(zip), &error));
     assert(strcmp(error.code, "UPDATE_OFFLINE") == 0);
     printf("[UPDATE_CHECK_TEST] download verification: PASS\n");
 }
@@ -563,6 +903,7 @@ int main(void) {
     test_synthetic_release_lists();
     test_short_notes();
     test_checksums();
+    test_signatures();
     test_check_failures();
     test_download();
     test_install_folder();

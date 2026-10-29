@@ -1145,6 +1145,8 @@ typedef struct {
     PackageHttpOpen transport;   /* NULL: the native one */
     void *transport_context;
     NkUpdateRelease release;
+    NkMinisignKey signing_key;
+    bool has_signing_key;        /* false: the download fails closed, asking nothing */
     char downloads_dir[NK_MAX_PATH];
     char zip_path[NK_MAX_PATH];
     char install_dir[NK_MAX_PATH];
@@ -1215,6 +1217,28 @@ static bool player_update_test_open(void *context, const char *url, const char *
 }
 #endif
 
+/* The key update signatures are checked with: the one built into this player
+   (update_check.h). The regression build takes a TEST-ONLY key from
+   NK_UI_TEST_UPDATE_DIR's update_signing_key.pub when the test wrote one, so its
+   synthetic releases can be signed; without that file it uses the built-in key
+   too. */
+static bool player_update_signing_key(NkMinisignKey *out) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
+    char path[NK_MAX_PATH];
+    char text[512];
+    FILE *file;
+    if (dir && snprintf(path, sizeof(path), "%s%cupdate_signing_key.pub", dir,
+                        nk_platform_path_separator()) < (int)sizeof(path) &&
+        (file = nk_fopen_utf8(path, "rb")) != NULL) {
+        size_t length = fread(text, 1, sizeof(text), file);
+        fclose(file);
+        return length < sizeof(text) && nk_minisign_parse_key(text, length, out);
+    }
+#endif
+    return nk_update_builtin_signing_key(out);
+}
+
 static bool player_update_progress(void *context, uint64_t received, uint64_t expected) {
     PlayerUpdateJob *job = (PlayerUpdateJob *)context;
     (void)expected;
@@ -1231,6 +1255,7 @@ static int SDLCALL player_update_thread_main(void *userdata) {
             break;
         case PLAYER_UPDATE_JOB_DOWNLOAD:
             job->ok = nk_update_download(job->transport, job->transport_context, &job->release,
+                                         job->has_signing_key ? &job->signing_key : NULL,
                                          job->downloads_dir, player_update_progress, job,
                                          job->zip_path, sizeof(job->zip_path), &job->error);
             break;
@@ -1288,6 +1313,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
     job->transport = player_update_test_open;
 #endif
     job->release = app->update.check.newest;
+    job->has_signing_key = player_update_signing_key(&job->signing_key);
     snprintf(job->zip_path, sizeof(job->zip_path), "%s", app->update.zip_path);
     if (!nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)) ||
         snprintf(job->downloads_dir, sizeof(job->downloads_dir), "%s%cdownloads", data_dir,
@@ -1326,6 +1352,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
     app->update.notice = false;
     if (kind == PLAYER_UPDATE_JOB_CHECK) {
         memset(&app->update.check, 0, sizeof(app->update.check));
+        app->update.can_verify = job->has_signing_key;
         app->update.zip_path[0] = '\0';
         app->update.install_dir[0] = '\0';
     }

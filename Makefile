@@ -1213,7 +1213,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
-HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors
+HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors and nk_minisign_verify against real minisign output
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-overlay-host-selftest := build and run the in-game overlay host on SDL3_ttf, real key events and the SDL_Renderer backend (#1159)
@@ -2084,8 +2084,27 @@ NK_PLAYER_BUILD_EPOCH := $(or $(SR_SOURCE_DATE_EPOCH),$(strip $(shell "$(PYTHON)
 NK_PLAYER_BUILD_COMMIT := $(shell "$(PYTHON)" -c "import sys; print(sys.argv[1][:7])" "$(SR_SOURCE_COMMIT)")
 NK_PLAYER_IDENTITY_DEFS := $(if $(NK_PLAYER_BUILD_EPOCH),-DNK_PLAYER_BUILD_EPOCH=$(NK_PLAYER_BUILD_EPOCH)LL,) $(if $(strip $(NK_PLAYER_BUILD_COMMIT)),-DNK_PLAYER_BUILD_COMMIT=\"$(strip $(NK_PLAYER_BUILD_COMMIT))\",)
 PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),-DNK_UI_WITH_SDL_TTF,) $(NK_PLAYER_IDENTITY_DEFS)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c src/player/update_check.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
+# Check for updates verifies a minisign signature over each release's checksum file
+# (src/player/update_check.h) with nk_minisign_verify (src/core/nk_sig.c) on the
+# vendored Monocypher Ed25519 and BLAKE2b code.
+UPDATE_SIG_SRCS := src/core/nk_sig.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
+# The update-signing public key (docs/RELEASE_SIGNING.md): the minisign public key the
+# owner commits as this file. When it is there, its base64 line is compiled into the
+# player and the update check's test as NK_UPDATE_SIGNING_KEY; when it is not, the build
+# carries no key and the player never downloads an update. A file that is there but is
+# not a minisign public key (an optional "untrusted comment: " line, then one base64 line
+# of "Ed", an 8-byte key ID and a 32-byte Ed25519 key) stops the build. The key comes
+# only from this committed file, so two builds of one commit embed the same key.
+NK_UPDATE_KEY_FILE := assets/update_signing_key.pub
+NK_UPDATE_KEY_LINE := $(if $(wildcard $(NK_UPDATE_KEY_FILE)),$(strip $(shell "$(PYTHON)" -c "import base64, sys; lines = [l.strip() for l in open(sys.argv[1], encoding='ascii').read().splitlines() if l.strip()]; key = lines[-1] if 1 <= len(lines) <= 2 and (len(lines) == 1 or lines[0].startswith('untrusted comment: ')) else ''; raw = base64.b64decode(key, validate=True) if len(key) == 56 else b''; print(key if len(raw) == 42 and raw[:2] == b'Ed' else '')" "$(NK_UPDATE_KEY_FILE)")),)
+ifneq ($(wildcard $(NK_UPDATE_KEY_FILE)),)
+ifeq ($(NK_UPDATE_KEY_LINE),)
+$(error $(NK_UPDATE_KEY_FILE) is not a minisign public key; see docs/RELEASE_SIGNING.md)
+endif
+endif
+NK_UPDATE_KEY_DEFS := $(if $(NK_UPDATE_KEY_LINE),-DNK_UPDATE_SIGNING_KEY=\"$(NK_UPDATE_KEY_LINE)\",)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c src/player/update_check.c $(UPDATE_SIG_SRCS) $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt -Ithird_party/monocypher $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 # Both icon objects come from this one rule; windres finds the icon beside the script.
 ifeq ($(OS),Windows_NT)
@@ -2096,9 +2115,9 @@ endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
+$(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/nk_sig.h src/core/generated/nk_title_catalog.h $(wildcard $(NK_UPDATE_KEY_FILE)) $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(NK_UPDATE_KEY_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
@@ -2109,9 +2128,9 @@ player: $(PLAYER_EXE)
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/nk_sig.h src/core/generated/nk_title_catalog.h $(wildcard $(NK_UPDATE_KEY_FILE))
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(NK_UPDATE_KEY_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # The regressions are independent player processes, so they run as parallel shards
 # (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
@@ -3155,8 +3174,10 @@ endef
 
 # Check for updates: answers from a fake transport and the recorded Releases API fixture,
 # never the internet (AGENTS.md section 5). Runs from the repository root for the fixture.
+# It signs with a TEST-ONLY key of its own and, when the build embeds the update-signing
+# key, checks that the embedded key reads back.
 define UPDATE_CHECK_TEST_BIN_CMD
-$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c src/player/update_check.c \
+$(CC) $(NC_CFLAGS_PLAYER) -Ithird_party/monocypher $(NK_UPDATE_KEY_DEFS) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c src/player/update_check.c $(UPDATE_SIG_SRCS) \
 	tests/native/native_test_isolation.c tests/native/test_update_check.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_update_check$(EXE_EXT)
 endef
 
@@ -3253,7 +3274,8 @@ clay-layout-selftest:
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
 # nk_ed25519_verify (src/core/nk_sig.c) on the vendored Monocypher Ed25519 check,
-# against the RFC 8032 section 7.1 vectors. Nothing in the player links it yet.
+# against the RFC 8032 section 7.1 vectors, and nk_minisign_verify against real
+# minisign output made with a TEST-ONLY key. The player's update check links both.
 ED25519_VERIFY_SELFTEST_SRCS := src/core/nk_sig.c third_party/monocypher/monocypher.c \
 	third_party/monocypher/monocypher-ed25519.c tests/native/test_nk_sig.c
 define ED25519_VERIFY_SELFTEST_CMD

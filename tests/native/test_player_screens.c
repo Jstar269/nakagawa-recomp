@@ -169,6 +169,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+               FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -270,7 +271,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
-        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED
+        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
+          which == FLOW_SETTINGS_UPDATE_NO_KEY || which == FLOW_SETTINGS_UPDATE_REFUSED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
@@ -287,7 +289,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
     }
     settings.current_version = "0.0.2-dev";
-    if (which == FLOW_SETTINGS_UPDATES) {
+    if (which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_NO_KEY ||
+        which == FLOW_SETTINGS_UPDATE_REFUSED) {
         /* A newer pre-release with its Windows ZIP, as the check found it. */
         settings.update_step = PLAYER_UI_UPDATE_AVAILABLE;
         settings.update_version = "0.0.3";
@@ -300,6 +303,21 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.update_can_download = true;
         settings.update_zip_name = "nakagawa-recomp-0.0.3-windows-x64.zip";
         settings.update_zip_bytes = 284758051ull;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_NO_KEY) {
+        /* A build without an update-signing key: the release page only. */
+        settings.update_can_download = false;
+        settings.update_unverifiable = true;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_REFUSED) {
+        /* The download stopped at the signature; nothing was fetched after it. */
+        settings.update_step = PLAYER_UI_UPDATE_FAILED;
+        settings.update_failed_step = PLAYER_UI_UPDATE_DOWNLOADING;
+        settings.update_error_title = "Signature Didn't Match";
+        settings.update_error_message =
+            "The release's signature doesn't match its checksum file, so Nakagawa did not "
+            "download the update. Nothing was installed. Try again later, or download it from "
+            "the release page.";
     }
     if (which == FLOW_SETTINGS_UPDATE_FAILED) {
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
@@ -1827,6 +1845,12 @@ static void test_settings_pages(void) {
          "Back leaves Updates"},
         {FLOW_SETTINGS_UPDATE_FAILED, PLAYER_UI_ID_UPDATE_CHECK, PLAYER_UI_SETTINGS_CHECK_UPDATES,
          "Check again asks GitHub again, only when pressed"},
+        {FLOW_SETTINGS_UPDATE_NO_KEY, PLAYER_UI_ID_UPDATE_PAGE,
+         PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "without a signing key, Open release page is what Updates offers"},
+        {FLOW_SETTINGS_UPDATE_REFUSED, PLAYER_UI_ID_UPDATE_PAGE,
+         PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "a refused download still offers its release page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ONLINE, PLAYER_UI_SETTINGS_OPEN_ONLINE,
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
@@ -1864,7 +1888,8 @@ static void test_settings_pages(void) {
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                                      FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
-                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED};
+                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+                                     FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -1912,6 +1937,18 @@ static void test_settings_pages(void) {
               strstr(dump, "Couldn't Reach GitHub") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "offline, Updates says it couldn't reach GitHub and offers only Check again");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") == NULL,
+          "a failed check has no release page to offer");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_NO_KEY, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "can't check update signatures") != NULL &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
+          "a build without a signing key says so and offers only the release page");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_REFUSED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Signature Didn't Match") != NULL &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL &&
+              strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"INSTALL\"") == NULL,
+          "a download refused at its signature offers the release page and Check again");
 }
 
 /* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
@@ -2828,6 +2865,8 @@ static int capture_screens(const char *directory) {
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
             {FLOW_SETTINGS_UPDATES, "settings-updates", PLAYER_UI_ID_UPDATE_DOWNLOAD},
             {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
+            {FLOW_SETTINGS_UPDATE_NO_KEY, "settings-update-no-key", PLAYER_UI_ID_UPDATE_PAGE},
+            {FLOW_SETTINGS_UPDATE_REFUSED, "settings-update-refused", PLAYER_UI_ID_UPDATE_CHECK},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},

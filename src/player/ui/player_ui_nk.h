@@ -418,6 +418,8 @@ typedef struct {
     const char *update_page_url;
     bool update_has_zip;
     bool update_can_download;       /* a Windows ZIP and a Windows build */
+    bool update_unverifiable;       /* this build has no update-signing key */
+    bool update_unsigned;           /* the release lists no signature */
     const char *update_zip_name;
     unsigned long long update_zip_bytes;
     unsigned long long update_received_bytes;

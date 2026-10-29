@@ -85,6 +85,72 @@ class BuildSystemParityTests(unittest.TestCase):
             self.assertIn(library, self.makefile_text)
             self.assertIn(library, self.cmake_text)
 
+    def test_update_signature_sources_and_key_parity(self) -> None:
+        """Both build systems link the update signature check into the player and its
+        test, and read the update-signing key from the same one committed file."""
+        for src in (
+            "src/core/nk_sig.c",
+            "third_party/monocypher/monocypher.c",
+            "third_party/monocypher/monocypher-ed25519.c",
+        ):
+            self.assertIn(src, self.makefile_text, f"Missing {src} in Makefile")
+            self.assertIn(src, self.cmake_text, f"Missing {src} in CMakeLists.txt")
+        for text in (self.makefile_text, self.cmake_text):
+            self.assertIn("assets/update_signing_key.pub", text)
+            self.assertIn("NK_UPDATE_SIGNING_KEY", text)
+        self.assertIn("test_nk_sig", self.cmake_text)
+        # The Makefile passes the key to the player, the regression player and the test.
+        self.assertEqual(self.makefile_text.count("$(NK_UPDATE_KEY_DEFS)"), 3)
+        self.assertIn("nk_update_sig", self.cmake_text.split("add_executable(nakagawa_player", 1)[1])
+
+    def test_update_signing_key_reader(self) -> None:
+        """The Makefile's key reader takes a minisign public key file or its bare line,
+        and prints nothing (which stops the build) for anything else."""
+        match = re.search(
+            r'^NK_UPDATE_KEY_LINE := .*?"\$\(PYTHON\)" -c "(.*?)" "\$\(NK_UPDATE_KEY_FILE\)"',
+            self.makefile_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(match, "the Makefile reads the key with one Python command")
+        code = match.group(1)
+        python = shutil.which("python") or shutil.which("python3")
+        if not python:
+            self.skipTest("Python is required for the behavioural check")
+        # The TEST-ONLY minisign public key of tests/native/test_nk_sig.c; it signs
+        # nothing outside the tests.
+        line = "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81"
+        comment = "untrusted comment: minisign public key D0A699A2C54C0C9E"
+        cases = {
+            f"{comment}\r\n{line}\r\n": line,
+            f"{comment}\n{line}": line,
+            f"{line}\n": line,
+            f"{comment}\n": "",
+            f"{comment}\n{line[:-1]}\n": "",
+            f"{comment}\n{line}\n{line}\n": "",
+            f"another comment\n{line}\n": "",
+            f"{comment}\nRU{line[2:]}\n": "",
+            f"{comment}\n{line[:-1]}!\n": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "update_signing_key.pub"
+            for content, expected in cases.items():
+                with self.subTest(content=content):
+                    path.write_bytes(content.encode("ascii"))
+                    proc = subprocess.run([python, "-c", code, str(path)],
+                                          capture_output=True, text=True, timeout=60)
+                    self.assertEqual(proc.stdout.strip(), expected, proc.stderr)
+            # A malformed committed key stops the build at parse time, even for help.
+            path.write_bytes(f"{comment}\nnot a key\n".encode("ascii"))
+            make = shutil.which("mingw32-make") or shutil.which("make")
+            if not make:
+                self.skipTest("GNU Make is required for the build-stop check")
+            proc = subprocess.run(
+                [make, "--no-print-directory", "help", f"NK_UPDATE_KEY_FILE={path.as_posix()}",
+                 f"BUILD_DIR={(Path(tmp) / 'help-build').as_posix()}"],
+                cwd=ROOT, capture_output=True, text=True, timeout=120,
+            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn("is not a minisign public key", proc.stdout + proc.stderr)
+
     def test_test_targets_parity(self) -> None:
         """Verify all native core test targets exist in both build systems."""
         test_targets = [

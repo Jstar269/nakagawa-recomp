@@ -307,12 +307,15 @@ static bool unexpected_release(NkUpdateError *error) {
     return false;
 }
 
-/* The Windows ZIP and its checksum file among a release's assets. */
+/* The Windows ZIP, its checksum file and that file's signature among a release's
+   assets. */
 static bool read_assets(const NkJsonNode *assets, NkUpdateRelease *release, NkUpdateError *error) {
     char checksum_name[160];
+    char signature_name[168];
     snprintf(release->zip_name, sizeof(release->zip_name), "nakagawa-recomp-%s-windows-x64.zip",
              release->version);
     snprintf(checksum_name, sizeof(checksum_name), "%s.sha256", release->zip_name);
+    snprintf(signature_name, sizeof(signature_name), "%s.minisig", checksum_name);
     for (size_t i = 0; i < nk_json_array_count(assets); i++) {
         const NkJsonNode *asset = nk_json_array_get(assets, i);
         const char *name = json_string(asset, "name");
@@ -320,7 +323,8 @@ static bool read_assets(const NkJsonNode *assets, NkUpdateRelease *release, NkUp
         const char *state = json_string(asset, "state");
         bool is_zip = name && strcmp(name, release->zip_name) == 0;
         bool is_checksum = name && strcmp(name, checksum_name) == 0;
-        if (!is_zip && !is_checksum) continue;
+        bool is_signature = name && strcmp(name, signature_name) == 0;
+        if (!is_zip && !is_checksum && !is_signature) continue;
         if (state && strcmp(state, "uploaded") != 0) continue;
         if (!exact_url(url, NK_UPDATE_DOWNLOAD_PREFIX, release->tag, name)) {
             return unexpected_release(error);
@@ -334,6 +338,13 @@ static bool read_assets(const NkJsonNode *assets, NkUpdateRelease *release, NkUp
                 lower_hex(release->zip_digest);
             }
             release->has_zip = true;
+        } else if (is_signature) {
+            if (!asset_size(asset, &release->signature_size) ||
+                release->signature_size > NK_UPDATE_MAX_SIGNATURE_BYTES) {
+                return unexpected_release(error);
+            }
+            snprintf(release->signature_url, sizeof(release->signature_url), "%s", url);
+            release->has_signature = true;
         } else {
             if (!asset_size(asset, &release->checksum_size) ||
                 release->checksum_size > NK_UPDATE_MAX_CHECKSUM_BYTES) {
@@ -437,9 +448,17 @@ bool nk_update_parse_checksum(const char *text, size_t length, const char *file_
     while (i < length && text[i] != '\r' && text[i] != '\n') i++;
     name_end = i;
     while (i < length && (text[i] == '\r' || text[i] == '\n' || text[i] == ' ')) i++;
-    if (i != length || name_end - name_start != strlen(file_name) ||
+    if (i != length || name_end == name_start) goto invalid;
+    /* The checksum names the file it is for, and the ZIP's name carries the
+       version: a checksum file copied from another release names another file. */
+    if (name_end - name_start != strlen(file_name) ||
         strncmp(text + name_start, file_name, name_end - name_start) != 0) {
-        goto invalid;
+        out_sha256[0] = '\0';
+        set_error(error, "UPDATE_CHECKSUM_WRONG_FILE", "Checksum for Another File",
+                  "The release's checksum file is for a different file than this release's "
+                  "Windows ZIP, so Nakagawa did not download it. You can download it from the "
+                  "release page instead.");
+        return false;
     }
     return true;
 invalid:
@@ -450,17 +469,105 @@ invalid:
     return false;
 }
 
-bool nk_update_expected_sha256(const NkUpdateRelease *release, const char *checksum_text,
-                               size_t checksum_length, char out_sha256[65],
-                               NkUpdateError *error) {
+/* ---- Signatures ----------------------------------------------------------------- */
+
+bool nk_update_builtin_signing_key(NkMinisignKey *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+#ifdef NK_UPDATE_SIGNING_KEY
+    {
+        /* The base64 line of assets/update_signing_key.pub, which the build
+           checked; parsed again here so a bad define can only fail closed. */
+        static const char key_line[] = NK_UPDATE_SIGNING_KEY;
+        return nk_minisign_parse_key(key_line, sizeof(key_line) - 1u, out);
+    }
+#else
+    return false;
+#endif
+}
+
+static void no_signing_key_error(NkUpdateError *error) {
+    set_error(error, "UPDATE_NO_SIGNING_KEY", "Can't Check Downloads",
+              "This build of Nakagawa has no update signing key, so it can't check that a "
+              "download really comes from the Nakagawa project, and it won't fetch one. You "
+              "can download the new version from the release page instead.");
+}
+
+static void checksum_missing_error(NkUpdateError *error) {
+    set_error(error, "UPDATE_CHECKSUM_MISSING", "No Checksum Published",
+              "This release has no checksum file for its Windows ZIP, so Nakagawa can't "
+              "check the download and won't fetch it. You can download it from the "
+              "release page instead.");
+}
+
+static void signature_missing_error(NkUpdateError *error) {
+    set_error(error, "UPDATE_SIGNATURE_MISSING", "Release Not Signed",
+              "This release has no signature for its checksum file, so Nakagawa can't check "
+              "that the download comes from the Nakagawa project and won't fetch it. You can "
+              "download it from the release page instead.");
+}
+
+/* The checksum file's bytes are trusted only when the signature verifies. */
+static bool verify_checksum_signature(const NkMinisignKey *key, const char *checksum_text,
+                                      size_t checksum_length, const char *signature_text,
+                                      size_t signature_length, NkUpdateError *error) {
+    switch (nk_minisign_verify(key, signature_text, signature_length,
+                               (const uint8_t *)checksum_text, checksum_length, NULL, NULL)) {
+        case NK_MINISIGN_VALID:
+            return true;
+        case NK_MINISIGN_UNKNOWN_KEY:
+            set_error(error, "UPDATE_SIGNATURE_UNKNOWN_KEY", "Signed With Another Key",
+                      "The release is signed with a key this version of Nakagawa doesn't know, "
+                      "so it did not download the update. You can download it from the release "
+                      "page instead.");
+            return false;
+        case NK_MINISIGN_BAD_SIGNATURE:
+        case NK_MINISIGN_BAD_COMMENT:
+            set_error(error, "UPDATE_SIGNATURE_INVALID", "Signature Didn't Match",
+                      "The release's signature doesn't match its checksum file, so Nakagawa did "
+                      "not download the update. Nothing was installed. Try again later, or "
+                      "download it from the release page.");
+            return false;
+        case NK_MINISIGN_MALFORMED:
+        default:
+            set_error(error, "UPDATE_SIGNATURE_UNREADABLE", "Signature Not Readable",
+                      "The release's signature file is not in the expected form, so Nakagawa "
+                      "did not download the update. You can download it from the release page "
+                      "instead.");
+            return false;
+    }
+}
+
+bool nk_update_expected_sha256(const NkUpdateRelease *release, const NkMinisignKey *signing_key,
+                               const char *checksum_text, size_t checksum_length,
+                               const char *signature_text, size_t signature_length,
+                               char out_sha256[65], NkUpdateError *error) {
     clear_error(error);
     if (out_sha256) out_sha256[0] = '\0';
     if (!release || !out_sha256) return false;
-    if (!release->has_checksum || !checksum_text) {
-        set_error(error, "UPDATE_CHECKSUM_MISSING", "No Checksum Published",
-                  "This release has no checksum file for its Windows ZIP, so Nakagawa can't "
-                  "check the download and won't fetch it. You can download it from the "
-                  "release page instead.");
+    if (!signing_key) {
+        no_signing_key_error(error);
+        return false;
+    }
+    /* What the release lists decides first, then what was fetched. */
+    if (!release->has_checksum) {
+        checksum_missing_error(error);
+        return false;
+    }
+    if (!release->has_signature) {
+        signature_missing_error(error);
+        return false;
+    }
+    if (!checksum_text) {
+        checksum_missing_error(error);
+        return false;
+    }
+    if (!signature_text) {
+        signature_missing_error(error);
+        return false;
+    }
+    if (!verify_checksum_signature(signing_key, checksum_text, checksum_length, signature_text,
+                                   signature_length, error)) {
         return false;
     }
     if (!nk_update_parse_checksum(checksum_text, checksum_length, release->zip_name, out_sha256,
@@ -654,15 +761,19 @@ static void download_error(const char *code, const char *message, const char *fo
 }
 
 bool nk_update_download(PackageHttpOpen transport, void *transport_context,
-                        const NkUpdateRelease *release, const char *downloads_dir,
-                        PackageDownloadContinue progress, void *progress_context,
-                        char *out_zip_path, size_t out_zip_path_size, NkUpdateError *error) {
+                        const NkUpdateRelease *release, const NkMinisignKey *signing_key,
+                        const char *downloads_dir, PackageDownloadContinue progress,
+                        void *progress_context, char *out_zip_path, size_t out_zip_path_size,
+                        NkUpdateError *error) {
     PackagePrerequisite item;
     char *checksum = NULL;
     size_t checksum_length = 0;
+    char *signature = NULL;
+    size_t signature_length = 0;
     char destination[NK_MAX_PATH];
     char code[48] = "";
     char message[512] = "";
+    bool trusted;
     int n;
     clear_error(error);
     if (out_zip_path && out_zip_path_size) out_zip_path[0] = '\0';
@@ -671,20 +782,31 @@ bool nk_update_download(PackageHttpOpen transport, void *transport_context,
                   "This release has no Windows ZIP to download.");
         return false;
     }
+    /* Nothing is fetched that could not be checked: no key, no checksum file or
+       no signature stops here, before any request. */
+    memset(&item, 0, sizeof(item));
+    if (!signing_key || !release->has_checksum || !release->has_signature) {
+        return nk_update_expected_sha256(release, signing_key, NULL, 0, NULL, 0, item.sha256,
+                                         error);
+    }
     transport = resolve_transport(transport, &transport_context);
     if (!transport) return unsupported(error);
-    memset(&item, 0, sizeof(item));
-    if (release->has_checksum &&
-        !fetch_text(transport, transport_context, release->checksum_url,
+    if (!fetch_text(transport, transport_context, release->checksum_url,
                     NK_UPDATE_DOWNLOAD_HOSTS, NK_UPDATE_MAX_CHECKSUM_BYTES, &checksum,
                     &checksum_length, error)) {
         return false;
     }
-    if (!nk_update_expected_sha256(release, checksum, checksum_length, item.sha256, error)) {
+    if (!fetch_text(transport, transport_context, release->signature_url,
+                    NK_UPDATE_DOWNLOAD_HOSTS, NK_UPDATE_MAX_SIGNATURE_BYTES, &signature,
+                    &signature_length, error)) {
         free(checksum);
         return false;
     }
+    trusted = nk_update_expected_sha256(release, signing_key, checksum, checksum_length,
+                                        signature, signature_length, item.sha256, error);
+    free(signature);
     free(checksum);
+    if (!trusted) return false;
     n = snprintf(destination, sizeof(destination), "%s%c%s", downloads_dir,
                  nk_platform_path_separator(), release->zip_name);
     if (n < 0 || (size_t)n >= sizeof(destination) || (size_t)n >= out_zip_path_size ||

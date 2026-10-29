@@ -117,6 +117,8 @@ a target and what isn't built yet.
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — the notes of the
   v0.0.1 release, kept as released.
+- [`RELEASE_SIGNING.md`](RELEASE_SIGNING.md) — the owner's update-signing key and
+  how each release's checksum file is signed for the player's update download.
 
 ## Archive
 
@@ -225,6 +227,7 @@ Every substantial document carries one status.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | CURRENT | Notes of the v0.0.1 release, kept as released |
+| `RELEASE_SIGNING.md` | CURRENT | Update-signing key procedure (minisign, offline) and what the player checks before an update download |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
 | `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |

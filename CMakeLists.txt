@@ -407,6 +407,57 @@ endif()
 add_test(NAME package_builder_test COMMAND test_package_builder)
 set_tests_properties(package_builder_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Update signatures: nk_minisign_verify (src/core/nk_sig.c) on the vendored
+# Monocypher Ed25519 and BLAKE2b code (third_party/monocypher/, imported unchanged).
+add_library(nk_update_sig STATIC
+    src/core/nk_sig.c
+    third_party/monocypher/monocypher.c
+    third_party/monocypher/monocypher-ed25519.c
+)
+target_include_directories(nk_update_sig PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher
+)
+
+# The update-signing public key (docs/RELEASE_SIGNING.md), as the Makefile reads it:
+# when assets/update_signing_key.pub is there, its base64 line becomes
+# NK_UPDATE_SIGNING_KEY for the player and the update check's test; when it is not,
+# the build carries no key and the player never downloads an update. A file that is
+# there but is not a minisign public key stops the configure step.
+set(NK_UPDATE_KEY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/assets/update_signing_key.pub")
+set(NK_UPDATE_KEY_DEFINITIONS "")
+if(EXISTS "${NK_UPDATE_KEY_FILE}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NK_UPDATE_KEY_FILE}")
+    file(STRINGS "${NK_UPDATE_KEY_FILE}" NK_UPDATE_KEY_LINES)
+    list(FILTER NK_UPDATE_KEY_LINES EXCLUDE REGEX "^[ \t\r]*$")
+    list(LENGTH NK_UPDATE_KEY_LINES NK_UPDATE_KEY_LINE_COUNT)
+    set(NK_UPDATE_KEY_LINE "")
+    if(NK_UPDATE_KEY_LINE_COUNT EQUAL 1 OR NK_UPDATE_KEY_LINE_COUNT EQUAL 2)
+        list(GET NK_UPDATE_KEY_LINES -1 NK_UPDATE_KEY_LINE)
+        string(STRIP "${NK_UPDATE_KEY_LINE}" NK_UPDATE_KEY_LINE)
+        if(NK_UPDATE_KEY_LINE_COUNT EQUAL 2)
+            list(GET NK_UPDATE_KEY_LINES 0 NK_UPDATE_KEY_COMMENT)
+            if(NOT NK_UPDATE_KEY_COMMENT MATCHES "^untrusted comment: ")
+                set(NK_UPDATE_KEY_LINE "")
+            endif()
+        endif()
+    endif()
+    # "Ed", an 8-byte key ID and a 32-byte key: 56 base64 characters starting "RW".
+    if(NOT NK_UPDATE_KEY_LINE MATCHES "^RW[A-Za-z0-9+/]+$")
+        set(NK_UPDATE_KEY_LINE "")
+    endif()
+    string(LENGTH "${NK_UPDATE_KEY_LINE}" NK_UPDATE_KEY_LENGTH)
+    if(NOT NK_UPDATE_KEY_LENGTH EQUAL 56)
+        message(FATAL_ERROR
+            "${NK_UPDATE_KEY_FILE} is not a minisign public key; see docs/RELEASE_SIGNING.md")
+    endif()
+    set(NK_UPDATE_KEY_DEFINITIONS "NK_UPDATE_SIGNING_KEY=\"${NK_UPDATE_KEY_LINE}\"")
+endif()
+
+add_executable(test_nk_sig tests/native/test_nk_sig.c)
+target_link_libraries(test_nk_sig PRIVATE nk_update_sig)
+add_test(NAME nk_sig_test COMMAND test_nk_sig)
+
 # Check for updates on a fake transport and the recorded Releases API answer; it
 # reads its fixture from the repository root and never touches the internet.
 add_executable(test_update_check
@@ -419,7 +470,10 @@ target_include_directories(test_update_check PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
-target_link_libraries(test_update_check PRIVATE nakagawa_core)
+target_link_libraries(test_update_check PRIVATE nakagawa_core nk_update_sig)
+if(NK_UPDATE_KEY_DEFINITIONS)
+    target_compile_definitions(test_update_check PRIVATE ${NK_UPDATE_KEY_DEFINITIONS})
+endif()
 if(WIN32)
     target_link_libraries(test_update_check PRIVATE winhttp bcrypt)
 endif()
@@ -521,7 +575,10 @@ if(BUILD_PLAYER)
         target_compile_definitions(nakagawa_player PRIVATE
             NK_PLAYER_BUILD_EPOCH=${NK_PLAYER_BUILD_EPOCH}LL)
     endif()
-    target_link_libraries(nakagawa_player PRIVATE nakagawa_core nk_libchdr)
+    target_link_libraries(nakagawa_player PRIVATE nakagawa_core nk_libchdr nk_update_sig)
+    if(NK_UPDATE_KEY_DEFINITIONS)
+        target_compile_definitions(nakagawa_player PRIVATE ${NK_UPDATE_KEY_DEFINITIONS})
+    endif()
     add_custom_command(TARGET nakagawa_player POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/ui"

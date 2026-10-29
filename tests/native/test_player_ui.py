@@ -726,15 +726,108 @@ class LegacyRendererSourceTests(unittest.TestCase):
 UPDATE_RELEASES_URL = "https://api.github.com/repos/Jstar269/nakagawa-recomp/releases?per_page=10"
 UPDATE_DOWNLOAD_PREFIX = "https://github.com/Jstar269/nakagawa-recomp/releases/download/"
 
+# A TEST-ONLY minisign signer for the synthetic releases: Ed25519 (RFC 8032) in plain
+# Python, so no package is needed. Its key pair is derived from a fixed label at run
+# time, so no key is stored anywhere. It is not the update-signing key: the player
+# accepts it only in the regression build, from NK_UI_TEST_UPDATE_DIR's
+# update_signing_key.pub, which these tests write. Output of this signer was checked
+# with `minisign -V` (minisign 0.12) when it was written.
+_ED_P = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+TEST_ONLY_SIGNER_LABEL = b"Nakagawa Recomp TEST-ONLY update signing key; never for releases"
+
+
+def _ed_add(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    p = _ED_P
+    x1, y1, z1, t1 = a
+    x2, y2, z2, t2 = b
+    aa = (y1 - x1) * (y2 - x2) % p
+    bb = (y1 + x1) * (y2 + x2) % p
+    cc = 2 * t1 * t2 * _ED_D % p
+    dd = 2 * z1 * z2 % p
+    e, f, g, h = bb - aa, dd - cc, dd + cc, bb + aa
+    return (e * f % p, g * h % p, f * g % p, e * h % p)
+
+
+def _ed_mul(scalar: int, point: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    result = (0, 1, 1, 0)
+    while scalar:
+        if scalar & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        scalar >>= 1
+    return result
+
+
+def _ed_encode(point: tuple[int, int, int, int]) -> bytes:
+    x, y, z, _ = point
+    inverse = pow(z, _ED_P - 2, _ED_P)
+    x, y = x * inverse % _ED_P, y * inverse % _ED_P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _ed_base() -> tuple[int, int, int, int]:
+    y = 4 * pow(5, _ED_P - 2, _ED_P) % _ED_P
+    xx = (y * y - 1) * pow(_ED_D * y * y + 1, _ED_P - 2, _ED_P) % _ED_P
+    x = pow(xx, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - xx) % _ED_P:
+        x = x * pow(2, (_ED_P - 1) // 4, _ED_P) % _ED_P
+    if x & 1:
+        x = _ED_P - x
+    return (x, y, 1, x * y % _ED_P)
+
+
+class TestOnlyMinisigner:
+    """minisign's formats (src/core/nk_sig.h) over a key derived from label."""
+
+    def __init__(self, label: bytes = TEST_ONLY_SIGNER_LABEL) -> None:
+        seed = hashlib.blake2b(label, digest_size=32).digest()
+        self.key_id = hashlib.blake2b(label, digest_size=64).digest()[:8]
+        digest = hashlib.sha512(seed).digest()
+        scalar = int.from_bytes(digest[:32], "little")
+        self._scalar = (scalar & ((1 << 254) - 8)) | (1 << 254)
+        self._prefix = digest[32:]
+        self._base = _ed_base()
+        self.public = _ed_encode(_ed_mul(self._scalar, self._base))
+
+    def _sign(self, message: bytes) -> bytes:
+        r = int.from_bytes(hashlib.sha512(self._prefix + message).digest(), "little") % _ED_L
+        big_r = _ed_encode(_ed_mul(r, self._base))
+        k = int.from_bytes(hashlib.sha512(big_r + self.public + message).digest(),
+                           "little") % _ED_L
+        return big_r + ((r + k * self._scalar) % _ED_L).to_bytes(32, "little")
+
+    def public_file(self) -> bytes:
+        import base64
+        number = int.from_bytes(self.key_id, "little")
+        line = base64.b64encode(b"Ed" + self.key_id + self.public).decode("ascii")
+        return f"untrusted comment: minisign public key {number:016X}\n{line}\n".encode("ascii")
+
+    def minisig(self, data: bytes, trusted_comment: str) -> bytes:
+        """What `minisign -S -t trusted_comment` writes: the prehashed (ED) form."""
+        import base64
+        signature = self._sign(hashlib.blake2b(data, digest_size=64).digest())
+        comment = trusted_comment.encode("utf-8")
+        global_signature = self._sign(signature + comment)
+        line = base64.b64encode(b"ED" + self.key_id + signature).decode("ascii")
+        return (f"untrusted comment: signature from minisign secret key\n{line}\n"
+                f"trusted comment: {trusted_comment}\n"
+                f"{base64.b64encode(global_signature).decode('ascii')}\n").encode("utf-8")
+
 
 def write_update_fixture(
     folder: Path, version: str = "0.0.3", *, wrong_checksum: bool = False,
-    missing_file: bool = False,
+    missing_file: bool = False, signed: bool = True, bad_signature: bool = False,
+    player_key: bool = True,
 ) -> None:
     """Synthetic GitHub answers for Check for updates, as the regression build's
     transport reads them from NK_UI_TEST_UPDATE_DIR: releases.json for
     the Releases API, then each asset by its file name. The ZIP has the release
-    ZIP's layout (bin/nakagawa_player.exe and SHA256SUMS.txt)."""
+    ZIP's layout (bin/nakagawa_player.exe and SHA256SUMS.txt). The checksum file
+    is signed with the TEST-ONLY signer (unless signed is False; bad_signature
+    signs other bytes), and update_signing_key.pub gives the regression player
+    that signer's public key (unless player_key is False: a build with no key)."""
     import io
     import zipfile
 
@@ -752,7 +845,15 @@ def write_update_fixture(
     data = archive.getvalue()
     (folder / name).write_bytes(data)
     digest = "0" * 64 if wrong_checksum else hashlib.sha256(data).hexdigest()
-    (folder / f"{name}.sha256").write_bytes(f"{digest}  {name}".encode("ascii") + b"\r\n")
+    checksum = f"{digest}  {name}".encode("ascii") + b"\r\n"
+    (folder / f"{name}.sha256").write_bytes(checksum)
+    signer = TestOnlyMinisigner()
+    if player_key:
+        (folder / "update_signing_key.pub").write_bytes(signer.public_file())
+    signature = signer.minisig(checksum + (b"tampered" if bad_signature else b""),
+                               f"nakagawa-recomp {version} windows-x64 zip checksum")
+    if signed:
+        (folder / f"{name}.sha256.minisig").write_bytes(signature)
     tag = f"v{version}"
     release = {
         "tag_name": tag,
@@ -768,6 +869,10 @@ def write_update_fixture(
              "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}.sha256"},
         ],
     }
+    if signed:
+        release["assets"].append(  # type: ignore[union-attr]
+            {"name": f"{name}.sha256.minisig", "size": len(signature), "state": "uploaded",
+             "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}.sha256.minisig"})
     (folder / "releases.json").write_text(json.dumps([release]), encoding="utf-8")
 
 
@@ -2067,8 +2172,9 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_update_check_finds_downloads_and_installs_a_newer_release(self) -> None:
         """Owner request 2026-10-28: CHECK FOR UPDATES asks GitHub once; Download and
-        Install each need their own click; the ZIP is checked against the published
-        SHA-256 before Install is offered, and Install unpacks into a new folder."""
+        Install each need their own click; the checksum file's signature is checked,
+        then the ZIP against that signed SHA-256, before Install is offered, and
+        Install unpacks into a new folder."""
         run, steps, requests = self.update_run(
             "updates",
             ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
@@ -2090,8 +2196,9 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(
             requests[1:],
             [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
+             UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256.minisig",
              UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip"],
-            "the checksum file first, then the ZIP, each once")
+            "the checksum file and its signature first, then the ZIP, each once")
         installed = steps[-1]
         self.assertTrue(installed["zip"].endswith(
             os.sep.join(("Nakagawa", "data", "downloads", "nakagawa-recomp-0.0.3-windows-x64.zip"))),
@@ -2120,6 +2227,38 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_HASH_MISMATCH")
         self.assertEqual(steps[-1]["zip"], "none", "nothing is kept or offered to install")
+
+    def test_update_download_with_a_bad_signature_is_refused(self) -> None:
+        """Owner request (v0.0.2): the checksum is trusted only under a valid signature
+        from the player's key; a bad one stops before the ZIP is asked for."""
+        if sys.platform != "win32":
+            self.skipTest("the update download runs on Windows only")
+        _, steps, requests = self.update_run(
+            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            {"bad_signature": True})
+        self.assertEqual(steps[-1]["update"], "failed", steps)
+        self.assertEqual(steps[-1]["error"], "UPDATE_SIGNATURE_INVALID")
+        self.assertEqual(steps[-1]["zip"], "none", "nothing is kept or offered to install")
+        self.assertEqual(
+            requests[1:],
+            [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
+             UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256.minisig"],
+            "the ZIP is never requested")
+
+    def test_update_without_a_signing_key_or_signature_offers_only_the_release_page(self) -> None:
+        """A build with no update-signing key, or a release with no signature, still
+        shows the newer version, but Download is not offered: Enter opens the release
+        page, and nothing past the release list is requested."""
+        for fixture in ({"player_key": False}, {"signed": False}):
+            with self.subTest(fixture=fixture):
+                run, steps, requests = self.update_run(
+                    "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN",
+                                "WAIT_MS=500"), fixture)
+                self.assertEqual([step["update"] for step in steps], ["available"], steps)
+                self.assertEqual(requests, [UPDATE_RELEASES_URL])
+                self.assertIn(
+                    "open_url=https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3",
+                    run["stdout"])
 
     def test_update_install_that_loses_a_listed_file_is_refused(self) -> None:
         if sys.platform != "win32":

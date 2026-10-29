@@ -734,7 +734,12 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             model.update_page_url = newest->page_url;
             model.update_has_zip = newest->has_zip;
 #if defined(_WIN32) || defined(_WIN64)
-            model.update_can_download = newest->has_zip && update->check.newer;
+            /* Download is offered only when the ZIP can be checked: a key in this
+               build and a signature in the release (update_check.h). */
+            model.update_unverifiable = !update->can_verify;
+            model.update_unsigned = !newest->has_signature;
+            model.update_can_download = newest->has_zip && update->check.newer &&
+                                        update->can_verify && newest->has_signature;
 #endif
             model.update_zip_name = newest->zip_name;
             model.update_zip_bytes = newest->zip_size;
@@ -1203,7 +1208,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    focuses CHECK FOR UPDATES. */
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
-                        focus = app->update.check.newest.has_zip
+                        focus = app->update.check.newest.has_zip &&
+                                app->update.check.newest.has_signature &&
+                                app->update.can_verify
                             ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
 #if !defined(_WIN32) && !defined(_WIN64)
                         focus = PLAYER_UI_ID_UPDATE_PAGE;

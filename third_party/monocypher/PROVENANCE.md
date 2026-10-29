@@ -1,10 +1,11 @@
 # PROVENANCE.md — `third_party/monocypher/`
 
-The Ed25519 signature check from Monocypher, vendored for the signed update notice planned in
-[`docs/ONLINE_FEATURES.md`](../../docs/ONLINE_FEATURES.md#implementation-order) (item 3, update check with signature
-verification). The project wrapper is `nk_ed25519_verify` in `src/core/nk_sig.c`; its only caller today is the
-native selftest `tests/native/test_nk_sig.c` (`ed25519-verify-selftest`, also run by `native-core-tests`). Nothing in
-the player links it yet, and the vendored files contain no network code and no key.
+The Ed25519 signature check and BLAKE2b hash from Monocypher, vendored for the player's signed update download
+([`docs/RELEASE_SIGNING.md`](../../docs/RELEASE_SIGNING.md); [`docs/ONLINE_FEATURES.md`](../../docs/ONLINE_FEATURES.md#implementation-order),
+item 3). The project wrappers are `nk_ed25519_verify` and `nk_minisign_verify` in `src/core/nk_sig.c`; the player's
+update check (`src/player/update_check.c`) calls them to check a release's minisign signature, and the native
+selftest `tests/native/test_nk_sig.c` (`ed25519-verify-selftest`, also run by `native-core-tests`) tests them. The
+vendored files contain no network code and no key.
 
 ## Upstream source
 

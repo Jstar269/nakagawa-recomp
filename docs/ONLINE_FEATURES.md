@@ -51,11 +51,16 @@ already are.
 - **Check at start** is a switch on that page, off by default (`check_updates_at_start` in `settings.json`).
   When on, the player asks once at start. A newer version shows one quiet "Version x is out" button on the
   library; a failure is not shown, only logged in the developer log.
-- **DOWNLOAD** and **INSTALL** are separate clicks. The Windows ZIP is kept only if its SHA-256 matches the
-  release's `.sha256` file and GitHub's own digest of the asset; Install unpacks it into a new folder and tells
-  the user how to start it. Nothing is replaced and nothing runs on its own.
-- A release signature (the Ed25519 check below, `nk_ed25519_verify`) or a build-provenance attestation for the
-  ZIP would add a check that does not trust GitHub's hosting alone. Neither exists for the release ZIP yet.
+- **DOWNLOAD** and **INSTALL** are separate clicks. DOWNLOAD first checks the release's `.sha256` file
+  against its minisign signature, `.sha256.minisig`, made offline by the owner with the update-signing key
+  whose public half is built into the player ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md)). The Windows ZIP is
+  fetched only after that, and kept only if its SHA-256 matches the signed checksum file and GitHub's own
+  digest of the asset; Install unpacks it into a new folder and tells the user how to start it. Nothing is
+  replaced and nothing runs on its own.
+- A build without the key, a release without a signature, and a signature that does not verify all fail
+  closed: no download, a plain card, and the release page link. The signed checksum names the ZIP, whose name
+  carries the version, so an older signed checksum served for a newer release is refused. A build-provenance
+  attestation for the ZIP does not exist yet.
 
 Hosts, the exact request and the failure cards are in [`SETUP.md`](SETUP.md#network-use).
 
@@ -136,7 +141,8 @@ its own explicit choice with its own sentence in Settings.
 ## Maintainer tasks
 
 - DNS and hosting for `nakagawa.jaycast.net`, serving `updates.json`, `news.json` and a privacy page.
-- Generating and keeping the Ed25519 update-signing key; publishing its public key with the source.
+- Generating and keeping the update-signing key offline and signing each release's checksum file; committing
+  its public key as `assets/update_signing_key.pub` ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md)).
 
 ## Implementation order
 
@@ -155,10 +161,14 @@ its own explicit choice with its own sentence in Settings.
 3. Update check. **Built** as its own opt-in feature on GitHub's Releases API, with a SHA-256 check of the
    download ([Update check](#update-check)); tests: `tests/native/test_update_check.c` and
    `tests/native/test_player_ui.py`, on recorded and synthetic answers, never the internet.
-   - A signed release manifest would add signature verification. The verify primitive is ready, with nothing
-     calling it yet: `nk_ed25519_verify` in `src/core/nk_sig.h`,
-     on the vendored Monocypher 4.0.3 Ed25519 check (`third_party/monocypher/`), tested against the RFC 8032
-     vectors by `ed25519-verify-selftest`. It holds no key and makes no connection.
+   - **Built:** signature verification before any SHA-256 is trusted. Each release's checksum file is signed
+     offline with stock `minisign` ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md)); the player checks the
+     `.minisig` with `nk_minisign_verify` (`src/core/nk_sig.h`: minisign's prehashed `ED` and legacy `Ed`
+     forms, the key ID and the trusted comment's global signature), on `nk_ed25519_verify` and the vendored
+     Monocypher 4.0.3 Ed25519 and BLAKE2b code (`third_party/monocypher/`). The public key is read at build
+     time from `assets/update_signing_key.pub`; until the owner commits that file, the build carries no key and
+     offers only the release page. Tests: `ed25519-verify-selftest` (the RFC 8032 vectors and real minisign
+     output, TEST-ONLY key) and the update tests above (TEST-ONLY keys derived at run time).
 4. News strip.
 5. Reports, browser hand-off first, then the endpoint.
 6. Online play: ad-hoc relay first, then per-title infrastructure revivals.

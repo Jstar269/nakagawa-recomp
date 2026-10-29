@@ -2267,6 +2267,15 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                     (void)snprintf(line, sizeof(line),
                                    "This release has no Windows download. Its page on GitHub "
                                    "lists what it offers.");
+                } else if (model->update_unverifiable) {
+                    (void)snprintf(line, sizeof(line),
+                                   "This build can't check update signatures, so it doesn't "
+                                   "download updates itself. Download the new version from the "
+                                   "release page on GitHub.");
+                } else if (model->update_unsigned) {
+                    (void)snprintf(line, sizeof(line),
+                                   "This release isn't signed, so Nakagawa won't download it. "
+                                   "Its page on GitHub has the download.");
                 } else if (!model->update_can_download) {
                     (void)snprintf(line, sizeof(line),
                                    "Download it from the release page on GitHub.");
@@ -2274,8 +2283,8 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                     flow_bytes(a, sizeof(a), model->update_zip_bytes);
                     (void)snprintf(line, sizeof(line),
                                    "Download fetches %s (%s) and checks it against the "
-                                   "release's published SHA-256. Nothing is installed until "
-                                   "you choose Install.",
+                                   "release's signed SHA-256. Nothing is installed until you "
+                                   "choose Install.",
                                    safe_text(model->update_zip_name, "the Windows ZIP"), a);
                 }
                 nk_ui_text(ui, SET_ID_TEXT + 0xD2u, line, &text);
@@ -2297,7 +2306,7 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                 settings_shorten_words(safe_text(model->update_folder, "the downloads folder"),
                                        folder, sizeof(folder), 72u);
                 (void)snprintf(line, sizeof(line),
-                               "Its SHA-256 matches the release's published checksum. Saved in "
+                               "Its SHA-256 matches the release's signed checksum. Saved in "
                                "%s. Install unpacks it into a new folder of its own; this "
                                "version stays as it is.", folder);
                 nk_ui_text(ui, SET_ID_TEXT + 0xD2u,
@@ -2380,6 +2389,14 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                                                                    : "Check again",
                                      NK_UI_BUTTON_PRIMARY)) {
                         *result = settings_op(PLAYER_UI_SETTINGS_CHECK_UPDATES);
+                    }
+                    /* A refused download still has its release page, where the
+                       user can download it by hand. */
+                    if (step == PLAYER_UI_UPDATE_FAILED &&
+                        model->update_failed_step == PLAYER_UI_UPDATE_DOWNLOADING &&
+                        model->update_page_url && model->update_page_url[0] &&
+                        nk_ui_button(ui, PLAYER_UI_ID_UPDATE_PAGE, "Open release page", 0u)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE);
                     }
                     /* A failed install leaves the checked ZIP to unpack by hand. */
                     if (step == PLAYER_UI_UPDATE_FAILED &&

@@ -136,6 +136,232 @@ static void add_order_to_s(uint8_t sig[64]) {
     }
 }
 
+/* ---- minisign ------------------------------------------------------------------------
+ *
+ * Real minisign output, so the format is checked against the tool the owner signs
+ * releases with, not only against this project's reading of it. TEST-ONLY: the key
+ * was made for this test with `minisign -G -W` (minisign 0.12, the newest release,
+ * Windows x86_64 build) and its secret half was deleted after signing; it signs
+ * nothing else and is not the update-signing key. Both signatures cover the
+ * 105-byte checksum file below, once in the default prehashed form and once with
+ * `-l` (legacy). minisign on Windows ends its lines in CRLF. */
+
+static const char k_minisign_test_pub[] =
+    "untrusted comment: minisign public key D0A699A2C54C0C9E\r\n"
+    "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81\r\n";
+
+static const char k_minisign_test_message[] =
+    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    "  nakagawa-recomp-0.0.2-windows-x64.zip\r\n";
+
+static const char k_minisign_test_prehashed[] =
+    "untrusted comment: TEST-ONLY signature for tests/native\r\n"
+    "RUSeDEzFopmm0IiX23jdEjzmTHOAw6AfJC98fPtQU+kDZ64h1gF5D9wc+Pn85CUmfAegosjtlzFrlH9svmOykGUu"
+    "uxM9Zs9aRQY=\r\n"
+    "trusted comment: nakagawa-recomp 0.0.2 windows-x64 zip checksum, TEST-ONLY key\r\n"
+    "SsnFMq8GKumiLOR/M6CeTgj5Ctxz+fXvZozm4UZZU7+lTV/lF41uuuegIOGzMOGScgx0k1gM/1tHvzYZNnwLAw==\r\n";
+
+static const char k_minisign_test_legacy[] =
+    "untrusted comment: TEST-ONLY legacy signature for tests/native\r\n"
+    "RWSeDEzFopmm0Lr40CootHEj/wZzyjl/S153q4mVrlBHYguSVxMUVu1BVZSzi8y/mERJ+AEzBDfOZ9vUB1crwxYI"
+    "aVeE4ov7YAQ=\r\n"
+    "trusted comment: nakagawa-recomp 0.0.2 windows-x64 zip checksum, TEST-ONLY key, legacy\r\n"
+    "oFNkHnhMFNeC9K/K+VFnkDUA8jP2J8siZok/+wu68GftlsWqlJd914riAow1cApDFgkuAT/9sNXaY6Owrn9BCA==\r\n";
+
+static NkMinisignResult minisign_check(const NkMinisignKey *key, const char *sig,
+                                       const char *msg, size_t msg_len) {
+    return nk_minisign_verify(key, sig, strlen(sig), (const uint8_t *)msg, msg_len, NULL, NULL);
+}
+
+/* sig with the first occurrence of from replaced by to (same length). */
+static char *edited(const char *sig, const char *from, const char *to) {
+    size_t n = strlen(sig);
+    char *copy = (char *)malloc(n + 1u);
+    char *at;
+    if (copy == NULL) return NULL;
+    memcpy(copy, sig, n + 1u);
+    at = strstr(copy, from);
+    if (at == NULL || strlen(from) != strlen(to)) {
+        free(copy);
+        return NULL;
+    }
+    memcpy(at, to, strlen(to));
+    return copy;
+}
+
+static void test_minisign(void) {
+    static const char *const sigs[] = { k_minisign_test_prehashed, k_minisign_test_legacy };
+    static const char *const names[] = { "minisign prehashed (ED)", "minisign legacy (Ed)" };
+    const size_t msg_len = sizeof(k_minisign_test_message) - 1u;
+    NkMinisignKey key;
+    NkMinisignKey other;
+    const char *comment = NULL;
+    size_t comment_len = 0;
+    char lf[512];
+
+    /* The key: the whole .pub file, its base64 line alone, with LF line ends. */
+    check(nk_minisign_parse_key(k_minisign_test_pub, strlen(k_minisign_test_pub), &key),
+          "minisign .pub file parses", "minisign key");
+    check(key.key_id[0] == 0x9eu && key.key_id[7] == 0xd0u,
+          "key ID read in file order (shown reversed as D0A699A2C54C0C9E)", "minisign key");
+    check(nk_minisign_parse_key("RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81", 56u,
+                                &other) &&
+              memcmp(&other, &key, sizeof(key)) == 0,
+          "the bare base64 line parses to the same key", "minisign key");
+    {
+        static const char *const bad_keys[] = {
+            "",
+            "untrusted comment: minisign public key D0A699A2C54C0C9E\n",
+            "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA8",     /* short */
+            "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81A",   /* long */
+            "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA8!",    /* not base64 */
+            "RUSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81",    /* "ED", not a key */
+            "RWSeDEzFopmm0LdwefFMjtRkQtZckksdhfycG9vMHzmHiu5pl16/wA81\nmore",
+        };
+        for (size_t i = 0; i < sizeof(bad_keys) / sizeof(bad_keys[0]); ++i) {
+            check(!nk_minisign_parse_key(bad_keys[i], strlen(bad_keys[i]), &other),
+                  "a malformed public key is refused", bad_keys[i]);
+        }
+    }
+
+    for (size_t i = 0; i < 2u; ++i) {
+        const char *sig = sigs[i];
+        char *bad;
+        check(nk_minisign_verify(&key, sig, strlen(sig), (const uint8_t *)k_minisign_test_message,
+                                 msg_len, &comment, &comment_len) == NK_MINISIGN_VALID,
+              "minisign's own signature verifies", names[i]);
+        check(comment != NULL && comment_len >= 49u &&
+                  strncmp(comment, "nakagawa-recomp 0.0.2 windows-x64 zip checksum, TEST-ONLY key",
+                          49u) == 0 &&
+                  comment[comment_len] == '\r',
+              "the trusted comment is returned without its prefix or line end", names[i]);
+        /* The same file with LF line ends (minisign elsewhere writes LF). */
+        {
+            size_t used = 0;
+            for (const char *c = sig; *c && used + 1u < sizeof(lf); ++c) {
+                if (*c != '\r') lf[used++] = *c;
+            }
+            lf[used] = '\0';
+            check(minisign_check(&key, lf, k_minisign_test_message, msg_len) == NK_MINISIGN_VALID,
+                  "LF line ends verify too", names[i]);
+            /* and without the final line end */
+            lf[used - 1u] = '\0';
+            check(minisign_check(&key, lf, k_minisign_test_message, msg_len) == NK_MINISIGN_VALID,
+                  "no final line end verifies too", names[i]);
+        }
+        /* The message: one changed byte, one byte short, one byte more. */
+        {
+            char changed[sizeof(k_minisign_test_message)];
+            memcpy(changed, k_minisign_test_message, sizeof(changed));
+            changed[0] = '3';
+            check(minisign_check(&key, sig, changed, msg_len) == NK_MINISIGN_BAD_SIGNATURE,
+                  "a changed checksum file is refused", names[i]);
+            check(minisign_check(&key, sig, k_minisign_test_message, msg_len - 1u) ==
+                      NK_MINISIGN_BAD_SIGNATURE,
+                  "a truncated checksum file is refused", names[i]);
+        }
+        /* The trusted comment, changed by one letter: only the global signature
+           covers it. */
+        bad = edited(sig, "windows-x64 zip", "windows-x86 zip");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_BAD_COMMENT,
+              "a changed trusted comment is refused", names[i]);
+        free(bad);
+        /* The untrusted comment is not signed and may say anything. */
+        bad = edited(sig, "TEST-ONLY", "ANYTHING!");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_VALID,
+              "the untrusted comment is not checked", names[i]);
+        free(bad);
+        /* A signature that names another key ID. */
+        bad = edited(sig, "SeDEzFopmm0", "SeDEzFopmm1");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_UNKNOWN_KEY,
+              "another key ID is refused before any check", names[i]);
+        free(bad);
+        /* The right key ID on another public key. */
+        other = key;
+        other.public_key[5] ^= 0x01u;
+        check(minisign_check(&other, sig, k_minisign_test_message, msg_len) != NK_MINISIGN_VALID,
+              "another public key with the same ID is refused", names[i]);
+        /* Malformed files: cut short, garbled base64, missing lines, wrong prefixes. */
+        {
+            /* Every cut that takes more than the final line end. */
+            size_t n = strlen(sig);
+            for (size_t cut = 0; cut + 2u < n; cut += 7u) {
+                NkMinisignResult r = nk_minisign_verify(
+                    &key, sig, cut, (const uint8_t *)k_minisign_test_message, msg_len, NULL, NULL);
+                if (r == NK_MINISIGN_VALID) {
+                    check(0, "a signature cut short is refused", names[i]);
+                    break;
+                }
+            }
+        }
+        bad = edited(sig, "untrusted comment:", "untrusted_comment:");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_MALFORMED,
+              "a wrong first-line prefix is refused", names[i]);
+        free(bad);
+        bad = edited(sig, "trusted comment: nakagawa", "trusted_comment: nakagawa");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_MALFORMED,
+              "a wrong trusted-comment prefix is refused", names[i]);
+        free(bad);
+        bad = edited(sig, "Fopmm0", "Fop*m0");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_MALFORMED,
+              "garbled signature base64 is refused", names[i]);
+        free(bad);
+        bad = edited(sig, "==\r\n", "A=\r\n");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_MALFORMED,
+              "global signature base64 without its padding is refused", names[i]);
+        free(bad);
+        {
+            /* An extra line after the global signature. */
+            size_t n = strlen(sig);
+            char *longer = (char *)malloc(n + 8u);
+            if (longer != NULL) {
+                memcpy(longer, sig, n);
+                memcpy(longer + n, "extra\r\n", 8u);
+                check(minisign_check(&key, longer, k_minisign_test_message, msg_len) ==
+                          NK_MINISIGN_MALFORMED,
+                      "text after the global signature is refused", names[i]);
+                free(longer);
+            }
+        }
+    }
+    /* An algorithm minisign does not define: "Ex". */
+    {
+        char *bad = edited(k_minisign_test_prehashed, "RUSeDEz", "RXSeDEz");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_MALFORMED,
+              "an unknown signature algorithm is refused", "minisign");
+        free(bad);
+    }
+    /* A prehashed signature relabelled as legacy, and the other way round. */
+    {
+        char *bad = edited(k_minisign_test_prehashed, "RUSeDEz", "RWSeDEz");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_BAD_SIGNATURE,
+              "a prehashed signature read as legacy is refused", "minisign");
+        free(bad);
+        bad = edited(k_minisign_test_legacy, "RWSeDEz", "RUSeDEz");
+        check(bad != NULL && minisign_check(&key, bad, k_minisign_test_message, msg_len) ==
+                                 NK_MINISIGN_BAD_SIGNATURE,
+              "a legacy signature read as prehashed is refused", "minisign");
+        free(bad);
+    }
+    check(nk_minisign_verify(NULL, k_minisign_test_prehashed, strlen(k_minisign_test_prehashed),
+                             (const uint8_t *)k_minisign_test_message, msg_len, NULL, NULL) ==
+              NK_MINISIGN_MALFORMED,
+          "no key is refused", "minisign");
+    check(nk_minisign_verify(&key, NULL, 0u, (const uint8_t *)k_minisign_test_message, msg_len,
+                             NULL, NULL) == NK_MINISIGN_MALFORMED,
+          "no signature is refused", "minisign");
+    printf("nk_sig selftest: minisign signatures OK\n");
+}
+
 int main(void) {
     const size_t count = sizeof(k_vectors) / sizeof(k_vectors[0]);
     size_t v;
@@ -201,6 +427,7 @@ int main(void) {
         free(msg);
     }
     free(other_pub);
+    test_minisign();
 
     if (g_failures != 0) {
         fprintf(stderr, "nk_sig selftest: %d failure(s)\n", g_failures);

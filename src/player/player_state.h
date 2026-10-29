@@ -239,6 +239,7 @@ typedef struct {
     PlayerUpdatePhase failed_step;   /* CHECKING, DOWNLOADING or INSTALLING */
     bool from_start;                 /* the check at start: a failure stays quiet */
     bool notice;                     /* the library says a newer version is out */
+    bool can_verify;                 /* this build has an update-signing key to check with */
     NkUpdateCheckResult check;
     uint64_t received_bytes;
     char zip_path[NK_MAX_PATH];

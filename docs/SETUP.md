@@ -808,17 +808,22 @@ The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases
 `Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
 `NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
 Updates page then shows this version, the newest one (pre-releases count), the release page link and the
-first lines of its notes. **DOWNLOAD** keeps that release's Windows ZIP in the `downloads` folder of
-Nakagawa's data folder (`%LOCALAPPDATA%\Nakagawa\data\downloads`) only if its SHA-256 matches the
-release's published `.sha256` file, and GitHub's own checksum of the ZIP when GitHub lists one; on any
-mismatch the file is deleted. **INSTALL** is a separate click: it unpacks the checked ZIP into a new folder
+first lines of its notes. **DOWNLOAD** first fetches the release's `.sha256` file and its signature,
+`.sha256.minisig` (two small files from the same hosts), and checks the signature with the project's
+update-signing public key, which is built into the player
+([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md)). Only then does it fetch the Windows ZIP, and it keeps the
+ZIP in the `downloads` folder of Nakagawa's data folder (`%LOCALAPPDATA%\Nakagawa\data\downloads`) only
+if its SHA-256 matches that signed checksum file, and GitHub's own checksum of the ZIP when GitHub lists
+one; on any mismatch the file is deleted. A release with no signature, a signature that doesn't match,
+or a build with no signing key gets no download from the player: the Updates page offers the release
+page instead. **INSTALL** is a separate click: it unpacks the checked ZIP into a new folder
 beside the running version (or in the downloads folder when Nakagawa doesn't run from a release folder) and
 tells you to start the new `bin\nakagawa_player.exe` yourself. It never replaces the running version.
 Your library, saves and settings stay in Nakagawa's data folders, outside the install folder, so the new
 version finds them. There are no retries and no background checks: a failure shows one "Couldn't Reach
 GitHub" card, and a failed check at start stays in the developer log. The release ZIP has no
-build-provenance attestation of its own yet, so the download is checked against the published checksum
-only.
+build-provenance attestation of its own yet; the signed checksum is what ties the download to the
+project.
 
 There is no telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
