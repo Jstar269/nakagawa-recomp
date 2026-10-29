@@ -722,8 +722,9 @@ Semantic handler census: **524** handlers across **25** API families, covering *
 - **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
   - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
 - **`h_MsgDialogAbort`** (`sceUtility`): `sceUtilityMsgDialogAbort` (0x4928bd96)
-  - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference, not a PSP measurement, and a button answer the model wrote at the first Update stays
+  - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays
   - Evidence: src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence
+  - Evidence: src/rt/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
 
 #### Compatibility Handlers (Named Limitations)

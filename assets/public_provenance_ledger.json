@@ -1507,7 +1507,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e8f42b89b5b9f39f491da1623d88ce16a6166af9a52670a8c3c1de947acdf9b6"
+      "sha256": "e2f4e5296fca4e4f2d228ab78488503ec699c27d281c568300d5db0e7f03e44b"
     },
     {
       "path": "docs/HLE_COVERAGE.md",
@@ -9115,7 +9115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a38e576cb4473b196769432971331534565e3d3f00157fe8d1de864bf6d8488"
+      "sha256": "eb86abb2bc7a145e932d69e901850d8fe1667ff2d1fed48b82c003420e9d381b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -13051,7 +13051,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd48f7e21278c78e97119116f8f1608336ad81bb7109651b91ff922dc0cfea7e"
+      "sha256": "7b7edddf38d73536156381261f364f61b590352030aa0b520f1bbc6290c75095"
     },
     {
       "path": "tools/host_stubs.py",

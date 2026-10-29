@@ -6884,6 +6884,30 @@ static void test_msg_dialog_abort_sequence(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "After reset: 80110001");
 }
 
+/* From PR #1607 (superseded by this change): the same abort.expected sequence driven without an
+ * Update before the first Abort, so the RUNNING check does not depend on a prior Update. */
+static void test_msg_dialog_abort_without_update(void) {
+    CpuState cpu;
+    sr_hle_test_osk_slot_reset();
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110005u, "abort before init: wrong type");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "abort test init");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during init refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 1u, "abort test enters running");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u && utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u,
+           "repeated abort accepted while running");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 2u &&
+           utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 3u, "update completes aborted dialog");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort after finish refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 4u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during and after shutdown refused");
+    sr_hle_test_osk_slot_reset();
+}
+
 static void test_msg_dialog_answer_field(void) {
     enum { OPTIONS = 0x23cu, BUTTON_PRESSED = 0x240u, OPT_YESNO = 0x10u };
     CpuState cpu;
@@ -37860,6 +37884,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_status_sequence();
     test_msg_dialog_answer_field();
     test_msg_dialog_abort_sequence();
+    test_msg_dialog_abort_without_update();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
     test_exit_thread_does_not_wake_launcher(0);

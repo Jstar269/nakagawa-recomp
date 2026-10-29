@@ -296,9 +296,10 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence",
+            "src/rt/hle_thread_selftest.c:test_msg_dialog_abort_without_update",
             "PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown",
         ],
-        "limitation": "return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference, not a PSP measurement, and a button answer the model wrote at the first Update stays",
+        "limitation": "return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays",
     },
     "h_FontGetFontList": {
         "status": "partial",
