@@ -773,7 +773,12 @@ class MatrixRunner:
                     f"{staged[case.case_id][:8]})")
         started = self.clock_ns()
         wall = 2 * (case.timeout + 120.0) + plan.watchdog_deadline + PROBE_RECOVERY_ALLOWANCE_SECONDS
-        code, stdout, _err = self.run(argv, wall, None)
+        code, stdout, err = self.run(argv, wall, None)
+        # The probe command's own report (for Nakagawa Link: its recovery steps and boot numbers) is the only
+        # record of how a contained launch was recovered; keep it next to the runner log.
+        plan.evidence_dir.mkdir(parents=True, exist_ok=True)
+        (plan.evidence_dir / f"{plan.matrix_id}-{tag}.probe-command.txt").write_text(
+            f"exit {code}\n--- stdout\n{stdout}\n--- stderr\n{err[-4000:]}\n", encoding="utf-8")
         return classify_launch(
             case=case,
             epoch_boot=boot,

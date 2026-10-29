@@ -375,6 +375,19 @@ resident-agent containment test probe.
    `PHYSICAL_INTERVENTION_REQUIRED`. The remaining cases stay `NOT_RUN`, and a
    later run resumes at the next case without retrying the stopped one.
 
+Measured on 2026-10-29: one run on the project PSP-3000 (firmware 6.6.1, PSPLink
+v3.2.1, Nakagawa Link resident), from one command, with no person involved. It
+ran three cases in about 18 minutes, all from commit `8cbd7d51`:
+
+- `thread-k0-block` was `ACCEPTED` on boot 73.
+- A resident-agent test probe whose `module_start` never returns was
+  `CONTAINED` on boot 74. The runner timed out on it. The agent's watchdog
+  contained it, then cold-reset the PSP into boot 75, in the XMB context.
+- `vfpu-forms` was `ACCEPTED` on boot 76. The matrix's own soft reset had
+  returned the PSP to standalone PSPLink.
+
+The raw logs stay private.
+
 Exit codes: 0 when every case is `ACCEPTED`, 2 for a refusal or any other
 outcome, 3 for `PHYSICAL_INTERVENTION_REQUIRED`. The report and checkpoint stay
 in the private evidence directory.

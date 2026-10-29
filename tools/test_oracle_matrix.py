@@ -352,6 +352,9 @@ class MatrixExecutionTests(MatrixTestCase):
         self.assertEqual(device.launched, [("delay-zero", 71), ("ge-nan", 72), ("dma-cells", 74)])
         self.assertIn(73, report["used_boots"])
         self.assertIn("rebooted during the launch (boot 72 -> 73)", " ".join(report["outcomes"][1]["reasons"]))
+        kept = (plan.evidence_dir / "m1-01-ge-nan-boot72.probe-command.txt").read_text(encoding="utf-8")
+        self.assertTrue(kept.startswith("exit 4\n"))
+        self.assertIn('"verdict": "recovered"', kept)
 
     def test_reboot_during_an_otherwise_eligible_launch_is_contained(self) -> None:
         plan = self.load(self.CASES[:2])
