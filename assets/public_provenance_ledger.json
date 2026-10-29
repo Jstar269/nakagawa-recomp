@@ -12616,7 +12616,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9f67d2a0c5f2250ee7f9f4530a5943908aca7e68bec92bf20fb3efae057bf7a6"
+      "sha256": "749df0d31ba86fcf3f9b99188e53bb796356ad013b6bbfb3d91fa2872804e379"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -14798,7 +14798,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5dbfaa0f89c47a78e50d6faf28efcc3e56d37bef1c6d48584fb7703f7ea06d70"
+      "sha256": "7cf8fb26d281a545d7a4c1d0299dbd64e4a34645b4fee035b241f500f2dafb03"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
