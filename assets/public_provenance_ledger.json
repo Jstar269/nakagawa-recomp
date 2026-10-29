@@ -1489,7 +1489,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "12e8dc6bf47e4ff8e7b22e5cd43aa7c7fdeacec9034049efb901ad0906bcba0e"
+      "sha256": "eb538d5fa8de987285508921225fd17cad3cddaf30f3fe273a64c303bd6c203d"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1918,7 +1918,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "98785953da23b429cd01b6277075675df4afbfa2774cbaa3e609e3a0c1d756a6"
+      "sha256": "911c4c9ebeb98791dc64269b72b22eacc8535f4063ed6ffe3ed231d40d1b4b16"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -9712,7 +9712,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8137639549157d449623def4241ec2152fd85139e1c9c71022a074f3ee153789"
+      "sha256": "e1b29eacfd0dff630fec223502d2503eeb3469212944305d5a18ec438517997f"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -9724,7 +9724,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967c27f67d9ea6b844fbdbbb54cc965df79486d1fe59c8cf88a6dde5e5539300"
+      "sha256": "f107cb4647494038bcae2e9439aee792a5d6e22048048a81ffe606035a3f6b39"
     },
     {
       "path": "src/rt/scripted_input.h",

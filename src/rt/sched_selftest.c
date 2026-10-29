@@ -310,6 +310,7 @@ static void reset_sched(void) {
     s_cur = -1;
     s_last_pick = -1;
     s_root_seen = 0;
+    s_module_start_uid = 0u;
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
@@ -1707,6 +1708,89 @@ static void test_stack_floor_and_partition_overlap(void) {
     expect(sched_guest_stack_floor() < floor1, "the floor follows the lowest live stack");
     g_test_partition_live = 0;
     sched_set_stack_range_refusal(NULL);
+}
+
+/* Thread stacks come from the high end of the user partition, and the module-start thread is
+ * deleted when module_start returns (PSP-THREAD-K0-001, PSP-3000 6.61; uOFW modulemgr
+ * _StartModule). The measured layout: module_start, on its default 0x40000-byte stack at the
+ * top of the partition, creates the main thread with 0x40000 bytes, which lands directly below
+ * at [0x09f80000, 0x09fc0000); after module_start returns, a new 0x4000-byte thread gets
+ * [0x09ffc000, 0x0a000000), the top of the released module-start stack. */
+static uint32_t g_k0_main_uid;
+static void module_start_creates_main_body(CpuState *s) {
+    g_k0_main_uid = sched_create_thread(0x9104u, 32, 0x40000u);
+    s->r[2] = 0u;   /* module_start returns 0 */
+}
+
+static void ordinary_return_body(CpuState *s) { s->r[2] = 0u; }
+
+static void test_module_start_thread_deleted_and_stacks_from_the_top(void) {
+    reset_sched();
+    g_k0_main_uid = 0u;
+    uint32_t start = sched_create_module_start_thread(0x9100u);
+    TCB *st = tcb_by_uid(start);
+    expect(st != NULL && st->stack_base == 0x09fc0000u && st->stack_size == 0x40000u,
+           "the module-start thread holds the default 0x40000-byte stack at the partition top");
+    if (!st) return;
+    sched_start_thread(start, 0, 0);
+    g_test_body = module_start_creates_main_body;
+    run_one_slice(index_of_uid(start));
+    g_test_body = NULL;
+    TCB *main_thread = tcb_by_uid(g_k0_main_uid);
+    expect(main_thread != NULL && main_thread->stack_base == 0x09f80000u &&
+               main_thread->stack_size == 0x40000u,
+           "the main thread module_start created holds [0x09f80000, 0x09fc0000), as measured");
+    expect(tcb_by_uid(start) == NULL && s_module_start_uid == 0u,
+           "the module-start thread is deleted once module_start returns");
+    expect(sched_thread_exit_status(start) == SCE_KERNEL_ERROR_UNKNOWN_THID,
+           "the deleted module-start thread's UID no longer resolves");
+    uint32_t fresh = sched_create_thread(0x9108u, 32, 0x4000u);
+    TCB *f = tcb_by_uid(fresh);
+    expect(f != NULL && f->stack_base == 0x09ffc000u && f->stack_size == 0x4000u,
+           "a new 0x4000-byte thread gets [0x09ffc000, 0x0a000000), the top of the released "
+           "module-start stack, as measured");
+
+    /* Only the module-start thread is deleted at its end: an ordinary thread that returns
+     * stays a DORMANT object holding its stack until it is deleted. */
+    uint32_t ordinary = sched_create_thread(0x910cu, 32, 0x1000u);
+    TCB *o = tcb_by_uid(ordinary);
+    expect(o != NULL, "an ordinary thread is created");
+    if (!o) return;
+    uint32_t ordinary_base = o->stack_base;
+    sched_start_thread(ordinary, 0, 0);
+    g_test_body = ordinary_return_body;
+    run_one_slice(index_of_uid(ordinary));
+    g_test_body = NULL;
+    o = tcb_by_uid(ordinary);
+    expect(o != NULL && o->state == TH_DORMANT && !o->stack_released &&
+               o->stack_base == ordinary_base,
+           "an ordinary thread that returns stays DORMANT and keeps its stack");
+}
+
+/* With several free blocks the highest one that holds the request is used, carved from its
+ * top, even when a lower block would also hold it. */
+static void test_stack_placement_prefers_the_highest_free_block(void) {
+    reset_sched();
+    uint32_t a = sched_create_thread(0x9200u, 32, 0x1000u);
+    uint32_t b = sched_create_thread(0x9204u, 32, 0x1000u);
+    uint32_t c = sched_create_thread(0x9208u, 32, 0x1000u);
+    TCB *ta = tcb_by_uid(a), *tb = tcb_by_uid(b), *tc = tcb_by_uid(c);
+    expect(ta && tb && tc && ta->stack_base == SR_STACK_ARENA_CEIL - 0x1000u &&
+               tb->stack_base == SR_STACK_ARENA_CEIL - 0x2000u &&
+               tc->stack_base == SR_STACK_ARENA_CEIL - 0x3000u,
+           "successive stacks descend from the partition top");
+    if (!ta || !tb || !tc) return;
+    const uint32_t a_base = ta->stack_base, c_base = tc->stack_base;
+    expect(sched_delete_thread(a) == 0u && sched_delete_thread(c) == 0u,
+           "the top and bottom threads are deleted");
+    uint32_t d = sched_create_thread(0x920cu, 32, 0x1000u);
+    TCB *td = tcb_by_uid(d);
+    expect(td != NULL && td->stack_base == a_base,
+           "a new stack takes the highest free block, not the lower one below the live stack");
+    uint32_t e = sched_create_thread(0x9210u, 32, 0x1000u);
+    TCB *te = tcb_by_uid(e);
+    expect(te != NULL && te->stack_base == c_base,
+           "with the top block used, the next stack comes from the top of the block below");
 }
 
 /* ---- sr_coro primitive tests ------------------------------------------------------- */
@@ -5222,6 +5306,8 @@ int main(int argc, char **argv) {
     test_uid_zero_is_never_a_role();
     test_stack_exhaustion_fails_create();
     test_stack_floor_and_partition_overlap();
+    test_module_start_thread_deleted_and_stacks_from_the_top();
+    test_stack_placement_prefers_the_highest_free_block();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();

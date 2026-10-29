@@ -532,6 +532,11 @@ uint32_t g_root_uid     = SR_ROLE_UID_NONE;
 uint32_t g_worker_uid   = SR_ROLE_UID_NONE;
 uint32_t g_launcher_uid = SR_ROLE_UID_NONE;
 static int s_root_seen  = 0;      /* first-created-thread latch (file-scope for the selftest) */
+/* The thread sched_run starts at the module entry. It stands in for the PSP module manager's
+ * module-start thread, which the module manager waits for and then deletes once module_start
+ * has returned (uOFW src/kd/modulemgr/modulemgr.c _StartModule: sceKernelStartThread,
+ * sceKernelWaitThreadEnd, sceKernelDeleteThread). Zero once that thread is gone. */
+static uint32_t s_module_start_uid = 0u;
 
 /* Nested host->guest call frames still held when a thread's resources are
  * released.  This should always be zero: it counts release paths that were
@@ -613,10 +618,17 @@ typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
 static SchedStackRangeRefusal s_stack_range_refusal;
 void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
 
+/* A PSP allocates a thread stack from the high end of the user partition: the highest free
+ * block that holds the request, carved from that block's top. Measured on a PSP-3000
+ * (PSP-THREAD-K0-001, docs/HARDWARE_ORACLE.md): the probe's main thread, created by its
+ * module_start, holds [0x09f80000, 0x09fc0000); the module-start thread's own 256 KiB stack
+ * above it was released when module_start returned, and a new 0x4000-byte thread got
+ * [0x09ffc000, 0x0a000000), the top of that released block, not the space directly below
+ * the main thread. The free list is sorted by address, so the search runs from its end. */
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
     if (!base_out || size == 0u) return 0;
-    for (int i = 0; i < s_stack_free_count; i++) {
+    for (int i = s_stack_free_count - 1; i >= 0; i--) {
         StackRange *range = &s_stack_free[i];
         if (range->size < size) continue;
         uint32_t base = range->base + range->size - size;
@@ -732,6 +744,7 @@ void sched_init(CpuState *cpu) {
     s_last_pick = -1;
     s_watchdog_spin_observations = 0;
     s_root_seen = 0;
+    s_module_start_uid = 0u;
     s_tick = 0;
     s_guest_reset_requested = 0;
     sched_transfer_reset();
@@ -3593,6 +3606,7 @@ int sched_reset_for_loadexec(void) {
     s_last_pick = -1;
     s_watchdog_spin_observations = 0;
     s_root_seen = 0;
+    s_module_start_uid = 0u;
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
@@ -4235,6 +4249,13 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
     t->wakeups = 0;
     t->join_waiting = 0;
     t->join_result_valid = 0;
+    if (!delete_object && s_module_start_uid != 0u && uid == s_module_start_uid) {
+        /* The module manager deletes the module-start thread as soon as it ends, returning
+         * its stack (by default 256 KiB at the top of the user partition) to the partition
+         * before the module's own threads allocate more. */
+        delete_object = 1;
+    }
+    if (delete_object && uid == s_module_start_uid) s_module_start_uid = 0u;
     if (delete_object) {
         t->deleted = 1;
         t->entry = 0;
@@ -4921,9 +4942,17 @@ static int sched_pause_run(void) {
 
 /* The scheduler loop. Runs on the main (converted) fiber. Creates the entry thread, then keeps
  * resuming the highest-priority ready thread until none remain runnable. */
+/* Create the module-start thread at the module entry: priority 32 and the PSP's default
+ * 256 KiB user stack (SCE_KERNEL_TH_USER_DEFAULT_STACKSIZE), deleted when it ends. */
+static uint32_t sched_create_module_start_thread(uint32_t entry) {
+    uint32_t uid = sched_create_thread(entry, 32, 0);
+    s_module_start_uid = uid;
+    return uid;
+}
+
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     sched_pause_script_load();
-    uint32_t uid = sched_create_thread(entry, 32, 0);
+    uint32_t uid = sched_create_module_start_thread(entry);
     TCB *t0 = tcb_by_uid(uid);
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
      * -- rather than the synthetic thread stack. */
