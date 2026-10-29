@@ -1639,6 +1639,41 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_REBUILD) {
+        /* Games an older Nakagawa built: the prompt, the library banner, the
+           launch reminder and the title page's Rebuild. */
+        switch ((PlayerUiRebuildOp)action->primary) {
+            case PLAYER_UI_REBUILD_ALL:
+                if (player_app_rebuild_prompt_visible(app)) {
+                    player_app_rebuild_prompt_answer(app, true);
+                } else {
+                    (void)player_app_rebuild_all(app);
+                }
+                break;
+            case PLAYER_UI_REBUILD_LATER:
+                player_app_rebuild_prompt_answer(app, false);
+                break;
+            case PLAYER_UI_REBUILD_HIDE_BANNER:
+                player_app_rebuild_banner_dismiss(app);
+                break;
+            case PLAYER_UI_REBUILD_NOW:
+                player_app_rebuild_reminder_rebuild_now(app);
+                break;
+            case PLAYER_UI_REBUILD_PLAY_ANYWAY:
+                player_app_rebuild_reminder_play_anyway(app);
+                break;
+            case PLAYER_UI_REBUILD_TITLE:
+                if (action->title_index < (size_t)app->game_count) {
+                    app->selected_game_index = (int)action->title_index;
+                    (void)player_app_rebuild_package(app, (int)action->title_index);
+                }
+                break;
+            case PLAYER_UI_REBUILD_NONE:
+            default:
+                break;
+        }
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_STALL_KEEP_WAITING) {
         player_app_keep_waiting_for_stalled_game(app);
         return;
@@ -1739,7 +1774,8 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     } else if (action->kind == PLAYER_UI_ACTION_PRIMARY) {
         switch (action->primary) {
             case PLAYER_UI_PRIMARY_PLAY:
-                player_app_request_launch(app, index);
+                /* An outdated game asks first (Rebuild now or Play anyway). */
+                (void)player_app_request_play(app, index);
                 break;
             case PLAYER_UI_PRIMARY_BUILD:
                 (void)player_app_start_package_build(app, index);
@@ -2506,7 +2542,10 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "next_preflight_action=%s "
            "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
-           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u\n",
+           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u "
+           "outdated=%d outdated_scanned=%d rebuild_prompt=%d rebuild_banner=%d "
+           "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
+           "rebuild_queue_paused=%d prompt_version=%s\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -2576,7 +2615,15 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            error_title, error_badge, error_retry,
            app->last_error.details_copied ? 1 : 0,
            next_package, next_expect, app->launch_pending ? 1 : 0,
-           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u);
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u,
+           player_app_outdated_count(app), app->outdated.scanned ? 1 : 0,
+           player_app_rebuild_prompt_visible(app) ? 1 : 0,
+           player_app_rebuild_banner_visible(app) ? 1 : 0,
+           player_app_rebuild_reminder_visible(app) ? 1 : 0,
+           app->rebuild_queue.count, app->rebuild_queue.active ? 1 : 0,
+           app->rebuild_queue.paused ? 1 : 0,
+           app->settings.rebuild_prompt_version[0] ? app->settings.rebuild_prompt_version
+                                                   : "none");
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -2664,6 +2711,53 @@ static SDL_AtomicInt s_player_closing;
 static bool player_closing(void *user) {
     (void)user;
     return SDL_GetAtomicInt(&s_player_closing) != 0;
+}
+
+/* Which games an older Nakagawa built (player_app_outdated_scan_*). The first
+   scan of a session hashes this player's own source tree (about 20 MB), so it
+   runs here; later scans only read each package.json. One at a time, polled
+   from the loop; the hashing stops when the launcher closes. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_AtomicInt done;
+    PlayerOutdatedScan scan;
+} PlayerOutdatedScanJob;
+
+static int SDLCALL player_outdated_scan_thread_main(void *userdata) {
+    PlayerOutdatedScanJob *job = (PlayerOutdatedScanJob *)userdata;
+    if (!job) return 1;
+    player_outdated_scan_run(&job->scan);
+    SDL_SetAtomicInt(&job->done, 1);
+    return 0;
+}
+
+/* Applies a finished scan and starts the next one asked for. closing waits
+   for a running scan and applies nothing. */
+static PlayerOutdatedScanJob *player_outdated_scan_poll(PlayerApp *app,
+                                                        PlayerOutdatedScanJob *job,
+                                                        bool closing) {
+    if (job) {
+        if (!closing && !SDL_GetAtomicInt(&job->done)) return job;
+        if (job->thread) SDL_WaitThread(job->thread, NULL);
+        if (!closing) player_app_outdated_scan_finish(app, &job->scan, NK_PLAYER_VERSION);
+        free(job);
+        job = NULL;
+    }
+    if (closing || !app->outdated.scan_requested) return NULL;
+    job = (PlayerOutdatedScanJob *)calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    if (!player_app_outdated_scan_begin(app, &job->scan)) {
+        free(job);
+        return NULL;
+    }
+    job->thread = SDL_CreateThread(player_outdated_scan_thread_main,
+                                   "nakagawa-package-age", job);
+    if (!job->thread) {
+        /* Bounded work: without a worker it runs once here. */
+        player_outdated_scan_run(&job->scan);
+        SDL_SetAtomicInt(&job->done, 1);
+    }
+    return job;
 }
 
 static int SDLCALL player_package_status_thread_main(void *userdata) {
@@ -3086,12 +3180,20 @@ static void player_package_status_finish(PlayerApp *app,
     }
 #endif
     if (handles_build) {
+        /* A Rebuild all build ends in the queue: the user stays where they
+           are, and a failed check leaves the old package, which still plays. */
+        bool queued_build = player_app_rebuild_queue_owns_build(app);
         *build_check_pending = false;
         *build_check_cache_generation = 0;
         /* Keep the completed session identity as a one-shot latch. The build
            state remains complete after its view changes, and the main loop
            must not queue the same post-build validation again. */
-        if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
+        if (queued_build && !(job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available)) {
+            player_app_rebuild_queue_build_checked(app, false);
+            if (app->active_view == VIEW_BUILDING_PACKAGE) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            }
+        } else if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
             nk_library_add_or_update(&app->library,
@@ -3107,7 +3209,14 @@ static void player_package_status_finish(PlayerApp *app,
                 player_app_runtime_package_cache_set_reason(app, current_index,
                                                             job->reason);
             }
-            player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
+            if (queued_build) {
+                player_app_rebuild_queue_build_checked(app, true);
+                if (app->active_view == VIEW_BUILDING_PACKAGE) {
+                    player_app_set_view(app, VIEW_LIBRARY);
+                }
+            } else {
+                player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
+            }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
             /* runtime= is what makes the title's card offer PLAY. */
             printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
@@ -5449,6 +5558,11 @@ int main(int argc, char *argv[]) {
         build_check_session_generation, build_check_cache_generation,
         &build_check_pending);
 
+    /* A Rebuild all queue the last session left resumes, and a scan says which
+       games an older Nakagawa built (the prompt follows it once per update). */
+    (void)player_app_rebuild_queue_load(&app);
+    app.outdated.scan_requested = true;
+    PlayerOutdatedScanJob *outdated_scan_job = NULL;
     app.enable_focus_handoff = interactive_window;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (getenv("NK_UI_TEST_CHECK_AT_START") != NULL) app.settings.check_updates_at_start = true;
@@ -6071,15 +6185,24 @@ int main(int argc, char *argv[]) {
                 build_check_session_generation =
                     app.build_session.session_generation;
                 build_check_cache_generation = 0;
-                player_app_set_build_error(
-                    &app, "package",
-                    "Package completed without its library title.",
-                    app.build_session.log_file_path);
+                if (player_app_rebuild_queue_owns_build(&app)) {
+                    /* Its title left the library during the rebuild. */
+                    player_app_rebuild_queue_build_checked(&app, false);
+                } else {
+                    player_app_set_build_error(
+                        &app, "package",
+                        "Package completed without its library title.",
+                        app.build_session.log_file_path);
+                }
             }
         } else {
             /* Once per session, like the completion branch above (#1277). */
             (void)player_app_apply_build_outcome(&app);
         }
+        /* Rebuild all: the next title starts once nothing else is building,
+           and which games an older Nakagawa built is read again when asked. */
+        player_app_rebuild_queue_step(&app);
+        outdated_scan_job = player_outdated_scan_poll(&app, outdated_scan_job, false);
 
         (void)player_package_status_start_next(
             &app, next_ui, &package_status_job, package_status_requested,
@@ -6277,6 +6400,7 @@ int main(int argc, char *argv[]) {
     /* Closing: a package check still hashing stops at its next read, so the
        window does not hang until every startup check is done. */
     SDL_SetAtomicInt(&s_player_closing, 1);
+    outdated_scan_job = player_outdated_scan_poll(&app, outdated_scan_job, true);
 
     /* A launch still on its worker finishes first, so its game is stopped. */
     launch_job = player_launch_job_poll(&app, launch_job, true);

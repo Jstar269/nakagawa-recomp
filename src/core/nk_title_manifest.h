@@ -206,6 +206,52 @@ bool nk_title_manifest_aot_package_cache_identity(
     char out_identity[65]
 );
 
+/* The Nakagawa a package was built by (owner decision, 2026-10-29: the player
+ * suggests a rebuild for a package an older Nakagawa built, and still launches
+ * it). Every package build since v0.0.1 records these four values in its cache
+ * key, and they are the parts of that key that come from Nakagawa itself rather
+ * than from the disc, the compiler or the build options:
+ *
+ *   runtime_source_digest  cache.key.native.components: the runtime, core and
+ *                          player C sources, the Makefile and assets/vfpu
+ *                          (tools/nk_core/package_cache.py source_tree_digest)
+ *   analyzer_sha256        cache.key.aot.components: tools/analyze.py
+ *   codegen_sha256         cache.key.aot.components: tools/codegen.py
+ *   planner_sha256         cache.codegen_options: tools/title_codegen_plan.py
+ *
+ * A package whose values differ from the ones the player's own source tree
+ * gives was built by a different Nakagawa: rebuilding it compiles this
+ * version's runtime and, when the translator changed, regenerates its C. No
+ * release bumps anything by hand; any change to those files moves the identity.
+ * The package format, the ABI epochs and the validator are untouched, so such a
+ * package still validates and launches. Each value is 64 lowercase hex digits. */
+typedef struct {
+    char runtime_source_digest[65];
+    char analyzer_sha256[65];
+    char codegen_sha256[65];
+    char planner_sha256[65];
+} NkPackageBuildIdentity;
+
+/* The identity a build from the source tree at `source_root` (the folder that
+ * holds tools/nk_cli.py's tools/ folder: a checkout, or a release's source/)
+ * records. Hashes about 20 MB, so it belongs on a worker thread; the cancel
+ * check stops it like a package validation. False when a tool file is missing
+ * or a file cannot be read. */
+bool nk_title_manifest_source_build_identity(const char *source_root,
+                                             NkPackageBuildIdentity *out);
+
+/* The identity recorded by the package at <user_data_root>/packages/<DISC_ID>.
+ * Reads package.json only (no validation, no hashing), so a library-wide scan
+ * stays cheap. False when there is no package or it does not record all four
+ * values: such a package is not judged here, and the validator says what is
+ * wrong with it. */
+bool nk_title_manifest_aot_package_build_identity(const char *user_data_root,
+                                                  const char *disc_id,
+                                                  NkPackageBuildIdentity *out);
+
+bool nk_package_build_identity_equal(const NkPackageBuildIdentity *a,
+                                     const NkPackageBuildIdentity *b);
+
 /* White-box seams for the package-validation cache epoch contract (#670).
  * Declared and defined only when the test build defines
  * NK_TITLE_MANIFEST_TEST_SEAMS, the same shape as SR_CD_TEST_HOOKS and

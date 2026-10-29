@@ -31,7 +31,10 @@ typedef enum {
     /* Settings is a view over the routes, never pushed; the top bar takes it to
        show the SETTINGS tab as the active one. */
     PLAYER_UI_ROUTE_SETTINGS = 5,
-    PLAYER_UI_ROUTE_STOP = 6       /* confirm STOP GAME */
+    PLAYER_UI_ROUTE_STOP = 6,      /* confirm STOP GAME */
+    /* An older Nakagawa built some games: the once-per-update prompt, or the
+       reminder a launch of one shows. Pushed while player_state says so. */
+    PLAYER_UI_ROUTE_REBUILD = 7
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -113,8 +116,31 @@ typedef enum {
     PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
                                           op, .title_index the PSP control it rebinds */
-    PLAYER_UI_ACTION_DEVELOPER_LOG     /* a developer log control; .primary carries the op */
+    PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
+    PLAYER_UI_ACTION_REBUILD           /* an older-build prompt, banner or reminder control;
+                                          .primary carries the PlayerUiRebuildOp */
 } PlayerUiActionKind;
+
+/* What a control about games an older Nakagawa built asks for
+   (PLAYER_UI_ACTION_REBUILD). main.c runs the player_state handlers. */
+typedef enum {
+    PLAYER_UI_REBUILD_NONE = 0,
+    PLAYER_UI_REBUILD_ALL,           /* the prompt's or the banner's Rebuild all */
+    PLAYER_UI_REBUILD_LATER,         /* the prompt's Later */
+    PLAYER_UI_REBUILD_HIDE_BANNER,   /* the banner's Hide: for this session */
+    PLAYER_UI_REBUILD_NOW,           /* the launch reminder's Rebuild now */
+    PLAYER_UI_REBUILD_PLAY_ANYWAY,   /* the launch reminder's Play anyway */
+    PLAYER_UI_REBUILD_TITLE          /* the title page's Rebuild (.title_index) */
+} PlayerUiRebuildOp;
+
+/* The once-per-update prompt (two choices) and the launch reminder: one
+   sentence each, with the primary choice focused first. */
+typedef struct {
+    const char *title;          /* the reminder: the game's name; NULL for the prompt */
+    const char *text;
+    float logical_width;
+    float logical_height;
+} PlayerUiRebuildModel;
 
 typedef struct {
     PlayerUiActionKind kind;
@@ -161,6 +187,9 @@ typedef struct {
        not one of the user's games: the Library lists it under TEST THIS PC,
        apart from the grid. */
     bool is_demo;
+    /* An older Nakagawa built this package (it still plays): the title page
+       offers Rebuild beside PLAY, and library_status_detail says why. */
+    bool rebuild_offered;
 } PlayerUiTitle;
 
 typedef struct {
@@ -176,6 +205,11 @@ typedef struct {
     /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
        opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
     const char *update_notice;
+    /* Games an older Nakagawa built: "3 games were built by an older
+       Nakagawa." with Rebuild all and Hide, or "Rebuilding 2 of 5" while the
+       queue runs (no Rebuild all). NULL draws nothing. */
+    const char *rebuild_notice;
+    bool rebuild_notice_offers_all;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -689,6 +723,11 @@ enum {
     PLAYER_UI_ID_UPDATE_FOLDER = 0x4526u,
     PLAYER_UI_ID_UPDATE_PAGE = 0x4527u,
     PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
+    PLAYER_UI_ID_LIBRARY_REBUILD_ALL = 0x4530u,       /* the older-build banner's Rebuild all */
+    PLAYER_UI_ID_LIBRARY_REBUILD_HIDE = 0x4531u,      /* the older-build banner's Hide */
+    PLAYER_UI_ID_REBUILD_PRIMARY = 0x4532u,           /* Rebuild all / Rebuild now */
+    PLAYER_UI_ID_REBUILD_SECOND = 0x4533u,            /* Later / Play anyway */
+    PLAYER_UI_ID_TITLE_REBUILD = 0x2007u,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
@@ -785,6 +824,9 @@ typedef struct {
 } PlayerUiStopModel;
 
 PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model);
+/* The older-build prompt (model->title NULL: Rebuild all, Later) and the launch
+   reminder (Rebuild now, Play anyway). Back is the second choice. */
+PlayerUiAction player_ui_screen_rebuild(NkUi *ui, const PlayerUiRebuildModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);

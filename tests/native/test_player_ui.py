@@ -379,6 +379,22 @@ def break_package_manifest(runtime_root: Path) -> None:
     package.write_text("{ not a package manifest", encoding="utf-8")
 
 
+# The runtime source digest package_cache.source_tree_digest gives the v0.0.1 tag:
+# what every package v0.0.1 built records in cache.key.native.components.
+V001_RUNTIME_SOURCE_DIGEST = "d1de93861db9fa8c572e2ff473bc6aab1245e8338469d488e5cebbe0fce80beb"
+
+
+def current_build_identity() -> dict[str, str]:
+    """What a package build from this checkout records about its Nakagawa
+    (NkPackageBuildIdentity in src/core/nk_title_manifest.h)."""
+    return {
+        "runtime_source_digest": package_cache.source_tree_digest(ROOT),
+        "analyzer_sha256": package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        "codegen_sha256": package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
+        "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
+    }
+
+
 def synthetic_ready_package(
     runtime_root: Path,
     source_executable: bytes,
@@ -386,8 +402,14 @@ def synthetic_ready_package(
     data_root_present: bool = True,
     disc_id: str = "TEST00006",
     title_id: str = "display-smoke-v1",
+    built_by: str | None = None,
 ) -> None:
-    """Write a source-owned package accepted by the real native validator."""
+    """Write a source-owned package accepted by the real native validator.
+
+    ``built_by`` names the Nakagawa the package records as its builder:
+    ``"current"`` for this checkout, ``"v0.0.1"`` for the same checkout with
+    v0.0.1's runtime sources, and None for no build identity at all (all-zero
+    tool digests and no planner digest), which the player does not judge."""
     package = runtime_root / "packages" / disc_id
     package.mkdir(parents=True)
     executable_name = f"{title_id}.exe"
@@ -428,11 +450,25 @@ def synthetic_ready_package(
     identity_path.parent.mkdir(parents=True)
     identity_path.write_text(identity_text, encoding="utf-8")
 
+    builder: dict[str, str | None] = {
+        "runtime_source_digest": zero_hash, "analyzer_sha256": zero_hash,
+        "codegen_sha256": zero_hash, "planner_sha256": None,
+    }
+    if built_by is not None:
+        builder = dict(current_build_identity())
+        if built_by == "v0.0.1":
+            builder["runtime_source_digest"] = V001_RUNTIME_SOURCE_DIGEST
+        elif built_by != "current":
+            raise ValueError(f"unknown package builder: {built_by}")
+    codegen_options = (
+        {} if builder["planner_sha256"] is None
+        else {"planner_sha256": builder["planner_sha256"]}
+    )
     aot_components = {
         "analyzer_codegen_epoch": "analyzer-codegen-v1",
-        "analyzer_sha256": zero_hash,
-        "codegen_options_sha256": canonical_hash({}),
-        "codegen_sha256": zero_hash,
+        "analyzer_sha256": builder["analyzer_sha256"],
+        "codegen_options_sha256": canonical_hash(codegen_options),
+        "codegen_sha256": builder["codegen_sha256"],
         "executable_sha256": input_executable_hash,
         "generated_code_abi_epoch": package_cache.GENERATED_CODE_ABI_EPOCH,
         "manifest_sha256": zero_hash,
@@ -448,7 +484,7 @@ def synthetic_ready_package(
         "generated_code_digest": zero_hash,
         "link_flags": "",
         "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
-        "runtime_source_digest": zero_hash,
+        "runtime_source_digest": builder["runtime_source_digest"],
     }
     cache_key = {
         "schema_version": 2,
@@ -459,7 +495,7 @@ def synthetic_ready_package(
         "format": "nakagawa-aot-cache",
         "schema_version": 2,
         "key": cache_key,
-        "codegen_options": {},
+        "codegen_options": codegen_options,
         "runtime_abi_compatibility": {
             "current_epoch": package_cache.RUNTIME_ABI_EPOCH, "generated_code_reusable": True,
         },
@@ -858,6 +894,7 @@ class NativePlayerUiTests(unittest.TestCase):
         timeout: float | None = None,
         library_titles: int = 0,
         dedicated_data_root: bool = False,
+        package_built_by: str | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -960,6 +997,7 @@ class NativePlayerUiTests(unittest.TestCase):
                     synthetic_ready_package(
                         runtime_root, source_executable,
                         data_root_present=data_root_present,
+                        built_by=package_built_by,
                     )
             catalog_overlay: Path | None = None
             if catalog_reload_count:
@@ -3762,6 +3800,86 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
                                          "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
                       run["stdout"])
+
+    ROUTE_REBUILD = "7"
+    OUTDATED_LABEL = "Built_by_an_older_Nakagawa._Rebuild_for_the_latest_fixes."
+
+    def test_package_built_by_an_older_nakagawa_suggests_a_rebuild_and_still_plays(self) -> None:
+        """Owner decision 2026-10-29: a v0.0.1-built package is outdated, not refused.
+
+        The fixture has v0.0.1's package format and ABI epochs (they did not
+        change) and records v0.0.1's runtime source digest. The player says so
+        once at start (Later here), keeps a library line, labels the title, and
+        a PLAY asks once before launching (Play anyway here). Failing-before:
+        nothing read the package's build identity, so the package was simply
+        ready, with no prompt, label or reminder."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=2500",
+             "KEY_ESCAPE", "WAIT_MS=300",            # the prompt: Later
+             "KEY_RETURN", "WAIT_MS=400",            # open the title
+             "KEY_RETURN", "WAIT_MS=300",            # PLAY: the reminder
+             "KEY_ESCAPE", "WAIT_MS=2000"),          # Play anyway
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            package_built_by="v0.0.1",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        prompted = [frame for frame in frames if frame["rebuild_prompt"] == "1"]
+        self.assertTrue(prompted, run["stdout"])
+        self.assertEqual(prompted[0]["outdated"], "1")
+        self.assertEqual(prompted[-1]["next_route"], self.ROUTE_REBUILD)
+        self.assertEqual(prompted[0]["prompt_version"], "none")
+        after = frames[frames.index(prompted[-1]) + 1:]
+        self.assertTrue(after and all(frame["rebuild_prompt"] == "0" for frame in after),
+                        "Later closes the prompt for good")
+        self.assertTrue(all(frame["prompt_version"] != "none" for frame in after),
+                        "the answer is kept in settings for this version")
+        self.assertIn("1", [frame["rebuild_banner"] for frame in after], "the library line stays")
+        titled = [frame for frame in after
+                  if frame["next_route"] == "2" and frame["next_primary_label"] == "PLAY"]
+        self.assertTrue(titled, run["stdout"])
+        self.assertEqual(titled[0]["next_detail"], self.OUTDATED_LABEL)
+        self.assertEqual(titled[0]["next_package"], self.PACKAGE_READY)
+        self.assertIn("next_ui_library_status index=0 status=Older build", str(run["stdout"]))
+        reminded = [frame for frame in after if frame["rebuild_reminder"] == "1"]
+        self.assertTrue(reminded, "PLAY on an outdated game asks first")
+        self.assertEqual(reminded[-1]["next_route"], self.ROUTE_REBUILD)
+        launched = frames[frames.index(reminded[-1]) + 1:]
+        self.assertIn("1", [frame["launch_pending"] for frame in launched], run["stdout"])
+        self.assertTrue(all(frame["rebuild_queue"] == "0" for frame in frames),
+                        "nothing was queued: Later and Play anyway rebuild nothing")
+        # The synthetic package has no real program: the launch ends on the
+        # launch's own card, as for any ready package (see the slow-start test).
+        self.assertIn(frames[-1]["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
+                                            "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
+                      run["stdout"])
+
+    def test_package_built_by_this_nakagawa_is_not_outdated(self) -> None:
+        """The player's own build identity matches what package_cache.py records.
+
+        The package records this checkout's identity, computed in Python
+        (source_tree_digest and the tool hashes); the player computes its own
+        in C from the same tree. Any disagreement would call every package
+        outdated: here nothing is, no prompt shows, and PLAY launches at once."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=2500", "KEY_RETURN", "WAIT_MS=400", "KEY_RETURN", "WAIT_MS=1500"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            package_built_by="current",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        scanned = [frame for frame in frames if frame["outdated_scanned"] == "1"]
+        self.assertTrue(scanned, run["stdout"])
+        self.assertTrue(all(frame["outdated"] == "0" for frame in frames), run["stdout"])
+        self.assertTrue(all(frame["rebuild_prompt"] == "0" and frame["rebuild_reminder"] == "0"
+                            for frame in frames))
+        self.assertIn("1", [frame["launch_pending"] for frame in frames], run["stdout"])
 
     def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
         """The open title's last frame while NK_UI_TEST_GAME_RUNNING=`running`.

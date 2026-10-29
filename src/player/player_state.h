@@ -14,6 +14,7 @@
 #include "package_builder.h"
 #include "update_check.h"
 #include "setup_staging.h"
+#include "nk_title_manifest.h"
 #include "generated/nk_title_catalog.h"
 
 #include <stdbool.h>
@@ -215,6 +216,9 @@ typedef struct {
        the next one opens. Empty on a first run: the pickers then open at the
        Desktop (player_app_picker_start_folder). */
     char picker_folder[MAX_PATH_LEN];
+    /* The player version whose "built by an older Nakagawa" prompt was shown
+       (Rebuild all or Later), so it shows once per update. Empty until then. */
+    char rebuild_prompt_version[32];
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -454,6 +458,82 @@ typedef struct {
     void *userdata;
 } PlayerPsnConvertCallbacks;
 
+/* Games built by an older Nakagawa (owner decision, 2026-10-29). A package
+ * records the Nakagawa that built it (NkPackageBuildIdentity in
+ * nk_title_manifest.h); one whose identity is not this player's is outdated.
+ * It still validates and launches: the player suggests a rebuild and never
+ * forces one. "Rebuild all" runs a queue in the background, one title at a
+ * time, through the same package builder as BUILD PACKAGE; the old package is
+ * replaced only once the new one is built and verified (tools/nk_cli.py), and
+ * saves are never touched. */
+#define PLAYER_OUTDATED_CARD_TEXT "Built by an older Nakagawa. Rebuild for the latest fixes."
+
+typedef struct {
+    char disc_id[MAX_DISC_ID_LEN];
+    bool disc_missing;      /* its source disc image is not where the library says */
+} PlayerOutdatedTitle;
+
+typedef struct {
+    /* A scan result is in. Until then nothing is called outdated. */
+    bool scanned;
+    /* main.c runs a scan: at start, after a library change, after the queue. */
+    bool scan_requested;
+    /* This player's own identity, from its source tree; read once a session. */
+    bool identity_known;
+    NkPackageBuildIdentity identity;
+    /* The outdated titles, sorted by disc ID. */
+    int count;
+    PlayerOutdatedTitle titles[MAX_LIBRARY_GAMES];
+    /* The once-per-update prompt, and the library banner after Later. Hiding
+       the banner lasts for this session only: it comes back at the next start
+       while outdated games remain. */
+    bool prompt_visible;
+    bool banner_dismissed;
+    char player_version[32];
+    /* The reminder a launch of an outdated game shows. Play anyway is kept
+       for the rest of the session, so the same game does not ask again. */
+    bool reminder_visible;
+    char reminder_disc_id[MAX_DISC_ID_LEN];
+    int played_anyway_count;
+    char played_anyway[64][MAX_DISC_ID_LEN];
+} PlayerOutdatedState;
+
+typedef enum {
+    PLAYER_REBUILD_PENDING = 0,
+    PLAYER_REBUILD_ACTIVE,      /* its build is starting or running */
+    PLAYER_REBUILD_DONE,
+    PLAYER_REBUILD_NO_DISC,     /* skipped: its disc image is missing */
+    PLAYER_REBUILD_FAILED       /* the build did not finish; the old package stays */
+} PlayerRebuildState;
+
+typedef struct {
+    char disc_id[MAX_DISC_ID_LEN];
+    PlayerRebuildState state;
+} PlayerRebuildEntry;
+
+/* The queue file, rebuild-queue.json beside settings.json:
+ *   {"format": "nakagawa-rebuild-queue", "schema_version": 1,
+ *    "titles": [{"disc_id": "ULUS10001", "state": "pending"}, ...]}
+ * state is "pending", "done", "missing_disc" or "failed"; a title whose build
+ * was running when the player closed is saved as "pending" and starts again.
+ * A file with a newer schema_version, another format, or an unknown member is
+ * left alone and not resumed. The file goes once nothing is pending. */
+#define PLAYER_REBUILD_QUEUE_FORMAT "nakagawa-rebuild-queue"
+#define PLAYER_REBUILD_QUEUE_SCHEMA_VERSION 1
+#define PLAYER_REBUILD_QUEUE_FILE "rebuild-queue.json"
+
+typedef struct {
+    int count;
+    PlayerRebuildEntry entries[MAX_LIBRARY_GAMES];
+    /* Titles are pending or one is being built. */
+    bool active;
+    /* A build could not start for a reason outside its title (its card is up,
+       or the build tool download was cancelled); Rebuild all starts again. */
+    bool paused;
+    /* The build session the queue started, once the builder runs; 0 before. */
+    uint64_t build_generation;
+} PlayerRebuildQueue;
+
 typedef struct PlayerApp {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
@@ -612,6 +692,10 @@ typedef struct PlayerApp {
     bool psn_conversion_active;
     bool psn_conversion_requested;
     PlayerView psn_conversion_return_view;
+
+    /* Games built by an older Nakagawa, and the Rebuild all queue. */
+    PlayerOutdatedState outdated;
+    PlayerRebuildQueue rebuild_queue;
 } PlayerApp;
 
 /* State management API */
@@ -1192,9 +1276,102 @@ void player_app_refresh_font_status(PlayerApp *app);
 
 /* Package build actions */
 bool player_app_start_package_build(PlayerApp *app, int game_index);
-/* Rebuild an existing package only when validation marks it incompatible.
-   Uses the same prerequisite consent and package-builder transaction as a new build. */
+/* Rebuild an existing package when validation marks it incompatible, or when an
+   older Nakagawa built it. Uses the same prerequisite consent and
+   package-builder transaction as a new build. */
 bool player_app_rebuild_package(PlayerApp *app, int game_index);
+
+/* Games built by an older Nakagawa. The scan is split like a launch, so its
+   hashing (this player's own source tree, about 20 MB, once a session) runs on
+   a worker: begin (UI thread) copies what it needs, run touches only the work,
+   finish (UI thread) applies it. begin returns false when there is nothing to
+   scan; finish shows the once-per-update prompt when outdated games are found
+   and settings.rebuild_prompt_version is not player_version. */
+typedef struct {
+    char source_root[NK_MAX_PATH];
+    char user_data_root[NK_MAX_PATH];
+    bool identity_known;
+    NkPackageBuildIdentity identity;
+    int count;
+    char disc_ids[MAX_LIBRARY_GAMES][MAX_DISC_ID_LEN];
+    char iso_paths[MAX_LIBRARY_GAMES][NK_MAX_PATH];
+    /* Results, written by player_outdated_scan_run. */
+    bool outdated[MAX_LIBRARY_GAMES];
+    bool disc_missing[MAX_LIBRARY_GAMES];
+} PlayerOutdatedScan;
+
+bool player_app_outdated_scan_begin(PlayerApp *app, PlayerOutdatedScan *scan);
+void player_outdated_scan_run(PlayerOutdatedScan *scan);
+void player_app_outdated_scan_finish(PlayerApp *app, const PlayerOutdatedScan *scan,
+                                     const char *player_version);
+/* The source tree a build would use: the folder above tools/nk_cli.py. */
+bool player_app_build_source_root(const PlayerApp *app, char *out, size_t out_size);
+
+bool player_app_game_is_outdated(const PlayerApp *app, const GameRecord *game);
+int player_app_outdated_count(const PlayerApp *app);
+
+/* The prompt: "N games were built by an older Nakagawa. ..." with Rebuild all
+   and Later. Either answer records this version in settings, so the prompt
+   does not come back until the next update. */
+bool player_app_rebuild_prompt_visible(const PlayerApp *app);
+size_t player_app_rebuild_prompt_text(const PlayerApp *app, char *out, size_t out_size);
+void player_app_rebuild_prompt_answer(PlayerApp *app, bool rebuild_all);
+/* The library banner: after Later, while outdated games remain and it was not
+   hidden this session, or while the queue runs ("Rebuilding 2 of 5"). Its
+   text, and whether it offers Rebuild all (not while the queue runs). */
+bool player_app_rebuild_banner_visible(const PlayerApp *app);
+size_t player_app_rebuild_banner_text(const PlayerApp *app, char *out, size_t out_size,
+                                      bool *offers_rebuild_all);
+void player_app_rebuild_banner_dismiss(PlayerApp *app);
+
+/* PLAY for a game. An outdated game whose disc is in place asks first (the
+   reminder: Rebuild now or Play anyway) unless Play anyway was chosen for it
+   this session; anything else asks the event loop to launch. Returns true when
+   the launch was asked for. A game whose own rebuild runs never launches. */
+bool player_app_request_play(PlayerApp *app, int game_index);
+bool player_app_rebuild_reminder_visible(const PlayerApp *app);
+void player_app_rebuild_reminder_play_anyway(PlayerApp *app);
+void player_app_rebuild_reminder_rebuild_now(PlayerApp *app);
+
+/* The Rebuild all queue. rebuild_all queues every outdated game (keeping any
+   still pending) and starts; enqueue adds one game. Both save the queue file
+   and return false when nothing was queued. step runs once a frame: it starts
+   the next title when no build, launch or tool download is under way, skips a
+   title whose disc is missing, and finishes the queue (removing its file) when
+   none is pending. load reads the file at start (the queue resumes); a file
+   from a newer player is not read. */
+bool player_app_rebuild_all(PlayerApp *app);
+bool player_app_rebuild_enqueue(PlayerApp *app, const char *disc_id);
+void player_app_rebuild_queue_step(PlayerApp *app);
+bool player_app_rebuild_queue_load(PlayerApp *app);
+bool player_app_rebuild_queue_save(const PlayerApp *app);
+bool player_app_rebuild_queue_path(const PlayerApp *app, char *out, size_t out_size);
+/* The build session that runs belongs to the queue. Its outcome goes to the
+   queue, not to a card, and the view stays where the user is. */
+bool player_app_rebuild_queue_owns_build(const PlayerApp *app);
+/* The check after a queue build finished: ok when the new package passed. */
+void player_app_rebuild_queue_build_checked(PlayerApp *app, bool ok);
+/* The queue's entry for a game, or NULL. */
+const PlayerRebuildEntry *player_app_rebuild_entry(const PlayerApp *app,
+                                                   const GameRecord *game);
+
+/* What a game's cards say about an older build: the library card's status
+   word, the title page's package sentence, and whether its rebuild runs (it
+   cannot launch then). fraction is the rebuild's compile share, or -1. Returns
+   false for a game with nothing to say (not outdated, not in the queue). */
+typedef struct {
+    const char *word;
+    const char *detail;
+    bool rebuilding;
+    /* Rebuild is offered on the title page: not while the game waits in the
+       queue or rebuilds, and not without its disc. */
+    bool can_rebuild;
+    float fraction;
+} PlayerRebuildCard;
+#define PLAYER_REBUILD_REMINDER_TEXT \
+    "This game was built by an older Nakagawa. Rebuild it for the latest fixes."
+bool player_app_rebuild_card(const PlayerApp *app, const GameRecord *game,
+                             PlayerRebuildCard *out);
 /* An experimental entry saved without a selected executable (its EBOOT.BIN was
    encrypted at import) takes the one its validated profile binds, and the
    library is saved. Returns true when the entry changed (#1276). */

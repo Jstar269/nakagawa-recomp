@@ -1218,6 +1218,11 @@ static size_t seal_with_builtin_recipe(uint8_t *out, size_t cap, const uint8_t *
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
+/* The Nakagawa the next fixture package records as its builder. NULL keeps the
+ * fixtures' all-zero tool digests and empty codegen options, which record no
+ * planner and so no build identity at all. */
+static const NkPackageBuildIdentity *g_fixture_build_identity = NULL;
+
 static void write_runtime_package_fixture_with_options(
     const char *user_root, const char *disc_id, const char *title_id,
     uint32_t abi_version, const char *executable_relative_path,
@@ -1229,8 +1234,27 @@ static void write_runtime_package_fixture_with_options(
     char aot_components_json[2048], native_components_json[2048], identity_json[2048];
     char aot_hash_input[2050], native_hash_input[2050], identity_hash_input[2050];
     char aot_digest[65], native_digest[65], modules_digest[65], identity_digest[65];
-    const char *codegen_options_digest =
+    char codegen_options_json[160] = "{}";
+    char codegen_options_digest[65] =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
+    char analyzer_sha256[65], codegen_sha256[65], runtime_source_digest[65];
+    const NkPackageBuildIdentity *builder = g_fixture_build_identity;
+    snprintf(analyzer_sha256, sizeof(analyzer_sha256), "%064d", 0);
+    snprintf(codegen_sha256, sizeof(codegen_sha256), "%064d", 0);
+    snprintf(runtime_source_digest, sizeof(runtime_source_digest), "%064d", 0);
+    if (builder) {
+        char options_hash_input[sizeof(codegen_options_json) + 2];
+        snprintf(analyzer_sha256, sizeof(analyzer_sha256), "%s", builder->analyzer_sha256);
+        snprintf(codegen_sha256, sizeof(codegen_sha256), "%s", builder->codegen_sha256);
+        snprintf(runtime_source_digest, sizeof(runtime_source_digest), "%s",
+                 builder->runtime_source_digest);
+        snprintf(codegen_options_json, sizeof(codegen_options_json),
+                 "{\"planner_sha256\":\"%s\"}", builder->planner_sha256);
+        int options_length = snprintf(options_hash_input, sizeof(options_hash_input), "%s\n",
+                                      codegen_options_json);
+        assert(options_length > 0 && (size_t)options_length < sizeof(options_hash_input));
+        fixture_sha_bytes(options_hash_input, (size_t)options_length, codegen_options_digest);
+    }
     snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
              nk_platform_path_separator());
     snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages,
@@ -1290,19 +1314,20 @@ static void write_runtime_package_fixture_with_options(
     fixture_sha_bytes("[]\n", 3, modules_digest);
     int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
         "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
-        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
-        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"analyzer_sha256\":\"%s\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%s\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
         "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
-        0, codegen_options_digest, 0, input_executable_sha256, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        analyzer_sha256, codegen_options_digest, codegen_sha256, input_executable_sha256,
+        NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
         modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
-        0, NK_AOT_RUNTIME_ABI_EPOCH, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%s\"}",
+        0, NK_AOT_RUNTIME_ABI_EPOCH, runtime_source_digest);
     assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
     int aot_hash_length = snprintf(aot_hash_input, sizeof(aot_hash_input), "%s\n", aot_components_json);
     int native_hash_length = snprintf(native_hash_input, sizeof(native_hash_input), "%s\n", native_components_json);
@@ -1317,9 +1342,9 @@ static void write_runtime_package_fixture_with_options(
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
-        "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
+        "\"codegen_options\":%s,\"runtime_abi_compatibility\":{"
         "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
-        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
+        cache_key_json, codegen_options_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
@@ -2078,6 +2103,21 @@ static int player_state_package_builder_child(int argc, char **argv) {
         const char *title_id = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID");
         const char *source_media = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA");
         if (!title_id || !title_id[0]) return 92;
+        /* A real build records the Nakagawa it ran from: the source tree above
+           tools/nk_cli.py (argv[1]). A tree without the tool files records
+           none, as the fixtures always did. */
+        static NkPackageBuildIdentity built_by;
+        char source_root[NK_MAX_PATH];
+        snprintf(source_root, sizeof(source_root), "%s", argv[1]);
+        for (int level = 0; level < 2; level++) {
+            char *cut = strrchr(source_root, '/');
+            char *back = strrchr(source_root, '\\');
+            if (back && (!cut || back > cut)) cut = back;
+            if (cut) *cut = '\0';
+        }
+        if (nk_title_manifest_source_build_identity(source_root, &built_by)) {
+            g_fixture_build_identity = &built_by;
+        }
         char executable[128];
         snprintf(executable, sizeof(executable), "%s.exe", title_id);
         if (source_media && source_media[0]) {
@@ -2540,6 +2580,355 @@ static void test_skipped_showcase_logs_its_reason(void) {
 /* #1277: the main loop asks for the build outcome every frame. A failure card
    and a cancel's return to the Library are shown once per build session, so
    the card can be dismissed and the Library left. */
+static void write_tree_file(const char *root, const char *relative, const char *text) {
+    char path[NATIVE_TEST_PATH_MAX + 256];
+    char sep = nk_platform_path_separator();
+    int written = snprintf(path, sizeof(path), "%s%c%s", root, sep, relative);
+    assert(written > 0 && (size_t)written < sizeof(path));
+    for (char *p = path; *p; p++) {
+        if (*p == '/') *p = sep;
+    }
+    char *leaf = strrchr(path, sep);
+    assert(leaf != NULL);
+    *leaf = '\0';
+    assert(nk_platform_mkdir_p(path));
+    *leaf = sep;
+    write_text_file(path, text);
+}
+
+/* The identity a build records about its Nakagawa is computed twice: by
+ * tools/nk_core/package_cache.py when a package is built, and by the player
+ * when it asks whether a package is outdated. They must agree byte for byte,
+ * or every package would look outdated. The expected digests come from
+ * package_cache.source_tree_digest and hashlib.sha256 over this same tree:
+ * suffixes compared without case, hidden files counted, other files left out
+ * of the source folders, every file of assets/vfpu counted, paths in code
+ * point order ("Z.c" before "a.c"). */
+static void test_build_identity_matches_the_python_digest(void) {
+    char root[NATIVE_TEST_PATH_MAX + 64];
+    snprintf(root, sizeof(root), "%s%cbuild-identity-tree", native_test_get_root(),
+             nk_platform_path_separator());
+    static const char *const files[][2] = {
+        {"Makefile", "all:\n"},
+        {"src/rt/a.c", "int a;\n"},
+        {"src/rt/sub/B.H", "#define B 1\n"},
+        {"src/rt/.hidden.c", "int hidden;\n"},
+        {"src/rt/notes.txt", "not hashed\n"},
+        {"src/core/Z.c", "int z;\n"},
+        {"src/core/a.c", "int ca;\n"},
+        {"src/player/ui/d.hpp", "int d;\n"},
+        {"assets/vfpu/lut.dat", "lut\n"},
+        {"assets/vfpu/sub/more.bin", "more\n"},
+        {"tools/analyze.py", "analyzer\n"},
+        {"tools/codegen.py", "codegen\n"},
+        {"tools/title_codegen_plan.py", "planner\n"},
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        write_tree_file(root, files[i][0], files[i][1]);
+    }
+    NkPackageBuildIdentity identity;
+    assert(nk_title_manifest_source_build_identity(root, &identity));
+    assert(strcmp(identity.runtime_source_digest,
+                  "322eba451bfa59cef47de3b3dea3d405cee40a1a4527fe4161c139639e4f3073") == 0);
+    assert(strcmp(identity.analyzer_sha256,
+                  "23e136a01229cfb27a5d25b96ee0a6320b3cfa394e2ffeb369cc4c5c7c444cef") == 0);
+    assert(strcmp(identity.codegen_sha256,
+                  "bd472cf656c14d9ac711ff39655f747c8d25f97d1f735905bd771a40d0054929") == 0);
+    assert(strcmp(identity.planner_sha256,
+                  "a2b0739fba9eb7787e30e81257d6d7b0ecec03bcf377f0ad0a2888506fc3ab43") == 0);
+    /* Any runtime source change is a different Nakagawa. */
+    write_tree_file(root, "src/rt/a.c", "int a2;\n");
+    NkPackageBuildIdentity changed;
+    assert(nk_title_manifest_source_build_identity(root, &changed));
+    assert(!nk_package_build_identity_equal(&identity, &changed));
+    assert(strcmp(identity.analyzer_sha256, changed.analyzer_sha256) == 0);
+    /* Without the translator's files there is no build to compare with. */
+    char missing[NATIVE_TEST_PATH_MAX + 128];
+    snprintf(missing, sizeof(missing), "%s%ctools%ccodegen.py", root,
+             nk_platform_path_separator(), nk_platform_path_separator());
+    assert(nk_remove_utf8(missing) == 0);
+    assert(!nk_title_manifest_source_build_identity(root, &changed));
+    assert(test_remove_tree(root));
+    printf("[PLAYER_STATE_TEST] package build identity matches package_cache.py PASS\n");
+}
+
+static void scan_outdated(PlayerApp *app, const char *version) {
+    PlayerOutdatedScan *scan = (PlayerOutdatedScan *)calloc(1, sizeof(*scan));
+    assert(scan != NULL);
+    assert(player_app_outdated_scan_begin(app, scan));
+    player_outdated_scan_run(scan);
+    player_app_outdated_scan_finish(app, scan, version);
+    free(scan);
+}
+
+static bool queue_file_exists(const PlayerApp *app) {
+    char path[MAX_PATH_LEN];
+    assert(player_app_rebuild_queue_path(app, path, sizeof(path)));
+    return nk_platform_file_exists(path);
+}
+
+/* Games built by an older Nakagawa (owner decision, 2026-10-29), through the
+ * same package-builder child as the rebuild test above. `app` holds one
+ * experimental title with a valid package and a disc in place; install_root
+ * is the build's source tree. A v0.0.1 package has the same format and ABI
+ * epochs as this build's: only its recorded build identity differs. */
+static void test_outdated_packages_rebuild(PlayerApp *app, const char *user_root,
+                                           const char *install_root,
+                                           const char *source_media_json) {
+    char sep = nk_platform_path_separator();
+    char package_path[NATIVE_TEST_PATH_MAX + 192];
+    char reason[2048];
+    char hash_before[65];
+    char hash_after[65];
+    char text[256];
+    bool offers = false;
+    PlayerRebuildCard card;
+
+    write_tree_file(install_root, "tools/analyze.py", "analyzer, this version\n");
+    write_tree_file(install_root, "tools/codegen.py", "codegen, this version\n");
+    write_tree_file(install_root, "tools/title_codegen_plan.py", "planner, this version\n");
+    write_tree_file(install_root, "src/rt/runtime.c", "int runtime_this_version;\n");
+    NkPackageBuildIdentity current;
+    assert(nk_title_manifest_source_build_identity(install_root, &current));
+    NkPackageBuildIdentity older = current;
+    /* The runtime source digest measured on the v0.0.1 tag. */
+    snprintf(older.runtime_source_digest, sizeof(older.runtime_source_digest), "%s",
+             "d1de93861db9fa8c572e2ff473bc6aab1245e8338469d488e5cebbe0fce80beb");
+
+    /* ULUS99998: built by v0.0.1, disc in place. ULUS99997: built by v0.0.1,
+       disc gone. ULUS99996: built by this Nakagawa. ULUS99995: records no
+       identity (not judged). */
+    static const char *const discs[] = {"ULUS99997", "ULUS99996", "ULUS99995"};
+    for (int i = 0; i < 3; i++) {
+        GameRecord *game = &app->games[1 + i];
+        memset(game, 0, sizeof(*game));
+        snprintf(game->disc_id, sizeof(game->disc_id), "%s", discs[i]);
+        snprintf(game->title_id, sizeof(game->title_id), "experimental-ulus%s", discs[i] + 4);
+        snprintf(game->title_name, sizeof(game->title_name), "Outdated fixture %d", i + 2);
+        snprintf(game->selected_executable, sizeof(game->selected_executable), "EBOOT.BIN");
+        snprintf(game->iso_path, sizeof(game->iso_path), "%s%cgone-%s.iso", user_root, sep,
+                 discs[i]);
+        game->is_experimental = true;
+        g_fixture_build_identity = i == 0 ? &older : i == 1 ? &current : NULL;
+        write_runtime_package_fixture_with_source_media(
+            user_root, game->disc_id, game->title_id, SR_CPUSTATE_ABI_VERSION,
+            "fixture.exe", FIXTURE_SHA256, NULL, source_media_json);
+    }
+    g_fixture_build_identity = &older;
+    write_runtime_package_fixture_with_source_media(
+        user_root, app->games[0].disc_id, app->games[0].title_id, SR_CPUSTATE_ABI_VERSION,
+        "experimental-ulus99998.exe", FIXTURE_SHA256, NULL, source_media_json);
+    g_fixture_build_identity = NULL;
+    app->game_count = 4;
+    memset(&app->outdated, 0, sizeof(app->outdated));
+    memset(&app->rebuild_queue, 0, sizeof(app->rebuild_queue));
+    snprintf(app->settings_path, sizeof(app->settings_path), "%s%csettings.json",
+             user_root, sep);
+    app->settings.rebuild_prompt_version[0] = '\0';
+    app->active_view = VIEW_LIBRARY;
+    app->last_error.error_code[0] = '\0';
+    player_app_runtime_package_cache_invalidate(app);
+
+    /* The v0.0.1 package is outdated, and still a valid package: nothing
+       about it is incompatible. */
+    assert(player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                               sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    NkPackageBuildIdentity recorded;
+    assert(nk_title_manifest_aot_package_build_identity(user_root, "ULUS99998", &recorded));
+    assert(!nk_package_build_identity_equal(&recorded, &current));
+    assert(!nk_title_manifest_aot_package_build_identity(user_root, "ULUS99995", &recorded));
+    assert(!player_app_game_is_outdated(app, &app->games[0]));   /* no scan yet */
+    scan_outdated(app, "9.9.9-test");
+    assert(app->outdated.identity_known);
+    assert(nk_package_build_identity_equal(&app->outdated.identity, &current));
+    assert(player_app_outdated_count(app) == 2);
+    assert(player_app_game_is_outdated(app, &app->games[0]));
+    assert(player_app_game_is_outdated(app, &app->games[1]));
+    assert(!player_app_game_is_outdated(app, &app->games[2]));
+    assert(!player_app_game_is_outdated(app, &app->games[3]));
+    assert(player_app_rebuild_card(app, &app->games[0], &card));
+    assert(strcmp(card.detail, "Built by an older Nakagawa. Rebuild for the latest fixes.") == 0);
+    assert(strcmp(card.word, "Older build") == 0 && card.can_rebuild && !card.rebuilding);
+    assert(player_app_rebuild_card(app, &app->games[1], &card));
+    assert(strcmp(card.word, "Disc missing") == 0 && !card.can_rebuild);
+    assert(strstr(card.detail, "Add the disc again") != NULL);
+    assert(!player_app_rebuild_card(app, &app->games[2], &card));
+    printf("[PLAYER_STATE_TEST] a v0.0.1-built package is outdated and still valid PASS\n");
+
+    /* The prompt: once per update, with the count. */
+    assert(player_app_rebuild_prompt_visible(app));
+    assert(!player_app_rebuild_banner_visible(app));
+    (void)player_app_rebuild_prompt_text(app, text, sizeof(text));
+    assert(strcmp(text, "2 games were built by an older Nakagawa. Rebuild them to get this "
+                        "version's fixes and new features.") == 0);
+    player_app_rebuild_prompt_answer(app, false);
+    assert(!player_app_rebuild_prompt_visible(app));
+    assert(strcmp(app->settings.rebuild_prompt_version, "9.9.9-test") == 0);
+    assert(!app->rebuild_queue.active);
+    assert(player_app_rebuild_banner_visible(app));
+    (void)player_app_rebuild_banner_text(app, text, sizeof(text), &offers);
+    assert(strcmp(text, "2 games were built by an older Nakagawa.") == 0 && offers);
+    {
+        PlayerApp *restart = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(restart != NULL);
+        assert(player_app_load_settings(restart, app->settings_path) == NK_OK);
+        assert(strcmp(restart->settings.rebuild_prompt_version, "9.9.9-test") == 0);
+        memcpy(restart->games, app->games, sizeof(GameRecord) * 4u);
+        restart->game_count = 4;
+        snprintf(restart->runtime_root, sizeof(restart->runtime_root), "%s", app->runtime_root);
+        snprintf(restart->install_root, sizeof(restart->install_root), "%s", app->install_root);
+        scan_outdated(restart, "9.9.9-test");
+        assert(player_app_outdated_count(restart) == 2);
+        assert(!player_app_rebuild_prompt_visible(restart));   /* Later was the answer */
+        assert(player_app_rebuild_banner_visible(restart));    /* until none remain */
+        scan_outdated(restart, "9.9.10-test");
+        assert(player_app_rebuild_prompt_visible(restart));    /* the next update asks again */
+        player_app_rebuild_prompt_answer(restart, true);
+        assert(strcmp(restart->settings.rebuild_prompt_version, "9.9.10-test") == 0);
+        assert(restart->rebuild_queue.active && restart->rebuild_queue.count == 2);
+        scan_outdated(restart, "9.9.10-test");
+        assert(!player_app_rebuild_prompt_visible(restart));   /* not after Rebuild all */
+        restart->rebuild_queue.active = false;
+        assert(player_app_rebuild_queue_save(restart));       /* removes its file */
+        free(restart);
+    }
+    assert(!queue_file_exists(app));
+    player_app_rebuild_banner_dismiss(app);
+    assert(!player_app_rebuild_banner_visible(app));
+    printf("[PLAYER_STATE_TEST] the rebuild prompt shows once per update, the banner until none remain PASS\n");
+
+    /* Launching an outdated game reminds once; Play anyway launches. */
+    app->request_launch = false;
+    assert(!player_app_request_play(app, 0));
+    assert(player_app_rebuild_reminder_visible(app) && !app->request_launch);
+    player_app_rebuild_reminder_play_anyway(app);
+    assert(!player_app_rebuild_reminder_visible(app));
+    assert(app->request_launch && app->request_launch_index == 0);
+    app->request_launch = false;
+    assert(player_app_request_play(app, 0));
+    /* With its disc gone a rebuild cannot follow, so it just plays. */
+    app->request_launch = false;
+    assert(player_app_request_play(app, 1) && app->request_launch_index == 1);
+    app->request_launch = false;
+    /* Rebuild now enqueues. */
+    app->outdated.played_anyway_count = 0;
+    assert(!player_app_request_play(app, 0));
+    player_app_rebuild_reminder_rebuild_now(app);
+    assert(!app->request_launch && !player_app_rebuild_reminder_visible(app));
+    assert(app->rebuild_queue.active && app->rebuild_queue.count == 1);
+    assert(strcmp(app->rebuild_queue.entries[0].disc_id, "ULUS99998") == 0);
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_PENDING);
+    assert(player_app_rebuild_card(app, &app->games[0], &card) &&
+           strcmp(card.word, "Queued") == 0 && !card.can_rebuild);
+    assert(player_app_rebuild_all(app));
+    assert(app->rebuild_queue.count == 2);
+    assert(!player_app_rebuild_all(app));                     /* nothing more to add */
+    assert(queue_file_exists(app));
+    assert(player_app_rebuild_banner_visible(app));           /* the count, though hidden */
+    (void)player_app_rebuild_banner_text(app, text, sizeof(text), &offers);
+    assert(strcmp(text, "Rebuilding 1 of 2") == 0 && !offers);
+    printf("[PLAYER_STATE_TEST] Play anyway launches, Rebuild now enqueues PASS\n");
+
+    /* A restart resumes the queue from its file. */
+    {
+        PlayerApp *resumed = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(resumed != NULL);
+        snprintf(resumed->settings_path, sizeof(resumed->settings_path), "%s",
+                 app->settings_path);
+        memcpy(resumed->games, app->games, sizeof(GameRecord) * 4u);
+        resumed->game_count = 4;
+        assert(player_app_rebuild_queue_load(resumed));
+        assert(resumed->rebuild_queue.active && resumed->rebuild_queue.count == 2);
+        assert(strcmp(resumed->rebuild_queue.entries[0].disc_id, "ULUS99998") == 0);
+        assert(strcmp(resumed->rebuild_queue.entries[1].disc_id, "ULUS99997") == 0);
+        assert(resumed->rebuild_queue.entries[0].state == PLAYER_REBUILD_PENDING &&
+               resumed->rebuild_queue.entries[1].state == PLAYER_REBUILD_PENDING);
+        free(resumed);
+    }
+    printf("[PLAYER_STATE_TEST] the rebuild queue resumes after a restart PASS\n");
+
+    /* A failed rebuild keeps the old package, says so, and the queue goes on:
+       the next title's disc is missing, so it is skipped and the queue ends. */
+    snprintf(package_path, sizeof(package_path), "%s%cpackages%cULUS99998%cpackage.json",
+             user_root, sep, sep, sep);
+    fixture_sha_file(package_path, hash_before);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "failure");
+    player_app_rebuild_queue_step(app);
+    assert(app->build_session.is_building);
+    assert(app->active_view == VIEW_LIBRARY);                 /* in the background */
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_ACTIVE);
+    assert(player_app_rebuild_queue_owns_build(app));
+    assert(player_app_rebuild_card(app, &app->games[0], &card) && card.rebuilding);
+    assert(strcmp(card.word, "Rebuilding") == 0);
+    app->request_launch = false;
+    assert(!player_app_request_play(app, 0) && !app->request_launch);   /* its own rebuild runs */
+    assert(player_app_request_play(app, 2) && app->request_launch_index == 2);  /* others play */
+    app->request_launch = false;
+    player_app_rebuild_queue_step(app);                       /* one build at a time */
+    assert(app->rebuild_queue.entries[1].state == PLAYER_REBUILD_PENDING);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_failed);
+    assert(!player_app_apply_build_outcome(app));
+    assert(app->active_view == VIEW_LIBRARY && app->last_error.error_code[0] == '\0');
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_FAILED);
+    assert(player_app_rebuild_card(app, &app->games[0], &card));
+    assert(strcmp(card.detail, "The rebuild did not finish. The old build still works.") == 0);
+    fixture_sha_file(package_path, hash_after);
+    assert(strcmp(hash_before, hash_after) == 0);
+    player_app_runtime_package_cache_invalidate(app);
+    assert(player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                               sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    player_app_rebuild_queue_step(app);
+    assert(app->rebuild_queue.entries[1].state == PLAYER_REBUILD_NO_DISC);
+    assert(!app->build_session.is_building);
+    assert(!app->rebuild_queue.active && !queue_file_exists(app));
+    assert(player_app_rebuild_card(app, &app->games[1], &card) &&
+           strcmp(card.word, "Disc missing") == 0);
+    printf("[PLAYER_STATE_TEST] a failed rebuild keeps the old package; a missing disc is skipped PASS\n");
+
+    /* A rebuild that passes leaves a package this Nakagawa built. */
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+    assert(player_app_rebuild_enqueue(app, "ULUS99998"));
+    assert(app->rebuild_queue.count == 1);                    /* a new run */
+    player_app_rebuild_queue_step(app);
+    assert(app->build_session.is_building);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_complete);
+    assert(player_app_rebuild_queue_owns_build(app));
+    player_app_runtime_package_cache_invalidate(app);
+    /* The check main.c runs after a build, and its outcome. */
+    player_app_rebuild_queue_build_checked(
+        app, player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                                 sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_DONE);
+    assert(!app->rebuild_queue.active && app->outdated.scan_requested);
+    assert(player_app_outdated_count(app) == 1);
+    scan_outdated(app, "9.9.9-test");
+    assert(!player_app_game_is_outdated(app, &app->games[0]));
+    assert(player_app_outdated_count(app) == 1);
+    printf("[PLAYER_STATE_TEST] a passing rebuild leaves a current package PASS\n");
+
+    /* A queue file a newer player wrote is left alone and not resumed. */
+    char queue_path[MAX_PATH_LEN];
+    assert(player_app_rebuild_queue_path(app, queue_path, sizeof(queue_path)));
+    write_text_file(queue_path,
+        "{\"format\":\"nakagawa-rebuild-queue\",\"schema_version\":2,"
+        "\"titles\":[{\"disc_id\":\"ULUS99997\",\"state\":\"pending\"}]}\n");
+    assert(!player_app_rebuild_queue_load(app));
+    assert(!app->rebuild_queue.active && nk_platform_file_exists(queue_path));
+    write_text_file(queue_path,
+        "{\"format\":\"nakagawa-rebuild-queue\",\"schema_version\":1,\"extra\":true,"
+        "\"titles\":[{\"disc_id\":\"ULUS99997\",\"state\":\"pending\"}]}\n");
+    assert(!player_app_rebuild_queue_load(app));
+    assert(nk_remove_utf8(queue_path) == 0);
+    printf("[PLAYER_STATE_TEST] a newer rebuild queue file is not resumed PASS\n");
+
+    app->game_count = 1;
+    memset(&app->outdated, 0, sizeof(app->outdated));
+    memset(&app->rebuild_queue, 0, sizeof(app->rebuild_queue));
+    app->settings_path[0] = '\0';
+}
+
 static void test_build_outcome_is_shown_once_per_session(void) {
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(app != NULL);
@@ -2947,6 +3336,8 @@ static void test_package_build_lifecycle(const char *self_executable) {
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_OK);
     printf("[PLAYER_STATE_TEST] synthetic package reliability 10 builds, rebuild, reuse PASS\n");
+
+    test_outdated_packages_rebuild(rebuild_app, user_root, install_root, source_media_json);
 
     /* A profile that binds no executable gives the entry nothing to adopt. */
     write_experimental_profile_fixture(
@@ -3813,6 +4204,7 @@ int main(int argc, char **argv) {
     test_remove_tree_deeper_than_max_path();
 #endif
     test_remove_from_library_deletes_what_nakagawa_built();
+    test_build_identity_matches_the_python_digest();
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();

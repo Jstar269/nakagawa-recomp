@@ -60,38 +60,38 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false},
+     PLAYER_UI_TIER_NONE, true, false, false},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false},
+     PLAYER_UI_TIER_NONE, true, false, false},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true, false},
+     PLAYER_UI_TIER_WONT_BOOT, true, false, false},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false},
+     PLAYER_UI_TIER_PERFECT, true, false, false},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false}
+     PLAYER_UI_TIER_PERFECT, true, false, false}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -101,22 +101,22 @@ static const PlayerUiTitle k_demo_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false},
+     PLAYER_UI_TIER_PERFECT, true, false, false},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false}
+     PLAYER_UI_TIER_PERFECT, true, false, false}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -125,12 +125,12 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true}
+     PLAYER_UI_TIER_PLAYABLE, false, true, false}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -1417,7 +1417,7 @@ static void test_router(void) {
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
           !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
           !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_STOP + 1)),
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REBUILD + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -3447,6 +3447,217 @@ static void test_stop_game_asks_first(void) {
     nk_ui_router_destroy(router);
 }
 
+static PlayerUiAction activate_rebuild_button(NkUiId id, const PlayerUiRebuildModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_rebuild(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+static bool rebuild_op_is(PlayerUiAction action, PlayerUiRebuildOp op) {
+    return action.kind == PLAYER_UI_ACTION_REBUILD && (PlayerUiRebuildOp)action.primary == op;
+}
+
+/* Games an older Nakagawa built (owner, 2026-10-29). The prompt names the
+   count and offers Rebuild all first, then Later; the launch reminder offers
+   Rebuild now first, then Play anyway; Back (the router's pop) is the second
+   choice. The library line offers Rebuild all and Hide, or only the count
+   while the queue runs, and the title page puts Rebuild beside PLAY. */
+static void test_rebuild_prompt_reminder_and_banner(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiRebuildModel prompt;
+    PlayerUiRebuildModel reminder;
+    PlayerUiAction action;
+    char expect[96];
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    memset(&prompt, 0, sizeof(prompt));
+    prompt.text = "3 games were built by an older Nakagawa. Rebuild them to get this "
+                  "version's fixes and new features.";
+    prompt.logical_width = 1280.0f;
+    prompt.logical_height = 800.0f;
+    reminder = prompt;
+    reminder.title = "Synthetic Outdated Fixture";
+    reminder.text = "This game was built by an older Nakagawa. Rebuild it for the latest fixes.";
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the rebuild prompt UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_rebuild(ui, &prompt);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "3 games were built by an older Nakagawa. Rebuild them") != NULL,
+          "the prompt names the count");
+    (void)snprintf(expect, sizeof(expect), "\"REBUILD ALL\"");
+    CHECK(strstr(dump, expect) != NULL && strstr(dump, "\"LATER\"") != NULL,
+          "the prompt offers Rebuild all and Later");
+    nk_ui_destroy(ui);
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_PRIMARY, &prompt),
+                        PLAYER_UI_REBUILD_ALL), "Rebuild all rebuilds them");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &prompt),
+                        PLAYER_UI_REBUILD_LATER), "Later leaves them");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_PRIMARY, &reminder),
+                        PLAYER_UI_REBUILD_NOW), "Rebuild now rebuilds the game");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &reminder),
+                        PLAYER_UI_REBUILD_PLAY_ANYWAY), "Play anyway plays it");
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the launch reminder UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, PLAYER_UI_ID_REBUILD_PRIMARY);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_rebuild(ui, &reminder);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "\"Synthetic Outdated Fixture\"") != NULL &&
+              strstr(dump, "Rebuild it for the latest fixes.") != NULL,
+          "the reminder names the game and says why");
+    (void)snprintf(expect, sizeof(expect), "\"REBUILD NOW\"");
+    CHECK(strstr(dump, expect) != NULL && strstr(dump, "\"PLAY ANYWAY\"") != NULL,
+          "the reminder offers Rebuild now and Play anyway");
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_REBUILD_PRIMARY, "Rebuild now is the main action");
+    nk_ui_destroy(ui);
+    {
+        NkUiRouter *router = nk_ui_router_create();
+        NkUiEvent back;
+        CHECK(router != NULL, "router allocates");
+        if (router == NULL) return;
+        memset(&back, 0, sizeof(back));
+        back.type = NK_UI_EV_BACK;
+        CHECK(nk_ui_router_push(router, PLAYER_UI_ROUTE_TITLE) &&
+                  nk_ui_router_push(router, PLAYER_UI_ROUTE_REBUILD) &&
+                  nk_ui_router_handle_event(router, &back) &&
+                  nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
+              "Back closes the reminder over the title page");
+        nk_ui_router_destroy(router);
+    }
+
+    /* The library line. */
+    {
+        PlayerUiTitle titles[1];
+        PlayerUiLibraryModel library;
+        memset(titles, 0, sizeof(titles));
+        titles[0].title = "Synthetic Outdated Fixture";
+        titles[0].disc_id = "TEST00006";
+        titles[0].library_status = "Older build";
+        memset(&library, 0, sizeof(library));
+        library.titles = titles;
+        library.title_count = 1u;
+        library.columns = 4u;
+        library.page_size = 8u;
+        library.logical_width = 1280.0f;
+        library.logical_height = 800.0f;
+        library.rebuild_notice = "1 game was built by an older Nakagawa.";
+        library.rebuild_notice_offers_all = true;
+        action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_ALL, &library);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_ALL), "the library's Rebuild all");
+        action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_HIDE, &library);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_HIDE_BANNER), "the library's Hide");
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create the library line UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &library);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        (void)snprintf(expect, sizeof(expect), "%08X \"1 game was built by an older Nakagawa.\"",
+                       (unsigned)theme->warning);
+        CHECK(strstr(dump, expect) != NULL, "the library says so, in the warning colour");
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(0u),
+              "the first card keeps the default focus");
+        library.rebuild_notice = "Rebuilding 2 of 5";
+        library.rebuild_notice_offers_all = false;
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &library);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "\"Rebuilding 2 of 5\"") != NULL &&
+                  strstr(dump, "\"REBUILD ALL\"") == NULL,
+              "while the queue runs the library shows its count, not Rebuild all");
+        nk_ui_destroy(ui);
+    }
+
+    /* The title page: PLAY stays the main action, Rebuild beside it. */
+    {
+        PlayerUiTitle title;
+        PlayerUiTitleModel detail;
+        memset(&title, 0, sizeof(title));
+        title.title = "Synthetic Outdated Fixture";
+        title.disc_id = "TEST00006";
+        title.library_status = "Older build";
+        title.library_status_detail = "Built by an older Nakagawa. Rebuild for the latest fixes.";
+        title.primary_action_label = "PLAY";
+        title.primary_action = PLAYER_UI_PRIMARY_PLAY;
+        title.primary_action_enabled = true;
+        title.package_state = PLAYER_UI_PACKAGE_READY;
+        title.rebuild_offered = true;
+        memset(&detail, 0, sizeof(detail));
+        detail.title = &title;
+        detail.title_index = 3u;
+        detail.logical_width = 1280.0f;
+        detail.logical_height = 800.0f;
+        action = activate_title_button(PLAYER_UI_ID_TITLE_REBUILD, &detail);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_TITLE) && action.title_index == 3u,
+              "the title page's Rebuild rebuilds that game");
+        action = activate_title_button(PLAYER_UI_ID_TITLE_PRIMARY, &detail);
+        CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
+                  action.primary == PLAYER_UI_PRIMARY_PLAY,
+              "an older build still plays");
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create the older-build title UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &detail);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "Built by an older Nakagawa. Rebuild for the latest fixes.") != NULL,
+              "the package card gives the label");
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY, "PLAY keeps the default focus");
+        title.rebuild_offered = false;
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &detail);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "\"REBUILD\"") == NULL, "a current package offers no Rebuild");
+        nk_ui_destroy(ui);
+    }
+}
+
 /* The walkthrough: three of the Controls page's binding buttons ended in
    "...". The words input_settings.c writes for the defaults and for any one
    input stay within PLAYER_UI_CONTROLLER_BINDING_CHARS, and a label that long
@@ -3608,6 +3819,7 @@ int main(int argc, char **argv) {
     test_wizard_steps_match_the_route();
     test_outcome_lines_take_their_colour();
     test_stop_game_asks_first();
+    test_rebuild_prompt_reminder_and_banner();
     test_binding_labels_fit();
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();

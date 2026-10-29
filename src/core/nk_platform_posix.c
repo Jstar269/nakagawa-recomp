@@ -220,6 +220,26 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+    if (!dir || !*dir || !fn) return false;
+    DIR *handle = opendir(dir);
+    if (!handle) return false;
+    struct dirent *item;
+    while ((item = readdir(handle)) != NULL) {
+        if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) continue;
+        char path[4096];
+        int written = snprintf(path, sizeof(path), "%s/%s", dir, item->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) continue;
+        struct stat st;
+        /* lstat: a symlink is neither a file nor a directory here. */
+        if (lstat(path, &st) != 0) continue;
+        if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) continue;
+        if (!fn(item->d_name, S_ISDIR(st.st_mode), ctx)) break;
+    }
+    closedir(handle);
+    return true;
+}
+
 int64_t nk_platform_get_file_size(const char *path) {
     if (!path) return -1;
     struct stat st;

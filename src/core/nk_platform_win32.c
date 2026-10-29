@@ -341,6 +341,43 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+    if (!dir || !*dir || !fn) return false;
+    /* Extended-length buffers stay off the stack: a caller walking a tree may
+       hold several of its own frames. */
+    enum { WIDE_PATTERN_CHARS = 32768 };
+    char *pattern = (char *)malloc(WIDE_PATTERN_CHARS);
+    WCHAR *wpattern = (WCHAR *)malloc(sizeof(WCHAR) * WIDE_PATTERN_CHARS);
+    bool ok = false;
+    if (pattern && wpattern) {
+        int written = snprintf(pattern, WIDE_PATTERN_CHARS, "%s\\*", dir);
+        if (written > 0 && written < WIDE_PATTERN_CHARS &&
+            utf8_to_wide(pattern, wpattern, WIDE_PATTERN_CHARS)) {
+            WIN32_FIND_DATAW data;
+            HANDLE find = FindFirstFileW(wpattern, &data);
+            if (find == INVALID_HANDLE_VALUE) {
+                ok = GetLastError() == ERROR_FILE_NOT_FOUND;
+            } else {
+                ok = true;
+                do {
+                    if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+                    if (wcscmp(data.cFileName, L".") == 0 ||
+                        wcscmp(data.cFileName, L"..") == 0) continue;
+                    char name[1024];
+                    if (!wide_to_utf8(data.cFileName, name, sizeof(name))) continue;
+                    if (!fn(name, (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, ctx)) {
+                        break;
+                    }
+                } while (FindNextFileW(find, &data));
+                FindClose(find);
+            }
+        }
+    }
+    free(pattern);
+    free(wpattern);
+    return ok;
+}
+
 int64_t nk_platform_get_file_size(const char *path) {
     if (!path) return -1;
     WCHAR wpath[32768];

@@ -1670,6 +1670,30 @@ def _replace_package_folder(source: Path, target: Path, *, sleeper=None,
             sleeper(delay)
 
 
+def _restore_interrupted_swap(target_dir: Path, cache_dir: Path) -> Path | None:
+    """Put back the package an interrupted swap left aside, and return where it was.
+
+    _swap_in_package_folder moves the old package to ``cache_dir/previous-<ns>``
+    before it moves the new one in. A build stopped between the two renames (a
+    cancel, a closed player, a Windows lock that outlasted its retries and then
+    the process) leaves no package in place. The next build of the title puts
+    the newest one back before it decides anything, so a stopped rebuild costs
+    the user no package that played.
+    """
+    if target_dir.exists() or target_dir.is_symlink() or not cache_dir.is_dir():
+        return None
+    backups = [
+        path for path in cache_dir.iterdir()
+        if path.name.startswith("previous-") and path.name[len("previous-"):].isdigit()
+        and path.is_dir() and not path.is_symlink()
+    ]
+    if not backups:
+        return None
+    newest = max(backups, key=lambda path: int(path.name[len("previous-"):]))
+    _replace_package_folder(newest, target_dir)
+    return newest
+
+
 def _swap_in_package_folder(staging: Path, target_dir: Path, cache_dir: Path) -> Path | None:
     """Move a verified staging folder into place and return the previous package.
 
@@ -2436,6 +2460,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
+        restored = _restore_interrupted_swap(target_dir, cache_dir)
+        if restored is not None:
+            reporter.log(f"PACKAGE_RESTORED: the package an interrupted build moved aside is back "
+                         f"({restored.name})")
         cache_key = _current_package_cache_key(
             manifest,
             manifest_cache_path,

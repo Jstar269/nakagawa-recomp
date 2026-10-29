@@ -365,6 +365,86 @@ compiles nothing.
 Neither folder is shipped, uploaded or shared: both stay in the player's data
 folder like the package entries.
 
+### Packages built by an older Nakagawa (v0.0.2)
+
+The package format, the cache schema and both ABI epochs are 2 in v0.0.1 and
+v0.0.2, so none of them tells a v0.0.1 package from one v0.0.2 builds. What
+does differ is the part of the cache key that comes from Nakagawa itself. Every
+package since v0.0.1 records it, and the native validator already requires it:
+
+| Value | Where the package records it | What it covers |
+| --- | --- | --- |
+| `runtime_source_digest` | `cache.key.native.components` | `src/rt`, `src/core`, `src/player` C sources, the `Makefile`, `assets/vfpu` (`package_cache.source_tree_digest`) |
+| `analyzer_sha256` | `cache.key.aot.components` | `tools/analyze.py` |
+| `codegen_sha256` | `cache.key.aot.components` | `tools/codegen.py` |
+| `planner_sha256` | `cache.codegen_options` | `tools/title_codegen_plan.py` |
+
+Measured on the tree: `source_tree_digest` gives `d1de9386...0beb` at the
+v0.0.1 tag and a different value on main, and the three tool hashes changed
+too. The player computes the same four values from the source tree a rebuild
+would use (the folder above `tools/nk_cli.py`: a checkout, or a release's
+`source/`), in C (`nk_title_manifest_source_build_identity`, byte for byte
+the Python digest; `tests/native/test_player_state.c` and
+`tests/native/test_player_ui.py` pin the two together). It reads a package's
+values from `package.json` alone (`nk_title_manifest_aot_package_build_identity`).
+A package whose values differ is *outdated*: rebuilding it compiles this
+version's runtime, and regenerates its C when the translator changed. These
+are exactly the components the build tools compare before they reuse a
+package, so "outdated" means "a rebuild would change it".
+
+An outdated package is not incompatible. Nothing in the format changed, the
+validator accepts it, and it launches. A package that records no identity
+(no planner digest, as hand-made fixtures have) is not judged at all.
+
+**How a future release bumps it: it does not have to.** Any change to those
+files moves the identity, so every release that changes the runtime or the
+translator marks the packages the previous one built, and a release that
+changes neither leaves them alone. A development checkout behaves the same
+way: its packages read as outdated after a runtime edit, because they lack it.
+Changes that must not trigger a rebuild stay out of those files.
+
+What the player does (owner decision, 2026-10-29: suggest, never force):
+
+* At start it scans the library on a worker. With outdated games and a
+  `settings.json` whose `rebuild_prompt_version` is not this player's version,
+  it shows one prompt naming the count, with Rebuild all and Later. Either
+  answer records the version, so the prompt shows once per update.
+  `rebuild_prompt_version` is an optional key: a file without it has never
+  shown the prompt.
+* After Later, a library line ("N games were built by an older Nakagawa.")
+  offers Rebuild all and Hide. Hide lasts for the session; the line comes back
+  at the next start while outdated games remain.
+* Each outdated card says "Built by an older Nakagawa. Rebuild for the latest
+  fixes.", and the title page offers Rebuild beside PLAY. PLAY asks once a
+  session (Rebuild now or Play anyway); Play anyway launches as before.
+* Rebuild all queues the outdated games and builds them one at a time, behind
+  whatever the user is doing, through the same package builder as BUILD
+  PACKAGE. The library line counts ("Rebuilding 2 of 5") and each card shows
+  its state and compile progress. A game can be played until its own rebuild
+  starts; while it runs, that game cannot launch and its card says why. A
+  game whose disc image is missing is skipped and its card asks for the disc
+  again; a failed or cancelled build is noted on its card and the queue moves
+  on.
+* The queue survives a restart in `rebuild-queue.json` beside `settings.json`:
+  `{"format": "nakagawa-rebuild-queue", "schema_version": 1, "titles":
+  [{"disc_id": "...", "state": "pending" | "done" | "missing_disc" |
+  "failed"}]}`. A build that was running is saved as `pending` and starts
+  again. A file with a newer `schema_version`, another format or an unknown
+  member is left in place and not resumed. The file goes when nothing is
+  pending.
+
+A rebuild never removes the old package first. The build runs in the
+content-addressed cache entry, is validated, copied next to the package,
+validated again, and only then swapped in, with the old package moved back if
+the swap fails (`_promote_cache_entry` in `tools/nk_cli.py`). A failed or
+cancelled build therefore leaves the old package in place and launchable. The
+one gap is a build stopped between the swap's two renames, which leaves the old
+package in `cache/packages/<DISC_ID>/previous-<n>`: the next build of that
+title moves it back before anything else (`_restore_interrupted_swap`).
+Saves live outside the package and are not touched, and the cache keeps its
+reuse: when only the runtime changed, the generated C is kept and only the
+native objects are rebuilt.
+
 ### Generated-code stage reuse (bring-up)
 
 `nk_cli.py bringup` generates each title's code once. Its codegen stage runs

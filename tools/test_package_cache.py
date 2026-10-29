@@ -1276,6 +1276,30 @@ class PackageCacheTests(unittest.TestCase):
             # The package that was in place before stays in place.
             self.assertEqual((target / "package.json").read_text(encoding="utf-8"), '{"new": true}')
 
+    def test_next_build_restores_a_package_an_interrupted_swap_left_aside(self) -> None:
+        """A build stopped between the swap's two renames leaves the old package in the
+        cache folder; the next build puts the newest one back before anything else, so
+        a cancelled rebuild (the player's Rebuild all) never loses a package that played."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+            target = root / "packages" / "ABCD12345"
+            target.parent.mkdir(parents=True)
+            for stamp, marker in ((100, "older"), (200, "newest")):
+                backup = cache_dir / f"previous-{stamp}"
+                backup.mkdir()
+                (backup / "package.json").write_text(marker, encoding="utf-8")
+            (cache_dir / "previous-notes").mkdir()
+            restored = nk_cli._restore_interrupted_swap(target, cache_dir)
+            self.assertEqual(restored, cache_dir / "previous-200")
+            self.assertEqual((target / "package.json").read_text(encoding="utf-8"), "newest")
+            self.assertFalse((cache_dir / "previous-200").exists())
+            # A package in place is never replaced by a backup.
+            self.assertIsNone(nk_cli._restore_interrupted_swap(target, cache_dir))
+            self.assertEqual((target / "package.json").read_text(encoding="utf-8"), "newest")
+            self.assertTrue((cache_dir / "previous-100").is_dir())
+
     def test_second_build_of_a_title_is_refused_while_one_runs(self) -> None:
         import argparse
         import contextlib

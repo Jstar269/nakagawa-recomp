@@ -146,6 +146,14 @@ struct PlayerUiNk {
     int stop_index;
     char stop_disc[NK_MAX_DISC_ID_LEN];
     bool stop_focus_pending;
+    /* The older-build prompt or launch reminder (PLAYER_UI_ROUTE_REBUILD) is
+       open; Back closing it answers with the second choice. */
+    bool rebuild_pushed;
+    bool rebuild_focus_pending;
+    char rebuild_text[256];
+    char rebuild_notice[96];
+    /* A rebuilding card's status word with its progress ("Rebuilding 40%"). */
+    char rebuild_word[PLAYER_UI_TITLE_CAP][32];
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
@@ -1575,6 +1583,27 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
+    /* An older Nakagawa built this package (owner, 2026-10-29): it still
+       plays, and the cards say what a rebuild would do, that it is queued or
+       running, or that its disc is missing. */
+    PlayerRebuildCard rebuild;
+    bool older = !starting && !running && player_app_rebuild_card(app, game, &rebuild);
+    out->rebuild_offered = false;
+    if (older) {
+        if (rebuild.rebuilding && rebuild.fraction >= 0.0f) {
+            snprintf(player->rebuild_word[index], sizeof(player->rebuild_word[index]),
+                     "%s %d%%", rebuild.word, (int)(rebuild.fraction * 100.0f + 0.5f));
+            out->library_status = player->rebuild_word[index];
+        } else {
+            out->library_status = rebuild.word;
+        }
+        out->library_status_detail = rebuild.detail;
+        out->status_rgba = rebuild.rebuilding ? PLAYER_UI_INFO : PLAYER_UI_WARNING;
+        out->status_marker = rebuild.rebuilding ? "◆" : "▲";
+        if (rebuild.rebuilding) out->package_state = PLAYER_UI_PACKAGE_BUILDING;
+        out->rebuild_offered = rebuild.can_rebuild && package_ready && !app->launch_pending &&
+                               !app->is_game_running && !app->build_session.is_building;
+    }
     out->art_kind = player_ui_art_kind(game);
     /* The showcase packages beside the player are the demos under TEST THIS
        PC. The --demo fixtures are the project's test programs, not a disc the
@@ -1605,6 +1634,9 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
+    } else if (older && rebuild.rebuilding) {
+        /* Its package is about to be replaced; the package card says so. */
+        out->primary_action_label = "REBUILDING...";
     } else if (package_ready) {
         out->primary_action_label = "PLAY";
         out->primary_action_enabled = true;
@@ -1756,6 +1788,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     size_t repeat_count;
     const NkUiDrawList *draw_list;
     PlayerUiAction action = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    PlayerUiAction rebuild_answer = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     PlayerUiRoute route;
     if (out_action != NULL) {
         out_action->kind = PLAYER_UI_ACTION_NONE;
@@ -1828,6 +1861,35 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     }
     route = nk_ui_router_current(player->router);
     player_ui_flow_focus(player, app);
+    if (!player_ui_nk_flow_view(app->active_view)) {
+        /* Games an older Nakagawa built: player_state says when the prompt or
+           a launch's reminder is up, and the route follows it, over the
+           library or the title page. Back pops the route; that answers with
+           the second choice (Later, Play anyway). */
+        bool rebuild_modal = player_app_rebuild_prompt_visible(app) ||
+                             player_app_rebuild_reminder_visible(app);
+        if (player->rebuild_pushed && route != PLAYER_UI_ROUTE_REBUILD) {
+            player->rebuild_pushed = false;
+            if (rebuild_modal) {
+                rebuild_answer.kind = PLAYER_UI_ACTION_REBUILD;
+                rebuild_answer.primary = (PlayerUiPrimaryAction)(
+                    player_app_rebuild_reminder_visible(app) ? PLAYER_UI_REBUILD_PLAY_ANYWAY
+                                                             : PLAYER_UI_REBUILD_LATER);
+            }
+        } else if (rebuild_modal && (route == PLAYER_UI_ROUTE_LIBRARY ||
+                                     route == PLAYER_UI_ROUTE_TITLE)) {
+            nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+            if (nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REBUILD)) {
+                player->rebuild_pushed = true;
+                player->rebuild_focus_pending = true;
+                route = PLAYER_UI_ROUTE_REBUILD;
+            }
+        } else if (!rebuild_modal && route == PLAYER_UI_ROUTE_REBUILD) {
+            (void)nk_ui_router_pop(player->router);
+            player->rebuild_pushed = false;
+            route = nk_ui_router_current(player->router);
+        }
+    }
     if (player_ui_nk_flow_view(app->active_view)) {
         action = player_ui_render_flow(player, app, scale, now_s);
         if ((player_ui_settings_view(app->active_view) ||
@@ -1951,6 +2013,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             snprintf(player->update_notice, sizeof(player->update_notice),
                      "Version %.40s is out", app->update.check.newest.version);
             model.update_notice = player->update_notice;
+        }
+        if (player_app_rebuild_banner_visible(app)) {
+            (void)player_app_rebuild_banner_text(app, player->rebuild_notice,
+                                                 sizeof(player->rebuild_notice),
+                                                 &model.rebuild_notice_offers_all);
+            model.rebuild_notice = player->rebuild_notice;
         }
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
@@ -2129,6 +2197,32 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
+    } else if (route == PLAYER_UI_ROUTE_REBUILD) {
+        PlayerUiRebuildModel model;
+        memset(&model, 0, sizeof(model));
+        if (player->rebuild_focus_pending) {
+            nk_ui_focus(player->ui, PLAYER_UI_ID_REBUILD_PRIMARY);
+            player->rebuild_focus_pending = false;
+        }
+        if (player_app_rebuild_reminder_visible(app)) {
+            int index = player_app_find_game_by_disc_id(app, app->outdated.reminder_disc_id);
+            model.title = index >= 0 && app->games[index].title_name[0]
+                ? app->games[index].title_name : "This game";
+            model.text = PLAYER_REBUILD_REMINDER_TEXT;
+        } else {
+            (void)player_app_rebuild_prompt_text(app, player->rebuild_text,
+                                                 sizeof(player->rebuild_text));
+            model.text = player->rebuild_text;
+        }
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        action = player_ui_screen_rebuild(player->ui, &model);
+        if (action.kind == PLAYER_UI_ACTION_REBUILD) {
+            if (out_action != NULL) *out_action = action;
+            (void)nk_ui_router_pop(player->router);
+            player->rebuild_pushed = false;
+            action.kind = PLAYER_UI_ACTION_NONE;
+        }
     } else if (route == PLAYER_UI_ROUTE_ABOUT) {
         PlayerUiAboutModel model;
         memset(&model, 0, sizeof(model));
@@ -2170,6 +2264,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     (void)SDL_RenderClear(renderer);
     if (!nk_ui_sdlr_render(player->backend, draw_list)) return false;
     SDL_RenderPresent(renderer);
+    if (action.kind == PLAYER_UI_ACTION_NONE) action = rebuild_answer;
     if (out_action != NULL && action.kind != PLAYER_UI_ACTION_NONE) {
         *out_action = action;
     }
