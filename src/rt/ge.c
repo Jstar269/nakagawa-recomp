@@ -1836,8 +1836,10 @@ void ge_set_frame(uint32_t frame) {
 }
 
 static uint32_t texel_offset(uint32_t row_pitch_pixels, uint32_t u, uint32_t v, uint32_t texel_bits) {
-    if (!ge.tex_swizzle)
-        return v * ((row_pitch_pixels * texel_bits) >> 3) + ((u * texel_bits) >> 3);
+    if (!ge.tex_swizzle) {
+        /* A linear texture's rows are whole 16-byte lines (ge_tex_row_bytes). */
+        return v * ge_tex_row_bytes(row_pitch_pixels, texel_bits) + ((u * texel_bits) >> 3);
+    }
 
     /* PPSSPP Software/Sampler.cpp GetPixelDataOffset() */
     const uint32_t tile_bits = 32, tiles_x = 4, tiles_y = 8;
@@ -2177,8 +2179,10 @@ int ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height, uint3
  * per-texel sample_tex call (wrap + swizzle offset math) dominates otherwise. */
 void ge_decode_tex_rgba(uint32_t *out) {
     if (!ge.tex_swizzle && ge.tex_fmt <= 3) {
-        uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
         uint32_t bpp = ge.tex_fmt == 3 ? 4u : 2u;
+        /* Rows are whole 16-byte lines, as the sampler reads them (ge_tex_row_bytes). */
+        uint32_t stride = ge_tex_row_bytes(ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w,
+                                           bpp * 8u) / bpp;
         SrGuestRectSpan source;
         /* A texture given through the 0x042 or 0x046 VRAM mirror (#1049: a movie drawn as a
          * texture) is not host-contiguous, so no host pointer can cover it. Each row is read
@@ -2351,6 +2355,9 @@ static void read_fb_px(int x, int y, int *r, int *g, int *b, int *a) {
     uint32_t off = (uint32_t)(y*(int)stride + x);
     if ((ge.fbfmt & 3) == 3) unpack_color(ge_fb_load(ge_fb_addr() + off*4, 1), 3, r,g,b,a);
     else                     unpack_color(ge_fb_load(ge_fb_addr() + off*2, 0), ge.fbfmt&3, r,g,b,a);
+    /* A 565 pixel's alpha, and so its stencil value, reads as 0 (PSP-GE-RASTER-001
+     * st565-eq0, b565-da-ida). */
+    if ((ge.fbfmt & 3) == 0) *a = 0;
 }
 
 /* One blend factor, 0..255 except the doubled alphas: 2a runs to 510 and 255 - 2a goes
@@ -2369,12 +2376,12 @@ static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int
     }
 }
 
-/* A colour times a blend factor as the PSP rounds it: (2v + 1)(2f + 1) / 1024, each product
- * on its own, before the equation (PSP-GE-RASTER-001: exact for every factor in 0..255 across
- * the blend cells). A negative doubled-alpha product truncates toward zero; that case is the
- * nearest fit, not an exact one (the b-2*a cells stay known deviations). */
+/* A colour times a blend factor as the PSP rounds it: floor((2v + 1)(2|f| + 1) / 1024), each
+ * product on its own before the equation, with the factor's sign applied afterwards (only
+ * 255 - 2a can be negative). Exact for every pixel of the PSP-GE-RASTER-001 blend cells. */
 static int blend_mul(int v, int f) {
-    return ((2*v + 1) * (2*f + 1)) / 1024;
+    if (f < 0) return -(((2*v + 1) * (1 - 2*f)) >> 10);
+    return ((2*v + 1) * (2*f + 1)) >> 10;
 }
 
 static int blend_chan(int s, int d, int sf, int df, int eq) {
@@ -2490,8 +2497,7 @@ static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int st
     }
     uint32_t oldraw=read_fb_raw(x,y);
     int dr,dg,db,da; unpack_color(oldraw,ge.fbfmt&3,&dr,&dg,&db,&da);
-    /* A 565 pixel has no alpha bits; blending reads its alpha as 0 (PSP-GE-RASTER-001
-     * b565-da-ida). */
+    /* A 565 pixel has no alpha bits; blending reads its alpha as 0 (read_fb_px). */
     if ((ge.fbfmt & 3) == 0) da = 0;
     if (ge.clear) {
         int write_color = (ge.clear_mode & 0x100) != 0;
@@ -2734,10 +2740,13 @@ static int shade(float u, float fv, float rho2, int fog,
             if (fog == 0) s_stat.fog0++; else if (fog >= 256) s_stat.fogfull++;
         }
         if (fog < 256) {  /* mix toward fog colour; alpha unaffected */
+            /* The factor F is the fog value times 256, truncated, at most 255, and the mix is
+             * ((c + 1) F + (fog + 1)(255 - F)) / 256 truncated (PSP-GE-RASTER-001 fog-*). */
             int fr=(int)(ge.fog_color&0xFF), fg=(int)((ge.fog_color>>8)&0xFF), fb=(int)((ge.fog_color>>16)&0xFF);
-            r = fr + (((r - fr) * fog) >> 8);
-            g = fg + (((g - fg) * fog) >> 8);
-            b = fb + (((b - fb) * fog) >> 8);
+            int f = fog > 255 ? 255 : fog;
+            r = ((r + 1) * f + (fr + 1) * (255 - f)) >> 8;
+            g = ((g + 1) * f + (fg + 1) * (255 - f)) >> 8;
+            b = ((b + 1) * f + (fb + 1) * (255 - f)) >> 8;
         }
         /* Fog precedes the color test on the PSP fragment pipeline. */
         if (!color_test(r,g,b)) return 0;

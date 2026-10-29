@@ -55,7 +55,8 @@ float quant_chan(float c, int bits) {
     return float((v << (8 - bits)) | (v >> (2 * bits - 8)));
 }
 
-/* PSP blend factor, integer 0..255 space — exactly ge.c factor_component(). */
+/* PSP blend factor, integer space — exactly ge.c factor_component(): 0..255 except the
+ * doubled alphas, 2a up to 510 and 255 - 2a down to -255. */
 ivec3 blend_factor(int f, bool srcSide, ivec3 s, int sa, ivec3 d, int da) {
     switch (f & 15) {
         case 0:  return srcSide ? d : s;
@@ -64,12 +65,19 @@ ivec3 blend_factor(int f, bool srcSide, ivec3 s, int sa, ivec3 d, int da) {
         case 3:  return ivec3(255 - sa);
         case 4:  return ivec3(da);
         case 5:  return ivec3(255 - da);
-        case 6:  return ivec3(clamp(sa * 2, 0, 255));
-        case 7:  return ivec3(clamp(255 - sa * 2, 0, 255));
-        case 8:  return ivec3(clamp(da * 2, 0, 255));
-        case 9:  return ivec3(clamp(255 - da * 2, 0, 255));
+        case 6:  return ivec3(sa * 2);
+        case 7:  return ivec3(255 - sa * 2);
+        case 8:  return ivec3(da * 2);
+        case 9:  return ivec3(255 - da * 2);
         default: return ivec3((srcSide ? pc.fixa.rgb : pc.fixb.rgb) * 255.0 + 0.5);
     }
+}
+
+/* Colour times factor as the PSP rounds it — exactly ge.c blend_mul():
+ * floor((2v + 1)(2|f| + 1) / 1024), with the factor's sign applied afterwards. */
+ivec3 blend_mul(ivec3 v, ivec3 f) {
+    ivec3 m = ((2 * v + 1) * (2 * abs(f) + 1)) >> 10;
+    return ivec3(f.x < 0 ? -m.x : m.x, f.y < 0 ? -m.y : m.y, f.z < 0 ? -m.z : m.z);
 }
 
 void main() {
@@ -151,8 +159,13 @@ void main() {
         }
 
         if ((flags & 8) != 0) {
-            float f = clamp(v_fog, 0.0, 1.0);   /* 1 = no fog (PPSSPP convention) */
-            col.rgb = mix(pc.fogcol.rgb * 255.0, col.rgb, f);
+            /* ge.c shade(): F = fog * 256 truncated (1 = no fog), at most 255, and
+             * ((c + 1) F + (fog colour + 1)(255 - F)) / 256 truncated. */
+            int f = int(clamp(v_fog, 0.0, 1.0) * 256.0);
+            if (f < 256) {
+                ivec3 c = ivec3(col.rgb), fc = ivec3(pc.fogcol.rgb * 255.0 + 0.5);
+                col.rgb = vec3(((c + 1) * f + (fc + 1) * (255 - f)) >> 8);
+            }
         }
 
         /* doubled-src-alpha blend factors folded into the source color */
@@ -170,13 +183,14 @@ void main() {
         int   sf  = pc.bl.x & 0xFF, df = (pc.bl.x >> 8) & 0xFF, eq = (pc.bl.x >> 16) & 7;
         ivec3 fs  = blend_factor(sf, true,  s, sa, dpx.rgb, dpx.a);
         ivec3 fd  = blend_factor(df, false, s, sa, dpx.rgb, dpx.a);
-        ivec3 sv  = s * fs / 255, dv = dpx.rgb * fd / 255;
+        ivec3 sv  = blend_mul(s, fs), dv = blend_mul(dpx.rgb, fd);
         ivec3 res;
         if      (eq == 1) res = clamp(sv - dv, 0, 255);
         else if (eq == 2) res = clamp(dv - sv, 0, 255);
         else if (eq == 3) res = min(s, dpx.rgb);        /* min/max/absdiff: factors ignored */
         else if (eq == 4) res = max(s, dpx.rgb);
         else if (eq == 5) res = abs(s - dpx.rgb);
+        else if (eq >= 6) res = s;                      /* 6 and 7 pass the source through */
         else              res = clamp(sv + dv, 0, 255);
         col.rgb = vec3(res);
     }

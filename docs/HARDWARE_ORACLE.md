@@ -28,6 +28,11 @@ the PSP GE command word layout; address operands are explicit relocations to its
 vertex words. A result records `framebuffer_sha256` and one `pixel_<x>_<y>` value for each selected
 coordinate, packed according to the case framebuffer format.
 
+The measured raster corpus is the `ge-raster` probe (`PSP-GE-RASTER-001`, see
+[Measured to date](#measured-to-date-index-exact-cells-only-do-not-generalize)): 189 cells whose window
+digests `src/rt/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
+those runs yet.
+
 Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
 case. A case is `MEASURED` only when its source tier is `PSP_HARDWARE`, the oracle envelope is
 acceptance-eligible, and the raw result protocol identifies `source=psp`. The public corpus never
@@ -36,8 +41,9 @@ results directory (`--results-directory`, default `oracle/hardware-results/`) by
 SHA-256, and the gate verifies that file. Without that directory a hardware claim reports
 `NOT_RUN`, never `MEASURED`. Software, Vulkan, or
 PPSSPP data cannot be promoted by setting a hardware label. The current case reports `NOT_RUN`.
-**GE raster pixel conformance is IN THE WORKS (#343);** a real run still depends on the resident
-runner and recovery substrate tracked by #352.
+**GE raster pixel conformance is IN THE WORKS (#343):** the
+`ge-raster` cells are measured; the schema corpus case, the Vulkan comparison and the families no cell covers
+yet are not.
 
 ## Measured to date (index — exact cells only, do not generalize)
 
@@ -865,6 +871,48 @@ One console is one data point; see §11. Nothing here closes issue #70
     alike: each row takes 1/16 of the row above it (the first row 1/16 of texel row 7). In the triangle pair it
     happens in u in both triangles and in v only in the first triangle (TL TR BL); the second triangle's rows are
     exact. This rule reproduces every pixel of all 48 draws.
+
+- **PSP-3000 single-case runs of the `ge-raster` probe (2026-10-29)**: firmware 6.6.1, PSPLink 3.2.1,
+  operator-declared model PSP-3000, case 118 in `fixtures/psp_oracle/probe_ge_sample.c`, each launch after the
+  `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). The cited run is boot 71 on commit `990748ec`:
+  acceptance-eligible with 0 blockers, evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean
+  committed tree, a strict golden sequence of 945 records and the done record (out0 945), all PASS; every one of
+  the 189 lists reached GE idle. The boot 70 run of `99578ce7` (175 cells, acceptance-eligible) and the boot 69
+  run of `8fa4a893` (166 cells; not eligible, the tree had an uncommitted selftest edit) gave the same window
+  for every cell whose list they share, so the results repeat across boots. The raw envelopes and host0 logs
+  stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `990748ec`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-RASTER-001` | `b-*`, `b565-*`, `b5551-*`, `b4444-*`, `at-*`, `ct-*`, `st-*`, `st4444-*`, `st5551-*`, `st565-*`, `z-*`, `tf-*`, `tfa-*`, `tx-*`, `wr-*`, `e-*`, `fmt-*`, `dth-*`, `msk-*`, `lo-*`, `clr-*`, `xf-*`, `fog-*`, `ge-raster-done` (every cell of the `gr_cells` table) | The wait timings, and any state or format no cell sets | MEASURED (`ge-raster`) |
+
+  Each cell is one display list of project-written command words over generated patterns (no game data). It
+  draws into the 16x4 window x 16..31, y 8..11 of a 64x32 colour buffer whose window holds a generated
+  destination pattern; the base state turns every per-fragment unit off and draws a 16x4 generated texture 1:1
+  with REPLACE/RGBA, so a sprite's source colour is the texel. The table and list builder are one block that
+  `src/rt/hle_thread_selftest.c` carries byte for byte; `test_ge_raster_cells_match_psp` runs every cell through
+  the software GE and compares its window digest with the PSP's. What the cells establish, for these exact
+  states only (issue #343):
+  - *Blending.* Each colour-times-factor product is floor((2v + 1)(2|f| + 1) / 1024) with the factor's sign
+    applied afterwards, computed separately for source and destination before the equation, then clamped to
+    0..255. The doubled alphas are not clamped: 2a runs to 510 and 255 - 2a goes negative. Equations 3, 4 and 5
+    (min, max, absolute difference) ignore the factors; equations 6 and 7 write the source colour. A 565 pixel's
+    alpha reads as 0, for blending and for the stencil test. With the stencil test off, the framebuffer alpha
+    byte keeps its old value.
+  - *Fog.* The factor F is the per-vertex fog value (z + FOG1) * FOG2, clamped to 0..1, times 256 and truncated,
+    at most 255; each channel is ((c + 1) F + (fog colour + 1)(255 - F)) / 256, truncated.
+  - *Texture row pitch.* A linear texture's row is a whole number of 16-byte lines: the buffer width in bytes
+    rounded down to a multiple of 16, and at least one line. A CLUT4 texture with buffer width 16 or 48 reads its
+    rows 16 bytes apart; buffer width 64 reads them 32 bytes apart.
+  - *Lines.* The major axis is stepped one pixel at a time from the first endpoint's pixel, for the integer part
+    of the longer extent, so the last endpoint's pixel is left out; the minor coordinate is the line's value at
+    the centre of each major-axis pixel, truncated, in either direction.
+  - *Clear mode* still dithers and still honours the pixel masks.
+  - The software GE already matched every other cell: alpha, colour, stencil and depth tests and every stencil
+    operation (8888, 4444, 5551), the texture functions with and without RGBA and colour doubling, 5650, 5551,
+    4444 and CLUT8 textures with CLUT shift, mask and offset, wrap and clamp under nearest and bilinear
+    filtering, through-mode triangle coverage, points, 16-bit framebuffer conversion, dithering, pixel masks,
+    the sixteen logic operations, and transform-mode triangles and sprites.
 
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
@@ -2651,6 +2699,7 @@ not expected PSP values.
 | `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
+| `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27

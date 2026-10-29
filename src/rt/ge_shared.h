@@ -111,6 +111,15 @@ typedef struct {
  * mode 3 stay on level 0: no public source gives their formula (unmeasured). The software
  * sampler (ge.c tex_lod) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this one
  * rule so the two GE paths turn mip levels on for the same states. */
+/* Bytes per row of a linear (unswizzled) texture whose buffer width is `bufw` texels of
+ * `bits` bits: whole 16-byte lines, the width's bytes rounded down to a multiple of 16 and at
+ * least one line (PSP-GE-RASTER-001 tx-c4-4444, tx-c4-bw48, tx-c4-bw64, tx-c8-bw24,
+ * tx-8888-bw20). */
+static inline uint32_t ge_tex_row_bytes(uint32_t bufw, uint32_t bits) {
+    uint32_t bytes = ((bufw * bits) >> 3) & ~15u;
+    return bytes ? bytes : 16u;
+}
+
 static inline int ge_tex_mip_active(const GeState *g) {
     return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u && g->tex_level_mode <= 1u;
 }
