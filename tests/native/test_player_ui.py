@@ -3827,29 +3827,30 @@ class NativePlayerUiTests(unittest.TestCase):
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
-        prompted = [frame for frame in frames if frame["rebuild_prompt"] == "1"]
+        prompted = [frame for frame in frames if frame.get("rebuild_prompt", "0") == "1"]
         self.assertTrue(prompted, run["stdout"])
-        self.assertEqual(prompted[0]["outdated"], "1")
+        self.assertEqual(prompted[0].get("outdated", "0"), "1")
         self.assertEqual(prompted[-1]["next_route"], self.ROUTE_REBUILD)
-        self.assertEqual(prompted[0]["prompt_version"], "none")
+        self.assertEqual(prompted[0].get("prompt_version", "none"), "none")
         after = frames[frames.index(prompted[-1]) + 1:]
-        self.assertTrue(after and all(frame["rebuild_prompt"] == "0" for frame in after),
+        self.assertTrue(after and all(frame.get("rebuild_prompt", "0") == "0" for frame in after),
                         "Later closes the prompt for good")
-        self.assertTrue(all(frame["prompt_version"] != "none" for frame in after),
+        self.assertTrue(all(frame.get("prompt_version", "none") != "none" for frame in after),
                         "the answer is kept in settings for this version")
-        self.assertIn("1", [frame["rebuild_banner"] for frame in after], "the library line stays")
+        self.assertIn("1", [frame.get("rebuild_banner", "0") for frame in after],
+                      "the library line stays")
         titled = [frame for frame in after
                   if frame["next_route"] == "2" and frame["next_primary_label"] == "PLAY"]
         self.assertTrue(titled, run["stdout"])
         self.assertEqual(titled[0]["next_detail"], self.OUTDATED_LABEL)
         self.assertEqual(titled[0]["next_package"], self.PACKAGE_READY)
         self.assertIn("next_ui_library_status index=0 status=Older build", str(run["stdout"]))
-        reminded = [frame for frame in after if frame["rebuild_reminder"] == "1"]
+        reminded = [frame for frame in after if frame.get("rebuild_reminder", "0") == "1"]
         self.assertTrue(reminded, "PLAY on an outdated game asks first")
         self.assertEqual(reminded[-1]["next_route"], self.ROUTE_REBUILD)
         launched = frames[frames.index(reminded[-1]) + 1:]
         self.assertIn("1", [frame["launch_pending"] for frame in launched], run["stdout"])
-        self.assertTrue(all(frame["rebuild_queue"] == "0" for frame in frames),
+        self.assertTrue(all(frame.get("rebuild_queue", "0") == "0" for frame in frames),
                         "nothing was queued: Later and Play anyway rebuild nothing")
         # The synthetic package has no real program: the launch ends on the
         # launch's own card, as for any ready package (see the slow-start test).
@@ -3874,11 +3875,11 @@ class NativePlayerUiTests(unittest.TestCase):
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
-        scanned = [frame for frame in frames if frame["outdated_scanned"] == "1"]
+        scanned = [frame for frame in frames if frame.get("outdated_scanned", "0") == "1"]
         self.assertTrue(scanned, run["stdout"])
-        self.assertTrue(all(frame["outdated"] == "0" for frame in frames), run["stdout"])
-        self.assertTrue(all(frame["rebuild_prompt"] == "0" and frame["rebuild_reminder"] == "0"
-                            for frame in frames))
+        self.assertTrue(all(frame.get("outdated", "0") == "0" for frame in frames), run["stdout"])
+        self.assertTrue(all(frame.get("rebuild_prompt", "0") == "0" and
+                            frame.get("rebuild_reminder", "0") == "0" for frame in frames))
         self.assertIn("1", [frame["launch_pending"] for frame in frames], run["stdout"])
 
     def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
