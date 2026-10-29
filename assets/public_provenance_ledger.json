@@ -1711,7 +1711,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "cf575886a7c9305a39730c1281da0963bbe228a40f45236867281cfd98850b00"
+      "sha256": "5c68dac48925c63032ffe6166909a7375ab71f96a524548998009bd1303e1288"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -14747,7 +14747,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ce8bf35a85d80f5e0cf5a42f92aefa9c66fae6a5be99b3fb37a8b473d164a77"
+      "sha256": "f2f3eaa13fe4a5ff09747469623626b00d7517a3e0262b8dbca198c03fab165a"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
