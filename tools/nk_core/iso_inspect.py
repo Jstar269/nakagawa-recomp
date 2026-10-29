@@ -17,6 +17,7 @@ from typing import Dict, Iterator, Optional, Sequence
 
 import psp_import_table
 import title_manifest
+from . import disc_expand_tool
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -722,6 +723,29 @@ def inspect_iso(
     path = Path(iso_path)
     if not path.is_file():
         raise IsoInspectionError(f"ISO file does not exist: {path}")
+
+    # A compressed disc image (.cso, .zso, .chd) is expanded once, by the
+    # player's own C code through tools/nk_core/disc_expand_tool.py, into the
+    # per-user data root, and the plain .iso it becomes is what is inspected.
+    source_format = disc_expand_tool.compressed_format(path)
+    if source_format is not None:
+        if user_data_root is not None:
+            data_root = Path(user_data_root)
+        else:
+            from .prereq_fetcher import default_data_root
+
+            data_root = default_data_root()
+        try:
+            expanded = disc_expand_tool.ensure_plain_iso(path, data_root)
+        except disc_expand_tool.DiscImageRefused as exc:
+            raise IsoInspectionError(str(exc), boundary_code=exc.code) from exc
+        except (RuntimeError, OSError) as exc:
+            raise IsoInspectionError(
+                f"The compressed disc image could not be expanded: {exc}"
+            ) from exc
+        info = inspect_iso(expanded, registry, user_data_root=user_data_root)
+        info.container_metadata["source_format"] = source_format
+        return info
 
     size_bytes = path.stat().st_size
 

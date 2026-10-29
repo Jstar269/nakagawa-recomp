@@ -30,7 +30,9 @@ event loop. The library and title screens are drawn by the newer UI in `src/play
 When the user picks a disc image, the player inspects it with `src/core/nk_iso.c`:
 `nk_iso_inspect()` reads `PARAM.SFO` for the disc ID and title, and
 `nk_iso_classify_executable()` works out whether the game's `EBOOT.BIN` is a plain MIPS ELF or
-encrypted.
+encrypted. A compressed image (`.cso`, `.zso`, `.chd`) is first expanded once into a plain `.iso` in
+the per-title folder by `nk_disc_import()` in `src/core/nk_disc_expand.c`, and that `.iso` is what
+gets inspected.
 
 ## 2. Staging and decryption
 

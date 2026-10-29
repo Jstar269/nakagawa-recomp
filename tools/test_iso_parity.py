@@ -678,7 +678,7 @@ int main(int argc, char **argv) {{
     if (strcmp(mode, "library_test") == 0) {{
         if (argc < 3) return 1;
         const char *lib_json = argv[2];
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         nk_library_init(&lib);
 
         NkGameEntry g1;
@@ -701,7 +701,7 @@ int main(int argc, char **argv) {{
         assert(nk_library_count(&lib) == 1);
         assert(nk_library_save(&lib, lib_json) == NK_OK);
 
-        NkLibrary loaded;
+        static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
         assert(nk_library_load(&loaded, lib_json) == NK_OK);
         assert(nk_library_count(&loaded) == 1);
 
@@ -796,7 +796,7 @@ int main(int argc, char **argv) {{
 
     if (strcmp(mode, "boot_roundtrip") == 0) {{
         if (argc < 5) return 1;
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkResult load_result = nk_library_load(&lib, argv[2]);
         printf("LOAD_RESULT:%d\\n", (int)load_result);
         if (load_result != NK_OK) return 0;
@@ -806,7 +806,7 @@ int main(int argc, char **argv) {{
         NkResult save_result = nk_library_save(&lib, argv[3]);
         printf("SAVE_RESULT:%d\\n", (int)save_result);
         if (save_result != NK_OK) return 0;
-        NkLibrary saved_lib;
+        static NkLibrary saved_lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkResult saved_load_result = nk_library_load(&saved_lib, argv[3]);
         const NkGameEntry *saved_entry = saved_load_result == NK_OK
             ? nk_library_find_by_disc_id(&saved_lib, "TEST00001") : NULL;
@@ -838,7 +838,7 @@ int main(int argc, char **argv) {{
 
     if (strcmp(mode, "boot_save_unterminated") == 0) {{
         if (argc < 3) return 1;
-        NkLibrary lib;
+        static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
         NkGameEntry game;
         memset(&game, 0, sizeof(game));
         nk_library_init(&lib);
