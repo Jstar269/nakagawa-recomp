@@ -1298,6 +1298,33 @@ refused NIDs in first-seen order with a count each (up to 32; further NIDs are c
 they cannot show what ran after it. The private triage tooling reports those as frozen at
 a refusal; that grouping is not part of this repository.
 
+The event ring keeps only the newest events. A thread that blocked minutes ago, while other
+threads kept producing GE or audio events, has fallen out of it. So every schema 6 bundle, the
+provisional `running` ones included, also has a `threads` block: one entry per guest thread
+that exists when the bundle is written (deleted threads are left out, at most 128). It is the
+state at the cut. It needs no event class of its own and costs nothing until a bundle is
+written. A runtime with no
+scheduler writes an empty list. Every value is a number or a fixed word; nothing comes from guest
+memory.
+
+| Field | Meaning |
+| --- | --- |
+| `uid`, `priority` | The thread and its current priority. |
+| `state` | `dormant`, `ready`, `running`, `wait-delay` or `wait-object`. |
+| `suspended` | `true` while `sceKernelSuspendThread` is in effect. |
+| `why` | Why a waiting thread is parked, as `sched_dump_threads` names it: `sleep`, `delay`, `vblank`, `ctrl`, `thread-end` or `object`. `none` when it is not waiting. |
+| `wait_type` | The PSP waitType `sceKernelReferThreadStatus` reports (for example 3 semaphore, 4 event flag). 0 when not waiting. |
+| `wait_object` | The UID the thread waits on. 0 outside an object wait. |
+| `block_nid` | The import the thread last blocked in. `null` if it never blocked, or if its last block happened outside any import. |
+| `pc`, `ra` | The saved `pc` and `$ra`. The running thread reports the live ones. |
+| `waited_us` | Guest microseconds since the current wait began. `null` when not waiting. |
+| `deadline_us` | Guest microseconds left on a timed wait. `null` for an untimed wait or no wait. |
+
+`tools/flight_diff.py` prints each side's waiting threads after its verdict, also when the pair
+is incomparable because a window slid. A thread stuck in an allocation, for example, reads as
+`uid=0x110 why=object wait_object=0x... block_nid=0x... waited_us=...`. The block is reported,
+never compared.
+
 ### Disabled-recorder overhead (#320)
 
 Switches. `SR_FLIGHT_RECORDER_LINKED` is a compile-time define that the Makefile adds to the runtime, generated-code

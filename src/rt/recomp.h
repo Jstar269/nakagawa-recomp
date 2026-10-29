@@ -1687,6 +1687,14 @@ int  sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
                                  uint32_t *gp_out);
 void sr_hle_loadexec_finish(void);
 extern uint32_t sr_last_nid;
+/* The import the running guest thread is inside. sr_last_nid is process-wide and outlives
+ * the call, so it can name another thread's import or one that already returned; this pair is
+ * scoped to the call instead. sr_syscall sets it around its handler and restores the outer
+ * pair on return (a nested import inside a callback does not leak out), and the scheduler
+ * (src/rt/sched.c) saves it per thread across switches. sr_import_active is 0 outside any
+ * import. The flight recorder's thread snapshot reads it at each block. */
+extern uint32_t sr_import_nid;
+extern int sr_import_active;
 
 /* Late-import resolution contract (src/rt/hle.c, Track B). Runtime-loaded PRX exports are
  * published by module load through sr_hle_register_late_import(); dispatch() queries
