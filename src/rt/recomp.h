@@ -1483,6 +1483,8 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
+uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
  * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
  * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
@@ -1591,6 +1593,58 @@ static inline bool sr_gui_request_launcher_foreground_once(
     raise_window(context);
     return true;
 }
+/* The game window opens on the display that holds the launcher window. SDL display IDs are
+ * per process, so the launcher (nk_launch.c) passes that display's desktop bounds instead, as
+ * SR_LAUNCHER_DISPLAY_BOUNDS=x,y,w,h, and the runtime picks its own display containing the
+ * centre of that rectangle. An empty value means the launcher did not know; the runtime then
+ * uses the primary display. */
+static inline bool sr_display_bounds_field(const char **p, int *out, char end) {
+    const char *s = *p;
+    bool negative = *s == '-';
+    int value = 0, digits = 0;
+    if (negative) s++;
+    /* At most nine digits, so the value always fits an int; no desktop is that large. */
+    while (*s >= '0' && *s <= '9' && digits < 9) {
+        value = value * 10 + (*s - '0');
+        s++;
+        digits++;
+    }
+    if (digits == 0 || *s != end) return false;
+    *out = negative ? -value : value;
+    *p = end ? s + 1 : s;
+    return true;
+}
+
+/* Parse an SR_LAUNCHER_DISPLAY_BOUNDS value into bounds (x, y, w, h). Returns false, leaving
+ * bounds unspecified, for NULL, empty, or anything other than four decimal integers separated
+ * by commas with a positive width and height. */
+static inline bool sr_parse_display_bounds(const char *value, int bounds[4]) {
+    const char *p = value;
+    if (!p || !bounds) return false;
+    if (!sr_display_bounds_field(&p, &bounds[0], ',') ||
+        !sr_display_bounds_field(&p, &bounds[1], ',') ||
+        !sr_display_bounds_field(&p, &bounds[2], ',') ||
+        !sr_display_bounds_field(&p, &bounds[3], '\0'))
+        return false;
+    return bounds[2] > 0 && bounds[3] > 0;
+}
+
+/* The index of the first of `count` displays (x, y, w, h each, in `displays`) whose bounds
+ * contain the centre of `bounds`, or -1 when none does; the caller then uses the primary
+ * display. A display with no width or height never matches. */
+static inline int sr_pick_display(const int bounds[4], const int *displays, int count) {
+    if (!bounds || !displays || count <= 0) return -1;
+    long long cx = (long long)bounds[0] + bounds[2] / 2;
+    long long cy = (long long)bounds[1] + bounds[3] / 2;
+    for (int i = 0; i < count; i++) {
+        const int *d = displays + 4 * i;
+        if (d[2] <= 0 || d[3] <= 0) continue;
+        if (cx >= d[0] && cx < (long long)d[0] + d[2] &&
+            cy >= d[1] && cy < (long long)d[1] + d[3])
+            return i;
+    }
+    return -1;
+}
 void     gui_init(const char *title);
 int      gui_on(void);
 int      gui_interactive(void);                  /* 1 when a person is at a real window: not offscreen, headless or acceptance */
@@ -1687,6 +1741,14 @@ int  sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
                                  uint32_t *gp_out);
 void sr_hle_loadexec_finish(void);
 extern uint32_t sr_last_nid;
+/* The import the running guest thread is inside. sr_last_nid is process-wide and outlives
+ * the call, so it can name another thread's import or one that already returned; this pair is
+ * scoped to the call instead. sr_syscall sets it around its handler and restores the outer
+ * pair on return (a nested import inside a callback does not leak out), and the scheduler
+ * (src/rt/sched.c) saves it per thread across switches. sr_import_active is 0 outside any
+ * import. The flight recorder's thread snapshot reads it at each block. */
+extern uint32_t sr_import_nid;
+extern int sr_import_active;
 
 /* Late-import resolution contract (src/rt/hle.c, Track B). Runtime-loaded PRX exports are
  * published by module load through sr_hle_register_late_import(); dispatch() queries

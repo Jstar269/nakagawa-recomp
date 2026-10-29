@@ -145,6 +145,11 @@ typedef struct {
     size_t arena_bytes; /* 0 selects Clay_MinMemorySize(). */
     const NkUiTextBackend *text;
     const NkUiTheme *theme; /* NULL selects the N1 theme, same as nk_ui_theme_n1(). */
+    /* The host's display rules, applied to every string before it is measured,
+       clamped or drawn: the launcher shows the profile folder as "~" so that
+       screenshots carry no user name. The rewrite must never grow its input;
+       it writes at most out_size bytes, NUL included. NULL draws text as given. */
+    size_t (*display_text)(const char *in, char *out, size_t out_size);
 } NkUiConfig;
 
 /* The only theme shipped today. The pointer is static, never NULL, and stays
@@ -284,6 +289,11 @@ void nk_ui_destroy(NkUi *ui);
 void nk_ui_set_viewport(NkUi *ui, const NkUiViewport *viewport);
 void nk_ui_set_prefs(NkUi *ui, const NkUiPrefs *prefs);
 void nk_ui_push_event(NkUi *ui, const NkUiEvent *event);
+/* A pointer press activates nothing by itself: the release does, when it lands
+   on the control the press landed on. A host calls this when its screen changes,
+   so the rest of a click that began on the old screen activates nothing on the
+   new one, even a control with the same id in the same place. */
+void nk_ui_cancel_press(NkUi *ui);
 void nk_ui_begin(NkUi *ui, double now_s);
 
 /* Containers use device-independent layout units and are translated by Clay.

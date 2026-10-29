@@ -95,11 +95,22 @@ bool nk_platform_set_app_data_dir_override(const char *path);
 bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now);
 /* Resolve the canonical per-user data directory without creating it. */
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
+/* nk_platform_get_path's folder for `type`, without creating it. */
+bool nk_platform_resolve_path(NkPathType type, char *out_path, size_t max_len);
+/* This program's own executable, as UTF-8 (GetModuleFileNameW on Windows,
+ * /proc/self/exe on Linux). False where the platform does not say. */
+bool nk_platform_get_executable_path(char *out_path, size_t max_len);
 /* Get/create the canonical per-user data directory. */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
 /* Resolve the pre-canonical Windows profile location used by older builds.
  * Returns false on non-Windows hosts or when USERPROFILE is unavailable. */
 bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len);
+
+/* The user's Desktop folder, where a first run's file pickers open. Windows:
+ * FOLDERID_Desktop, which follows a Desktop the user or a sync tool moved.
+ * POSIX: the Desktop folder in the home folder when it exists, else the home
+ * folder itself. False when there is none. */
+bool nk_platform_get_desktop_dir(char *out_path, size_t max_len);
 #if defined(_WIN32) || defined(_WIN64)
 /* Unit-testable Windows base selection: LOCALAPPDATA, Known Folder, APPDATA.
  * USERPROFILE is deliberately not a candidate. */

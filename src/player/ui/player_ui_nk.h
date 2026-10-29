@@ -323,7 +323,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
     PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
     PLAYER_UI_SETTINGS_PAGE_FONTS,
-    PLAYER_UI_SETTINGS_PAGE_UPDATES       /* VIEW_UPDATES: check for updates */
+    PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
+    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET /* VIEW_CONFIRM_FACTORY_RESET */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -367,10 +368,13 @@ typedef enum {
     PLAYER_UI_SETTINGS_CANCEL_UPDATE,      /* stop the download */
     PLAYER_UI_SETTINGS_INSTALL_UPDATE,
     PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
-    PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE   /* the release page, in the browser */
+    PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
+    PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
+    PLAYER_UI_SETTINGS_FACTORY_RESET       /* move the user data aside and start afresh */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
+#define PLAYER_UI_RESET_FOLDERS 5u   /* PLAYER_FACTORY_RESET_FOLDERS */
 
 /* Where Check for updates is, in the order of player_state's PlayerUpdatePhase. */
 typedef enum {
@@ -434,6 +438,9 @@ typedef struct {
     size_t font_line_count;
     const char *font_message;
     PlayerUiNoteKind font_message_kind;
+    /* Factory reset (VIEW_CONFIRM_FACTORY_RESET): the folders that move aside */
+    const char *reset_folders[PLAYER_UI_RESET_FOLDERS];
+    size_t reset_folder_count;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -594,6 +601,7 @@ typedef struct {
     bool stalled_game_notice_visible;
     /* The notice is for frames that show nothing, not for frames that stopped. */
     bool stalled_game_dark_picture;
+    double now_s;           /* drives the starting bar (0 holds it still) */
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
 } PlayerUiTitleModel;
@@ -681,6 +689,8 @@ enum {
     PLAYER_UI_ID_UPDATE_FOLDER = 0x4526u,
     PLAYER_UI_ID_UPDATE_PAGE = 0x4527u,
     PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
+    PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
+    PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

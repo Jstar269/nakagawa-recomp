@@ -455,8 +455,35 @@ void gui_init(const char *title) {
     RegisterClassA(&wc);
     RECT r = {0, 0, PSP_W * 2, PSP_H * 2};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    /* Centred on the monitor that holds the launcher window, as the SDL presenter does
+     * (SR_LAUNCHER_DISPLAY_BOUNDS, recomp.h); without a usable value Windows places it. */
+    int win_x = CW_USEDEFAULT, win_y = CW_USEDEFAULT;
+    {
+        const char *value = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
+        int b[4];
+        if (value && value[0] && !sr_parse_display_bounds(value, b)) {
+            fprintf(stderr, "gui_init: SR_LAUNCHER_DISPLAY_BOUNDS=%s is not x,y,w,h; "
+                            "opening on the primary display\n", value);
+        } else if (value && value[0]) {
+            POINT centre = { b[0] + b[2] / 2, b[1] + b[3] / 2 };
+            HMONITOR mon = MonitorFromPoint(centre, MONITOR_DEFAULTTONULL);
+            MONITORINFO mi;
+            mi.cbSize = sizeof(mi);
+            if (!mon) {
+                fprintf(stderr, "gui_init: no monitor contains the launcher's display %s; "
+                                "opening on the primary display\n", value);
+                mon = MonitorFromPoint(centre, MONITOR_DEFAULTTOPRIMARY);
+            }
+            if (GetMonitorInfoA(mon, &mi)) {
+                win_x = mi.rcWork.left +
+                        ((mi.rcWork.right - mi.rcWork.left) - (r.right - r.left)) / 2;
+                win_y = mi.rcWork.top +
+                        ((mi.rcWork.bottom - mi.rcWork.top) - (r.bottom - r.top)) / 2;
+            }
+        }
+    }
     s_hwnd = CreateWindowA("psp_recomp", title ? title : SR_APP_TITLE,
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, win_x, win_y,
         r.right - r.left, r.bottom - r.top, 0, 0, GetModuleHandleA(0), 0);
     s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
     s_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
