@@ -204,7 +204,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1939c0b977886dfdcd785329f0b83eb927a59a224160371f12a6cad8d2e68e8f"
+      "sha256": "3eb570aae83b45801b73e84a67238c47d0be44383514b6c956688c4e51408b92"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1411,7 +1411,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "aca7f460fd12f6571f13e413001fbdc36ba37513148f628b8d5c472551891415"
+      "sha256": "06006e337f007971766fe21928d1b1865ad65d1c7980a856ed66f14d37e5b7fd"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -1522,7 +1522,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "de5cdb02888ce345fd1fbe1714ac2cb3b521d6e27b0dfcddf30919dcc92f3bf1"
+      "sha256": "ee7fe7d392878f86ffb289809cea65b4e7eab88ced60b3ce9c73a9f4ad7c8447"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -4019,7 +4019,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ebf8c0c02ce497bcf4d06a4ae09542e2f1c62aa451807f06d58de142e59430c4"
+      "sha256": "4d501404b24cb923f7c16fe0c45f8d9910e7d58098104af180f54a4f70cc6627"
     },
     {
       "path": "src/player/package_builder.c",
@@ -4031,7 +4031,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "77619f826e5f3d346de4a3d9a69eb4f1d69fb2ef8022990751ef596902063ca1"
+      "sha256": "db53aef7ad1d7b444ea342371eeb268475ea4552f659c3c2e0faf34e911d1d42"
     },
     {
       "path": "src/player/package_builder.h",
@@ -4043,7 +4043,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e80c04be0444f93c82e4c18a4c2dc501ffef6e4dd07d0cc62999c83538e7e00f"
+      "sha256": "76e4e6ed319e582da827f6ff76529a4a2c3e7a43dfd611ca0480476c109c65db"
     },
     {
       "path": "src/player/player_state.c",
@@ -4055,7 +4055,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b292bfee974c756694b6a670ceb40aeb33e757ab7efa21409bad325d7ff2e8f7"
+      "sha256": "2e42d56290e6faa7567f344de9a73bef21d9925addb593bd4339de71f15d5e14"
     },
     {
       "path": "src/player/player_state.h",
@@ -4067,7 +4067,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3835290351cb2a9fd71e66288605a98e0a1f01e5b51117b30bc1409e5ad9ff0c"
+      "sha256": "46715e60db464cb266986c50155df33f5b680877cac29934cbea2ac1b3a8d695"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -4127,7 +4127,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38fa30080a77439429ae9659a065f467041f67a9539a763be44c7b88c86f8c95"
+      "sha256": "74c0f4be2f9f30292c34b7bd86815c0e1dbff35e2bd96ef7c3b4701a2a22e382"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -4139,7 +4139,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "323463f419b2174e85c6fca3e080e5e99843e3e5553a7e19c4ed180ddf526e82"
+      "sha256": "161f1c303cf8feb3dd2b89441d2f757eb8c4431d8cd7fd274ec163dd0effa233"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -10650,7 +10650,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04e469b62cc05db2c38f455cc9519195e6e60a9cffa64582e0f738d2b417da8a"
+      "sha256": "f44a4252cadeb86f13fec5c1ead17ab4a0cfd79df90b3c80bf36d3e734db4b05"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -10722,7 +10722,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92a29c59ba3f654e43aa844a4796aafe35d24a724645c3e573aaa7c65b8e0d1f"
+      "sha256": "64d387860b008ede611e0a6c726a3c8e420bf31df38a3f3734282bf107052634"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -10734,7 +10734,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30d66361d59458c2a8351146912e5c9d40432fa698592090b6f80a0f8f27d3eb"
+      "sha256": "f901e655f131676082c3867040ae5c636cb2c158df20b9bd6ac55b180358bf10"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
@@ -15219,7 +15219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d373f760e50e623c208767f7b8d1759a8cf18ccf7f17f6fed0d7f253bc5da9ac"
+      "sha256": "70c8f772b1b122e50a0a5da42da94db55dfd876d408c8cb52f4d69b1509b3e09"
     },
     {
       "path": "tools/test_public_export.py",
