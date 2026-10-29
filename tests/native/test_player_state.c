@@ -208,6 +208,7 @@ static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
 
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
+    if (!file) fprintf(stderr, "write_text_file: cannot create %s: %s\n", path, strerror(errno));
     assert(file != NULL);
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
