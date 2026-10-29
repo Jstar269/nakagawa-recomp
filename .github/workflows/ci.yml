@@ -177,9 +177,20 @@ jobs:
 
       - name: Scan reachable sanitized Git history with Betterleaks
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # A pull request is judged by the commits it adds. The full-history checkout also
+        # fetches every other branch, and Betterleaks' default `git log --all` failed every
+        # pull request on one unrelated branch's finding (79d9ef6e, on #1669's branch).
+        # Without a pull-request base (pushes, merge groups, the schedule, manual runs) the
+        # scan covers all history reachable from HEAD.
         run: |
           set -euo pipefail
-          "$BETTERLEAKS_BIN" git . --redact --verbose
+          if [ -n "$BASE_SHA" ]; then
+            "$BETTERLEAKS_BIN" git . --redact --verbose --log-opts="--full-history ${BASE_SHA}..HEAD"
+          else
+            "$BETTERLEAKS_BIN" git . --redact --verbose --log-opts="--full-history HEAD"
+          fi
 
       - name: Run Betterleaks synthetic canaries
         shell: bash

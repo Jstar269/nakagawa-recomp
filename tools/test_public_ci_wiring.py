@@ -1039,6 +1039,26 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("pre-commit run --all-files --show-diff-on-failure",
                       "\n".join(self.blocks["hygiene"]))
 
+    def test_betterleaks_history_scan_is_bounded_to_this_change(self) -> None:
+        """A pull request is scanned only for the commits it adds; never with `git log --all`.
+
+        The checkout fetches every branch (fetch-depth: 0), and Betterleaks' default log
+        options are `--all`, so one unrelated branch's finding failed every pull request.
+        Pushes and other events scan all history reachable from HEAD.
+        """
+        step = _ci_step(self.blocks["hygiene"], "Scan reachable sanitized Git history with Betterleaks")
+        self.assertIsNotNone(step)
+        text = "\n".join(step or [])
+        scans = [line.strip() for line in step or [] if '"$BETTERLEAKS_BIN" git .' in line]
+        self.assertEqual(len(scans), 2, text)
+        self.assertTrue(all("--log-opts=" in scan for scan in scans),
+                        "a bare `git .` scan defaults to `git log --all`")
+        self.assertFalse(any("--all" in scan for scan in scans))
+        self.assertIn("BASE_SHA: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn('if [ -n "$BASE_SHA" ]; then', text)
+        self.assertIn('--log-opts="--full-history ${BASE_SHA}..HEAD"', scans[0])
+        self.assertIn('--log-opts="--full-history HEAD"', scans[1])
+
     def test_pre_commit_bootstrap_uses_a_hash_locked_closure(self) -> None:
         step = _ci_step(self.blocks["hygiene"], "Install pre-commit")
         self.assertIsNotNone(step)
