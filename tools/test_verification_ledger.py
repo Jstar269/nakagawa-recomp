@@ -148,6 +148,27 @@ class LedgerTests(unittest.TestCase):
 
 
 class RuntimeLogTests(unittest.TestCase):
+    def test_host_tested_with_no_recorded_host_test_fails(self) -> None:
+        # The evidence chain says HOST_TESTED but names no conformance cell or selftest dispatch.
+        chain = {
+            "_manifest": {"registrations": [{"nid": "0x00000001", "subsystem": "kernel"}]},
+            "entries": [{
+                "nid": "0x00000001", "canonical_name": "sceExample", "evidence_tier": "HOST_TESTED",
+                "exercised": {"conformance_cells": [], "hle_selftest_dispatch": False, "psp_oracle_probes": []},
+                "registration": {"handler": "h_example_not_registered", "classification": "implemented"},
+            }],
+        }
+        with self.assertRaisesRegex(ledger_mod.LedgerError, "HOST_TESTED with no conformance cell"):
+            ledger_mod.classify_hle(chain, {}, {})
+
+    def test_census_tier_h_without_a_semantic_measurement_fails(self) -> None:
+        census = {"rows": [{
+            "compatibility_disposition": "supported", "differential_tests": [], "hardware_measured": [],
+            "canonical_word": "0x60000000", "evidence_tier": "H",
+        }]}
+        with self.assertRaisesRegex(ledger_mod.LedgerError, "tier H with no semantic"):
+            ledger_mod.classify_vfpu(census, ("no_such_kernel",))
+
     def test_dispatch_logs_unverified_nids_once_from_the_generated_table(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn('#include "hle_evidence.h"', source)

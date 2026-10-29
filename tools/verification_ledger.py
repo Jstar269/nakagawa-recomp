@@ -343,6 +343,10 @@ def classify_hle(chain: dict, mentions: dict[str, set[str]], blocks: dict[str, l
                 parts.append("conformance cells")
             if ex["hle_selftest_dispatch"]:
                 parts.append("HLE selftest dispatch")
+            if not parts:
+                # The evidence chain says HOST_TESTED but names no host test: the records disagree.
+                raise LedgerError(f"{e['canonical_name']} ({e['nid']}) is HOST_TESTED with no conformance "
+                                  "cell or selftest dispatch recorded")
             cls, basis = "synthetic", " and ".join(parts)
         elif tests:
             cls, basis = "synthetic", "registry evidence `" + tests[0].split(" ", 1)[0] + "`"
@@ -380,6 +384,10 @@ def classify_vfpu(census: dict, kernels: tuple[str, ...]) -> tuple[list[dict], i
         body = str(vfpu_coverage_report._classify_aot(int(row["canonical_word"], 16))["aot_emitted"])
         called = sorted(set(kernel_call.findall(body)))
         if row["evidence_tier"] == "H":
+            if not semantic:
+                # Census tier H claims a hardware measurement the row does not name.
+                raise LedgerError(f"VFPU census row {row['canonical_word']} is tier H with no semantic "
+                                  "hardware-measured entry")
             cls, basis = "hardware-measured", "census tier H: " + ", ".join(semantic)
         elif measured:
             cls, basis = "hardware-measured", "selftest pinned to " + ", ".join(measured)
