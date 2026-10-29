@@ -5565,7 +5565,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e928d31e0f97797ce084376710afdfbe273841a4e15338a5b0a14acf628fe996"
+      "sha256": "93014de8206aca7bf404b83694928af29ff363e61212dd7d7b6f6469967bc3fb"
     },
     {
       "path": "src/rt/evf.h",
@@ -15471,7 +15471,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4db6883a09e24a7f0dbad65b1754d5eff0cf4eedfb50a7186946ae83b6e5a2e0"
+      "sha256": "c4696fa49ac665ebfeafb29005d4ae212c7e8962ea5af1ae05a7f832650f7112"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
