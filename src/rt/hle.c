@@ -23847,7 +23847,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
     if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
-/* An init on a core that is already initialized is a fresh init (measured on PSP-3000, firmware 6.6.1,
+/* An init on a core that is already initialized is a fresh init (measured on PSP-3000, firmware 6.61,
  * PSP-SAS-001, #1595): it returns 0, the new grain and output mode take effect, and every voice reads as
  * ended again. sceSasCore exports no exit call, so a game that stops its mixer for a movie re-inits the same
  * core this way. Initializing a second core leaves the first one's state alone on the PSP; this model keeps
