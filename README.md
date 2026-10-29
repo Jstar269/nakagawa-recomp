@@ -40,6 +40,7 @@ ZIP for Windows 11, 64-bit. It includes the build tools, so you don't need to in
 
 The ZIP isn't code-signed, so Windows may warn you the first time. The
 [release notes](docs/RELEASE_NOTES_v0.0.1.md) say what works, what doesn't yet, and how to check the download.
+From v0.0.2, Settings > Updates checks GitHub for a newer version when you ask, and can download and check it for you.
 
 You need:
 
@@ -72,8 +73,8 @@ is behind [Zelda 64: Recompiled](https://github.com/Zelda64Recomp/Zelda64Recomp)
 
 - When a game needs something that isn't supported yet, the player stops and names the missing piece.
 - No games, firmware or system fonts ship here, and no game data is ever downloaded.
-- The player works offline. It connects to the internet only when you agree, and today only to fetch build tools
-  when they aren't already present ([network use](docs/SETUP.md#network-use)).
+- The player works offline. It connects to the internet only when you agree: to fetch build tools when they
+  aren't already present, and to check for updates when you ask ([network use](docs/SETUP.md#network-use)).
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#pipeline) describes the pipeline, and
 [`docs/CODE_TOUR.md`](docs/CODE_TOUR.md) follows one game through the code.

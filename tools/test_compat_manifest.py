@@ -1033,9 +1033,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         self.assertTrue(patches, "temporary compatibility debt census is empty")
         ids = [patch["id"] for patch in patches]
         self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
-        # The #363 subject: a remaining title scheduler hook must be inventoried.
-        anchors = {patch["id"].split(":")[1] for patch in patches}
-        for address in ("0x0029a174",):
+        # The #363 subject: the remaining title dispatch terminators must be inventoried
+        # as live debt (they need a nonzero module base before they can go).
+        anchors = {patch["id"].split(":")[1] for patch in _active_census()}
+        for address in ("0x0003e06c", "0x00292fa0"):
             self.assertIn(address, anchors, f"census lost {address}")
 
     def test_every_temporary_patch_has_owner_retirement_and_test(self):
