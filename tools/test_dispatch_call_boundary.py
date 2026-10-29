@@ -493,6 +493,12 @@ _DEPTH_PROBE_HARNESS = r"""
 #include <stdio.h>
 extern void sr_register_all(void);
 
+/* How many guest instructions the interpreter floor ran, a probe field printed at exit:
+ * a call into a body codegen translated runs none. */
+static void probe_report_interp(void) {
+    printf("DEPTH_PROBE interp=%llu\n", (unsigned long long)sr_exec_interp_instructions);
+}
+
 /* Every generated body begins with SR_YIELD; with a timeslice of one it calls
  * sr_yield at each guest function entry, which samples the fiber's remaining
  * host stack. The probe is the production stack-bounds query. */
@@ -561,6 +567,7 @@ int main(int argc, char **argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
     unsigned long n = argc > 1 ? strtoul(argv[1], NULL, 0) : 0ul;
+    atexit(probe_report_interp);
     sr_mem_init();
     /* The loader's job: the interpreter tier executes guest memory, so the image
      * must be there, exactly as the translated bodies were generated from it. */
@@ -1544,8 +1551,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
 
     def test_linked_branch_in_the_body_calls_the_target(self):
         # Taken (`bal`): slot +100, the called leaf +1, the link +10. Not taken
-        # (`bltzal $zero`): the slot and the link only. The leaf here is the REGIMM one,
-        # which the interpreter refuses, so only an AOT entry can run it.
+        # (`bltzal $zero`): the slot and the link only. The leaf here is the REGIMM one;
+        # it runs as its AOT entry, so the interpreter floor runs nothing.
         for selector, expected in ((_BAL, 111), (_BLTZAL, 110)):
             with self.subTest(selector=hex(selector)):
                 generated, (rc, output, fields) = self._run_one(
@@ -1556,6 +1563,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(fields.get("v0"), expected, output)
                 self.assertEqual(fields.get("a0"), 0x1020, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                self.assertEqual(fields.get("interp"), 0, output)
 
     def test_linked_callee_that_is_also_the_callers_tail(self):
         # The callee is now an entry, so the caller's fall-through into it is the
@@ -1621,15 +1629,17 @@ class GeneratedCallDepthTests(unittest.TestCase):
             lambda r: r[0][0] == 0 and r[0][2].get("v0") == 101,
         )
         # L2: the analyzer absorbs the callee again, so codegen has no body to call and
-        # the call reaches the interpreter floor, which refuses the leaf's REGIMM branch.
+        # the call falls to the interpreter floor. (Before the floor decoded REGIMM
+        # branches, it refused the leaf there.)
         self._assert_mutant_fails(
             "L2-analyzer-absorbs-the-callee", _linked_branch_in_body(_BAL, _LEAF_REGIMM), (0,),
             {"analyze.py": (
                 "if (op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
                 "if (False and op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
             )},
-            lambda r: r[0][0] != 0
-            and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1],
+            lambda r: (r[0][0] == 0 and r[0][2].get("interp", 0) > 0)
+            or (r[0][0] != 0
+                and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1]),
         )
         # L3: a frame-releasing continuation is called: its return restores the SP it
         # released and the caller then runs the inline data word at the link.
