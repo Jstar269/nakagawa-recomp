@@ -1578,7 +1578,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
         };
         static const WizardButton font_buttons[] = {
-            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Import fonts folder", NK_UI_BUTTON_SMALL,
+            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Choose font files", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_IMPORT_FONTS},
             {PLAYER_UI_ID_WIZARD_REMOVE_FONTS, "Remove imported fonts", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_REMOVE_FONTS}
@@ -2546,9 +2546,10 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
                         "Optional. Games look right with your PSP's own fonts: copy the .pgf "
-                        "files from flash0:/font on your PSP to a folder on this PC and import "
-                        "it (docs/SETUP.md, \"Copying the fonts from your PSP\"). Until then "
-                        "similar fonts stand in.",
+                        "files from flash0:/font on your PSP to a folder on this PC (docs/SETUP.md, "
+                        "\"Copying the fonts from your PSP\"), then choose them here. The import "
+                        "reads ltn0.pgf to ltn15.pgf, jpn0.pgf and kr0.pgf from that folder; "
+                        "until then similar fonts stand in.",
                         NK_UI_TYPE_BODY_S, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
             NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
@@ -2588,7 +2589,7 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                                          NK_UI_SPACE_3);
             row.padding_top = NK_UI_SPACE_1;
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Import fonts folder",
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Choose font files",
                                  NK_UI_BUTTON_PRIMARY)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
                 }
