@@ -132,6 +132,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `prxload.py` | Rebase a PRX/ELF at a base address and write a flat image. |
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
+| `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
