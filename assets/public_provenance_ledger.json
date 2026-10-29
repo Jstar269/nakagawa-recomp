@@ -12447,7 +12447,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dc55fa3b4540a36c7d329a6e4d3ed33dafef7ce8fab050f65939e1256b115c1b"
+      "sha256": "3d24a5c55c93570c03e7811fab03aee5f637bbd255f3cc7665557492abde91f7"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -12592,7 +12592,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "43ea0604ccfd72efa25f702d663741626cb57fff2534f750fcd64d64efe58647"
+      "sha256": "0377a016a87390a98ede2a628b912133ec87fe3c35c8f89203ae41b7f92c178d"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12725,7 +12725,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc63fbe4dc53a8cd02a186660d7f07299b0f7675eaafa4474d46aa5d1407a826"
+      "sha256": "7a62ab30ac76132947a11fe5d51b37845bcf19aad43f000e5fbdb1a9067049be"
     },
     {
       "path": "tools/evidence_model.py",
@@ -14377,7 +14377,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50ade8a21c926ea33631a30ee72b4680b802e2671df355a7d1fbd44abce36ce1"
+      "sha256": "a081f5b59d6d909b2e1e56ca173f3a22d21ad6db179bb86e780b4c90f7e32878"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -14486,7 +14486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c0739acce8d15ee8ccb68f622a63c5e3e7fcece9c074801f0c0dbbdd95c0245"
+      "sha256": "db7fb48e92881697060e12407f4187d76d37a3729e6da108d766d0384817c43d"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
@@ -14774,7 +14774,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d324760de4f33b982e2b63fa7c7558788341ae47ef66925ebb1b50a8d0797dcf"
+      "sha256": "6dc63f1d71b9627a33c3916d3e4cab43a6b0cd13184d7c2cc478a14b51087d4c"
     },
     {
       "path": "tools/test_evf_c.py",
