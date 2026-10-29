@@ -14340,11 +14340,10 @@ static uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity);
  * that changes into its data directory and loads "Target/libfont.prx" loads the declared,
  * translated libfont, not an undeclared host-served record with no start entry (#299). */
 static uint32_t h_LoadModule(CpuState *s) {
-    char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
-        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     char resolved[512];
     uint32_t rc = io_guest_path(A0, resolved, sizeof(resolved));
+    /* An unreadable path string is the module manager's illegal address, not an I/O error. */
+    if (rc == 0x80010016u) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (rc != 0u) return rc;
     return load_module_by_guest_path(resolved, A2);
 }
