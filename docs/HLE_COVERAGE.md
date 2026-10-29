@@ -27,10 +27,10 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `ppsspp-derived` | 104 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 280 | 200 |
-| `unverified` | 192 | 51 |
-| total | 640 | 355 |
+| `unverified` | 192 | 54 |
+| total | 640 | 358 |
 
-The VFPU census also lists 320 forms the runtime refuses at the
+The VFPU census also lists 315 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
 them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
 
@@ -45,7 +45,7 @@ them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
   counted, because it would give every path the same class.
 - Hardware runs described only in `tools/hle_registry_meta.py` notes count only when
   `tools/psp_oracle/manifest.json` links them; the rows marked `note` below carry such a note.
-- Measured VFPU oracle rows that no census form cites yet: `PSP-VFPU-CMP-001`, `PSP-VFPU-TRANSCENDENTAL-001`. Their forms keep the class
+- Measured VFPU oracle rows that no census form cites yet: `PSP-VFPU-CMP-001`, `PSP-VFPU-FUNNEL-001`, `PSP-VFPU-SORT-001`, `PSP-VFPU-TRANSCENDENTAL-001`. Their forms keep the class
   their census row gives until the census links them.
 
 At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is
@@ -939,6 +939,9 @@ belongs to without the census's own grouping.
 | `vfpu-34-d0448000-9ca02b934046` | `0x34` | `0xd0448084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d0450000-6b85266691e1` | `0x34` | `0xd0450000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0450100-d11658a3e0f7` | `0x34` | `0xd0450180` | 2 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0468000-ac69ea1bf731` | `0x34` | `0xd046807f` | 3 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0478000-bf2dcb1482da` | `0x34` | `0xd04780ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0488000-bf2dcb1482da` | `0x34` | `0xd0488090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d04a0000-01881cbef1ef` | `0x34` | `0xd04a0000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d04a8000-bf2dcb1482da` | `0x34` | `0xd04a80ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d0598000-bf2dcb1482da` | `0x34` | `0xd0598090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
