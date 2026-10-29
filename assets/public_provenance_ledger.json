@@ -1894,7 +1894,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "98785953da23b429cd01b6277075675df4afbfa2774cbaa3e609e3a0c1d756a6"
+      "sha256": "dfadaf3fdc83ea4a2f590a47cfd2f9bed11debdcadbcabe4d1febe6d5f0d702e"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -14258,7 +14258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "058c6129d5065bff46594883fade368c9903f05687548f3b33d1e6472998b832"
+      "sha256": "02158c86dc6d8383535eb26a2c08eb6e9fe1f711b1eea581b766140af837ddb6"
     },
     {
       "path": "tools/test_guestmem_c.py",
