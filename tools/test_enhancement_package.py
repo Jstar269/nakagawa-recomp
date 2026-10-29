@@ -22,6 +22,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,6 +44,7 @@ from enhancement_package import (
     ROOT_KEYS,
     SITE_TRANSFORMS,
     SUPPORTED_SCHEMA_VERSION,
+    UPDATE_BOUNDARY_KEYS,
     VALID_CATEGORIES,
     EnhancementPackageError,
     compute_stock_words_digest,
@@ -52,6 +54,7 @@ from enhancement_package import (
 from nk_core import package_cache
 
 SCHEMA_PATH = ROOT / "assets" / "enhancement_package.schema.json"
+GCC = shutil.which("gcc") or shutil.which("cc")
 
 
 class TestEnhancementPackageSchema(unittest.TestCase):
@@ -128,6 +131,13 @@ class TestEnhancementPackageSchema(unittest.TestCase):
         self.assertEqual(site_props["insn_offset"].get("multipleOf"), 4)
         self.assertIn("Byte offset", site_props["insn_offset"]["description"])
         self.assertEqual(set(site_props["transform"]["enum"]), SITE_TRANSFORMS)
+
+        # The update boundary is one pinned instruction: function, offset, digest.
+        boundary = schema["properties"]["update_boundary"]
+        self.assertFalse(boundary.get("additionalProperties"))
+        self.assertEqual(set(boundary["required"]), UPDATE_BOUNDARY_KEYS)
+        self.assertEqual(set(boundary["properties"]), UPDATE_BOUNDARY_KEYS)
+        self.assertEqual(boundary["properties"]["insn_offset"].get("multipleOf"), 4)
 
     def test_load_package_from_disk(self) -> None:
         """load_package must correctly read and parse JSON packages."""
@@ -480,6 +490,42 @@ class TestEnhancementPackageSchema(unittest.TestCase):
             validate_package(misaligned_pkg)
         self.assertIn("4-byte-aligned", str(ctx.exception))
 
+        # A package that gates must declare where each logic update begins.
+        gated_pkg = copy.deepcopy(valid_60hz_pkg)
+        gated_pkg["sites"].append(dict(gated_pkg["sites"][0], id="S002", insn_offset=8,
+                                       transform="gate_30hz"))
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(copy.deepcopy(gated_pkg))
+        self.assertIn("must declare update_boundary", str(ctx.exception))
+        boundary = {
+            "function": "synth_frame_body",
+            "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([0x27BDFFF0]),  # addiu sp, sp, -16
+        }
+        validate_package(dict(copy.deepcopy(gated_pkg), update_boundary=dict(boundary)))
+        bad_boundaries = (
+            ({**boundary, "insn_offset": 2}, "4-byte-aligned"),
+            ({**boundary, "function": "FUN_00047920"}, "Address-literal"),
+            ({**boundary, "stock_digest": "x"}, "SHA-256"),
+            ({k: v for k, v in boundary.items() if k != "stock_digest"}, "Missing required property"),
+            ({**boundary, "word_count": 1}, "Unknown properties"),
+            ({"function": "synth_vblank_sync_loop", "insn_offset": 0,
+              "stock_digest": boundary["stock_digest"]}, "must not be a rewritten site"),
+            ("synth_frame_body", "must be an object"),
+        )
+        for bad, why in bad_boundaries:
+            with self.subTest(boundary=bad):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    validate_package(dict(copy.deepcopy(valid_60hz_pkg), update_boundary=bad))
+                self.assertIn(why, str(ctx.exception))
+        # Only a timing package may name a boundary.
+        presentation_pkg = {k: v for k, v in valid_60hz_pkg.items()
+                            if k not in ("game_version", "executable_sha256", "rng_policy", "sites")}
+        presentation_pkg = dict(presentation_pkg, category="presentation_only", update_boundary=boundary)
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(presentation_pkg)
+        self.assertIn("only valid for category 'timing_frame_presentation'", str(ctx.exception))
+
         # Unknown transform rejected
         bad_transform_pkg = copy.deepcopy(valid_60hz_pkg)
         bad_transform_pkg["sites"][0]["transform"] = "accelerate_clock_x2"
@@ -684,6 +730,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     "transform": "gate_30hz",
                 },
             ],
+            # One update runs synth_vblank_wait once; its return's delay slot counts it.
+            "update_boundary": {
+                "function": "synth_vblank_wait",
+                "insn_offset": 8,
+                "stock_digest": compute_stock_words_digest([self.words[0x00001108]]),
+            },
         }
         return pkg, symbols
 
@@ -775,6 +827,122 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertNotEqual(rc_bad, 0, "Codegen must fail closed when a stock_digest mismatches")
             self.assertIn("Stock instruction digest mismatch", out_bad)
             self.assertEqual(files_bad, {}, "No partial enhanced output may be emitted on digest failure")
+
+    def _codegen_with(self, tmp: Path, name: str, pkg: dict[str, Any], symbols: dict[str, str]
+                      ) -> tuple[int, str, dict[str, bytes]]:
+        elf_path = tmp / "synth.elf"
+        pkg_path = tmp / f"{name}.json"
+        pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+        (tmp / f"{name}.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+        out_dir = tmp / name
+        out_dir.mkdir()
+        return self._run_codegen(elf_path, out_dir / "out.c", [f"--enhancement-package={pkg_path}"])
+
+    def test_gated_sites_count_logic_updates_at_the_update_boundary(self) -> None:
+        """The boundary statement counts each update once; gates read that count, not the display."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            rc, output, files = self._codegen_with(tmp, "boundary", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            self.assertEqual(combined.count("nk_enhancement_updates++"), 1)
+            self.assertIn("uint32_t nk_enhancement_updates;", combined)
+            self.assertIn("(nk_enhancement_updates & 1u) == 0u", combined)
+            self.assertNotIn("sr_display_vcount", combined)
+            # The count runs before the boundary's own stock statement.
+            count_at = combined.index("nk_enhancement_updates++")
+            self.assertLess(count_at, combined.index("sr_begin(s, 0x00001108u", count_at))
+
+    def test_update_boundary_refusals(self) -> None:
+        """A gate without a boundary, or a boundary that does not verify, refuses the package."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+
+            # A unit step under step_x0.5 plans a gate, so it needs a boundary too.
+            words = dict(self.words)
+            words[0x00001300] = 0x24A50001  # addiu a1, a1, 1
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", words, self.entry)
+            step_pkg = copy.deepcopy(pkg)
+            step_pkg["executable_sha256"] = hashlib.sha256(elf_bytes).hexdigest()
+            step_pkg["sites"] = [dict(step_pkg["sites"][2],
+                                      stock_digest=compute_stock_words_digest([0x24A50001]))]
+            del step_pkg["update_boundary"]
+            rc, output, files = self._codegen_with(tmp, "step-no-boundary", step_pkg, symbols)
+            self.assertEqual(rc, 1, output)
+            self.assertIn("declares no update_boundary", output)
+            self.assertEqual(files, {})
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+
+            cases = (
+                ("boundary-digest", {"stock_digest": compute_stock_words_digest([0x24020099])},
+                 "Stock instruction digest mismatch"),
+                ("boundary-control", {"insn_offset": 4,
+                                      "stock_digest": compute_stock_words_digest([0x03E00008])},
+                 "control transfer cannot begin a logic update"),
+            )
+            for name, change, why in cases:
+                with self.subTest(name):
+                    bad = copy.deepcopy(pkg)
+                    bad["update_boundary"].update(change)
+                    rc, output, files = self._codegen_with(tmp, name, bad, symbols)
+                    self.assertEqual(rc, 1, output)
+                    self.assertIn(why, output)
+                    self.assertEqual(files, {})
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_gates_alternate_on_updates_when_frames_drop(self) -> None:
+        """Compile the generated gate and boundary count and run updates of 1 to 3 vblanks.
+
+        A gated statement must run on every other logic update however many display
+        vblanks each update takes (a frame drop, or a stock two-vblank wait).
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            rc, output, files = self._codegen_with(tmp, "drops", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            header = files["out_funcs.h"].decode("utf-8")
+            gate_def = next(line for line in header.splitlines()
+                            if "int nk_enhancement_gate_30hz(void)" in line)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            count_stmt = next(line.strip() for line in combined.splitlines()
+                              if "nk_enhancement_updates++" in line)
+            harness = tmp / "drops.c"
+            harness.write_text(
+                "#include <stdint.h>\n#include <stdio.h>\n"
+                "static uint32_t vcount;\n"
+                "uint32_t sr_display_vcount(void) { return vcount; }\n"
+                "int nk_enhancement_on(void) { return 1; }\n"
+                "uint32_t nk_enhancement_updates;\n"
+                f"{gate_def}\n"
+                "int main(void) {\n"
+                "    static const unsigned vblanks[] = {1, 1, 2, 2, 2, 1, 3, 2, 1, 1, 2, 2};\n"
+                "    unsigned runs = 0, alternations = 0, last = 2;\n"
+                "    for (unsigned u = 0; u < 1200; u++) {\n"
+                f"        {count_stmt}\n"
+                "        unsigned ran = 0;\n"
+                "        if (nk_enhancement_gate_30hz()) { ran = 1; runs++; }\n"
+                "        if (ran != last) alternations++;\n"
+                "        last = ran;\n"
+                "        vcount += vblanks[u % 12];\n"
+                "    }\n"
+                "    printf(\"%u %u\\n\", runs, alternations);\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            exe = tmp / "drops.exe"
+            subprocess.run([GCC, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function",
+                            "-o", str(exe), str(harness)], check=True, capture_output=True)
+            out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
+            runs, alternations = (int(v) for v in out.split())
+            self.assertEqual(runs, 600)
+            self.assertEqual(alternations, 1200)
 
     def test_rewrite_planner_is_defined_or_refuses(self) -> None:
         """Each (transform, instruction) pair has one defined rewrite; anything else refuses."""

@@ -89,6 +89,9 @@ ENHANCEMENT_PKG_META: dict | None = None
 # The sites whose rewrite has been emitted. A package is refused unless every
 # verified site is in it when the translation is written.
 ENHANCEMENT_APPLIED: set[int] = set()
+# The verified address of the package's update_boundary (where one logic update
+# begins), or None. Gated sites count logic updates there.
+ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -103,6 +106,16 @@ def _enhancement_rewrite(addr: int) -> dict | None:
         return None
     ENHANCEMENT_APPLIED.add(addr)
     return site["rewrite"]
+
+
+def _enhancement_boundary(addr: int) -> bool:
+    """Whether ``addr`` is the package's update boundary; the caller emits its count."""
+    if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
+        return False
+    if addr != ENHANCEMENT_UPDATE_BOUNDARY:
+        return False
+    ENHANCEMENT_APPLIED.add(addr)
+    return True
 
 
 def _scaled_store_line(rw: dict, stock_line: str) -> str:
@@ -761,10 +774,12 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         if enhancement:
             # Enhancement-package builds only: rewritten sites run their stock form
             # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
-            # even display vblanks (alternate updates of a once-per-vblank loop).
+            # even logic updates, counted at the package's update_boundary, so they
+            # keep alternating when an update takes more than one vblank.
             f.write("\nint nk_enhancement_on(void);\n")
+            f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
-                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
+                    "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -2383,6 +2398,9 @@ def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch
 def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                        delay_branch_pc=delay_branch_pc)
+    if w is not None and _enhancement_boundary(addr):
+        # One logic update begins here: count it before the stock statement runs.
+        line = f"    if (nk_enhancement_on()) {{ nk_enhancement_updates++; }}\n{line}"
     rw = _enhancement_rewrite(addr) if w is not None else None
     if rw is None:
         return line
@@ -3773,9 +3791,10 @@ def main(argv):
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
 
-    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META, ENHANCEMENT_UPDATE_BOUNDARY
     ENHANCEMENT_SITES = {}
     ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_UPDATE_BOUNDARY = None
     ENHANCEMENT_APPLIED.clear()
     if enhancement_pkg_path is not None:
         import hashlib
@@ -3820,6 +3839,23 @@ def main(argv):
                         f"site {site['id']}: only a jal call site can be rewritten among "
                         "control transfers (fail-closed refusal)"
                     )
+            boundary = enhancement_package.verify_and_resolve_update_boundary(
+                pkg_validated,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            if boundary is not None:
+                if is_control(boundary["stock_word"]):
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: a control transfer cannot begin a logic update "
+                        "(fail-closed refusal)"
+                    )
+                if boundary["site_addr"] in ENHANCEMENT_SITES:
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: the boundary is also a rewritten site (fail-closed refusal)"
+                    )
+                ENHANCEMENT_UPDATE_BOUNDARY = boundary["site_addr"]
             ENHANCEMENT_PKG_META = {
                 "id": pkg_validated["id"],
                 "version": pkg_validated["version"],
@@ -4269,6 +4305,9 @@ def main(argv):
             site["id"] for addr, site in ENHANCEMENT_SITES.items()
             if addr not in ENHANCEMENT_APPLIED
         )
+        if (ENHANCEMENT_UPDATE_BOUNDARY is not None
+                and ENHANCEMENT_UPDATE_BOUNDARY not in ENHANCEMENT_APPLIED):
+            missing.append("update_boundary")
         if missing:
             # A verified site that no emitted statement rewrites (an unreached address, a
             # stubbed function, a fused fast path) would leave the epoch stamp claiming
@@ -4379,6 +4418,7 @@ def main(argv):
             "    }",
             "    return on;",
             "}",
+            "uint32_t nk_enhancement_updates;",
             "",
         ]
     census_entries = sorted({a for a in emitted if a not in resume_owners})

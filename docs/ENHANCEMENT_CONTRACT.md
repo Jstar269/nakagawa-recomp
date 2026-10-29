@@ -188,7 +188,7 @@ Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, 
 | Transform | Instructions with a defined rewrite | Rewrite |
 | --- | --- | --- |
 | `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
-| `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even display VBLANKs (`sr_display_vcount()`), so every instance runs on the same alternate updates |
+| `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even logic updates (§9.5), so every instance runs on the same alternate updates |
 | `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
 | `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
 | `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$ | $k \to 1 - \sqrt{1-k}$, rounded to the upper half |
@@ -206,8 +206,13 @@ Every frame-rate rescale package declares `rng_policy`. Under `rescale_probabili
 2. Build a package build: `python tools/nk_cli.py build-package <DISC_ID> --enhancement-package path/to/pkg-60hz.json` (or `--experimental-60hz` with the package at `<user data>/enhancements/<disc_id>-60hz.json`, the disc ID in lowercase, for example `ulus12345-60hz.json`), or pass `ENHANCEMENT_PACKAGE=path/to/pkg-60hz.json` to `make`. Codegen resolves function names from the ELF symbol table or a `<package>.symbols.json` sidecar.
 3. Run the built executable with `SR_EXPERIMENTAL_60HZ=1` for 60 Hz logic, or without it for the authentic 30 Hz game. The player does not yet select `packages/<disc_id>-enhanced-<pkg_id>` when launching a library entry.
 
-### 9.5. Known Limitation: Gating Follows Display VBLANK Parity
+### 9.5. Update Boundary: Gating Counts Logic Updates
 
-`gate_30hz` sites (and the unit steps and countdowns that plan a `gate` rewrite) run when `sr_display_vcount()` is even. That keeps every instance of a gated site on the same updates only while each logic update takes exactly one VBLANK. When an update takes two VBLANKs (a frame drop under load, or the toggle on while a stock two-VBLANK wait still runs), every update sees the same parity, so the gated statements run on every update or on none: the gated logic then runs at twice its intended rate or stops. Treat a package build with frame drops as unreliable.
+A gated statement (a `gate_30hz` site, and the unit steps and countdowns whose rewrite is a gate) runs when the number of logic updates begun so far is even. The package says where an update begins with `update_boundary`: a symbolic `function`, a 4-byte-aligned `insn_offset` and the `stock_digest` of one instruction that runs exactly once per logic update, usually the first instruction of the title's per-frame body. While `SR_EXPERIMENTAL_60HZ=1`, that instruction first advances the counter `nk_enhancement_updates` and then runs its stock statement unchanged; with the toggle off nothing is counted.
 
-A counter that advances once per logic update would remove this, but where an update begins is title-specific (a package's `vblank_wait_2_to_1` site is the natural place, and a package need not declare one), so it is not implemented. This package format is experimental and opt-in for that reason.
+1. **Required when anything gates.** The validator refuses a package with a `gate_30hz` site and no `update_boundary`, and codegen refuses one whose planned rewrites include any gate without it.
+2. **Verified like a site.** The boundary's function resolves and its stock word is checked against `stock_digest` the same way, fail-closed. It may not be a control transfer or a rewritten site, and a package whose boundary is never emitted is refused like an unemitted site.
+3. **Correct under frame drops.** The count advances once per update however many display VBLANKs that update takes, so gated statements keep alternating when an update overruns a VBLANK or a stock two-VBLANK wait still runs. `tools/test_enhancement_package.py` compiles the generated gate and runs updates of one to three VBLANKs to check it.
+4. **Why it is declared, not inferred.** A `vblank_wait_2_to_1` site is the compare inside a title's wait loop, which can run several times in one update, so it does not mark where an update begins. The package names the boundary explicitly.
+
+This package format is experimental and opt-in.

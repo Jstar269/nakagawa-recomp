@@ -749,7 +749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88830bb47cc3e761ab706604f9c5e97acd1e0176972220409fe2b51041eb905e"
+      "sha256": "76033d621008f40cf692fa0399bcc7181511db1b83488670e2569835ec88a528"
     },
     {
       "path": "assets/flight_recorder_schema.json",
@@ -1468,7 +1468,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7952b9002d4b7c9e6da729b9c6544df603ace81cb8868859ce8ef3be896ef77a"
+      "sha256": "9c145b43b0561be3539f27a763d336650ab0e64b16d39a7c33c410dc74e49994"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -12592,7 +12592,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "43ea0604ccfd72efa25f702d663741626cb57fff2534f750fcd64d64efe58647"
+      "sha256": "9fe329294368ab1ddbed29ad4f8b19aeacc04a530cbd8496f602c56b0abb28a2"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12713,7 +12713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "21b154c95a4c5d47255cf4409f03700e8ab08cf5be669da19dd4ff74c6d74116"
+      "sha256": "312f385aa31dfd3a7a8582282d097dab5a202116000b41cfb2cfeec702c13fda"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -14762,7 +14762,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f02256f8978dfc033ca3f8be6f1b8b240e9e5e987f482810404a8dcba38121f7"
+      "sha256": "4f8804d2f2a448308ace072451551d94f9257e6785ae937d9db3c254dc32a2a0"
     },
     {
       "path": "tools/test_entry_frame_balance.py",

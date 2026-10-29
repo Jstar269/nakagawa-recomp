@@ -186,6 +186,35 @@
           }
         }
       }
+    },
+    "update_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "insn_offset",
+        "stock_digest"
+      ],
+      "description": "The instruction where one logic update begins; it must run exactly once per update. Gated sites run on alternate updates counted here, so a package with gated sites declares it.",
+      "properties": {
+        "function": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$",
+          "description": "Symbolic function name; raw address literals and decompiler stems are forbidden."
+        },
+        "insn_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536,
+          "multipleOf": 4,
+          "description": "Byte offset of the boundary instruction word from the function entry; a multiple of 4."
+        },
+        "stock_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 digest of the expected stock 32-bit instruction word."
+        }
+      }
     }
   }
 }

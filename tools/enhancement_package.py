@@ -87,6 +87,7 @@ ROOT_KEYS = frozenset({
     "executable_sha256",
     "rng_policy",
     "sites",
+    "update_boundary",
 })
 
 REQUIRED_ROOT_KEYS = frozenset({
@@ -106,6 +107,11 @@ TIMING_PACKAGE_KEYS = frozenset({
     "sites",
 })
 
+# Timing-package fields that may be left out.
+OPTIONAL_TIMING_PACKAGE_KEYS = frozenset({
+    "update_boundary",
+})
+
 HOOK_KEYS = frozenset({
     "symbol",
     "type",
@@ -123,6 +129,13 @@ SITE_KEYS = frozenset({
     "stock_digest",
     "word_count",
     "transform",
+})
+
+# The instruction where one logic update of the title begins: it runs exactly once per update.
+UPDATE_BOUNDARY_KEYS = frozenset({
+    "function",
+    "insn_offset",
+    "stock_digest",
 })
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -207,6 +220,35 @@ def load_package(path: Path | str) -> dict[str, Any]:
 def load_and_validate_package(path: Path | str) -> dict[str, Any]:
     """Load an enhancement package JSON file and perform full normative validation."""
     return validate_package(load_package(path))
+
+
+def _check_instruction_location(obj: Mapping[str, Any], path: str, role: str) -> None:
+    """Check the symbolic function, 4-byte-aligned insn_offset and stock_digest of one instruction."""
+    fn_name = obj["function"]
+    fn_path = f"{path}.function"
+    check_not_address_literal(fn_name, fn_path, f"{role} function")
+    if not SYMBOL_RE.match(fn_name):
+        fail(fn_path, f"{role} function {fn_name!r} does not match required pattern {SYMBOL_RE.pattern}")
+
+    insn_offset = obj["insn_offset"]
+    if (
+        not isinstance(insn_offset, int)
+        or isinstance(insn_offset, bool)
+        or insn_offset < 0
+        or insn_offset > 65536
+        or (insn_offset % 4) != 0
+    ):
+        fail(
+            f"{path}.insn_offset",
+            f"insn_offset must be a 4-byte-aligned integer in [0, 65536], got {insn_offset!r}",
+        )
+
+    stock_digest = obj["stock_digest"]
+    if not isinstance(stock_digest, str) or not SHA256_HEX_RE.match(stock_digest):
+        fail(
+            f"{path}.stock_digest",
+            f"stock_digest {stock_digest!r} must be a 64-character lowercase hex SHA-256 digest",
+        )
 
 
 def validate_package(data: Any) -> dict[str, Any]:
@@ -350,7 +392,7 @@ def validate_package(data: Any) -> dict[str, Any]:
                 fail(type_path, f"Unknown hook type: {hook_type!r}; must be one of {sorted(HOOK_TYPES)}")
 
     # Validate timing / frame-rate rescale fields (fail-closed consistency)
-    present_timing_keys = sorted(set(data.keys()) & TIMING_PACKAGE_KEYS)
+    present_timing_keys = sorted(set(data.keys()) & (TIMING_PACKAGE_KEYS | OPTIONAL_TIMING_PACKAGE_KEYS))
     if present_timing_keys:
         if category != "timing_frame_presentation":
             fail(
@@ -433,26 +475,9 @@ def validate_package(data: Any) -> dict[str, Any]:
                 fail(id_path, f"duplicate site id {site_id!r}")
             seen_site_ids.add(site_id)
 
+            _check_instruction_location(site, site_path, "site")
             fn_name = site["function"]
-            fn_path = f"{site_path}.function"
-            check_not_address_literal(fn_name, fn_path, "site function")
-            if not SYMBOL_RE.match(fn_name):
-                fail(fn_path, f"site function {fn_name!r} does not match required pattern {SYMBOL_RE.pattern}")
-
             insn_offset = site["insn_offset"]
-            off_path = f"{site_path}.insn_offset"
-            if (
-                not isinstance(insn_offset, int)
-                or isinstance(insn_offset, bool)
-                or insn_offset < 0
-                or insn_offset > 65536
-                or (insn_offset % 4) != 0
-            ):
-                fail(
-                    off_path,
-                    f"insn_offset must be a 4-byte-aligned integer in [0, 65536], got {insn_offset!r}",
-                )
-
             pos_key = (fn_name, insn_offset)
             if pos_key in seen_positions:
                 fail(
@@ -460,14 +485,6 @@ def validate_package(data: Any) -> dict[str, Any]:
                     f"duplicate site target ({fn_name!r}, insn_offset={insn_offset})",
                 )
             seen_positions.add(pos_key)
-
-            stock_digest = site["stock_digest"]
-            digest_path = f"{site_path}.stock_digest"
-            if not isinstance(stock_digest, str) or not SHA256_HEX_RE.match(stock_digest):
-                fail(
-                    digest_path,
-                    f"stock_digest {stock_digest!r} must be a 64-character lowercase hex SHA-256 digest",
-                )
 
             if "word_count" in site:
                 word_count = site["word_count"]
@@ -489,6 +506,28 @@ def validate_package(data: Any) -> dict[str, Any]:
                     tf_path,
                     f"Unknown site transform: {transform!r}; must be one of {sorted(SITE_TRANSFORMS)}",
                 )
+
+        # Validate update_boundary: where one logic update begins. Gated sites run on
+        # alternate updates counted there, so a package that gates must declare it.
+        if "update_boundary" in data:
+            boundary = data["update_boundary"]
+            if not isinstance(boundary, dict):
+                fail("update_boundary", f"update_boundary must be an object, got {type(boundary).__name__}")
+            unknown_boundary_keys = sorted(set(boundary.keys()) - UPDATE_BOUNDARY_KEYS)
+            if unknown_boundary_keys:
+                fail("update_boundary", f"Unknown properties forbidden in update_boundary: {unknown_boundary_keys}")
+            for req_boundary in sorted(UPDATE_BOUNDARY_KEYS):
+                if req_boundary not in boundary:
+                    fail("update_boundary", f"Missing required property {req_boundary!r} in update_boundary")
+            _check_instruction_location(boundary, "update_boundary", "update_boundary")
+            if (boundary["function"], boundary["insn_offset"]) in seen_positions:
+                fail("update_boundary", "update_boundary must not be a rewritten site")
+        elif any(site["transform"] == "gate_30hz" for site in sites):
+            fail(
+                "update_boundary",
+                "A package with gate_30hz sites must declare update_boundary: gated sites run on "
+                "alternate logic updates, counted where each update begins",
+            )
 
     return data
 
@@ -618,68 +657,14 @@ def verify_and_resolve_sites(
         word_count = int(site.get("word_count", 1))
         expected_digest = site["stock_digest"]
 
-        fn_addr: int | None = None
-        if fn_name in symbol_to_addr:
-            fn_addr = int(symbol_to_addr[fn_name])
-        elif fn_name in unresolved_fn_cache:
-            fn_addr = unresolved_fn_cache[fn_name]
-        elif known_functions:
-            # Deterministic fallback: find all functions in the ELF whose instruction words
-            # at all sites referencing fn_name match their expected stock_digest.
-            fn_sites = [s for s in validated["sites"] if s["function"] == fn_name]
-            candidates: list[int] = []
-            for cand_fn in known_functions:
-                all_match = True
-                for s_item in fn_sites:
-                    s_off = int(s_item["insn_offset"])
-                    s_wc = int(s_item.get("word_count", 1))
-                    s_words = read_words_fn(int(cand_fn) + s_off, s_wc)
-                    if s_words is None or len(s_words) != s_wc:
-                        all_match = False
-                        break
-                    if compute_stock_words_digest(s_words) != s_item["stock_digest"]:
-                        all_match = False
-                        break
-                if all_match:
-                    candidates.append(int(cand_fn))
-            if len(candidates) == 1:
-                fn_addr = candidates[0]
-                unresolved_fn_cache[fn_name] = fn_addr
-            elif len(candidates) > 1:
-                fail(
-                    f"{site_path}.function",
-                    f"Ambiguous symbolic function {fn_name!r} without symbol map: "
-                    f"matched {len(candidates)} candidate functions (fail-closed refusal)",
-                )
-
-        if fn_addr is None:
-            fail(
-                f"{site_path}.function",
-                f"Cannot resolve symbolic function {fn_name!r} in guest executable "
-                f"(fail-closed refusal)",
-            )
-        if known_set and fn_addr not in known_set:
-            fail(
-                f"{site_path}.function",
-                f"Resolved address 0x{fn_addr:08x} for {fn_name!r} is not a known function entry "
-                f"(fail-closed refusal)",
-            )
-
-        site_addr = fn_addr + insn_offset
-        words = read_words_fn(site_addr, word_count)
-        if words is None or len(words) != word_count:
-            fail(
-                f"{site_path}.stock_digest",
-                f"Cannot read {word_count} instruction word(s) at {fn_name}+{insn_offset} "
-                f"(fail-closed refusal)",
-            )
-        actual_digest = compute_stock_words_digest(words)
-        if actual_digest != expected_digest:
-            fail(
-                f"{site_path}.stock_digest",
-                f"Stock instruction digest mismatch at {fn_name}+{insn_offset} "
-                f"(fail-closed refusal): expected {expected_digest}, got {actual_digest}",
-            )
+        fn_addr = _resolve_function_address(
+            validated, fn_name, site_path, symbol_to_addr, read_words_fn, known_functions,
+            unresolved_fn_cache,
+        )
+        site_addr, words = _read_verified_words(
+            fn_name, fn_addr, insn_offset, word_count, expected_digest, site_path,
+            read_words_fn, known_set,
+        )
 
         if site_addr in resolved_by_addr:
             fail(
@@ -699,7 +684,131 @@ def verify_and_resolve_sites(
         resolved_entry["rewrite"] = plan_site_rewrite(site, resolved_entry["stock_words"][0])
         resolved_by_addr[site_addr] = resolved_entry
 
+    if "update_boundary" not in validated:
+        gated = sorted(e["id"] for e in resolved_by_addr.values() if e["rewrite"]["kind"] == "gate")
+        if gated:
+            fail(
+                "update_boundary",
+                f"Sites {gated} run on alternate logic updates, but the package declares no "
+                f"update_boundary to count them (fail-closed refusal)",
+            )
     return resolved_by_addr
+
+
+def verify_and_resolve_update_boundary(
+    pkg_data: Mapping[str, Any],
+    *,
+    symbol_to_addr: Mapping[str, int],
+    read_words_fn: Any,
+    known_functions: Sequence[int] = (),
+) -> dict[str, Any] | None:
+    """Resolve and verify a package's ``update_boundary`` fail-closed.
+
+    Returns ``None`` when the package declares none, else a dict with ``fn_addr``,
+    ``site_addr`` and ``stock_word``. The executable digest is checked by
+    :func:`verify_and_resolve_sites`, which callers run first.
+    """
+    validated = validate_package(dict(pkg_data))
+    boundary = validated.get("update_boundary")
+    if boundary is None:
+        return None
+    fn_name = boundary["function"]
+    fn_addr = _resolve_function_address(
+        validated, fn_name, "update_boundary", symbol_to_addr, read_words_fn, known_functions, {},
+    )
+    site_addr, words = _read_verified_words(
+        fn_name, fn_addr, int(boundary["insn_offset"]), 1, boundary["stock_digest"],
+        "update_boundary", read_words_fn, set(int(a) for a in known_functions),
+    )
+    return {"fn_addr": fn_addr, "site_addr": site_addr, "stock_word": int(words[0]) & 0xFFFFFFFF}
+
+
+def _function_locations(validated: Mapping[str, Any], fn_name: str) -> list[tuple[int, int, str]]:
+    """Every (insn_offset, word_count, stock_digest) the package pins inside ``fn_name``."""
+    locations = [
+        (int(s["insn_offset"]), int(s.get("word_count", 1)), s["stock_digest"])
+        for s in validated["sites"] if s["function"] == fn_name
+    ]
+    boundary = validated.get("update_boundary")
+    if boundary is not None and boundary["function"] == fn_name:
+        locations.append((int(boundary["insn_offset"]), 1, boundary["stock_digest"]))
+    return locations
+
+
+def _resolve_function_address(
+    validated: Mapping[str, Any],
+    fn_name: str,
+    path: str,
+    symbol_to_addr: Mapping[str, int],
+    read_words_fn: Any,
+    known_functions: Sequence[int],
+    cache: dict[str, int],
+) -> int:
+    """A symbolic function's entry: the symbol map's, else the one known function whose
+    words match every location the package pins in it (a deterministic fallback)."""
+    if fn_name in symbol_to_addr:
+        return int(symbol_to_addr[fn_name])
+    if fn_name in cache:
+        return cache[fn_name]
+    if known_functions:
+        locations = _function_locations(validated, fn_name)
+        candidates: list[int] = []
+        for cand_fn in known_functions:
+            for off, wc, digest in locations:
+                words = read_words_fn(int(cand_fn) + off, wc)
+                if words is None or len(words) != wc or compute_stock_words_digest(words) != digest:
+                    break
+            else:
+                candidates.append(int(cand_fn))
+        if len(candidates) == 1:
+            cache[fn_name] = candidates[0]
+            return candidates[0]
+        if len(candidates) > 1:
+            fail(
+                f"{path}.function",
+                f"Ambiguous symbolic function {fn_name!r} without symbol map: "
+                f"matched {len(candidates)} candidate functions (fail-closed refusal)",
+            )
+    fail(
+        f"{path}.function",
+        f"Cannot resolve symbolic function {fn_name!r} in guest executable "
+        f"(fail-closed refusal)",
+    )
+
+
+def _read_verified_words(
+    fn_name: str,
+    fn_addr: int,
+    insn_offset: int,
+    word_count: int,
+    expected_digest: str,
+    path: str,
+    read_words_fn: Any,
+    known_set: set[int],
+) -> tuple[int, list[int]]:
+    """Read the stock words at ``fn_name + insn_offset`` and check their digest fail-closed."""
+    if known_set and fn_addr not in known_set:
+        fail(
+            f"{path}.function",
+            f"Resolved address 0x{fn_addr:08x} for {fn_name!r} is not a known function entry "
+            f"(fail-closed refusal)",
+        )
+    site_addr = fn_addr + insn_offset
+    words = read_words_fn(site_addr, word_count)
+    if words is None or len(words) != word_count:
+        fail(
+            f"{path}.stock_digest",
+            f"Cannot read {word_count} instruction word(s) at {fn_name}+{insn_offset} "
+            f"(fail-closed refusal)",
+        )
+    actual_digest = compute_stock_words_digest(words)
+    if actual_digest != expected_digest:
+        fail(
+            f"{path}.stock_digest",
+            f"Stock instruction digest mismatch at {fn_name}+{insn_offset} "
+            f"(fail-closed refusal): expected {expected_digest}, got {actual_digest}",
+        )
+    return site_addr, list(words)
 
 
 # Constant factor each scaling transform applies to the operand the site produces.
