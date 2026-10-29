@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 14 |
 | `ppsspp-derived` | 103 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 277 | 200 |
-| `unverified` | 194 | 51 |
+| `synthetic` | 279 | 200 |
+| `unverified` | 192 | 51 |
 | total | 638 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
@@ -411,7 +411,7 @@ belongs to without the census's own grouping.
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
-| `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `ppsspp-derived` | handler comment names PPSSPP |
+| `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0x8ab81558` | `sceMp3StartEntry` | audio_codec | `unverified` | no recorded evidence |
 | `0x8bea2b3e` | `sceNetAdhocPtpRecv` | network | `unverified` | no recorded evidence |
 | `0x8c1e027d` | `sceMpegGetPcmAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -533,7 +533,7 @@ belongs to without the census's own grouping.
 | `0xba6b92e2` | `sceKernelSysClock2USec` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0xbb8e7fe6` | `sceFontOpenUserMemory` | font | `unverified` | no recorded evidence |
 | `0xbc6febc5` | `sceKernelReferSemaStatus` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0xbd11b7c2` | `__sceSasGetGrain` | audio | `unverified` | no recorded evidence |
+| `0xbd11b7c2` | `__sceSasGetGrain` | audio | `synthetic` | HLE selftest dispatch |
 | `0xbd123d9e` | `sceKernelDelaySysClockThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0xbd2bde07` | `sceUmdUnRegisterUMDCallBack` | umd | `unverified` | no recorded evidence |
 | `0xbd2f1094` | `sceKernelLoadExec` | kernel_module | `synthetic` | HLE selftest dispatch |
@@ -618,7 +618,7 @@ belongs to without the census's own grouping.
 | `0xe0d68148` | `sceGeListUpdateStallAddr` | ge | `synthetic` | HLE selftest dispatch |
 | `0xe1619d7c` | `sceKernelSysClock2USecWide` | kernel_time | `unverified` | no recorded evidence |
 | `0xe162cb14` | `sceNetAdhocctlGetPeerList` | network | `unverified` | no recorded evidence |
-| `0xe175ef66` | `__sceSasGetOutputmode` | audio | `unverified` | no recorded evidence |
+| `0xe175ef66` | `__sceSasGetOutputmode` | audio | `synthetic` | HLE selftest dispatch |
 | `0xe1c93e47` | `sceRtcGetTime64_t` | rtc | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024`; note |
 | `0xe1cd9561` | `__sceSasSetVoicePCM` | audio | `synthetic` | HLE selftest dispatch |
 | `0xe1ce83a7` | `sceMpegGetAtracAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -686,7 +686,7 @@ belongs to without the census's own grouping.
 | `0xfa835cde` | `sceKernelGetTlsAddr` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xfa8a5739` | `sceRegCloseRegistry` | system | `synthetic` | HLE selftest dispatch |
 | `0xfaa4f89b` | `sceAtracGetLoopStatus` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
-| `0xfb8e22ec` | `sceKernelEnableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
+| `0xfb8e22ec` | `sceKernelEnableSubIntr` | kernel_interrupt | `ppsspp-derived` | handler comment names PPSSPP |
 | `0xfbfa697d` | `sceKernelReceiveMsgPipeCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xfc6fc07b` | `sceNetAdhocPtpConnect` | network | `unverified` | no recorded evidence |
 | `0xfccfad26` | `sceKernelCancelWakeupThread` | kernel_thread | `unverified` | no recorded evidence |
