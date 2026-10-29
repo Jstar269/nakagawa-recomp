@@ -2357,11 +2357,11 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     def test_full_library_written_by_the_player_is_readable(self) -> None:
         """MAX_LIBRARY_GAMES records in the player's format (nk_library_save), with
         long paths, fit the byte limit and the structural budgets of the CLI route."""
-        folder = "D:\PSP collection\\" + "A" * 80
+        folder = "D:/PSP collection/" + "A" * 80
         games = [{
             "disc_id": f"TEST{i:05d}", "title_name": "Synthetic title " + "T" * 100,
-            "disc_version": "1.00", "iso_path": f"{folder}\disc-{i:05d}.iso",
-            "prepared_root": f"{folder}\prepared\TEST{i:05d}",
+            "disc_version": "1.00", "iso_path": f"{folder}/disc-{i:05d}.iso",
+            "prepared_root": f"{folder}/prepared/TEST{i:05d}",
             "title_id": f"experimental-test{i:05d}", "iso_size_bytes": 1800000000,
             "status": 1, "is_experimental": True, "executable_eboot_kind": 2,
             "executable_boot_kind": 1, "executable_selection": 1,
