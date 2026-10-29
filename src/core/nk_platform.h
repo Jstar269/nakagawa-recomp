@@ -84,11 +84,14 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode);
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 
-/* Point every per-user data lookup in this process (the library, title
- * manifests, packages, staged games, fonts) at `path` instead of the
- * platform default, the player's counterpart of nk_cli's --user-data-root.
- * NULL or "" restores the default. Returns false, leaving the previous
- * setting, when the path is too long. Call before the first data lookup. */
+/* Point every per-user folder of this process at `path` instead of the
+ * platform default, the player's counterpart of nk_cli's --user-data-root:
+ * NK_PATH_DATA (the library, title manifests, packages, staged games, fonts)
+ * is `path` itself, and NK_PATH_CONFIG, NK_PATH_CACHE, NK_PATH_LOGS and
+ * NK_PATH_SAVES are its config, cache, logs and saves folders, so nothing of
+ * the default profile is read or written. NULL or "" restores the default.
+ * Returns false, leaving the previous setting, when the path is too long.
+ * Call before the first lookup. */
 bool nk_platform_set_app_data_dir_override(const char *path);
 /* The host's local time zone: its standard offset from UTC in minutes (east of UTC positive)
  * and whether daylight saving is in effect now. False when the host does not say. */

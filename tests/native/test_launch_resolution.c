@@ -290,6 +290,24 @@ static void test_no_iso_child_environment(const char *test_executable,
     snprintf(custom_user_root, sizeof(custom_user_root), "%s%cuser_data_override", root, sep);
     assert(nk_platform_mkdir_p(custom_user_root));
     assert(nk_platform_set_app_data_dir_override(custom_user_root));
+    {
+        /* Every per-user folder follows the override: the data folder is the root itself and
+           settings, cache, logs and saves are folders in it, so a player opened on another root
+           reads and writes nothing of the default profile. */
+        static const struct { NkPathType type; const char *leaf; } folders[] = {
+            {NK_PATH_CONFIG, "config"}, {NK_PATH_CACHE, "cache"},
+            {NK_PATH_LOGS, "logs"}, {NK_PATH_SAVES, "saves"},
+        };
+        char resolved[NK_MAX_PATH];
+        char expected[NK_MAX_PATH * 4 + 16];
+        assert(nk_platform_resolve_path(NK_PATH_DATA, resolved, sizeof(resolved)));
+        assert(strcmp(resolved, custom_user_root) == 0);
+        for (size_t i = 0; i < sizeof(folders) / sizeof(folders[0]); i++) {
+            snprintf(expected, sizeof(expected), "%s%c%s", custom_user_root, sep, folders[i].leaf);
+            assert(nk_platform_resolve_path(folders[i].type, resolved, sizeof(resolved)));
+            assert(strcmp(resolved, expected) == 0);
+        }
+    }
 
     /* One font root: the per-user data directory (the override above in this run). Fonts are
      * imported there, so the launcher exports the root to the runtime. A cache under the package
