@@ -93,6 +93,10 @@ REJECTED = "REJECTED"
 CONTAINED = "CONTAINED"
 INTERVENTION = "PHYSICAL_INTERVENTION_REQUIRED"
 NOT_RUN = "NOT_RUN"
+# Matrix terminal states besides INTERVENTION: the device is fine but the matrix cannot go on.
+RECOVERY_REFUSED = "RECOVERY_REFUSED"
+NO_FRESH_BOOT = "NO_FRESH_BOOT"
+CONTAINED_BUDGET_EXHAUSTED = "CONTAINED_FAILURE_BUDGET_EXHAUSTED"
 
 
 class MatrixError(ValueError):
@@ -702,36 +706,45 @@ class MatrixRunner:
         if problem:
             raise MatrixError(f"{problem} ({stage})")
 
-    def _recover(self, stage: str) -> tuple[int | None, str]:
+    def _recover(self, stage: str) -> tuple[int | None, str, str | None]:
+        """Run the recover command; return (attested boot, detail, terminal state when there is no boot).
+
+        Exit 2 is the recover command refusing (lock or reset budget): the matrix stops without claiming
+        that a person is needed. Any other failure, or a timeout, means the device could not be brought
+        back to a qualified state by software."""
+
         self._gate(stage)
         argv = render_argv(self.plan.commands["recover_argv"], self._values())
         code, _out, err = self.run(argv, RECOVER_COMMAND_TIMEOUT_SECONDS, None)
         self.events.append(f"{stage}: recover exit {code}")
         if code != 0:
-            return None, f"recover command exited {code}: {err.strip()[-200:]}"
+            detail = f"{stage}: recover command exited {code}: {err.strip()[-200:]}"
+            return None, detail, RECOVERY_REFUSED if code == 2 else INTERVENTION
         boot, status = attested_boot(_read_lock(self.lock_path), self.plan.session_id)
         if boot is None:
-            return None, f"no fresh qualified device-state attestation after recovery ({status})"
-        return boot, status
+            return None, f"{stage}: no fresh qualified device-state attestation after recovery ({status})",                 INTERVENTION
+        return boot, status, None
 
-    def fresh_epoch(self, used_boots: list[int]) -> tuple[int | None, str, int | None]:
-        """Requalify, soft-reset once, requalify; return (new boot, detail, boot before the reset)."""
+    def fresh_epoch(self, used_boots: list[int]) -> tuple[int | None, str, int | None, str | None]:
+        """Requalify, soft-reset once, requalify.
 
-        before, detail = self._recover("before the soft reset")
+        Return (new boot, detail, boot before the reset, terminal state when there is no new boot)."""
+
+        before, detail, terminal = self._recover("before the soft reset")
         if before is None:
-            return None, detail, None
+            return None, detail, None, terminal
         self._gate("before the soft reset")
         argv = render_argv(self.plan.commands["reset_argv"], self._values())
         code, _out, _err = self.run(argv, RESET_COMMAND_TIMEOUT_SECONDS, None)
         self.events.append(f"PSPLink soft reset from boot {before}: command exit {code} (a timeout is expected)")
-        after, detail = self._recover("after the soft reset")
+        after, detail, terminal = self._recover("after the soft reset")
         if after is None:
-            return None, detail, before
+            return None, detail, before, terminal
         newest = max([before, *used_boots])
         if after <= newest:
             return None, (f"the soft reset did not produce a newer qualified boot (attested boot {after}, "
-                          f"newest seen {newest})"), before
-        return after, "QUALIFIED", before
+                          f"newest seen {newest})"), before, NO_FRESH_BOOT
+        return after, "QUALIFIED", before, None
 
     def launch(self, case: MatrixCase, boot: int, index: int, staged: dict[str, str]) -> CaseOutcome:
         plan = self.plan
@@ -806,32 +819,37 @@ class MatrixRunner:
         for index in range(len(outcomes), len(plan.cases)):
             case = plan.cases[index]
             if contained > plan.max_contained_failures:
-                terminal = "CONTAINED_FAILURE_BUDGET_EXHAUSTED"
+                terminal = CONTAINED_BUDGET_EXHAUSTED
                 break
             state["state"] = "IN_PROGRESS"
-            boot, detail, before = self.fresh_epoch(used_boots)
+            boot, detail, before, epoch_terminal = self.fresh_epoch(used_boots)
             if before is not None and before not in used_boots:
                 used_boots.append(before)
             if boot is None:
-                outcome = CaseOutcome(case.case_id, INTERVENTION, [f"no fresh qualified boot: {detail}"])
+                # Nothing was launched, so there is no result to protect: a resumed matrix starts at this case.
+                terminal = epoch_terminal or INTERVENTION
+                state["stopped_before"] = {"case_id": case.case_id, "state": terminal,
+                                           "reason": f"no fresh qualified boot, nothing launched: {detail}"}
+                state.update({"used_boots": used_boots})
+                self._save(state)
+                break
+            state.pop("stopped_before", None)
+            used_boots.append(boot)
+            outcome = self.launch(case, boot, index, staged)
+            for seen in outcome.boots_seen:
+                if seen not in used_boots:
+                    used_boots.append(seen)
+            if outcome.status == CONTAINED:
+                contained += 1
+            if outcome.status == INTERVENTION:
                 terminal = INTERVENTION
-            else:
-                used_boots.append(boot)
-                outcome = self.launch(case, boot, index, staged)
-                for seen in outcome.boots_seen:
-                    if seen not in used_boots:
-                        used_boots.append(seen)
-                if outcome.status == CONTAINED:
-                    contained += 1
-                if outcome.status == INTERVENTION:
-                    terminal = INTERVENTION
-                try:
-                    note_launch(self.lock_path, plan.session_id,
-                                f"matrix {plan.matrix_id} case {index + 1}/{len(plan.cases)} {case.case_id} on boot "
-                                f"{boot}: {outcome.status}"
-                                + (f" ({'; '.join(outcome.reasons)[:300]})" if outcome.reasons else ""))
-                except MatrixError as exc:
-                    self.events.append(f"probes_run note after {case.case_id} not written: {exc}")
+            try:
+                note_launch(self.lock_path, plan.session_id,
+                            f"matrix {plan.matrix_id} case {index + 1}/{len(plan.cases)} {case.case_id} on boot "
+                            f"{boot}: {outcome.status}"
+                            + (f" ({'; '.join(outcome.reasons)[:300]})" if outcome.reasons else ""))
+            except MatrixError as exc:
+                self.events.append(f"probes_run note after {case.case_id} not written: {exc}")
             outcomes.append(outcome.as_dict())
             state.update({"outcomes": outcomes, "used_boots": used_boots, "contained_failures": contained})
             self._save(state)
@@ -862,6 +880,7 @@ class MatrixRunner:
             "used_boots": state.get("used_boots"),
             "outcomes": outcomes,
             "not_run": [{"case_id": case_id, "status": NOT_RUN} for case_id in not_run],
+            "stopped_before": state.get("stopped_before"),
             "accepted": [item.get("case_id") for item in outcomes
                          if isinstance(item, dict) and item.get("status") == ACCEPTED],
             "events": list(self.events),

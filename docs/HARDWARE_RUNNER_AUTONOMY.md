@@ -348,8 +348,11 @@ resident-agent containment test probe.
    command, issues one PSPLink soft reset, and runs the recover command again.
    The hardware lock's device-state attestation must then name a qualified
    boot newer than every boot the matrix has seen, including boots seen during
-   earlier launches. Otherwise the matrix stops in
-   `PHYSICAL_INTERVENTION_REQUIRED` before launching anything.
+   earlier launches. Otherwise the matrix stops before launching anything:
+   `PHYSICAL_INTERVENTION_REQUIRED` when the recover command could not bring
+   the device back, `RECOVERY_REFUSED` when it refused (lock or reset budget),
+   or `NO_FRESH_BOOT` when the reset produced no newer boot. Nothing ran, so a
+   later run starts again at the same case.
 3. **Launch.** The probe command runs `run_psplink.py` with `transport-write`
    and the case, and a report path unique to the case and boot. With Nakagawa
    Link this is the agent's guarded probe wrapper. Every reset and launch

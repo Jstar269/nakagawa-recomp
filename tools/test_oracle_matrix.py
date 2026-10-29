@@ -388,16 +388,35 @@ class MatrixExecutionTests(MatrixTestCase):
         code, report = self.runner(plan, device).execute()
         self.assertEqual(code, 3)
         self.assertEqual(device.launched, [])
-        self.assertIn("recover command exited 3", report["outcomes"][0]["reasons"][0])
+        self.assertEqual(report["state"], om.INTERVENTION)
+        self.assertEqual(report["outcomes"], [])
+        self.assertIn("recover command exited 3", report["stopped_before"]["reason"])
+        self.assertEqual(len(report["not_run"]), 3)
+        # Nothing was launched, so a resumed matrix starts again at the same case.
+        device.recover_failures_after_reset = False
+        code, report = self.runner(plan, device).execute()
+        self.assertEqual(code, 0, report)
+        self.assertEqual([case for case, _ in device.launched], ["delay-zero", "ge-nan", "dma-cells"])
+        self.assertIsNone(report["stopped_before"])
+
+    def test_refused_recovery_stops_without_claiming_an_intervention(self) -> None:
+        plan = self.load(self.CASES)
+        device = self.device()
+        device.recover_exit = 2
+        code, report = self.runner(plan, device).execute()
+        self.assertEqual(code, 2)
+        self.assertEqual(report["state"], om.RECOVERY_REFUSED)
+        self.assertEqual(device.launched, [])
 
     def test_reset_that_yields_no_newer_boot_is_not_a_fresh_epoch(self) -> None:
         plan = self.load(self.CASES)
         device = self.device()
         device.reset_works = False
         code, report = self.runner(plan, device).execute()
-        self.assertEqual(code, 3)
+        self.assertEqual(code, 2)
+        self.assertEqual(report["state"], om.NO_FRESH_BOOT)
         self.assertEqual(device.launched, [])
-        self.assertIn("did not produce a newer qualified boot", report["outcomes"][0]["reasons"][0])
+        self.assertIn("did not produce a newer qualified boot", report["stopped_before"]["reason"])
 
     def test_stale_wrong_fixture_and_wrong_runner_results_are_rejected(self) -> None:
         for behaviour, reason in (("stale", "does not belong to this launch"),
