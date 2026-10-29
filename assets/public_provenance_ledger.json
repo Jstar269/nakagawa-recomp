@@ -1519,7 +1519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7aa50129590e734397c66e1bdeb36ef399fe0c1d3e7dfe943be6b62d3f4829b4"
+      "sha256": "c8cac024083f502c3a2d0483a273af32585c7553800a197702e5ef8972b0dda5"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -9065,7 +9065,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "af8e73ef8340a72ec314b0ecde6f5de1b197ebb488e200aa2e2813318dfe9f2a"
+      "sha256": "e1d86a5cce0efe835632cf9e9ea38d22bb656f2d430773e6d979d1740654f1e2"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9077,7 +9077,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae8decae86e1c2e20e4f6d303326bb8f78f186f800e2e6c31a0eb911d0af2f94"
+      "sha256": "b549deacc38cb1d011380fbb10551897af09f95e48379c234fb832de86f7c62e"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -9115,7 +9115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eaa011711124cad7141112cbc8af3c6f071d8c7530ac4301387026e2f966bca1"
+      "sha256": "34c0fe880f4b150944093f88e7304ba0e4509703f5e6805bb1b37f702a45ed93"
     },
     {
       "path": "src/rt/intr_conformance.h",
