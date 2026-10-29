@@ -386,7 +386,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
                  "upload_ring_fallbacks", "snapshot_copy_px", "fallback_prims",
                  "fallback_stencil", "fallback_color_test", "fallback_logic_op",
                  "fallback_write_mask", "fallback_ram_fb", "fallback_wide_stride",
-                 "fallback_mips", "fallback_line", "fallback_point"]
+                 "fallback_mips", "fallback_line", "fallback_point", "stencil_splits"]
         with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "gpu_replay_harness.c"
@@ -438,7 +438,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
                         "fallback_prims": 0, "fallback_stencil": 0, "fallback_color_test": 5,
                         "fallback_logic_op": 0, "fallback_write_mask": 0, "fallback_ram_fb": 0,
                         "fallback_wide_stride": 0, "fallback_mips": 0, "fallback_line": 0,
-                        "fallback_point": 0}
+                        "fallback_point": 0, "stencil_splits": 0}
             for name in names:
                 column = f"gpu_replay_{name}"
                 self.assertIn(column, header)

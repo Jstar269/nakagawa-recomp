@@ -198,6 +198,9 @@ typedef struct GeGpuReplayStats {
      * colour and depth readback each), by reason: GEGPU_FALLBACK_*. */
     unsigned long long fallback_prims;
     unsigned long long fallback_readbacks[9];
+    /* Stencil primitives that started a new batch because their box met the batch's
+     * earlier primitives and the state reads what it writes (a snapshot copy between). */
+    unsigned long long stencil_splits;
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;

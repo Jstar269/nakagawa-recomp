@@ -209,6 +209,7 @@ typedef enum SrPerfGpuReplayCounter {
     SR_PERF_GPU_FALLBACK_MIPS,
     SR_PERF_GPU_FALLBACK_LINE,
     SR_PERF_GPU_FALLBACK_POINT,
+    SR_PERF_GPU_STENCIL_SPLITS,            /* stencil primitives split off to read their own writes */
     SR_PERF_GPU_REPLAY_COUNT,
 } SrPerfGpuReplayCounter;
 

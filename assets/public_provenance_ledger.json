@@ -5980,7 +5980,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "03e15909004bfa980a1c273c3d220364afb283764f81dbadd701a8589ac44ff0"
+      "sha256": "d80b3e363ef9585cf0183f697ce65720112e2b99c95c270abe156ca2bab291bd"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -5993,7 +5993,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3122cb53851280572476f384d49de8a60bdceb5a9dbdca9a33a318c5fe9999c6"
+      "sha256": "49720bc448e22b08da03cfcd10211ef6a1bccb86d66fac6f7cf97e8536f542b8"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
@@ -6006,7 +6006,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "69dd6f9f46be83e054d00a42e2bd88b309be62862b45af7d1fe90b14f28114a9"
+      "sha256": "76a08bd8b11aa2c4b38232ab16dec7cfc7ee6802ed8101278033bd866fb9730c"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
@@ -6058,7 +6058,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9eea123260d99e7f7eb8741013fde042a0fbf1e7d2860f86cd2f2babcc552afa"
+      "sha256": "3fb1cfbaca334be24d6bb3243b92e43053146075aab3ba66bf46b5ed21037c62"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
@@ -6071,7 +6071,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "02916c5b7bce8f334afee1e2c3461191a879631730f89a6f2286839476e9d23a"
+      "sha256": "bd2f47c90a8a2e1bde447dcf9378dc09b70952efb993fe4843aab5e39402e37b"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shaders/psp.vert",
@@ -9504,7 +9504,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8c3b013786872d8cf2ea27bca9d630e81317ac9714fb49da4a241199c4c94ee7"
+      "sha256": "ce4470ad47c4c4fff74a1bf84742ef70fef39dd536b0f56d79cdac62636bd5da"
     },
     {
       "path": "src/rt/perf.h",
@@ -9516,7 +9516,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e5faab36f8bdfd3811a6941242410d901700fa3d1b968e0ac8cf80216ffec2cc"
+      "sha256": "1313c845468f81f276f8274f77191c610de86cb45300c93e3a0b862989b7a508"
     },
     {
       "path": "src/rt/pgd_api.h",
@@ -15627,7 +15627,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e43e4b0daf657fc45c367946b35f26a68959e77d5ff9e2a2b174edb7dccfa716"
+      "sha256": "51318338817d950476dd12fc9c88dc8dea0baeb6df9c594e2d2cfd2b8f0e3ae5"
     },
     {
       "path": "tools/test_pgf_validate_parity.py",

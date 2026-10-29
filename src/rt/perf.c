@@ -192,7 +192,7 @@ static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
     "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps", "upload_ring_fallbacks",
     "snapshot_copy_px", "fallback_prims", "fallback_stencil", "fallback_color_test",
     "fallback_logic_op", "fallback_write_mask", "fallback_ram_fb", "fallback_wide_stride",
-    "fallback_mips", "fallback_line", "fallback_point",
+    "fallback_mips", "fallback_line", "fallback_point", "stencil_splits",
 };
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. */

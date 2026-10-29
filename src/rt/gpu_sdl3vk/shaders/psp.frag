@@ -35,7 +35,11 @@ layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot 
  * the output color is snapped to the native 5650/5551/4444 lattice so the RGBA8
  * attachment only ever holds values that round-trip guest VRAM bit-exactly
  * (truncate(bit_replicate(x)) == x -> zero drift across readback/upload cycles),
- * 4096 shader blend (full PSP blend against u_dst; pipeline blending is OFF). */
+ * 4096 shader blend (full PSP blend against u_dst; pipeline blending is OFF),
+ * 8192 stencil: the stencil test and ops of ge.c put_px_rgba_tested() against the
+ * destination alpha in u_dst (bl.z = GE_STENCILTEST, bl.w = GE_STENCILOP | PMSKA<<24).
+ * ge_gpu.c routes here only states whose depth-fail and depth-tested stencil-fail ops
+ * are KEEP, so a discard is exact wherever the depth test runs in the pipeline. */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -43,7 +47,8 @@ layout(push_constant) uniform PC {
     vec4  fogcol;   /* rgb = GE_FOGCOLOR / 255 */
     vec4  texsize;  /* xy = tex dimensions, zw = texel offset (render-target sub-rect) */
     ivec4 dith;     /* 4x4 GE dither matrix, one row per component, 4 x s8 packed per int */
-    ivec4 bl;       /* x = blend srcf | dstf<<8 | eq<<16, y = render scale (>= 1) */
+    ivec4 bl;       /* x = blend srcf | dstf<<8 | eq<<16, y = render scale (>= 1),
+                       z = stencil test, w = stencil ops | alpha write mask<<24 */
     vec4  fixa;     /* rgb = GE_BLENDFIXEDA / 255 (src FIX constant) */
     vec4  fixb;     /* rgb = GE_BLENDFIXEDB / 255 (dst FIX constant) */
 } pc;
@@ -72,8 +77,37 @@ ivec3 blend_factor(int f, bool srcSide, ivec3 s, int sa, ivec3 d, int da) {
     }
 }
 
+/* PSP stencil op on an 8-bit destination stencil -- exactly ge.c apply_stencil_op(). */
+int stencil_op(int op, int old, int ref, int fbfmt) {
+    switch (op & 7) {
+        case 0: return old;
+        case 1: return 0;
+        case 2: return ref;
+        case 3: return (~old) & 0xFF;
+        case 4:
+            if (fbfmt == 3) return old < 255 ? old + 1 : old;
+            if (fbfmt == 1) return 255;
+            if (fbfmt == 2) return old < 0xF0 ? old + 0x10 : old;
+            return old;
+        case 5:
+            if (fbfmt == 2) return old >= 0x10 ? old - 0x10 : old;
+            if (fbfmt == 1) return 0;
+            return old > 0 ? old - 1 : old;
+        default: return old;
+    }
+}
+
+/* An 8-bit alpha on the native lattice of framebuffer format `fbfmt`. */
+int quant_alpha(int a, int fbfmt) {
+    if (fbfmt == 1) return a >= 128 ? 255 : 0;
+    if (fbfmt == 2) return int(quant_chan(float(a), 4));
+    if (fbfmt == 0) return 255;
+    return a;
+}
+
 void main() {
     int flags = pc.cfg.x >> 8;
+    int fbfmt = (flags >> 10) & 3;
 
     /* PSP depth-range test: discard transform-mode pixels outside [minz,maxz]. */
     if ((flags & 16) != 0) {
@@ -160,10 +194,40 @@ void main() {
         if ((flags & 256) != 0) col.rgb *= clamp(255.0 - col.a * 2.0, 0.0, 255.0) * (1.0 / 255.0);
     }
 
+    /* Stencil test against the destination stencil (its alpha), reference OP destination
+     * as in ge.c stencil_test_pass(). A failing pixel keeps its colour and takes the
+     * stencil-fail op; a passing one carries the depth-pass op's value to the store.
+     * The depth-fail op is KEEP (ge_gpu.c), so the pipeline depth test discards. */
+    bool stencil_fail = false;
+    int stencil = 0;
+    ivec4 spx = ivec4(0);
+    if ((flags & 8192) != 0) {
+        spx = ivec4(texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0) * 255.0 + 0.5);
+        int smask = (pc.bl.z >> 16) & 0xFF, sref = (pc.bl.z >> 8) & 0xFF;
+        int ref = sref & smask, val = spx.a & smask, sfunc = pc.bl.z & 7;
+        bool pass;
+        if      (sfunc == 0) pass = false;
+        else if (sfunc == 1) pass = true;
+        else if (sfunc == 2) pass = ref == val;
+        else if (sfunc == 3) pass = ref != val;
+        else if (sfunc == 4) pass = ref <  val;
+        else if (sfunc == 5) pass = ref <= val;
+        else if (sfunc == 6) pass = ref >  val;
+        else                 pass = ref >= val;
+        if (!pass) {
+            if ((pc.bl.w & 7) == 0) discard;
+            stencil_fail = true;
+            col = vec4(spx);
+            stencil = stencil_op(pc.bl.w & 7, spx.a, sref, fbfmt);
+        } else {
+            stencil = stencil_op((pc.bl.w >> 16) & 7, spx.a, sref, fbfmt);
+        }
+    }
+
     /* Shader blend: full PSP factor/equation set against the destination snapshot,
      * integer math identical to ge.c blend_chan(). Runs BEFORE dither/quantization so
      * the 16-bit lattice snap applies to the blend RESULT, like the hardware store. */
-    if ((flags & 4096) != 0) {
+    if ((flags & 4096) != 0 && !stencil_fail) {
         ivec4 dpx = ivec4(texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0) * 255.0 + 0.5);
         ivec3 s   = ivec3(col.rgb + 0.5);
         int   sa  = int(col.a + 0.5);
@@ -185,7 +249,7 @@ void main() {
      * framebuffer pixel position (ge.c compose_px_rgba) — divide the device coordinate
      * by the render scale so upscaled rendering keeps the native pattern. Applies in
      * clear mode too, and post-blend when shader blending is active (hardware order). */
-    if ((flags & 512) != 0) {
+    if ((flags & 512) != 0 && !stencil_fail) {
         ivec2 fc = ivec2(gl_FragCoord.xy) / max(pc.bl.y, 1);
         int row = pc.dith[fc.y & 3];
         int dv = (row >> ((fc.x & 3) * 8)) & 0xFF;
@@ -197,7 +261,6 @@ void main() {
      * limit of the real 5650/5551/4444 framebuffer: pack by truncation, expand by bit
      * replication — identical to ge.c pack_fb + unpack_color, so the RGBA8 image and
      * guest VRAM stay bit-identical across arbitrarily many frames. */
-    int fbfmt = (flags >> 10) & 3;
     if (fbfmt == 0) {
         col = vec4(quant_chan(col.r, 5), quant_chan(col.g, 6), quant_chan(col.b, 5), 255.0);
     } else if (fbfmt == 1) {
@@ -206,6 +269,15 @@ void main() {
     } else if (fbfmt == 2) {
         col = vec4(quant_chan(col.r, 4), quant_chan(col.g, 4), quant_chan(col.b, 4),
                    quant_chan(col.a, 4));
+    }
+
+    /* The stored stencil is the op's value on the native lattice, under the alpha write
+     * mask (ge.c pack_fb + fb_write_mask_native: a set mask bit keeps the old bit). On the
+     * native lattice a bitwise merge of expanded values equals the merge of native bits. */
+    if ((flags & 8192) != 0) {
+        int amask = quant_alpha((pc.bl.w >> 24) & 0xFF, fbfmt);
+        int a = quant_alpha(stencil, fbfmt);
+        col.a = float((a & ~amask) | (spx.a & amask));
     }
 
     o_color = col * (1.0 / 255.0);
