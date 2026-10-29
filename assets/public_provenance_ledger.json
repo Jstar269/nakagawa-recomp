@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ab455f8832c935cc17c6066bac9e6ff9ef1d813000f60ede9b0d6028e9dda322"
+      "sha256": "fafb6e994276613e424c35eddf2620d39fc1be02f164dcd46bdaf1418a345a85"
     },
     {
       "path": "NOTICE.md",
@@ -761,7 +761,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "76033d621008f40cf692fa0399bcc7181511db1b83488670e2569835ec88a528"
+      "sha256": "331355ec9073337d4c9b34d5c10994f60262b8d641a6f80f40d1bfbe1cced6da"
     },
     {
       "path": "assets/flight_recorder_schema.json",
@@ -1459,7 +1459,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2349ac35ffb0d4f69a81814cf6f92327c90bebf7faf18075804caee48945182"
+      "sha256": "41979d652141b2255f341fecb7d8745277530cd3174340b73ce2fc119fb2e6d1"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1480,7 +1480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c145b43b0561be3539f27a763d336650ab0e64b16d39a7c33c410dc74e49994"
+      "sha256": "ca4b8c71b86c5243dabde6eb416b38783b9263bc5d366af5363fc04de65f8675"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -9065,7 +9065,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "15597a9ca93918909c4d886e50d26d3337f0b1e11a2cc4cb05c9663b0ca891a1"
+      "sha256": "5e53e9e6dd175d3d0b29709a3d6d8c2167adfaf468f758e50cb5344e09ce6518"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9115,7 +9115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "992bf767037789d09239ab1298ce8b7f95d8b5ade12dfda24e5282e53d9fc71b"
+      "sha256": "b55b9d199f6fac02ca6cdf5eaf4c30f237ac8324665f2e9f9563dfdf629c328f"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9686,7 +9686,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2d022e7a824b87e27e6140e57e08b0b8c1672b93ce5204335346a28d81f03200"
+      "sha256": "665f99b0c4977e8d0ac0011b88238ee69d592f223780ce27341547ddea6379eb"
     },
     {
       "path": "src/rt/savedata.c",
@@ -12616,7 +12616,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9fe329294368ab1ddbed29ad4f8b19aeacc04a530cbd8496f602c56b0abb28a2"
+      "sha256": "327146808f2d430c498c144bdf74506970aa6229782b272151dd246bad2facea"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12737,7 +12737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "312f385aa31dfd3a7a8582282d097dab5a202116000b41cfb2cfeec702c13fda"
+      "sha256": "6bae52d66bed6df0b1d9a19acc4c1f13c79bf2bafdf2f03346207d45a5ca7e11"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -13318,7 +13318,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f18c99c82aed8a3f2a3004a6ed11c8e44618ce9adc039f1f089349fa164094f"
+      "sha256": "19790c7dfae71b5e4fe66a2e8f84ccd771948fda22ce8f309822a06e7d33d409"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -14798,7 +14798,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f8804d2f2a448308ace072451551d94f9257e6785ae937d9db3c254dc32a2a0"
+      "sha256": "950abe67994ddd22d695a3ed9a177adb88ab9da541685615aa511caa2b3f8145"
     },
     {
       "path": "tools/test_entry_frame_balance.py",
@@ -16936,7 +16936,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d80d1086df8d9714668aa4d0a2009ba9ceb8decdf7b13220133876f7b4f4146e"
+      "sha256": "354c297ce8b4665048b3db1f46af3ee6768d42471d3eac26184f0dbb7b5a9f66"
     },
     {
       "path": "tools/title_manager_plan.ps1",
