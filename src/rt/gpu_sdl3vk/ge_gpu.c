@@ -6667,7 +6667,7 @@ static int coherence_run_fallback_reasons(void) {
         s_ge->stencil_enable = i == 0;
         s_ge->color_test_enable = i == 1;
         s_ge->logic_op_enable = i == 2;
-        s_ge->fbp = i == 3 ? 0x08800000u : 0x04000000u;
+        s_ge->fbp = i == 3 ? 0x08000000u : 0x04000000u;   /* main RAM, not VRAM */
         s_ge->fbw = i == 4 ? 1024u : 512u;
         const int got = gpu_state_unsupported_reason();
         if (got != cells[i].want) {
