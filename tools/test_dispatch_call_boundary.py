@@ -1041,9 +1041,9 @@ class StackCensusPipelineTests(unittest.TestCase):
     def test_census_wrapper_that_does_not_drain_is_caught(self):
         compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
             self._TAIL_WORDS, "SR_STACK_CENSUS_COMPLETE", post_call_probe=self._TAIL_PROBE,
-            codegen_mutation=('            "    SR_TAIL_DRAIN(s);\\n"\n'
-                              '            f"    sr_stack_census_exit(',
-                              '            f"    sr_stack_census_exit('),
+            codegen_mutation=('        "    SR_TAIL_DRAIN(s);\\n"\n'
+                              '        f"    sr_stack_census_exit(',
+                              '        f"    sr_stack_census_exit('),
         )
         self.assertEqual(compile_rc, 0, compile_output)
         self.assertEqual(run_rc, 6, f"MUTANT_SURVIVED rc={run_rc}\n{run_output}")

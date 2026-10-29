@@ -37,7 +37,7 @@ does not make this file stale. `--details` prints them to stdout.
 ## Summary
 
 - helpers: **370** (declared in `recomp.h`: 312)
-- reach class: emitter-reached 69, production-runtime-only 271, selftest-only 15, address-only 7, none 8
+- reach class: emitter-reached 68, production-runtime-only 272, selftest-only 15, address-only 7, none 8
 - provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 344
 
 ## Helpers
@@ -293,7 +293,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
 | `sr_host_data_entry_count` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_host_data_prepare` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_host_stack_entry_slow` | `rt/recomp.c` | yes | emitter-reached (via `SR_HOST_STACK_CHECK`) | `rt/recomp.c`: upstream_derived |
+| `sr_host_stack_entry_slow` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_host_stack_window_clear` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_inrange` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_inrange_n` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
