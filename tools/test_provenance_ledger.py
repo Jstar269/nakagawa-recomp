@@ -864,11 +864,12 @@ class _RefreshFixture:
         allowed: dict,
         baseline_digest: str | None = None,
         candidate_digest: str | None = None,
+        schema_version: int = 1,
     ) -> Path:
         """External policy-delta authority binding both digests and the delta."""
         path = self.tmp / "policy-delta-authority.json"
         path.write_text(json.dumps({
-            "schema_version": 1,
+            "schema_version": schema_version,
             "kind": "policy-delta-authority",
             "baseline_policy_sha256": baseline_digest or hashlib.sha256(
                 baseline_policy.read_bytes()).hexdigest(),
@@ -2813,6 +2814,76 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         result = fixture.refresh(
             "docs/guide.md",
             trusted_candidate_policy=blessed, policy_delta_authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("POLICY_DELTA_AUTHORITY_INVALID", result.stderr)
+
+    def _commit_rule_change(self, fixture: _RefreshFixture) -> tuple[dict, dict]:
+        fixture.commit_change("docs/guide.md", "# Guide\n\nRevised.\n", "doc edit")
+        baseline = json.loads(fixture.trusted_policy.read_text(encoding="utf-8"))
+        candidate = json.loads(json.dumps(baseline))
+        candidate["build_mode"] = "PUBLIC_SAFE=reviewed"
+        fixture.commit_change(
+            "assets/public_source_profile.json", json.dumps(candidate, indent=2) + "\n", "rule change")
+        return baseline, candidate
+
+    def _bound(self, key: str, baseline: dict, candidate: dict) -> dict:
+        return {
+            "key": key,
+            "baseline_sha256": provenance_ledger.policy_rule_value_sha256(baseline, key),
+            "candidate_sha256": provenance_ledger.policy_rule_value_sha256(candidate, key),
+        }
+
+    def test_v2_rule_change_bound_to_its_values_is_authorized(self) -> None:
+        fixture = _RefreshFixture(self)
+        baseline, candidate = self._commit_rule_change(fixture)
+        blessed = fixture.external_policy_copy()
+        authority = fixture.policy_delta_authority(
+            baseline_policy=fixture.trusted_policy, candidate_policy=blessed, schema_version=2,
+            allowed=self._allow(rule_changes=[self._bound("build_mode", baseline, candidate)]))
+        result = fixture.refresh(
+            "docs/guide.md", trusted_candidate_policy=blessed, policy_delta_authority=authority)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_v2_rule_change_bound_to_another_value_is_refused(self) -> None:
+        fixture = _RefreshFixture(self)
+        baseline, candidate = self._commit_rule_change(fixture)
+        blessed = fixture.external_policy_copy()
+        reviewed = dict(candidate, build_mode="PUBLIC_SAFE=something-else")
+        authority = fixture.policy_delta_authority(
+            baseline_policy=fixture.trusted_policy, candidate_policy=blessed, schema_version=2,
+            allowed=self._allow(rule_changes=[self._bound("build_mode", baseline, reviewed)]))
+        result = fixture.refresh(
+            "docs/guide.md", trusted_candidate_policy=blessed, policy_delta_authority=authority)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("POLICY_DELTA_RULE_VALUE_MISMATCH", result.stderr)
+
+    def test_v2_rule_changes_must_be_bound_and_present(self) -> None:
+        """A V2 rule change named without its values, or a V2 delta with none, is invalid on its face."""
+        for rule_changes in (["build_mode"], []):
+            with self.subTest(rule_changes=rule_changes):
+                fixture = _RefreshFixture(self)
+                self._commit_rule_change(fixture)
+                blessed = fixture.external_policy_copy()
+                authority = fixture.policy_delta_authority(
+                    baseline_policy=fixture.trusted_policy, candidate_policy=blessed, schema_version=2,
+                    allowed=self._allow(rule_changes=rule_changes))
+                result = fixture.refresh(
+                    "docs/guide.md", trusted_candidate_policy=blessed, policy_delta_authority=authority)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("POLICY_DELTA_AUTHORITY_INVALID", result.stderr)
+
+    def test_v2_cannot_bind_a_path_list_as_a_rule(self) -> None:
+        fixture = _RefreshFixture(self)
+        baseline, candidate = self._commit_rule_change(fixture)
+        blessed = fixture.external_policy_copy()
+        authority = fixture.policy_delta_authority(
+            baseline_policy=fixture.trusted_policy, candidate_policy=blessed, schema_version=2,
+            allowed=self._allow(rule_changes=[
+                self._bound("build_mode", baseline, candidate),
+                {"key": "include_paths", "baseline_sha256": None, "candidate_sha256": "0" * 64},
+            ]))
+        result = fixture.refresh(
+            "docs/guide.md", trusted_candidate_policy=blessed, policy_delta_authority=authority)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("POLICY_DELTA_AUTHORITY_INVALID", result.stderr)
 

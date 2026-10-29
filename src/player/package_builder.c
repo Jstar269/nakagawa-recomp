@@ -1,6 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Builds a title's runtime package when the user presses BUILD PACKAGE. It
+ * finds Python and the build tools (bundled with the player, already
+ * installed, or downloaded once the user agrees on the consent card, the only
+ * network use the player has), runs `tools/nk_cli.py build-package <disc id>`,
+ * and turns the JSON progress lines that command prints into the stages and
+ * progress bar the launcher shows.
+ */
+
 /* The downloader and bootstrapper are Windows-only, but the Linux strict-C gate still compiles this
  * file with -std=c99; this exposes POSIX declarations to it and to the headers it includes. */
 #if !defined(_WIN32) && !defined(_WIN64) && !defined(_POSIX_C_SOURCE)
@@ -9,6 +18,7 @@
 
 #include "package_builder.h"
 #include "nk_json.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 
 #include <ctype.h>
@@ -644,8 +654,14 @@ static void winhttp_close(void *context) {
 
 static bool winhttp_open(void *context, const char *url, const char *allowed_hosts,
                          PackageHttpResponse *response) {
-    (void)context;
+    const PackageHttpOptions *options = (const PackageHttpOptions *)context;
+    wchar_t user_agent[64] = L"NakagawaRecomp/PrerequisiteBootstrap";
     if (!allowed_url(url, allowed_hosts) || !response) return false;
+    if (options && options->user_agent &&
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, options->user_agent, -1, user_agent,
+                            (int)(sizeof(user_agent) / sizeof(user_agent[0]))) <= 0) {
+        return false;
+    }
     WinHttpDownload *state = (WinHttpDownload *)calloc(1, sizeof(*state));
     if (!state) return false;
     if (strlen(url) >= sizeof(state->final_url)) {
@@ -653,7 +669,7 @@ static bool winhttp_open(void *context, const char *url, const char *allowed_hos
         return false;
     }
     snprintf(state->final_url, sizeof(state->final_url), "%s", url);
-    state->session = WinHttpOpen(L"NakagawaRecomp/PrerequisiteBootstrap",
+    state->session = WinHttpOpen(user_agent,
                                  WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!state->session) {
@@ -774,6 +790,14 @@ static bool sha256_begin(BCRYPT_ALG_HANDLE *algorithm, BCRYPT_HASH_HANDLE *hash,
     return true;
 }
 #endif
+
+PackageHttpOpen package_builder_native_transport(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return winhttp_open;
+#else
+    return NULL;
+#endif
+}
 
 bool package_builder_download_verified(
     const PackagePrerequisite *item, const char *destination,
@@ -1421,6 +1445,16 @@ NkResult package_builder_start_prerequisite_fetch(
     const char *argv[] = { python_path, "-c", code, NULL };
     if (!nk_platform_spawn_process(python_path, argv, envp, source_root,
                                    session->log_file_path, &session->process)) {
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(session->process.spawn_error,
+                                           "the build tools' Python", "Build Tools",
+                                           python_path, &block)) {
+            safe_str_copy(session->failure_code, sizeof(session->failure_code), block.code);
+            safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
+                          block.message);
+            fprintf(stderr, "[BUILD] %s: %s\n", block.code, block.details);
+            return NK_ERROR_PROCESS_SPAWN;
+        }
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
                       "Could not start the verified Python prerequisite fetcher.");

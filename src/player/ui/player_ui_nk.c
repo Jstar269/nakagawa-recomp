@@ -103,7 +103,10 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    char update_folder[NK_MAX_PATH];
+    char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
+    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
     char pad_scope[96];
     char pad_status[400];
     char pad_deadzone[48];
@@ -133,6 +136,10 @@ struct PlayerUiNk {
     char remove_disc[NK_MAX_DISC_ID_LEN];
     bool remove_delete_saves;
     bool remove_focus_pending;
+    /* STOP GAME asks first: the title page the question was asked from. */
+    int stop_index;
+    char stop_disc[NK_MAX_DISC_ID_LEN];
+    bool stop_focus_pending;
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
@@ -338,7 +345,7 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -399,6 +406,17 @@ static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
     row->message = player_preflight_plain_message(check);
     row->status = player_preflight_status_word(check);
     row->rgba = player_ui_check_rgba(theme, check);
+}
+
+/* The state's outcome kind as the screens' one; the two lists are in the same order. */
+static PlayerUiNoteKind player_ui_note_kind(PlayerNoteKind kind) {
+    switch (kind) {
+        case PLAYER_NOTE_DONE: return PLAYER_UI_NOTE_DONE;
+        case PLAYER_NOTE_WARNING: return PLAYER_UI_NOTE_WARNING;
+        case PLAYER_NOTE_ERROR: return PLAYER_UI_NOTE_ERROR;
+        case PLAYER_NOTE_NEUTRAL:
+        default: return PLAYER_UI_NOTE_NEUTRAL;
+    }
 }
 
 /* The setup wizard's model, from the same wizard state the existing renderer
@@ -486,6 +504,7 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
                         : app->wizard.font_latin_index_detail[item - 1];
             }
             model.font_message = app->wizard.font_message;
+            model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
             break;
         case WIZARD_STEP_READY_LAUNCH:
             model.runtime_ready = game->is_prepared;
@@ -578,6 +597,12 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     return player_ui_screen_disc(player->ui, &model);
 }
 
+/* PlayerUiUpdateStep follows PlayerUpdatePhase value for value. */
+typedef char player_ui_update_step_order[
+    (PLAYER_UI_UPDATE_CHECKING == (int)PLAYER_UPDATE_CHECKING &&
+     PLAYER_UI_UPDATE_DOWNLOADED == (int)PLAYER_UPDATE_DOWNLOADED &&
+     PLAYER_UI_UPDATE_FAILED == (int)PLAYER_UPDATE_FAILED) ? 1 : -1];
+
 /* The Settings pages' model, from the settings the existing renderer shows. */
 static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *app,
                                                 NkUiScale scale) {
@@ -588,6 +613,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
+        case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
         case VIEW_PSP_FONTS:
             model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
@@ -599,6 +625,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
                         : app->wizard.font_latin_index_detail[item - 1];
             }
             model.font_message = app->wizard.font_message;
+            model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
             break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
@@ -627,7 +654,6 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     }
     model.saves_folder = player->settings_saves;
     model.online_mode = app->settings.online_mode;
-    model.online_updates = app->settings.online_updates;
     model.online_news = app->settings.online_news;
     model.online_reports = app->settings.online_reports;
     model.developer_mode = app->settings.developer_mode;
@@ -648,6 +674,49 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
                                                             : item->license);
         model.tools[model.tool_count++] = line;
     }
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_UPDATES) {
+        const PlayerUpdateState *update = &app->update;
+        const NkUpdateRelease *newest = &update->check.newest;
+        bool checked = update->phase >= PLAYER_UPDATE_CURRENT &&
+                       (update->phase != PLAYER_UPDATE_FAILED ||
+                        update->failed_step != PLAYER_UPDATE_CHECKING);
+        model.update_step = (PlayerUiUpdateStep)update->phase;
+        model.update_failed_step = (PlayerUiUpdateStep)update->failed_step;
+        model.check_updates_at_start = app->settings.check_updates_at_start;
+        model.current_version = NK_PLAYER_VERSION;
+        if (checked) {
+            model.update_version = newest->version;
+            model.update_prerelease = newest->prerelease;
+            model.update_published = newest->published;
+            model.update_notes = newest->notes;
+            model.update_page_url = newest->page_url;
+            model.update_has_zip = newest->has_zip;
+#if defined(_WIN32) || defined(_WIN64)
+            model.update_can_download = newest->has_zip && update->check.newer;
+#endif
+            model.update_zip_name = newest->zip_name;
+            model.update_zip_bytes = newest->zip_size;
+        }
+        model.update_received_bytes = update->received_bytes;
+        /* The folder the last step left something in: the new version, or the
+           downloaded ZIP's folder. */
+        player->update_folder[0] = '\0';
+        if (update->phase == PLAYER_UPDATE_INSTALLED) {
+            snprintf(player->update_folder, sizeof(player->update_folder), "%s",
+                     update->install_dir);
+        } else if (update->zip_path[0] != '\0') {
+            size_t cut = strlen(update->zip_path);
+            while (cut > 0u && update->zip_path[cut - 1u] != '/' &&
+                   update->zip_path[cut - 1u] != '\\') {
+                --cut;
+            }
+            snprintf(player->update_folder, sizeof(player->update_folder), "%.*s",
+                     (int)(cut > 0u ? cut - 1u : 0u), update->zip_path);
+        }
+        model.update_folder = player->update_folder;
+        model.update_error_title = update->error.title;
+        model.update_error_message = update->error.message;
+    }
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
     return player_ui_screen_settings(player->ui, &model);
@@ -656,6 +725,47 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
 /* A share of the full axis range, as a whole percent. */
 static int player_ui_axis_percent(int value) {
     return (value * 100) / 32767;
+}
+
+/* Whose names a controller's pills carry, from the glyph set it is shown in. */
+static InputPadNames player_ui_pad_names(NkUiPromptStyle style) {
+    switch (style) {
+    case NK_UI_PROMPT_LETTERS_A_SOUTH: return INPUT_PAD_NAMES_A_SOUTH;
+    case NK_UI_PROMPT_LETTERS_A_EAST: return INPUT_PAD_NAMES_A_EAST;
+    case NK_UI_PROMPT_SHAPES: return INPUT_PAD_NAMES_SHAPES;
+    default: return INPUT_PAD_NAMES_NEUTRAL;
+    }
+}
+
+/* A binding's glyph as the prompt glyph that draws it (#1299): face buttons, the
+   shoulders, Start and the D-pad as the prompt bar draws them, the arrow keys as the
+   arrow cluster, and every other key or pad input as a keycap or pill with its legend. */
+static PlayerUiBindingGlyph player_ui_binding_glyph(const InputBindingGlyph *glyph) {
+    PlayerUiBindingGlyph out;
+    memset(&out, 0, sizeof(out));
+    out.shown = true;
+    switch (glyph->kind) {
+    case INPUT_GLYPH_FACE_SOUTH: out.action = NK_UI_PROMPT_ACT_CONFIRM; break;
+    case INPUT_GLYPH_FACE_EAST: out.action = NK_UI_PROMPT_ACT_BACK; break;
+    case INPUT_GLYPH_FACE_WEST: out.action = NK_UI_PROMPT_ACT_OPTIONS; break;
+    case INPUT_GLYPH_FACE_NORTH: out.action = NK_UI_PROMPT_ACT_DETAILS; break;
+    case INPUT_GLYPH_SHOULDER_LEFT: out.action = NK_UI_PROMPT_ACT_TAB_PREV; break;
+    case INPUT_GLYPH_SHOULDER_RIGHT: out.action = NK_UI_PROMPT_ACT_TAB_NEXT; break;
+    case INPUT_GLYPH_PAD_START: out.action = NK_UI_PROMPT_ACT_MENU; break;
+    case INPUT_GLYPH_DPAD:
+    case INPUT_GLYPH_ARROW_KEY: out.action = NK_UI_PROMPT_ACT_MOVE; break;
+    case INPUT_GLYPH_PAD_LEGEND:
+        out.action = NK_UI_PROMPT_ACT_TAB_PREV;   /* the shoulder's pill */
+        out.label = glyph->legend;
+        break;
+    case INPUT_GLYPH_KEY:
+        out.action = NK_UI_PROMPT_ACT_CONFIRM;    /* a keycap */
+        out.label = glyph->legend;
+        break;
+    case INPUT_GLYPH_NONE:
+    default: out.shown = false; break;
+    }
+    return out;
 }
 
 /* The controller settings model, from the same input_settings state the
@@ -668,18 +778,26 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
     memset(&model, 0, sizeof(model));
     model.keyboard = input->device == INPUT_DEVICE_KEYBOARD;
     model.capturing = input->capturing ? input->capture_control : -1;
+    /* Keys as keycaps; the controller in the set of the pad the user would pick up,
+       even while the keyboard drives the page. */
+    model.glyph_style = model.keyboard ? NK_UI_PROMPT_KEYCAPS
+                                       : nk_ui_input_pad_prompt_style(&player->input.input);
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         model.names[i] = input_settings_control_name((int)i);
         if (model.keyboard) {
             /* A key used twice is refused when it is pressed, so keys never conflict. */
             input_settings_format_key_binding(input, (int)i, player->pad_bindings[i],
                                               sizeof(player->pad_bindings[i]));
+            input_settings_key_glyph(input, (int)i, &player->pad_glyphs[i]);
         } else {
             input_settings_format_binding(input, (int)i, player->pad_bindings[i],
                                           sizeof(player->pad_bindings[i]));
             model.conflicted[i] = input_settings_is_control_conflicted(input, (int)i);
+            input_settings_pad_glyph(input, (int)i, player_ui_pad_names(model.glyph_style),
+                                     &player->pad_glyphs[i]);
         }
         model.bindings[i] = player->pad_bindings[i];
+        model.glyphs[i] = player_ui_binding_glyph(&player->pad_glyphs[i]);
     }
     model.scope_title = input_settings_is_title_scope(input);
     model.offer_scope = player_app_selected_disc_id(app) != NULL;
@@ -987,6 +1105,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
+                    : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -1009,6 +1128,28 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
             case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
+            case VIEW_UPDATES:
+                /* Each step's result is a screen of its own, focused on what comes
+                   next. CANCEL is the download's only control; a finished check
+                   with nothing newer, a failure or a release without a Windows ZIP
+                   focuses CHECK FOR UPDATES. */
+                screen += (unsigned)app->update.phase;
+                switch (app->update.phase) {
+                    case PLAYER_UPDATE_AVAILABLE:
+                        focus = app->update.check.newest.has_zip
+                            ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
+#if !defined(_WIN32) && !defined(_WIN64)
+                        focus = PLAYER_UI_ID_UPDATE_PAGE;
+#endif
+                        break;
+                    case PLAYER_UPDATE_DOWNLOADING: focus = PLAYER_UI_ID_UPDATE_CANCEL; break;
+                    case PLAYER_UPDATE_DOWNLOADED: focus = PLAYER_UI_ID_UPDATE_INSTALL; break;
+                    case PLAYER_UPDATE_INSTALLED: focus = PLAYER_UI_ID_UPDATE_FOLDER; break;
+                    case PLAYER_UPDATE_CHECKING:
+                    case PLAYER_UPDATE_INSTALLING: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+                    default: focus = PLAYER_UI_ID_UPDATE_CHECK; break;
+                }
+                break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
@@ -1617,6 +1758,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player->library_page_label[0] = '\0';
             model.page_label = player->library_page_label;
         }
+        if (app->update.notice) {
+            snprintf(player->update_notice, sizeof(player->update_notice),
+                     "Version %.40s is out", app->update.check.newest.version);
+            model.update_notice = player->update_notice;
+        }
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
             app->selected_game_index = (int)action.title_index;
@@ -1661,6 +1807,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             model.stalled_game_notice_visible =
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
+            model.stalled_game_dark_picture = app->stalled_game_dark_picture;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {
@@ -1706,9 +1853,50 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                     (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REMOVE);
                 }
                 action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_PRIMARY &&
+                       action.primary == PLAYER_UI_PRIMARY_STOP_GAME) {
+                /* Stopping loses what was not saved, so it asks first, as
+                   quitting with a game running does. */
+                player->stop_index = index;
+                snprintf(player->stop_disc, sizeof(player->stop_disc), "%s",
+                         app->games[index].disc_id);
+                player->stop_focus_pending = true;
+                nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_STOP);
+                action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
                        action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
                 if (out_action != NULL) *out_action = action;
+            }
+        }
+    } else if (route == PLAYER_UI_ROUTE_STOP) {
+        int index = player->stop_index;
+        /* The question goes when there is nothing left to stop: the game
+           ended by itself, or its title left the library. */
+        if (!app->is_game_running || index < 0 || index >= app->game_count ||
+            strcmp(app->games[index].disc_id, player->stop_disc) != 0) {
+            (void)nk_ui_router_pop(player->router);
+        } else {
+            PlayerUiStopModel model;
+            if (player->stop_focus_pending) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_STOP_KEEP);
+                player->stop_focus_pending = false;
+            }
+            memset(&model, 0, sizeof(model));
+            /* STOP GAME stops the game that runs, which may not be this page's. */
+            model.title = app->launch_session.game_title[0] != '\0'
+                ? app->launch_session.game_title : app->games[index].title_name;
+            model.title_index = (size_t)index;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
+            action = player_ui_screen_stop(player->ui, &model);
+            if (action.kind == PLAYER_UI_ACTION_BACK) {
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_PRIMARY) {
+                if (out_action != NULL) *out_action = action;
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
     } else if (route == PLAYER_UI_ROUTE_REMOVE) {

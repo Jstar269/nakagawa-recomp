@@ -168,12 +168,14 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
+               FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
                /* Whole pages for the window-fit sweep only. */
                FLOW_PAGE_LIBRARY, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT, FLOW_PAGE_REMOVE,
+               FLOW_PAGE_STOP,
                FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
@@ -201,7 +203,7 @@ static const PlayerUiCheckRow k_disc_rows_fonts[] = {
     {"Checked later", "Game data", "Nakagawa checks the game's files again after you build it.",
      0xDBB024FFu},
     {"Some missing", "Fonts", "Some PSP system fonts were not found, so some text may look "
-     "different. You can import your own fonts in the setup wizard.", 0xDBB024FFu},
+     "different. You can import your own fonts in Settings, PSP fonts.", 0xDBB024FFu},
     {"Ready", "Sound", "Sound plays through your default audio device. With no device, the "
      "game runs silently.", 0x2DD4BFFFu}
 };
@@ -268,6 +270,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
+        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED
+            ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
     settings.pacing = "PSP timing";
@@ -282,11 +286,35 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
     }
+    settings.current_version = "0.0.2-dev";
+    if (which == FLOW_SETTINGS_UPDATES) {
+        /* A newer pre-release with its Windows ZIP, as the check found it. */
+        settings.update_step = PLAYER_UI_UPDATE_AVAILABLE;
+        settings.update_version = "0.0.3";
+        settings.update_prerelease = true;
+        settings.update_published = "2026-11-04";
+        settings.update_notes = "Second preview. Faster builds and fewer black screens.";
+        settings.update_page_url =
+            "https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3";
+        settings.update_has_zip = true;
+        settings.update_can_download = true;
+        settings.update_zip_name = "nakagawa-recomp-0.0.3-windows-x64.zip";
+        settings.update_zip_bytes = 284758051ull;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_FAILED) {
+        settings.update_step = PLAYER_UI_UPDATE_FAILED;
+        settings.update_failed_step = PLAYER_UI_UPDATE_CHECKING;
+        settings.update_error_title = "Couldn't Reach GitHub";
+        settings.update_error_message =
+            "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
+            "later. Nothing was changed.";
+    }
     if (which == FLOW_SETTINGS_FONTS) {
         for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
             settings.font_lines[settings.font_line_count++] = k_font_lines[i];
         }
         settings.font_message = "Imported 3 fonts from C:/synthetic/psp-fonts.";
+        settings.font_message_kind = PLAYER_UI_NOTE_DONE;
     }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
@@ -303,16 +331,35 @@ static const char *const k_pad_names[PLAYER_UI_CONTROLLER_BUTTONS] = {
     "L Trigger (L1)", "R Trigger (R1)", "Triangle", "Circle", "Cross", "Square", "Home", "Hold"
 };
 static const char *const k_pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
-    "Button Back / Select", "Button Start", "D-Pad Up", "D-Pad Right", "D-Pad Down",
-    "D-Pad Left", "Left Bumper (LB / L1) / Left Trigger", "Right Bumper (RB / R1) / Right Trigger",
-    "Button North (Y / Triangle)", "Button East (B / Circle)", "Button South (A / Cross)",
-    "Button West (X / Square)", "Guide / Home", "None (Unbound)"
+    "Back (Select)", "Start", "D-Pad Up", "D-Pad Right", "D-Pad Down",
+    "D-Pad Left", "LB (L1) / LT (L2)", "RB (R1) / RT (R2)",
+    "Y (Triangle)", "B (Circle)", "A (Cross)", "X (Square)", "Guide (Home)", "None (Unbound)"
 };
+/* When set, Select's controller binding in the controller cases. */
+static const char *k_pad_bindings_override;
 /* input_settings.c's words for the profile's default keyboard keys (#1299). */
 static const char *const k_key_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
-    "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
+    "Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
     "Q", "W", "S", "Z", "X", "A", "None", "None"
 };
+/* The glyphs player_ui_nk.c gives the defaults (#1299): the controller's in the set of
+   an Xbox-style pad, the keys as keycaps; Home and Hold are unbound. */
+#define GLYPH(action, label) {true, NK_UI_PROMPT_ACT_##action, label}
+#define NO_GLYPH {false, NK_UI_PROMPT_ACT_CONFIRM, NULL}
+static const PlayerUiBindingGlyph k_pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    GLYPH(TAB_PREV, "VIEW"), GLYPH(MENU, NULL), GLYPH(MOVE, NULL), GLYPH(MOVE, NULL),
+    GLYPH(MOVE, NULL), GLYPH(MOVE, NULL), GLYPH(TAB_PREV, NULL), GLYPH(TAB_NEXT, NULL),
+    GLYPH(DETAILS, NULL), GLYPH(BACK, NULL), GLYPH(CONFIRM, NULL), GLYPH(OPTIONS, NULL),
+    NO_GLYPH, NO_GLYPH
+};
+static const PlayerUiBindingGlyph k_key_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    GLYPH(CONFIRM, "SHIFT"), GLYPH(CONFIRM, "ENTER"), GLYPH(MOVE, NULL), GLYPH(MOVE, NULL),
+    GLYPH(MOVE, NULL), GLYPH(MOVE, NULL), GLYPH(CONFIRM, "Q"), GLYPH(CONFIRM, "W"),
+    GLYPH(CONFIRM, "S"), GLYPH(CONFIRM, "Z"), GLYPH(CONFIRM, "X"), GLYPH(CONFIRM, "A"),
+    NO_GLYPH, NO_GLYPH
+};
+#undef GLYPH
+#undef NO_GLYPH
 
 static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
     PlayerUiControllerModel pad;
@@ -324,6 +371,12 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         pad.names[i] = k_pad_names[i];
         pad.bindings[i] = which == FLOW_CONTROLLER_KEYS ? k_key_bindings[i] : k_pad_bindings[i];
+        pad.glyphs[i] = which == FLOW_CONTROLLER_KEYS ? k_key_glyphs[i] : k_pad_glyphs[i];
+    }
+    pad.glyph_style = which == FLOW_CONTROLLER_KEYS ? NK_UI_PROMPT_KEYCAPS
+                                                    : NK_UI_PROMPT_LETTERS_A_SOUTH;
+    if (k_pad_bindings_override != NULL && which != FLOW_CONTROLLER_KEYS) {
+        pad.bindings[0] = k_pad_bindings_override;
     }
     pad.capturing = -1;
     pad.scope = "global mapping";
@@ -342,7 +395,7 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
         pad.capturing = 10;
         pad.conflicted[8] = true;
         pad.conflicted[11] = true;
-        pad.status = "Conflict: Button North (Y / Triangle) bound to both Triangle and Square";
+        pad.status = "Conflict: Y (Triangle) bound to both Triangle and Square";
         pad.status_error = true;
     } else if (which == FLOW_CONTROLLER_KEYS) {
         /* The keyboard keys of a game's own mapping, with Start waiting for a key. */
@@ -548,6 +601,15 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         remove.logical_width = g_flow_width;
         remove.logical_height = g_flow_height;
         return player_ui_screen_remove(ui, &remove);
+    }
+    if (which == FLOW_PAGE_STOP) {
+        PlayerUiStopModel stop;
+        memset(&stop, 0, sizeof(stop));
+        stop.title = "Synthetic Showcase Scene";
+        stop.title_index = 0u;
+        stop.logical_width = g_flow_width;
+        stop.logical_height = g_flow_height;
+        return player_ui_screen_stop(ui, &stop);
     }
     if (which == FLOW_CONSENT_FULL) {
         PlayerUiPrereqModel pre;
@@ -1354,7 +1416,8 @@ static void test_router(void) {
     CHECK(!nk_ui_router_replace(router, (PlayerUiRoute)0) &&
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
           !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)),
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_STOP + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -1752,6 +1815,18 @@ static void test_settings_pages(void) {
          "Controller settings opens the controller screen"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_DONE, PLAYER_UI_SETTINGS_DONE,
          "Done saves and closes Settings"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_CHECK_UPDATES,
+         "Check for updates opens Updates and asks GitHub"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_DOWNLOAD, PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE,
+         "Download fetches the newer version only when pressed"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_PAGE, PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "Open release page opens it"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_UPDATE_AT_START,
+         PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START, "the check-at-start switch toggles it"},
+        {FLOW_SETTINGS_UPDATES, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Back leaves Updates"},
+        {FLOW_SETTINGS_UPDATE_FAILED, PLAYER_UI_ID_UPDATE_CHECK, PLAYER_UI_SETTINGS_CHECK_UPDATES,
+         "Check again asks GitHub again, only when pressed"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ONLINE, PLAYER_UI_SETTINGS_OPEN_ONLINE,
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
@@ -1768,8 +1843,6 @@ static void test_settings_pages(void) {
          "Back returns to Settings from build tools and cache"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
          "the online switch toggles online mode"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
-         "the update check switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_NEWS, PLAYER_UI_SETTINGS_TOGGLE_NEWS,
          "the news switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_REPORTS, PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
@@ -1790,7 +1863,8 @@ static void test_settings_pages(void) {
          "Keep them leaves the tools alone and returns to build tools and cache"}
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-                                     FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE};
+                                     FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
+                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -1822,6 +1896,22 @@ static void test_settings_pages(void) {
               strstr(dump, "\"REMOVE BUILD TOOLS\"") != NULL &&
               strstr(dump, "Shared library cache cleared.") != NULL,
           "build tools and cache shows the switch, tool removal and the clear notice");
+    CHECK(flow_case_fits(FLOW_SETTINGS, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"CHECK FOR UPDATES\"") != NULL,
+          "Settings has CHECK FOR UPDATES at 960 x 540");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATES, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Version 0.0.3 is out.") != NULL &&
+              strstr(dump, "0.0.3 (pre-release, 2026-11-04)") != NULL &&
+              strstr(dump, "releases/tag/v0.0.3") != NULL &&
+              strstr(dump, "Second preview.") != NULL &&
+              strstr(dump, "271.6 MB") != NULL &&
+              strstr(dump, "\"CHECK AT START: OFF\"") != NULL &&
+              strstr(dump, "\"DOWNLOAD\"") != NULL,
+          "Updates shows this and the newest version, the notes, the link and the size");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Couldn't Reach GitHub") != NULL &&
+              strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
+          "offline, Updates says it couldn't reach GitHub and offers only Check again");
 }
 
 /* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
@@ -1932,13 +2022,13 @@ static void test_controller_and_developer_log_pages(void) {
           "Close leaves the developer log");
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
-              strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"BUTTON SOUTH (A / CROSS)\"") != NULL &&
+              strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"A (CROSS)\"") != NULL &&
               strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"SAVE PROFILE\"") != NULL,
           "the mapping names each control beside its binding, and the mapping it edits");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
               strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
-              strstr(dump, "Conflict: Button North") != NULL &&
+              strstr(dump, "Conflict: Y (Triangle)") != NULL &&
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
     CHECK(dump_flow_case(FLOW_DEVLOG, dump, sizeof(dump)) &&
@@ -1961,6 +2051,76 @@ static void test_controller_and_developer_log_pages(void) {
     CHECK(flow_case_fits(FLOW_DEVLOG, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "\"CLOSE\"") != NULL,
           "the newest log line and Close are on screen at 960 x 540");
+}
+
+/* True when the dump has a draw command of `kind` for element `id`, with `text` when
+   that is not NULL; the first such command's left and right edges go to x0 and x1. */
+static bool dump_has_element(const char *dump, NkUiId id, const char *kind, const char *text,
+                             int *x0, int *x1) {
+    char prefix[32];
+    char quoted[40];
+    const char *row = dump;
+    (void)snprintf(prefix, sizeof(prefix), "%08X %s ", (unsigned)id, kind);
+    if (text != NULL) (void)snprintf(quoted, sizeof(quoted), "\"%s\"\n", text);
+    while (row != NULL && *row != '\0') {
+        const char *end = strchr(row, '\n');
+        if (strncmp(row, prefix, strlen(prefix)) == 0 &&
+            (text == NULL || (end != NULL && (size_t)(end - row) + 1u >= strlen(quoted) &&
+                              strncmp(end + 1 - strlen(quoted), quoted, strlen(quoted)) == 0))) {
+            int left = 0, top = 0, right = 0;
+            if (sscanf(row + strlen(prefix), "%d %d %d", &left, &top, &right) != 3) return false;
+            if (x0 != NULL) *x0 = left;
+            if (x1 != NULL) *x1 = right;
+            return true;
+        }
+        row = end != NULL ? end + 1 : NULL;
+    }
+    return false;
+}
+
+/* #1299: each binding's prompt glyph, in the set of the device shown, between the
+   control's name and its binding: keycaps with the key's legend for the keyboard, the
+   pad's own face letters, shoulders, D-pad and pills for the controller. */
+static void test_controller_binding_glyphs(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const FlowCase pages[] = {FLOW_CONTROLLER, FLOW_CONTROLLER_KEYS};
+    static const char *const pad_text[PLAYER_UI_CONTROLLER_BUTTONS] = {
+        "VIEW", NULL, NULL, NULL, NULL, NULL, "L", "R", "Y", "B", "A", "X", NULL, NULL
+    };
+    for (size_t p = 0u; p < sizeof(pages) / sizeof(pages[0]); ++p) {
+        bool keys = pages[p] == FLOW_CONTROLLER_KEYS;
+        const PlayerUiBindingGlyph *glyphs = keys ? k_key_glyphs : k_pad_glyphs;
+        CHECK(dump_flow_case(pages[p], dump, sizeof(dump)), "the Controls page draws");
+        for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
+            NkUiId glyph = PLAYER_UI_ID_CONTROLLER_GLYPH(control);
+            const char *text = keys ? glyphs[control].label : pad_text[control];
+            int glyph_x1 = 0, words_x0 = 0;
+            if (!glyphs[control].shown) {
+                CHECK(!dump_has_element(dump, glyph, "RECT", NULL, NULL, NULL) &&
+                          !dump_has_element(dump, glyph, "TEXT", NULL, NULL, NULL),
+                      "an unbound control has no glyph");
+                continue;
+            }
+            CHECK(dump_has_element(dump, glyph, "RECT", NULL, NULL, &glyph_x1),
+                  "every binding has its glyph");
+            if (text != NULL) {
+                CHECK(dump_has_element(dump, glyph, "TEXT", text, NULL, NULL),
+                      "the glyph prints the key's legend or the pad button's name");
+            } else {
+                CHECK(!dump_has_element(dump, glyph, "TEXT", NULL, NULL, NULL),
+                      "the D-pad, arrow keys and menu button glyphs are drawn, not written");
+            }
+            CHECK(dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_BUTTON(control), "TEXT", NULL,
+                                   &words_x0, NULL) &&
+                      glyph_x1 < words_x0,
+                  "the glyph sits before the binding in words");
+        }
+    }
+    CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)) &&
+              dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(1u), "TEXT", "ENTER", NULL,
+                               NULL) &&
+              strstr(dump, "\"PRESS A KEY...\"") != NULL,
+          "the control waiting for a key keeps the glyph of the key it has");
 }
 
 /* #1299: the keyboard keys on the Controls page. CONTROLLER and KEYBOARD choose
@@ -2661,6 +2821,8 @@ static int capture_screens(const char *directory) {
             {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_BUILD_CACHE, "settings-build-cache",
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
+            {FLOW_SETTINGS_UPDATES, "settings-updates", PLAYER_UI_ID_UPDATE_DOWNLOAD},
+            {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},
@@ -2900,6 +3062,18 @@ static void test_stalled_game_offers_stop_once(void) {
     }
     CHECK(stops == 1u, "a stalled game's page offers STOP GAME once");
     CHECK(strstr(dump, "KEEP WAITING") != NULL, "the stall card keeps Keep waiting");
+    CHECK(strstr(dump, "hasn't drawn anything new") != NULL, "a no-new-frames card says so");
+    /* #308: frames keep coming but show nothing: the same card, worded for a black screen. */
+    model.stalled_game_dark_picture = true;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &model);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "only a black screen") != NULL, "a dark-picture card names the black screen");
+    CHECK(strstr(dump, "hasn't drawn anything new") == NULL, "a dark-picture card drops the no-frames text");
+    CHECK(strstr(dump, "KEEP WAITING") != NULL, "the dark-picture card keeps Keep waiting");
     nk_ui_destroy(ui);
 }
 
@@ -3140,6 +3314,186 @@ static void test_remove_from_library(void) {
     nk_ui_destroy(ui);
 }
 
+/* The walkthrough: the wizard's chips promised Fonts and Ready steps that a
+   first run never shows (copying the files ends on the library card). Every
+   step a first run shows names only the steps on that route. */
+static void test_wizard_steps_match_the_route(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const FlowCase route[] = {FLOW_WIZ_WELCOME, FLOW_WIZ_OPTIONS, FLOW_WIZ_CHOOSE,
+                                     FLOW_WIZ_VERIFY, FLOW_WIZ_COPYING};
+    for (size_t i = 0u; i < sizeof(route) / sizeof(route[0]); ++i) {
+        CHECK(dump_flow_case(route[i], dump, sizeof(dump)), "lay out a wizard step");
+        CHECK(strstr(dump, "FONTS\"") == NULL && strstr(dump, "READY\"") == NULL,
+              "no Fonts or Ready chip promises a step the first run never shows");
+        CHECK(strstr(dump, "WELCOME\"") != NULL && strstr(dump, "OPTIONS\"") != NULL &&
+                  strstr(dump, "GAME\"") != NULL && strstr(dump, "VERIFY\"") != NULL,
+              "the chips name Welcome, Options, Game and Verify");
+    }
+    CHECK(dump_flow_case(FLOW_WIZ_WELCOME, dump, sizeof(dump)) &&
+              strstr(dump, "\"4  VERIFY\"") != NULL,
+          "Verify is the last of four steps");
+}
+
+/* The walkthrough: lines that report something that worked, or nothing at
+   all, were drawn in the warning colour. Only a warning is amber. */
+static void test_outcome_lines_take_their_colour(void) {
+    static char dump[CASE_DUMP_CAP];
+    char expect[96];
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    (void)snprintf(expect, sizeof(expect), "%08X \"Imported 3 fonts", (unsigned)theme->ready);
+    CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
+          "a font import that worked reads in the ready colour");
+    (void)snprintf(expect, sizeof(expect), "%08X \"Importing reads", (unsigned)theme->muted);
+    CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
+          "the Fonts step's hint, before any import, is muted");
+    (void)snprintf(expect, sizeof(expect), "%08X \"Choose a disc image below",
+                   (unsigned)theme->muted);
+    CHECK(dump_flow_case(FLOW_WIZ_CHOOSE, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
+          "the Game step with nothing chosen yet shows the muted hint");
+}
+
+static PlayerUiAction activate_stop_button(NkUiId id, const PlayerUiStopModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_stop(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+/* The walkthrough: STOP GAME ended the game at once. It asks first, as
+   quitting with a game running does: KEEP PLAYING is focused first, STOP
+   GAME is the danger button, and Back (the router's pop) keeps playing. */
+static void test_stop_game_asks_first(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiRouter *router;
+    NkUiEvent back;
+    PlayerUiStopModel stop;
+    PlayerUiAction action;
+    char expect[96];
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    memset(&stop, 0, sizeof(stop));
+    stop.title = "Synthetic Showcase Scene";
+    stop.title_index = 2u;
+    stop.logical_width = 1280.0f;
+    stop.logical_height = 800.0f;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the stop-game UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_stop(ui, &stop);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_STOP_KEEP,
+          "Keep playing has the first focus, never Stop game");
+    CHECK(strstr(dump, "\"Stop Synthetic Showcase Scene?\"") != NULL &&
+              strstr(dump, "anything since its last save is lost") != NULL,
+          "the dialog names the game and says what stopping loses");
+    (void)snprintf(expect, sizeof(expect), "%08X \"STOP GAME\"", (unsigned)theme->error);
+    CHECK(strstr(dump, expect) != NULL, "Stop game is the danger button");
+    nk_ui_destroy(ui);
+    action = activate_stop_button(PLAYER_UI_ID_STOP_CONFIRM, &stop);
+    CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
+              action.primary == PLAYER_UI_PRIMARY_STOP_GAME && action.title_index == 2u,
+          "Stop game stops the game");
+    action = activate_stop_button(PLAYER_UI_ID_STOP_KEEP, &stop);
+    CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Keep playing leaves the dialog");
+    router = nk_ui_router_create();
+    CHECK(router != NULL, "router allocates");
+    if (router == NULL) return;
+    CHECK(nk_ui_router_push(router, PLAYER_UI_ROUTE_TITLE) &&
+              nk_ui_router_push(router, PLAYER_UI_ROUTE_STOP) &&
+              nk_ui_router_current(router) == PLAYER_UI_ROUTE_STOP,
+          "the question opens over the title page");
+    memset(&back, 0, sizeof(back));
+    back.type = NK_UI_EV_BACK;
+    CHECK(nk_ui_router_handle_event(router, &back) &&
+              nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
+          "Back (Esc or B) closes the question and the game keeps running");
+    nk_ui_router_destroy(router);
+}
+
+/* The walkthrough: three of the Controls page's binding buttons ended in
+   "...". The words input_settings.c writes for the defaults and for any one
+   input stay within PLAYER_UI_CONTROLLER_BINDING_CHARS, and a label that long
+   shows whole at every launcher size. */
+static void test_binding_labels_fit(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const struct { int w; int h; } sizes[] = {
+        {1280, 720}, {960, 540}, {1366, 705}, {853, 480}, {1920, 1080}
+    };
+    static char widest[PLAYER_UI_CONTROLLER_BINDING_CHARS + 1u];
+    char caps[64];
+    memset(widest, 'W', PLAYER_UI_CONTROLLER_BINDING_CHARS);
+    widest[PLAYER_UI_CONTROLLER_BINDING_CHARS] = '\0';
+    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        for (int keys = 0; keys < 2; ++keys) {
+            const char *const *words = keys ? k_key_bindings : k_pad_bindings;
+            CHECK(flow_case_fits(keys ? FLOW_CONTROLLER_KEYS : FLOW_CONTROLLER, sizes[s].w,
+                                 sizes[s].h, dump, sizeof(dump)),
+                  "the Controls page fits the window");
+            for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
+                size_t n = 0u;
+                if (keys && i == 1u) continue; /* Start waits for a key in that case */
+                caps[n++] = '"';
+                for (const char *c = words[i]; *c != '\0' && n + 2u < sizeof(caps); ++c) {
+                    caps[n++] = (*c >= 'a' && *c <= 'z') ? (char)(*c - 'a' + 'A') : *c;
+                }
+                caps[n++] = '"';
+                caps[n] = '\0';
+                CHECK(strstr(dump, caps) != NULL, "every default binding shows whole");
+            }
+        }
+    }
+    /* The widest label the words may take, in place of Select's binding. */
+    k_pad_bindings_override = widest;
+    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        (void)flow_case_fits(FLOW_CONTROLLER, sizes[s].w, sizes[s].h, dump, sizeof(dump));
+        (void)snprintf(caps, sizeof(caps), "\"%s\"", widest);
+        CHECK(strstr(dump, caps) != NULL,
+              "a binding of PLAYER_UI_CONTROLLER_BINDING_CHARS characters shows whole");
+    }
+    k_pad_bindings_override = NULL;
+}
+
+/* The walkthrough: the top bar's chip read "Controller · Letters, A south".
+   It names the pad as a player would. */
+static void test_input_chip_words(void) {
+    CHECK(strcmp(nk_ui_input_label(NK_UI_PROMPT_KEYCAPS), "KEYBOARD AND MOUSE") == 0,
+          "the keyboard chip");
+    CHECK(strcmp(nk_ui_input_label(NK_UI_PROMPT_LETTERS_A_SOUTH), "XBOX-STYLE CONTROLLER") == 0,
+          "A on the south button is an Xbox-style controller");
+    CHECK(strcmp(nk_ui_input_label(NK_UI_PROMPT_LETTERS_A_EAST),
+                 "NINTENDO-STYLE CONTROLLER") == 0,
+          "A on the east button is a Nintendo-style controller");
+    CHECK(strcmp(nk_ui_input_label(NK_UI_PROMPT_SHAPES), "PLAYSTATION-STYLE CONTROLLER") == 0,
+          "shape labels are a PlayStation-style controller");
+    CHECK(strcmp(nk_ui_input_label(NK_UI_PROMPT_NEUTRAL), "CONTROLLER") == 0,
+          "any other pad is a controller");
+}
+
 /* The category -> player tier table in scr_title.c and the "Status words"
    table in docs/COMPATIBILITY.md say the same thing, row for row (#1297). */
 static void test_tier_table_matches_the_docs(void) {
@@ -3231,6 +3585,7 @@ int main(int argc, char **argv) {
     test_settings_pages();
     test_controller_and_developer_log_pages();
     test_controller_keyboard_page();
+    test_controller_binding_glyphs();
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
@@ -3238,6 +3593,11 @@ int main(int argc, char **argv) {
     test_default_focus_lands_on_the_main_action();
     test_tier_table_matches_the_docs();
     test_remove_from_library();
+    test_wizard_steps_match_the_route();
+    test_outcome_lines_take_their_colour();
+    test_stop_game_asks_first();
+    test_binding_labels_fit();
+    test_input_chip_words();
     test_build_bar_shows_compiled_parts();
     test_library_demos();
     CHECK(build_library_golden(library, sizeof(library), &library_size),

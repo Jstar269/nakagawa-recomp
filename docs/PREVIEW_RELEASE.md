@@ -1,16 +1,16 @@
-# Release candidate scope & qualification guide
+# Release candidate scope and qualification guide
 
-Status: CURRENT — maintained release candidate specification. Governed by release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278). This document does not create a Git tag, GitHub Release, or release asset (AGENTS.md § 3).
+Status: CURRENT. The maintained release candidate specification, under [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278). This document does not create a Git tag, GitHub Release or release asset (AGENTS.md § 3).
 
-> [!IMPORTANT]
-> **SUPERSEDED VERSION PROPOSAL & HISTORICAL CANDIDATE CONTEXT:**
-> An earlier draft proposed `0.1.0-preview.1` based on older source snapshots (such as base `a699000` and `b3f87be`). That proposal is formally superseded. The project roadmap has converged on **`v0.0.1`** as the first formal experimental platform release, with qualification criteria defined in [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278). Historical preview exercises proved basic packaging feasibility for earlier trees, but they do not represent the current candidate.
+## Release version
 
-## Target release version
+`v0.0.1`, the first experimental release, was published on 2026-10-28 from an exact, reproducible,
+publication-clean commit on `main`. `main` now builds `0.0.2-dev`, and the next release follows the same
+procedure. An older proposal for a `0.1.0-preview.1` version is withdrawn.
 
-`v0.0.1` is the targeted release version. It represents the first formal experimental public platform release from an exact, reproducible, publication-clean integrated commit on `main`.
-
-Per `AGENTS.md` § 3, agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. This document serves as the maintainer's candidate specification and reproduction procedure.
+Agents never create, move, push or delete Git tags, edit GitHub Releases, upload release assets or change a
+published version without the maintainer's explicit authorization in the current turn (`AGENTS.md` § 3). This
+document is the maintainer's candidate specification and reproduction procedure.
 
 ## What this release contains
 
@@ -46,7 +46,7 @@ This is the limitations section, not a footnote:
 
 - The dated preview candidate at base `a699000` had no `src/player/` tree and no `player` Make target.
 - The older `b3f87be` packaging exercise proved toolchain reproducibility for an earlier snapshot, but predated PR #277 (PSMF MPEG-2 flag corrections and media work) and #293 (public export immutability).
-- These historical exercises remain recorded as packaging evidence, but they do not define the scope of `v0.0.1`.
+- Both stay recorded as packaging evidence; neither defines a release's scope.
 
 ## Supported host contract
 
@@ -392,7 +392,7 @@ Steps:
    .\prereqs\python\python.exe -c "import runpy, sys; sys.path.insert(0, 'source'); sys.argv = ['prereq_fetcher', '--manifest', 'source/assets/prereq_manifest.json', '--verify-bundle', 'prereqs']; runpy.run_module('tools.nk_core.prereq_fetcher', run_name='__main__')"
    ```
 
-6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. v0.0.1 is not Authenticode-signed, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
+6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. Releases are not Authenticode-signed yet, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
 7. Click **START SETUP WIZARD** and add your game image. If its game card names an encrypted executable, place your own unencrypted files in the folder the card names, as [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#what-the-player-does-automatically) describes.
 8. Select **BUILD PACKAGE**. Pass: no consent card and no download prompt appear, and the build completes. A `PREREQUISITE_BUNDLE_INVALID` card names the damaged file: record the name, it is a failure. Any build-tool consent card is a failure.
 9. Select **Play**. Pass: the title reaches its first interactive screen and accepts input.
@@ -403,4 +403,4 @@ Report the result in #1285 and #278: the ZIP SHA-256, the Windows build and VM t
 
 ## Attribution boundary
 
-`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, and the vendored ATRAC3+ license record attribution and third-party license data for the `v0.0.1` candidate. The packaged native binaries also require the generated `THIRD_PARTY_NOTICES` bundle and `RELINK.md` described above.
+`NOTICE.md`, `THIRD_PARTY_LICENSES/`, `assets/release_manifest.json`, `assets/upstream/`, and the vendored ATRAC3+ license record attribution and third-party license data for a release candidate. The packaged native binaries also require the generated `THIRD_PARTY_NOTICES` bundle and `RELINK.md` described above.

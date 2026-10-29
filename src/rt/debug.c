@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // Debug framework implementation. Defines global state and memory watch infrastructure.
 
@@ -327,6 +328,106 @@ void sr_debug_init_watches(void) {
         }
     }
 
+}
+
+/* ---- diagnostic streams (#1296) ---------------------------------------------
+ *
+ * The Windows C runtime buffers a printf call as a whole only when the stream is a
+ * console. Otherwise an unbuffered stream, which stderr is, reaches the OS one byte
+ * per WriteFile. The player points the runtime's stdout and stderr at the session
+ * log, so each diagnostic byte was a system call on whichever host thread printed
+ * it, the guest thread included: an 80-byte line into the player's append-mode log
+ * cost about half a millisecond.
+ *
+ * A redirected stream therefore gets a full buffer, and a host thread writes it out
+ * every SR_DEBUG_STREAM_FLUSH_MS, so a line reaches the log within that period and
+ * the thread that printed it does not pay for the write. Everything printed still
+ * reaches the log when the process ends by exit() (the drain thread stops, then the
+ * C runtime flushes), _Exit(), _exit() or ExitProcess() (the C runtime flushes as it
+ * unloads), abort() or a failed assert() (the SIGABRT handler below), or a host
+ * fault (the crash reporter flushes stderr after its report). Only a process killed
+ * from outside, by TerminateProcess, can lose what it printed in the last period.
+ * A console keeps the C runtime's per-call buffering. Other C libraries already
+ * write one call to an unbuffered stream as one write, so stderr stays unbuffered
+ * there and stdout stays line buffered, as before. */
+#ifdef _WIN32
+#include <io.h>
+#include <signal.h>
+#include <windows.h>
+
+#define SR_DEBUG_STREAM_BUFFER_BYTES 65536u
+
+static HANDLE s_debug_stream_drain_thread;
+static HANDLE s_debug_stream_drain_stop;
+
+/* A stream whose handle is a file, pipe or device other than a console. A missing
+ * handle (no standard stream at all) is left to the C runtime. */
+static int sr_debug_stream_redirected(FILE *stream) {
+    DWORD mode = 0;
+    int fd = _fileno(stream);
+    if (fd < 0) return 0;
+    intptr_t os_handle = _get_osfhandle(fd);
+    if (os_handle == -1 || os_handle == -2 || os_handle == 0) return 0;
+    return GetConsoleMode((HANDLE)os_handle, &mode) == 0;
+}
+
+static void sr_debug_streams_flush(void) {
+    (void)fflush(stderr);
+    (void)fflush(stdout);
+}
+
+/* abort() and a failed assert() end the process after this returns. */
+static void sr_debug_streams_on_abort(int sig) {
+    (void)sig;
+    sr_debug_streams_flush();
+}
+
+static DWORD WINAPI sr_debug_streams_drain(LPVOID unused) {
+    (void)unused;
+    while (WaitForSingleObject(s_debug_stream_drain_stop, SR_DEBUG_STREAM_FLUSH_MS) == WAIT_TIMEOUT)
+        sr_debug_streams_flush();
+    return 0;
+}
+
+/* At exit() the drain thread finishes its pass before the C runtime's final flush,
+ * so process teardown never ends it while it holds a stream lock. */
+static void sr_debug_streams_stop(void) {
+    (void)SetEvent(s_debug_stream_drain_stop);
+    (void)WaitForSingleObject(s_debug_stream_drain_thread, INFINITE);
+}
+#endif
+
+int sr_debug_streams_init(void) {
+#ifdef _WIN32
+    if (s_debug_stream_drain_thread) return 0;
+    FILE *const streams[2] = {stderr, stdout};
+    int redirected[2] = {sr_debug_stream_redirected(stderr), sr_debug_stream_redirected(stdout)};
+    if (!redirected[0] && !redirected[1]) return 0;
+
+    /* Without a drain thread the streams stay unbuffered, as before. */
+    s_debug_stream_drain_stop = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (s_debug_stream_drain_stop)
+        s_debug_stream_drain_thread = CreateThread(NULL, 0, sr_debug_streams_drain, NULL, 0, NULL);
+    if (!s_debug_stream_drain_thread) {
+        fprintf(stderr, "warning: diagnostic streams stay unbuffered: no drain thread (error %lu)\n",
+                (unsigned long)GetLastError());
+        if (s_debug_stream_drain_stop) CloseHandle(s_debug_stream_drain_stop);
+        s_debug_stream_drain_stop = NULL;
+        return 0;
+    }
+    (void)signal(SIGABRT, sr_debug_streams_on_abort);
+    (void)atexit(sr_debug_streams_stop);
+
+    int buffered = 0;
+    for (int i = 0; i < 2; i++) {
+        if (redirected[i] && setvbuf(streams[i], NULL, _IOFBF, SR_DEBUG_STREAM_BUFFER_BYTES) == 0)
+            buffered++;
+    }
+    return buffered;
+#else
+    (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    return 0;
+#endif
 }
 
 /* ---- SR_NAN_TRAP reporter (see the SR_NAN_TRAP block in recomp.h) ----------

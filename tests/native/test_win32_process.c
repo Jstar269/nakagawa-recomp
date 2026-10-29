@@ -181,6 +181,31 @@ int main(int argc, char *argv[]) {
     assert(!refused.is_active);
     printf("[PROCESS_TEST] Invalid UTF-8 working directory and environment refused.\n");
 
+    /* A refused start keeps the code CreateProcessW gave, which is the only
+     * thing a Windows Security block reaches the player as. A folder is refused
+     * with ERROR_ACCESS_DENIED, the code an attack surface reduction rule gives;
+     * a missing file with ERROR_FILE_NOT_FOUND, which is no block. */
+    char build_dir[MAX_PATH];
+    assert(GetFullPathNameA(SR_SELFTEST_BUILD_ROOT, MAX_PATH, build_dir, NULL) > 0);
+    const char *dir_argv[] = {build_dir, NULL};
+    assert(!nk_platform_spawn_process(build_dir, dir_argv, NULL, NULL, NULL, &refused));
+    assert(!refused.is_active);
+    assert(refused.spawn_error == ERROR_ACCESS_DENIED);
+    assert(nk_platform_spawn_block(refused.spawn_error) == NK_SPAWN_BLOCK_ACCESS_DENIED);
+    char os_text[256];
+    assert(nk_platform_describe_os_error(refused.spawn_error, os_text, sizeof(os_text)));
+    assert(os_text[0] != '\0' && os_text[strlen(os_text) - 1] != '\n');
+    char missing_exe[MAX_PATH + 32];
+    snprintf(missing_exe, sizeof(missing_exe), "%s\\no-such-program.exe", build_dir);
+    const char *missing_argv[] = {missing_exe, NULL};
+    assert(!nk_platform_spawn_process(missing_exe, missing_argv, NULL, NULL, NULL, &refused));
+    assert(refused.spawn_error == ERROR_FILE_NOT_FOUND);
+    assert(nk_platform_spawn_block(refused.spawn_error) == NK_SPAWN_BLOCK_NONE);
+    assert(nk_platform_spawn_block(ERROR_VIRUS_INFECTED) == NK_SPAWN_BLOCK_THREAT);
+    assert(nk_platform_spawn_block(ERROR_VIRUS_DELETED) == NK_SPAWN_BLOCK_THREAT);
+    assert(nk_platform_spawn_block(ERROR_ACCESS_DISABLED_BY_POLICY) == NK_SPAWN_BLOCK_POLICY);
+    printf("[PROCESS_TEST] A refused start keeps the OS error and names a security block.\n");
+
     /* Profile directories are read through the wide API: a LOCALAPPDATA outside
      * the active code page must round-trip as UTF-8, not as '?' bytes. An
      * explicit LOCALAPPDATA takes precedence over the Known Folder. */

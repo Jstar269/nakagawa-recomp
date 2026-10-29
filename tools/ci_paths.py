@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Classify a change for the path-gated public CI workflow.
 
@@ -51,7 +51,7 @@ def _is_docs(path: str) -> bool:
         path.startswith("docs/")
         or path.startswith(".github/ISSUE_TEMPLATE/")
         or path.startswith(".github/PULL_REQUEST_TEMPLATE")
-        or path in {"README.md", "ISSUES.md", "AGENTS.md", ".github/copilot-instructions.md"}
+        or path in {"README.md", "AGENTS.md", ".github/copilot-instructions.md"}
         or _is_markdown(path)
     )
 

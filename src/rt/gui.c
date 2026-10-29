@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 
-/* * to sceCtrl, so the recompiled game runs like a normal app (watch the intro, press START, play).
+/* The game's window: presents the PSP framebuffer each frame and feeds keyboard and gamepad
+ * input to sceCtrl, so the recompiled game runs like a normal app (watch the intro, press START,
+ * play). gui_init() picks the presenter, gui_present() paces and shows a frame, and the
+ * gui_pause_* functions run the pause overlay.
  *
  * The default presenter is SDL3 + Vulkan (src/rt/gpu_sdl3vk), which owns the window and ALL input
  * devices — the comprehensive SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c simply
@@ -343,8 +347,20 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 #endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static void gui_release_presenter(void);
+static void gui_exit_cleanup(void) {
+    sr_perf_shutdown();
+    gui_release_presenter();
+}
+#endif
+
 void gui_init(const char *title) {
     (void)title;
+#if defined(SR_SDL3VK) || defined(_WIN32)
+    static int cleanup_registered;
+    if (!cleanup_registered && atexit(gui_exit_cleanup) == 0) cleanup_registered = 1;
+#endif
     gui_headless_acceptance_parse();
     if (s_headless_accept_requested && s_headless_accept_invalid) {
         sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=invalid_frame_target");

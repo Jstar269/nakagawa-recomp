@@ -845,7 +845,8 @@ def latin_index_states(
             detail = f"L{index + 1} missing; legacy nkltn.pgf"
         else:
             detail = f"L{index + 1} missing {requested}"
-        states.append({"source": resolution["source"], "detail": detail})
+        states.append({"source": resolution["source"], "served_index": served_index,
+                       "detail": detail})
     return states
 
 

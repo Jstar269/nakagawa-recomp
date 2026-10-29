@@ -33,23 +33,27 @@ const char *input_settings_control_name(int control_idx) {
     return "Unknown Control";
 }
 
+/* A host input by the label a pad prints on it, with its other common name in brackets
+   (the PlayStation-style label for a face button or shoulder): short enough that a
+   control's two inputs together fit its button on the Controls page
+   (INPUT_SETTINGS_BINDING_TEXT_MAX). */
 static const char *friendly_host_button_name(NkHostGamepadButton btn) {
     switch (btn) {
-    case NK_HOST_BUTTON_SOUTH:          return "Button South (A / Cross)";
-    case NK_HOST_BUTTON_EAST:           return "Button East (B / Circle)";
-    case NK_HOST_BUTTON_WEST:           return "Button West (X / Square)";
-    case NK_HOST_BUTTON_NORTH:          return "Button North (Y / Triangle)";
-    case NK_HOST_BUTTON_BACK:           return "Button Back / Select";
-    case NK_HOST_BUTTON_START:          return "Button Start";
+    case NK_HOST_BUTTON_SOUTH:          return "A (Cross)";
+    case NK_HOST_BUTTON_EAST:           return "B (Circle)";
+    case NK_HOST_BUTTON_WEST:           return "X (Square)";
+    case NK_HOST_BUTTON_NORTH:          return "Y (Triangle)";
+    case NK_HOST_BUTTON_BACK:           return "Back (Select)";
+    case NK_HOST_BUTTON_START:          return "Start";
     case NK_HOST_BUTTON_LEFT_STICK:     return "Left Stick Click";
     case NK_HOST_BUTTON_RIGHT_STICK:    return "Right Stick Click";
-    case NK_HOST_BUTTON_LEFT_SHOULDER:  return "Left Bumper (LB / L1)";
-    case NK_HOST_BUTTON_RIGHT_SHOULDER: return "Right Bumper (RB / R1)";
+    case NK_HOST_BUTTON_LEFT_SHOULDER:  return "LB (L1)";
+    case NK_HOST_BUTTON_RIGHT_SHOULDER: return "RB (R1)";
     case NK_HOST_BUTTON_DPAD_UP:        return "D-Pad Up";
     case NK_HOST_BUTTON_DPAD_DOWN:      return "D-Pad Down";
     case NK_HOST_BUTTON_DPAD_LEFT:      return "D-Pad Left";
     case NK_HOST_BUTTON_DPAD_RIGHT:     return "D-Pad Right";
-    case NK_HOST_BUTTON_GUIDE:          return "Guide / Home";
+    case NK_HOST_BUTTON_GUIDE:          return "Guide (Home)";
     case NK_HOST_BUTTON_MISC1:          return "Misc Button";
     case NK_HOST_BUTTON_TOUCHPAD:       return "Touchpad";
     default:                            return nk_host_button_name(btn);
@@ -62,8 +66,8 @@ static const char *friendly_host_axis_name(NkHostGamepadAxis axis) {
     case NK_HOST_AXIS_LEFTY:         return "Left Stick Y";
     case NK_HOST_AXIS_RIGHTX:        return "Right Stick X";
     case NK_HOST_AXIS_RIGHTY:        return "Right Stick Y";
-    case NK_HOST_AXIS_LEFT_TRIGGER:  return "Left Trigger (LT / L2)";
-    case NK_HOST_AXIS_RIGHT_TRIGGER: return "Right Trigger (RT / R2)";
+    case NK_HOST_AXIS_LEFT_TRIGGER:  return "LT (L2)";
+    case NK_HOST_AXIS_RIGHT_TRIGGER: return "RT (R2)";
     default:                         return nk_host_axis_name(axis);
     }
 }
@@ -130,6 +134,28 @@ void input_settings_format_key(int key, char *buf, size_t buf_sz) {
     nk_host_key_words(key, buf, buf_sz);
 }
 
+/* A left-right pair of one modifier (Left Shift and Right Shift) reads as the modifier alone:
+   either key works, and the binding stays short enough for its button. */
+static const char *input_settings_key_pair_word(int a, int b) {
+    static const struct {
+        const char *left;
+        const char *right;
+        const char *word;
+    } kPairs[] = {
+        { "lshift", "rshift", "Shift" }, { "lctrl", "rctrl", "Ctrl" }, { "lalt", "ralt", "Alt" }
+    };
+    const char *first = nk_host_key_name(a);
+    const char *second = nk_host_key_name(b);
+    if (!first || !second) return NULL;
+    for (size_t i = 0; i < sizeof(kPairs) / sizeof(kPairs[0]); i++) {
+        if ((strcmp(first, kPairs[i].left) == 0 && strcmp(second, kPairs[i].right) == 0) ||
+            (strcmp(first, kPairs[i].right) == 0 && strcmp(second, kPairs[i].left) == 0)) {
+            return kPairs[i].word;
+        }
+    }
+    return NULL;
+}
+
 void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
                                        char *buf, size_t buf_sz) {
     char primary[32];
@@ -140,6 +166,11 @@ void input_settings_format_key_binding(const InputSettingsState *state, int cont
         return;
     }
     const NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    const char *pair = input_settings_key_pair_word(keys->primary, keys->secondary);
+    if (pair) {
+        snprintf(buf, buf_sz, "%s", pair);
+        return;
+    }
     input_settings_format_key(keys->primary, primary, sizeof(primary));
     if (keys->secondary != NK_HOST_KEY_NONE && keys->secondary != keys->primary) {
         input_settings_format_key(keys->secondary, secondary, sizeof(secondary));
@@ -151,6 +182,137 @@ void input_settings_format_key_binding(const InputSettingsState *state, int cont
     } else {
         snprintf(buf, buf_sz, "%s", primary);
     }
+}
+
+/* Keycap legends where a key's name in words is longer than what its key prints. */
+static const struct {
+    const char *words;
+    const char *legend;
+} kKeyLegends[] = {
+    { "Left Shift", "SHIFT" }, { "Right Shift", "SHIFT" }, { "Left Ctrl", "CTRL" },
+    { "Right Ctrl", "CTRL" },  { "Left Alt", "ALT" },      { "Right Alt", "ALT" },
+    { "Backspace", "BKSP" },   { "Insert", "INS" },        { "Delete", "DEL" },
+    { "Page Up", "PG UP" },    { "Page Down", "PG DN" }
+};
+
+/* The pills of the pad inputs with no glyph of their own, per InputPadNames. */
+enum { PILL_BACK, PILL_GUIDE, PILL_LEFT_STICK, PILL_RIGHT_STICK, PILL_LEFT_TILT,
+       PILL_RIGHT_TILT, PILL_LEFT_TRIGGER, PILL_RIGHT_TRIGGER, PILL_COUNT };
+static const char *const kPadPills[PILL_COUNT][INPUT_PAD_NAMES_COUNT] = {
+    /* neutral   A south   A east   shapes */
+    { "BACK",    "VIEW",   "-",     "CREATE" },
+    { "HOME",    "GUIDE",  "HOME",  "HOME" },
+    { "LS",      "LS",     "LS",    "L3" },   /* a stick pressed in */
+    { "RS",      "RS",     "RS",    "R3" },
+    { "LS",      "LS",     "LS",    "LS" },   /* a stick pushed one way */
+    { "RS",      "RS",     "RS",    "RS" },
+    { "LT",      "LT",     "ZL",    "L2" },
+    { "RT",      "RT",     "ZR",    "R2" }
+};
+
+static void glyph_set_legend(InputBindingGlyph *out, InputGlyphKind kind, const char *text) {
+    size_t i;
+    out->kind = kind;
+    for (i = 0; text[i] != '\0' && i + 1u < sizeof(out->legend); i++) {
+        char c = text[i];
+        out->legend[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    out->legend[i] = '\0';
+}
+
+void input_settings_key_glyph(const InputSettingsState *state, int control_idx,
+                              InputBindingGlyph *out) {
+    char words[32];
+    const char *text = words;
+    const char *name;
+    int key;
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return;
+    key = state->profile.psp_keys[control_idx].primary;
+    if (key == NK_HOST_KEY_NONE) key = state->profile.psp_keys[control_idx].secondary;
+    name = nk_host_key_name(key);
+    if (!name) return;
+    if (strcmp(name, "up") == 0 || strcmp(name, "down") == 0 || strcmp(name, "left") == 0 ||
+        strcmp(name, "right") == 0) {
+        out->kind = INPUT_GLYPH_ARROW_KEY;
+        return;
+    }
+    input_settings_format_key(key, words, sizeof(words));
+    /* A keypad key prints what its copy on the main keys prints. */
+    if (strncmp(text, "Keypad ", 7) == 0) text += 7;
+    for (size_t i = 0; i < sizeof(kKeyLegends) / sizeof(kKeyLegends[0]); i++) {
+        if (strcmp(text, kKeyLegends[i].words) == 0) {
+            text = kKeyLegends[i].legend;
+            break;
+        }
+    }
+    glyph_set_legend(out, INPUT_GLYPH_KEY, text);
+}
+
+/* A trigger or stick axis, as its pill. */
+static int axis_pill(int axis) {
+    switch (axis) {
+    case NK_HOST_AXIS_LEFTX:
+    case NK_HOST_AXIS_LEFTY:         return PILL_LEFT_TILT;
+    case NK_HOST_AXIS_RIGHTX:
+    case NK_HOST_AXIS_RIGHTY:        return PILL_RIGHT_TILT;
+    case NK_HOST_AXIS_LEFT_TRIGGER:  return PILL_LEFT_TRIGGER;
+    case NK_HOST_AXIS_RIGHT_TRIGGER: return PILL_RIGHT_TRIGGER;
+    default:                         return -1;
+    }
+}
+
+void input_settings_pad_glyph(const InputSettingsState *state, int control_idx,
+                              InputPadNames names, InputBindingGlyph *out) {
+    const NkBindingSource *src;
+    const char *extra = NULL;
+    int pill = -1;
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return;
+    if ((unsigned)names >= (unsigned)INPUT_PAD_NAMES_COUNT) names = INPUT_PAD_NAMES_NEUTRAL;
+    src = &state->profile.psp_buttons[control_idx].primary;
+    if (src->type == NK_BINDING_NONE) src = &state->profile.psp_buttons[control_idx].secondary;
+    switch (src->type) {
+    case NK_BINDING_HOST_BUTTON:
+        switch (src->index) {
+        case NK_HOST_BUTTON_SOUTH:          out->kind = INPUT_GLYPH_FACE_SOUTH; return;
+        case NK_HOST_BUTTON_EAST:           out->kind = INPUT_GLYPH_FACE_EAST; return;
+        case NK_HOST_BUTTON_WEST:           out->kind = INPUT_GLYPH_FACE_WEST; return;
+        case NK_HOST_BUTTON_NORTH:          out->kind = INPUT_GLYPH_FACE_NORTH; return;
+        case NK_HOST_BUTTON_LEFT_SHOULDER:  out->kind = INPUT_GLYPH_SHOULDER_LEFT; return;
+        case NK_HOST_BUTTON_RIGHT_SHOULDER: out->kind = INPUT_GLYPH_SHOULDER_RIGHT; return;
+        case NK_HOST_BUTTON_START:          out->kind = INPUT_GLYPH_PAD_START; return;
+        case NK_HOST_BUTTON_DPAD_UP:
+        case NK_HOST_BUTTON_DPAD_DOWN:
+        case NK_HOST_BUTTON_DPAD_LEFT:
+        case NK_HOST_BUTTON_DPAD_RIGHT:     out->kind = INPUT_GLYPH_DPAD; return;
+        case NK_HOST_BUTTON_BACK:           pill = PILL_BACK; break;
+        case NK_HOST_BUTTON_GUIDE:          pill = PILL_GUIDE; break;
+        case NK_HOST_BUTTON_LEFT_STICK:     pill = PILL_LEFT_STICK; break;
+        case NK_HOST_BUTTON_RIGHT_STICK:    pill = PILL_RIGHT_STICK; break;
+        /* The extra buttons have one name on every pad: the paddles are numbered
+           as SDL describes them. */
+        case NK_HOST_BUTTON_MISC1:          extra = "EXTRA"; break;
+        case NK_HOST_BUTTON_RIGHT_PADDLE1:  extra = "P1"; break;
+        case NK_HOST_BUTTON_RIGHT_PADDLE2:  extra = "P2"; break;
+        case NK_HOST_BUTTON_LEFT_PADDLE1:   extra = "P3"; break;
+        case NK_HOST_BUTTON_LEFT_PADDLE2:   extra = "P4"; break;
+        case NK_HOST_BUTTON_TOUCHPAD:       extra = "TOUCH"; break;
+        default:                            return;
+        }
+        break;
+    case NK_BINDING_HOST_TRIGGER:
+    case NK_BINDING_HOST_AXIS_POS:
+    case NK_BINDING_HOST_AXIS_NEG:
+        pill = axis_pill(src->index);
+        break;
+    default:
+        return;
+    }
+    if (pill >= 0) extra = kPadPills[pill][names];
+    if (extra) glyph_set_legend(out, INPUT_GLYPH_PAD_LEGEND, extra);
 }
 
 void input_settings_init(InputSettingsState *state) {

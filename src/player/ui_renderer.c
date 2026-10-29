@@ -1,6 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Draws launcher screens with SDL_Renderer: every screen the new UI in
+ * src/player/ui/ does not draw (player_ui_nk_view_active() decides), and all
+ * of them with --ui=legacy. It also owns the fonts and the cover-art loader
+ * those screens use. ui_render_frame() is the entry point; each render_*
+ * function draws one screen.
+ */
+
 #include "ui_renderer.h"
 #include "ui_clip.h"
 #include "iso_reader.h"
@@ -4302,13 +4310,13 @@ static void render_build_cache(SDL_Renderer *ren, PlayerApp *app, const UiInput 
 /* The one sentence each switch carries (docs/ONLINE_FEATURES.md), and the plain
    fact that this build has no online feature yet. */
 static const char k_online_sentence[] =
-    "Check nakagawa.jaycast.net for updates and news, and let you send reports. "
-    "Nothing is sent without you.";
+    "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent "
+    "without you.";
 static const char k_developer_sentence[] =
     "Show a developer log on screen to help track down problems. Stays on this PC.";
 static const char k_online_not_yet[] =
-    "This version has no online features yet and makes no connection. Your choice is "
-    "kept for when they arrive.";
+    "News and reports aren't built yet, so online mode makes no connection. Your choice "
+    "is kept for when they arrive.";
 
 /* Draws the two option switches and their sentences from y; returns the y below
    them. focus is advanced past each switch drawn. */
@@ -4325,11 +4333,10 @@ static float render_option_switches(SDL_Renderer *ren, PlayerApp *app, const UiI
     }
     y = draw_text_wrapped(ren, x, y + 44.0f, width, k_online_sentence, 0.95f, COLOR_TEXT_MUTED, 2);
     if (with_parts && app->settings.online_mode) {
-        static const char *const names[3] = {"Update check", "News", "Reports"};
-        const bool values[3] = {app->settings.online_updates, app->settings.online_news,
-                                app->settings.online_reports};
+        static const char *const names[2] = {"News", "Reports"};
+        const bool values[2] = {app->settings.online_news, app->settings.online_reports};
         float bx = x;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 2; ++i) {
             snprintf(label, sizeof(label), "%s: %s", names[i], values[i] ? "ON" : "OFF");
             focused = app->focus_index == (*focus)++;
             if (draw_button_focused(ren, bx, y + 8.0f, 180.0f, 34.0f, label, values[i], in,
@@ -4601,7 +4608,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
-                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
+                strcmp(app->last_error.error_code, "DISC_IMAGE_COMPRESSED") == 0 ||
+                strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }
         }

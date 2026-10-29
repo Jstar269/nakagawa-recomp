@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 
 /* *
- * Loads a statically-linked PSP ELF into guest memory, seeds the CpuState from the entry
- * register state the PPSSPP reference trace recorded ("# init" line in the trace), registers
- * every generated function, and runs the entry function with tracing on. Execution stops
- * cleanly at the first HLE call (sr_hle_call longjmps), exactly where the reference trace is
- * truncated for comparison.
+ * main() of every built game. It loads the PSP program into guest memory, registers every
+ * generated function (sr_register_all), resolves the entry point, and then runs in one of
+ * two ways:
+ *   - with --gui, as the player launches a game: it opens the window (gui.c) and hands the
+ *     entry point to the scheduler (sched_run in sched.c), which runs the game's threads
+ *     until it exits. --sched alone does the same without a window;
+ *   - without --sched, as a trace-comparison harness: it seeds the CpuState from the entry
+ *     register state the reference trace recorded ("# init" line), runs the entry function
+ *     with tracing on, and stops at the first HLE call (sr_hle_call longjmps), exactly where
+ *     the reference trace is truncated for comparison.
  *
- * Usage: driver <elf> <ref-trace> <out-trace>
+ * Usage: driver <elf> <ref-trace> <out-trace> [--sched] [--gui] [--expect-u32=ADDR:VALUE]
+ *        driver --image <image.bin> <base-hex> <entry-hex> <ref-trace> <out-trace> [...]
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -479,9 +486,10 @@ int main(int argc, char **argv) {
 #endif
         }
     }
-    /* With the player attaching stdout to the per-session log, keep each
-       diagnostic line durable even if the player later stops the child. */
-    (void)setvbuf(stdout, NULL, _IOLBF, 0);
+    /* With the player attaching stdout and stderr to the per-session log, keep each
+       diagnostic line durable even if the player later stops the child, without a
+       system call per byte on the thread that prints it (#1296). */
+    (void)sr_debug_streams_init();
 
     /* Initialize debug framework from SR_DEBUG env var (or legacy SR_* vars) */
     g_sr_debug = sr_debug_init();
@@ -645,6 +653,7 @@ have_image:;
          * the declared project program from the same runtime module package. sched_init
          * is process-start-only; LoadExec uses the explicit teardown/rebind seam below. */
         sched_init(&s);
+        sched_preempt_timer_start();
         for (;;) {
             sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
             sched_run(entry, s.r[4], s.r[5]);

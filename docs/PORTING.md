@@ -306,7 +306,7 @@ are.
 
 That census was itself incomplete, and said so with confidence: it reported 38/38
 covered while eight further title addresses sat in
-`ensure_runtime_sync_callbacks` — a configuration block base, a semaphore name
+the runtime-sync seeding (since retired) — a configuration block base, a semaphore name
 pointer, and six guest wrapper entry points, all reached from an unconditionally
 registered `sceDisplaySetMode`. Not one of them is written inside a `MEM_*` call: each
 is bound to a local or assigned into a `CpuState` register first, so the extractor's
@@ -327,12 +327,13 @@ recompiler address probes have been removed from generic `hle.c`, `sched.c`, and
 `recomp.c`. The historical inventory remains under `RETIRED_*` names as a guard;
 the live HST diagnostic count in those files is zero. Generic runtime diagnostics
 use `SR_TRACE_PC` and `SR_WATCH`.
-Three active former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups (15 addresses / 22 sites)
-remain typed title configuration via `runtime_bindings` (`display_bringup`,
-`runtime_sync`, `frame_ready_latch_addr`). The libfont readiness injection was retired;
-its single historical address remains only in the inventory. Retired inventory lives in
-`tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
-`tools/test_hle_title_isolation.py`.
+The four former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups are all retired: libfont readiness
+injection, and the display bring-up replay, runtime-sync seeding and frame-latch assist
+(retired under [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)). Their
+historical addresses remain only in the inventory,
+`tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT`, gated by
+`tools/test_hle_title_isolation.py`. A manifest that still names `display_bringup`,
+`runtime_sync` or `frame_ready_latch_addr` fails with `HLE_TITLE_ASSIST_RETIRED`.
 
 No Newlib master or guest thread-table address remains: the HST reent bindings were
 retired under [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363), and the
@@ -347,9 +348,9 @@ By bucket (live `hle.c` only):
   There is no blanket numeric ceiling and no whole-region VRAM exemption: a
   direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
   `0x041fffff`) is inventoried like any other absolute guest address.
-- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (15 active title-configured
-  addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
-  build/profile couplings below (C-2, C-3) are retired.
+- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (the retired title-configured
+  addresses stay only in `HLE_TITLE_CONFIGURED_COMPAT`); two documented build/profile
+  couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
 - `DIAGNOSTIC_ONLY`: 0 live; 30 addresses / 36 historical sites retired.
 - `PRIVATE_ACCEPTANCE_ONLY`: 0.
@@ -357,22 +358,20 @@ By bucket (live `hle.c` only):
   explicit generic-site rules are regression-tested).
 - `UNRESOLVED_COUPLING`: 0 (all sites classified; the gate fails closed on any new one).
 
-Migrated compat (now `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
+Retired title-configured compat (formerly `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
 
-| Group | Addresses | Title config | Note |
+| Group | Addresses | Former title config | Status |
 | --- | --- | --- | --- |
-| `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | 30-vblank timer is profile-qualified |
-| `runtime_sync_callback_config` | 8 | `runtime_sync {config_base, sema_name_ptr, wrappers{mode,enter,leave}}` | mode-keyed pairs not flattened |
-| `display_setmode_guest_init` | 6 | `display_bringup {malloc, vblank_init, render_init, magic, ready_flag, ctx_word}` | 3 dispatch + 3 data |
+| `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | retired; field fails with `HLE_TITLE_ASSIST_RETIRED` |
+| `runtime_sync_callback_config` | 8 | `runtime_sync` | retired; field fails with `HLE_TITLE_ASSIST_RETIRED` |
+| `display_setmode_guest_init` | 6 | `display_bringup` | retired; field fails with `HLE_TITLE_ASSIST_RETIRED` |
 
-**Why this no longer blocks title #2 (for these 3 live groups).** Generic `sceDisplaySetMode`
-/ `sceKernelLoadModule` / `sr_vblank_tick` now consult `title_config` and perform
-no HST guest calls, writes or callback installs when the title has no compat
-profile. A second executable reaching `h_DisplaySetMode` with no `display_bringup`
-gets the generic PSP path (mode/width/height logged, no guest dispatch). The
-`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the active and retired addresses auditable and the
-`test_hle_title_isolation.py` matrix proves wrong-title, invalid-address and
-disabled-profile fail-closed.
+**Why these no longer block title #2.** `sceDisplaySetMode`, `sceKernelLoadModule` and
+`sr_vblank_tick` perform no title guest calls, writes or callback installs for any profile:
+`h_DisplaySetMode` logs the requested mode and size and returns success, and only a title's
+own GE finish callback advances its counters. The `HLE_TITLE_CONFIGURED_COMPAT` inventory
+keeps the retired addresses auditable, and `test_hle_title_isolation.py` proves no generic
+source or header carries them.
 
 ### Top remaining title-#2 blockers
 

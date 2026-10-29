@@ -45,6 +45,9 @@
 #define LIBRARY_DEMO_ART_WIDTH 72.0f
 /* The first-start card's height with its icon, rounded up. */
 #define LIBRARY_EMPTY_CARD_HEIGHT 300.0f
+/* The LIBRARY heading's line height (NK_UI_TYPE_DISPLAY), reserved when working
+   out how much room is left for the grid or the empty card. */
+#define LIBRARY_HEADING_ROW_HEIGHT 32.0f
 
 static NkUiSizing sizing_grow(void) {
     NkUiSizing sizing = {NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
@@ -90,6 +93,7 @@ static float library_tile_width(float width, size_t columns) {
     if (columns == 0u) columns = 1u;
     tile = (available - NK_UI_TILE_GAP * (float)(columns - 1u)) / (float)columns;
     if (tile < 150.0f) tile = 150.0f;
+    /* Whole logical pixels, so every card in a row has the same width. */
     return (float)(int)tile;
 }
 
@@ -136,8 +140,8 @@ size_t player_ui_library_page_size_with_demos(float logical_width, float logical
     /* Window minus the bars, the body padding, the heading row and the TEST THIS
        PC section under the grid. */
     grid_height = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
-                  NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM - 32.0f - NK_UI_SPACE_4 -
-                  library_demos_height(demo_count, columns);
+                  NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM - LIBRARY_HEADING_ROW_HEIGHT -
+                  NK_UI_SPACE_4 - library_demos_height(demo_count, columns);
     rows = grid_height > tile_height
         ? (size_t)((grid_height + NK_UI_TILE_ROW_GAP) / (tile_height + NK_UI_TILE_ROW_GAP))
         : 1u;
@@ -184,7 +188,6 @@ static size_t library_grid_title(const PlayerUiTitle *titles, size_t count, size
 static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
-
 
 static void library_prompts(NkUi *ui, bool has_titles) {
     static const NkUiPromptItem with_titles[] = {
@@ -294,12 +297,12 @@ static bool library_demo_card(NkUi *ui, NkUiId id, const PlayerUiTitle *title, f
         NkUiLayout art = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(LIBRARY_DEMO_ART_WIDTH),
                                      sizing_grow(), 0.0f);
         NkUiStyle art_style;
-        float box = LIBRARY_DEMO_ART_WIDTH - 2.0f * NK_UI_SPACE_2;
-        float h = LIBRARY_DEMO_ROW_HEIGHT - 2.0f * NK_UI_SPACE_2;
-        float w = h * picture->view_w / picture->view_h;
-        if (w > box) {
-            w = box;
-            h = w * picture->view_h / picture->view_w;
+        float picture_box = LIBRARY_DEMO_ART_WIDTH - 2.0f * NK_UI_SPACE_2;
+        float picture_h = LIBRARY_DEMO_ROW_HEIGHT - 2.0f * NK_UI_SPACE_2;
+        float picture_w = picture_h * picture->view_w / picture->view_h;
+        if (picture_w > picture_box) {
+            picture_w = picture_box;
+            picture_h = picture_w * picture->view_h / picture->view_w;
         }
         art.align_x = NK_UI_ALIGN_CENTER;
         art.align_y = NK_UI_ALIGN_CENTER;
@@ -308,7 +311,8 @@ static bool library_demo_card(NkUi *ui, NkUiId id, const PlayerUiTitle *title, f
         art_style.corner_radius = NK_UI_RADIUS_TILE;
         art_style.square_corners = NK_UI_CORNER_SQUARE_TR | NK_UI_CORNER_SQUARE_BR;
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 1u), &art, &art_style)) {
-            nk_ui_shapes(ui, nk_ui_child_id(id, 2u), sizing_fixed(w), sizing_fixed(h), picture);
+            nk_ui_shapes(ui, nk_ui_child_id(id, 2u), sizing_fixed(picture_w),
+                         sizing_fixed(picture_h), picture);
             nk_ui_end_container(ui);
         }
     }
@@ -321,14 +325,14 @@ static bool library_demo_card(NkUi *ui, NkUiId id, const PlayerUiTitle *title, f
         body.align_y = NK_UI_ALIGN_CENTER;
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 3u), &body, NULL)) {
             NkUiTextStyle name = nk_ui_type(NK_UI_TYPE_TILE_TITLE, theme->paper);
-            const char *word = nk_ui_caps(ui, safe_text(title->library_status, ""));
+            const char *status_word = nk_ui_caps(ui, safe_text(title->library_status, ""));
             nk_ui_text(ui, nk_ui_child_id(id, 4u),
                        nk_ui_text_clamp(ui, safe_text(title->title, "Nakagawa demo"), &name,
                                         text_width, 2), &name);
             if (title->status_marker != NULL && title->status_marker[0] != '\0') {
-                (void)snprintf(meta, sizeof(meta), "%s %s", title->status_marker, word);
+                (void)snprintf(meta, sizeof(meta), "%s %s", title->status_marker, status_word);
             } else {
-                (void)snprintf(meta, sizeof(meta), "%s", word);
+                (void)snprintf(meta, sizeof(meta), "%s", status_word);
             }
             nk_ui_text_role(ui, nk_ui_child_id(id, 5u), meta, NK_UI_TYPE_LABEL_S,
                             title->status_rgba != 0u ? title->status_rgba : theme->muted);
@@ -439,6 +443,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
     if (nk_ui_begin_container(ui, LIBRARY_ID_BODY, &layout, NULL)) {
         size_t columns = model->columns > 0u ? model->columns : 1u;
         size_t page_size;
+        /* The add card ends the grid, so it counts as one more item to page. */
         size_t item_count = has_games ? game_count + 1u : 0u;
         size_t page_count;
         size_t start;
@@ -476,6 +481,14 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 }
             }
             nk_ui_spacer(ui, LIBRARY_ID_HEAD_SPACER, sizing_grow(), sizing_fixed(1.0f));
+            /* The check at start found a newer version: one quiet button, never a
+               screen of its own. */
+            if (model->update_notice != NULL &&
+                nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE, model->update_notice,
+                             NK_UI_BUTTON_SMALL)) {
+                result.kind = PLAYER_UI_ACTION_SETTINGS;
+                result.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_OPEN_UPDATES;
+            }
             if (page_count > 1u) {
                 NkUiLayout pager = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
                                                NK_UI_SPACE_3);
@@ -504,7 +517,8 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
         if (!has_games) {
             /* Room for the card under the heading, above TEST THIS PC. */
             float room = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
-                         NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM - 32.0f - NK_UI_SPACE_4 -
+                         NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM -
+                         LIBRARY_HEADING_ROW_HEIGHT - NK_UI_SPACE_4 -
                          library_demos_height(demo_count, columns);
             PlayerUiAction empty = library_empty(ui, room >= LIBRARY_EMPTY_CARD_HEIGHT);
             if (empty.kind != PLAYER_UI_ACTION_NONE) result = empty;

@@ -10,14 +10,15 @@ as a record.
 
 Start here if you want to play or try the project rather than change it:
 
-- [`../README.md`](../README.md) — what the project is, and the quick start.
-- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
-- [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) — what the player does and does not support for accessibility, and how to report a barrier.
-- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question, including
+- [`../README.md`](../README.md): what the project is, the download and the quick start.
+- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md): playing a game you own.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md): which games work.
+- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md): what the current release does, and how to check the download.
+- [`SETUP.md`](SETUP.md#windows-host-pitfalls): troubleshooting on Windows.
+- [`SHOWCASE.md`](SHOWCASE.md): the two demo programs.
+- [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md): what the player supports for accessibility, and how to report a barrier.
+- [`../SUPPORT.md`](../SUPPORT.md): where to take a question, including
   [GitHub Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions).
-- [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
-- [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
-- [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
 
 ## Start here
 
@@ -32,8 +33,9 @@ Each row is something you are about to do. Find yours and read what it points to
 | Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Qualify a public title through the native player | [`TITLE_TESTING.md`](TITLE_TESTING.md) |
+| Find your way around the code for the first time | [`CODE_TOUR.md`](CODE_TOUR.md) — one game from disc image to a frame on screen, file by file |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
+| Pick up work, or check whether something is already known | [`STATUS.md`](STATUS.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
 | **Change a `*_posix.c` / `*_win32.c` pair, or code behind a `!_WIN32` guard** | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — hosted CI compiles the POSIX backend on Linux; a Windows-green change can still fail there |
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
@@ -56,19 +58,10 @@ Each row is something you are about to do. Find yours and read what it points to
   player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
-  runtime and supported tooling parser boundaries, including every native and Python
-  JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
-  input profile, player settings and package-builder documents) plus performance
-  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
-  regression/mutation status, sanitizer availability, and unresolved gaps (#319).
-  Every source anchor is a stable `path:symbol` reference checked against current
-  definitions by `tools/test_parse_fuzz.py`; line-number anchors are rejected.
-  Python methods use `Class.method` where needed, and anchors must resolve to one
-  definition (including supported constants). The checker rejects a `never reaches`
-  claim when a listed Python test has a syntactic call path to that reader, and a
-  row may only call a route untested when it names the kind of test that is missing.
-  The document is `schema_version` 4: `arithmetic.safe` remains a string status
-  rather than a boolean, and `schema_notes` records both changes.
+  inventory of the runtime's and supported tools' parser boundaries, each with its resource limits,
+  regression and mutation status, sanitizer availability and open gaps (#319).
+  `tools/test_parse_fuzz.py` checks its source anchors and claims; `schema_notes`
+  records the schema history.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
@@ -119,9 +112,8 @@ a target and what isn't built yet.
 - [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — scope, packaging and qualification
   guide for the v0.0.1 release candidate. Creating a tag or release is a
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
-- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
-  for the v0.0.1 public build.
-  Status: DRAFT; releases are maintainer-published.
+- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — the notes of the
+  v0.0.1 release, kept as released.
 
 ## Archive
 
@@ -194,10 +186,12 @@ Every substantial document carries one status.
 | Path | Status | Authority / scope |
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
+| `CODE_TOUR.md` | CURRENT | Newcomer route through the code, disc image to frame on screen (source remains authoritative) |
 | `ARCHIVE_VFS.md` | CURRENT | Read-only archive-backed VFS: XB mounts, member lookup and loose-content routes (#298) |
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
+| `STATUS.md` | CURRENT | Project status summary: live work areas, execution-contract state and evidence boundary; live GitHub Issues win |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `TITLE_TESTING.md` | CURRENT | Public title qualification: manifest and input-profile validation, sandboxed native-player smoke, bring-up-schema report and sweep vocabulary (#699) |
 | `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
@@ -227,7 +221,7 @@ Every substantial document carries one status.
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Authoritative capability disposition table plus the native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
-| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
+| `RELEASE_NOTES_v0.0.1.md` | CURRENT | Notes of the v0.0.1 release, kept as released |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
 | `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |
@@ -269,7 +263,7 @@ These facts must not be hand-maintained in prose — Generate, Link, or Remove,
 preferring removal when the duplicate adds no value:
 
 - issue open/closed state: link the live issue, never restate its state
-  (`ISSUES.md` carries no state labels; `audit_public_issue_links.py`
+  (`STATUS.md` carries no state labels; `audit_public_issue_links.py`
   enforces the At-a-glance rule where that section exists);
 - HLE address/site/bucket and compatibility-override counts: cite
   `tools/test_compat_manifest.py` over `tools/compat_overrides.py`;

@@ -684,11 +684,11 @@ void nk_ui_set_prompt_images(NkUi *ui, const NkUiPromptImages *images) {
     }
 }
 
-/* The glyph image for the current style, or NULL to draw the geometry. */
-static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction action) {
+/* The glyph image for a style, or NULL to draw the geometry. */
+static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptStyle style,
+                                               NkUiPromptAction action) {
     const NkUiImage *image;
-    unsigned style = (unsigned)ui->prefs.prompt_style;
-    if (ui->prompt_images == NULL || style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
+    if (ui->prompt_images == NULL || (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
         (unsigned)action >= (unsigned)NK_UI_PROMPT_ACT_COUNT) {
         return NULL;
     }
@@ -697,24 +697,37 @@ static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction 
 }
 
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height) {
+    return ui != NULL &&
+           nk_ui_prompt_glyph_in(ui, id, ui->prefs.prompt_style, action, NULL, height);
+}
+
+bool nk_ui_prompt_glyph_in(NkUi *ui, NkUiId id, NkUiPromptStyle style, NkUiPromptAction action,
+                           const char *label, float height) {
     NkUiCustomSlot *slot;
     NkUiLayout layout;
-    const NkUiImage *image;
+    const NkUiImage *image = NULL;
     float width;
-    if (ui == NULL || !isfinite(height) || height <= 0.0f) {
+    if (ui == NULL || !isfinite(height) || height <= 0.0f ||
+        (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT) {
         return false;
     }
-    image = nk_ui_prompt_image_for(ui, action);
+    if (label != NULL) {
+        /* The legend lives in frame storage until the glyph is painted. */
+        label = nk_ui_frame_text(ui, label);
+    } else {
+        image = nk_ui_prompt_image_for(ui, style, action);
+    }
     width = image != NULL
         ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
-        : nk_ui_prompt_width(ui->prefs.prompt_style, action, height);
+        : nk_ui_prompt_label_width(style, action, label, height);
     slot = nk_ui_custom_slot(ui);
     if (slot == NULL) {
         return false;
     }
     slot->kind = NK_UI_CUSTOM_SLOT_PROMPT;
-    slot->prompt.style = ui->prefs.prompt_style;
+    slot->prompt.style = style;
     slot->prompt.action = action;
+    slot->prompt.label = label;
     slot->prompt.fg_rgba = ui->theme.paper;
     slot->prompt.dim_rgba = ui->theme.placeholder;
     slot->prompt.face_rgba = ui->theme.surface_high;
@@ -789,15 +802,16 @@ static bool nk_ui_image_usable(const NkUiImage *image) {
 static NkUiPixelRect nk_ui_image_fit(const NkUiImage *image, float cx, float cy, float w,
                                      float h, bool cover) {
     NkUiPixelRect px;
-    float sx = w / (float)image->width;
-    float sy = h / (float)image->height;
-    float s = cover ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
-    float dw = (float)image->width * s;
-    float dh = (float)image->height * s;
-    px.x0 = (int)floorf(cx - dw * 0.5f + 0.5f);
-    px.y0 = (int)floorf(cy - dh * 0.5f + 0.5f);
-    px.x1 = px.x0 + (int)floorf(dw + 0.5f);
-    px.y1 = px.y0 + (int)floorf(dh + 0.5f);
+    float scale_x = w / (float)image->width;
+    float scale_y = h / (float)image->height;
+    float scale = cover ? (scale_x > scale_y ? scale_x : scale_y)
+                        : (scale_x < scale_y ? scale_x : scale_y);
+    float drawn_w = (float)image->width * scale;
+    float drawn_h = (float)image->height * scale;
+    px.x0 = (int)floorf(cx - drawn_w * 0.5f + 0.5f);
+    px.y0 = (int)floorf(cy - drawn_h * 0.5f + 0.5f);
+    px.x1 = px.x0 + (int)floorf(drawn_w + 0.5f);
+    px.y1 = px.y0 + (int)floorf(drawn_h + 0.5f);
     return px;
 }
 
@@ -808,15 +822,15 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
     NkUiPixelRect box = nk_ui_round_rect(rect, density);
     float cx = (float)(box.x0 + box.x1) * 0.5f;
     float cy = (float)(box.y0 + box.y1) * 0.5f;
-    float bw = (float)(box.x1 - box.x0);
-    float bh = (float)(box.y1 - box.y0);
-    if (bw <= 0.0f || bh <= 0.0f) {
+    float box_w = (float)(box.x1 - box.x0);
+    float box_h = (float)(box.y1 - box.y0);
+    if (box_w <= 0.0f || box_h <= 0.0f) {
         return true;
     }
     if (nk_ui_image_usable(art->cover)) {
         if (!nk_ui_draw_add_scissor(draw, true, box, id) ||
             !nk_ui_draw_add_image(draw, art->cover,
-                                  nk_ui_image_fit(art->cover, cx, cy, bw, bh, true),
+                                  nk_ui_image_fit(art->cover, cx, cy, box_w, box_h, true),
                                   0xFFFFFFFFu, id) ||
             !nk_ui_draw_add_scissor(draw, false, box, id)) {
             return false;
@@ -826,8 +840,8 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
         float scale = art->contain_scale > 0.0f && art->contain_scale <= 1.0f
             ? art->contain_scale : 1.0f;
         if (!nk_ui_draw_add_image(draw, art->contain,
-                                  nk_ui_image_fit(art->contain, cx, cy, bw * scale,
-                                                  bh * scale, false),
+                                  nk_ui_image_fit(art->contain, cx, cy, box_w * scale,
+                                                  box_h * scale, false),
                                   0xFFFFFFFFu, id)) {
             return false;
         }
@@ -840,20 +854,20 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
 static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
                                NkUiRect rect, float density, uint32_t id) {
     float scale;
-    float ox;
-    float oy;
+    float origin_x;
+    float origin_y;
     size_t i;
     if (rect.w <= 0.0f || rect.h <= 0.0f) {
         return true;
     }
     scale = rect.w / art->view_w < rect.h / art->view_h
         ? rect.w / art->view_w : rect.h / art->view_h;
-    ox = rect.x + (rect.w - art->view_w * scale) * 0.5f - art->view_x * scale;
-    oy = rect.y + (rect.h - art->view_h * scale) * 0.5f - art->view_y * scale;
+    origin_x = rect.x + (rect.w - art->view_w * scale) * 0.5f - art->view_x * scale;
+    origin_y = rect.y + (rect.h - art->view_h * scale) * 0.5f - art->view_y * scale;
     for (i = 0; i < art->count; ++i) {
         const NkUiShape *shape = &art->shapes[i];
         if (shape->kind == NK_UI_SHAPE_RECT) {
-            NkUiRect r = {ox + shape->v[0] * scale, oy + shape->v[1] * scale,
+            NkUiRect r = {origin_x + shape->v[0] * scale, origin_y + shape->v[1] * scale,
                           shape->v[2] * scale, shape->v[3] * scale};
             if (!nk_ui_draw_add_rect(draw, r, density, shape->radius * scale,
                                      shape->rgba, id)) {
@@ -862,13 +876,13 @@ static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
         } else if (shape->kind == NK_UI_SHAPE_CIRCLE) {
             float xy[64];
             unsigned k;
-            float cx = (ox + shape->v[0] * scale) * density;
-            float cy = (oy + shape->v[1] * scale) * density;
-            float r = shape->v[2] * scale * density;
+            float cx = (origin_x + shape->v[0] * scale) * density;
+            float cy = (origin_y + shape->v[1] * scale) * density;
+            float radius = shape->v[2] * scale * density;
             for (k = 0; k < 32u; ++k) {
-                float a = (float)k * 0.19634954084936207f; /* 2 pi / 32 */
-                xy[k * 2u] = cx + r * cosf(a);
-                xy[k * 2u + 1u] = cy + r * sinf(a);
+                float angle = (float)k * 0.19634954084936207f; /* 2 pi / 32 */
+                xy[k * 2u] = cx + radius * cosf(angle);
+                xy[k * 2u + 1u] = cy + radius * sinf(angle);
             }
             if (!nk_ui_draw_add_convex(draw, xy, 32u, shape->rgba, id)) {
                 return false;
@@ -878,8 +892,8 @@ static bool nk_ui_paint_shapes(NkUiDrawBuffer *draw, const NkUiShapeArt *art,
             float xy[NK_UI_SHAPE_MAX_POINTS * 2u];
             unsigned k;
             for (k = 0; k < shape->count; ++k) {
-                xy[k * 2u] = (ox + shape->v[k * 2u] * scale) * density;
-                xy[k * 2u + 1u] = (oy + shape->v[k * 2u + 1u] * scale) * density;
+                xy[k * 2u] = (origin_x + shape->v[k * 2u] * scale) * density;
+                xy[k * 2u + 1u] = (origin_y + shape->v[k * 2u + 1u] * scale) * density;
             }
             if (!nk_ui_draw_add_convex(draw, xy, shape->count, shape->rgba, id)) {
                 return false;

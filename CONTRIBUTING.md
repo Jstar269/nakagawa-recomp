@@ -18,8 +18,10 @@ The rules it links to decide whether a change can land, so read them once.
    (enhancements, diagnostic views, performance, new platforms). If GitHub won't let you set them, say in the
    issue which fit and a maintainer sets them.
 3. **Agree the approach.** For anything bigger than a small fix, comment on the issue first.
-4. **Make one focused change.** Fork the repository to your personal account, create a branch, and change
-   one thing. Leave **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
+4. **Make your change.** Fork the repository to your personal account and create a branch. One pull request
+   may group related changes, for example several fixes in the same area or a feature with its tests and docs.
+   Put unrelated changes in separate pull requests, and say in the description what each change does. Leave
+   **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
    up to date with `main` before merging. GitHub doesn't let them push to a fork owned by an organisation,
    so a pull request from one is carried in a new pull request. That pull request keeps your commits
    unchanged and credits you as co-author.
@@ -141,7 +143,7 @@ Kilo Code Review is an advisory AI review and never blocks a merge.
 
 1. Read [AGENTS.md](AGENTS.md) and the maintained documentation relevant to your subsystem.
 2. Search **GitHub Issues**, which are the canonical source of truth for actionable work and acceptance criteria, before opening a duplicate.
-3. Use [ISSUES.md](ISSUES.md) as the concise project status summary, not as a competing detailed issue tracker.
+3. Use [docs/STATUS.md](docs/STATUS.md) as the concise project status summary, not as a competing detailed issue tracker.
 4. Never submit game binaries/assets, decrypted PRXs, private oracle traces, generated asset hashes, local databases, logs containing private paths, or files under the private-input directories documented by the project.
 5. Do not edit generated `build/<game>/<game>_recomp_*.c`; change the generator/runtime and rebuild.
 6. Follow [docs/AI_USAGE.md](docs/AI_USAGE.md) when using AI-assisted development tools.
@@ -172,9 +174,9 @@ auto-detected Vulkan SDK/loader. The native player is the repository's only user
 
 - Runtime C: follow `.clang-format`, use `sr_` for public symbols and `s_` for file-static state, and preserve the `CpuState` ABI.
 - Python: follow `pyproject.toml`; update or add a focused test when changing codegen/tooling behavior.
-- Documentation: update the maintained document, not an archived investigation. Keep `ISSUES.md`
+- Documentation: update the maintained document, not an archived investigation. Keep `docs/STATUS.md`
   concise and link the canonical GitHub issue. When adding a confirmed defect or known limitation,
-  update the canonical issue and its `ISSUES.md` status entry in the same change when applicable;
+  update the canonical issue and its `docs/STATUS.md` status entry in the same change when applicable;
   label hypotheses and informational notes explicitly.
 - Preserve existing SPDX, copyright, and provenance notices. For a new file, use an SPDX identifier only when its origin/license are actually known; do not invent a copyright owner or provenance claim.
 - For project-authored source, use `GPL-3.0-or-later`; for inherited/upstream-derived source, preserve the SPDX identifier and notices required by its provenance record.
@@ -323,7 +325,7 @@ evidence. In every substantive pull request:
 - list exact tests/routes and results;
 - call out anything blocked or unavailable;
 - keep generated `build/` output and private/proprietary inputs out of Git;
-- update the linked `ISSUES.md` status when the current milestone materially changes;
+- update the linked `docs/STATUS.md` status when the current milestone materially changes;
 - certify DCO 1.1 sign-off status;
 - disclose any new third-party source/data with exact source/revision/license; and
 - disclose material AI-assisted translation/reimplementation so provenance can be reviewed.
