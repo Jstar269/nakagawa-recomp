@@ -1028,6 +1028,225 @@ static int check_vscmp_hle_issues_cells(void) {
     return bad;
 }
 
+/* vfad and vavg against PSP-VFPU-FUNNEL-001 (PSP-3000, 2026-10-29, issue #326): every pass-0
+ * cell of the measured stream, whose second pass was identical. Each cell is the
+ * production interpreter on vfad/vavg S200, C000 with the operand set in C000, the S
+ * prefix in force and a VFPU_CC preset; only S200 may change, the prefix is consumed and
+ * CC is untouched. wzyx at .p and .t swizzles past the width, which the measurement does
+ * not fix in general, so those cells must be refused with no state change. */
+static int check_psp_measured_funnel(void) {
+    static const uint32_t ops[26][4] = {
+        {0x4b800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+        {0x3f800000u, 0x3f800000u, 0x3f800000u, 0x4b800000u},
+        {0x3f800000u, 0x33800000u, 0x33800000u, 0x00000000u},
+        {0x33800000u, 0x33800000u, 0x3f800000u, 0x00000000u},
+        {0x7149f2cau, 0xf149f2cau, 0x40400000u, 0x00000000u},
+        {0x40400000u, 0x7149f2cau, 0xf149f2cau, 0x00000000u},
+        {0x40a00000u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x40e00000u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x3f800000u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x42c80000u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x3f800000u, 0x3f800000u, 0x3f800000u, 0x00000000u},
+        {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u},
+        {0x80000000u, 0x80000000u, 0x80000000u, 0x80000000u},
+        {0x00000000u, 0x80000000u, 0x00000000u, 0x80000000u},
+        {0x7f800000u, 0xff800000u, 0x3f800000u, 0x3f800000u},
+        {0x7f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+        {0x7fc00000u, 0x3f800000u, 0x3f800000u, 0x3f800000u},
+        {0x3f800000u, 0x3f800000u, 0x7f800001u, 0x3f800000u},
+        {0xffc00001u, 0x00000000u, 0x00000000u, 0x00000000u},
+        {0x00000001u, 0x00000001u, 0x00000000u, 0x00000000u},
+        {0x00400000u, 0x00400000u, 0x00000000u, 0x00000000u},
+        {0x7f7fffffu, 0x7f7fffffu, 0x00000000u, 0x00000000u},
+        {0xff7fffffu, 0xff7fffffu, 0x00000000u, 0x00000000u},
+        {0x3f800001u, 0x3f800001u, 0x3f800001u, 0x3f800001u},
+        {0x3fc00000u, 0x40100000u, 0xbe000000u, 0x322bcc77u},
+        {0x7149f2cau, 0x40400000u, 0xf149f2cau, 0x00000000u},
+    };
+    /* want[form][size][prefix][set]: form vfad/vavg, size .p/.t/.q, prefix none/negate-all/wzyx
+     * (wzyx at .q only: at .p and .t it swizzles past the width and is refused). */
+    static const uint32_t want[2][3][3][26] = {
+        {
+            {
+                {0x4b800000u, 0x40000000u, 0x3f800000u, 0x34000000u, 0x00000000u, 0x7149f2cau,
+                 0x40a00000u, 0x40e00000u, 0x3f800000u, 0x42c80000u, 0x40000000u, 0x40400000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x40000000u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7f800000u, 0xff800000u, 0x40000001u,
+                 0x40700000u, 0x7149f2cau},
+                {0xcb800000u, 0xc0000000u, 0xbf800000u, 0xb4000000u, 0x00000000u, 0xf149f2cau,
+                 0xc0a00000u, 0xc0e00000u, 0xbf800000u, 0xc2c80000u, 0xc0000000u, 0xc0400000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0xc0000000u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xff800000u, 0x7f800000u, 0xc0000001u,
+                 0xc0700000u, 0xf149f2cau},
+                {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u},
+            },
+            {
+                {0x4b800001u, 0x40400000u, 0x3f800001u, 0x3f800001u, 0x00000000u, 0x00000000u,
+                 0x40a00000u, 0x40e00000u, 0x3f800000u, 0x42c80000u, 0x40400000u, 0x40c00000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7f800000u, 0xff800000u, 0x40400002u,
+                 0x40680000u, 0x00000000u},
+                {0xcb800001u, 0xc0400000u, 0xbf800001u, 0xbf800001u, 0x00000000u, 0x00000000u,
+                 0xc0a00000u, 0xc0e00000u, 0xbf800000u, 0xc2c80000u, 0xc0400000u, 0xc0c00000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xff800000u, 0x7f800000u, 0xc0400002u,
+                 0xc0680000u, 0x00000000u},
+                {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u},
+            },
+            {
+                {0x4b800001u, 0x4b800001u, 0x3f800001u, 0x3f800001u, 0x00000000u, 0x00000000u,
+                 0x40a00000u, 0x40e00000u, 0x3f800000u, 0x42c80000u, 0x40400000u, 0x41200000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7f800000u, 0xff800000u, 0x40800001u,
+                 0x40680000u, 0x00000000u},
+                {0xcb800001u, 0xcb800001u, 0xbf800001u, 0xbf800001u, 0x00000000u, 0x00000000u,
+                 0xc0a00000u, 0xc0e00000u, 0xbf800000u, 0xc2c80000u, 0xc0400000u, 0xc1200000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xff800000u, 0x7f800000u, 0xc0800001u,
+                 0xc0680000u, 0x00000000u},
+                {0x4b7ffffeu, 0xcb7ffffeu, 0x3f800000u, 0x3f800000u, 0x71c9f2cau, 0xf1c9f2cau,
+                 0x40a00000u, 0x40e00000u, 0x3f800000u, 0x42c80000u, 0x3f800000u, 0xc0000000u,
+                 0x00000000u, 0x00000000u, 0x7f800000u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0xbf600000u, 0x00000000u},
+            },
+        },
+        {
+            {
+                {0x4b000000u, 0x3f800000u, 0x3f000000u, 0x33800000u, 0x00000000u, 0x70c9f2cau,
+                 0x40200000u, 0x40600000u, 0x3f000000u, 0x42480000u, 0x3f800000u, 0x3fc00000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x3f800000u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7f7fffffu, 0xff7fffffu, 0x3f800001u,
+                 0x3ff00000u, 0x70c9f2cau},
+                {0xcb000000u, 0xbf800000u, 0xbf000000u, 0xb3800000u, 0x00000000u, 0xf0c9f2cau,
+                 0xc0200000u, 0xc0600000u, 0xbf000000u, 0xc2480000u, 0xbf800000u, 0xbfc00000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0xbf800000u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xff7fffffu, 0x7f7fffffu, 0xbf800001u,
+                 0xbff00000u, 0xf0c9f2cau},
+                {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u},
+            },
+            {
+                {0x4aaaaaacu, 0x3f800000u, 0x3eaaaaacu, 0x3eaaaaacu, 0x00000000u, 0x00000000u,
+                 0x3fd55555u, 0x40155556u, 0x3eaaaaabu, 0x42055556u, 0x3f800000u, 0x40000000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7f2aaaaau, 0xff2aaaaau, 0x3f800001u,
+                 0x3f9aaaabu, 0x00000000u},
+                {0xcaaaaaacu, 0xbf800000u, 0xbeaaaaacu, 0xbeaaaaacu, 0x00000000u, 0x00000000u,
+                 0xbfd55555u, 0xc0155556u, 0xbeaaaaabu, 0xc2055556u, 0xbf800000u, 0xc0000000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xff2aaaaau, 0x7f2aaaaau, 0xbf800001u,
+                 0xbf9aaaabu, 0x00000000u},
+                {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0x00000000u, 0x00000000u},
+            },
+            {
+                {0x4a800001u, 0x4a800001u, 0x3e800001u, 0x3e800001u, 0x00000000u, 0x00000000u,
+                 0x3fa00000u, 0x3fe00000u, 0x3e800000u, 0x41c80000u, 0x3f400000u, 0x40200000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x7effffffu, 0xfeffffffu, 0x3f800001u,
+                 0x3f680000u, 0x00000000u},
+                {0xca800001u, 0xca800001u, 0xbe800001u, 0xbe800001u, 0x00000000u, 0x00000000u,
+                 0xbfa00000u, 0xbfe00000u, 0xbe800000u, 0xc1c80000u, 0xbf400000u, 0xc0200000u,
+                 0x00000000u, 0x00000000u, 0x7f800001u, 0xff800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0xfeffffffu, 0x7effffffu, 0xbf800001u,
+                 0xbf680000u, 0x00000000u},
+                {0x4a7ffffeu, 0xca7ffffeu, 0x3e800000u, 0x3e800000u, 0x70c9f2cau, 0xf0c9f2cau,
+                 0x3fa00000u, 0x3fe00000u, 0x3e800000u, 0x41c80000u, 0x3e800000u, 0xbf000000u,
+                 0x00000000u, 0x00000000u, 0x7f800000u, 0x7f800000u, 0x7f800001u, 0x7f800001u,
+                 0x7f800001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
+                 0xbe600000u, 0x00000000u},
+            },
+        },
+    };
+    static const uint32_t words[2][3] = {
+        {0xd0460088u, 0xd0468008u, 0xd0468088u},
+        {0xd0470088u, 0xd0478008u, 0xd0478088u},
+    };
+    static const uint32_t prefixes[3] = {0xe4u, 0xf00e4u, 0x5001bu};
+    static const char *const forms[2] = {"vfad", "vavg"}, *const sizes = "ptq";
+    int bad = 0;
+    for (int f = 0; f < 2; f++) {
+        for (int z = 0; z < 3; z++) {
+            for (int p = 0; p < 3; p++) {
+                for (int i = 0; i < 26; i++) {
+                    CpuState s, before;
+                    uint8_t si[4], di[1];
+                    setup_identity_compute(&s);
+                    for (int r = 0; r < 128; r++) s.vi[r] = 0x3f800000u | ((uint32_t)r << 16);
+                    vreg_idx(0x00, 4, si);                     /* C000.q */
+                    vreg_idx(0x08, 1, di);                     /* S200 */
+                    for (int l = 0; l < 4; l++) s.vi[si[l]] = ops[i][l];
+                    s.vfpuCtrl[0] = prefixes[p];
+                    s.vfpuCtrl[3] = 0x15u;
+                    before = s;
+                    const int kind = sr_vfpu_interp(&s, words[f][z]);
+                    const int refused = p == 2 && z < 2;
+                    int ok;
+                    if (refused) {
+                        ok = kind == SR_VFPU_OTHER && memcmp(&s, &before, sizeof(s)) == 0;
+                    } else {
+                        before.vi[di[0]] = want[f][z][p][i];
+                        before.vfpuCtrl[0] = 0xe4u;
+                        ok = kind == SR_VFPU_COMPUTE &&
+                             memcmp(s.vi, before.vi, sizeof(s.vi)) == 0 &&
+                             memcmp(s.vfpuCtrl, before.vfpuCtrl, sizeof(s.vfpuCtrl)) == 0;
+                    }
+                    g_checks++;
+                    if (!ok) {
+                        g_failures++;
+                        bad = 1;
+                        fprintf(stderr, "FAIL: PSP-VFPU-FUNNEL-001 %s.%c set %d prefix 0x%05x: "
+                                "psp=0x%08x interp=0x%08x kind=%d%s\n", forms[f], sizes[z], i,
+                                prefixes[p], refused ? 0u : want[f][z][p][i], s.vi[di[0]], kind,
+                                refused ? " (want refused)" : "");
+                    }
+                }
+            }
+        }
+    }
+    /* .s, abs and constant S lanes, and T or D prefixes are unmeasured: refused. */
+    static const struct { uint32_t w, ctrl0, ctrl1, ctrl2; } refuse[] = {
+        {0xd0460008u, 0xe4u, 0xe4u, 0u},      /* vfad.s */
+        {0xd0468008u, 0xe7u, 0xe4u, 0u},      /* vfad.t, lane 0 swizzled from lane 3 */
+        {0xd0468088u, 0x001e4u, 0xe4u, 0u},   /* abs on lane 0 */
+        {0xd0468088u, 0x010e4u, 0xe4u, 0u},   /* constant lane 0 */
+        {0xd0478088u, 0xe4u, 0x1bu, 0u},      /* T prefix */
+        {0xd0478088u, 0xe4u, 0xe4u, 0x1u},    /* D prefix */
+    };
+    for (unsigned r = 0; r < sizeof(refuse) / sizeof(refuse[0]); r++) {
+        CpuState s, before;
+        setup_identity_compute(&s);
+        s.vfpuCtrl[0] = refuse[r].ctrl0;
+        s.vfpuCtrl[1] = refuse[r].ctrl1;
+        s.vfpuCtrl[2] = refuse[r].ctrl2;
+        before = s;
+        const int kind = sr_vfpu_interp(&s, refuse[r].w);
+        g_checks++;
+        if (kind != SR_VFPU_OTHER || memcmp(&s, &before, sizeof(s)) != 0) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr, "FAIL: PSP-VFPU-FUNNEL-001 unmeasured form %u word 0x%08x accepted\n",
+                    r, refuse[r].w);
+        }
+    }
+    return bad;
+}
+
 /* One vsgn/vbfy/vt4444 cell: the instruction word, the S prefix in force, the source
  * lanes and the expected destination lanes. `lanes` counts the destination lanes the
  * form writes; `measured` is 1 when every expected word is a PSP-3000 reading. */
@@ -1650,6 +1869,7 @@ static int check_vfpu_forms_measured(void) {
 int main(void) {
     int bad = 0;
     bad |= check_psp_measured_vfpu9();
+    bad |= check_psp_measured_funnel();
     bad |= check_vrndi_rule_cells();
     bad |= check_vfpu_forms_measured();
     bad |= check_cop2_control_transfers();

@@ -144,6 +144,72 @@ static uint32_t vfpu_add_bits(uint32_t a, uint32_t b) {
     return vfpu_daz(r);
 }
 
+/* The VFPU dot-product adder, as a PSP-3000 measured it through vfad and vavg
+ * (PSP-VFPU-FUNNEL-001, 2026-10-29, issue #326: 936 cells over .p/.t/.q, 26 operand
+ * sets, three S prefixes, two identical passes). sum(a[i] * b[i]) is not a chain of IEEE
+ * operations. Each product keeps two guard bits below its 24-bit mantissa; the products are
+ * aligned to the largest exponent by truncating their magnitudes, summed as signed
+ * integers, the guard bits are dropped by truncation, and only a sum wider than 24 bits is
+ * rounded (to nearest, ties to even) as it is normalised. A denormal operand counts as
+ * zero, a zero or underflowing sum is +0, and a NaN operand, Inf * 0 or Inf - Inf gives the
+ * canonical 0x7f800001. So 2^24 - 1 sums to 2^24 - 2, and 1 - 2^-24 to 1 - 2^-23. */
+static uint32_t vfpu_dot_bits(const uint32_t *a, const uint32_t *b, int n) {
+    enum { GUARD = 2 };
+    int32_t ex[4];
+    uint64_t mt[4];
+    int sg[4], inf_sign = -1, emax = 0;
+    for (int i = 0; i < n; i++) {
+        const uint32_t ae = (a[i] >> 23) & 0xffu, be = (b[i] >> 23) & 0xffu;
+        sg[i] = (int)(((a[i] ^ b[i]) >> 31) & 1u);
+        ex[i] = 0;
+        mt[i] = 0;
+        if (ae == 255u || be == 255u) {
+            if ((ae == 255u && ((a[i] & 0x7fffffu) || be == 0u)) ||
+                (be == 255u && ((b[i] & 0x7fffffu) || ae == 0u)))
+                return 0x7f800001u;
+            if (inf_sign >= 0 && inf_sign != sg[i]) return 0x7f800001u;
+            inf_sign = sg[i];
+            continue;
+        }
+        if (ae == 0u || be == 0u) continue;
+        const uint64_t am = (uint64_t)((a[i] & 0x7fffffu) | 0x800000u) << GUARD;
+        const uint64_t bm = (uint64_t)((b[i] & 0x7fffffu) | 0x800000u) << GUARD;
+        mt[i] = (am * bm) >> (23 + GUARD);
+        ex[i] = (int32_t)ae + (int32_t)be - 127;
+    }
+    if (inf_sign >= 0) return 0x7f800000u | ((uint32_t)inf_sign << 31);
+    for (int i = 0; i < n; i++)
+        if (mt[i] && ex[i] > emax) emax = ex[i];
+    int64_t total = 0;
+    for (int i = 0; i < n; i++) {
+        const int d = emax - ex[i];
+        const int64_t m = d >= 32 ? 0 : (int64_t)(mt[i] >> d);
+        total += sg[i] ? -m : m;
+    }
+    uint32_t sign = 0u;
+    if (total < 0) {
+        sign = 0x80000000u;
+        total = -total;
+    }
+    uint64_t mag = (uint64_t)total >> GUARD;
+    if (mag == 0u || emax <= 0) return 0u;
+    int width = 64 - __builtin_clzll(mag);
+    if (width > 24) {
+        const int sh = width - 24;
+        const uint64_t half = 1ull << (sh - 1), low = mag & ((1ull << sh) - 1u);
+        if (low > half || (low == half && ((mag >> sh) & 1u))) mag += half;
+        width = 64 - __builtin_clzll(mag);
+        mag >>= width - 24;
+        emax += width - 24;
+    } else {
+        mag <<= 24 - width;
+        emax -= 24 - width;
+    }
+    if (emax >= 255) return sign | 0x7f800000u;
+    if (emax <= 0) return 0u;
+    return sign | ((uint32_t)emax << 23) | ((uint32_t)mag & 0x7fffffu);
+}
+
 /* Write raw result words through the D prefix: saturation clamps a non-NaN lane
  * (the D prefix is UNMEASURED for these forms), then the write mask applies. Raw
  * words keep the canonical NaN bit-exact where a float store might quiet it. */
@@ -528,6 +594,30 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 vreg_idx(vd, n, di);
                 VFPU_NAN1(op9 == 2 ? "vbfy1" : "vbfy2", (const float *)d, n, sv, n);
                 vwrite_bits(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
+            }
+            if ((op9 == 6 || op9 == 7) && n >= 2) {
+                /* vfad (6) and vavg (7) at .p/.t/.q: d = the VFPU dot adder over S and a T
+                 * of 1.0 (vfad) or 1/n (vavg: 0.5, 0x3eaaaaab, 0.25), as PSP-VFPU-FUNNEL-001
+                 * measured (2026-10-29, issue #326, vfpu_dot_bits above). The S prefix was
+                 * measured as negation on any lane and swizzles inside the width (no prefix,
+                 * negate-all, and wzyx with lanes 0/2 negated at .q); a swizzle reaching
+                 * past the width, abs and constant lanes, a T or D prefix, and .s are
+                 * UNMEASURED and refused. Neither form writes VFPU_CC. */
+                static const uint32_t recip[5] = {0u, 0u, 0x3f000000u, 0x3eaaaaabu, 0x3e800000u};
+                const uint32_t sp = s->vfpuCtrl[0];
+                uint32_t sv[4], tv[4];
+                if (s->vfpuCtrl[1] != 0xe4u || s->vfpuCtrl[2] != 0u) return SR_VFPU_OTHER;
+                vreg_idx(vs, n, si);
+                for (int i = 0; i < n; i++) {
+                    const uint32_t sw = (sp >> (2 * i)) & 3u;
+                    if (sw >= (uint32_t)n || ((sp >> (8 + i)) & 1u) || ((sp >> (12 + i)) & 1u))
+                        return SR_VFPU_OTHER;
+                    sv[i] = s->vi[si[sw]] ^ (((sp >> (16 + i)) & 1u) << 31);
+                    tv[i] = op9 == 6 ? 0x3f800000u : recip[n];
+                }
+                vreg_idx(vd, 1, di);
+                s->vi[di[0]] = vfpu_dot_bits(sv, tv, n);
+                eat_prefix(s); return SR_VFPU_COMPUTE;
             }
             if (op9 == 0x19 && n == 4) {  /* vt4444.q: four 32-bit colours -> a pair of
                                            * 16-bit ones, d[j] = c(s[2j]) | c(s[2j+1]) << 16.

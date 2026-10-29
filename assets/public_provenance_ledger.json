@@ -9834,7 +9834,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "29417b66e1feb332c234cab299517be3a3be67618e9bd9810009c4bebb941b34"
+      "sha256": "b9853b5a218d42d6a0b19fe98b7efca978dcc68ca4cac011abeebad01db8ff8d"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -9846,7 +9846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c164190414e6330a48c3af0a44fe6ff923534d09c3d88a4fdf729e5f6245f2a8"
+      "sha256": "eaf3efa77300a207a2b920bde210703c1f0468326dc08ab15e9f976d5185818e"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -11860,7 +11860,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "43ea0604ccfd72efa25f702d663741626cb57fff2534f750fcd64d64efe58647"
+      "sha256": "6034de4f27cca9dac13afc059b5951e466a2a407738fbdc0a286a53a1809b8be"
     },
     {
       "path": "tools/codegen_gate.py",
