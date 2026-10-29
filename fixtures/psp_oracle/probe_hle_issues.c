@@ -9,7 +9,9 @@
 //   CASE=vfpu-forms (PSP-VFPU-FORMS-001): #326 raw result words of vh2f, vuc2i, vsocp,
 //     vwbn, vrndf1 and vrndf2, register-only;
 //   CASE=vfpu-funnel (PSP-VFPU-FUNNEL-001): #326 raw result words of vfad and vavg at
-//     .p, .t and .q, register-only.
+//     .p, .t and .q, register-only;
+//   CASE=vfpu-sort (PSP-VFPU-SORT-001): #326 raw result words of vsrt1.q to vsrt4.q,
+//     register-only.
 // These cases live apart from probe_hle_measure.c because they do what that file's
 // families never may: hle-intr-cells registers a VBLANK sub-interrupt handler, sets
 // VTimer and alarm handlers and suspends interrupts, and hle-issues-batch calls a kernel
@@ -34,9 +36,9 @@
 #include <string.h>
 
 PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
-#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 118
-/* hle-issues-batch, vfpu-forms and vfpu-funnel run VFPU words on the main thread; without the VFPU
-   attribute the first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
+#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 118 || PSP_ORACLE_CASE == 120
+/* hle-issues-batch, vfpu-forms, vfpu-funnel and vfpu-sort run VFPU words on the main thread;
+   without the VFPU attribute the first VFPU instruction traps (probe.c's vfpu-compare case, measured). */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
@@ -51,6 +53,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_INTR_CELLS 107
 #define HLE_CASE_VFPU_FORMS 108
 #define HLE_CASE_VFPU_FUNNEL 118
+#define HLE_CASE_VFPU_SORT 120
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -68,6 +71,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "vfpu-funnel"
 #define HLE_TEST_ID "PSP-VFPU-FUNNEL-001"
 #define HLE_LOG "host0:/vfpu_funnel_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VFPU_SORT
+#define HLE_CAMPAIGN_ID "vfpu-sort"
+#define HLE_TEST_ID "PSP-VFPU-SORT-001"
+#define HLE_LOG "host0:/vfpu_sort_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1025,6 +1032,154 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_VFPU_FUNNEL */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VFPU_SORT
+
+/* #326 VFPU sort steps (PSP-VFPU-SORT-001), one launch, register-only: the raw result words
+   of vsrt1.q, vsrt2.q, vsrt3.q and vsrt4.q (the min/max compare-exchange of the pairs
+   (x, y) and (z, w), (x, w) and (y, z), and so on) over 24 operand sets that put the
+   interesting pair in several lane positions, each under no S prefix and the two TN_PFX
+   forms. Two passes for repeatability. Only the .q form exists. Every word is emitted as a
+   word. The encodings are VFPU op 0x34, jump field 2, op field 0, 1, 8 and 9 (vsrt1, vsrt2,
+   vsrt3, vsrt4), vd C200 (0x08), vs C000, size .q (bits 7 and 15). Nothing outside the VFPU
+   registers of this thread is touched. */
+
+#include "hle_vfpu_cells.h"
+
+/* Source C000 (image 0-3), destination C200 (image 32-35, all four lanes are results). */
+TN_CELL_SET(st_srt1, "0xd0408088")   /* vsrt1.q C200, C000 */
+TN_CELL_SET(st_srt2, "0xd0418088")   /* vsrt2.q C200, C000 */
+TN_CELL_SET(st_srt3, "0xd0488088")   /* vsrt3.q C200, C000 */
+TN_CELL_SET(st_srt4, "0xd0498088")   /* vsrt4.q C200, C000 */
+
+typedef void (*st_cell_fn)(const uint32_t *in, uint32_t *out, uint32_t *cc);
+
+/* Operand sets, four float32 words each (lanes 0-3 of C000). */
+static const uint32_t s_st_ops[24][4] = {
+    /*  0: 1, 2, 3, 4 */
+    {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u},
+    /*  1: 4, 3, 2, 1 */
+    {0x40800000u, 0x40400000u, 0x40000000u, 0x3f800000u},
+    /*  2: 2, 1, 4, 3 */
+    {0x40000000u, 0x3f800000u, 0x40800000u, 0x40400000u},
+    /*  3: -1, 1, -2, 2 */
+    {0xbf800000u, 0x3f800000u, 0xc0000000u, 0x40000000u},
+    /*  4: 5 four times */
+    {0x40a00000u, 0x40a00000u, 0x40a00000u, 0x40a00000u},
+    /*  5: +0, -0, -0, +0 */
+    {0x00000000u, 0x80000000u, 0x80000000u, 0x00000000u},
+    /*  6: -0, +0, +0, -0 */
+    {0x80000000u, 0x00000000u, 0x00000000u, 0x80000000u},
+    /*  7: qNaN, 1, 1, qNaN */
+    {0x7fc00000u, 0x3f800000u, 0x3f800000u, 0x7fc00000u},
+    /*  8: 1, qNaN, qNaN, 1 */
+    {0x3f800000u, 0x7fc00000u, 0x7fc00000u, 0x3f800000u},
+    /*  9: -qNaN, 1, 1, -qNaN */
+    {0xffc00000u, 0x3f800000u, 0x3f800000u, 0xffc00000u},
+    /* 10: signalling NaN, -1, -1, signalling NaN */
+    {0x7f800001u, 0xbf800000u, 0xbf800000u, 0x7f800001u},
+    /* 11: qNaN, -qNaN, -qNaN, qNaN */
+    {0x7fc00000u, 0xffc00000u, 0xffc00000u, 0x7fc00000u},
+    /* 12: NaN payloads 0x7fc12345, 0x7fc00001, 0x7fc00001, 0x7fc12345 */
+    {0x7fc12345u, 0x7fc00001u, 0x7fc00001u, 0x7fc12345u},
+    /* 13: +inf, -inf, -inf, +inf */
+    {0x7f800000u, 0xff800000u, 0xff800000u, 0x7f800000u},
+    /* 14: +inf, qNaN, qNaN, +inf */
+    {0x7f800000u, 0x7fc00000u, 0x7fc00000u, 0x7f800000u},
+    /* 15: -inf, 1, 1, -inf */
+    {0xff800000u, 0x3f800000u, 0x3f800000u, 0xff800000u},
+    /* 16: smallest denormal, 0, 0, smallest denormal */
+    {0x00000001u, 0x00000000u, 0x00000000u, 0x00000001u},
+    /* 17: -smallest denormal, 0, 0, -smallest denormal */
+    {0x80000001u, 0x00000000u, 0x00000000u, 0x80000001u},
+    /* 18: +denormal, -denormal, -denormal, +denormal */
+    {0x00000001u, 0x80000001u, 0x80000001u, 0x00000001u},
+    /* 19: denormal 1, denormal 2, denormal 2, denormal 1 */
+    {0x00000001u, 0x00000002u, 0x00000002u, 0x00000001u},
+    /* 20: 1, 1 + 2^-23, 1 + 2^-23, 1 */
+    {0x3f800000u, 0x3f800001u, 0x3f800001u, 0x3f800000u},
+    /* 21: FLT_MAX, +inf, +inf, FLT_MAX */
+    {0x7f7fffffu, 0x7f800000u, 0x7f800000u, 0x7f7fffffu},
+    /* 22: 1, 1, 0, 0 (ties across the pairs) */
+    {0x3f800000u, 0x3f800000u, 0x00000000u, 0x00000000u},
+    /* 23: -2, -1, 1, 2 (ascending across zero) */
+    {0xc0000000u, 0xbf800000u, 0x3f800000u, 0x40000000u},
+};
+
+static const char *const s_st_forms[4] = {"srt1", "srt2", "srt3", "srt4"};
+static const st_cell_fn s_st_cells[4][3] = {
+    {st_srt1_none, st_srt1_p1, st_srt1_p2}, {st_srt2_none, st_srt2_p1, st_srt2_p2},
+    {st_srt3_none, st_srt3_p1, st_srt3_p2}, {st_srt4_none, st_srt4_p1, st_srt4_p2},
+};
+static const uint32_t s_st_words[4] = {0xd0408088u, 0xd0418088u, 0xd0488088u, 0xd0498088u};
+static const char *const s_st_pfx_names[3] = {"none", "p1", "p2"};
+static const uint32_t s_st_pfx_words[3] = {TN_PFXW_NONE, TN_PFXW_P1, TN_PFXW_P2};
+
+static uint32_t s_st_in[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+static uint32_t s_st_out[TN_IMAGE_WORDS] __attribute__((aligned(64)));
+
+/* One cell: background image word i = 0x3f800000 | i << 16, source lanes at image 0-3, then
+   the word. Row <name>: result = the instruction word; out0-3 = image 32-35 after (C200);
+   out4/out5 = VFPU_CC after the preset / after the word; out6-9 = image 0-3 before;
+   out10 = number of image words outside 32-35 that changed; out11 = the first such index
+   (0xffffffff when none); out12 = the vpfxs word issued before it (0 = none). */
+static void st_cell(const char *name, st_cell_fn fn, uint32_t word, uint32_t pfx,
+                    const uint32_t *lanes)
+{
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        s_st_in[i] = 0x3f800000u | (i << 16);
+    }
+    for (unsigned i = 0; i < 4u; i++) {
+        s_st_in[i] = lanes[i];
+    }
+    uint32_t cc[2] = {0u, 0u};
+    fn(s_st_in, s_st_out, cc);
+    uint32_t changed = 0u, first = 0xffffffffu;
+    for (unsigned i = 0; i < TN_IMAGE_WORDS; i++) {
+        if ((i < 32u || i > 35u) && s_st_out[i] != s_st_in[i]) {
+            if (changed++ == 0u) {
+                first = i;
+            }
+        }
+    }
+    const uint32_t w[13] = {
+        s_st_out[32], s_st_out[33], s_st_out[34], s_st_out[35], cc[0], cc[1], s_st_in[0],
+        s_st_in[1], s_st_in[2], s_st_in[3], changed, first, pfx,
+    };
+    hle_record(name, "PASS", word, w, 13);
+}
+
+/* Rows srt<n>-p<pass>-<i>-<pfx>: the form over operand set i, one step per (form, pass)
+   before its cells. */
+static void st_group(unsigned pass, unsigned form)
+{
+    char name[64];
+    snprintf(name, sizeof(name), "%s-p%u", s_st_forms[form], pass);
+    hle_step(name);
+    for (unsigned i = 0; i < 24u; i++) {
+        for (unsigned f = 0; f < 3u; f++) {
+            snprintf(name, sizeof(name), "%s-p%u-%u-%s", s_st_forms[form], pass, i,
+                     s_st_pfx_names[f]);
+            st_cell(name, s_st_cells[form][f], s_st_words[form], s_st_pfx_words[f],
+                    s_st_ops[i]);
+        }
+    }
+}
+
+static int hle_run(void)
+{
+    /* Traps off before the first VFPU cell, as in the vfpu-compare case. */
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        for (unsigned form = 0; form < 4u; form++) {
+            st_group(pass, form);
+        }
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_VFPU_SORT */
 
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_INTR_CELLS

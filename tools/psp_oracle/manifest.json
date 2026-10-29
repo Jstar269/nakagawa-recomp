@@ -1418,6 +1418,51 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-VFPU-SORT-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists: this probe has not been run on a PSP. It is built from fixtures/psp_oracle/probe_hle_issues.c as vfpu_sort.prx and runs as a single launch, not in the campaign queue. Its stream is a strict golden sequence of 576 records and the done record; PASS means the instruction result was recorded, and the parser compares no value.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_hle_issues.c",
+        "prx": "vfpu_sort.prx",
+        "apis": [
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "Allegrex VFPU vsrt1.q",
+          "Allegrex VFPU vsrt2.q",
+          "Allegrex VFPU vsrt3.q",
+          "Allegrex VFPU vsrt4.q"
+        ],
+        "diagnostic_case_ids": [
+          "vfpu-sort"
+        ],
+        "case_ids": [
+          "srt1-p0-*",
+          "srt2-p0-*",
+          "srt3-p0-*",
+          "srt4-p0-*",
+          "srt1-p1-*",
+          "srt2-p1-*",
+          "srt3-p1-*",
+          "srt4-p1-*",
+          "vfpu-sort-done"
+        ],
+        "invariant": "#326, two passes, register-only: the raw C200 words (with a changed-word census of the rest of the register file, and VFPU_CC) after vsrt1.q, vsrt2.q, vsrt3.q and vsrt4.q of C000 over 24 operand sets (ordinary orderings, equal values and signed zeros, quiet, negative, signalling and payload NaNs against numbers in several lane positions, infinities, denormals, neighbouring floats and FLT_MAX against infinity), each under no S prefix, negate-all and a wzyx swizzle with lanes 0 and 2 negated.",
+        "issues": [
+          326
+        ],
+        "risk": "low; register-only VFPU cells on the main thread (VFPU attribute); no handler, timer, kernel call or device state is installed or changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-GE-SAMPLE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
