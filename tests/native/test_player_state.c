@@ -3762,6 +3762,15 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+    /* Copies of this binary stand in for the bundled python and child modes above. Any other
+     * arguments are a mode this binary does not have: name them and stop, instead of running
+     * the whole suite again inside a child (which would start its own children). */
+    if (argc > 1) {
+        fprintf(stderr, "test_player_state: no mode takes these arguments:");
+        for (int i = 1; i < argc; i++) fprintf(stderr, " [%s]", argv[i]);
+        fprintf(stderr, "\n");
+        return 97;
+    }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
     test_source_iso_member_path_validation();
