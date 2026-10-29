@@ -1341,7 +1341,13 @@ class NativePlayerUiTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 4, completed.stderr)
         self.assertIn("LAUNCHER_UNAVAILABLE", completed.stderr)
-        self.assertIn("Extract the ZIP again", completed.stderr)
+        if sys.platform == "win32":
+            self.assertIn("Extract the ZIP again", completed.stderr)
+        else:
+            # No release ZIP or nakagawa_player.exe off Windows (#306).
+            self.assertNotIn("ZIP", completed.stderr)
+            self.assertIn("tools/stage_install.py", completed.stderr)
+        self.assertNotIn("compiled without", completed.stderr)
         self.assertIn("assets\\fonts\\ui", completed.stderr)
         self.assertNotIn(marker, completed.stdout)
         self.assertNotIn("frame=", completed.stdout, "nothing is drawn after the message")
@@ -4304,7 +4310,20 @@ class PlayerVersionIdentityTests(unittest.TestCase):
     A dry run of the player link shows the define the build passes; nothing is
     compiled. The date itself (MM-DD-YYYY from the epoch) is checked by
     tests/native/test_player_screens.c.
+
+    `player-ui-regressions` runs this module under `make -j4 --output-sync=target`,
+    and that make's MAKEFLAGS (its jobserver and its output-sync mutex handle) reach
+    the dry run through the environment. The handle is a raw Windows handle number
+    the child never inherits, so a dry run that used it could wait on whatever
+    handle has that number in its own process: hosted runs hung for the whole
+    timeout holding jobserver tokens. `-j1 --output-sync=none` makes the dry run
+    a standalone make while keeping the variables the shard passes (CC, VULKAN_SDK).
     """
+
+    # A dry run takes about 13 s on a Windows desktop, and the shard that runs both
+    # of them takes 41-67 s on hosted Windows runners; 180 s is about three times
+    # that whole shard, so a stuck dry run fails in minutes, not after ten.
+    DRY_RUN_TIMEOUT_S = 180
 
     def _player_defines(self, env_extra: dict[str, str]) -> list[str]:
         make = shutil.which("mingw32-make") or shutil.which("make")
@@ -4316,8 +4335,10 @@ class PlayerVersionIdentityTests(unittest.TestCase):
             build_root = Path(scratch).as_posix()
             exe = f"{build_root}/nakagawa_player{'.exe' if os.name == 'nt' else ''}"
             run = subprocess.run(
-                [make, "--no-print-directory", "-n", "-B", f"BUILD_ROOT={build_root}", exe],
-                cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+                [make, "--no-print-directory", "-j1", "--output-sync=none", "-n", "-B",
+                 f"BUILD_ROOT={build_root}", exe],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+                timeout=self.DRY_RUN_TIMEOUT_S,
             )
         if run.returncode != 0:
             self.skipTest(f"the player dry run needs its build dependencies: {run.stderr[-400:]}")

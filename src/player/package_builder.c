@@ -2076,28 +2076,36 @@ bool package_builder_find_tool(const char *name, char *out_path, size_t out_size
 bool package_builder_find_tool_in_root(const char *name, const char *data_root,
                                        char *out_path, size_t out_size) {
     if (out_path && out_size) out_path[0] = '\0';
+#if defined(_WIN32) || defined(_WIN64)
     if (name && name[0] && data_root && data_root[0] && out_path && out_size) {
         char executable[NK_MAX_PATH];
-#if defined(_WIN32) || defined(_WIN64)
         int n = snprintf(executable, sizeof(executable),
                          "%s%cprerequisites%cmsys64%cucrt64%cbin%c%s.exe", data_root,
                          nk_platform_path_separator(), nk_platform_path_separator(),
                          nk_platform_path_separator(), nk_platform_path_separator(),
                          nk_platform_path_separator(), name);
-#else
-        int n = snprintf(executable, sizeof(executable),
-                         "%s%cprerequisites%cmsys64%cucrt64%cbin%c%s", data_root,
-                         nk_platform_path_separator(), nk_platform_path_separator(),
-                         nk_platform_path_separator(), nk_platform_path_separator(),
-                         nk_platform_path_separator(), name);
-#endif
         if (n > 0 && (size_t)n < sizeof(executable) && nk_platform_file_exists(executable)) {
             if (nk_platform_absolute_path(executable, out_path, out_size)) return true;
             safe_str_copy(out_path, out_size, executable);
             return true;
         }
     }
+#else
+    /* Nothing is ever downloaded into the per-user root here, and the build
+       child gets no PATH entry for it (package_builder_start adds one only for
+       the Windows download), so a tool found there would be one the build
+       cannot run. */
+    (void)data_root;
+#endif
     return package_builder_find_tool(name, out_path, out_size);
+}
+
+const char *package_builder_make_tool_name(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return "mingw32-make";
+#else
+    return "make";
+#endif
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -2174,18 +2182,43 @@ bool package_builder_toolchain_missing(
 ) {
     const char *tool = NULL;
     const char *fix = NULL;
+    const char *make_tool = package_builder_make_tool_name();
+#if defined(_WIN32) || defined(_WIN64)
+    const char *python_fix =
+        "Install CPython 3.15 or 3.14 (see docs/SETUP.md) or set the PYTHON environment "
+        "variable to the interpreter.";
+    const char *gcc_fix =
+        "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-gcc) and put "
+        "its bin directory on PATH.";
+    const char *make_fix =
+        "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
+        "its bin directory on PATH.";
+    const char *source =
+        "Use the player's pinned prerequisite consent card to install the Windows build tools.";
+#else
+    const char *python_fix =
+        "Install CPython 3.15 or 3.14 (on Ubuntu 24.04, python3.15 from the deadsnakes PPA; "
+        "see docs/LINUX_DEVELOPMENT.md) or set the PYTHON environment variable to the "
+        "interpreter.";
+    const char *gcc_fix =
+        "Install GCC from your distribution's packages (on Ubuntu, build-essential) so that "
+        "gcc is on PATH.";
+    const char *make_fix =
+        "Install GNU Make from your distribution's packages (on Ubuntu, build-essential) so "
+        "that make is on PATH.";
+    const char *source =
+        "Nakagawa downloads build tools only on Windows; here it uses the ones your system "
+        "provides.";
+#endif
     if (!have_python) {
         tool = "python";
-        fix = "Install CPython 3.15 or 3.14 (see docs/SETUP.md) or set the PYTHON environment "
-              "variable to the interpreter.";
+        fix = python_fix;
     } else if (!have_gcc) {
         tool = "gcc";
-        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-gcc) and put "
-              "its bin directory on PATH.";
+        fix = gcc_fix;
     } else if (!have_make) {
-        tool = "mingw32-make";
-        fix = "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
-              "its bin directory on PATH.";
+        tool = make_tool;
+        fix = make_fix;
     }
     if (!tool) {
         if (out_tool && out_tool_size) out_tool[0] = '\0';
@@ -2196,9 +2229,8 @@ bool package_builder_toolchain_missing(
     if (out_message && out_message_size) {
         snprintf(out_message, out_message_size,
                  "BUILD_TOOLCHAIN_MISSING: %s was not found on PATH. The package build "
-                 "runs python, gcc and mingw32-make, so it cannot start. %s "
-                 "Use the player's pinned prerequisite consent card to install the Windows build tools.",
-                 tool, fix);
+                 "runs python, gcc and %s, so it cannot start. %s %s",
+                 tool, make_tool, fix, source);
     }
     return true;
 }

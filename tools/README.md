@@ -269,6 +269,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ci_test_shards.py` | Deterministic cost-weighted partition of the Python test modules into CI shards; weights in `tools/ci_test_weights.json`. |
 | `portability_inventory.py` | Public-safe portability inventory of the native runtime and build. |
 | `tree_lint.py` | Report tracked files that no other tracked file names; `--check` enforces the reference ratchet. |
+| `purity_gate.py` | Fail on PSP user-RAM address literals in `src/rt/` outside title config, self-tests, NIDs and its reviewed allowlist. |
 
 ### Performance, frames and runtime diagnostics
 
@@ -324,6 +325,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_analyzer_span_scope.py` | Regression tests for analyzer executable-span ownership. |
 | `test_codegen_continuations.py` | Linked transfers carry a resume boundary; unlinked ones stay tail dispatches. |
 | `test_codegen_entry_semantics.py` | End-to-end regressions for callable versus resume-entry codegen semantics. |
+| `test_static_coverage.py` | Static coverage: `analyze.static_coverage`, codegen's coverage report and the build-report reader. |
 | `test_codegen_fp_convert.py` | Execute generated COP1 conversions against independent fixed vectors. |
 | `test_codegen_gate_b_encoding.py` | Regression tests for gate ISA purity: every instruction under test stays pure. |
 | `test_codegen_madd_msub.py` | Regression tests for Allegrex madd/maddu/msub/msubu decoding and emission. |
@@ -562,6 +564,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_site_mobile.py` | The project website, rendered headless at phone and desktop widths in every theme: no sideways overflow, one theme top to bottom, AA contrast, 44 px tap targets, the theme picker, and every reference resolving. SKIP without Playwright. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
+| `test_purity_gate.py` | Tests for `tools/purity_gate.py`, including the gate on this checkout. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |
 | `test_vulkan_sdk.py` | Vulkan SDK discovery precedence and Makefile wiring. |
 | `test_workspace_paths.py` | Workspace path handling with spaces, Unicode and long paths. |
