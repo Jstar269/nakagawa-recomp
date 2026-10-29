@@ -3105,6 +3105,7 @@ def new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
+        "runtime_boundary": None,
         "presentation": {
             "status": "NOT_RUN",
             "frame_submissions": 0,
@@ -3465,6 +3466,10 @@ def _bringup_human_summary(report: dict) -> str:
         if imported["nid_name"]:
             detail += f", {imported['nid_name']}"
         detail += ")"
+    elif report["failure_class"] == "UNSUPPORTED_IMPORT" and report.get("runtime_boundary"):
+        detail = f" ({report['runtime_boundary']} was called in a way that is not supported yet)"
+    elif report["failure_class"] == "RUNTIME_SEMANTIC_BOUNDARY":
+        detail = f" (the runtime stopped at {report['runtime_boundary']}, which is not supported yet)"
     elif report["failure_class"] == "ENTRY_NOT_COMPILED":
         detail = " (the selected executable entry has no generated function)"
     elif report["failure_class"] == "RUNTIME_INPUT_UNAVAILABLE":
@@ -3727,6 +3732,40 @@ def _runtime_import_rows(output: str, imports: list[dict]) -> list[dict]:
     ]
 
 
+# The runtime's named stops (src/rt). The dispatcher, GE and I/O boundaries print
+# "SEMANTIC_BOUNDARY: <code>; ..." (a few "<code>: ..."); an import the runtime cannot serve
+# as called prints "UNSUPPORTED_IMPORT: <import> <detail>; the run stops here (#308)"; other
+# refusals print "<TAG>: ..." ending "the run stops here (#N)" or "stops at <boundary>".
+_RUNTIME_SEMANTIC_BOUNDARY = re.compile(r"^SEMANTIC_BOUNDARY: ([A-Za-z][A-Za-z0-9_-]{0,95})[;:] ")
+_RUNTIME_IMPORT_STOP = re.compile(
+    r"^UNSUPPORTED_IMPORT: ([A-Za-z_][A-Za-z0-9_]{0,95}) .*; the run stops here \(#\d+\)$"
+)
+_RUNTIME_NAMED_STOP = re.compile(
+    r"^([A-Z][A-Z0-9_]{3,95}): .*(?:the run stops here \(#\d+\)|stops at [a-z0-9-]+)$"
+)
+
+
+def runtime_stop(output: str) -> tuple[str, str] | None:
+    """The last named stop in one runtime's output, as (kind, name), or None.
+
+    kind is IMPORT for an import the runtime refused as called (name: the import) and
+    BOUNDARY for every other named stop (name: the runtime's boundary code or line tag). The
+    last one wins: a fatal stop is the runtime's last word. A boundary the runtime only
+    reports and runs on (the GE names one depth-buffer limit once) is named here only when
+    nothing later is.
+    """
+    stop = None
+    for line in output.splitlines():
+        line = line.strip()
+        if match := _RUNTIME_IMPORT_STOP.fullmatch(line):
+            stop = ("IMPORT", match.group(1))
+        elif match := _RUNTIME_SEMANTIC_BOUNDARY.match(line):
+            stop = ("BOUNDARY", match.group(1))
+        elif match := _RUNTIME_NAMED_STOP.fullmatch(line):
+            stop = ("BOUNDARY", match.group(1))
+    return stop
+
+
 def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     """Classify one runtime's captured output into the bring-up runtime_output_kind vocabulary."""
     folded = output.casefold()
@@ -3765,6 +3804,8 @@ def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
         return "DRIVER_ARGUMENT_FAILURE"
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
+    if runtime_stop(output) is not None:
+        return "SEMANTIC_BOUNDARY"
     # SDL's generic dummy-driver diagnostic can accompany a more useful PSP
     # boundary. Keep it as a fallback so it cannot mask named runtime failures.
     if "no available video device" in folded or "video driver" in folded:
@@ -3791,9 +3832,16 @@ _PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
 _ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def set_bringup_presentation(report: dict, output: str) -> bool:
-    """Record presenter identity and accept only ordered, validated evidence."""
+def set_bringup_presentation(report: dict, output: str, *, stopped: bool = False) -> bool:
+    """Record presenter identity and accept only ordered, validated evidence.
+
+    stopped: the run was killed at its time limit, so its output can end part-way through a
+    frame: on an unfinished last line, or after a frame's present event but before its
+    submission line. That one cut-off frame is not counted; everything before it is.
+    """
     lines = [line.strip() for line in output.splitlines()]
+    if stopped and lines and not output.endswith(("\n", "\r")):
+        lines.pop()
     submission_indices: list[int] = []
     malformed_submission = False
     for index, line in enumerate(lines):
@@ -3813,6 +3861,9 @@ def set_bringup_presentation(report: dict, output: str) -> bool:
             frame_indices.append(index)
         else:
             malformed_frame = True
+    if (stopped and len(frame_indices) == len(submission_indices) + 1
+            and (not submission_indices or frame_indices[-1] > submission_indices[-1])):
+        frame_indices.pop()
 
     backends = {
         match.group(1)
@@ -4615,8 +4666,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
+                stop = runtime_stop(launch_output)
+                report["runtime_boundary"] = stop[1] if stop else None
                 if (report["runtime_imports"] or "unknown nid" in folded
-                      or "unimplemented import" in folded):
+                      or "unimplemented import" in folded
+                      or (report["runtime_output_kind"] == "SEMANTIC_BOUNDARY"
+                          and stop[0] == "IMPORT")):
                     failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
                       or "unsupported instruction" in folded or "aot-gap" in folded):
@@ -4635,6 +4690,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "NATIVE_RUNTIME_CRASH", [308]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
+                elif report["runtime_output_kind"] == "SEMANTIC_BOUNDARY":
+                    failure, issues = "RUNTIME_SEMANTIC_BOUNDARY", [308]
                 elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
                     failure, issues = "HEADLESS_UNAVAILABLE", [308]
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
@@ -4646,7 +4703,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             process.kill()
             launch_output, _ = process.communicate()
             _write_bringup_launch_log(work_dir, launch_output)
-            _set_bringup_presentation(report, launch_output)
+            _set_bringup_presentation(report, launch_output, stopped=True)
             report["exit_classification"] = "TIMED_OUT"
             fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
                           int((time.perf_counter() - started) * 1000))

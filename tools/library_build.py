@@ -203,6 +203,7 @@ def summarize_report(report: dict) -> dict[str, Any]:
             "presentation": presentation.get("status"),
             "frame_submissions": presentation.get("frame_submissions"),
             "runtime_imports": runtime_imports,
+            "runtime_boundary": report.get("runtime_boundary"),
             "failure_class": report.get("failure_class") if built else None,
         },
     }
@@ -505,6 +506,16 @@ def render_markdown(manifest: dict[str, Any]) -> str:
         lines += ["", "## First launch of built titles", "",
                   "| Exit / runtime output / presentation | Titles |", "| --- | --- |"]
         lines += [f"| {key} | {count} |" for key, count in launches.most_common()]
+    stops = Counter(
+        ((record.get("launch") or {}).get("failure_class"),
+         (record.get("launch") or {}).get("runtime_boundary"))
+        for record in titles
+        if record["outcome"] == "BUILT" and (record.get("launch") or {}).get("runtime_boundary")
+    )
+    if stops:
+        lines += ["", "## Where first launches stopped", "", "| Failure | Runtime stop | Titles |",
+                  "| --- | --- | --- |"]
+        lines += [f"| {failure} | `{stop}` | {count} |" for (failure, stop), count in stops.most_common()]
     imports = Counter(name for record in titles for name in record.get("unsupported_imports") or [])
     if imports:
         lines += ["", "## Unsupported imports found at build (top 40)", "",

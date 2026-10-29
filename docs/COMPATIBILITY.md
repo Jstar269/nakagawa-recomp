@@ -99,8 +99,8 @@ the data folder safely, because the library is written under a lock.
 
 The run never stops on one title. After each title it rewrites `library-build.json` and `library-build.md` in the
 data folder (and in each `--manifest-dir`): the disc ID and title, and either the package built (its size, the
-unsupported imports found while building, how the first launch ended) or the exact stage and failure class it
-stopped at. Run the same command again to resume: titles that ended are kept, and a title cut off mid-build runs
+unsupported imports found while building, how the first launch ended and, when the runtime stopped it by name,
+where) or the exact stage and failure class it stopped at. Run the same command again to resume: titles that ended are kept, and a title cut off mid-build runs
 again. `--retry-failed` builds the failures again. Only `.iso` files are discs; other files are counted by kind,
 and a disc ID seen before is recorded as a duplicate of the first file with it.
 

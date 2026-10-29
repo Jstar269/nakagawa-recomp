@@ -272,6 +272,25 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertIn("DUPLICATE_DISC_MODULE_BASENAME", rows[0]["message"])
         self.assertTrue(target.is_file())
 
+    def test_the_manifest_names_where_each_first_launch_stopped(self) -> None:
+        stages = {stage: {"status": "PASS", "duration_ms": 1} for stage in library_build.STAGES}
+        stages["launch"]["status"] = "FAIL"
+        record = library_build.summarize_report({
+            "reached_stage": "launch", "stages": stages, "failure_class": "RUNTIME_SEMANTIC_BOUNDARY",
+            "exit_classification": "EXITED_NONZERO", "runtime_output_kind": "SEMANTIC_BOUNDARY",
+            "runtime_boundary": "target-not-executable", "process_exit_code": 1,
+            "presentation": {"status": "NO_FRAME_SUBMISSIONS", "frame_submissions": 0},
+        })
+        self.assertEqual(record["outcome"], "BUILT")
+        self.assertEqual(record["launch"]["runtime_boundary"], "target-not-executable")
+        record.update(source="a/a.iso", disc_id="TEST70001", title="Synthetic")
+        markdown = library_build.render_markdown({
+            "titles": [record], "counts": {"BUILT": 1}, "started_at": "t0", "updated_at": "t1",
+            "user_data_root": "data",
+        })
+        self.assertIn("## Where first launches stopped", markdown)
+        self.assertIn("| RUNTIME_SEMANTIC_BOUNDARY | `target-not-executable` | 1 |", markdown)
+
     def test_the_default_job_count_follows_the_cpus(self) -> None:
         self.assertEqual(library_build.default_jobs(None), 1)
         self.assertEqual(library_build.default_jobs(8), 1)

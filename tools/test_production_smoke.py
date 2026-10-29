@@ -3247,6 +3247,90 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["exit_classification"], "TIMED_OUT")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
 
+    def test_a_launch_stopped_at_its_limit_counts_the_frames_it_finished(self):
+        frames = "".join(
+            f"BOOT_EVENT phase=frame_present backend=offscreen frame={n}\n"
+            f"HOST_PRESENT_SUBMITTED f={n} buf=0x04000000 fmt=3 stride=512\n"
+            for n in (1, 2, 3)
+        )
+        window = "BOOT_EVENT phase=window_ready backend=offscreen\n"
+        # The kill lands after a frame's present event, before its submission line, and
+        # again part-way through writing a line.
+        for index, cut in enumerate((
+                "BOOT_EVENT phase=frame_present backend=offscreen frame=4\n",
+                "BOOT_EVENT phase=frame_present backend=offscreen frame=4\nHOST_PRES")):
+            with self.subTest(cut=cut):
+                status, report = self._run_case(
+                    f"timeout-{index}", timeout=True, launch_output=window + frames + cut)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(report["failure_class"], "LAUNCH_TIMEOUT")
+                self.assertEqual(report["presentation"]["status"], "FRAME_SUBMITTED")
+                self.assertEqual(report["presentation"]["frame_submissions"], 3)
+                nk_cli.validate_bringup_report(report)
+
+        # A run that ended on its own keeps the strict pairing.
+        report = nk_cli.new_bringup_report()
+        self.assertFalse(nk_cli.set_bringup_presentation(
+            report, window + frames + "BOOT_EVENT phase=frame_present backend=offscreen frame=4\n"))
+        self.assertEqual(report["presentation"]["frame_submissions"], 0)
+
+    def test_a_named_runtime_stop_is_its_own_failure_and_names_the_boundary(self):
+        cases = (
+            ("SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x08800000 resumed at "
+             "0x08800008 but its guest jr $ra target was 0x08800100; stopping before the AOT "
+             "continuation\n", "RUNTIME_SEMANTIC_BOUNDARY", "AOT_RETURN_TARGET_MISMATCH"),
+            ("  SEMANTIC_BOUNDARY: target-not-executable; in the works: #308\n",
+             "RUNTIME_SEMANTIC_BOUNDARY", "target-not-executable"),
+            ("LIBFONT_STARTUP_UNAVAILABLE: the translated libfont image was refused at load; "
+             "translated guest libfont startup is not supported yet on this route; refusing to "
+             "synthesize readiness, so the run stops at libfont-startup-unavailable\n",
+             "RUNTIME_SEMANTIC_BOUNDARY", "LIBFONT_STARTUP_UNAVAILABLE"),
+            ("UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock placement kind 1 is not supported "
+             "yet; the run stops here (#308)\n", "UNSUPPORTED_IMPORT", "sceKernelAllocMemoryBlock"),
+        )
+        for index, (output, failure, boundary) in enumerate(cases):
+            with self.subTest(boundary=boundary):
+                status, report = self._run_case(
+                    f"stop-{index}", launch_code=1,
+                    launch_output="GE: unhandled command 0xf7 (unknown) data=0x000000\n" + output,
+                )
+                self.assertNotEqual(status, 0)
+                self.assertEqual(report["failure_class"], failure)
+                self.assertEqual(report["runtime_output_kind"], "SEMANTIC_BOUNDARY")
+                self.assertEqual(report["runtime_boundary"], boundary)
+                self.assertEqual(report["issue_numbers"], [308])
+                self.assertNotIn("08800000", json.dumps(report))
+                summary = nk_cli._bringup_human_summary(report)
+                self.assertIn(boundary, summary)
+                self.assertIn("not supported yet", summary)
+                self.assertNotRegex(summary, r"#[0-9]+")
+                nk_cli.validate_bringup_report(report)
+
+    def test_a_dispatch_miss_keeps_its_class_and_records_the_stop_after_it(self):
+        status, report = self._run_case(
+            "launch", launch_code=1,
+            launch_output=(
+                "DISPATCH_MISS_NEW[1]: target=0x08800000 caller_pc=0x08800004 ra=0x08800008 uid=0x1\n"
+                "  SEMANTIC_BOUNDARY: incomplete-executable-span; in the works: #308\n"
+                "--- UNIQUE DISPATCH MISSES SUMMARY (1 entries) ---\n"
+                "  target=0x08800000 pc=0x08800004 ra=0x08800008\n"
+                "--- END UNIQUE DISPATCH MISSES SUMMARY ---\n"
+            ),
+        )
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["failure_class"], "UNRESOLVED_DISPATCH_TARGET")
+        self.assertEqual(report["runtime_output_kind"], "DISPATCH_MISS")
+        self.assertEqual(report["runtime_boundary"], "incomplete-executable-span")
+        nk_cli.validate_bringup_report(report)
+
+    def test_the_last_named_stop_is_the_one_reported(self):
+        self.assertIsNone(nk_cli.runtime_stop("ordinary output\nthe run stops here\n"))
+        self.assertEqual(nk_cli.runtime_stop(
+            "SEMANTIC_BOUNDARY: VRAM_DEPTH_STRIDE_UNSUPPORTED; depth stride is not supported yet.\n"
+            "VTIMER_HANDLER: fn=0x08800000 uid=0x10 has no nested guest-call frame; "
+            "the run stops here (#308)\n"),
+            ("BOUNDARY", "VTIMER_HANDLER"))
+
     def test_report_schema_rejects_unwhitelisted_and_address_shaped_values(self):
         report = nk_cli._new_bringup_report()
         report["guest_pc"] = "0x08800000"

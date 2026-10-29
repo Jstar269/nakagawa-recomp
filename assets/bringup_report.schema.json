@@ -77,6 +77,7 @@
         "UNSUPPORTED_IMPORT",
         "UNSUPPORTED_INSTRUCTION",
         "UNRESOLVED_DISPATCH_TARGET",
+        "RUNTIME_SEMANTIC_BOUNDARY",
         "EXITED_ZERO_BEFORE_HLE",
         "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP",
         "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP",
@@ -109,7 +110,12 @@
       "items": { "$ref": "#/$defs/runtime_import" }
     },
     "runtime_output_kind": {
-      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "SEMANTIC_BOUNDARY", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "runtime_boundary": {
+      "description": "The runtime's last named stop in a run that exited nonzero: its boundary code, line tag, or the import it refused as called.",
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,95}$"
     },
     "presentation": {
       "type": "object",
