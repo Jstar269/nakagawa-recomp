@@ -1269,6 +1269,9 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     "src/rt/h264_ffmpeg_sub/libavcodec/",
     "src/rt/h264_ffmpeg_sub/libavutil/",
     "src/rt/h264_ffmpeg_sub/compat/",
+    # libchdr and the codecs it carries, kept as upstream wrote them (CRLF normalised to LF only;
+    # third_party/libchdr/PROVENANCE.md records every upstream blob).
+    "third_party/libchdr/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
