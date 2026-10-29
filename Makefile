@@ -1086,6 +1086,7 @@ PUBLIC_TARGETS := \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
+	coro-selftest-asm \
 	hle-thread-selftest \
 	aot-return-boundary-thread-selftest \
 	hle-thread-selftest-build \
@@ -1222,6 +1223,7 @@ HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (s
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
+HELP_DESCRIPTION_coro-selftest-asm := run the coroutine selftest on the Android stack-switch backend (POSIX hosts)
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
 HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
@@ -2520,8 +2522,25 @@ native-core-tests: ge-cpu-profile-validate-selftest
 coro-selftest:
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/coro_selftest.exe \
 		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
-		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
+		$(if $(filter Windows_NT,$(OS)),-lpsapi,-lm)
 	$(BUILD_DIR)/coro_selftest.exe
+
+# The same selftest on the stack-switch backend Android uses (bionic has no swapcontext), built
+# for this POSIX host with SR_CORO_BACKEND_ASM. x86-64 and AArch64 System V hosts only; the
+# Windows fiber backend has no such variant, so the target refuses there.
+coro-selftest-asm:
+ifeq ($(OS),Windows_NT)
+	$(error coro-selftest-asm needs a POSIX host (Linux or WSL); Windows uses Win32 fibers)
+else
+	$(CC) $(CFLAGS) -DSR_CORO_BACKEND_ASM -o $(BUILD_DIR)/coro_selftest_asm.exe \
+		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) -lm
+	$(BUILD_DIR)/coro_selftest_asm.exe
+endif
+
+native-core-tests: coro-selftest
+ifneq ($(OS),Windows_NT)
+native-core-tests: coro-selftest-asm
+endif
 
 # ge-raster-ref-selftest — project-authored GE triangle setup and rasterization
 # reference model (issue #696): 12.4 snapping, top-left coverage with a tiling

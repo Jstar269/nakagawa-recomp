@@ -51,9 +51,13 @@ void nk_secure_zero(void *p, size_t len)
 #if defined(_WIN32) || defined(_WIN64)
     SecureZeroMemory(p, len);
     return;
-#elif defined(__GLIBC__) && defined(__USE_MISC) && __GLIBC_PREREQ(2, 25)
+#elif defined(__GLIBC__) && defined(__USE_MISC) && defined(__GLIBC_PREREQ)
+    /* Nested: a preprocessor that has no __GLIBC_PREREQ (Android's bionic, clang) rejects the
+     * function-like call even inside a condition that is already false. */
+#if __GLIBC_PREREQ(2, 25)
     explicit_bzero(p, len);
     return;
+#endif
 #endif
 
     /* Portable fallback.  Every write goes through a volatile-qualified
