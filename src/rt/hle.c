@@ -3084,9 +3084,11 @@ static uint32_t free_block(uint32_t uid) {
             return 0;
         }
     }
-    /* Block not found — could be an invalid UID. PSP returns error. */
+    /* No live block has this UID. PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5,
+     * recorded on a PSP: freeing an already-freed UID, UID 0 or 0xDEADBEEF returns
+     * SCE_KERNEL_ERROR_UNKNOWN_UID (0x800200CB) (#341). */
     if (getenv("SR_ALLOC_TRACE")) fprintf(stderr, "FreePartitionMemory: uid=0x%x not found\n", uid);
-    return 0x80020000;
+    return HLE_KERNEL_ERROR_UNKNOWN_UID;
 }
 static uint32_t h_FreePartitionMemory(CpuState *s) {
     return free_block(A0);
@@ -13017,6 +13019,8 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
     sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
     sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
+    /* Shared with the executable harness so it dispatches the production mapping (#341). */
+    sr_hle_register(0x46ebb729u, "sceUmdCheckMedium", h_UmdCheckMedium);
 }
 
 /* VBLANK (PSP_VBLANK_INT = 30) sub-interrupt handlers the game registers; the scheduler
@@ -28120,7 +28124,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_power_register_callback();
-    sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
     sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);

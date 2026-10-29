@@ -1376,6 +1376,206 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code",
     },
+    # ---- #341 Route-A batch 11: measured getters, GE sync, UMD state, thread waits ----
+    # Each entry cites PSP cells whose values docs/HARDWARE_ORACLE.md (or the oracle
+    # manifest's measurement note) publishes, plus the production-NID selftest that pins
+    # the runtime to them. Nothing here is complete: each names what the cells do not cover.
+    "h_GetSystemParamInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: int-id-2..int-id-9, int-unknown-0, int-unknown-10, int-unknown-64)",
+            "src/rt/hle_thread_selftest.c:test_sysreg_virtual_registry",
+        ],
+        "limitation": "ids 2 to 10 return 0 and write a value and ids 0 and 64 return 0x80110103 with the output untouched, as measured; the seeded values are the oracle console's configured settings (WLAN_POWERSAVE is an unmeasured project default), not factory defaults; an invalid output pointer is not measured",
+    },
+    "h_GetSystemParamString": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: string-id-1-len-0x80, string-id-1-len-0x04)",
+            "src/rt/hle_thread_selftest.c:test_sysparam_nickname_string",
+        ],
+        "limitation": "the nickname (id 1) copy with its NUL and the short-buffer 0x80110102 refusal that writes nothing are measured; other string ids, a null buffer and len <= 0 return 0x80110103 without a measurement, and the nickname is the registry value (empty by default), not the console's",
+    },
+    "h_CtrlReadLatch": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-CTRL-LATCH-001: latch-read-initial, latch-read-after-poll, latch-read-clears-peek-keeps)",
+            "src/rt/hle_thread_selftest.c:test_ctrl_read_latch",
+        ],
+        "limitation": "with no input the measured make, break and press words are 0 and release is 0xFFFFFFFF, which the runtime matches; whether a read clears the latch is not established by the cells (the release word stays saturated), so the clearing contract and the returned cycle count are the project's model, and the null-pointer code is source-selftested only",
+    },
+    "h_HprmIsRemoteExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-remote-first, hprm-remote-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the value with a remote attached is not measured",
+    },
+    "h_HprmIsHeadphoneExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured",
+    },
+    "h_HprmIsMicrophoneExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-microphone-first, hprm-microphone-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled state, 1 by default as measured twice on the PSP-3000 oracle console; other models (without a built-in microphone) are not measured",
+    },
+    "h_PowerGetPllClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: pll-clock-int)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 222 MHz is measured; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_PowerGetCpuClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: cpu-clock-int, cpu-clock-alias, cpu-clock-int-repeat)",
+            "docs/HARDWARE_ORACLE.md (PSP-SYSTEM-001: model-profile)",
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 222 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_PowerGetBusClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: bus-clock-int, bus-clock-alias)",
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 111 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_GeListSync": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-list-sync-paused, ge-list-sync-cancelled, ge-list-dequeue-stalled)",
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+            "src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list",
+        ],
+        "limitation": "the syncType 1 peeks (paused 4, stalled 3) and the reset-removed 0x80000100 are measured; syncType 0 blocking is the PSPSDK contract and is source-selftested, an unknown queue id returns 0 without a measurement, and command-boundary timing is not measured",
+    },
+    "h_GeDrawSync": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-draw-sync-paused, ge-draw-sync-cancelled, ge-list-dequeue-stalled)",
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+            "src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list",
+        ],
+        "limitation": "the mode 1 peeks (paused 2, stalled 3, 0 after a reset) are measured; mode 0 blocking is the PSPSDK contract and is source-selftested, and modes other than 0 and 1 take the wait path without a measurement",
+    },
+    "h_DcacheRangeMaintenance": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-CACHE-001: cache-alias-init, cache-writeback-contrast, cache-inval-contrast)",
+            "src/rt/hle_thread_selftest.c:test_dcache_maintenance_notifies_renderer",
+        ],
+        "limitation": "guest RAM is one coherent array, so the post-maintenance words the cells check are met, but the pre-maintenance contrast words (an uncached read before writeback, a stale cached read before invalidate) are not reproduced; a title that reads stale data through the cached alias is outside this model",
+    },
+    "h_DelayThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-thread-zero)",
+            "src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics",
+        ],
+        "limitation": "a zero delay returning 0 without yielding to an equal-priority ready thread or dispatching a pending callback is measured; nonzero delays block for the modeled microsecond duration, whose rounding and wake latency are not measured (#325)",
+    },
+    "h_DelayThreadCB": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-threadcb-zero)",
+            "src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics",
+            "src/rt/hle_thread_selftest.c:test_delay_threadcb_zero_bounds_a_self_renotifying_callback",
+        ],
+        "limitation": "a zero delay returning 0 without yielding and dispatching the pending callback exactly once is measured; nonzero delays and the callback pump while blocked are not measured (#325)",
+    },
+    "h_ExitGame": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-SMOKE-001: module_start, sceKernelExitGame)",
+            "src/rt/hle_thread_selftest.c:test_exit_game_ignores_argument_registers",
+        ],
+        "limitation": "the call ends the guest process and ignores the argument registers (the PSPSDK signature takes none); the smoke cell shows only that a module reaching it exits, and exit callbacks and the return to the system menu are not modeled",
+    },
+    "h_WaitThreadEnd": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-R77, ED-R00, ED-RNEG, ED-RERR, ED-X77, ED-X00, ED-XNEG, ED-XERR, ED-D77, ED-D00, ED-DNEG, ED-DERR)",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_invalid_targets",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_already_ended",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_blocking_and_resume",
+        ],
+        "limitation": "the cells join a worker that exits at once (return, ExitThread or ExitDeleteThread with four status values) with a NULL timeout; a join that blocks on a running thread, timeouts, multiple joiners and the remaining-time write are source-selftested only",
+    },
+    "h_UmdCheckMedium": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)",
+            "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
+        ],
+        "limitation": "always reports a medium present (1), as measured with a disc inserted; the runtime serves one ISO, so the no-disc result and disc removal are not modeled",
+    },
+    "h_UmdDriveStat": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)",
+            "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
+        ],
+        "limitation": "reports the modeled drive state: 0x32 with the disc inserted, as measured before and after the PSP-UMDIO-001 opens, and 0x12 after sceUmdDeactivate (a 2026-10-24 measurement recorded in the handler source); no-disc and transitional states are not modeled",
+    },
+    # ---- #341 Route-A batch 12: PSPAutotests 2ed7c9c5 expectations (recorded on a PSP) ----
+    "h_CreateEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/events/create/create.expected at 2ed7c9c5 (NULL name 0x80020001, attr 0x100/0x122/0x300/0x900/0x1200 refused with 0x80020191, long names cut to 31 bytes)",
+            "src/rt/hle_thread_selftest.c:test_evf_create_and_refer",
+        ],
+        "limitation": "the name, attribute and pattern cells match; the shared semaphore/event-flag/LwMutex table holds 128 objects, while the same PSP-recorded output shows 1024 event flags created, and the exhaustion code 0x80020000 is not measured; the option struct is ignored",
+    },
+    "h_DeleteEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/events/delete/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019A; a blocked waiter leaves with 0x800201B5)",
+            "src/rt/hle_thread_selftest.c:test_evf_typed_uids_and_delete",
+        ],
+        "limitation": "unknown-id and waiter-release cells match; the outBits written to a waiter at deletion follow the measured Cancel rule, and a nonzero pattern at deletion is not measured",
+    },
+    "h_DeleteMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/msgpipe/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019E; blocked receivers and senders leave with 0x800201B5)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_delete_unknown_ids",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_callback_and_delete",
+        ],
+        "limitation": "unknown-id and blocked-receiver release cells are selftested; the remaining-timeout word a timed waiter receives at deletion and blocked senders are not asserted, and interrupt-context precedence is not established",
+    },
+    "h_GetBlockHeadAddr": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Get deleted, NULL and invalid all 00000000)",
+            "src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes",
+            "src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse",
+        ],
+        "limitation": "returns a live block's base and 0 for a freed, zero or unknown UID, as recorded; block placement itself follows the runtime allocator, whose High and aligned types do not yet match partition.expected (sceKernelAllocPartitionMemory stays unreviewed)",
+    },
+    "h_FreePartitionMemory": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Free deleted, NULL and invalid all 0x800200CB)",
+            "src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes",
+            "src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse",
+        ],
+        "limitation": "a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
@@ -1531,8 +1731,6 @@ WAIVERS = ()
 # Never add an entry to make that gate pass: review the handler instead.
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
-    0x03444EB4: {"name": "sceGeListSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeListSync
-    0x05572A5F: {"name": "sceKernelExitGame", "issue": PROFILE_ZERO_ISSUE},  # h_ExitGame
     0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
     0x092968F4: {"name": "sceKernelCpuSuspendIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuSuspendIntr
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
@@ -1540,26 +1738,17 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
     0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
-    0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
     0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
     0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
-    0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
     0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
     0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
-    0xA5DA2406: {"name": "sceUtilityGetSystemParamInt", "issue": PROFILE_ZERO_ISSUE},  # h_GetSystemParamInt
     0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
-    0xB287BD61: {"name": "sceGeDrawSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeDrawSync
-    0xB6D61D02: {"name": "sceKernelFreePartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_FreePartitionMemory
     0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
-    0xCEADEB47: {"name": "sceKernelDelayThread", "issue": PROFILE_ZERO_ISSUE},  # h_DelayThread
     0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
     0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
     0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
-    0xEF9E4C70: {"name": "sceKernelDeleteEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteEventFlag
-    0xF0B7DA1C: {"name": "sceKernelDeleteMsgPipe", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteMsgPipe
     0xF475845D: {"name": "sceKernelStartThread", "issue": PROFILE_ZERO_ISSUE},  # h_StartThread
     0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
 }

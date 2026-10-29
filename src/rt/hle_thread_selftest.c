@@ -8594,6 +8594,7 @@ static void test_psp_measured_umd_state_20261024(void) {
         NID_UMD_ACTIVATE = 0xc6183d47u,
         NID_UMD_DEACTIVATE = 0xe83742bau,
         NID_UMD_GET_DRIVE_STAT = 0x6b4a146cu,
+        NID_UMD_CHECK_MEDIUM = 0x46ebb729u,
         NID_UMD_WAIT_DRIVE_STAT = 0x8ef08fceu,
         NID_UMD_GET_DISC_INFO = 0x340b7686u,
         INFO = ORACLE_CALLBACK_NAME + 0x200u,
@@ -8610,6 +8611,10 @@ static void test_psp_measured_umd_state_20261024(void) {
            "sceUmdDeactivate and sceUmdGetDriveStat are registered");
     expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
            "the drive state at entry is the measured 0x32");
+    /* PSP-UMDIO-001 umd-state-before / umd-state-after: with a disc inserted,
+     * sceUmdCheckMedium returned 1. */
+    expect(sr_syscall(&cpu, NID_UMD_CHECK_MEDIUM) == 1u,
+           "sceUmdCheckMedium reports the medium present (PSP-UMDIO-001: 1)");
     cpu.r[4] = 1u; cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u,
            "sceUmdDeactivate returns 0");
@@ -25769,6 +25774,34 @@ static void selftest_msgpipe_nested_fixture_end(
     s_oracle_mode = fixture->saved_oracle_mode;
 }
 
+/* sceKernelDeleteMsgPipe on a pipe that is not live (#341). PSPAutotests
+ * tests/threads/msgpipe/delete.expected at 2ed7c9c5, recorded on a PSP: the first delete returns
+ * 0, then UID 0, 0xDEADBEEF and the already-deleted UID each return 0x8002019E (UNKNOWN_MPPID). */
+static void test_msgpipe_delete_unknown_ids(void) {
+    const uint32_t GUEST_NAME = 0x08030000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 'd'); MEM_W8(GUEST_NAME + 1u, 0u);
+    TCB *owner = fixture_thread(0x33a20u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 0x100u);
+    expect(pipe != 0u && pipe < 0x80000000u, "DeleteMsgPipe unknown-ID test: a pipe is created");
+    CpuState cpu = {0};
+    cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "DeleteMsgPipe of a live pipe returns 0");
+    const uint32_t dead[3] = { 0u, 0xDEADBEEFu, pipe };
+    const char *what[3] = { "UID 0", "UID 0xDEADBEEF", "the deleted pipe" };
+    for (int i = 0; i < 3; i++) {
+        char msg[128];
+        cpu = (CpuState){0};
+        cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "DeleteMsgPipe of %s returns 0x8002019E (delete.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == SCE_KERNEL_ERROR_UNKNOWN_MPPID, msg);
+    }
+    s_cur = -1;
+}
+
 static void test_msgpipe_nested_callback_wait_scopes(void) {
     const uint32_t GUEST_BUF = 0x08010000u;
     const uint32_t GUEST_OUT = 0x08020000u;
@@ -26666,6 +26699,45 @@ static void test_td28_partition_free_reuse(void) {
     expect(addr_x == base0, "no-free path block 1 address unchanged");
     expect(addr_y == ((base0 + 0x100u + 0xFFu) & ~0xFFu), "no-free path block 2 address unchanged");
     expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
+}
+
+/* sceKernelGetBlockHeadAddr and sceKernelFreePartitionMemory on a block UID that is not live
+ * (#341). PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5, recorded on a PSP: for a
+ * freed UID, UID 0 and 0xDEADBEEF, GetBlockHeadAddr returns 0 and FreePartitionMemory returns
+ * 0x800200CB (SCE_KERNEL_ERROR_UNKNOWN_UID). A live block's address and its single free are the
+ * control. */
+static void test_partition_unknown_block_codes(void) {
+    extern void sr_hle_test_partition_reset(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid != 0u && uid < 0x80000000u, "partition unknown-UID test: a control block is allocated");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) != 0u, "GetBlockHeadAddr of a live block is its address");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "FreePartitionMemory of a live block returns 0");
+
+    const uint32_t dead[3] = { uid, 0u, 0xDEADBEEFu };
+    const char *what[3] = { "a freed UID", "UID 0", "UID 0xDEADBEEF" };
+    for (int i = 0; i < 3; i++) {
+        char msg[128];
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "GetBlockHeadAddr of %s returns 0 (partition.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_GET_HEAD) == 0u, msg);
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "FreePartitionMemory of %s returns 0x800200CB (partition.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_FREE_PART) == 0x800200cbu, msg);
+    }
+    sr_hle_test_partition_reset();
 }
 
 /* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
@@ -37525,6 +37597,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();
     test_msgpipe_termination_requeues_readied_waiters();
     test_msgpipe_callback_and_delete();
+    test_msgpipe_delete_unknown_ids();
     test_msgpipe_nested_callback_wait_scopes();
     test_msgpipe_cancel_skips_paused_callback_wait();
     test_td23_guest_pointer_validation();
@@ -37533,6 +37606,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
+    test_partition_unknown_block_codes();
     test_module_id_queries_resolve_owning_module();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
