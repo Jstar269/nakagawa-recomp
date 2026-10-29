@@ -120,6 +120,52 @@ extern uint32_t (*sr_rt_uid_fn)(void);
 extern int sr_perf_aot_active;
 extern int sr_perf_enabled;
 
+/* ---- execution share (always on; no SR_PERF needed) --------------------------------
+ * How much executed guest work ran natively (AOT) and how much in the interpreter floor
+ * (#118), reported once at exit as one EXEC_SHARE line on stderr and, when
+ * SR_EXEC_SHARE_JSON names a file, as a small JSON summary (schema nakagawa-exec-share-v1).
+ * Time is attributed to the tier that is running: sr_exec_enter() switches tier only when
+ * it changes, so an AOT-to-AOT dispatch reads no clock. A guest thread's tier is saved
+ * across scheduler switches (sr_exec_slice_begin/end). Host idle waits inside a slice are
+ * not guest work (sr_exec_idle). The time share overstates the interpreter's share of
+ * instructions, because it is slower per instruction; the exact instruction share needs a
+ * PERF_AOT_INSTRUCTIONS=1 build. Nothing here changes guest behaviour. */
+typedef enum SrExecTier {
+    SR_EXEC_TIER_NONE = 0,
+    SR_EXEC_TIER_AOT,
+    SR_EXEC_TIER_INTERP,
+    SR_EXEC_TIER_COUNT,
+} SrExecTier;
+
+extern int sr_exec_tier;
+extern uint64_t sr_exec_interp_instructions;
+
+/* Inlined even in the default -O0 runtime build: an AOT dispatch pays one compare. */
+#if defined(__GNUC__)
+#define SR_EXEC_INLINE static inline __attribute__((always_inline))
+#else
+#define SR_EXEC_INLINE static inline
+#endif
+
+void     sr_exec_tier_switch(int tier);
+SR_EXEC_INLINE int sr_exec_enter(int tier) {
+    int previous = sr_exec_tier;
+    if (previous != tier) sr_exec_tier_switch(tier);
+    return previous;
+}
+SR_EXEC_INLINE void sr_exec_leave(int previous) {
+    if (sr_exec_tier != previous) sr_exec_tier_switch(previous);
+}
+void     sr_exec_interp_entry(uint32_t entry_pc);
+void     sr_exec_interp_exit(int returned_to_aot, int call_return);
+void     sr_exec_slice_begin(int tier);
+int      sr_exec_slice_end(void);
+uint64_t sr_exec_now_ns(void);
+void     sr_exec_idle(uint64_t started_ns);
+/* Only the game runtime (driver.c) arms the report, so native self-tests print nothing. */
+void     sr_exec_share_arm(void);
+void     sr_exec_share_report(void);
+
 void     sr_perf_init(void);
 
 /* Where a finished telemetry line goes.  The default is a single fwrite() to stderr; the
