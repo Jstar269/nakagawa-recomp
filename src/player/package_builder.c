@@ -654,8 +654,14 @@ static void winhttp_close(void *context) {
 
 static bool winhttp_open(void *context, const char *url, const char *allowed_hosts,
                          PackageHttpResponse *response) {
-    (void)context;
+    const PackageHttpOptions *options = (const PackageHttpOptions *)context;
+    wchar_t user_agent[64] = L"NakagawaRecomp/PrerequisiteBootstrap";
     if (!allowed_url(url, allowed_hosts) || !response) return false;
+    if (options && options->user_agent &&
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, options->user_agent, -1, user_agent,
+                            (int)(sizeof(user_agent) / sizeof(user_agent[0]))) <= 0) {
+        return false;
+    }
     WinHttpDownload *state = (WinHttpDownload *)calloc(1, sizeof(*state));
     if (!state) return false;
     if (strlen(url) >= sizeof(state->final_url)) {
@@ -663,7 +669,7 @@ static bool winhttp_open(void *context, const char *url, const char *allowed_hos
         return false;
     }
     snprintf(state->final_url, sizeof(state->final_url), "%s", url);
-    state->session = WinHttpOpen(L"NakagawaRecomp/PrerequisiteBootstrap",
+    state->session = WinHttpOpen(user_agent,
                                  WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!state->session) {
@@ -784,6 +790,14 @@ static bool sha256_begin(BCRYPT_ALG_HANDLE *algorithm, BCRYPT_HASH_HANDLE *hash,
     return true;
 }
 #endif
+
+PackageHttpOpen package_builder_native_transport(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return winhttp_open;
+#else
+    return NULL;
+#endif
+}
 
 bool package_builder_download_verified(
     const PackagePrerequisite *item, const char *destination,

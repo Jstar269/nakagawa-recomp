@@ -232,6 +232,22 @@ class SiteStaticTests(unittest.TestCase):
         missing = sorted(set(auto_tokens) - set(_declarations(light.group(1))))
         self.assertEqual(missing, [], "dark tokens with no light value")
 
+    def test_download_rows_give_their_date_and_size_once_per_layout(self) -> None:
+        # A phone shows a row's date and size in the version cell's meta line instead of their own columns, so
+        # the two copies must agree.
+        table = re.search(r'<table class="dl">(.*?)</table>', _page_text(), re.S)
+        self.assertIsNotNone(table, "no download table")
+        assert table
+        rows = re.findall(r"<tr>(.*?)</tr>", table.group(1).split("<tbody>", 1)[1], re.S)
+        self.assertTrue(rows, "the download table has no release row")
+        for row in rows:
+            cells = {
+                name: " ".join(value.split())
+                for name, value in re.findall(r'<(?:td|span) class="(meta|rel|size)">(.*?)</(?:td|span)>', row)
+            }
+            self.assertEqual(sorted(cells), ["meta", "rel", "size"], row)
+            self.assertEqual(cells["meta"], f"{cells['rel']} · {cells['size']}", row)
+
 
 # ---- Browser checks ----
 
@@ -376,6 +392,37 @@ async () => {
     img.addEventListener('error', done, { once: true });
   })));
   return [...document.images].filter((img) => !img.naturalWidth).map((img) => img.currentSrc || img.src);
+}
+"""
+
+# The download table at this width: whether it needs a sideways scroll inside its frame, and every fact that is
+# split over more than one line. Each fact keeps one line: the version with its badge, the platform, the date and
+# size (in their columns, or in the meta line on a phone) and the Download button.
+DOWNLOAD_TABLE_JS = r"""
+() => {
+  const out = { scrolls: null, wrapped: [], shown: {} };
+  const wrap = document.querySelector('.dl-wrap');
+  out.scrolls = wrap.scrollWidth > wrap.clientWidth ? `${wrap.scrollWidth}px of table in ${wrap.clientWidth}px` : null;
+  const spread = (range) => {
+    const tops = [...range.getClientRects()].filter((r) => r.width > 0).map((r) => r.top);
+    return tops.length ? Math.max(...tops) - Math.min(...tops) : 0;
+  };
+  const shown = (el) => el.checkVisibility();
+  for (const row of document.querySelectorAll('.dl tbody tr')) {
+    const ver = row.querySelector('td.ver');
+    const head = document.createRange();
+    head.setStart(ver, 0);
+    head.setEndAfter(ver.querySelector('.latest'));
+    if (spread(head) > 8) out.wrapped.push(`version "${head.toString().trim()}"`);
+    for (const el of row.querySelectorAll('.plat, .meta, td.rel, td.size, .btn')) {
+      out.shown[el.className] = shown(el);
+      if (!shown(el)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      if (spread(range) > 8) out.wrapped.push(`${el.className} "${el.textContent.trim()}"`);
+    }
+  }
+  return out;
 }
 """
 
@@ -552,6 +599,20 @@ class SiteBrowserTests(unittest.TestCase):
                     self._shot(page, f"{viewport[0]}x{viewport[1]}-{name}")
                     self.assertEqual(foreign, [], "requests outside the site")
                     self.assertEqual(errors, [])
+
+    def test_download_table_keeps_each_fact_on_one_line(self) -> None:
+        # At 390 px the four columns squeezed the date, the size and the platform onto two lines each, and at
+        # 360 px the table scrolled sideways inside its frame. A phone moves the date and size under the platform.
+        for viewport in VIEWPORTS:
+            phone = viewport in PHONES
+            with self.subTest(f"{viewport[0]}x{viewport[1]}"):
+                page, _foreign, errors = self._open(viewport, "light")
+                found = page.evaluate(DOWNLOAD_TABLE_JS)
+                self.assertIsNone(found["scrolls"], "the download table scrolls sideways")
+                self.assertEqual(found["wrapped"], [], "facts split over two lines")
+                self.assertEqual(found["shown"], {"plat": True, "meta": phone, "rel": not phone,
+                                                  "size": not phone, "btn": True})
+                self.assertEqual(errors, [])
 
     def test_picker_switches_the_whole_page_and_is_remembered(self) -> None:
         theme_colours = "[...document.querySelectorAll('meta[name=theme-color]')].map(m => m.content)"

@@ -158,6 +158,7 @@ static int write_launch_environment_probe(void) {
     const char *disc_id = getenv("SR_DISC_ID");
     const char *ui_root = getenv("SR_UI_ROOT");
     const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
+    const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -174,7 +175,8 @@ static int write_launch_environment_probe(void) {
                      "SR_GAME_TITLE=%s\n"
                      "SR_DISC_ID=%s\n"
                      "SR_UI_ROOT=%s\n"
-                     "SR_EXPERIMENTAL_60HZ=%s\n",
+                     "SR_EXPERIMENTAL_60HZ=%s\n"
+                     "SR_HOST_TIME_ZONE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -190,7 +192,8 @@ static int write_launch_environment_probe(void) {
                      game_title ? game_title : "<unset>",
                      disc_id ? disc_id : "<unset>",
                      ui_root ? ui_root : "<unset>",
-                     experimental_60hz ? experimental_60hz : "<unset>") >= 0;
+                     experimental_60hz ? experimental_60hz : "<unset>",
+                     host_time_zone ? host_time_zone : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -341,6 +344,9 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_60hz;
     char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
     set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
+    bool had_host_zone;
+    char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
+    set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
@@ -460,6 +466,19 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
+    /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
+       from the platform, never an inherited value. */
+    {
+        int zone_minutes = 0;
+        bool daylight = false;
+        char expected_zone[64];
+        assert(nk_platform_local_time_zone(&zone_minutes, &daylight));
+        assert(zone_minutes >= -720 && zone_minutes <= 840);
+        snprintf(expected_zone, sizeof(expected_zone), "SR_HOST_TIME_ZONE=%d,%d\n", zone_minutes,
+                 daylight ? 1 : 0);
+        assert(strstr(observed, expected_zone) != NULL);
+        assert(strstr(observed, "poisoned-parent-zone") == NULL);
+    }
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
@@ -482,6 +501,8 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
     free(old_60hz);
+    restore_environment_value("SR_HOST_TIME_ZONE", old_host_zone, had_host_zone);
+    free(old_host_zone);
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
