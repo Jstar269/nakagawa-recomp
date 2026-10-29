@@ -1744,20 +1744,37 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
     return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
+static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid, const char *modname,
+                                          uint32_t sdk_version);
+
 /* with_start == 0 writes a library module with no start routine: the system library
  * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
  * one function under `export_nid`. */
 static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid) {
+    return write_runtime_module_prx_named(path, flavour, with_start, export_nid, "rtplaced", 0u);
+}
+
+/* The module info names the module `modname`. A start-less module with a nonzero
+ * sdk_version also exports the module_sdk_version variable (NID 0x11B97506) from its system
+ * library, holding sdk_version, as SDK-built library modules do. */
+#define RT_SDK_VERSION_WORD 0x1D0u
+static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid, const char *modname,
+                                          uint32_t sdk_version) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
-    /* A start-less module's single system-library address sits at table + 4. */
+    const int sdk_var = !with_start && sdk_version != 0u;
+    /* A start-less module's single system-library address sits at table + 4; with the
+     * version variable, the two addresses follow the two NIDs at table + 8 and + 12. */
     const uint32_t sites[RT_RELOC_COUNT] = {
         RT_MODINFO + 32u, RT_MODINFO + 36u, RT_MODINFO + 40u, RT_MODINFO + 44u,
         RT_MODINFO + 48u, RT_LIBENT + 12u, RT_LIBENT + 16u, RT_LIBENT + 28u,
-        with_start ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u, RT_SYSLIB_TABLE + 12u,
-        RT_LIB_TABLE + 4u, RT_DATA_PTR,
+        with_start ? RT_SYSLIB_TABLE + 8u : sdk_var ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u,
+        RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
+    if (strlen(modname) >= 27u) return 0;
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
     memset(image, 0, sizeof(image));
@@ -1794,7 +1811,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
     fixture_wr16(seg + RT_MODINFO + 0, 0);
     seg[RT_MODINFO + 2] = 1;
     seg[RT_MODINFO + 3] = 1;
-    memcpy(seg + RT_MODINFO + 4, "rtplaced", 9);
+    memcpy(seg + RT_MODINFO + 4, modname, strlen(modname) + 1u);
     fixture_wr32(seg + RT_MODINFO + 32, RT_GP_LINK);
     fixture_wr32(seg + RT_MODINFO + 36, RT_LIBENT);
     fixture_wr32(seg + RT_MODINFO + 40, RT_LIBENT_END);
@@ -1825,6 +1842,14 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xCEE05613u);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    }
+    if (sdk_var) {
+        /* {0 vars -> 1 var}: NIDs stop, module_sdk_version; then their addresses. */
+        seg[RT_LIBENT + 9] = 1;
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0x11B97506u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 8, RT_STOP);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_SDK_VERSION_WORD);
+        fixture_wr32(seg + RT_SDK_VERSION_WORD, sdk_version);
     }
     fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
@@ -2348,6 +2373,48 @@ static void test_runtime_placed_modules(void) {
                    s_rt_stop_calls == stops + 1u &&
                    rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
                "runtime placement: a start-less module still runs its module_stop");
+        remove(nostart_path);
+    }
+
+    /* The scePsmfPlayer library build is the module_sdk_version its module exports, read
+     * where the image was placed (#279): a module of another name leaves it alone, and a
+     * player module without the export clears it. */
+    {
+        extern uint32_t sr_hle_test_psmfplayer_lib_version(void);
+        static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+        static const struct {
+            const char *modname;
+            uint32_t sdk_version;
+            uint32_t recorded;
+            const char *what;
+        } cases[] = {
+            {"rtplaced", 0x03090510u, 0u,
+             "psmfplayer build: a module of another name records no build"},
+            {"scePsmfP_library", 0x03090510u, 0x03090510u,
+             "psmfplayer build: the player module's exported module_sdk_version is recorded"},
+            {"rtplaced", 0x03070110u, 0x03090510u,
+             "psmfplayer build: a later module of another name keeps the recorded build"},
+            {"scePsmfP_library", 0u, 0u,
+             "psmfplayer build: a player module without the export records no build"},
+        };
+        char nostart_path[1024];
+        runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
+        expect(sr_hle_test_psmfplayer_lib_version() == 0u,
+               "psmfplayer build: nothing is recorded before a player module loads");
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            uint32_t placed = 0;
+            expect(write_runtime_module_prx_named(nostart_path, 5u, 0, RT_EXPORT_NID,
+                                                  cases[i].modname, cases[i].sdk_version) &&
+                       runtime_module_identity(nostart_path, &s_rt_nostart_code),
+                   "psmfplayer build: the module fixture is written");
+            uid = rt_load(nostart_guest, 0u);
+            expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                       sr_module_code_is_bound(&s_rt_nostart_code, &placed),
+                   "psmfplayer build: the module fixture loads");
+            expect(sr_hle_test_psmfplayer_lib_version() == cases[i].recorded, cases[i].what);
+            expect(rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+                   "psmfplayer build: the module fixture unloads");
+        }
         remove(nostart_path);
     }
 
