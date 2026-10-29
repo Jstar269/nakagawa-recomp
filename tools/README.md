@@ -318,6 +318,7 @@ harness changes no compiler default. Findings belong in issue #317.
 
 | Module | Purpose |
 | --- | --- |
+| `test_analysis_ir.py` | Analysis IR parity with codegen's CFG report, JSON round trip, annotation comparison and `explain` (#305). |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
