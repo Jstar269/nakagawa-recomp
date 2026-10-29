@@ -454,7 +454,7 @@ class LibrarySweepTests(unittest.TestCase):
         diagnostic = "ValueError: SYNTHETIC_ANALYZER_FAILURE"
 
         for index, failure_class in enumerate((
-            "ANALYSIS_FAILED",
+            "ANALYZER_INTERNAL_ERROR",
             "ANALYZER_IMPORT_NID_TABLE_MISSING",
         )):
             work_dir = self.private_dir / f"analysis-failure-work-{index}"
@@ -614,7 +614,7 @@ class LibrarySweepTests(unittest.TestCase):
         }
         failure_row = {
             **_sweep_row("analyze"),
-            "boundary_code": "ANALYSIS_FAILED",
+            "boundary_code": "ANALYZER_INTERNAL_ERROR",
             "issue_numbers": [308],
             "stopped_at_stage": "analyze",
             "stage_duration_ms": {**durations, "analyze": 1200},

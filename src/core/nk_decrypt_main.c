@@ -15,10 +15,10 @@
  *          Report which key entries the container needs (exit 0).
  *   decrypt [--key-file FILE] --in FILE --out FILE
  *          Run the full production boundary; the output file is written
- *          only on success.  Failures print one of:
- *          MISSING_KEY_ENTRY / CONTAINER_MALFORMED / INTEGRITY /
- *          KEYFILE_INVALID / DECOMPRESS_FAILED / INPUT_UNREADABLE /
- *          UNSUPPORTED_CONTAINER / FIRMWARE_OUT_OF_SCOPE and exit non-zero.
+ *          only on success.  A failure prints its nk_psp_status_name word
+ *          (KEY_REQUIRED followed by the entry, MALFORMED_INPUT,
+ *          INTEGRITY_FAILURE and so on; docs/FAILURE_CODES.md lists them)
+ *          and exits with that status's code.
  *   npumdimg [--key-file FILE] --in EBOOT.PBP --out FILE.iso
  *          Turn a PSN release of a UMD game (a PBP whose DATA.PSAR is an
  *          NPUMDIMG image) back into its ISO: written beside FILE.iso,
@@ -124,7 +124,10 @@ static int file_present(const char *path)
 
 /* Prints the status word for `rc` (plus the context's message when there is
  * one) and returns the matching process exit code. Callers return that value
- * from main(), so the word and the code are what the Python tooling sees. */
+ * from main(), so the word and the code are what the Python tooling sees. The
+ * word is nk_psp_status_name's, the one name the failure-code taxonomy
+ * (docs/FAILURE_CODES.md) gives each result; the exit codes are the contract
+ * tools/nk_core/decrypt_tool.py reads. */
 static int print_diagnostic(int rc, const NkPspCtx *ctx)
 {
     const char *entry = (ctx != NULL && ctx->missing_entry[0] != '\0')
@@ -133,58 +136,30 @@ static int print_diagnostic(int rc, const NkPspCtx *ctx)
     const char *msg = (ctx != NULL && ctx->message[0] != '\0')
                           ? ctx->message
                           : NULL;
+    int exit_code;
     switch (rc) {
-    case NK_PSP_ERR_MISSING_KEY:
-        printf("MISSING_KEY_ENTRY %s\n", entry != NULL ? entry : "(unknown)");
+    case NK_PSP_ERR_INPUT: exit_code = 1; break;
+    case NK_PSP_ERR_MISSING_KEY: exit_code = 3; break;
+    case NK_PSP_ERR_FORMAT: exit_code = 4; break;
+    case NK_PSP_ERR_INTEGRITY: exit_code = 5; break;
+    case NK_PSP_ERR_KEYFILE: exit_code = 6; break;
+    case NK_PSP_ERR_UNSUPPORTED: exit_code = 7; break;
+    case NK_PSP_ERR_DECOMPRESS: exit_code = 8; break;
+    case NK_PSP_ERR_FIRMWARE: exit_code = 10; break;
+    case NK_PSP_ERR_CONTEXT: exit_code = 11; break;
+    case NK_PSP_ERR_PSONE: exit_code = 12; break;
+    case NK_PSP_ERR_CANCELLED: exit_code = 13; break;
+    default: rc = NK_PSP_ERR_INTERNAL; exit_code = 9; break;
+    }
+    if (rc == NK_PSP_ERR_MISSING_KEY) {
+        printf("%s %s\n", nk_psp_status_name(rc), entry != NULL ? entry : "(unknown)");
         printf("this executable needs key entry %s\n",
                entry != NULL ? entry : "(unknown)");
-        if (msg != NULL) printf("%s\n", msg);
-        return 3;
-    case NK_PSP_ERR_FORMAT:
-        printf("CONTAINER_MALFORMED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 4;
-    case NK_PSP_ERR_INTEGRITY:
-        printf("INTEGRITY_CHECK_FAILED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 5;
-    case NK_PSP_ERR_KEYFILE:
-        printf("KEYFILE_INVALID\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 6;
-    case NK_PSP_ERR_UNSUPPORTED:
-        printf("UNSUPPORTED_CONTAINER\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 7;
-    case NK_PSP_ERR_DECOMPRESS:
-        printf("DECOMPRESS_FAILED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 8;
-    case NK_PSP_ERR_INPUT:
-        printf("INPUT_UNREADABLE\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 1;
-    case NK_PSP_ERR_FIRMWARE:
-        printf("FIRMWARE_OUT_OF_SCOPE\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 10;
-    case NK_PSP_ERR_CONTEXT:
-        printf("CONTEXT_REQUIRED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 11;
-    case NK_PSP_ERR_PSONE:
-        printf("PSONE_CLASSIC_UNSUPPORTED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 12;
-    case NK_PSP_ERR_CANCELLED:
-        printf("CANCELLED\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 13;
-    default:
-        printf("INTERNAL_ERROR\n");
-        if (msg != NULL) printf("%s\n", msg);
-        return 9;
+    } else {
+        printf("%s\n", nk_psp_status_name(rc));
     }
+    if (msg != NULL) printf("%s\n", msg);
+    return exit_code;
 }
 
 /* ------------------------------ kat ----------------------------------- */
@@ -339,7 +314,7 @@ static int cmd_probe(const char *in_path, const char *key_path)
         return 2;
     }
     if (read_file(in_path, &data, &size) != 0) {
-        printf("INPUT_UNREADABLE cannot read input file %s\n", in_path);
+        printf("IO_FAILURE cannot read input file %s\n", in_path);
         return 1;
     }
     nk_psp_ctx_init(&ctx, NULL);
@@ -394,7 +369,7 @@ static int cmd_decrypt(const char *key_path, const char *in_path,
         return 2;
     }
     if (read_file(in_path, &data, &size) != 0) {
-        printf("INPUT_UNREADABLE cannot read input file %s\n", in_path);
+        printf("IO_FAILURE cannot read input file %s\n", in_path);
         return 1;
     }
 
@@ -422,7 +397,7 @@ static int cmd_decrypt(const char *key_path, const char *in_path,
 
     /* Success: only now is the output file created. */
     if (write_file(out_path, plain, plain_size) != 0) {
-        printf("OUTPUT_UNWRITABLE cannot write %s\n", out_path);
+        printf("IO_FAILURE cannot write %s\n", out_path);
         free(plain);
         nk_keystore_free(ks);
         free(data);

@@ -79,6 +79,35 @@ def find_or_build_tool(root: Union[Path, str]) -> Path:
     return out
 
 
+#: nk_decrypt's exit codes and the status word each one prints (print_diagnostic in
+#: src/core/nk_decrypt_main.c): the decrypt codes docs/FAILURE_CODES.md documents.
+EXIT_STATUS_CODES = {
+    1: "IO_FAILURE",
+    3: "KEY_REQUIRED",
+    4: "MALFORMED_INPUT",
+    5: "INTEGRITY_FAILURE",
+    6: "KEY_FILE_INVALID",
+    7: "UNSUPPORTED_SCHEME",
+    8: "DECOMPRESS_FAILURE",
+    9: "INTERNAL_ERROR",
+    10: "FIRMWARE_OUT_OF_SCOPE",
+    11: "CONTEXT_REQUIRED",
+    12: "PSONE_CLASSIC_UNSUPPORTED",
+    13: "CANCELLED",
+}
+
+
+def status_code(status: int) -> str | None:
+    """The decrypt code for an nk_decrypt exit status; None for success.
+
+    A status the engine does not define (its usage error, 2) is a defect in the caller and
+    reads as INTERNAL_ERROR.
+    """
+    if status == 0:
+        return None
+    return EXIT_STATUS_CODES.get(status, "INTERNAL_ERROR")
+
+
 def _run_tool(tool: Path, encrypted: Path, destination: Path) -> tuple[int, str]:
     proc = subprocess.run(
         [str(tool), "decrypt", "--in", str(encrypted), "--out", str(destination)],
@@ -97,9 +126,10 @@ def decrypt_disc(iso_path: Union[Path, str], user_data_root: Union[Path, str], d
     ``EBOOT.BIN`` becomes ``titles/<disc>/decrypted/EBOOT.elf`` and each encrypted guest module
     keeps its own name there, where ``inspect_compatibility_preflight`` and the bring-up look
     for them. A decrypted copy already there is kept. Returns one row per encrypted file: the
-    disc member, the name written, the engine's exit status (0 for a kept copy) and its last
-    message line. A file the engine refuses (firmware is refused by name) stays encrypted and
-    the bring-up names that boundary.
+    disc member, the name written, the engine's exit status (0 for a kept copy), its decrypt
+    code (``status_code``; None on success) and its last message line. A file the engine
+    refuses (firmware is refused by name) stays encrypted and the bring-up names that
+    boundary.
     """
     from . import iso_inspect as ii
 
@@ -131,6 +161,7 @@ def decrypt_disc(iso_path: Union[Path, str], user_data_root: Union[Path, str], d
         # A module set the intake refuses (two modules of one name, say) keeps its own named
         # boundary; the executable is still decrypted, so the bring-up reaches that boundary.
         rows.append({"member": None, "name": "(guest modules)", "status": -1,
+                     "code": exc.boundary_code or "GUEST_MODULE_DISCOVERY_FAILED",
                      "message": str(exc)[:300]})
     if not items:
         return rows
@@ -140,7 +171,8 @@ def decrypt_disc(iso_path: Union[Path, str], user_data_root: Union[Path, str], d
             destination = out_dir / name
             row = {"member": "/".join(members), "name": name}
             if destination.is_file() and destination.stat().st_size > 0:
-                rows.append({**row, "status": 0, "message": "kept the decrypted copy already there"})
+                rows.append({**row, "status": 0, "code": None,
+                             "message": "kept the decrypted copy already there"})
                 continue
             with iso.open("rb") as stream:
                 lba, count = ii._lookup_iso_file(stream, size, members)
@@ -149,5 +181,6 @@ def decrypt_disc(iso_path: Union[Path, str], user_data_root: Union[Path, str], d
             encrypted.write_bytes(blob)
             status, message = runner(encrypted, destination)
             encrypted.unlink(missing_ok=True)
-            rows.append({**row, "status": status, "message": message})
+            rows.append({**row, "status": status, "code": status_code(status),
+                         "message": message})
     return rows

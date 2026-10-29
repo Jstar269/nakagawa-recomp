@@ -132,7 +132,8 @@ The report keeps these signals distinct:
   record presentation progress separately from `exit_classification` and
   `process_exit_code`, which record how the player process ended.
 
-Failure classes used by this route, all from the bring-up `failure_class` enum:
+Failure classes used by this route, all from the bring-up `failure_class` enum
+([`FAILURE_CODES.md`](FAILURE_CODES.md) lists every code):
 
 | Failure class | Meaning |
 | --- | --- |

@@ -135,7 +135,8 @@ _PUBLIC_COMPARISON_REASONS = frozenset({
 _SWEEP_RUN_STATUSES = frozenset({"COMPLETED", "TIMED_OUT", "NO_REPORT"})
 _PUBLIC_LIBRARY_FAMILY_SOURCE = ROOT / "tools" / "nid_corpus.json"
 _PUBLIC_LIBRARY_MODULE_PREFIX = re.compile(r"^(?:_+)?(sce[A-Z][a-z0-9]*)")
-_PUBLIC_BLOCKER_CODE_SOURCE = ROOT / "assets" / "bringup_report.schema.json"
+_PUBLIC_BLOCKER_CODE_SOURCE = ROOT / "assets" / "failure_codes.json"
+_PUBLIC_ISSUE_NUMBER_SOURCE = ROOT / "assets" / "bringup_report.schema.json"
 _PUBLIC_SWEEP_BLOCKER_CODES = frozenset({
     "SWEEP_TIME_BUDGET",
     "SWEEP_ROUTE_FAILED",
@@ -176,16 +177,26 @@ _PUBLIC_LIBRARY_FAMILIES = _load_public_library_families()
 
 
 def _load_public_blocker_codes() -> frozenset[str]:
-    """Load report failure classes and the runner's public synthetic boundaries."""
+    """Load report failure classes and the runner's public synthetic boundaries.
+
+    Both come from the failure-code taxonomy (docs/FAILURE_CODES.md): the codes a bring-up
+    report carries, plus the runner's own boundaries, which the taxonomy must list too.
+    """
     try:
         payload = json.loads(_PUBLIC_BLOCKER_CODE_SOURCE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("public blocker-code vocabulary is unavailable") from exc
-    failure_class = payload.get("properties", {}).get("failure_class")
-    codes = failure_class.get("enum") if isinstance(failure_class, dict) else None
-    if not isinstance(codes, list) or any(not isinstance(code, str) for code in codes):
+    codes = payload.get("codes") if isinstance(payload, dict) else None
+    if not isinstance(codes, dict) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("in"), list)
+        for entry in codes.values()
+    ):
         raise RuntimeError("public blocker-code vocabulary is malformed")
-    return frozenset(codes) | _PUBLIC_SWEEP_BLOCKER_CODES
+    report = {code for code, entry in codes.items() if "report" in entry["in"]}
+    library = {code for code, entry in codes.items() if "library" in entry["in"]}
+    if not _PUBLIC_SWEEP_BLOCKER_CODES <= library:
+        raise RuntimeError("public blocker-code vocabulary is missing a sweep boundary")
+    return frozenset(report) | _PUBLIC_SWEEP_BLOCKER_CODES
 
 
 _PUBLIC_BLOCKER_CODES = _load_public_blocker_codes()
@@ -194,7 +205,7 @@ _PUBLIC_BLOCKER_CODES = _load_public_blocker_codes()
 def _load_public_issue_numbers() -> frozenset[int]:
     """Load the non-networked issue allowlist from the public report schema."""
     try:
-        payload = json.loads(_PUBLIC_BLOCKER_CODE_SOURCE.read_text(encoding="utf-8"))
+        payload = json.loads(_PUBLIC_ISSUE_NUMBER_SOURCE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("public issue-number vocabulary is unavailable") from exc
     issue_numbers = payload.get("properties", {}).get("issue_numbers")

@@ -3267,7 +3267,7 @@ def _sanitized_checks(preflight: dict) -> list[dict]:
 _STAGE_FAILURE_CLASS = {
     "inspect": "INVALID_ISO",
     "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
-    "analyze": "ANALYZER_FAILURE_UNCLASSIFIED",
+    "analyze": "ANALYZER_INTERNAL_ERROR",
     "codegen": "CODEGEN_FAILED",
     "compile": "COMPILE_FAILED",
     "build_package": "BUILD_PACKAGE_FAILED",
@@ -3275,9 +3275,11 @@ _STAGE_FAILURE_CLASS = {
 }
 
 _ANALYZER_BOUNDARY_MESSAGES = {
-    "ANALYZER_FAILURE_UNCLASSIFIED": (
-        "The analyzer cannot classify this input yet. "
-        "This input is not supported yet."
+    # An exception that carries no boundary code is a defect in the analyzer itself, not a
+    # property of the game (docs/FAILURE_CODES.md).
+    "ANALYZER_INTERNAL_ERROR": (
+        "The analyzer stopped on an internal error. "
+        "This is a defect in Nakagawa, not a game feature that is unsupported."
     ),
     "ANALYZER_IMPORT_NID_TABLE_MISSING": (
         "The PSP import table declares functions without NID data. "
@@ -4328,7 +4330,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             analyzer_boundary
             if isinstance(analyzer_boundary, str)
             and analyzer_boundary in _ANALYZER_BOUNDARY_MESSAGES
-            else "ANALYZER_FAILURE_UNCLASSIFIED"
+            else "ANALYZER_INTERNAL_ERROR"
         )
         diagnostic = (
             f"{analyzer_boundary}: {type(exc).__name__}: {exc}"
