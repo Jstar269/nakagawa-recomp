@@ -28258,7 +28258,9 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
+    sr_exec_leave(exec_previous);
     if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
