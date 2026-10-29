@@ -4151,7 +4151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a840d7f5315600133368c75a671e6f00cd9c2f59abc88df57a32a8cb766e62c3"
+      "sha256": "cb233ff816a2b2d09d52e9021bdb85e7eafe143b071319137580e38d31277ebd"
     },
     {
       "path": "src/player/player_state.h",
@@ -5480,7 +5480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "395e0645044e385d8ed72739e07f4c80a2dde105a83afa0f56ea8649c314d537"
+      "sha256": "76a63385ace0953076144a204e7bf62bce0d277dd4b9a7df80619fe0cdfc3821"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -5504,7 +5504,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29425b5cba3aa0c1bf3bf2b6d7771e45007c65c18ff45b34287c9d61dde1b467"
+      "sha256": "6e8ed93cad34e667c4e7f103887259f135ee91aa96fc7a207004a9303e58eabe"
     },
     {
       "path": "src/rt/domain_mode.c",
@@ -6084,7 +6084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "82113ab9c7514d5c5c8f8a71aa770b2fcd80ea61dc377ba4294dea2f04db7a58"
+      "sha256": "55af8111f7ccef69c159aa300dcb36272f90474ba9cdb39ca8a16a93a81ccd52"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -6096,7 +6096,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cf9002bdf14c9f32ac9469f6b4ce0a08cd5d555b3d5efb560fe669f6b37fd844"
+      "sha256": "4f05446904093ee2942f006a8bc486a52e7f5be37d9d35df7fda4138824005cf"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -9637,7 +9637,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "06b4e9e39e8ed46b56e53a901e8e9306e601f23b0913b923ad6d96f25fb2c309"
+      "sha256": "7780c6ffcc760e0cc52d205de063adc523471705d87e3bb72d688ebd94797a27"
     },
     {
       "path": "src/rt/recomp.h",
@@ -9650,7 +9650,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2d022e7a824b87e27e6140e57e08b0b8c1672b93ce5204335346a28d81f03200"
+      "sha256": "a5916d28f8a7af742b9264a0227f602780bde152f1ba09ce0951769b82e54a23"
     },
     {
       "path": "src/rt/savedata.c",
@@ -10842,7 +10842,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7fcef99cf23058e4e8180f379cfd6687ef485cba9c53b66f22f9934b6b4d885a"
+      "sha256": "aec16a7410a6a0d00c385131d8e82b36389b760f38ccb26a33871e6ef0868af2"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -12568,7 +12568,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "43ea0604ccfd72efa25f702d663741626cb57fff2534f750fcd64d64efe58647"
+      "sha256": "e12f1b89276c76736b1f7f7fa65dab81f25225153be32361f62662c8d19c006f"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -14365,7 +14365,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "079bd49617a9038619fa7c42bdb9107e0d600bb9ae23ec79089fcbf607608fe1"
+      "sha256": "8fff140523628ae054acadbc099780287bd876997602d29ef8a2e60d1c39c734"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
@@ -14486,7 +14486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37eb008adb56f65cbbb657bf6d30b53b345ee42ad576bc07d4ddbad385315128"
+      "sha256": "2ab02cffa73a32224992004a0c8c0231ceac68bfa96d16fc9e2c0d4cb8e0ee4c"
     },
     {
       "path": "tools/test_codegen_vfpu_fallback.py",
@@ -14666,7 +14666,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02b9324f6953e6ca049813b148af626398ba1891b5b1d10fa14031ea15571cc3"
+      "sha256": "9ea4c6e6c74e04fc856e695ca54d3718f898dc6a647372443fd1f8d28ad5035b"
     },
     {
       "path": "tools/test_dispatch_call_boundary.py",
