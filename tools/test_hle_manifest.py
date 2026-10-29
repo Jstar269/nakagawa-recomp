@@ -1618,7 +1618,7 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
                 "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRACE-001", "PSP-TRANSPORT-001",
                 "PSP-UMDIO-001", "PSP-VFPU-CMP-001", "PSP-VFPU-FORMS-001",
-                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",
+                "PSP-VFPU-FUNNEL-001", "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",
             ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)

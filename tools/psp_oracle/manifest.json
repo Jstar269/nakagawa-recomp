@@ -1369,8 +1369,16 @@
       {
         "id": "PSP-VFPU-FUNNEL-001",
         "status": "implemented",
-        "hardware_evidence": "NOT_RUN",
-        "evidence_note": "No hardware capture exists: this probe has not been run on a PSP. It is built from fixtures/psp_oracle/probe_hle_issues.c as vfpu_funnel.prx and runs as a single launch, not in the campaign queue. Its stream is a strict golden sequence of 936 records and the done record; PASS means the instruction result was recorded, and the parser compares no value.",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "fad-p0-*",
+          "avg-p0-*",
+          "fad-p1-*",
+          "avg-p1-*",
+          "vfpu-funnel-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 68) of commit 8d0f75ad, the commit that added this probe, case vfpu-funnel after the transport-write preflight: 936 records and the done record (out0 936), all PASS, acceptance-eligible with 0 blockers, both passes identical. Cited: the raw S200 word, the changed-word census and VFPU_CC of every cell. PASS means the instruction result was recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
         "group": "cpu",
         "source": "fixtures/psp_oracle/probe_hle_issues.c",
         "prx": "vfpu_funnel.prx",
