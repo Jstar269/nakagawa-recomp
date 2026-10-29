@@ -466,5 +466,128 @@ class RelocatedImmediateEmission(unittest.TestCase):
         self.assertEqual(codegen.fnv1a64(b"a"), 0xAF63DC4C8601EC8C)
 
 
+# --- The main module's kernel record (sceKernelQueryModuleInfo, module-start thread) ---
+# A synthetic fixed-address ELF with a SceModuleInfo, a syslib export table and a
+# module_start_thread_parameter (uOFW src/kd/loadcore/loadelf.c, module.c and
+# src/kd/modulemgr/modulemgr.c are the contract). An ELF without a SceModuleInfo gets no
+# record, so its generated output is unchanged.
+import os  # noqa: E402
+import shutil  # noqa: E402
+
+TEXT_VADDR = 0x08804000
+DATA_VADDR = 0x08805000
+TEXT_OFF = 0x100
+DATA_OFF = 0x400
+INFO_AT = 0x40         # SceModuleInfo, inside the text segment
+ENT_AT = 0x80          # the syslib export entry
+TABLE_AT = 0x90        # its NID/address table
+PARAM_AT = 0xC0        # module_start_thread_parameter
+GP = 0x08805800
+
+
+def _text(*, with_param=True, syslib_len=4, extra_var_nid=0x11223344):
+    text = bytearray(0x100)
+    # Code: the entry is "jr $ra; nop".
+    struct.pack_into("<II", text, 0, 0x03E00008, 0)
+    nvars = 2 if with_param else 1
+    ent_end = ENT_AT + 16
+    struct.pack_into("<HBB", text, INFO_AT, 0x1007, 1, 2)          # attribute, minor, major
+    text[INFO_AT + 4:INFO_AT + 4 + 9] = b"SynthMain"
+    struct.pack_into("<5I", text, INFO_AT + 32, GP, TEXT_VADDR + ENT_AT, TEXT_VADDR + ent_end,
+                     TEXT_VADDR + ENT_AT, TEXT_VADDR + ENT_AT)       # gp, ent, entend, empty stub
+    # PspLibEntEntry: name 0 (syslib), version, attribute 0x8000, len, vars, funcs, table.
+    struct.pack_into("<IHHBBHI", text, ENT_AT, 0, 0x0101, 0x8000, syslib_len, nvars, 1,
+                     TEXT_VADDR + TABLE_AT)
+    nids = [0xD632ACDB, extra_var_nid] + ([codegen.MODULE_START_THREAD_PARAMETER_NID]
+                                          if with_param else [])
+    addrs = [TEXT_VADDR, TEXT_VADDR + 0xF0] + ([TEXT_VADDR + PARAM_AT] if with_param else [])
+    struct.pack_into(f"<{2 * len(nids)}I", text, TABLE_AT, *nids, *addrs)
+    struct.pack_into("<4I", text, PARAM_AT, 3, 0x20, 0x400, 0x80000000)
+    return bytes(text)
+
+
+def _elf(text, *, with_info=True):
+    """ET_EXEC, two PT_LOAD (text X, data RW with 0xC0 bss bytes), no section table."""
+    data = bytes(range(0x40))
+    phoff = 52
+    ehdr = b"\x7fELF\x01\x01\x01" + b"\0" * 9 + struct.pack(
+        "<HHIIIIIHHHHHH", 2, 8, 1, TEXT_VADDR, phoff, 0, 0, 52, 32, 2, 40, 0, 0)
+    paddr = (TEXT_OFF + INFO_AT) if with_info else TEXT_VADDR
+    ph_text = struct.pack("<8I", 1, TEXT_OFF, TEXT_VADDR, paddr, len(text), len(text), 5, 0x10)
+    ph_data = struct.pack("<8I", 1, DATA_OFF, DATA_VADDR, DATA_VADDR, len(data), 0x100, 6, 0x10)
+    blob = bytearray(DATA_OFF + len(data))
+    blob[0:52] = ehdr
+    blob[phoff:phoff + 64] = ph_text + ph_data
+    blob[TEXT_OFF:TEXT_OFF + len(text)] = text if with_info else text[:INFO_AT] + b"\0" * (
+        len(text) - INFO_AT)
+    blob[DATA_OFF:] = data
+    return bytes(blob)
+
+
+class MainModuleRecordTest(unittest.TestCase):
+    def _write(self, blob):
+        tmp = tempfile.NamedTemporaryFile(suffix=".elf", delete=False)
+        tmp.write(blob)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        return tmp.name
+
+    def _record(self, blob):
+        return codegen.main_module_record(Elf(self._write(blob)))
+
+    def test_record_fields_come_from_the_elf(self):
+        rec = self._record(_elf(_text()))
+        self.assertEqual(rec["segments"], [(TEXT_VADDR, 0x100), (DATA_VADDR, 0x100)])
+        self.assertEqual(rec["entry"], TEXT_VADDR)
+        self.assertEqual(rec["gp"], GP)
+        self.assertEqual(rec["text_addr"], TEXT_VADDR)
+        # A plain ELF: executable PT_LOAD file bytes are text, the others data, and the
+        # memory beyond the file bytes bss (uOFW loadelf.c CheckElfSection).
+        self.assertEqual((rec["text_size"], rec["data_size"], rec["bss_size"]),
+                         (0x100, 0x40, 0xC0))
+        self.assertEqual(rec["attribute"], 0x1007)
+        self.assertEqual(rec["version"], (1, 2))
+        self.assertEqual(rec["name"], b"SynthMain")
+        self.assertEqual(rec["start_thread"], (0x20, 0x400, 0x80000000))
+
+    def test_undeclared_start_parameter_is_absent_not_defaulted(self):
+        rec = self._record(_elf(_text(with_param=False)))
+        self.assertIsNone(rec["start_thread"])
+        lines = "\n".join(codegen.main_module_record_lines(rec))
+        self.assertIn("    0u, 0u, 0u, 0u", lines)
+
+    def test_generated_record_matches_the_runtime_layout(self):
+        lines = "\n".join(codegen.main_module_record_lines(self._record(_elf(_text()))))
+        self.assertIn("static const SrMainModuleRecord sr_main_module_record = {", lines)
+        self.assertIn("    2u,", lines)
+        self.assertIn("{0x08804000u, 0x08805000u, 0x00000000u, 0x00000000u}", lines)
+        self.assertIn("0x08804000u, 0x08805800u, 0x08804000u,", lines)
+        self.assertIn("0x00000100u, 0x00000040u, 0x000000c0u,", lines)
+        self.assertIn("0x1007u, {0x01u, 0x02u},", lines)
+        self.assertIn("{0x53u, 0x79u, 0x6eu, 0x74u, 0x68u, 0x4du, 0x61u, 0x69u, 0x6eu, 0x00u,", lines)
+        self.assertIn("1u, 0x00000020u, 0x00000400u, 0x80000000u", lines)
+
+    def test_no_module_info_means_no_record(self):
+        self.assertIsNone(self._record(_elf(_text(), with_info=False)))
+
+    def test_zero_length_export_entry_is_refused(self):
+        with self.assertRaises(codegen.MainModuleRecordError):
+            self._record(_elf(_text(syslib_len=0)))
+
+    def test_codegen_emits_and_registers_the_record_only_when_present(self):
+        out_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(out_dir, ignore_errors=True))
+        outputs = {}
+        for label, blob in (("with", _elf(_text())), ("without", _elf(_text(), with_info=False))):
+            out_c = os.path.join(out_dir, f"{label}_recomp.c")
+            rc = codegen.main(["codegen.py", self._write(blob), out_c])
+            self.assertEqual(rc, 0, label)
+            outputs[label] = Path(out_c).read_text(encoding="ascii")
+        self.assertIn("    sr_main_module_register(&sr_main_module_record);", outputs["with"])
+        self.assertIn("static const SrMainModuleRecord sr_main_module_record", outputs["with"])
+        self.assertNotIn("SrMainModuleRecord", outputs["without"])
+        self.assertNotIn("sr_main_module_register", outputs["without"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7243,6 +7243,95 @@ static uint32_t h_GetModuleId(CpuState *s) {
     return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
 }
 
+/* The main module's kernel record, registered by the generated sr_register_all() when the
+ * ELF has a SceModuleInfo (tools/codegen.py main_module_record). NULL when it has none, and
+ * again after LoadExec replaces the program. */
+static const SrMainModuleRecord *s_main_module_record;
+
+#define SCE_MODULE_PRIVILEGE_LEVELS        0x1e00u   /* MS|USB_WLAN|APP|VSH|KERNEL */
+#define SCE_KERNEL_MODULE_INIT_PRIORITY    32
+#define SCE_KERNEL_TH_USER_DEFAULT_STACK   0x40000u
+#define SCE_KERNEL_TH_USER_MODE            0x80000000u
+
+/* The module manager creates the module-start thread from the record (uOFW
+ * src/kd/modulemgr/modulemgr.c, _StartModule): the declared module_start_thread_parameter
+ * priority, stack size and attribute, or the module-init priority 32 and the 256 KiB user
+ * stack when the module declares none; the attribute's top nibble is cleared and the
+ * user-mode bit set, and the thread is named "SceModmgrStart" and runs with the module's gp.
+ * A game's main module is a user module: the loader refuses to boot one whose privilege
+ * level is not user (uOFW src/kd/loadcore/loadelf.c, sceKernelProbeExecutableObject). */
+void sr_main_module_register(const SrMainModuleRecord *record) {
+    s_main_module_record = record;
+    if (!record) return;
+    int priority = SCE_KERNEL_MODULE_INIT_PRIORITY;
+    uint32_t stack_size = 0u, attr = 0u;
+    if (record->has_start_thread_param) {
+        priority = (int)record->start_thread_priority;
+        stack_size = record->start_thread_stack_size;
+        attr = record->start_thread_attr;
+    }
+    if (stack_size == 0u) stack_size = SCE_KERNEL_TH_USER_DEFAULT_STACK;
+    attr = (attr & ~0xf0000000u) | SCE_KERNEL_TH_USER_MODE;
+    sched_set_module_start_thread(priority, stack_size, attr, "SceModmgrStart",
+                                  record->gp_value);
+}
+
+/* sceKernelQueryModuleInfo(uid, info), from uOFW src/kd/modulemgr/queryModule.c (MIT):
+ * interrupt context, then a 96-byte user buffer, then (compiled SDK 2.80 or later) a size of
+ * 64 (SceKernelModuleInfoV1) or 96 (SceKernelModuleInfo), then the module. The first 64 bytes
+ * are always written; attribute (privilege bits cleared), version and name only for size 96.
+ * The main module answers from its generated record. A loaded PRX's runtime record holds no
+ * segment table, text/data/bss sizes, attribute, version or name, so it is refused by name
+ * rather than answered with partial values; so is a main module built without a record. */
+#define SCE_KERNEL_ERROR_CANNOT_GET_MODULE_INFO 0x8002014au
+static uint32_t h_QueryModuleInfo(CpuState *s) {
+    const uint32_t uid = A0, info = A1;
+    if (sched_is_intr_context()) return 0x80020064u;      /* CANNOT_BE_CALLED_FROM_INTERRUPT */
+    if (info == 0u || !sr_guest_span_writable(info, 96u)) return 0x800200d3u; /* ILLEGAL_ADDR */
+    const uint32_t size = MEM_R32(info);
+    if ((sr_sdkver_get(&g_sdk_version) & 0xffff0000u) >= 0x02080000u && size != 64u && size != 96u)
+        return 0x800201bcu;                               /* ILLEGAL_SIZE */
+    const int is_main = uid != 0u && uid == s_main_module_uid &&
+                        sr_loaded_base() < sr_loaded_end();
+    if (!is_main) {
+        if (!find_loaded_module(uid)) return SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is a loaded module whose record holds no segment table, sizes, "
+                        "attribute, version or name; refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    const SrMainModuleRecord *r = s_main_module_record;
+    if (!r) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is the main module, but this build carries no record of it (the "
+                        "ELF has no SceModuleInfo); refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    MEM_W8(info + 4u, (uint8_t)r->nsegment);
+    for (uint32_t i = 0; i < 4u; i++) {
+        MEM_W32(info + 8u + 4u * i, r->segment_addr[i]);
+        MEM_W32(info + 24u + 4u * i, r->segment_size[i]);
+    }
+    MEM_W32(info + 40u, r->entry_addr);
+    MEM_W32(info + 44u, r->gp_value);
+    MEM_W32(info + 48u, r->text_addr);
+    MEM_W32(info + 52u, r->text_size);
+    MEM_W32(info + 56u, r->data_size);
+    MEM_W32(info + 60u, r->bss_size);
+    if (size == 96u) {
+        MEM_W16(info + 64u, (uint16_t)(r->attribute & ~SCE_MODULE_PRIVILEGE_LEVELS));
+        MEM_W8(info + 66u, r->version[0]);
+        MEM_W8(info + 67u, r->version[1]);
+        int ended = 0;                                    /* strncpy: copy, then NUL pad */
+        for (uint32_t i = 0; i < 27u; i++) {
+            if (!ended && r->name[i] == 0u) ended = 1;
+            MEM_W8(info + 68u + i, ended ? 0u : r->name[i]);
+        }
+        MEM_W8(info + 95u, 0u);
+    }
+    return 0;
+}
+
 static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
     LoadedModule *mod = find_loaded_module(modid);
@@ -14607,6 +14696,7 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 
 void sr_hle_test_module_reset(void) {
     s_main_module_uid = 0u;
+    s_main_module_record = NULL;
     s_deferred_self_stop_uid = 0u;
     s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
@@ -27638,6 +27728,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
+    sr_hle_register(0x748cbed9, "sceKernelQueryModuleInfo", h_QueryModuleInfo);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
@@ -28461,6 +28552,10 @@ static void loadexec_reset_user_partition(void) {
 }
 
 void sr_hle_loadexec_reset_guest_state(void) {
+    /* The replacement program is a module record of its own; the old main module's record
+     * and module-start thread parameters no longer apply. */
+    s_main_module_record = NULL;
+    sched_set_module_start_thread(SCE_KERNEL_MODULE_INIT_PRIORITY, 0u, 0u, NULL, 0u);
     if (s_loadexec_request.args) free(s_loadexec_request.args);
     memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
     s_loadexec_pending = 0;

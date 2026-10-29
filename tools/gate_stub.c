@@ -135,6 +135,9 @@ int     sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
 void    sr_hle_loadexec_finish(void) {}
 int     sched_reset_for_loadexec(void) { return 0; }
 void    sched_set_guest_process_gp(uint32_t gp) { (void)gp; }
+/* The headless gate runs no scheduler, so the main module's record has no consumer here. */
+struct SrMainModuleRecord;
+void    sr_main_module_register(const struct SrMainModuleRecord *record) { (void)record; }
 int (*sr_sched_stop_requested)(void) = NULL;
 struct SrPauseHost;
 const struct SrPauseHost *sr_sched_pause_host = NULL;

@@ -1249,6 +1249,28 @@ typedef struct SrModuleBindDetail {
 #define SR_MODULE_CODE_MAX_BOUND 64u
 
 void sr_module_code_register(const SrModuleCode *code);   /* from generated sr_register_all() */
+
+/* The kernel's record of the main module, emitted by tools/codegen.py from the ELF (PT_LOAD
+ * segments, SceModuleInfo, section or program headers, and the syslib's
+ * module_start_thread_parameter). Field meanings follow uOFW's SceModule / SceKernelModuleInfo;
+ * addresses are final guest addresses. A build whose ELF has no SceModuleInfo emits none. */
+typedef struct SrMainModuleRecord {
+    uint32_t nsegment;                    /* PT_LOAD segments, at most 4 */
+    uint32_t segment_addr[4];
+    uint32_t segment_size[4];             /* p_memsz */
+    uint32_t entry_addr;
+    uint32_t gp_value;                    /* SceModuleInfo gp */
+    uint32_t text_addr;                   /* first PT_LOAD address */
+    uint32_t text_size, data_size, bss_size;
+    uint32_t attribute;                   /* SceModuleInfo modAttribute */
+    uint8_t  version[2];                  /* modVersion: [0] minor, [1] major */
+    uint8_t  name[27];                    /* modName, NUL padded (SCE_MODULE_NAME_LEN) */
+    uint32_t has_start_thread_param;      /* 1 when module_start_thread_parameter is declared */
+    uint32_t start_thread_priority;
+    uint32_t start_thread_stack_size;
+    uint32_t start_thread_attr;
+} SrMainModuleRecord;
+void sr_main_module_register(const SrMainModuleRecord *record);  /* from generated sr_register_all() */
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
@@ -1858,6 +1880,10 @@ void     sched_init(CpuState *cpu);                 /* CpuState the running thre
 void     sched_preempt_timer_start(void);          /* paced runs: a stronger due thread preempts at once (#1296) */
 int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
 void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
+/* The module-start thread sched_run creates: priority, stack size (0 = the 256 KiB default),
+ * attribute, name and $gp, as the module manager creates it from the module's record. */
+void     sched_set_module_start_thread(int priority, uint32_t stack_size, uint32_t attr,
+                                       const char *name, uint32_t gp);
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name);

@@ -1069,6 +1069,57 @@ static void test_waiting_guest_keeps_host_window_pumped(void) {
            "no gap between window pumps exceeds one display period plus one poll");
 }
 
+/* The module-start thread sched_run creates takes the module's declared
+ * module_start_thread_parameter (uOFW modulemgr.c _StartModule), here {0x20, 0x400,
+ * 0x80000000} as a retail main module declares it, and the module's gp when the driver seeded
+ * none. Without a record it keeps the 256 KiB default stack.
+ *
+ * MUTANT: create the root as sched_create_thread(entry, 32, 0) again -- the thread reports a
+ *   0x40000 stack, attribute 0 and no name, and the 0x400 assertions fail. */
+enum { MST_ENTRY = 0x09320000u };
+static SrThreadInfo g_mst_info;
+static uint32_t g_mst_gp;
+static int g_mst_done;
+static void module_start_param_body(CpuState *s) {
+    g_mst_gp = s->r[28];
+    expect(sched_thread_info(0u, &g_mst_info) == 0, "the module-start thread reports its status");
+    g_mst_done = 1;
+}
+static int module_start_param_stop(void) { return g_mst_done; }
+
+static void run_module_start_thread(void) {
+    reset_sched();
+    memset(&g_mst_info, 0, sizeof(g_mst_info));
+    g_mst_gp = 0u;
+    g_mst_done = 0;
+    if (s_cpu) s_cpu->r[28] = 0u;
+    g_test_body = module_start_param_body;
+    sr_sched_stop_requested = module_start_param_stop;
+    sched_run(MST_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+}
+
+static void test_module_start_thread_uses_declared_parameters(void) {
+    sched_set_module_start_thread(0x20, 0x400u, 0x80000000u, "SceModmgrStart", 0x08c98d00u);
+    run_module_start_thread();
+    expect(g_mst_done == 1, "the module-start thread ran");
+    expect(g_mst_info.stackSize == 0x400u,
+           "the module-start thread's stack is the declared 0x400 bytes, not 0x40000");
+    expect(g_mst_info.initPriority == 0x20u, "the module-start thread has the declared priority");
+    expect(g_mst_info.attr == 0x80000000u, "the module-start thread has the declared attribute");
+    expect(strcmp(g_mst_info.name, "SceModmgrStart") == 0, "the module-start thread is named");
+    expect(g_mst_gp == 0x08c98d00u && g_mst_info.gpReg == 0x08c98d00u,
+           "the module-start thread starts with the module's gp when the driver seeded none");
+    expect(g_mst_info.stack >= SR_STACK_ARENA_CEIL - 0x400u,
+           "the 0x400-byte stack takes only the top of the arena");
+
+    sched_set_module_start_thread(32, 0u, 0u, NULL, 0u);
+    run_module_start_thread();
+    expect(g_mst_done == 1 && g_mst_info.stackSize == 0x40000u && g_mst_info.initPriority == 32u &&
+               g_mst_info.attr == 0u && g_mst_gp == 0u,
+           "with no module record the module-start thread keeps priority 32 and the 256 KiB stack");
+}
+
 static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
     expect(preempt_timer_run(16) == PT_DUE_AT_YIELD,
            "a stronger thread whose delay ran out runs at the weak thread's next yield point");
@@ -5242,6 +5293,7 @@ int main(int argc, char **argv) {
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
+    test_module_start_thread_uses_declared_parameters();
     test_paced_vtime_is_host_anchored();
     test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();

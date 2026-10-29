@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **640** (dedicated **533**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **512** handlers across **25** API families, covering **539** handler-associated NID registrations.
+Registered NIDs: **641** (dedicated **534**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **513** handlers across **25** API families, covering **540** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `partial` | 172 | 174 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 324 | 336 |
+| `unreviewed` | 325 | 337 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -71,7 +71,7 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 79 | 0 | 0 | 102 | 184 | 202 |
+| `sceKernel` | 3 | 79 | 0 | 0 | 103 | 185 | 203 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
@@ -84,7 +84,7 @@ Semantic handler census: **512** handlers across **25** API families, covering *
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **172** | **1** | **2** | **324** | **512** | **539** |
+| **Total** | **13** | **172** | **1** | **2** | **325** | **513** | **540** |
 
 #### Complete Handlers (Evidence-Backed)
 

@@ -1695,6 +1695,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetModuleId": "kernel_module",
     "sceKernelLoadExec": "kernel_module",
     "sceKernelLoadModule": "kernel_module",
+    "sceKernelQueryModuleInfo": "kernel_module",
     "sceKernelRegisterExitCallback": "kernel_module",
     "sceKernelSelfStopUnloadModule": "kernel_module",
     "sceKernelStartModule": "kernel_module",

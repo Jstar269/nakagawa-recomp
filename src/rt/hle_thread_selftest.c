@@ -26732,6 +26732,101 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* sceKernelQueryModuleInfo answers the main module from its generated record, as uOFW
+ * queryModule.c fills SceKernelModuleInfo: buffer before size, size 64 or 96 from SDK 2.80,
+ * unknown uid refused, attribute without privilege bits and a NUL-padded name only at size 96.
+ * A loaded module whose record has no segment table is refused by name, not half answered.
+ *
+ * MUTANT: drop the sceKernelQueryModuleInfo registration -- the syscall is an unknown NID
+ *   and the main-module answers fail. */
+extern void sr_hle_test_set_compiled_sdk_version(uint32_t version);
+static void test_query_module_info_answers_main_module_record(void) {
+    const uint32_t NID_GET_ID_BY_ADDR = 0xd8b73127u, NID_QUERY = 0x748cbed9u;
+    const uint32_t BUF = 0x09000000u;
+    static const SrMainModuleRecord rec = {
+        2u, {0x08804000u, 0x08b5c078u, 0u, 0u}, {0x00358074u, 0x00195454u, 0u, 0u},
+        0x08a8cd6cu, 0x08c98d00u, 0x08804000u, 0x0031e7f4u, 0x0003ab68u, 0x0019414cu,
+        0x1207u, {0x01u, 0x02u},
+        {'S','y','n','t','h','M','a','i','n',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+        1u, 0x20u, 0x400u, 0x80000000u,
+    };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08cf14ccu;
+    sr_hle_init();
+    sr_main_module_register(&rec);
+    expect(s_module_start_stack_size == 0x400u && s_module_start_priority == 0x20 &&
+               s_module_start_attr == 0x80000000u && s_module_start_gp == 0x08c98d00u,
+           "the record's module_start_thread_parameter reaches the module-start thread");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    const uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    sr_hle_test_set_compiled_sdk_version(0x06060010u);
+
+    memset(SR_HOST(BUF), 0xa5, 96u);
+    MEM_W32(BUF, 96u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u, "the main module's info is answered");
+    expect(MEM_R32(BUF) == 96u && MEM_R8(BUF + 4u) == 2u && MEM_R8(BUF + 5u) == 0xa5u,
+           "size is kept, nsegment written, reserved bytes untouched");
+    expect(MEM_R32(BUF + 8u) == 0x08804000u && MEM_R32(BUF + 12u) == 0x08b5c078u &&
+               MEM_R32(BUF + 16u) == 0u && MEM_R32(BUF + 24u) == 0x00358074u &&
+               MEM_R32(BUF + 28u) == 0x00195454u && MEM_R32(BUF + 36u) == 0u,
+           "segment addresses and sizes come from the record");
+    expect(MEM_R32(BUF + 40u) == 0x08a8cd6cu && MEM_R32(BUF + 44u) == 0x08c98d00u &&
+               MEM_R32(BUF + 48u) == 0x08804000u && MEM_R32(BUF + 52u) == 0x0031e7f4u &&
+               MEM_R32(BUF + 56u) == 0x0003ab68u && MEM_R32(BUF + 60u) == 0x0019414cu,
+           "entry, gp, text address and text/data/bss sizes come from the record");
+    expect(MEM_R16(BUF + 64u) == 0x0007u && MEM_R8(BUF + 66u) == 1u && MEM_R8(BUF + 67u) == 2u,
+           "attribute drops the privilege bits; version keeps minor then major");
+    expect(memcmp(SR_HOST(BUF + 68u), "SynthMain", 9) == 0 && MEM_R8(BUF + 77u) == 0u &&
+               MEM_R8(BUF + 94u) == 0u && MEM_R8(BUF + 95u) == 0u,
+           "the name is NUL padded to 27 bytes and terminated");
+
+    memset(SR_HOST(BUF), 0xa5, 96u);
+    MEM_W32(BUF, 64u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u && MEM_R32(BUF + 60u) == 0x0019414cu &&
+               MEM_R32(BUF + 64u) == 0xa5a5a5a5u,
+           "a 64-byte SceKernelModuleInfoV1 gets only the first 64 bytes");
+
+    MEM_W32(BUF, 80u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800201bcu, "another size is ILLEGAL_SIZE from SDK 2.80");
+    sr_hle_test_set_compiled_sdk_version(0x02070010u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u && MEM_R32(BUF + 64u) == 0xa5a5a5a5u,
+           "before SDK 2.80 the size is not checked and only the V1 part is written");
+    sr_hle_test_set_compiled_sdk_version(0x06060010u);
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800200d3u, "a null buffer is ILLEGAL_ADDR");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0x0c000000u - 64u;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800200d3u,
+           "a buffer without 96 writable bytes is ILLEGAL_ADDR");
+    MEM_W32(BUF, 96u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x7fff1234u; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x8002012eu, "an unknown uid is UNKNOWN_MODULE");
+
+    const uint32_t late = sr_hle_test_register_module("late_q.prx", 0x08a10070u, 0u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = late; cpu.r[5] = BUF;
+    expect(late != 0u && sr_syscall(&cpu, NID_QUERY) == 0x80020002u,
+           "a loaded module without a full record is refused by name");
+
+    sr_main_module_register(NULL);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x80020002u,
+           "a main module built without a record is refused by name");
+
+    sched_set_module_start_thread(32, 0u, 0u, NULL, 0u);
+    sr_hle_test_set_compiled_sdk_version(0u);
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
+    s_fixture_loaded_end = 0x00400000u;
+}
+
 /* #1385: sceKernelGetModuleIdByAddress and sceKernelGetModuleId resolve through the
  * live module records and the main image, not a constant shared by every module. */
 static void test_module_id_queries_resolve_owning_module(void) {
@@ -37534,6 +37629,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
     test_module_id_queries_resolve_owning_module();
+    test_query_module_info_answers_main_module_record();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();

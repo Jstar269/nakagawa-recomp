@@ -3634,6 +3634,24 @@ void sched_set_guest_process_gp(uint32_t gp) {
     if (s_cpu) s_cpu->r[28] = gp;
 }
 
+/* The module-start thread's parameters. Until a module record says otherwise they are the
+ * runtime's historical root-thread values: priority 32, the default stack, attribute 0, no name
+ * and the driver-seeded $gp. */
+static int s_module_start_priority = 32;
+static uint32_t s_module_start_stack_size = 0u;
+static uint32_t s_module_start_attr = 0u;
+static const char *s_module_start_name = NULL;
+static uint32_t s_module_start_gp = 0u;
+
+void sched_set_module_start_thread(int priority, uint32_t stack_size, uint32_t attr,
+                                   const char *name, uint32_t gp) {
+    s_module_start_priority = priority;
+    s_module_start_stack_size = stack_size;
+    s_module_start_attr = attr;
+    s_module_start_name = name;
+    s_module_start_gp = gp;
+}
+
 void sched_wait_cancel_object(uint32_t object, uint32_t result) {
     for (WaitInvocation *w = s_wait_invocations; w; w = w->next) {
         if (w->object != object) continue;
@@ -4923,11 +4941,15 @@ static int sched_pause_run(void) {
  * resuming the highest-priority ready thread until none remain runnable. */
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     sched_pause_script_load();
-    uint32_t uid = sched_create_thread(entry, 32, 0);
+    uint32_t uid = sched_create_thread_ex(entry, s_module_start_priority,
+                                          s_module_start_stack_size, s_module_start_attr,
+                                          s_module_start_name);
     TCB *t0 = tcb_by_uid(uid);
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
-     * -- rather than the synthetic thread stack. */
+     * -- rather than the synthetic thread stack. With no seeded $gp it starts with the
+     * module's own, as the module manager sets it before creating the thread. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
+    if (!t0->saved.r[28] && s_module_start_gp) t0->saved.r[28] = t0->gp_init = s_module_start_gp;
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
     sched_start_thread(uid, arglen, argp);
 

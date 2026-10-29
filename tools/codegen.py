@@ -3410,6 +3410,156 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     return module
 
 
+# The PSP kernel's module record for the main module (sceKernelQueryModuleInfo and the
+# module-start thread). uOFW (MIT) is the contract: src/kd/loadcore/loadelf.c
+# (sceKernelProbeExecutableObject, CheckElfSection, CheckElfSectionPRX, the PT_LOAD
+# segment table), src/kd/loadcore/module.c (the SceModule fields copied from
+# SceModuleInfo) and src/kd/modulemgr/modulemgr.c (_ProcessModuleExportEnt reads the
+# first SCE_LIB_IS_SYSLIB export table, and module_start_thread_parameter there).
+MODULE_RECORD_MAX_SEGMENTS = 4             # SCE_KERNEL_MAX_MODULE_SEGMENT
+MODULE_RECORD_NAME_BYTES = 27              # SCE_MODULE_NAME_LEN
+MODULE_START_THREAD_PARAMETER_NID = 0x0F7C276C
+SCE_LIB_IS_SYSLIB = 0x8000
+ELF_ET_SCE_PRX = 0xFFA0
+ELF_SHT_PROGBITS = 1
+ELF_SHT_NOBITS = 8
+ELF_SHF_WRITE, ELF_SHF_ALLOC, ELF_SHF_EXECINSTR = 0x1, 0x2, 0x4
+
+
+class MainModuleRecordError(ValueError):
+    """The main module has a SceModuleInfo, but the kernel record cannot be derived."""
+
+
+def main_module_record(elf):
+    """The PSP kernel's record of the main module, or None when it has no SceModuleInfo.
+
+    Every field is read from the ELF the way the loader reads it (see the constants
+    above): the PT_LOAD segments (address and memory size, at most four), the entry,
+    the SceModuleInfo attribute, version, name and gp, the text/data/bss sizes (section
+    headers for a PRX that has them, program headers otherwise), and the syslib's
+    module_start_thread_parameter when the module declares one. Addresses are in the
+    image's final (relocated) address space. Raises MainModuleRecordError for a record
+    the loader would refuse; nothing is guessed.
+    """
+    from elf_bounds import validate_elf32_envelope
+
+    info_section = elf.sec(".rodata.sceModuleInfo")
+    if info_section is None:
+        return None
+    raw = elf.read_at_vaddr(info_section["addr"], 52)
+    if raw is None or len(raw) != 52:
+        raise MainModuleRecordError("SceModuleInfo is not readable at its address")
+    attribute = struct.unpack_from("<H", raw, 0)[0]
+    version = (raw[2], raw[3])
+    name = raw[4:4 + MODULE_RECORD_NAME_BYTES].split(b"\0", 1)[0]
+    gp, ent_top, ent_end = struct.unpack_from("<3I", raw, 32)
+
+    loads = [s for s in elf.segments if s["type"] == 1]
+    if not loads:
+        raise MainModuleRecordError("no PT_LOAD segment")
+    if len(loads) > MODULE_RECORD_MAX_SEGMENTS:
+        raise MainModuleRecordError(
+            f"{len(loads)} PT_LOAD segments; the kernel holds {MODULE_RECORD_MAX_SEGMENTS}")
+
+    envelope = validate_elf32_envelope(elf.data, "<main module>")
+    e_type = struct.unpack_from("<H", elf.data, 16)[0]
+    text_size = data_size = bss_size = 0
+    if e_type == ELF_ET_SCE_PRX and envelope["shoff"] > 0:
+        if not envelope["shdrs"]:
+            raise MainModuleRecordError("PRX section table is empty")
+        for sh in envelope["shdrs"]:
+            if sh["typ"] == ELF_SHT_PROGBITS:
+                if sh["flags"] in (ELF_SHF_EXECINSTR | ELF_SHF_ALLOC, ELF_SHF_ALLOC):
+                    text_size += sh["size"]
+                elif sh["flags"] == ELF_SHF_WRITE | ELF_SHF_ALLOC:
+                    data_size += sh["size"]
+            elif sh["typ"] == ELF_SHT_NOBITS and sh["flags"] == ELF_SHF_WRITE | ELF_SHF_ALLOC:
+                bss_size += sh["size"]
+    else:
+        for seg in loads:
+            if seg["flags"] & 1:
+                text_size += seg["filesz"]
+            else:
+                data_size += seg["filesz"]
+            if seg["filesz"] < seg["memsz"]:
+                bss_size += seg["memsz"] - seg["filesz"]
+    if max(text_size, data_size, bss_size) > 0xFFFFFFFF:
+        raise MainModuleRecordError("text/data/bss size exceeds 32 bits")
+
+    base = getattr(elf, "base", 0) or 0
+
+    def rebase(value):
+        # The same convention imports.py applies to the stub table of a relocated image.
+        return value + base if value and base and value < base else value
+
+    start_param = None
+    ent, ent_end = rebase(ent_top), rebase(ent_end)
+    while ent < ent_end:
+        entry = elf.read_at_vaddr(ent, 16)
+        if entry is None or len(entry) != 16:
+            raise MainModuleRecordError(f"export entry at 0x{ent:08x} is not readable")
+        lib_attr, words, nvars, nfuncs, table = struct.unpack_from("<xxxxxxHBBHI", entry)
+        if words == 0:
+            raise MainModuleRecordError(f"export entry at 0x{ent:08x} has length 0")
+        if lib_attr & SCE_LIB_IS_SYSLIB:
+            table = rebase(table)
+            cells = elf.read_at_vaddr(table, 8 * (nfuncs + nvars))
+            if cells is None or len(cells) != 8 * (nfuncs + nvars):
+                raise MainModuleRecordError(f"syslib export table at 0x{table:08x} is not readable")
+            words_ = struct.unpack(f"<{2 * (nfuncs + nvars)}I", cells)
+            for i in range(nvars):
+                if words_[nfuncs + i] != MODULE_START_THREAD_PARAMETER_NID:
+                    continue
+                where = rebase(words_[2 * nfuncs + nvars + i])
+                body = elf.read_at_vaddr(where, 16)
+                if body is None or len(body) != 16:
+                    raise MainModuleRecordError(
+                        f"module_start_thread_parameter at 0x{where:08x} is not readable")
+                _count, priority, stack_size, thread_attr = struct.unpack("<4I", body)
+                start_param = (priority, stack_size, thread_attr)
+            break                               # the module manager reads the first syslib only
+        ent += 4 * words
+
+    return {
+        "segments": [(s["vaddr"], s["memsz"]) for s in loads],
+        "entry": elf.entry & 0xFFFFFFFF,
+        "gp": gp,
+        "text_addr": loads[0]["vaddr"],
+        "text_size": text_size,
+        "data_size": data_size,
+        "bss_size": bss_size,
+        "attribute": attribute,
+        "version": version,
+        "name": name,
+        "start_thread": start_param,
+    }
+
+
+def main_module_record_lines(record):
+    """The generated C definition of one main-module record (SrMainModuleRecord)."""
+    segments = record["segments"] + [(0, 0)] * (MODULE_RECORD_MAX_SEGMENTS - len(record["segments"]))
+    name = record["name"].ljust(MODULE_RECORD_NAME_BYTES, b"\0")
+    start = record["start_thread"]
+    return [
+        "/* The kernel's record of this main module: PT_LOAD segments, entry, gp, text/data/bss "
+        "sizes and the SceModuleInfo attribute, version and name; then the module_start thread "
+        "parameter it declares, if any. */",
+        "static const SrMainModuleRecord sr_main_module_record = {",
+        f"    {len(record['segments'])}u,",
+        "    {" + ", ".join(f"0x{a:08x}u" for a, _ in segments) + "},",
+        "    {" + ", ".join(f"0x{s:08x}u" for _, s in segments) + "},",
+        f"    0x{record['entry']:08x}u, 0x{record['gp']:08x}u, 0x{record['text_addr']:08x}u,",
+        f"    0x{record['text_size']:08x}u, 0x{record['data_size']:08x}u, "
+        f"0x{record['bss_size']:08x}u,",
+        f"    0x{record['attribute']:04x}u, {{0x{record['version'][0]:02x}u, "
+        f"0x{record['version'][1]:02x}u}},",
+        "    {" + ", ".join(f"0x{b:02x}u" for b in name) + "},",
+        (f"    1u, 0x{start[0]:08x}u, 0x{start[1]:08x}u, 0x{start[2]:08x}u"
+         if start is not None else "    0u, 0u, 0u, 0u"),
+        "};",
+    ]
+
+
 COVERAGE_TOTAL_FIELDS = (
     "executable_words", "owned_words", "unowned_words", "translated_words",
     "interpreter_words", "other_owned_words", "functions", "functions_translated",
@@ -3716,6 +3866,13 @@ def main(argv):
             sys.stderr.write(f"invalid extra-elf base address: {spec}\n")
             return 2
     elf = Elf(elf_path, base=base)
+    try:
+        module_record = main_module_record(elf)
+    except MainModuleRecordError as exc:
+        # The image still translates; the runtime answers a module-info query for it with
+        # a named refusal instead of a guessed record.
+        sys.stderr.write(f"codegen: MAIN_MODULE_RECORD_REFUSED: {exc}\n")
+        module_record = None
     # Only the primary image may carry an explicit extra executable span (its title's
     # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
@@ -4404,7 +4561,12 @@ def main(argv):
         for a, name, size in symbol_table:
             main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
         main_out.append("};")
+    if module_record is not None:
+        main_out.append("")
+        main_out.extend(main_module_record_lines(module_record))
     main_out.append("\nvoid sr_register_all(void) {")
+    if module_record is not None:
+        main_out.append("    sr_main_module_register(&sr_main_module_record);")
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")

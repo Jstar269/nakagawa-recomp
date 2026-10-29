@@ -27,8 +27,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `ppsspp-derived` | 104 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 280 | 200 |
-| `unverified` | 192 | 51 |
-| total | 640 | 355 |
+| `unverified` | 193 | 51 |
+| total | 641 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -355,6 +355,7 @@ belongs to without the census's own grouping.
 | `0x737486f2` | `scePowerSetClockFrequency` | power | `synthetic` | HLE selftest dispatch |
 | `0x740fccd1` | `sceMpegAvcDecodeStop` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x74829b76` | `sceKernelReceiveMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
+| `0x748cbed9` | `sceKernelQueryModuleInfo` | kernel_module | `unverified` | no recorded evidence |
 | `0x7497ea85` | `__sceSasConcatenateATRAC3` | audio | `unverified` | no recorded evidence |
 | `0x74ae582a` | `__sceSasGetEnvelopeHeight` | audio | `unverified` | no recorded evidence |
 | `0x75156e8f` | `sceKernelResumeThread` | kernel_thread | `synthetic` | HLE selftest dispatch |

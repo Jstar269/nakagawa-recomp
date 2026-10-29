@@ -1827,6 +1827,12 @@
     "name": "sceKernelReceiveMsgPipe",
     "status": "partial"
   },
+  "0x748cbed9": {
+    "classification": "dedicated",
+    "handler": "h_QueryModuleInfo",
+    "name": "sceKernelQueryModuleInfo",
+    "status": "unreviewed"
+  },
   "0x7497ea85": {
     "classification": "controlled_unsupported",
     "handler": "h_SasUnsupportedVoice",
