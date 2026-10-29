@@ -198,6 +198,7 @@ typedef enum SrPerfGpuReplayCounter {
     SR_PERF_GPU_UPLOAD_RING_BYTES,
     SR_PERF_GPU_UPLOAD_RING_WRAPS,
     SR_PERF_GPU_UPLOAD_RING_FALLBACKS,
+    SR_PERF_GPU_SNAPSHOT_COPY_PX,          /* device pixels the snapshot copies moved */
     SR_PERF_GPU_REPLAY_COUNT,
 } SrPerfGpuReplayCounter;
 
