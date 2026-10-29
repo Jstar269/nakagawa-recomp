@@ -5992,7 +5992,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d19f03addc84dee5350ff3cdea09d6421ae9dfb147e16c9015fc5ee1a8331fa8"
+      "sha256": "a1970543a1aa0fdbe6ff536dbb9d8c1f351086eb4ea7479d285248f2d1735d6e"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -15783,7 +15783,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "86f834d41d67f42911e4351f1623cef98cfcdb596eef1d9c5e661d0d4380d681"
+      "sha256": "385a0c7900dbe0d11c9613f1c0fd6ef3bffd799d8a50ebcfe7d72996201c6f6e"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
