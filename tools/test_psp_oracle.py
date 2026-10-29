@@ -2444,12 +2444,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 102)
+        self.assertEqual(len(routes), 103)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108}
+        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -3107,6 +3107,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-CPU-TIMING-001",
                 # The 2026-10-28 acceptance-eligible vfpu-forms run of 781ccd34 (#326).
                 "PSP-VFPU-FORMS-001",
+                # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
+                "PSP-GE-SAMPLE-001",
             },
         )
         self.assertEqual(
@@ -7419,6 +7421,84 @@ class VfpuFormsProbeTests(unittest.TestCase):
         self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
         self.assertEqual(row["diagnostic_case_ids"], ["vfpu-forms"])
         self.assertEqual(row["issues"], [326])
+
+
+class GeSampleProbeTests(unittest.TestCase):
+    """CASE=ge-sample (109, PSP-GE-SAMPLE-001) in probe_ge_sample.c: the #282 GE texture
+    sample-point cells. Raw display lists, bounded GE waits, one step per draw, the shared
+    writer and lifecycle, and a fixed-shape stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.issues = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_SAMPLE\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_SAMPLE */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-sample)\nCASE_ID = 109\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-sample)\nTARGET = $(BUILD_DIR)/ge_sample\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)\n"
+                      "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\n", self.makefile)
+        self.assertIn("#define GE_CASE_SAMPLE 109\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-sample"\n#define HLE_TEST_ID "PSP-GE-SAMPLE-001"\n'
+                      '#define HLE_LOG "host0:/ge_sample_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-sample").name,
+                         "ge_sample_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-sample"), "strict-golden-sequence")
+        self.assertNotIn("ge-sample", CAMPAIGN_QUEUE_CASES)
+
+    def test_writer_round_trip_and_lifecycle_are_the_hle_issues_copies(self) -> None:
+        shared = self.issues[self.issues.index("static int s_log_failed;\n"):
+                             self.issues.index("/* ---", self.issues.index("int module_stop("))]
+        self.assertIn(shared, self.probe)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay"):
+            self.assertNotIn(banned, self.section)
+        self.assertIn("sceGeListEnQueue(s_gs_list, NULL, -1, NULL)", self.section)
+        self.assertEqual(self.section.count("i < GS_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GS_WAIT_POLLS 5000u", self.probe)
+        self.assertIn("#define GS_WAIT_POLL_US 100u", self.probe)
+        # The framebuffer block the probe clears and draws into: 64 x 32 words at VRAM 0x100000.
+        self.assertIn("#define GS_FB_OFFSET 0x00100000u", self.probe)
+        self.assertIn("for (unsigned i = 0; i < GS_FB_STRIDE * GS_FB_ROWS; i++) {", self.section)
+        self.assertIn("0x9C000000u | (GS_FB_OFFSET & 0x00ffffffu), 0x9D000000u | GS_FB_STRIDE,",
+                      self.section)
+
+    def test_each_draw_writes_its_step_before_its_list(self) -> None:
+        body = _c_function_bodies(self.section)["gs_draw"]
+        self.assertLess(body.index("hle_step(name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-sample"]
+        self.assertEqual(spec.test_id, "PSP-GE-SAMPLE-001")
+        self.assertEqual(spec.terminal_case, "ge-sample-done")
+        self.assertEqual(len(parse_golden.GE_SAMPLE_CASES), 48 * 17)
+        self.assertEqual(counts["tri-near-1to1-u-draw"], 7)
+        self.assertEqual(counts["spr-lin-s16min-v-r18"], 16)
+        self.assertEqual(parse_golden.GE_SAMPLE_CASES[:2],
+                         ("tri-near-1to1-u-draw", "tri-near-1to1-u-r03"))
+        maps = re.findall(r'\{"(\w+)", [01]u, ', self.section)
+        self.assertEqual(tuple(maps), parse_golden.GE_SAMPLE_MAPS)
+        self.assertIn('s_gs_prims[2] = {"tri", "spr"}', self.section)
+        self.assertIn('s_gs_filters[2] = {"near", "lin"}', self.section)
+        self.assertIn('s_gs_texs[2] = {"u", "v"}', self.section)
+        self.assertIn("#define GS_WIN_Y0 3u", self.probe)
+        self.assertIn("#define GS_WIN_SIDE 16u", self.probe)
+        self.assertEqual(parse_golden.GE_SAMPLE_ROWS, tuple(range(3, 19)))
 
 
 if __name__ == "__main__":
