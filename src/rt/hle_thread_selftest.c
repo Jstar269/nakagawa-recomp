@@ -3949,8 +3949,12 @@ static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_
                umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010016u &&
                umd_test_seek32(fd, 0, 1u) == 21u,
            "a zero-sector raw UMD async read completes with 0x80010016 and keeps the position");
-    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, 0x0bffff00u, 1u, 0u, 0u) == 0x80010016u,
-           "a raw UMD async read into memory that cannot hold a whole sector is refused");
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, 0x0bffff00u, 1u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 21u,
+           "a raw UMD async read into memory that cannot hold a whole sector completes "
+           "refused with 0x80010016 and keeps the position");
 
     /* Queued seeks count sectors like the synchronous ones. */
     expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 32u, 0u, 0u) == 0u &&

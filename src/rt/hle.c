@@ -18322,12 +18322,12 @@ static uint32_t h_IoReadAsync(CpuState *s) {
     if (raw_error != 0u) return raw_error;
     if (s_fds[fd].kind == FD_KIND_STD) return 0x80010009u;
     if (hle_fd_is_raw_umd(fd)) {
-        /* The count is sectors; the destination must hold every requested sector, the same
-         * refusal the synchronous read makes. A zero count is the device's to refuse, as the
-         * request's result. */
-        if (A2 != 0u && (A2 > UINT32_MAX / IO_UMD_SECTOR_BYTES ||
-                         !sr_guest_span_writable(A1, A2 * IO_UMD_SECTOR_BYTES)))
-            return 0x80010016u;
+        /* The I/O manager queues the request and its worker runs the device read, so the
+         * device's refusals (a zero count, a destination that cannot hold every requested
+         * sector, a read past the last sector) come back as the request's result, not from
+         * the submission (uOFW src/kd/iofilemgr/iofilemgr.c do_read: async requests are
+         * handed to the descriptor's async thread before df_read runs). The count is
+         * sectors; the completion checks the whole destination span before any copy. */
         return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
     }
     if (A2 != 0u && !sr_guest_span_writable(A1, A2)) return 0x80010016u;

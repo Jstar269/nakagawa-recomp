@@ -2895,9 +2895,10 @@ the runtime's asynchronous request queue and complete through the same sector
 calls, matching the captured async cells: submission returns 0, an immediate poll
 returns 1 and the wait stores the sector count. A synchronous read or seek while a
 request is pending is refused as busy, as for files. The completion delay is the
-queue's synthetic two-import policy, not a measured interval, and a zero count is
-refused as the request's result rather than at submission, which no cell
-distinguishes. It keeps a named boundary for a read that crosses the last sector,
+queue's synthetic two-import policy, not a measured interval. The device's
+refusals (a zero count, a destination that cannot hold the sectors) are the
+request's result rather than the submission's, as the I/O manager hands the
+request to its worker before the device read runs; no cell captures them. It keeps a named boundary for a read that crosses the last sector,
 for sceIoOpenAsync, sceIoWriteAsync and sceIoIoctlAsync on the device, and it
 refuses every position past the last sector: the edge between the last sector
 and 0x7fffffff is inferred from SEEK_END, not captured.
