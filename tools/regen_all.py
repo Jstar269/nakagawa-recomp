@@ -142,6 +142,12 @@ def _render_hle(tmp: Path) -> dict[str, bytes]:
     }
 
 
+def _render_verification_ledger(tmp: Path) -> dict[str, bytes]:
+    doc, header = tmp / "HLE_COVERAGE.md", tmp / "hle_evidence.h"
+    _run(["tools/verification_ledger.py", "--out", str(doc), "--header", str(header)])
+    return {"docs/HLE_COVERAGE.md": _text_bytes(doc), "src/rt/hle_evidence.h": _text_bytes(header)}
+
+
 def _render_title_catalog(tmp: Path) -> dict[str, bytes]:
     _run(["tools/title_catalog_codegen.py", "--output-dir", str(tmp)])
     return {
@@ -176,6 +182,12 @@ STEPS: tuple[Step, ...] = (
         "python tools/hle_manifest.py --write-baseline --census-markdown <tmp> --census-heading-level 3",
         ("tools/import_audit_baseline.json", HLE_INVENTORY),
         _render_hle,
+    ),
+    Step(
+        "HLE and VFPU verification ledger",
+        "python tools/verification_ledger.py",
+        ("docs/HLE_COVERAGE.md", "src/rt/hle_evidence.h"),
+        _render_verification_ledger,
     ),
     Step(
         "waits census",

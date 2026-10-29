@@ -36,8 +36,16 @@
 
 /* Normal streaming lead bound for submitted picture times. At parser EOF the player may stage
  * the bounded producer/player tail before closing decoder input; the extra capacity is exactly
- * the producer queue, player queue, and one final AU emitted by the producer's EOS drain. */
-#define PSMF_OUT_PTS_RING 8
+ * the producer queue, player queue, and one final AU emitted by the producer's EOS drain.
+ *
+ * A decoder may hold up to the stream's decoded picture buffer before it outputs a picture: up
+ * to 16 frames in H.264 (ITU-T H.264 A.3.1, MaxDpbFrames), and a stream with picture order count
+ * type 0 and no VUI bitstream restriction gives it no smaller bound. The submit bound has to
+ * let that full buffer fill and then pass one more picture, or nothing comes out and nothing
+ * more goes in: LocoRoco 2's movies (POC type 0, no restriction) stalled after 8 submitted
+ * pictures while the system H.264 decoder waited for more (#279). */
+#define PSMF_H264_MAX_DPB_FRAMES 16u
+#define PSMF_OUT_PTS_RING (PSMF_H264_MAX_DPB_FRAMES + 1u)
 #define PSMF_OUT_PTS_EOS_TAIL (PSMF_Q_DEPTH + SR_PSMF_QUEUE_DEPTH + 1u)
 #define PSMF_OUT_PTS_CAPACITY (PSMF_OUT_PTS_RING + PSMF_OUT_PTS_EOS_TAIL)
 
