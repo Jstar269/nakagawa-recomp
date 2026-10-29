@@ -5002,13 +5002,18 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             }
 
             float fonts_btn_y = spec_y + spec_h + 14.0f;
+            bool psp_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, fonts_btn_y, 200.0f, 40.0f,
+                                    "GET FONTS FROM MY PSP", false, in, psp_foc)) {
+                player_app_fonts_import_from_psp(app);
+            }
             bool import_foc = (app->focus_index == focus++);
-            if (draw_button_focused(ren, card_x + 32.0f, fonts_btn_y, 220.0f, 40.0f,
-                                    "IMPORT FONTS FOLDER", false, in, import_foc)) {
+            if (draw_button_focused(ren, card_x + 244.0f, fonts_btn_y, 200.0f, 40.0f,
+                                    "CHOOSE FONT FILES", false, in, import_foc)) {
                 app->request_font_folder_picker = true;
             }
             bool remove_foc = (app->focus_index == focus++);
-            if (draw_button_focused(ren, card_x + 268.0f, fonts_btn_y, 220.0f, 40.0f,
+            if (draw_button_focused(ren, card_x + 456.0f, fonts_btn_y, 200.0f, 40.0f,
                                     "REMOVE IMPORTED FONTS", false, in, remove_foc)) {
                 player_app_fonts_remove_imports(app);
             }

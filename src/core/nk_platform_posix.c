@@ -220,6 +220,39 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
+/* Call fn for each folder directly inside dir (not following a link to a non-folder); with
+ * nested, also for each folder inside those. Returns false once fn has asked to stop. */
+static bool posix_list_mount_folders(const char *dir, bool nested, NkDirFileFn fn, void *ctx) {
+    DIR *handle = opendir(dir);
+    if (!handle) return true;
+    bool keep = true;
+    struct dirent *item;
+    while (keep && (item = readdir(handle)) != NULL) {
+        if (item->d_name[0] == '.') continue;
+        char path[4096];
+        int written = snprintf(path, sizeof(path), "%s/%s", dir, item->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) continue;
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        keep = fn(path, ctx);
+        if (keep && nested) keep = posix_list_mount_folders(path, false, fn, ctx);
+    }
+    closedir(handle);
+    return keep;
+}
+
+void nk_platform_list_drive_roots(NkDirFileFn fn, void *ctx) {
+    if (!fn) return;
+#if defined(__APPLE__)
+    (void)posix_list_mount_folders("/Volumes", false, fn, ctx);
+#else
+    /* /media/<label> and /media/<user>/<label>, /run/media/<user>/<label>, /mnt/<label>. */
+    if (!posix_list_mount_folders("/media", true, fn, ctx)) return;
+    if (!posix_list_mount_folders("/run/media", true, fn, ctx)) return;
+    (void)posix_list_mount_folders("/mnt", false, fn, ctx);
+#endif
+}
+
 int64_t nk_platform_get_file_size(const char *path) {
     if (!path) return -1;
     struct stat st;

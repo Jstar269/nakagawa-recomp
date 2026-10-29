@@ -531,6 +531,8 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             }
             model.font_message = app->wizard.font_message;
             model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
+            model.font_summary = app->wizard.font_summary;
+            model.fonts_all_own = app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT;
             break;
         case WIZARD_STEP_READY_LAUNCH:
             model.runtime_ready = game->is_prepared;
@@ -666,6 +668,8 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             }
             model.font_message = app->wizard.font_message;
             model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
+            model.font_summary = app->wizard.font_summary;
+            model.fonts_all_own = app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT;
             break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
@@ -1193,7 +1197,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
-            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
+            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_PSP_FONTS; break;
             case VIEW_UPDATES:
                 /* Each step's result is a screen of its own, focused on what comes
                    next. CANCEL is the download's only control; a finished check

@@ -63,6 +63,13 @@ bool nk_platform_path_missing(const char *path);
  * Returns false when dir cannot be opened. */
 typedef bool (*NkDirFileFn)(const char *name, void *ctx);
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
+/* Call fn(root, ctx) for the root of each drive the computer has mounted that a user could
+ * plug in or carry: on Win32 the root of every fixed or removable drive letter; on macOS each
+ * folder in /Volumes; elsewhere each folder in /media, /media/<name>, /run/media/<name> and
+ * /mnt. Network and optical drives are left out. Stops early when fn returns false. Nothing is
+ * opened or read here; on Win32, a drive with no medium does not raise a system dialog while fn
+ * runs. */
+void nk_platform_list_drive_roots(NkDirFileFn fn, void *ctx);
 /* The bytes of every regular file under path (path itself when it is a file),
  * without following a symlink, junction or other reparse point: one counts as
  * nothing. A top-level child of path named skip_child (NULL for none) is left

@@ -426,6 +426,9 @@ typedef struct {
     char font_latin_index_detail[NK_FONT_LATIN_INDEX_COUNT][160];
     char font_message[NK_FONT_TEXT_MAX];
     PlayerNoteKind font_message_kind; /* what font_message says: done, a warning, ... */
+    /* How many of the eighteen PSP fonts are the user's own, in plain words, and that count. */
+    char font_summary[160];
+    int font_own_count;
 } SetupWizardState;
 
 /* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
@@ -1164,6 +1167,14 @@ const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
    per-slot status and the message. Import reads the folder's .pgf files once each, checks
    them with the native reader, and copies each slot's file into the per-user cache. */
 bool player_app_fonts_import_folder(PlayerApp *app, const char *folder);
+/* "Get fonts from my PSP": find a PSP connected by USB (nk_font_find_psp_folder: its system
+   storage's font folder, or the <drive>/NAKAGAWA/fonts folder Nakagawa Font Copy filled) and
+   import it. The message names the storage and the drive's own name, never the folder's path,
+   and says what to do when no PSP is connected. */
+bool player_app_fonts_import_from_psp(PlayerApp *app);
+/* The same over the given drive roots instead of the mounted drives (tests). */
+bool player_app_fonts_import_from_psp_roots(PlayerApp *app, const char *const *roots,
+                                            int root_count);
 bool player_app_fonts_remove_imports(PlayerApp *app);
 void player_app_refresh_font_status(PlayerApp *app);
 

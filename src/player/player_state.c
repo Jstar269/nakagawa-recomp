@@ -5948,6 +5948,19 @@ void player_app_refresh_font_status(PlayerApp *app) {
                  sizeof(app->wizard.font_latin_index_detail[index]), "%s",
                  latin_states[index].detail);
     }
+    app->wizard.font_own_count = nk_font_own_font_count(root, project_root);
+    if (app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT) {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "All %d PSP fonts are your PSP's originals.", NK_FONT_PSP_FONT_COUNT);
+    } else if (app->wizard.font_own_count == 0) {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "None of the %d PSP fonts is your PSP's original yet, so games show a "
+                 "stand-in that looks different.", NK_FONT_PSP_FONT_COUNT);
+    } else {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "%d of the %d PSP fonts are your PSP's originals; the rest show a stand-in "
+                 "that looks different.", app->wizard.font_own_count, NK_FONT_PSP_FONT_COUNT);
+    }
 }
 
 bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
@@ -5990,6 +6003,97 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
+}
+
+bool player_app_fonts_import_from_psp(PlayerApp *app) {
+    return player_app_fonts_import_from_psp_roots(app, NULL, 0);
+}
+
+static bool psp_font_path_separator(char c) { return c == '/' || c == '\\'; }
+
+static bool psp_font_name_equal(const char *text, const char *name, size_t length) {
+    for (size_t i = 0u; i < length; i++) {
+        if (tolower((unsigned char)text[i]) != tolower((unsigned char)name[i])) return false;
+    }
+    return true;
+}
+
+/* True when path ends with <separator>a[<separator>b], in any case. *root_len is the length
+   of what comes before that separator. */
+static bool psp_font_folder_ends_with(const char *path, const char *a, const char *b,
+                                      size_t *root_len) {
+    size_t length = strlen(path);
+    size_t a_len = strlen(a);
+    size_t b_len = b ? strlen(b) : 0u;
+    size_t tail = 1u + a_len + (b ? 1u + b_len : 0u);
+    const char *at;
+    if (length <= tail) return false;
+    at = path + length - tail;
+    if (!psp_font_path_separator(at[0]) || !psp_font_name_equal(at + 1, a, a_len)) {
+        return false;
+    }
+    if (b && (!psp_font_path_separator(at[1 + a_len]) ||
+              !psp_font_name_equal(at + 2 + a_len, b, b_len))) {
+        return false;
+    }
+    *root_len = length - tail;
+    return true;
+}
+
+/* Which PSP storage a found font folder is on, in words for the screen: "your PSP's Memory
+   Stick (E:)" or "your PSP's system storage (E:)". Only the drive's own name is shown (its
+   letter, or the last part of its mount point), never the rest of the path, which can hold
+   the user's name on Linux (/media/<user>/<drive>). */
+static void psp_font_source_words(const char *folder, char *out, size_t out_size) {
+    size_t root_len = 0u;
+    const char *kind = "your PSP";
+    const char *label;
+    char root[NK_MAX_PATH];
+    if (psp_font_folder_ends_with(folder, NK_FONT_PSP_COPY_PARENT, NK_FONT_PSP_COPY_FOLDER,
+                                  &root_len)) {
+        kind = "your PSP's Memory Stick";
+    } else if (psp_font_folder_ends_with(folder, NK_FONT_PSP_SYSTEM_FOLDER, NULL, &root_len)) {
+        kind = "your PSP's system storage";
+    }
+    if (root_len >= sizeof(root)) root_len = 0u;
+    memcpy(root, folder, root_len);
+    root[root_len] = '\0';
+    while (root_len > 0u && psp_font_path_separator(root[root_len - 1u])) root[--root_len] = '\0';
+    label = root;
+    for (size_t i = 0u; i < root_len; i++) {
+        if (psp_font_path_separator(root[i])) label = root + i + 1u;
+    }
+    if (label[0] != '\0') {
+        snprintf(out, out_size, "%s (%.64s)", kind, label);
+    } else {
+        snprintf(out, out_size, "%s", kind);
+    }
+}
+
+bool player_app_fonts_import_from_psp_roots(PlayerApp *app, const char *const *roots,
+                                            int root_count) {
+    char folder[NK_MAX_PATH];
+    char source[128];
+    char outcome[NK_FONT_TEXT_MAX];
+    int found;
+    bool imported;
+    if (!app) return false;
+    found = roots != NULL ? nk_font_find_psp_folder_in(roots, root_count, folder, sizeof(folder))
+                          : nk_font_find_psp_folder(folder, sizeof(folder));
+    if (found <= 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No PSP fonts were found on this PC's drives. Connect your PSP by USB as "
+                 "docs/SETUP.md, \"Copying the fonts from your PSP\", describes, then try again.");
+        app->wizard.font_message_kind = PLAYER_NOTE_WARNING;
+        player_app_refresh_font_status(app);
+        return false;
+    }
+    imported = player_app_fonts_import_folder(app, folder);
+    psp_font_source_words(folder, source, sizeof(source));
+    snprintf(outcome, sizeof(outcome), "%s", app->wizard.font_message);
+    snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "From %s%s: %.400s",
+             source, found > 1 ? ", the first of several drives with PSP fonts" : "", outcome);
+    return imported;
 }
 
 bool player_app_fonts_remove_imports(PlayerApp *app) {

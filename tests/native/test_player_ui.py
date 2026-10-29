@@ -1451,13 +1451,16 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_settings_psp_fonts_imports_and_removes(self) -> None:
         """Walkthrough blocker: the PSP font import is reachable from Settings."""
-        run = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        run = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_RIGHT", "WAIT_MS=100"))
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "psp_fonts")
-        self.assertIn(str(0x451E), self.focus_trail(run), "Import fonts folder has focus")
+        trail = self.focus_trail(run)
+        self.assertIn(str(0x452B), trail, "Get fonts from my PSP has focus first")
+        self.assertIn(str(0x451E), trail, "Right reaches Choose font files")
+        self.assertLess(trail.index(str(0x452B)), trail.index(str(0x451E)), trail)
         back = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"))
         self.assertEqual(self.screens(back)[-1][0], "settings", "Esc goes back to Settings")
 

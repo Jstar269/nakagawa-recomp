@@ -1605,6 +1605,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
         };
         static const WizardButton font_buttons[] = {
+            {PLAYER_UI_ID_WIZARD_PSP_FONTS, "Get fonts from my PSP", NK_UI_BUTTON_SMALL,
+             PLAYER_UI_WIZARD_PSP_FONTS},
             {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Choose font files", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_IMPORT_FONTS},
             {PLAYER_UI_ID_WIZARD_REMOVE_FONTS, "Remove imported fonts", NK_UI_BUTTON_SMALL,
@@ -1614,6 +1616,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         if (wizard_box_begin(ui, 0u)) {
             wizard_text(ui, 1u, model->resolution_line, NK_UI_TYPE_BODY, theme->paper);
             wizard_text(ui, 2u, model->controller_line, NK_UI_TYPE_BODY_S, theme->ready);
+            wizard_text(ui, 6u, model->font_summary, NK_UI_TYPE_BODY_S,
+                        model->fonts_all_own ? theme->ready : theme->warning);
             nk_ui_eyebrow(ui, WIZ_ID_TEXT + 3u, "PSP font slots (fallbacks shown)");
             {
                 NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
@@ -1642,11 +1646,13 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             }
             wizard_text(ui, 4u,
                         safe_text(model->font_message,
-                                  "Importing reads the .pgf files in a folder you choose."),
+                                  "To get your PSP's own fonts, connect it by USB (docs/SETUP.md, "
+                                  "\"Copying the fonts from your PSP\") and choose Get fonts "
+                                  "from my PSP."),
                         NK_UI_TYPE_CAPTION,
                         model->font_message != NULL && model->font_message[0] != '\0'
                             ? note_rgba(theme, model->font_message_kind) : theme->muted);
-            wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 2u, &result);
+            wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 3u, &result);
             nk_ui_end_container(ui);
         }
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 4u, &result);
@@ -2576,12 +2582,17 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
         nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
-                        "Optional. Games look right with your PSP's own fonts: copy the .pgf "
-                        "files from flash0:/font on your PSP to a folder on this PC (docs/SETUP.md, "
-                        "\"Copying the fonts from your PSP\"), then choose them here. The import "
+                        "Optional. Games look right with your PSP's own fonts: connect your PSP "
+                        "by USB and choose Get fonts from my PSP, or copy the .pgf files from "
+                        "flash0:/font on your PSP to a folder on this PC (docs/SETUP.md, "
+                        "\"Copying the fonts from your PSP\") and choose them here. The import "
                         "reads ltn0.pgf to ltn15.pgf, jpn0.pgf and kr0.pgf from that folder; "
                         "until then similar fonts stand in.",
                         NK_UI_TYPE_BODY_S, theme->muted);
+        if (model->font_summary != NULL && model->font_summary[0] != '\0') {
+            nk_ui_text_role(ui, SET_ID_TEXT + 0xDDu, model->font_summary, NK_UI_TYPE_BODY_S,
+                            model->fonts_all_own ? theme->ready : theme->warning);
+        }
         if (wizard_box_begin(ui, 0u)) {
             NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                           NK_UI_SPACE_4);
@@ -2620,8 +2631,12 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                                          NK_UI_SPACE_3);
             row.padding_top = NK_UI_SPACE_1;
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Choose font files",
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_PSP_FONTS, "Get fonts from my PSP",
                                  NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_PSP_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Choose font files",
+                                 0u)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
                 }
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_FONTS, "Remove imported fonts",

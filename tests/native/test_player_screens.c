@@ -315,6 +315,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         }
         settings.font_message = "Imported 3 fonts from C:/synthetic/psp-fonts.";
         settings.font_message_kind = PLAYER_UI_NOTE_DONE;
+        settings.font_summary = "3 of the 18 PSP fonts are your PSP's originals; the rest show a "
+                                "stand-in that looks different.";
     }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
@@ -505,6 +507,8 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
                 wizard.font_lines[wizard.font_line_count++] = k_font_lines[i];
             }
+            wizard.font_summary = "None of the 18 PSP fonts is your PSP's original yet, so games "
+                                  "show a stand-in that looks different.";
             break;
         case FLOW_WIZ_READY:
         case FLOW_WIZ_STAGED:
@@ -1527,6 +1531,8 @@ static void test_wizard_actions(void) {
          "Accept and continue confirms the fonts step"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
          "Change resolution cycles the scale"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_PSP_FONTS, PLAYER_UI_WIZARD_PSP_FONTS,
+         "Get fonts from my PSP imports a connected PSP's copied fonts"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_IMPORT_FONTS, PLAYER_UI_WIZARD_IMPORT_FONTS,
          "Import fonts folder opens the folder picker"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_REMOVE_FONTS, PLAYER_UI_WIZARD_REMOVE_FONTS,
@@ -1629,6 +1635,13 @@ static void test_plain_cards(void) {
               strstr(dump, "Synthetic reason") != NULL &&
               strstr(dump, "listed in the native title catalog") == NULL,
           "a failed copy shows its reason in place of the catalog note");
+    /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
+    CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
+              strstr(dump, "None of the 18 PSP fonts is your PSP's original yet") != NULL &&
+              strstr(dump, "connect it by USB") != NULL &&
+              strstr(dump, "\"GET FONTS FROM MY PSP\"") != NULL &&
+              strstr(dump, "\"CHOOSE FONT FILES\"") != NULL,
+          "the fonts step explains how to get the PSP's original fonts");
 }
 
 static bool disc_op_is(PlayerUiAction action, PlayerUiDiscOp op) {
@@ -1924,6 +1937,10 @@ static void test_psp_fonts_page(void) {
                                                        FLOW_SETTINGS).primary ==
               PLAYER_UI_SETTINGS_OPEN_FONTS,
           "Settings opens PSP fonts");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_PSP_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_PSP_FONTS,
+          "Get fonts from my PSP imports a connected PSP's fonts");
     CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_IMPORT_FONTS,
                                                    FLOW_SETTINGS_FONTS).primary ==
               PLAYER_UI_SETTINGS_IMPORT_FONTS,
@@ -3355,7 +3372,8 @@ static void test_outcome_lines_take_their_colour(void) {
     (void)snprintf(expect, sizeof(expect), "%08X \"Imported 3 fonts", (unsigned)theme->ready);
     CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
           "a font import that worked reads in the ready colour");
-    (void)snprintf(expect, sizeof(expect), "%08X \"Importing reads", (unsigned)theme->muted);
+    (void)snprintf(expect, sizeof(expect), "%08X \"To get your PSP's own fonts",
+                   (unsigned)theme->muted);
     CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
           "the Fonts step's hint, before any import, is muted");
     (void)snprintf(expect, sizeof(expect), "%08X \"Choose a disc image below",

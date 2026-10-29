@@ -998,6 +998,9 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
         case PLAYER_UI_WIZARD_REMOVE_FONTS:
             player_app_fonts_remove_imports(app);
             break;
+        case PLAYER_UI_WIZARD_PSP_FONTS:
+            player_app_fonts_import_from_psp(app);
+            break;
         case PLAYER_UI_WIZARD_FINISH: {
             bool runtime_ready = app->inspecting_game.is_prepared;
             int idx = player_ui_wizard_save_title(app);
@@ -1471,6 +1474,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             break;
         case PLAYER_UI_SETTINGS_IMPORT_FONTS: app->request_font_folder_picker = true; break;
         case PLAYER_UI_SETTINGS_REMOVE_FONTS: player_app_fonts_remove_imports(app); break;
+        case PLAYER_UI_SETTINGS_PSP_FONTS: (void)player_app_fonts_import_from_psp(app); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;

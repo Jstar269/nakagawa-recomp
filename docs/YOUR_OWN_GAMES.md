@@ -32,7 +32,9 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
 - **PSP system fonts (optional, recommended for in-game text).** To see a
   game's text in the PSP's own lettering, copy the Sony font files (`.pgf`)
   from your own PSP's `flash0:/font/`. The project doesn't include or share
-  them. Copy them to a folder and run `python tools/nk_cli.py fonts import <folder>`.
+  them. Connect your PSP by USB as [Copying the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp)
+  describes and choose **GET FONTS FROM MY PSP** in **Settings > PSP FONTS**, or
+  copy them to a folder and run `python tools/nk_cli.py fonts import <folder>`.
   If two files cover the same slot, pick one with `--choose <slot>=<file>`
   (slots: `japanese`, `latin`, `korean`). Check the result with
   `python tools/nk_cli.py fonts status`. Without them, Nakagawa uses open
