@@ -9,7 +9,10 @@ path-shaped token in another tracked text file spells its path, its basename, or
 importable module name.  The generated inventories -- the publication policy, the
 provenance ledger, the export control and the inherited-file notice manifest -- list
 every tracked path by construction, so they are not read as sources of references:
-without that exclusion every file looks used and the report is always empty.
+without that exclusion every file looks used and the report is always empty.  The
+release manifest is excluded for the same reason (it names each file a release
+carries), and so are the two README index sections a lint makes list every tools
+module and every document (``INDEX_SECTIONS``).
 
 ``tools/tree_lint_allow.json`` is excluded for the same reason and by the same rule:
 it records a reviewed decision *about* a path rather than using it.  The caller knows
@@ -82,9 +85,20 @@ DEFAULT_ALLOWLIST = Path(__file__).resolve().parent / "tree_lint_allow.json"
 GENERATED_INVENTORIES = frozenset({
     "assets/public_provenance_ledger.json",
     "assets/public_source_profile.json",
+    "assets/release_manifest.json",
     "PUBLIC_EXPORT.json",
     "docs/provenance/MODIFIED_FILE_NOTICES.json",
 })
+
+#: Index sections that name every file of one kind because a lint requires it:
+#: ``tools/test_lint_docs.py`` wants a row for every ``tools/`` module and
+#: ``tools/lint_docs.py`` a taxonomy row for every document.  A row there says the
+#: file exists, not that anything uses it, so the section (from its ``## `` heading to
+#: the next one) is not read as a source.  The rest of each README still counts.
+INDEX_SECTIONS = {
+    "tools/README.md": "## Module index",
+    "docs/README.md": "## Document status taxonomy",
+}
 
 #: A path-shaped token over the character subset this tree's paths use (letters,
 #: digits, ``_ . + -`` and ``/``).  Git permits more (``@``, ``#``, ``~``, spaces, ...):
@@ -148,6 +162,22 @@ def _spelling_keys(path: str) -> set[str]:
     return keys
 
 
+def _without_section(text: str, heading: str) -> str:
+    """``text`` with the level-2 section that starts at ``heading`` left out.
+
+    The section runs to the next ``## `` heading or the end of the file; deeper
+    headings inside it belong to it.  A file without the heading is returned whole.
+    """
+    kept: list[str] = []
+    inside = False
+    for line in text.splitlines(keepends=True):
+        if line.startswith("## "):
+            inside = line.rstrip() == heading
+        if not inside:
+            kept.append(line)
+    return "".join(kept)
+
+
 def _tree_relative(path: Path, root: Path) -> str | None:
     """``path`` as a tracked-tree-relative POSIX path, or None when it is outside.
 
@@ -197,7 +227,10 @@ def build_reference_index(
         blob = source_path.read_bytes()
         if not _is_scannable(blob):
             continue
-        for raw_token in TOKEN_RE.findall(blob.decode("utf-8", errors="replace")):
+        text = blob.decode("utf-8", errors="replace")
+        if source in INDEX_SECTIONS:
+            text = _without_section(text, INDEX_SECTIONS[source])
+        for raw_token in TOKEN_RE.findall(text):
             token = raw_token.rstrip(".")
             if not token:
                 continue

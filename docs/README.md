@@ -56,6 +56,8 @@ Each row is something you are about to do. Find yours and read what it points to
   native player.
 - [`SHOWCASE.md`](SHOWCASE.md) — the source-owned showcase demos: sources, packaging,
   player discovery, and their profile-zero acceptance status (#309).
+- [`PSPDEV_LOCAL_VERIFICATION.md`](PSPDEV_LOCAL_VERIFICATION.md) — the pinned PSPDEV
+  baseline and the local steps that check a toolchain against it.
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
   inventory of the runtime's and supported tools' parser boundaries, each with its resource limits,
@@ -94,6 +96,9 @@ a target and what isn't built yet.
 - [`HLE_COVERAGE.md`](HLE_COVERAGE.md) — the generated verification ledger: the
   evidence class of every registered HLE NID and every executed VFPU form, used to
   choose which HLE to replace with LLE first.
+- [`PROJECT_MODEL.md`](PROJECT_MODEL.md) — the three products in this repository
+  (the HST recompilation, its decompilation and the general toolkit), what each owns,
+  and which way dependencies may point.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.

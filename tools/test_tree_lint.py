@@ -159,6 +159,7 @@ class TreeLintTests(unittest.TestCase):
         statuses = self._statuses({
             "assets/public_source_profile.json": inventory,
             "assets/public_provenance_ledger.json": inventory,
+            "assets/release_manifest.json": inventory,
             "PUBLIC_EXPORT.json": inventory,
             "docs/provenance/MODIFIED_FILE_NOTICES.json": inventory,
             "src/orphan.c": "int orphan(void) { return 0; }\n",
@@ -169,6 +170,37 @@ class TreeLintTests(unittest.TestCase):
         # Each inventory is still judged on its own merit: nothing names it either.
         for inventory_path in tree_lint.GENERATED_INVENTORIES:
             self.assertEqual(statuses.get(inventory_path), tree_lint.UNREFERENCED, inventory_path)
+
+    def test_a_lint_required_index_section_is_not_a_source_of_references(self) -> None:
+        statuses = self._statuses({
+            "tools/README.md": (
+                "# Tools\n\nRun `tools/used.py` first.\n\n"
+                "## Module index\n\n| `indexed.py` | listed only |\n\n"
+                "### Tests\n\n| `deeper.py` | listed only |\n\n"
+                "## Hard rules\n\nSee `after.py`.\n"
+            ),
+            "docs/README.md": (
+                "# Documentation\n\n## Start here\n\n| [`GUIDE.md`](GUIDE.md) |\n\n"
+                "## Document status taxonomy\n\n| `ORPHAN.md` | CURRENT |\n"
+            ),
+            "tools/used.py": "",
+            "tools/indexed.py": "",
+            "tools/deeper.py": "",
+            "tools/after.py": "",
+            "docs/GUIDE.md": "",
+            "docs/ORPHAN.md": "",
+        })
+        self.assertEqual(statuses.get("tools/indexed.py"), tree_lint.UNREFERENCED)
+        self.assertEqual(statuses.get("tools/deeper.py"), tree_lint.UNREFERENCED)
+        self.assertEqual(statuses.get("docs/ORPHAN.md"), tree_lint.UNREFERENCED)
+        # The rest of each README still counts.
+        for live in ("tools/used.py", "tools/after.py", "docs/GUIDE.md"):
+            self.assertNotIn(live, statuses, live)
+
+    def test_the_index_section_headings_exist_in_the_shipped_readmes(self) -> None:
+        for path, heading in tree_lint.INDEX_SECTIONS.items():
+            lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+            self.assertIn(heading, lines, f"{path} lost its {heading!r} section")
 
     def test_allowlisted_file_is_reported_as_a_finding_with_its_reason(self) -> None:
         allowlist = self._allowlist([{"path": "src/orphan.c", "reason": "consumed by an external tool"}])

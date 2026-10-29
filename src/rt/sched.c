@@ -5049,7 +5049,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * host whose page file or address space is constrained, so sr_coro_create may
              * return NULL. Switching to a NULL coroutine would crash, so a failure is reported
              * and the run aborts: a thread that never started cannot be recovered. */
-            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_CORO_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",

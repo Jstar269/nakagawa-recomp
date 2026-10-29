@@ -1286,7 +1286,7 @@ static int run_host_stack_guard_child(void) {
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_sched_on = 1;
     SrCoro *fiber = sr_coro_create(stack_guard_coro_body, &s,
-                                   SR_GUEST_FIBER_STACK_SIZE);
+                                   SR_GUEST_CORO_STACK_SIZE);
     if (!fiber) return 11;
     sr_coro_switch(fiber);
     sr_sched_on = 0;
@@ -1295,7 +1295,7 @@ static int run_host_stack_guard_child(void) {
     if (g_stack_guard_result != SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
         g_stack_guard_calls == 0 ||
         g_stack_guard_remaining < STACK_GUARD_EXPECTED_MARGIN ||
-        g_stack_guard_remaining > SR_GUEST_FIBER_STACK_SIZE) {
+        g_stack_guard_remaining > SR_GUEST_CORO_STACK_SIZE) {
         fprintf(stderr,
                 "stack guard child: result=%d calls=%u remaining=%zu margin=%zu\n",
                 g_stack_guard_result, g_stack_guard_calls, g_stack_guard_remaining,

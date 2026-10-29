@@ -99,8 +99,9 @@ def _addiu_sp(imm: int) -> int:
 # --- the address-coupled inventory, taken from codegen's own tables ---------
 
 # The SR_BOOT_DIAG entry and inline probes were retired with the generic-runtime
-# HST cleanup (#363); codegen no longer emits them in either profile.
-HST_DIAG_PROBES = (0x0010433C, 0x0006E9BC)
+# HST cleanup (#363), and the TOKENSCAN_DIAG and F3G_ENTRY probes with #1531.  These
+# two addresses are now coupled only through the --static-verify exclusion.
+HST_SV_ONLY = (0x0010433C, 0x0006E9BC)
 HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
 HST_CUSTOM_STUBS = (
@@ -115,7 +116,7 @@ HST_SIMPLE_STUB_ADDRS = tuple(sorted(HST_SIMPLE_STUBS))
 # Bodies whose emission differs between the two profiles.  These are the pairs
 # the differential compares.
 BODY_COUPLED = (
-    HST_DIAG_PROBES
+    HST_SV_ONLY
     + HST_FASTPATHS
     + HST_ABORT
     + HST_CUSTOM_STUBS
@@ -175,7 +176,7 @@ def _shape_for(addr: int) -> list[int]:
         return _body_fastpath(10)   # consumed 0x6ea20..0x6ea44
     if addr == 0x00108630:
         return _body_fastpath(24)   # consumed 0x108634..0x108690
-    if addr in HST_DIAG_PROBES:
+    if addr in HST_SV_ONLY:
         return _body_sv_leaf()
     return _body_leaf()
 
@@ -360,15 +361,10 @@ class ProfileNoneDecouplingTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.diag_was = codegen.EMIT_DIAG_PROBES
-        # Turn the two diagnostic sites on so their gates are exercised too;
-        # in production they are compiled out by this flag alone.
-        codegen.EMIT_DIAG_PROBES = True
         cls.funcs = _CodegenRun.functions("none", static_verify=True)
 
     @classmethod
     def tearDownClass(cls):
-        codegen.EMIT_DIAG_PROBES = cls.diag_was
         _CodegenRun._cache.clear()
 
     def test_specimen_reaches_every_coupled_address(self):
@@ -405,13 +401,10 @@ class ProfileHstCouplingTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.diag_was = codegen.EMIT_DIAG_PROBES
-        codegen.EMIT_DIAG_PROBES = True
         cls.funcs = _CodegenRun.functions("hst", static_verify=True)
 
     @classmethod
     def tearDownClass(cls):
-        codegen.EMIT_DIAG_PROBES = cls.diag_was
         _CodegenRun._cache.clear()
 
     def test_every_coupled_address_differs_from_its_control_copy(self):
@@ -465,8 +458,8 @@ class ProfileHstLegacyTests(unittest.TestCase):
         self.assertEqual(missing, [], "profile=hst lost legacy HST emission")
 
     def test_diagnostic_probes_stay_compiled_out_in_production(self):
-        # EMIT_DIAG_PROBES is False here: the two diag sites must be absent even
-        # under hst, which is the production default this slice must not change.
+        # The TOKENSCAN_DIAG and F3G_ENTRY probes were deleted with the #1531
+        # cleanup; neither may come back under hst.
         self.assertNotIn("TOKENSCAN_DIAG", self.combined)
         self.assertNotIn("F3G_ENTRY", self.combined)
         # The SR_BOOT_DIAG probes were retired with the generic-runtime HST cleanup (#363).

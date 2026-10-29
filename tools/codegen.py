@@ -2487,13 +2487,10 @@ SV_MAX_PER_FLUSH = 3     # checks attached to one flush point
 SV_MAX_PER_FUNC = 16     # checks per function (bounds chunk growth)
 SV_STATS = {"funcs": 0, "checks": 0}
 
-# Diagnostic probe emission. When False (default/production), the temporary
-# TOKENSCAN_DIAG and F3G_ENTRY fprintf probes are completely omitted from the
-# generated C. Set True only for debug runs.
-EMIT_DIAG_PROBES = False
-
-# Functions carrying hand-injected code (fastpaths, probes, condition
-# overrides) execute semantics the simulator does not model; exclude them.
+# Functions carrying hand-injected code (fastpaths, condition overrides)
+# execute semantics the simulator does not model; exclude them. 0x0010433c
+# carried the retired TOKENSCAN_DIAG probe; its entry stays so that
+# --static-verify output does not change with this cleanup.
 # The exclusion is a consequence of that injected code, so it is title-owned:
 # under a profile that emits none of it there is nothing unmodelled to exclude,
 # and suppressing the checks on a numeric-address collision alone would be an
@@ -2506,8 +2503,6 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "cond"   : force the branch condition to `value` (always/never taken) and
 #              optionally inject `stmt`.
 #   "inject" : unconditionally inject `stmt` into the branch block.
-#   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
-#              change; diagnostic only).
 _GUEST_PATCH_KEYS: set[int] = set()
 # 0x0004cdc8 (forced host0 asset route) retired under #363 (2026-10-27): with the UMD block
 # device readable in sectors, the title's own archive reader serves every asset.
@@ -2818,39 +2813,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
         # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
         # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
-        # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
-        # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
-        # it dispatches f_0006517c (a vtable "get char / element" call) once per iteration
-        # until a 0x23 ('#') byte, so the trip bound depends on runtime container contents
-        # that cannot be resolved by static reading. Dump the container pointer (r21+0x1c)
-        # plus the two index/count field-pairs (r21+0x2c/0x30 and r21+0x38/0x3c) and the
-        # running per-scan byte counter (sp+0xc8) at the loop top. A single run then
-        # distinguishes "many short parses" (struct changes between prints, counts sane =
-        # bounded-slow, same class as the memset/arrshift fixes) from "one stuck/huge scan"
-        # (struct unchanging while the counter climbs without ever hitting the count bound =
-        # runaway / correctness bug upstream). Prints the first 24 hits, then every ~1M-th,
-        # so it can neither miss the opening nor flood a long run. REMOVE once characterised.
-        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0010433c:
-            out.append(
-                "    { static unsigned long long _ts_it = 0; static int _ts_pr = 0;\n"
-                "      unsigned long long _ts_n = ++_ts_it;\n"
-                "      if (_ts_pr < 24 || (_ts_n & 0xfffffull) == 0) { if (_ts_pr < 1000000) _ts_pr++;\n"
-                "        fprintf(stderr, \"TOKENSCAN_DIAG it=%llu struct=0x%08x buf=0x%08x idxA=0x%08x cntA=0x%08x idxB=0x%08x cntB=0x%08x bcnt=0x%08x\\n\",\n"
-                "          _ts_n, s->r[21], MEM_R32(s->r[21] + 0x1cu), MEM_R32(s->r[21] + 0x2cu), MEM_R32(s->r[21] + 0x30u), MEM_R32(s->r[21] + 0x38u), MEM_R32(s->r[21] + 0x3cu), MEM_R32(s->r[29] + 0xc8u));\n"
-                "        fflush(stderr); } }"
-            )
-
-
-
-        # F3G ENTRY PROBE (temporary): dump f_0006e9bc's incoming object (r4) and count (r5)
-        # to resolve the static-vs-runtime disconnect — statically r5 should be 96 and r4 a
-        # valid heap object, but at runtime the memset reads garbage. Prints once. Remove after.
-        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0006e9bc:
-            out.append(
-                "    { static int _e9_n = 0; if (_e9_n++ < 4) fprintf(stderr, "
-                "\"F3G_ENTRY f_0006e9bc: r4(obj)=0x%08x r5(count)=0x%08x ra=0x%08x sp=0x%08x\\n\", "
-                "s->r[4], s->r[5], s->r[31], s->r[29]); }"
-            )
 
         # MEMSET_FASTPATH: f_0006e9bc's post-alloc zero-fill loop (body 0x6ea28-0x6ea44,
         # count/base reloaded at 0x6ea1c/0x6ea28). Confirmed by static trace of the lifted
