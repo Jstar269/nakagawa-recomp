@@ -267,6 +267,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "reports the two measured samples for the modeled power source (external power by default); no discharge model",
     },
+    "h_PowerCheckWlanCoexistenceClock": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024",
+            "PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 scePower.cpp (model-dependent capability)",
+        ],
+        "limitation": "returns the derived PSP-1000 capability value 0 for every model; later model selection is not implemented",
+    },
     "h_PowerGetBatteryChargingStatus": {
         "status": "partial",
         "evidence": [

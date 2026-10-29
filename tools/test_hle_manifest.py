@@ -1187,8 +1187,11 @@ static uint32_t h_SynthReal(CpuState *s) {
                 # partial with that limitation recorded in tools/hle_registry_meta.py.
                 "0x64d4540e": "sceKernelReferThreadProfiler",
                 "0x8218b4dd": "sceKernelReferGlobalProfiler",
+                # A capability value, not a success status. The current model is PSP-1000;
+                # its literal zero remains visible to the mechanical detector.
+                "0xa85880d0": "scePowerCheckWlanCoexistenceClock",
             },
-            "only named exceptions may remain fake-success: two route compatibility results and two profiler NULL results",
+            "only named exceptions may remain fake-success: compatibility results, profiler NULL results and the PSP-1000 capability",
         )
 
         unsupported = {
