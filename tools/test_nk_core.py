@@ -2378,6 +2378,69 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(entry["title_id"], "synthetic")
         self.assertEqual(entry["iso_path"], "replacement.iso")
 
+    def test_bringup_library_writers_sharing_a_root_keep_every_title(self) -> None:
+        """Bring-ups building into one data folder (bringup --user-data-root) each rewrite
+        library.json from what they read; the library lock keeps every title they add."""
+        import threading
+        import time as time_module
+
+        self._cli_library(0)
+        original_read = nk_cli._read_library_json
+
+        def slow_read(path):
+            payload = original_read(path)
+            time_module.sleep(0.05)  # widen the read-to-write window the lock must cover
+            return payload
+
+        errors: list[BaseException] = []
+
+        def add(index: int) -> None:
+            try:
+                nk_cli._write_bringup_library(
+                    self.temp_dir, Path(f"disc-{index}.iso"),
+                    SimpleNamespace(disc_id=f"TEST{index:05d}", title=f"Title {index}",
+                                    version="1.01"),
+                    "synthetic", "BOOT.BIN", True,
+                )
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        with patch.object(nk_cli, "_read_library_json", side_effect=slow_read):
+            threads = [threading.Thread(target=add, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
+        library = json.loads((self.temp_dir / "library.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(game["disc_id"] for game in library["games"]),
+                         [f"TEST{index:05d}" for index in range(6)])
+        entry = nk_cli._load_library_entry(self.temp_dir, "TEST00003")
+        self.assertEqual(entry["title_name"], "Title 3", "the card names the game")
+        self.assertEqual(entry["disc_version"], "1.01")
+
+    def test_bringup_builds_into_a_shared_data_folder(self) -> None:
+        """bringup --user-data-root builds into that folder, not <work-dir>/user-data."""
+        shared = self.temp_dir / "collection-data"
+        work = self.temp_dir / "work"
+        report = work / "bringup.json"
+        args = SimpleNamespace(
+            iso=str(self.temp_dir / "missing.iso"), work_dir=str(work), report=str(report),
+            user_data_root=shared, launch_timeout=20, instruction_trace=False,
+            private_sweep_import_report=None, sweep_progress_report=None,
+        )
+        usage = subprocess.run(
+            [sys.executable, str(Path(nk_cli.__file__)), "bringup", "--help"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("--user-data-root", usage)
+        with patch("builtins.print"):
+            self.assertEqual(nk_cli.cmd_bringup(args), 1)
+        self.assertTrue(shared.is_dir())
+        self.assertFalse((work / "user-data").exists())
+        self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["failure_class"],
+                         "INVALID_ISO")
+
     def test_cli_library_append_over_limit_preserves_existing_file(self) -> None:
         path = self._cli_library(2)
         before = path.read_bytes()
