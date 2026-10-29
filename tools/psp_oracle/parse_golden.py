@@ -1801,6 +1801,39 @@ _register_campaign_probe(
     {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
 )
 
+# dma-timing (118, probe_dmac_timing.c): the #303 DMAC transfer-time and busy-channel cells.
+# Every cell is emitted on every run, so the stream is fixed-shape: t-<pair>-<api>-<size>
+# for the four main-RAM/VRAM pairs, both APIs and nine sizes (13 words), a-<src offset>-
+# <dst offset>-<size> for eleven alignments at two sizes (13 words), then b1 (11), the five
+# b2 cells (12), the two b3 cells (17) and the six b4 cells (15).
+DMA_TIMING_PAIRS = ("rr", "rv", "vr", "vv")
+DMA_TIMING_APIS = ("m", "t")
+DMA_TIMING_SIZES = (0x10, 0x40, 0x100, 0x400, 0x1000, 0x4000, 0x10000, 0x40000, 0x100000)
+DMA_TIMING_ALIGN = ((0, 0), (1, 0), (0, 1), (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
+                    (4, 0), (0, 4), (32, 0))
+DMA_TIMING_ALIGN_SIZES = (0x1000, 0x10000)
+DMA_TIMING_B2_CELLS = ("b2-try-null", "b2-try-zero", "b2-memcpy-null", "b2-memcpy-zero",
+                       "b2-try-valid")
+DMA_TIMING_B3_CELLS = ("b3-second-higher", "b3-second-lower")
+DMA_TIMING_B4_CELLS = tuple(f"b4-{pair}-{size:06x}" for pair in ("vv", "rr")
+                            for size in (0x10000, 0x40000, 0x100000))
+DMA_TIMING_T_CASES = tuple(f"t-{pair}-{api}-{size:06x}" for pair in DMA_TIMING_PAIRS
+                           for api in DMA_TIMING_APIS for size in DMA_TIMING_SIZES)
+DMA_TIMING_A_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN
+                           for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_CASES = (DMA_TIMING_T_CASES + DMA_TIMING_A_CASES + ("b1-try-dest",)
+                    + DMA_TIMING_B2_CELLS + DMA_TIMING_B3_CELLS + DMA_TIMING_B4_CELLS)
+_register_campaign_probe(
+    "dma-timing", "PSP-DMAC-002", DMA_TIMING_CASES,
+    {
+        **{case: 13 for case in DMA_TIMING_T_CASES + DMA_TIMING_A_CASES},
+        "b1-try-dest": 11,
+        **{case: 12 for case in DMA_TIMING_B2_CELLS},
+        **{case: 17 for case in DMA_TIMING_B3_CELLS},
+        **{case: 15 for case in DMA_TIMING_B4_CELLS},
+    },
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",

@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 103)
+        self.assertEqual(len(routes), 104)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 118}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -7499,6 +7499,99 @@ class GeSampleProbeTests(unittest.TestCase):
         self.assertIn("#define GS_WIN_Y0 3u", self.probe)
         self.assertIn("#define GS_WIN_SIDE 16u", self.probe)
         self.assertEqual(parse_golden.GE_SAMPLE_ROWS, tuple(range(3, 19)))
+
+
+class DmaTimingProbeTests(unittest.TestCase):
+    """CASE=dma-timing (118, PSP-DMAC-002) in probe_dmac_timing.c: the #303 DMAC transfer-time
+    and busy-channel cells. Probe-owned spans only, bounded loops and joins, the shared
+    writer and lifecycle, and a fixed-shape stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_dmac_timing.c").read_text(encoding="utf-8")
+        cls.issues = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                                  .read_text(encoding="utf-8"))
+        start = cls.probe.index("#if PSP_ORACLE_CASE == DMAC_CASE_TIMING\n\n")
+        end = cls.probe.index("#endif /* DMAC_CASE_TIMING */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),dma-timing)\nCASE_ID = 118\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),dma-timing)\nTARGET = $(BUILD_DIR)/dma_timing\n"
+                      "OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_dmac_timing.o,$(OBJS)),)\n"
+                      "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\n", self.makefile)
+        self.assertIn("#define DMAC_CASE_TIMING 118\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "dma-timing"\n#define HLE_TEST_ID "PSP-DMAC-002"\n'
+                      '#define HLE_LOG "host0:/dmac_timing_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "dma-timing").name,
+                         "dmac_timing_log.txt")
+        self.assertEqual(_campaign_completeness_contract("dma-timing"), "strict-golden-sequence")
+        self.assertNotIn("dma-timing", CAMPAIGN_QUEUE_CASES)
+
+    def test_writer_round_trip_and_lifecycle_are_the_hle_issues_copies(self) -> None:
+        shared = self.issues[self.issues.index("static int s_log_failed;\n"):
+                             self.issues.index("/* ---", self.issues.index("int module_stop("))]
+        self.assertIn(shared, self.probe)
+
+    def test_section_calls_only_dmac_memory_and_thread_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceDmacMemcpy", "sceDmacTryMemcpy", "sceKernelAllocPartitionMemory",
+            "sceKernelGetBlockHeadAddr", "sceKernelFreePartitionMemory",
+            "sceKernelDcacheWritebackInvalidateRange", "sceKernelCreateThread",
+            "sceKernelStartThread", "sceKernelWaitThreadEnd", "sceKernelDeleteThread",
+            "sceKernelTerminateDeleteThread", "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc("):
+            self.assertNotIn(banned, self.section)
+        # Every join is bounded, and the busy poll has a cap.
+        self.assertIn("#define DT_JOIN_TIMEOUT_US 2000000u", self.probe)
+        self.assertIn("sceKernelWaitThreadEnd(thread, &timeout)", self.section)
+        self.assertIn("for (; polls < DT_POLL_MAX; polls++) {", self.section)
+        # DMA spans: three partition-2 blocks and the two VRAM halves, nothing else.
+        self.assertIn("#define DT_BLOCK_BYTES 0x00110000u", self.probe)
+        self.assertIn("#define DT_VRAM_DST 0x04000000u", self.probe)
+        self.assertIn("#define DT_VRAM_SRC 0x04100000u", self.probe)
+        self.assertEqual(self.section.count("sceKernelAllocPartitionMemory(2, name, PSP_SMEM_Low"), 1)
+
+    def test_every_cell_is_registered_in_order(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["dma-timing"]
+        self.assertEqual(spec.test_id, "PSP-DMAC-002")
+        self.assertEqual(spec.terminal_case, "dma-timing-done")
+        self.assertEqual(len(parse_golden.DMA_TIMING_CASES), 72 + 22 + 1 + 5 + 2 + 6)
+        self.assertEqual(parse_golden.DMA_TIMING_CASES[:2], ("t-rr-m-000010", "t-rr-m-000040"))
+        self.assertEqual(parse_golden.DMA_TIMING_CASES[-1], "b4-rr-100000")
+        self.assertEqual(counts["t-vv-t-100000"], 13)
+        self.assertEqual(counts["a-20-00-010000"], 13)
+        self.assertEqual(counts["b1-try-dest"], 11)
+        self.assertEqual(counts["b2-memcpy-zero"], 12)
+        self.assertEqual(counts["b3-second-lower"], 17)
+        self.assertEqual(counts["b4-vv-040000"], 15)
+        # The probe's tables are the registry's.
+        self.assertIn('{{"rr", 0u, 0u}, {"rv", 0u, 1u}, {"vr", 1u, 0u}, {"vv", 1u, 1u}}',
+                      self.section)
+        self.assertIn("s_dt_sizes[9] = {0x10u, 0x40u, 0x100u, 0x400u, 0x1000u, 0x4000u,",
+                      self.section)
+        for name in (parse_golden.DMA_TIMING_B2_CELLS + parse_golden.DMA_TIMING_B3_CELLS
+                     + parse_golden.DMA_TIMING_B4_CELLS + ("b1-try-dest",)):
+            self.assertIn(f'"{name}"', self.section)
+        self.assertIn('hle_record(case_id, pass ? "PASS" : "FAIL", last, out, 13);', self.section)
+        self.assertIn('hle_record("b1-try-dest", setup ? "ERROR" : "PASS", last, out, 11);',
+                      self.section)
+
+    def test_manifest_row_names_the_probe(self) -> None:
+        rows = [row for row in self.manifest["tests"] if row.get("id") == "PSP-DMAC-002"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_dmac_timing.c")
+        self.assertEqual(row["prx"], "dma_timing.prx")
+        self.assertEqual(row["diagnostic_case_ids"], ["dma-timing"])
+        self.assertEqual(row["issues"], [303])
 
 
 if __name__ == "__main__":

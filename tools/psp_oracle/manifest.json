@@ -84,6 +84,22 @@
       "outcome_contract": {"result": "expected scalar record is present", "skip": "explicit safety-gate SKIP", "hang": "no record plus observed timeout", "reset": "no record plus observed reset", "inconclusive": "no record and no terminal observation"}
     },
     {
+      "id": "PSP-DMAC-002",
+      "status": "implemented",
+      "hardware_evidence": "NOT_RUN",
+      "evidence_note": "Not yet run on hardware. Built from fixtures/psp_oracle/probe_dmac_timing.c as dma_timing.prx and run as a single launch, not in the campaign queue; its stream is fixed-shape (CAMPAIGN_PROBE_CASES['dma-timing']).",
+      "group": "dmac",
+      "source": "fixtures/psp_oracle/probe_dmac_timing.c",
+      "prx": "dma_timing.prx",
+      "apis": ["sceDmacMemcpy", "sceDmacTryMemcpy", "sceKernelAllocPartitionMemory", "sceKernelGetBlockHeadAddr", "sceKernelFreePartitionMemory", "sceKernelDcacheWritebackInvalidateRange", "sceKernelCreateThread", "sceKernelStartThread", "sceKernelWaitThreadEnd", "sceKernelDeleteThread", "sceKernelTerminateDeleteThread", "sceKernelGetSystemTimeLow", "sceIoClose", "sceIoOpen", "sceIoRead", "sceIoWrite", "sceKernelExitThread", "sceKernelGetThreadId", "sceKernelSleepThread", "sceKernelWakeupThread", "thread scheduling"],
+      "diagnostic_case_ids": ["dma-timing"],
+      "case_ids": ["t-*", "a-*", "b1-try-dest", "b2-*", "b3-*", "b4-*", "dma-timing-done"],
+      "invariant": "#303: how long sceDmacMemcpy and sceDmacTryMemcpy keep the caller and the channel busy, by size (0x10 to 0x100000), main-RAM/VRAM source and destination and alignment, with every byte of each destination checked; what a Try refused with BUSY leaves in its destination; BUSY against the NULL-pointer and zero-size checks; the order two blocking callers queued behind a pending transfer are served in; and how long a weaker thread sees the channel busy.",
+      "issues": [303],
+      "risk": "low; DMA only between three probe-owned partition-2 blocks and the two VRAM halves, never over an unowned or invalid span (the NULL and zero-size cells are rejected before any transfer, as already measured); every worker join is bounded and a worker that does not end is terminated",
+      "reset": "one PRX launch; PSPLink soft reset before the next launch"
+    },
+    {
       "id": "PSP-TRANSPORT-001",
       "status": "implemented",
       "hardware_evidence": "MEASURED",
