@@ -225,6 +225,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
 | `record_toolchain.py` | Record observed live toolchain identities using the doctor's detection functions. |
 | `vulkan_sdk.py` | Vulkan SDK validation and discovery shared by the workspace doctor. |
+| `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest. |
 | `library_sweep.py` | Run the production ISO bring-up route across a library and aggregate blockers. |
 | `progress_tracker.py` | Run concrete gating checks against real outputs and emit a structured progress record. |
 
@@ -477,6 +478,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_hardware_runner_protocol.py` | Executable conformance suite for the hardware runner autonomy design. |
 | `test_incident_regression_private.py` | Exact-incident regression against preserved private evidence. |
 | `test_intr_waits_matrix.py` | Guards for the interrupt and dispatch-context conformance matrix. |
+| `test_library_build.py` | Regressions for the resumable whole-folder library build and its disc check. |
 | `test_library_sweep.py` | Regressions for the private, resumable library compatibility sweep. |
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
@@ -549,6 +551,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
+| `test_disc_expand.py` | Compressed disc images (.cso, .zso, .chd) reach `iso_inspect` and `nk_cli.py bringup` through the `nk_disc_expand` C wrapper (`nk_core/disc_expand_tool.py`), expanded once into the per-title folder; refusals keep their named codes. |
 | `test_format_portability_check.py` | The format portability checker fails a synthetic `%u`/`%d` on a fixed-width value and passes PRI macros and casts, through the API and the CLI. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |
