@@ -3129,6 +3129,8 @@ static void test_title_enhancement_card(void) {
     CHECK(strstr(dump, "An optional enhancement made for this game") != NULL &&
               strstr(dump, "Off plays the original game as") != NULL,
           "the card says it is optional and that off is the original game as released");
+    CHECK(strstr(dump, "Experimental") != NULL || strstr(dump, "EXPERIMENTAL") != NULL,
+          "the card is tagged experimental until matches hold 60 updates a second");
     CHECK(strstr(dump, "Turn it off to play the original game.") == NULL,
           "a usable package has no problem line");
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY,

@@ -455,7 +455,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_ENH_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_ENH_EYEBROW, "Enhancements");
-                    nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Optional");
+                    nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Experimental");
                     nk_ui_end_container(ui);
                 }
                 (void)snprintf(label, sizeof(label), "60 FPS game logic: %s",
@@ -476,7 +476,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                 "An optional enhancement made for this game: its game logic "
                                 "runs 60 times a second instead of 30, from a separate "
                                 "package built for it. Off plays the original game as "
-                                "released.",
+                                "released. Experimental: where this PC cannot keep 60 a "
+                                "second, the game says SLOWED.",
                                 NK_UI_TYPE_BODY_S, theme->paper);
                 if (title->enhancement_problem != NULL &&
                     title->enhancement_problem[0] != '\0') {
