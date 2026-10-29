@@ -57,6 +57,11 @@ typedef struct {
     char title_name[NK_MAX_TITLE_LEN];
     char disc_version[16];
     char iso_path[NK_MAX_PATH];
+    /* A compressed disc image (.cso, .zso, .chd) the user added. iso_path is
+       then the plain .iso it was expanded into (nk_disc_expand.h), which every
+       later step reads; this path is only shown to the user. Empty for a disc
+       added as an .iso. */
+    char source_image_path[NK_MAX_PATH];
     char prepared_root[NK_MAX_PATH];
     char title_id[64];
     uint64_t iso_size_bytes;
