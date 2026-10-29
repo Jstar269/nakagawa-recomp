@@ -77,11 +77,14 @@ CpuState *s_cpu = NULL;
 int sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice;
 
-uint32_t sched_current_uid(void) { return 0u; }
-void sched_exit_current(int32_t status) { (void)status; }
-void sched_exit_current_delete(int32_t status) { (void)status; }
+/* A test may name a current guest thread; the dispatch core must never stop it on its own. */
+static uint32_t g_current_uid = 0u;
+static int g_thread_stops = 0;
+uint32_t sched_current_uid(void) { return g_current_uid; }
+void sched_exit_current(int32_t status) { (void)status; g_thread_stops++; }
+void sched_exit_current_delete(int32_t status) { (void)status; g_thread_stops++; }
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) { (void)uid; (void)arglen; (void)argp; return 0; }
-uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; g_thread_stops++; return 0; }
 uint32_t sched_delete_thread(uint32_t uid) { (void)uid; return 0; }
 uint32_t sched_thread_wakeup(uint32_t uid) { (void)uid; return 0; }
 void sched_set_current_join_target(uint32_t uid) { (void)uid; }
@@ -1907,9 +1910,49 @@ static int boot_event_file_names(const char *path, const char *needle) {
     return strstr(text, needle) != NULL;
 }
 
+static void set_boot_event_file(const char *path) {
+#ifdef _WIN32
+    _putenv_s("SR_BOOT_EVENT_FILE", path);
+#else
+    if (path[0]) setenv("SR_BOOT_EVENT_FILE", path, 1);
+    else unsetenv("SR_BOOT_EVENT_FILE");
+#endif
+}
+
 static void test_null_code_pointer_is_not_the_offset0_function(const char *self_path) {
     sr_mem_init();
     sr_exec_span_reset();
+    char event_path[512];
+    snprintf(event_path, sizeof event_path, "%s.nullptr-events.txt", self_path);
+
+    /* No code at address 0 yet: a dispatch there is a null code pointer, whatever s->pc
+     * holds. A host entry handed a null guest handler seeds s->pc with that 0, which the
+     * old "collapsed thread" guard read as lost state: it zeroed Status, terminated the
+     * current thread and reported success. It must stop the run by name instead, with
+     * the thread and its registers untouched. */
+    g_offset0_hits = 0;
+    g_thread_stops = 0;
+    g_current_uid = 0x0414u;
+    CpuState s = nullptr_state(0u);
+    s.cop0[SR_CP0_STATUS] = 0x00000001u;
+    CpuState before = s;
+    remove(event_path);
+    set_boot_event_file(event_path);
+    int dispatch_result = dispatch_try(&s, 0u);
+    set_boot_event_file("");
+    g_current_uid = 0u;
+    CHECK(dispatch_result == SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "a dispatch to address 0 with no code there was not refused as a null code pointer "
+          "(result=%d)", dispatch_result);
+    CHECK(g_thread_stops == 0 && s.cop0[SR_CP0_STATUS] == before.cop0[SR_CP0_STATUS] &&
+              s.r[2] == before.r[2] && s.r[31] == before.r[31],
+          "a dispatch to address 0 stopped the current thread or changed its state "
+          "(stops=%d status=0x%08x v0=0x%08x)",
+          g_thread_stops, s.cop0[SR_CP0_STATUS], s.r[2]);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "a dispatch to address 0 did not record its boot event naming #1375");
+    remove(event_path);
+
     own_synthetic_aot_word(0u);
     sr_register(0u, offset0_body);
     own_synthetic_aot_word(PROBE_RA);
@@ -1934,7 +1977,7 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
      * offset-0 function, and a static CALL of it runs that function. */
     CHECK(sr_lookup(0u) == offset0_body, "address 0 does not resolve to the offset-0 function");
     g_offset0_hits = 0;
-    CpuState s = nullptr_state(PROBE_PC);
+    s = nullptr_state(PROBE_PC);
     CHECK(dispatch_call_try(&s, 0u, PROBE_RA) == SR_GUEST_INTERP_AOT_HANDOFF &&
               g_offset0_hits == 1 && s.r[2] == 0x70u,
           "a static CALL to address 0 did not run the offset-0 function (hits=%d v0=0x%08x)",
@@ -1955,34 +1998,42 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
           s.r[31], s.r[3]);
 
     /* A static jal 0 from interpreted code is not a code pointer, so the null rule
-     * must not claim it. (The dispatch core's older pc==0 thread guard still stands
-     * between an interpreted CALL and address 0; #1375 lists it as what is left.) */
+     * must not claim it. The interpreter seeds s->pc with the CALL's target, 0, and the
+     * dispatch core must not read that as a collapsed thread either: the offset-0
+     * function runs, the interpreted caller resumes after the call (v0 + 1) and leaves
+     * through `jr t1`, and the current thread and its Status are untouched. */
+    g_offset0_hits = 0;
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    g_thread_stops = 0;
+    g_current_uid = 0x0414u;
     s = nullptr_state(NULLPTR_JAL_ENTRY);
     s.r[9] = PROBE_RA;
+    s.cop0[SR_CP0_STATUS] = 0x00000001u;
     result = sr_guest_interp_run(&s, NULLPTR_JAL_ENTRY, &fault);
+    g_current_uid = 0u;
     CHECK(result != SR_GUEST_INTERP_NULL_CODE_POINTER,
           "static jal 0 from interpreted code was refused as a null code pointer");
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF && g_offset0_hits == 1 &&
+              g_interp_handoff_hits == 1 && g_interp_handoff_v0 == 0x71u,
+          "static jal 0 from interpreted code did not run the offset-0 function and resume "
+          "its caller (result=%s hits=%d handoffs=%d v0=0x%08x)",
+          sr_guest_interp_result_name(result), g_offset0_hits, g_interp_handoff_hits,
+          g_interp_handoff_v0);
+    CHECK(g_thread_stops == 0 && s.cop0[SR_CP0_STATUS] == 0x00000001u,
+          "static jal 0 from interpreted code was treated as a collapsed thread "
+          "(stops=%d status=0x%08x)", g_thread_stops, s.cop0[SR_CP0_STATUS]);
 
     /* Interpreted jr through a null register, through the production dispatch core:
      * the named boundary and its event line. */
-    char event_path[512];
-    snprintf(event_path, sizeof event_path, "%s.nullptr-events.txt", self_path);
     remove(event_path);
-#ifdef _WIN32
-    _putenv_s("SR_BOOT_EVENT_FILE", event_path);
-#else
-    setenv("SR_BOOT_EVENT_FILE", event_path, 1);
-#endif
+    set_boot_event_file(event_path);
     g_offset0_hits = 0;
     s = nullptr_state(PROBE_PC);
     s.r[8] = 0u;
-    CpuState before = s;
-    int dispatch_result = dispatch_try(&s, NULLPTR_JR_ENTRY);
-#ifdef _WIN32
-    _putenv_s("SR_BOOT_EVENT_FILE", "");
-#else
-    unsetenv("SR_BOOT_EVENT_FILE");
-#endif
+    before = s;
+    dispatch_result = dispatch_try(&s, NULLPTR_JR_ENTRY);
+    set_boot_event_file("");
     CHECK(dispatch_result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
           "null jr did not stop the dispatch core as a null code pointer "
           "(result=%d hits=%d)", dispatch_result, g_offset0_hits);

@@ -1851,14 +1851,28 @@ void sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame) {
  * sr_null_code_pointer, the interpreter returns SR_GUEST_INTERP_NULL_CODE_POINTER), before
  * its link write and delay slot, and the dispatch table and dispatch core stay keyed on
  * the address alone. On hardware the fetch from address 0 faults; here the run stops. */
+static void dispatch_record_null_code_pointer(void) {
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-code-pointer; see #1375\n");
+    dispatch_record_semantic_stop_issue("null-code-pointer", 1375u);
+    dump_dispatch_trace();
+}
+
 static void dispatch_report_null_code_pointer(const CpuState *s, uint32_t transfer_pc) {
     fprintf(stderr,
             "NULL_CODE_POINTER: computed transfer at 0x%08" PRIx32 " targets 0x00000000 "
             "ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
             transfer_pc, s->r[31], s->r[29], sched_current_uid());
-    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-code-pointer; see #1375\n");
-    dispatch_record_semantic_stop_issue("null-code-pointer", 1375u);
-    dump_dispatch_trace();
+    dispatch_record_null_code_pointer();
+}
+
+/* A dispatch to address 0 on an image with no code there (dispatch_try_with_boundary).
+ * The dispatch carries no transfer pc; s->pc is only what the caller last wrote. */
+static void dispatch_report_null_dispatch(const CpuState *s) {
+    fprintf(stderr,
+            "NULL_CODE_POINTER: dispatch to 0x00000000, where no code is registered; "
+            "pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            s->pc, s->r[31], s->r[29], sched_current_uid());
+    dispatch_record_null_code_pointer();
 }
 
 void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
@@ -2263,55 +2277,35 @@ static int dispatch_try_with_boundary(
      * and it must be configured -- an unconfigured build matches nothing and the same
      * sentinel at the same site follows ordinary dispatch behavior below. This sits
      * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
-     * that a title configuration must never be able to shadow. It sits BEFORE the pc==0
-     * corruption guard because a terminal callback is a normal completion, not a
-     * collapsed thread. */
+     * that a title configuration must never be able to shadow. It sits BEFORE the
+     * null-code-pointer stop below because a configured terminal callback is a normal
+     * completion, even when its sentinel is 0. */
     if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
         s->r[2] = 1u;
         s->pc = s->r[31];
         return SR_GUEST_INTERP_AOT_HANDOFF;
     }
-    /* CpuState corruption guard: a PC of 0 means the thread state has collapsed.
-     * Terminate the thread to prevent infinite spinning/deadlock. */
-    if (s->pc == 0) {
-        s->cop0[SR_CP0_STATUS] = 0u;
-        if (sched_current_uid() != 0) {
-            sched_terminate_thread(sched_current_uid());
-        }
-        return SR_GUEST_INTERP_AOT_HANDOFF;
+    /* Guest address 0 (#1375). Dispatch is keyed on `target` alone. s->pc is not lost-state
+     * evidence: generated code writes it only at returns and recorded tail transfers, and
+     * every host entry and interpreted transfer seeds it with the target it dispatches, so a
+     * zero s->pc here means only that the target is 0. Address 0 holds code only on a
+     * zero-based image whose offset-0 function is registered, and a guest reaches that
+     * function only by a static transfer (a j/jal or branch, generated or interpreted) or as
+     * the module entry, which run it like any other address. With no code at address 0, a
+     * dispatch there is a null code pointer however it was formed (a host entry handed a
+     * null guest handler, for instance), and the run stops by name before any guest state
+     * changes. This replaces two `s->pc == 0` "collapsed thread" guards that silently
+     * terminated or exited the current thread and swallowed a static jal 0. */
+    if (target == 0u && !sr_lookup(0u)) {
+        dispatch_report_null_dispatch(s);
+        return SR_GUEST_INTERP_NULL_CODE_POINTER;
     }
-    /* The entry guard above (`if (s->pc == 0)`, near the top of this function) already
-     * catches s->pc==0 unconditionally and returns before anything else runs, so a second
-     * "saved PC of 0" check here — gated on the same s->pc with no intervening write to it —
-     * could never fire. Removed as dead code (historical cleanup: collapse the pc==0
-     * guards into a single check"). The remaining post-SR_YIELD guard below is NOT
-     * redundant with the entry guard: SR_YIELD can switch fiber context underneath `s`,
-     * so it observes a genuinely different point in execution and stays as its own check.
-     *
-     * The every-100-dispatch sr_timeslice=0 resets that used to sit here (one for the
+    /* The every-100-dispatch sr_timeslice=0 resets that used to sit here (one for the
      * worker thread, one for every other thread) were a defensive backstop against
      * priority inversion. Removed per Phase 1.4 — pure dispatch overhead. The launcher
      * demotion that replaced them is retired too (#363): pick_next is strict priority, and
      * every thread keeps the priority its creator passed. */
     SR_YIELD(s, s->pc);
-
-    /* Phase 2.6 / BUG1: pc=0 in dispatch() means the thread lost its state somewhere
-     * (corrupt return, missed epilogue, scheduler scratch). Without this guard, we
-     * dispatch into junk and the thread spins at the wrong PC forever, deadlocking
-     * the scheduler. Treat the thread as stopped and yield once so the scheduler
-     * can keep running siblings. */
-    if (s->pc == 0u) {
-        if (sched_current_uid() != 0) {
-            static int pc0_n = 0;
-            if (pc0_n < 4) {
-                fprintf(stderr, "dispatch: pc==0 uid=0x%" PRIx32 " ra=0x%08" PRIx32 " target=0x%08" PRIx32 " — halting thread\n",
-                        sched_current_uid(), s->r[31], target);
-                pc0_n++;
-            }
-            sched_exit_current(0);
-            return SR_GUEST_INTERP_AOT_HANDOFF;
-        }
-    }
 
     /* Record every dispatch in circular trace buffer.
      * The trace is circular by design (DISPATCH_TRACE_SIZE = 32); g_dtrace_idx wraps
