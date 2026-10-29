@@ -274,9 +274,16 @@ extern void sr_hle_test_umd_reset(void);
 extern uint32_t sr_hle_test_guest_fault_count(void);
 extern uint32_t sr_hle_test_guest_fault_addr(void);
 extern void sr_hle_test_guest_fault_reset(void);
-extern uint32_t sr_vblank_handler(void);
-uint32_t sr_vblank_no(void);
-uint32_t sr_vblank_arg(void);
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
+
+/* The handler the scheduler would deliver for VBLANK sub-interrupt `no` (0 when none), and its
+ * arg through *arg when one is delivered. */
+static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
+    uint32_t handler = 0u, a = 0u;
+    if (sr_vblank_subintr(no, &handler, &a) != 1) return 0u;
+    if (arg) *arg = a;
+    return handler;
+}
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -14854,7 +14861,7 @@ static void test_atrac_context_abi(void) {
  * through sr_syscall -- the same path a generated import stub takes -- and
  * pins behaviour the old h_ok routing could not produce: per-channel volume
  * retention with the neighbouring audio error codes, VBLANK disable/release
- * delivery transitions observed through sr_vblank_handler(), retained power
+ * delivery transitions observed through sr_vblank_subintr(), retained power
  * clocks reflected by the Get handlers, and the decoder's own frame size from
  * sceAtracGetMaxSample. HOST_TESTED, not PSP_HARDWARE evidence; anything the
  * runtime does not measure is marked UNMEASURED in the handler comments. */
@@ -14917,36 +14924,70 @@ static void test_td24b_cheap_hle_batch(void) {
     /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
     reset_fixture();
     sr_hle_init();
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
-           "sub-interrupt fixture starts from a released VBLANK line");
-    expect(sr_vblank_handler() == 0u, "VBLANK delivery starts clear");
+    for (uint32_t no = 0u; no < 16u; no++)
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u) == 0u,
+               "sub-interrupt fixture starts from released VBLANK sub-interrupts");
+    expect(vblank_delivered(5u, NULL) == 0u, "VBLANK delivery starts clear");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
-    expect(sr_vblank_no() == 5u && sr_vblank_arg() == 0x1234u,
-           "RegisterSubIntrHandler keeps the sub-interrupt number and arg the handler is called with");
-    expect(sr_vblank_handler() == 0u, "a registered-but-disabled handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a registered-but-disabled handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 4u, 0u, 0u) == 0u,
+           "EnableSubIntr on another sub-interrupt answers success");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "enabling sub-interrupt 4 does not enable the handler registered on 5");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success");
-    expect(sr_vblank_handler() == 0x08001000u, "an enabled VBLANK handler is delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    uint32_t arg = 0u;
+    expect(vblank_delivered(5u, &arg) == 0x08001000u && arg == 0x1234u,
+           "an enabled VBLANK handler is delivered with the arg it registered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "DisableSubIntr answers success");
-    expect(sr_vblank_handler() == 0u, "a disabled VBLANK handler is not delivered");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a disabled VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr answers success a second time");
-    expect(sr_vblank_handler() == 0x08001000u, "Disable keeps the registration: Enable resumes it");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0x08001000u,
+           "Disable keeps the registration: Enable resumes it");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler answers success");
-    expect(sr_vblank_handler() == 0u, "a released VBLANK handler is not delivered");
-    expect(sr_vblank_no() == 0u && sr_vblank_arg() == 0u,
-           "ReleaseSubIntrHandler clears the sub-interrupt number and arg");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+    expect(vblank_delivered(5u, NULL) == 0u, "a released VBLANK handler is not delivered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 5u, 0u, 0u) == 0u,
            "EnableSubIntr after release still answers success");
-    expect(sr_vblank_handler() == 0u, "Release clears the handler word: Enable delivers nothing");
+    expect(vblank_delivered(5u, NULL) == 0u,
+           "Release clears the handler word: Enable delivers nothing");
     expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "DisableSubIntr on a non-VBLANK line answers success without effect");
     expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
-    expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 16u, 0x08001000u, 0u) ==
+               0x80020065u,
+           "a VBLANK sub-interrupt number past 15 is refused (ILLEGAL_INTRCODE)");
+    uint32_t h = 0u, a = 0u;
+    expect(sr_vblank_subintr(16u, &h, &a) == -1, "the scheduler's walk ends after sub-interrupt 15");
+
+    /* Two VBLANK sub-interrupts at once: a title's frame counter on 0 and a video player's
+     * handler on 1, the second released when its video closes. Each number keeps its own
+     * handler, arg and enable state, so the release leaves the frame counter running. With
+     * one shared slot the second registration replaced the first handler and the release
+     * removed it: the game's counter stopped and a wait on it never ended. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 0u, 0x08003000u, 0x30u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the frame-counter handler is registered and enabled on sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08004000u, 0x40u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is registered and enabled on sub-interrupt 1");
+    arg = 0u;
+    expect(vblank_delivered(0u, &arg) == 0x08003000u && arg == 0x30u,
+           "registering sub-interrupt 1 leaves sub-interrupt 0's handler and arg in place");
+    arg = 0u;
+    expect(vblank_delivered(1u, &arg) == 0x08004000u && arg == 0x40u,
+           "both handlers are delivered on the same VBLANK");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "the video handler is released");
+    expect(vblank_delivered(1u, NULL) == 0u, "the released sub-interrupt is no longer delivered");
+    expect(vblank_delivered(0u, NULL) == 0x08003000u,
+           "releasing sub-interrupt 1 keeps delivering sub-interrupt 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
+           "the two-handler fixture leaves the VBLANK line released");
 
     /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
      * registration line once, not once per frame. A changed registration and a register after
@@ -14975,7 +15016,9 @@ static void test_td24b_cheap_hle_batch(void) {
         expect(count_occurrences(err,
                    "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
                "a changed arg and a register after Release each write the registration line");
-        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+        uint32_t quiet_arg = 0u;
+        expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
+                   vblank_delivered(1u, &quiet_arg) == 0x08002000u && quiet_arg == 0x10u,
                "the quiet path still records the latest registration");
         expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
                "the log fixture leaves the VBLANK line released");
@@ -20139,7 +20182,7 @@ enum {
 };
 static unsigned s_ge_tim_calls;
 static uint64_t s_ge_tim_fired_at[4];
-static uint32_t s_ge_tim_list[4];
+static uint32_t s_ge_tim_id[4];   /* the callback's id (a0): the list's FINISH argument */
 static uint32_t s_ge_tim_arg;
 static int s_ge_tim_intr_ctx;
 static uint32_t s_ge_tim_cbid;
@@ -20147,7 +20190,7 @@ static uint32_t s_ge_tim_cbid;
 static void ge_tim_finish_fn(CpuState *cpu) {
     if (s_ge_tim_calls < 4u) {
         s_ge_tim_fired_at[s_ge_tim_calls] = s_vtime_us;
-        s_ge_tim_list[s_ge_tim_calls] = cpu->r[4];
+        s_ge_tim_id[s_ge_tim_calls] = cpu->r[4];
     }
     s_ge_tim_calls++;
     s_ge_tim_arg = cpu->r[5];
@@ -20155,9 +20198,13 @@ static void ge_tim_finish_fn(CpuState *cpu) {
     cpu->r[2] = 0u;
 }
 
+/* Each test list ends in a FINISH whose id names the list's address, so a callback says which
+ * list it completed. */
+static uint32_t ge_tim_finish_id(uint32_t base) { return (base >> 8) & 0xffffu; }
+
 static void ge_tim_write_list(uint32_t base, unsigned nops) {
     for (unsigned i = 0; i < nops; i++) MEM_W32(base + 4u * i, 0x00000000u); /* NOP */
-    MEM_W32(base + 4u * nops, 0x0f000000u);       /* FINISH */
+    MEM_W32(base + 4u * nops, 0x0f000000u | ge_tim_finish_id(base));  /* FINISH id */
     MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
 }
 
@@ -20202,7 +20249,7 @@ static void ge_tim_setup(void) {
     sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
     s_ge_tim_calls = 0;
     memset(s_ge_tim_fired_at, 0, sizeof(s_ge_tim_fired_at));
-    memset(s_ge_tim_list, 0, sizeof(s_ge_tim_list));
+    memset(s_ge_tim_id, 0, sizeof(s_ge_tim_id));
     s_ge_tim_arg = 0;
     s_ge_tim_intr_ctx = 0;
     MEM_W32(GE_TIM_INFO + 0u, 0u);                 /* signal func */
@@ -20225,6 +20272,9 @@ static void ge_tim_teardown(void) {
     sr_test_guest_fn_reset();
 }
 
+/* The FINISH id of the list the GE ran last, read back from ge.c. */
+static uint32_t ge_tim_last_finish_id(void) { return ge_last_finish_id(); }
+
 /* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
  * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
 static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
@@ -20243,7 +20293,8 @@ static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, 
     scheduler_service_pending();
     snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
              (unsigned long long)(due - enq));
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due &&
+           s_ge_tim_id[0] == ge_tim_last_finish_id(), msg);
 }
 
 /* A display-list builder for the measured-cell lists. */
@@ -20360,8 +20411,25 @@ static void test_ge_completion_timing(void) {
     ge_tim_write_list(GE_TIM_DL, 0u);
     memset(&cpu, 0, sizeof(cpu));
     uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing off: the finish callback runs inside sceGeListEnQueue");
+    /* finish_func(id, arg): id is the FINISH command's 16-bit argument, as libpspgu's
+     * sceGuFinishId(0xffff) sets it, never the queue ID. Bits 16..23 of the payload are not
+     * part of it. A title that marks a skipped frame this way waits on that id. */
+    MEM_W32(GE_TIM_DL2, 0x0f12ffffu);              /* FINISH, payload 0x12ffff */
+    MEM_W32(GE_TIM_DL2 + 4u, 0x0c000000u);         /* END */
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    uint32_t qid_ff = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0xffffu && qid_ff != 0xffffu,
+           "GE finish: the callback's id is the FINISH argument's low 16 bits, not the queue ID");
+    expect(s_ge_tim_arg == GE_TIM_FINISH_ARG,
+           "GE finish: the callback's second argument is its registered argument");
+    MEM_W32(GE_TIM_DL2, 0x0c000000u);              /* END with no FINISH */
+    s_ge_tim_calls = 0;
+    (void)ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == 0u,
+           "GE finish: a list that ran no FINISH does not inherit the previous list's id");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
            "GE timing off: the syncs read the list as complete at once");
@@ -20390,7 +20458,8 @@ static void test_ge_completion_timing(void) {
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
            "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u &&
+           s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the empty list's finish callback runs at 15 us");
     expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
            "GE timing: the callback runs in interrupt context with its registered argument");
@@ -20404,11 +20473,13 @@ static void test_ge_completion_timing(void) {
     /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
     s_ge_tim_calls = 0;
     s_vtime_us = 60000u;
+    ge_tim_write_list(GE_TIM_DL2, 0u);
     uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    (void)qa;
     s_vtime_us = 60015u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
+    expect(s_ge_tim_calls == 1u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL),
            "GE timing: the first list completes after its own 15 us");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
            "GE timing: the second list is still drawing behind it");
@@ -20417,7 +20488,8 @@ static void test_ge_completion_timing(void) {
     expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
     s_vtime_us = 60030u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+    expect(s_ge_tim_calls == 2u && s_ge_tim_id[1] == ge_tim_finish_id(GE_TIM_DL2) &&
+           s_ge_tim_fired_at[1] == 60030u,
            "GE timing: the second list completes 15 us after the first");
 
     /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
@@ -23615,6 +23687,49 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
     cpu.r[4] = CORE;
     expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
            "__sceSasCoreWithMix refreshes the end flags as a cycle does");
+}
+
+/* #1595: a second __sceSasInit on an initialized core, as the PSP answers it (PSP-SAS-001, PSP-3000 6.6.1):
+ * 0, the new grain and output mode take effect, and a playing voice reads as ended again. A misaligned core
+ * is still refused with the address error after an init. */
+#define NID_SAS_GET_GRAIN      0xbd11b7c2u
+#define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+static void test_sas_reinit_is_a_fresh_init(void) {
+    CpuState cpu;
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 64u, 1u);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = VAG; cpu.r[7] = 64u * 16u; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xfffffffeu, "before the re-init only voice 0 is playing");
+
+    cpu.r[4] = CORE; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "__sceSasInit on an initialized core returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the re-init leaves every voice ended");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "the re-initialized core mixes");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the voice stays ended after the next cycle");
+
+    cpu.r[4] = CORE; cpu.r[5] = 512; cpu.r[6] = 16; cpu.r[7] = 1; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "a re-init with other parameters returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_GRAIN) == 512u, "the re-init's grain takes effect");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_OUTPUTMODE) == 1u, "the re-init's output mode takes effect");
+
+    cpu.r[4] = CORE + 4u; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == SAS_ERROR_ADDRESS,
+           "a misaligned core is refused with the address error after an init");
 }
 
 static void test_msgpipe_safety(void) {
@@ -37264,6 +37379,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_sas_reinit_is_a_fresh_init();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
