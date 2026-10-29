@@ -123,6 +123,135 @@ static void test_audio_queue_line(void) {
           s_report_count);
 }
 
+/* Live profile view (#314). The history ring keeps the newest SR_PERF_HISTORY_LEN closed
+ * intervals, ages from the newest, and drops the oldest when full. */
+static void test_live_history_ring(void) {
+    static SrPerfHistory history;
+    SrPerfLiveInterval interval;
+    sr_perf_history_reset(&history);
+    CHECK(sr_perf_history_at(&history, 0) == NULL, "an empty ring has no newest interval");
+    memset(&interval, 0, sizeof(interval));
+    for (unsigned i = 1; i <= 3; i++) {
+        interval.wall_ns = i;
+        sr_perf_history_push(&history, &interval);
+    }
+    CHECK(history.count == 3, "three pushes hold three intervals (count=%u)", history.count);
+    CHECK(sr_perf_history_at(&history, 0) && sr_perf_history_at(&history, 0)->wall_ns == 3,
+          "age 0 is the newest push");
+    CHECK(sr_perf_history_at(&history, 2) && sr_perf_history_at(&history, 2)->wall_ns == 1,
+          "age 2 is the oldest of three");
+    CHECK(sr_perf_history_at(&history, 3) == NULL, "no interval past the oldest held");
+    for (unsigned i = 4; i <= SR_PERF_HISTORY_LEN + 5u; i++) {
+        interval.wall_ns = i;
+        sr_perf_history_push(&history, &interval);
+    }
+    CHECK(history.count == SR_PERF_HISTORY_LEN, "a full ring holds %u (count=%u)",
+          SR_PERF_HISTORY_LEN, history.count);
+    CHECK(sr_perf_history_at(&history, 0)->wall_ns == SR_PERF_HISTORY_LEN + 5u,
+          "the newest survives a wrap");
+    CHECK(sr_perf_history_at(&history, SR_PERF_HISTORY_LEN - 1u)->wall_ns == 6u,
+          "the oldest held after a wrap is the first not dropped (wall_ns=%llu)",
+          (unsigned long long)sr_perf_history_at(&history, SR_PERF_HISTORY_LEN - 1u)->wall_ns);
+    CHECK(sr_perf_history_at(&history, SR_PERF_HISTORY_LEN) == NULL, "no age past the ring");
+    history.head = SR_PERF_HISTORY_LEN;
+    CHECK(sr_perf_history_at(&history, 0) == NULL, "a corrupt head reads nothing");
+    sr_perf_history_push(&history, &interval);
+    CHECK(history.head == SR_PERF_HISTORY_LEN, "a corrupt head is not written through");
+    sr_perf_history_push(NULL, &interval);
+    CHECK(sr_perf_history_at(NULL, 0) == NULL, "a NULL ring is empty");
+}
+
+/* The rows are the PERF line's definitions: shares of the interval's wall time for the
+ * guest/host split and residency, shares of the recorded thread states for the scheduler. */
+static void test_live_rows(void) {
+    SrPerfLiveInterval iv;
+    SrPerfLiveRow rows[SR_PERF_LIVE_ROWS];
+    memset(&iv, 0, sizeof(iv));
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS) == 0, "an empty interval has no rows");
+    iv.wall_ns = 1000000000ull;
+    iv.cpu_ns = 600000000ull;
+    iv.ge_wait_ns = 100000000ull;
+    iv.present_ns = 50000000ull;
+    iv.idle_ns = 250000000ull;
+    iv.presents = 60;
+    iv.new_frames = 30;
+    iv.aot_ns = 550000000ull;
+    iv.interp_ns = 25000000ull;
+    iv.aot_to_interp = 12;
+    iv.interp_to_aot = 11;
+    iv.sched_ns[SR_PERF_SCHED_RUNNING] = 300;
+    iv.sched_ns[SR_PERF_SCHED_RUNNABLE] = 100;
+    iv.sched_ns[SR_PERF_SCHED_BLOCKED] = 500;
+    iv.sched_ns[SR_PERF_SCHED_IDLE] = 100;
+    iv.ge_cpu_ns = 3100000ull;
+    iv.gpu_draws = 812;
+    iv.vk_submit_ns = 400000ull;
+    iv.vk_wait_ns = 5200000ull;
+    iv.vk_readback_ns = 100000ull;
+    iv.audio_underruns = 2;
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS - 1u) == 0, "a short row buffer is refused");
+    CHECK(sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS) == SR_PERF_LIVE_ROWS, "eight rows");
+    static const char *const want[SR_PERF_LIVE_ROWS][2] = {
+        {"Frame", "30.0 game fps  16.7 ms per present"},
+        {"Guest/host", "cpu 60%  ge wait 10%  present 5%  idle 25%"},
+        {"Residency", "aot 55%  interpreter 3%"},
+        {"Transitions", "12 to interpreter  11 to aot"},
+        {"Scheduler", "run 30%  ready 10%  blocked 50%  idle 10%"},
+        {"GE CPU", "3.1 ms  812 gpu draws"},
+        {"Vulkan", "submit 0.4 wait 5.2 pipeline 0.0 readback 0.1 ms"},
+        {"Audio", "2 underruns"},
+    };
+    for (unsigned i = 0; i < SR_PERF_LIVE_ROWS; i++) {
+        CHECK(strcmp(rows[i].label, want[i][0]) == 0 && strcmp(rows[i].value, want[i][1]) == 0,
+              "row %u was '%s' '%s' (expected '%s' '%s')", i, rows[i].label, rows[i].value,
+              want[i][0], want[i][1]);
+    }
+    memset(iv.sched_ns, 0, sizeof(iv.sched_ns));
+    (void)sr_perf_live_rows(&iv, rows, SR_PERF_LIVE_ROWS);
+    CHECK(strcmp(rows[4].value, "no thread states recorded") == 0,
+          "no thread states reads as such, not as 0%% everywhere");
+}
+
+/* Each closed telemetry interval lands in the history the live view reads, carrying the
+ * interval's counters, and the transition hot spots are the summary's top_pcs. */
+static void test_live_history_follows_the_report(void) {
+    SrPerfTopPc top[4];
+    sr_perf_init();
+    unsigned before = sr_perf_history()->count;
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_audio_queue(3, 0u, 1000000u, 1);
+    sr_perf_audio_queue(5, 0u, 1000000u, 1);
+    for (int i = 0; i < 3; i++) {
+        sr_perf_aot_begin(0x08804000u);
+        sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
+        sr_perf_interp_begin(0x08804120u);
+        sr_perf_interp_end(0x08804130u, 0);
+        sr_perf_aot_end();
+    }
+    sr_perf_aot_begin(0x08805000u);
+    sr_perf_interp_begin(0x08805200u);
+    sr_perf_interp_end(0x08805210u, 0);
+    sr_perf_aot_end();
+    sr_perf_test_force_report();
+    sr_perf_test_set_report_sink(NULL);
+    const SrPerfLiveInterval *newest = sr_perf_history_at(sr_perf_history(), 0);
+    CHECK(sr_perf_history()->count == before + 1u, "one report pushed one interval (%u -> %u)",
+          before, sr_perf_history()->count);
+    CHECK(newest && newest->wall_ns > 0 && newest->audio_underruns == 2 &&
+              newest->aot_to_interp == 4,
+          "the newest interval carries the report's counters (underruns=%llu aot_to_interp=%llu)",
+          newest ? (unsigned long long)newest->audio_underruns : 0ull,
+          newest ? (unsigned long long)newest->aot_to_interp : 0ull);
+    unsigned n = sr_perf_top_transitions(0, top, 4);
+    CHECK(n == 2 && top[0].pc == 0x08804120u && top[0].count == 3 &&
+              strcmp(top[0].reason, "stale-block") == 0 && top[1].pc == 0x08805200u &&
+              strcmp(top[1].reason, "dispatch-miss") == 0,
+          "top AOT->interpreter PCs, most frequent first (n=%u)", n);
+    CHECK(sr_perf_top_transitions(0, top, 1) == 1, "the top list stops at the caller's max");
+    CHECK(sr_perf_top_transitions(2, top, 4) == 0, "an unknown direction has no entries");
+}
+
 /* Guest symbol labels (codegen --symbol-map). The registered table is what the crash report and
  * the dispatch trace name addresses with; without a table every label is empty, so a build with
  * no map prints exactly what it printed before. Address 0 is a real function start on a zero-based
@@ -199,6 +328,9 @@ static void test_new_frames_are_distinct_buffers(void) {
 int main(void) {
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
+    test_live_history_ring();
+    test_live_rows();
+    test_live_history_follows_the_report();
     test_guest_symbol_labels();
     test_new_frames_are_distinct_buffers();
     sr_profile_test_reset();
