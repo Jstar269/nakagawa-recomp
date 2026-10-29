@@ -281,9 +281,9 @@ def synthetic_art_iso(
     path.write_bytes(image)
 
 
-def write_large_library(scratch: Path, localappdata: Path, count: int) -> None:
+def write_large_library(scratch: Path, data: Path, count: int) -> None:
     """A saved library of `count` experimental titles, each on its own synthetic
-    disc with its own one-pixel ICON0.PNG, where the player reads its library."""
+    disc with its own one-pixel ICON0.PNG, in the player's data folder `data`."""
     discs = scratch / "large-library"
     discs.mkdir()
     games = []
@@ -297,7 +297,6 @@ def write_large_library(scratch: Path, localappdata: Path, count: int) -> None:
             "iso_path": str(iso), "title_id": f"experimental-{disc_id.lower()}",
             "is_experimental": True, "selected_executable": "EBOOT.BIN",
         })
-    data = localappdata / "Nakagawa" / "data"
     data.mkdir(parents=True)
     (data / "library.json").write_text(
         json.dumps({"schema_version": 1, "games": games}), encoding="utf-8")
@@ -1038,7 +1037,14 @@ class NativePlayerUiTests(unittest.TestCase):
             if ready_source_iso is not None:
                 ui_iso_path = ready_source_iso
             if library_titles:
-                write_large_library(scratch, localappdata, library_titles)
+                # Where this run's player reads its library (LOCALAPPDATA on Windows,
+                # XDG_DATA_HOME elsewhere; both point into the scratch folder below).
+                write_large_library(
+                    scratch,
+                    localappdata / "Nakagawa" / "data" if os.name == "nt"
+                    else userprofile / "data" / "nakagawa-recomp",
+                    library_titles,
+                )
             if stale_package:
                 synthetic_stale_package(runtime_root)
             if incompatible_package:
