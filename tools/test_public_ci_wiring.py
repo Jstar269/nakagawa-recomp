@@ -1619,10 +1619,7 @@ class MergeQueueWakeWiringTests(unittest.TestCase):
 MAIN_RULESET_SNAPSHOT: dict[str, object] = {
     "strict_required_status_checks_policy": True,
     "required_status_checks": {
-        "CI required": 15368,
-        "OSV Vulnerability Scan": 15368,
-        "dependency-review": 15368,
-        "Hygiene and security": 15368,
+        "Trusted CI verdict": 15368,
         "CodeQL": 57789,
     },
 }
@@ -1707,26 +1704,30 @@ class MainRulesetClaimsTests(unittest.TestCase):
         doc = (ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8")
         candidates = [
             block for block in _markdown_blocks(doc)
-            if all(term in block.lower() for term in ("main-minimal", "ruleset", "five checks"))
+            if all(term in block.lower() for term in ("main-minimal", "ruleset", "two checks"))
         ]
         self.assertTrue(
             candidates,
             "docs/PROVENANCE_MERGE_GATE.md must state the required main ruleset checks",
         )
         block = candidates[0]
-        start = block.lower().find("five checks")
+        start = block.lower().find("two checks")
         left = block.find("(", start)
         right = block.find(")", left + 1)
         self.assertGreaterEqual(left, start)
         self.assertGreater(right, left)
         self.assertEqual(_backticked(block[left + 1:right]), self.required)
 
-    def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
+    def test_provenance_workflow_comment_defers_the_required_list_to_the_docs(self) -> None:
+        """The comment cannot list the required checks: one of them is the CI verdict, whose
+        context no workflow may name (CI_CONTEXT_COLLISION). It points at docs/CI.md instead,
+        and must not keep a stale list of its own."""
         comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))
-        match = re.search(r"which are: ([^.]*)\.", comment)
-        self.assertIsNotNone(match, "provenance-attestation.yml no longer lists the ruleset's checks")
-        assert match is not None
-        self.assertEqual({name.strip() for name in match.group(1).split(",")}, self.required)
+        self.assertIn("NOT in the branch ruleset's required status checks (docs/CI.md names them", comment)
+        self.assertNotRegex(comment, r"which are: ")
+        for name in self.required:
+            if name != "CodeQL":
+                self.assertNotIn(name, comment)
 
     def test_strict_policy_claims_match_the_snapshot(self) -> None:
         doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))

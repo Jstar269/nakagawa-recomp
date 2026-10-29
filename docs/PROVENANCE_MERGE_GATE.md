@@ -259,10 +259,9 @@ That makes head-tree attestation sufficient **for the verifier's side**. It is
 not a complete merge-time guarantee by itself: nothing in the verifier stops base
 from advancing between verification and the merge button. Closing that needs
 `strict_required_status_checks_policy: true`. The `main-minimal` ruleset requires
-five checks (`CI required`, `OSV Vulnerability Scan`, `dependency-review`,
-`Hygiene and security`, `CodeQL`) and its `strict_required_status_checks_policy`
-is **`true`** (live value read from the ruleset, 2026-10-10; this document
-previously recorded `false` as of 2026-09-30), so GitHub does require an
+two checks (`Trusted CI verdict`, `CodeQL`), since 2026-10-29 (#373), and its
+`strict_required_status_checks_policy` is **`true`** (live value read from the ruleset,
+2026-10-29; this document previously recorded `false` as of 2026-09-30), so GitHub does require an
 up-to-date head at merge time. That half of T15 is therefore enforced by live
 configuration rather than by any code here — re-read the ruleset before relying
 on it, because a configuration change would silently reopen it with no diff in
@@ -500,13 +499,13 @@ The trusted CI verdict ([`docs/CI.md`](CI.md#trusted-ci-verdict), #373) is the r
 chosen for #364. It does not make this context required. It requires a
 `Trusted provenance attestation` job, once, green, from a `pull_request_target` run of
 `provenance-attestation.yml` at the exact head, and refuses the context from any other
-workflow, event or app (`FOREIGN_PRODUCER`). The owner's ruleset step then requires
+workflow, event or app (`FOREIGN_PRODUCER`). Since 2026-10-29 the ruleset requires
 `Trusted CI verdict` and `CodeQL` only.
 
 When the day comes, the ruleset already carries a `pull_request` rule,
 `required_linear_history`, and an empty `bypass_actors` list; its
 `strict_required_status_checks_policy` is already `true` (live value read from
-the ruleset, 2026-10-10). Whatever context
+the ruleset, 2026-10-29). Whatever context
 is eventually required inherits all of that; do not relax any of it.
 
 ## Required-check identity: what GitHub can and cannot enforce here
@@ -604,7 +603,7 @@ for `Trusted CI verdict`, would close that too.
 | The verifier, its tests, the trusted workflow, this documentation | complete and safe to merge; they add a real control and remove none |
 | The gate as a **signal** — it runs on every pull request, fails closed, and puts findings in the PR | complete once the secret exists |
 | The gate as **tamper-proof merge enforcement** against a hostile author who can add workflow files | **NOT complete.** Requires the `workflows` rule or the GitHub App above |
-| The gate as an input to `Trusted CI verdict` | built (#373); enforcing once the owner requires `Trusted CI verdict` in the ruleset. Against fork authors that is enforcement; against same-repository writers it still needs the App |
+| The gate as an input to `Trusted CI verdict` | built (#373); enforcing since the ruleset requires `Trusted CI verdict` (2026-10-29). Against fork authors that is enforcement; against same-repository writers it still needs the App |
 
 Do not describe the required status check alone as enforcement. Until identity
 binding exists, it is a strong control against error and against an author who

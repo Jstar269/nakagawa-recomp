@@ -102,7 +102,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6a690c83daf29f99559f41bd1ce697bb50862d2a9a00ed63d000534641273587"
+      "sha256": "c040ab23252b8dc6dd95aaccf66af837d5cd0a37e65aa0a003bd14172f40ba00"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/accessibility.yml",
@@ -312,7 +312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2398cbcea9ccdb3cc4e08dbb251391542e7f63943e846c3f3af45e57f72c4556"
+      "sha256": "f056469aa1c91ab2668f41b47e39367929b3a60573162979087fad900396a1a7"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -1423,7 +1423,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b0c0192fbfad3e6bff9c8e45390d55ab5ea4a3ac7b8b7fb32978da12f0977111"
+      "sha256": "67c77f252533e5435294abe7d5398964ac65dca3e2ab91bfbf3c3f8dd8447681"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -1657,7 +1657,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5b5464124a9b461e43b90d9f8d71ca1f18cc7bab7e4e1ec366f1aca85f4d4754"
+      "sha256": "22dc02ca94d8a8bd7dbe515ec95a923a2e8ed6d0c97138336c99a935664d3969"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a6ce5196defebd311b82446618daa7e75e76b7569ec491472770621253a9e148"
+      "sha256": "d55342dc5e5aef3dafbb5435cfdc965b337518246556c40ba1693d44adc73b52"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -14401,7 +14401,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3cbe52aa34428bb2c53fe9805db1ce962555e698a123668b5fa8798820f2e834"
+      "sha256": "046829efb884e0611e67e1fba78813c5d43c27a62c7b606d466c9f7c6045a12d"
     },
     {
       "path": "tools/test_codegen_continuations.py",
@@ -16083,7 +16083,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a983a54a8d8a64efe01d4c90186ef0ffa9c26e70d94a2c96de2872df9d3beadc"
+      "sha256": "05091bb2f1bf3033a8cf93efc2f36bf58d57577c78a7586dbe849dcf960da999"
     },
     {
       "path": "tools/test_public_export.py",

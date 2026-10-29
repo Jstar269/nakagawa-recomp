@@ -17,7 +17,7 @@
 #      the Trusted CI verdict workflow (.github/workflows/ci-trust-verdict.yml,
 #      docs/CI.md) judges each job by its producer at the exact head, and a
 #      change to a workflow or CI tool needs the ci-change-approved label on
-#      that head. It is enforcing once the ruleset requires it (#373);
+#      that head. The ruleset requires it since 2026-10-29 (#373);
 #   3. the fail-closed canonical policy in assets/public_source_profile.json,
 #      which rejects unknown and excluded paths mechanically.
 #

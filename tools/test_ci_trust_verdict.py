@@ -537,7 +537,7 @@ class WorkflowWiringTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertNotIn(ctv.VERDICT_CONTEXT, path.read_text(encoding="utf-8"))
 
-    def test_producers_cover_the_actions_contexts_the_ruleset_requires(self) -> None:
+    def test_the_ruleset_requires_the_verdict_not_the_contexts_it_judges(self) -> None:
         try:
             from test_public_ci_wiring import MAIN_RULESET_SNAPSHOT
         except ModuleNotFoundError:
@@ -545,7 +545,10 @@ class WorkflowWiringTests(unittest.TestCase):
         required = MAIN_RULESET_SNAPSHOT["required_status_checks"]
         assert isinstance(required, dict)
         actions = {name for name, app in required.items() if app == ctv.GITHUB_ACTIONS_APP_ID}
-        self.assertLessEqual(actions, {producer.context for producer in ctv.PRODUCERS})
+        # Since 2026-10-29 the only GitHub Actions context the ruleset requires is the verdict;
+        # a producer context required by name again would be spoofable by any same-named job.
+        self.assertEqual(actions, {ctv.VERDICT_CONTEXT})
+        self.assertNotIn(ctv.VERDICT_CONTEXT, {producer.context for producer in ctv.PRODUCERS})
 
     def test_each_producer_workflow_declares_its_job_and_event(self) -> None:
         for producer in ctv.PRODUCERS:

@@ -57,10 +57,11 @@ jobs:
     # reserves the string: a candidate workflow declaring a job under the same
     # name is refused.
     #
-    # It is deliberately NOT in the branch ruleset's required status checks,
-    # which are: CI required, OSV Vulnerability Scan, dependency-review,
-    # Hygiene and security, CodeQL. Until an identity-bound check producer
-    # exists, merge-time provenance authority rests on maintainer review, and
+    # It is deliberately NOT in the branch ruleset's required status checks
+    # (docs/CI.md names them; no workflow may name the CI verdict's context).
+    # The verdict judges this job by producer at the exact head instead. Until an
+    # identity-bound check producer exists, merge-time provenance authority rests
+    # on maintainer review, and
     # docs/PROVENANCE_MERGE_GATE.md explains why requiring this context first
     # would give a false assurance: a context name alone is not sufficient
     # anti-spoof protection.
