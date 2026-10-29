@@ -12007,7 +12007,7 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
-uint32_t sr_savedata_execute(uint32_t param);
+uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
 uint32_t sr_savedata_prepare_utility(unsigned kind);
 
 enum { SR_UTILITY_STORAGE_GAMEDATA = 1, SR_UTILITY_STORAGE_GAMESHARING = 2 };
@@ -12053,7 +12053,7 @@ static uint32_t utility_slot_claim_locked(int type) {
 }
 
 static int s_dlg_status = 0, s_dlg_tick = 0;
-static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
+static uint32_t s_dlg_param = 0, s_dlg_param_size = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
 int sr_savedata_pause_busy(void) {
     dialog_lock();
@@ -12062,8 +12062,12 @@ int sr_savedata_pause_busy(void) {
     return busy;
 }
 static uint32_t h_SavedataInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 4u) || MEM_R32(A0) != 0x600u ||
-        !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u))
+    /* The block's first word is its size: the 0x5c8, 0x5dc and 0x600-byte versions are
+     * accepted and any other size is refused (pspautotests e2d098fc). */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    const uint32_t size = MEM_R32(A0);
+    if ((size != 0x5c8u && size != 0x5dcu && size != 0x600u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
         return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
@@ -12071,7 +12075,7 @@ static uint32_t h_SavedataInitStart(CpuState *s) {
         dialog_unlock();
         return claim;
     }
-    s_dlg_param = A0; s_dlg_status = 1; s_dlg_tick = 0;
+    s_dlg_param = A0; s_dlg_param_size = size; s_dlg_status = 1; s_dlg_tick = 0;
     s_dlg_work_started = s_dlg_work_done = 0;
     s_dlg_generation++;
     s_dlg_result = 0;
@@ -12112,7 +12116,7 @@ static uint32_t h_DlgGetStatus(CpuState *s) {
 }
 static uint32_t h_SavedataUpdate(CpuState *s) {
     (void)s;
-    uint32_t param = 0, generation = 0;
+    uint32_t param = 0, size = 0, generation = 0;
     dialog_lock();
     if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
         dialog_unlock();
@@ -12125,6 +12129,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     if (s_dlg_status == 2 && !s_dlg_work_started) {
         s_dlg_work_started = 1;
         param = s_dlg_param;
+        size = s_dlg_param_size;
         generation = s_dlg_generation;
     } else if (s_dlg_status == 2 && s_dlg_work_done && ++s_dlg_tick >= 2) {
         s_dlg_status = 3;
@@ -12134,7 +12139,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     }
     dialog_unlock();
     if (param) {
-        uint32_t result = sr_savedata_execute(param);
+        uint32_t result = sr_savedata_execute_sized(param, size);
         dialog_lock();
         if (generation == s_dlg_generation) {
             s_dlg_result = result;
