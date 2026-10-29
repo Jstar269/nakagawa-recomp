@@ -173,6 +173,8 @@ host runs its own arms of `hle.c`'s file, directory and host-data seams. A few c
 Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
 `CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
 plants a symbolic link in its place).
+The Linux job also runs `hle-title-selftest`, the same harness built under the generic and both
+fixture title configurations.
 
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package

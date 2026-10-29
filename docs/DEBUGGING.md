@@ -1143,6 +1143,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
 | `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
+| `SR_DEVELOPER_MODE=0\|1` | Developer mode (the launcher exports its setting): `F3`'s profile HUD and the pause menu's VRAM viewer and Profile page |
 | `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or
@@ -1527,7 +1528,8 @@ VIDEO: present fb=0x04000000 fmt=3 stride=512
 The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance overlay (HUD) that can be toggled at runtime or enabled at process start:
 
 - **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
-- **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off. (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
+- **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off; in developer mode
+  it steps through the profile HUD as well (below). (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
 - **Telemetry Displayed**:
   - **Game FPS**: New game frames per second. A new frame is a present whose guest framebuffer differs from the
     previous present's, the flip that `tools/perf_attribution.py` counts. This is the frame rate a player sees.
@@ -1544,6 +1546,30 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
   - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.
   - When enabled, host-side drawing renders text onto an SDL3 surface after the guest frame is composed and copies it directly into the swapchain staging buffer, guaranteeing zero impact on guest-visible timing or emulation clocks.
   - Snapshot captures (`SR_FBSNAP` / visual evidence capture) capture the pristine guest framebuffer before the presentation blit, keeping automated tests and snapshots free of HUD artifacts.
+
+### Developer mode: profile HUD, VRAM viewer and Profile page
+
+Developer mode in the player's settings reaches the game as `SR_DEVELOPER_MODE=1`; the launcher
+always exports it, as `0` when the setting is off, so an inherited value never turns it on. A run started by hand
+is a developer run when `SR_DEVELOPER_MODE` is set and not `0`. Without it none of the following exists, and the
+player and game behave as they do for everyone ([#314](https://github.com/Jstar269/nakagawa-recomp/issues/314)).
+
+- **Profile HUD.** `F3` steps off, the HUD above, then the profile HUD, then off. The profile HUD shows the
+  `nakagawa-perf-v1` counters for the last closed one-second interval, with the definitions of the `PERF` and
+  `PERF_ATTRIB` lines: frame rate, the cpu, GE wait, present and idle split of wall time, AOT and interpreter
+  residency and transitions, scheduler residency, GE CPU time and GPU draws, Vulkan submit, wait, pipeline and
+  readback time, audio underruns, the hottest AOT-to-interpreter PC of the run, and one bar per second. It reads
+  the same counters as `SR_PERF` (`src/rt/perf.h`); it adds none. A window smaller than 560 x 232 pixels shows the
+  HUD instead.
+- **VRAM viewer.** The pause menu's `VRAM viewer` shows the displayed framebuffer, the GE's draw framebuffer and
+  depth buffer, or the texture the last draw bound, as the GE state names them while the game is paused. Left and
+  right on `Source`, `Address`, `Stride` and `Format` (5650, 5551, 4444, 8888, DEPTH16) move the window; it stays
+  inside the 2 MiB at `0x04000000`. The viewer only reads: colour formats expand as the texture decoder expands
+  them, DEPTH16 is shown as `SR_VRAMDUMP`'s decoder shows it, and the bound texture goes through the texture
+  decoder with the GE state untouched. Like any CPU read, a surface the GPU rasterizer still owns is first brought
+  back to guest memory. Alpha is shown opaque. The texture is refused while a GE capture runs.
+- **Profile page.** The pause menu's `Profile` shows the profile HUD's rows, both directions' hottest transition PC
+  and up to 60 bars. Opening it turns the counters on if nothing had; they then collect while the game runs.
 
 ## Quick recipes
 

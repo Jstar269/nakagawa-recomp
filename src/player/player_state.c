@@ -2438,6 +2438,58 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
             app->last_error.details);
 }
 
+void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason) {
+    char message[512];
+    PlayerView back;
+    if (!app) return;
+    back = app->active_view == VIEW_ERROR ? VIEW_LIBRARY : app->active_view;
+#if defined(_WIN32) || defined(_WIN64)
+    const char *how = "Windows could not open it.";
+#else
+    /* SDL opens folders through xdg-open (xdg-utils), which a minimal
+       install or a WSL distribution can lack. */
+    const char *how = "Nakagawa asks xdg-open (from xdg-utils) to show folders, and that "
+                      "did not work here.";
+#endif
+    (void)snprintf(message, sizeof(message),
+                   "Nakagawa couldn't show this folder in a file manager. %s Open it "
+                   "yourself; its path is in the details.", how);
+    player_app_set_error(app, "FOLDER_OPEN_FAILED", "Couldn't Open the Folder", message,
+                         "Back", back);
+    (void)snprintf(app->last_error.details, sizeof(app->last_error.details), "%s%s%s%s",
+                   path ? path : "", reason && reason[0] ? " (" : "",
+                   reason && reason[0] ? reason : "", reason && reason[0] ? ")" : "");
+}
+
+void player_launcher_unavailable_message(const char *reason, bool built_without_launcher,
+                                         char *out, size_t out_size) {
+    const char *fix;
+    if (!out || out_size == 0u) return;
+    if (!reason || !reason[0]) reason = "it could not initialize";
+    if (built_without_launcher) {
+        /* Reinstalling cannot help: the support is missing from the binary. */
+        fix = "This build of the player was compiled without the SDL_Renderer and "
+              "SDL3_ttf support its launcher needs. Install the SDL3_ttf development "
+              "files (sdl3-ttf for pkg-config on Linux, mingw-w64-ucrt-x86_64-SDL3_ttf "
+              "in MSYS2 UCRT64 on Windows) and build the player again.";
+    } else {
+#if defined(_WIN32) || defined(_WIN64)
+        fix = "Some of its files are missing. Extract the ZIP again, keeping "
+              "every folder, and start nakagawa_player.exe from the extracted "
+              "folder.";
+#else
+        fix = "Some of the files it needs are missing: the SDL3_ttf library, or the "
+              "assets folder installed beside the player. Install SDL3_ttf, then "
+              "install the player again with tools/stage_install.py "
+              "(docs/LINUX_DEVELOPMENT.md).";
+#endif
+    }
+    /* The launcher's own errors are sentences; add the full stop only when missing. */
+    size_t reason_length = strlen(reason);
+    (void)snprintf(out, out_size, "Nakagawa Recomp can't open its launcher: %s%s\n\n%s",
+                   reason, reason[reason_length - 1u] == '.' ? "" : ".", fix);
+}
+
 const char *player_disc_refusal_title(const char *boundary_code) {
     if (boundary_code && strcmp(boundary_code, "DISC_IMAGE_COMPRESSED") == 0) {
         return "Compressed Disc Image";
@@ -3358,6 +3410,7 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
     config->experimental_60hz = settings->experimental_60hz;
+    config->developer_mode = settings->developer_mode;
 }
 
 /* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is
@@ -3690,13 +3743,14 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
     } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before building the package or installing tools.",
+                             PLAYER_DATA_DIR_UNAVAILABLE_TEXT " before building the package or installing tools.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
 
     /* Toolchain preflight: fail here with the missing tool named instead of
-     * deep inside the build when gcc or mingw32-make is not on PATH. */
+     * deep inside the build when gcc or make (mingw32-make on Windows) is not
+     * on PATH. */
     char gcc_path[NK_MAX_PATH];
     char make_path[NK_MAX_PATH];
     char python_path[NK_MAX_PATH];
@@ -3727,16 +3781,23 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
                                                           python_path, sizeof(python_path));
         have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
                                                      gcc_path, sizeof(gcc_path));
-        have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+        have_make = package_builder_find_tool_in_root(package_builder_make_tool_name(),
+                                                      user_data_root,
                                                       make_path, sizeof(make_path));
     }
     bool missing_toolchain = !have_gcc || !have_make;
     if (!have_python || missing_toolchain) {
 #if !defined(_WIN32) && !defined(_WIN64)
-        player_app_set_error(app, "PREREQUISITE_PLATFORM_UNSUPPORTED",
-                             "Build Tools Not Available on This Platform",
-                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works.",
-                             "Return to Library", VIEW_LIBRARY);
+        /* No download exists off Windows: the build runs the system's python,
+           gcc and make, so the card names the first one missing and the
+           package that provides it. */
+        char missing_tool[32];
+        char missing_message[1024];
+        (void)package_builder_toolchain_missing(have_python, have_gcc, have_make,
+                                                missing_tool, sizeof(missing_tool),
+                                                missing_message, sizeof(missing_message));
+        player_app_set_error(app, "BUILD_TOOLCHAIN_MISSING", "Build Tools Not Found",
+                             missing_message, "Return to Library", VIEW_LIBRARY);
         return false;
 #else
         PackagePrerequisiteList list;
@@ -3952,7 +4013,7 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     PackagePrerequisiteList list;
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before inspecting installed tools.",
+                             PLAYER_DATA_DIR_UNAVAILABLE_TEXT " before inspecting installed tools.",
                              "Return to Settings", VIEW_SETTINGS);
         return false;
     }
@@ -4037,7 +4098,7 @@ void player_app_remove_prerequisites(PlayerApp *app) {
     char message[512];
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
         snprintf(code, sizeof(code), "DATA_DIR_UNAVAILABLE");
-        snprintf(message, sizeof(message), "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA. No files were removed.");
+        snprintf(message, sizeof(message), PLAYER_DATA_DIR_UNAVAILABLE_TEXT ". No files were removed.");
     } else if (package_builder_remove_downloaded_tools(data_root, code, sizeof(code),
                                                        message, sizeof(message))) {
         for (size_t i = 0; i < app->prerequisites.items.count; i++)
