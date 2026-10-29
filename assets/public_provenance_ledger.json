@@ -5992,7 +5992,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "99400cbab9a5a4cc5ba68c417950d9b1e5eb926d6762f27ec495be85bdf934a8"
+      "sha256": "c35d7fa2c4818afc25dd2fb17eb196c354387065a1f7600d3b1e166a8487d297"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -6005,7 +6005,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "602b2a4b47715f8684d85a0903abd06776a23692a312e910d3df0950af365159"
+      "sha256": "78499fdda1d41ee5d23e128766878e3f44619d11b1163419d64cef4423bd31e0"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",

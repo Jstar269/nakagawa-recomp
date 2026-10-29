@@ -214,6 +214,11 @@ typedef struct {
     int guest_dirty;                        /* Vulkan depth is newer than guest VRAM */
 } DepthEnt;
 
+/* CPU writes into a resident target are held as up to this many byte spans and applied
+ * together when the GE next uses the target; a write that would need one more span first
+ * applies the held ones. */
+#define TARGET_CPU_SPANS 32
+
 /* persistent GE render target */
 typedef struct {
     int used;
@@ -227,6 +232,10 @@ typedef struct {
     uint64_t lru;
     uint64_t render_gen;                   /* bumped per submit that rendered into this */
     uint64_t clean_gen;                    /* render_gen when guest VRAM last matched */
+    /* CPU writes to this target's VRAM not yet in the image: merged, disjoint, sorted
+     * [lo, hi) VRAM-offset byte spans (target_note_cpu_write, target_sync_cpu_writes). */
+    uint32_t cpu_lo[TARGET_CPU_SPANS], cpu_hi[TARGET_CPU_SPANS];
+    int cpu_n;
 } Target;
 
 /* Presentation readbacks use their own command buffer, fence, and persistently mapped
@@ -1533,7 +1542,11 @@ static void stats_tick(void) { stats_emit(0); }
 /* ---- targets ----------------------------------------------------------------------------- */
 
 /* Write the target's GPU contents back to guest VRAM (eviction, CLUT-from-VRAM). */
+static int target_sync_cpu_writes(Target *t);
+
 static int target_readback(Target *t) {
+    if (!t->gpu_valid) return 1;
+    if (!target_sync_cpu_writes(t)) return 0;
     if (!t->gpu_valid) return 1;
     /* The pending batch holds the pixels we are about to materialize. Treat a failed
      * submit as a hard readback failure instead of blessing the previous generation. */
@@ -1696,6 +1709,7 @@ static int target_upload(Target *t) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!upload_finish(&upload, SR_PERF_GE_TARGET_UPLOAD)) return 0;
     t->gpu_valid = 1;
+    t->cpu_n = 0;                          /* the whole image now holds guest VRAM */
     t->render_gen++;                       /* image content changed (snapshot reuse check) */
     t->clean_gen = t->render_gen;          /* VRAM is the source: in sync by definition */
     s_cnt_upload++;
@@ -1874,6 +1888,56 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
     return 1;
 }
 
+/* Apply the CPU writes held for `t` to its image, in guest order relative to the GE: no GE
+ * operation has used the target since they were held, so the image still holds what it held
+ * when each write happened, and guest VRAM holds the bytes the writes left. Batches already
+ * queued for the current target were drawn before the writes, so they go first. */
+static int target_sync_cpu_writes(Target *t) {
+    if (!t || !t->cpu_n) return 1;
+    if (t == s_cur && s_nbatch && !submit_pending()) {
+        fprintf(stderr, "gegpu: failed to submit target before CPU VRAM patch\n");
+        t->gpu_valid = 0;
+        t->cpu_n = 0;
+        return 0;
+    }
+    const int n = t->cpu_n;
+    t->cpu_n = 0;
+    s_replay_stats.cpu_write_syncs++;
+    for (int i = 0; i < n; i++) {
+        if (!t->gpu_valid) break;
+        if (!target_patch_vram_dirty(t, t->cpu_lo[i], t->cpu_hi[i] - t->cpu_lo[i])) {
+            fprintf(stderr, "gegpu: failed to preserve target across CPU VRAM patch\n");
+            t->gpu_valid = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Hold one CPU write [lo, hi) for `t` (VRAM offsets), merging it with every span it overlaps
+ * or touches. A write needing a span beyond TARGET_CPU_SPANS applies the held ones first. */
+static void target_note_cpu_write(Target *t, uint32_t lo, uint32_t hi) {
+    s_replay_stats.cpu_write_notes++;
+    int i = 0;
+    while (i < t->cpu_n && t->cpu_hi[i] < lo) i++;
+    int j = i;
+    while (j < t->cpu_n && t->cpu_lo[j] <= hi) {
+        if (t->cpu_lo[j] < lo) lo = t->cpu_lo[j];
+        if (t->cpu_hi[j] > hi) hi = t->cpu_hi[j];
+        j++;
+    }
+    if (j == i && t->cpu_n == TARGET_CPU_SPANS) {
+        if (!target_sync_cpu_writes(t) || !t->gpu_valid) return;
+        i = j = 0;
+    }
+    const int keep = t->cpu_n - j;
+    memmove(&t->cpu_lo[i + 1], &t->cpu_lo[j], (size_t)keep * sizeof(t->cpu_lo[0]));
+    memmove(&t->cpu_hi[i + 1], &t->cpu_hi[j], (size_t)keep * sizeof(t->cpu_hi[0]));
+    t->cpu_lo[i] = lo;
+    t->cpu_hi[i] = hi;
+    t->cpu_n = i + 1 + keep;
+}
+
 static void target_destroy(Target *t) {
     if (!t->used) return;
     (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
@@ -1955,6 +2019,7 @@ static Target *target_color_acquire(uint32_t fba, uint32_t stride, uint32_t fmt,
     if (seed_from_vram && !t->gpu_valid) {
         if (!target_upload(t)) return NULL;
     }
+    if (!target_sync_cpu_writes(t)) return NULL;
     t->lru = s_lru++;
     return t;
 }
@@ -2159,6 +2224,7 @@ static int begin_target(void) {
     uint32_t stride = s_ge->fbw ? s_ge->fbw : 512;
     if (s_cur && s_cur->used && s_cur->fba == fba &&
         s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid) {
+        if (!target_sync_cpu_writes(s_cur)) return 0;
         if (!ge_zbuf_prepare_current()) return 0;
         s_zbuf = ge_zbuf_ptr();
         if (!s_zbuf || (s_cur->dep && s_cur->dep->cpu_dirty &&
@@ -2961,7 +3027,8 @@ static void build_state(int persp, int sprite, Batch *b) {
              * SR_GPU_NORTT=1 forces the readback path for all draws (debug bisect). A target
              * image has no mip levels, so a draw with mip levels on (#1373) reads the target
              * back and samples its chain from the texture cache. */
-            if (!nortt && !ge_tex_mip_active(g) && g->tex_fmt == src->fmt && !g->tex_swizzle &&
+            (void)target_sync_cpu_writes(src);   /* a failure leaves it invalid: decoded from VRAM */
+            if (src->gpu_valid && !nortt && !ge_tex_mip_active(g) && g->tex_fmt == src->fmt && !g->tex_swizzle &&
                 (g->tex_bufw == src->stride || g->tex_bufw == 0) && (toff % bpp_s) == 0) {
                 uint32_t pix = toff / bpp_s;
                 if (src == s_cur) {
@@ -3414,13 +3481,13 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
         uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
         uint32_t flen = t->stride * FB_H * bpp_t;
         if (a0 < t->fba + flen && t->fba < a0 + bytes) {
-            if (t == s_cur && s_nbatch && !submit_pending()) {
-                fprintf(stderr, "gegpu: failed to submit target before CPU VRAM patch\n");
-                t->gpu_valid = 0;
-            } else if (!target_patch_vram_dirty(t, a0, bytes)) {
-                fprintf(stderr, "gegpu: failed to preserve target across CPU VRAM patch\n");
-                t->gpu_valid = 0;
-            }
+            /* Held until the GE next uses the target (target_sync_cpu_writes). A readback
+             * already in flight holds the image from before this write: it must not copy
+             * over the bytes the CPU has just written. */
+            readback_discard_target(t);
+            uint32_t lo = a0 > t->fba ? a0 : t->fba;
+            uint32_t hi = a0 + bytes < t->fba + flen ? a0 + bytes : t->fba + flen;
+            target_note_cpu_write(t, lo, hi);
             s_cnt_dirty++;
         }
     }
@@ -4068,8 +4135,8 @@ static int coherence_run_case(const CoherenceCase *tc) {
     if (tc->dirty_alias) dirty_addr += 0x40000000u;
     sr_gpu_vram_dirty(dirty_addr, tc->dirty_bytes);
 
-    if (tc->pending_batch && s_nbatch) {
-        fprintf(stderr, "gpu coherence selftest [%s]: dirty hook left batch pending\n", tc->name);
+    if (!t->cpu_n) {
+        fprintf(stderr, "gpu coherence selftest [%s]: dirty hook did not hold the write\n", tc->name);
         free(expected); free(payload); return 0;
     }
     if (stale) {
@@ -4161,6 +4228,69 @@ static int coherence_run_clean_case(const char *name, uint32_t fmt, uint32_t str
     return 1;
 }
 
+/* Many small CPU writes into a resident target between two GE uses are held and applied
+ * together (target_note_cpu_write, target_sync_cpu_writes), not one image patch each. The GPU
+ * holds G1 while guest VRAM holds G0, so a byte the image takes from the wrong side shows.
+ * 1024 adjacent 4-byte stores fill two rows and merge into one span; 48 unaligned 2-byte
+ * stores in other rows split pixels and outnumber the spans, so one group is applied early.
+ * The readback must hold the written bytes, G1 everywhere else (the GPU side of every split
+ * pixel included), with far fewer patches than writes. */
+static int coherence_run_cpu_write_coalesce(void) {
+    const char *name = "cpu-write-coalesce";
+    const uint32_t fba = 0x00150000u, base = 0x04000000u | fba;
+    const uint32_t fmt = 3u, stride = 512u, bpp = 4u, pixels = stride * FB_H;
+    const uint32_t target_bytes = pixels * bpp;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    uint8_t *expected = (uint8_t *)malloc(target_bytes);
+    if (!expected) return 0;
+    coherence_fill_raw(guest, pixels, bpp, coherence_g1(fmt));
+    Target *t = target_color_acquire(fba, stride, fmt, 1);
+    if (!t || !t->gpu_valid) { free(expected); return 0; }
+    memcpy(expected, guest, target_bytes);              /* the image: G1 */
+    coherence_fill_raw(guest, pixels, bpp, coherence_g0(fmt));
+    t->clean_gen = 0;                                   /* the image is newer than VRAM */
+
+    const unsigned long long notes0 = s_replay_stats.cpu_write_notes;
+    const unsigned long long syncs0 = s_replay_stats.cpu_write_syncs;
+    const unsigned uploads0 = s_cnt_upload;
+    for (uint32_t i = 0; i < 1024u; i++) {             /* rows 40 and 41, every pixel */
+        const uint32_t off = (40u * stride) * bpp + i * 4u;
+        for (uint32_t k = 0; k < 4u; k++) guest[off + k] = expected[off + k] = (uint8_t)(0x31u + i + k);
+        sr_gpu_vram_dirty(base + off, 4u);
+    }
+    for (uint32_t i = 0; i < 48u; i++) {               /* one 2-byte store per row, mid-pixel */
+        const uint32_t off = ((100u + i) * stride + 7u * i) * bpp + 1u;
+        guest[off] = expected[off] = (uint8_t)(0xa0u + i);
+        guest[off + 1u] = expected[off + 1u] = (uint8_t)(0x50u + i);
+        sr_gpu_vram_dirty(base + off, 2u);
+    }
+    const unsigned long long notes = s_replay_stats.cpu_write_notes - notes0;
+    if (!target_readback(t)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: readback failed\n", name);
+        free(expected); return 0;
+    }
+    const unsigned long long syncs = s_replay_stats.cpu_write_syncs - syncs0;
+    const unsigned uploads = s_cnt_upload - uploads0;
+    size_t mismatch = 0;
+    while (mismatch < target_bytes && guest[mismatch] == expected[mismatch]) mismatch++;
+    if (mismatch != target_bytes) {
+        fprintf(stderr, "gpu coherence selftest [%s]: byte %zu expected=%02x actual=%02x\n",
+                name, mismatch, expected[mismatch], guest[mismatch]);
+        free(expected); return 0;
+    }
+    if (notes != 1072u || syncs != 2u || uploads > 1u + 48u) {
+        fprintf(stderr, "gpu coherence selftest [%s]: notes=%llu syncs=%llu uploads=%u\n",
+                name, notes, syncs, uploads);
+        free(expected); return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s writes=%llu groups=%llu patches=%u\n",
+           name, notes, syncs, uploads);
+    coherence_reset_targets();
+    free(expected);
+    return 1;
+}
+
 static int coherence_run_full_cover_case(void) {
     const char *name = "full-cover-stale";
     const uint32_t fba = 0x00130000u;
@@ -4187,7 +4317,7 @@ static int coherence_run_full_cover_case(void) {
     }
     sr_gpu_vram_dirty(base, target_bytes);
 
-    if (t->clean_gen != t->render_gen) {
+    if (!target_sync_cpu_writes(t) || t->clean_gen != t->render_gen) {
         fprintf(stderr, "gpu coherence selftest [%s]: full cover write failed to advance clean_gen\n", name);
         free(expected); return 0;
     }
@@ -6657,6 +6787,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clean_case("clean-aligned", 3, 512, (50u * 512u + 20u) * 4u, 16)) ok = 0;
     if (!coherence_run_clean_case("clean-unaligned", 3, 512, (51u * 512u + 21u) * 4u + 1u, 5)) ok = 0;
     if (!coherence_run_full_cover_case()) ok = 0;
+    if (!coherence_run_cpu_write_coalesce()) ok = 0;
     if (!coherence_run_overlap_case()) ok = 0;
     if (!coherence_run_tflt_descriptor_capacity()) ok = 0;
     if (!coherence_run_sprite_semantics()) ok = 0;

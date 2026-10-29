@@ -186,6 +186,10 @@ typedef struct GeGpuReplayStats {
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
     unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
+    /* CPU writes into resident targets: each one noted, and the groups applied to an image
+     * when the GE next used the target (one or more patch uploads per group). */
+    unsigned long long cpu_write_notes;
+    unsigned long long cpu_write_syncs;
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;
