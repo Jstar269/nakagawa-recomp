@@ -498,11 +498,13 @@ MUTANTS: tuple[Mutant, ...] = (
         target="split-generator",
     ),
     Mutant(
+        # Forward crossings only: xing_dst's backward crossing would then loop for
+        # good, which locates nothing. xing_taken's never-taken `bne` still diverges.
         "split-crossing-ignores-condition",
-        "SPLIT GENERATOR: a branch into another entry transfers when not taken",
+        "SPLIT GENERATOR: a forward branch into another entry transfers when not taken",
         [(
             '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
-            '                out.append(f"      {{ {tail} }} }}")\n',
+            '                out.append(f"      if ({\'_c\' if target <= addr else \'1\'}) {{ {tail} }} }}")\n',
             1,
         )],
         target="split-generator",

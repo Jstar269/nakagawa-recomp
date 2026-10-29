@@ -2176,7 +2176,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f280f732d72a97c2bdc22a275adae28f068913f75f0d99e04f78f053aebf19f2"
+      "sha256": "361a78d528c4776b3bcc9ed5fab58e1867931d76a6bc642b503055ac77d1a72f"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
