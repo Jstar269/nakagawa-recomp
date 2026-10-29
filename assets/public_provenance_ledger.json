@@ -12427,7 +12427,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef04c04b693e11a92d7723cb3ad2a52502465eed67ce70bde5ab5f99395168ad"
+      "sha256": "41d3bdbeb18c42d415082826e9ebe9c4dc97bf2ad8009d6c18baf64ea0e814b9"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
