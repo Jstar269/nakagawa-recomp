@@ -1094,6 +1094,9 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.retry_label = player_error_retry_label(error);
         model.copy_available = true;
         model.copied = error->details_copied;
+        model.report_available = player_error_offers_report(error) &&
+            player_app_find_game_by_disc_id(app, error->subject_disc_id) >= 0;
+        model.known_issue = player_error_known_issue(error);
         /* Plain errors lead with the sentence and show the technical boundary
            as details. */
         model.message = launch_readiness ? error->message
@@ -2051,7 +2054,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_STOP);
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
-                       action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
+                       action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER ||
+                       action.kind == PLAYER_UI_ACTION_REPORT_PROBLEM) {
                 if (out_action != NULL) *out_action = action;
             }
         }

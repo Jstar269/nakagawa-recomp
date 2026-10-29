@@ -164,7 +164,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
-               FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
+               FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_ERROR_CRASH, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
@@ -634,17 +634,22 @@ static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
-    if (which == FLOW_ERROR_STOP) {
-        /* #1282: a game that stopped early, with Restart game and Copy details. */
+    if (which == FLOW_ERROR_STOP || which == FLOW_ERROR_CRASH) {
+        /* #1282: a game that stopped early, with Restart game and Copy details,
+           and Report this game: a known cause leads with its issue (the stop),
+           an unknown one with the report (the crash). */
         PlayerUiErrorModel error;
         memset(&error, 0, sizeof(error));
-        error.badge = "Game stopped";
-        error.title = "Game Stopped Early";
+        error.badge = which == FLOW_ERROR_STOP ? "Game stopped" : "Game closed";
+        error.title = which == FLOW_ERROR_STOP ? "Game Stopped Early"
+                                               : "Game Closed Unexpectedly";
         error.message = "The game needed ad hoc wireless play that this version can't run yet.";
         error.details = "Stopped at a synthetic boundary (not supported yet).";
         error.recovery_label = "Return to Library";
         error.retry_label = "Restart game";
         error.copy_available = true;
+        error.report_available = true;
+        error.known_issue = which == FLOW_ERROR_STOP ? 308u : 0u;
         error.logical_width = g_flow_width;
         error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
@@ -1616,6 +1621,39 @@ static void test_plain_cards(void) {
           "the stopped game's card never offers to continue");
     CHECK(strstr(dump, "Nothing is sent anywhere") != NULL,
           "the card says the report stays on this computer");
+    /* Report this game: a known cause says so and links its issue, and the
+       report steps back to a small button; an unknown one leads with it. */
+    CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
+              strstr(dump, "\"SEE ISSUE #308\"") != NULL &&
+              strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
+              strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
+          "a known stop names its issue next to Report this game and the existing reports");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_ISSUE, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE,
+          "See issue asks for the known issue's page");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_REPORT,
+          "Report this game asks for the report link");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORTS, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_SEE_REPORTS,
+          "See existing reports asks for the disc's reports");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_ISSUE, FLOW_ERROR_CRASH).kind ==
+              PLAYER_UI_ACTION_NONE &&
+              activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR_CRASH).kind ==
+              PLAYER_UI_ACTION_ERROR_REPORT,
+          "a crash with no known cause offers the report and no issue");
+    CHECK(dump_flow_case(FLOW_ERROR_CRASH, dump, sizeof(dump)) &&
+              strstr(dump, "known issue") == NULL &&
+              strstr(dump, "\"REPORT THIS GAME\"") != NULL,
+          "a crash card does not call itself a known issue");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR).kind ==
+              PLAYER_UI_ACTION_NONE &&
+              activate_flow_button(PLAYER_UI_ID_ERROR_REPORTS, FLOW_ERROR).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "a card that is not about a game stopping offers no report");
+    CHECK(dump_flow_case(FLOW_ERROR, dump, sizeof(dump)) &&
+              strstr(dump, "REPORT THIS GAME") == NULL,
+          "a build error card draws no Report this game");
     CHECK(dump_flow_case(FLOW_WIZ_BLOCKED, dump, sizeof(dump)) &&
               strstr(dump, "ADD TO LIBRARY") == NULL &&
               strstr(dump, "EBOOT.BIN is encrypted") != NULL &&
@@ -2370,6 +2408,9 @@ static void test_screen_actions(void) {
     action = activate_title_button(PLAYER_UI_ID_TITLE_BACK, &detail);
     CHECK(action.kind == PLAYER_UI_ACTION_BACK,
           "the back button returns to the Library");
+    action = activate_title_button(PLAYER_UI_ID_TITLE_REPORT, &detail);
+    CHECK(action.kind == PLAYER_UI_ACTION_REPORT_PROBLEM && action.title_index == 0u,
+          "Report a problem asks for that title's report link");
     library.page_size = 8u;
     library.columns = 4u;
     library.logical_width = 1280.0f;

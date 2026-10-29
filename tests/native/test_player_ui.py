@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from typing import Sequence
+from urllib.parse import parse_qs, urlsplit
 import zlib
 
 
@@ -3692,6 +3693,64 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "error", "Copy details keeps the card open")
         self.assertEqual(frames[-1]["error_copied"], "1")
+
+    def test_report_this_game_opens_only_links_the_user_clicks(self) -> None:
+        """Report this game, See existing reports and a known cause's issue.
+
+        Each is a link the user's browser opens on a click; the regression build
+        prints it instead of opening a browser, and the player makes no request.
+        The link carries the disc ID and the named boundary, and no path or user
+        name. Failing-before: the stop card had no second row of actions, so the
+        presses below opened nothing."""
+        user = "Synthetic Example"
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=50", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN",
+             "WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_SEMANTIC_BOUNDARY", ui_mode="next",
+            env_extra={"USERNAME": user, "USER": user},
+        )
+        stdout = str(run["stdout"])
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in stdout:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        urls = re.findall(r"\[PLAYER_UI_TEST\] open_url=(\S+)", stdout)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        disc = frames[0]["selected_disc"]
+        repo = "https://github.com/Jstar269/nakagawa-recomp"
+        # A known cause (an unsupported import, #308) leads with its issue.
+        self.assertEqual(len(urls), 3, stdout)
+        self.assertEqual(urls[0], f"{repo}/issues/308")
+        report = urlsplit(urls[1])
+        self.assertEqual(f"{report.scheme}://{report.netloc}{report.path}",
+                         f"{repo}/discussions/new")
+        query = parse_qs(report.query)
+        self.assertEqual(query["category"], ["compatibility-reports"])
+        self.assertTrue(query["title"][0].endswith(
+            f"({disc}): stopped at unsupported-import-scenetadhocinit"), query["title"])
+        body = query["body"][0]
+        for line in (f"- Disc ID: {disc}\n", "- Nakagawa: v",
+                     "- Problem: stopped at unsupported-import-scenetadhocinit\n",
+                     "### What I did\n", "### What I saw\n"):
+            self.assertIn(line, body)
+        self.assertLessEqual(len(urls[1]), 2000)
+        self.assertEqual(urls[2], f"{repo}/discussions/categories/compatibility-reports"
+                                  f"?discussions_q={disc}")
+        for url in urls:
+            for leak in ("Synthetic", "%5C", ".player-ui-test-", "localappdata", "profile",
+                         ROOT.name):
+                self.assertNotIn(leak, url)
+        self.assertEqual(frames[-1]["view"], "error", "the links keep the card open")
+
+        # A crash with no known cause: Report this game is the first link.
+        crash = self.run_player(
+            "library", ("WAIT_MS=50", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+        )
+        urls = re.findall(r"\[PLAYER_UI_TEST\] open_url=(\S+)", str(crash["stdout"]))
+        self.assertEqual(len(urls), 1, crash["stdout"])
+        title = parse_qs(urlsplit(urls[0]).query)["title"][0]
+        self.assertTrue(title.endswith(": RUNTIME_ERROR_EXIT, exit code 3"), title)
 
     def test_restart_game_relaunches_the_stopped_game(self) -> None:
         """#1282: Restart game runs the same launch PLAY does for that game.

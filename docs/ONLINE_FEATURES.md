@@ -67,6 +67,27 @@ Hosts, the exact request and the failure cards are in [`SETUP.md`](SETUP.md#netw
 
 ## Reports
 
+Built for v0.0.2: browser links, with no network call from the player.
+
+- **Report this game** is on the card of a game that stopped early, closed unexpectedly or did not start; each
+  game's title page has a smaller **Report a problem**. Either opens the user's browser at a new discussion in
+  the [Compatibility reports](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/compatibility-reports)
+  category, with the title ("game title (disc ID): boundary or crash code") and the body filled in: the disc ID
+  and version, the Nakagawa version and commit, the system, the named boundary or crash code, and empty "What I
+  did" and "What I saw" sections. The link carries no path, user name, log or setting, is percent-encoded and
+  stays under 2000 characters (Windows' shell takes links up to 2083). Nothing is posted until the user posts it
+  on GitHub.
+- **See existing reports** opens the same category searched for the disc ID.
+- **Known causes.** When the named boundary is in the player's table of known causes (`k_known_causes` in
+  `src/player/player_state.c`), the card says "This is a known issue", links that issue, and shows Report as a
+  smaller button. Only open issues are listed.
+- **Copy details** puts a longer report on the clipboard: the boundary, the last boot events, the renderer and
+  the package check. The profile folder is shown as `~` and the user name as `<user>`.
+- If a `.github/DISCUSSION_TEMPLATE/compatibility-reports.yml` form is added later, its fields are filled by
+  their ids instead of `body`.
+
+The plan below is the later in-player report, once online mode ships.
+
 - A **Report** action on a game's title page and on every error card composes a report inside the player: player
   version and build date, operating system, disc ID and title, the furthest stage reached and the named boundary
   (for example `unsupported-import-sceUmdReplaceProhibit`), and the user's own comment.

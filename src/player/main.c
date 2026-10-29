@@ -1065,10 +1065,68 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
     }
 }
 
+#ifndef NK_PLAYER_BUILD_COMMIT
+#define NK_PLAYER_BUILD_COMMIT ""
+#endif
+
+/* The version a report names: "v0.0.2-dev", with the source commit when the
+   build knows it. */
+static const char *player_report_version(void) {
+    static char version[64];
+    if (!version[0]) {
+        if (NK_PLAYER_BUILD_COMMIT[0]) {
+            snprintf(version, sizeof(version), "v%s (commit %s)", NK_PLAYER_VERSION,
+                     NK_PLAYER_BUILD_COMMIT);
+        } else {
+            snprintf(version, sizeof(version), "v%s", NK_PLAYER_VERSION);
+        }
+    }
+    return version;
+}
+
+/* Opens a link in the user's browser, only ever from a click. The player itself
+   makes no connection: the browser does, as for any link the user follows. The
+   regression build prints the link instead, so no browser opens in a test. */
+static void player_open_link(PlayerApp *app, const char *what, const char *url) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    (void)app;
+    (void)what;
+    printf("[PLAYER_UI_TEST] open_url=%s\n", url);
+    fflush(stdout);
+#else
+    if (!SDL_OpenURL(url)) {
+        fprintf(stderr, "[PLAYER] %s could not be opened: %s\n", what, SDL_GetError());
+        if (app) player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
+                                    SDL_GetError());
+    }
+#endif
+}
+
+/* Report this game, See existing reports and a known cause's issue: links to
+   this project's GitHub, filled in from player_state's report link builder. */
+static void player_ui_open_report_link(PlayerApp *app, PlayerUiActionKind kind,
+                                       int game_index, const ErrorState *error) {
+    char url[PLAYER_REPORT_URL_MAX + 1u];
+    bool ok = false;
+    const char *what = "The report page";
+    if (game_index < 0 || game_index >= app->game_count) return;
+    if (kind == PLAYER_UI_ACTION_ERROR_SEE_REPORTS) {
+        what = "The reports page";
+        ok = player_report_search_url(app->games[game_index].disc_id, url, sizeof(url));
+    } else if (kind == PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE) {
+        what = "The issue page";
+        ok = player_report_issue_url(player_error_known_issue(error), url, sizeof(url));
+    } else {
+        ok = player_app_report_url(app, game_index, error, player_report_version(),
+                                   url, sizeof(url));
+    }
+    if (ok) player_open_link(app, what, url);
+}
+
 /* Copy details: the error card's report goes to the clipboard and nowhere else. */
 static void player_ui_copy_error_details(PlayerApp *app) {
     char report[PLAYER_ERROR_DETAILS_MAX + 4096];
-    (void)player_app_format_error_report(app, "v" NK_PLAYER_VERSION, report, sizeof(report));
+    (void)player_app_format_error_report(app, player_report_version(), report, sizeof(report));
     bool copied = report[0] && SDL_SetClipboardText(report);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     /* The test reads the report from stdout, one line: newlines become " | ". */
@@ -1396,14 +1454,7 @@ static void player_update_open_release_page(const PlayerApp *app) {
     if (strncmp(url, NK_UPDATE_RELEASE_PAGE_PREFIX, strlen(NK_UPDATE_RELEASE_PAGE_PREFIX)) != 0) {
         return;
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    printf("[PLAYER_UI_TEST] open_url=%s\n", url);
-    fflush(stdout);
-#else
-    if (!SDL_OpenURL(url)) {
-        fprintf(stderr, "[PLAYER] The release page could not be opened: %s\n", SDL_GetError());
-    }
-#endif
+    player_open_link(NULL, "The release page", url);
 }
 
 /* The Settings controls: the same handlers the existing renderer's Settings
@@ -1715,6 +1766,23 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_ERROR_COPY) {
         player_ui_copy_error_details(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_REPORT ||
+        action->kind == PLAYER_UI_ACTION_ERROR_SEE_REPORTS ||
+        action->kind == PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE) {
+        if (player_error_offers_report(&app->last_error)) {
+            player_ui_open_report_link(
+                app, action->kind,
+                player_app_find_game_by_disc_id(app, app->last_error.subject_disc_id),
+                &app->last_error);
+        }
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_REPORT_PROBLEM) {
+        if (action->title_index < (size_t)app->game_count) {
+            player_ui_open_report_link(app, action->kind, (int)action->title_index, NULL);
+        }
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {

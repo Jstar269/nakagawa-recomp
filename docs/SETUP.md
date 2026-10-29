@@ -804,6 +804,12 @@ connections, listed below; any future online feature will be opt-in and added he
 A release folder that carries a verified `prereqs/` tree never makes the build-tool
 download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
+Links the player shows, such as a release page, **Report this game**, **See existing reports** and a
+known issue's page, are not player connections: selecting one opens it in your own browser, as
+following any link does, and nothing opens on its own. A report link holds only the disc ID and
+version, the Nakagawa version, the system and the stop reason, never a path, user name, log or
+setting ([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#reports)).
+
 The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
 `Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
 `NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The

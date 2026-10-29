@@ -435,13 +435,21 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
-            /* Remove from library (#1304), apart from the play actions: it
-               deletes what Nakagawa built, so it asks first. */
-            if (title->can_remove) {
+            /* Report a problem, a link the user's browser opens, and Remove
+               from library (#1304), apart from the play actions: it deletes
+               what Nakagawa built, so it asks first. */
+            bool can_report = title->disc_id != NULL && title->disc_id[0] != '\0';
+            if (can_report || title->can_remove) {
                 NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
                                              NK_UI_SPACE_3);
                 if (nk_ui_begin_container(ui, TITLE_ID_REMOVE_ROW, &row, NULL)) {
-                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_REMOVE, "Remove from library",
+                    if (can_report &&
+                        nk_ui_button(ui, PLAYER_UI_ID_TITLE_REPORT, "Report a problem", 0u)) {
+                        result = action(PLAYER_UI_ACTION_REPORT_PROBLEM, model->title_index,
+                                        PLAYER_UI_PRIMARY_NONE);
+                    }
+                    if (title->can_remove &&
+                        nk_ui_button(ui, PLAYER_UI_ID_TITLE_REMOVE, "Remove from library",
                                      NK_UI_BUTTON_DANGER)) {
                         result = action(PLAYER_UI_ACTION_REMOVE_TITLE, model->title_index,
                                         PLAYER_UI_PRIMARY_NONE);
@@ -490,6 +498,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
 #define FLOW_ID_TOTAL 0x60000070u
 #define FLOW_ID_ACTIONS 0x60000080u
 #define FLOW_ID_DETAILS 0x60000090u
+#define FLOW_ID_REPORT_TEXT 0x60000098u
+#define FLOW_ID_REPORT_ROW 0x60000099u
 #define FLOW_ID_PROMPTS 0x600000A0u
 #define FLOW_ID_WAVES 0x600000B0u
 
@@ -1016,7 +1026,43 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
             nk_ui_end_container(ui);
         }
     }
-    flow_end(ui, model->copy_available
+    /* Report this game: links the user's browser opens, on a row of their
+       own. A known cause leads with its issue and Report steps back. */
+    if (model->report_available) {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.align_y = NK_UI_ALIGN_CENTER;
+        if (model->known_issue != 0u) {
+            char known[64];
+            (void)snprintf(known, sizeof(known), "This is a known issue (#%u).",
+                           model->known_issue);
+            nk_ui_text_role(ui, FLOW_ID_REPORT_TEXT, nk_ui_frame_text(ui, known),
+                            NK_UI_TYPE_BODY_S, theme->paper);
+        }
+        if (nk_ui_begin_container(ui, FLOW_ID_REPORT_ROW, &row, NULL)) {
+            if (model->known_issue != 0u) {
+                char issue[32];
+                (void)snprintf(issue, sizeof(issue), "See issue #%u", model->known_issue);
+                if (nk_ui_button(ui, PLAYER_UI_ID_ERROR_ISSUE, nk_ui_frame_text(ui, issue),
+                                 0u)) {
+                    result = action(PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, 0u,
+                                    PLAYER_UI_PRIMARY_NONE);
+                }
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_ERROR_REPORT, "Report this game",
+                             model->known_issue != 0u ? NK_UI_BUTTON_SMALL : 0u)) {
+                result = action(PLAYER_UI_ACTION_ERROR_REPORT, 0u, PLAYER_UI_PRIMARY_NONE);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_ERROR_REPORTS, "See existing reports",
+                             NK_UI_BUTTON_SMALL)) {
+                result = action(PLAYER_UI_ACTION_ERROR_SEE_REPORTS, 0u, PLAYER_UI_PRIMARY_NONE);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    flow_end(ui, model->report_available
+                     ? "Copy details uses the clipboard and Report opens your browser. "
+                       "Nothing is sent anywhere."
+                 : model->copy_available
                      ? "Copy details puts a short report on the clipboard. Nothing is sent "
                        "anywhere."
                      : "",

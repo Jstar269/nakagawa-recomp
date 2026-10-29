@@ -113,7 +113,11 @@ typedef enum {
     PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
                                           op, .title_index the PSP control it rebinds */
-    PLAYER_UI_ACTION_DEVELOPER_LOG     /* a developer log control; .primary carries the op */
+    PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
+    PLAYER_UI_ACTION_ERROR_REPORT,     /* Report this game: the report link in the browser */
+    PLAYER_UI_ACTION_ERROR_SEE_REPORTS, /* the reports already filed for this disc */
+    PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, /* the issue that tracks a known cause */
+    PLAYER_UI_ACTION_REPORT_PROBLEM    /* the title page's Report a problem */
 } PlayerUiActionKind;
 
 typedef struct {
@@ -591,6 +595,12 @@ typedef struct {
     const char *retry_label;    /* "Restart game", "Try again", or NULL for none */
     bool copy_available;        /* offer Copy details */
     bool copied;                /* the report is on the clipboard: say so */
+    /* A game that stopped, closed or did not start: offer Report this game
+       and See existing reports (links the user's browser opens). */
+    bool report_available;
+    /* The open issue behind a known cause, 0 for none: the card says so,
+       links it, and Report this game becomes a secondary button. */
+    unsigned int known_issue;
     float logical_width;
     float logical_height;
 } PlayerUiErrorModel;
@@ -625,6 +635,9 @@ enum {
     PLAYER_UI_ID_ERROR_RECOVER = 0x4201u,
     PLAYER_UI_ID_ERROR_RETRY = 0x4202u,
     PLAYER_UI_ID_ERROR_COPY = 0x4203u,
+    PLAYER_UI_ID_ERROR_REPORT = 0x4204u,
+    PLAYER_UI_ID_ERROR_REPORTS = 0x4205u,
+    PLAYER_UI_ID_ERROR_ISSUE = 0x4206u,
     PLAYER_UI_ID_WIZARD_PRIMARY = 0x4301u,
     PLAYER_UI_ID_WIZARD_SECOND = 0x4302u,
     PLAYER_UI_ID_WIZARD_BACK = 0x4303u,
@@ -640,6 +653,7 @@ enum {
     PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
     PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING = 0x2005u,
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
+    PLAYER_UI_ID_TITLE_REPORT = 0x2007u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
