@@ -84,7 +84,11 @@ class TestGuestSpanRouting(unittest.TestCase):
         self.assertIn("sr_guest_span_prefix(dst, n)", dmac)
         self.assertIn("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;", dmac)
         self.assertNotIn("SCE_DMAC_EFFECTIVE_MAX", dmac)
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", dmac)
+        # Every copy goes through dmac_copy, after the span preflight above.
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", dmac)
+        self.assertIn("dmac_copy(dst, src, effective)", dmac)
+        self.assertLess(dmac.find("sr_guest_span_writable(dst, effective)"),
+                        dmac.find("dmac_copy(dst, src, effective)"))
         memcpy_start = text.find("static uint32_t h_Memcpy")
         memcpy_end = text.find("static uint32_t", memcpy_start + 1)
         memcpy = text[memcpy_start:memcpy_end]
