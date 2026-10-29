@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "cf575886a7c9305a39730c1281da0963bbe228a40f45236867281cfd98850b00"
+      "sha256": "c429ac391c1c67125ed796fcbffce112d5782da2ce7298422c9c99081570db65"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -2164,7 +2164,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9872f2e982db83a0ccae04e17d3ef00b8bffe5ceb94e36da12f8c189519d7d56"
+      "sha256": "8e96baa898863ecf206502d218804756b2fab6e44df518662818cdd6c6ba56f3"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
