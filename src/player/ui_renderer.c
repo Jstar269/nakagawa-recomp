@@ -2290,7 +2290,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 34.0f,
                                  save_line, 1.0f, hero_w - 96.0f, COLOR_TEXT_MUTED);
         }
-        draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 56.0f, game->iso_path[0] ? game->iso_path : "No source path recorded",
+        draw_text_ellipsized(ren, hero_x + 48.0f, rail_y + 56.0f,
+                             game->source_image_path[0] ? game->source_image_path
+                             : game->iso_path[0] ? game->iso_path : "No source path recorded",
                              0.9f, hero_w - 96.0f, COLOR_TEXT_DIM);
     }
     } /* end specs rail (skipped on compact heroes) */
@@ -2581,7 +2583,10 @@ static void render_inspecting(SDL_Renderer *ren, PlayerApp *app, const UiInput *
         char size_str[48];
         format_size(size_str, sizeof(size_str), app->inspecting_game.iso_size_bytes);
         float after = draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
-                                        app->inspecting_game.iso_path, 1.1f, COLOR_TEXT_MUTED, 2);
+                                        app->inspecting_game.source_image_path[0]
+                                            ? app->inspecting_game.source_image_path
+                                            : app->inspecting_game.iso_path,
+                                        1.1f, COLOR_TEXT_MUTED, 2);
         char size_line[64];
         snprintf(size_line, sizeof(size_line), "Size: %s", size_str);
         draw_text(ren, card_x + 32.0f, after + 2.0f, size_line, 1.0f, COLOR_TEXT_DIM);
@@ -4609,7 +4614,7 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
                 strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
-                strcmp(app->last_error.error_code, "DISC_IMAGE_COMPRESSED") == 0 ||
+                strncmp(app->last_error.error_code, "DISC_IMAGE_", 11) == 0 ||
                 strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }

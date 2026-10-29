@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
     assert(strcmp(m1.disc_id, m2.disc_id) != 0);
 
     /* Add both to native library and persist */
-    NkLibrary lib;
+    static NkLibrary lib;  /* too large for the stack (NK_MAX_GAMES) */
     nk_library_init(&lib);
 
     NkGameEntry g1, g2;
@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
     assert(nk_library_save(&lib, lib_file) == NK_OK);
 
     /* Reload and assert distinct records */
-    NkLibrary reloaded;
+    static NkLibrary reloaded;  /* too large for the stack (NK_MAX_GAMES) */
     assert(nk_library_load(&reloaded, lib_file) == NK_OK);
     assert(nk_library_count(&reloaded) == 2);
 

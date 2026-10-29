@@ -3350,11 +3350,13 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
         self.assertEqual(frames[2]["picker"], "1")
 
-    def test_compressed_and_non_psp_disc_images_get_their_own_cards(self) -> None:
-        """A .cso is a compressed disc image, and an ISO9660 image without a PSP_GAME folder
-        is a disc image of something else: each gets its own plain card, not the generic
-        "isn't a PSP disc image" card or an "unknown PSP title" page."""
-        # A CISO header (magic, header size, uncompressed size, block size, version).
+    def test_damaged_compressed_and_non_psp_disc_images_get_their_own_cards(self) -> None:
+        """A .cso whose block index points outside the file is a damaged compressed disc
+        image, and an ISO9660 image without a PSP_GAME folder is a disc image of something
+        else: each gets its own plain card, not the generic "isn't a PSP disc image" card or
+        an "unknown PSP title" page."""
+        # A CISO header (magic, header size, uncompressed size, block size, version)
+        # whose block index is all zeros: every block points into the header.
         cso = b"CISO" + struct.pack("<IQIBB2x", 0x18, 2048 * 32, 2048, 1, 0) + bytes(4096)
         # A valid ISO9660 image whose root holds only a text file.
         sector = 2048
@@ -3392,7 +3394,7 @@ class NativePlayerUiTests(unittest.TestCase):
         image[18 * sector:18 * sector + len(root)] = root
         image[19 * sector:19 * sector + 16] = b"synthetic text\n\n"
         cases = (
-            ("source-owned-compressed.cso", cso, "DISC_IMAGE_COMPRESSED", "Compressed_Disc_Image"),
+            ("source-owned-compressed.cso", cso, "DISC_IMAGE_INDEX_INVALID", "Damaged_Disc_Image"),
             ("source-owned-data-disc.iso", bytes(image), "DISC_NOT_PSP", "Not_a_PSP_Disc_Image"),
         )
         for name, payload, code, title in cases:
@@ -3404,6 +3406,36 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[1]["error"], code)
                 self.assertEqual(frames[1]["error_title"], title)
                 self.assertEqual(frames[2]["picker"], "1")
+
+    def test_compressed_disc_images_open_the_card_their_iso_opens(self) -> None:
+        """A .cso, .zso or .chd is expanded once, with the wizard's progress panel, and
+        then opens exactly the card its .iso opens: no refusal, the same view."""
+        from test_disc_expand import BUILDERS
+
+        with tempfile.TemporaryDirectory(prefix=".compressed-disc-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic.iso"
+            create_test_iso_with_executables(
+                iso_path, b"synthetic input executable\n", disc_id="TEST00042",
+                title="Synthetic Compressed Disc",
+            )
+            iso = iso_path.read_bytes()
+        wait = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100")
+        plain = self.run_player("library", wait, drop_bytes=("source-owned.iso", iso))
+        plain_views = [frame["view"] for frame in plain["frames"]]
+        self.assertNotIn("error", plain_views, plain["stdout"])
+        for name, build in BUILDERS.items():
+            with self.subTest(format=name):
+                run = self.run_player("library", wait,
+                                      drop_bytes=(f"source-owned.{name}", build(iso)))
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                views = [frame["view"] for frame in frames]
+                self.assertNotIn("error", views, run["stdout"])
+                self.assertIn("1", [frame["extracting"] for frame in frames if frame["view"] == "wizard"],
+                              "the expansion shows the wizard's progress panel")
+                self.assertEqual(views[-1], plain_views[-1], run["stdout"])
+                self.assertEqual(frames[-1]["error"], "NONE")
+                self.assertIn(f"[PLAYER] Disc image {name} expanded into TEST00042", run["stdout"])
 
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
@@ -4212,6 +4244,46 @@ class FirstRunRouteTests(unittest.TestCase):
             ])
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
+
+    def test_add_to_library_on_a_compressed_disc_stores_its_expansion(self) -> None:
+        """A compressed disc given as --iso is expanded once into the per-title folder;
+        ADD TO LIBRARY stores the expanded .iso for every later step and the picked file
+        for the user. Adding the same unchanged file again reuses the expansion."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_disc_expand import build_cso
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-compressed-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Compressed Disc",
+                            volume_id="TEST00001")
+            cso = scratch / "supported.cso"
+            cso.write_bytes(build_cso(iso.read_bytes()))
+            events = "--ui-test-events=WAIT_VIEW=supported,15000;KEY_RETURN;WAIT_VIEW=library,10000;QUIT"
+            completed = self.run_route(scratch, [
+                f"--iso={cso}", events, f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("[PLAYER] Expanding disc image cso", completed.stdout)
+            libraries = list(scratch.rglob("library.json"))
+            self.assertEqual(len(libraries), 1)
+            games = json.loads(libraries[0].read_text(encoding="utf-8"))["games"]
+            self.assertEqual([game["disc_id"] for game in games], ["TEST00002"])
+            expanded = Path(games[0]["iso_path"])
+            self.assertEqual(expanded.name, "TEST00002.cso.iso")
+            self.assertEqual(expanded.parent.name, "TEST00002")
+            self.assertEqual(expanded.parent.parent.name, "discs")
+            self.assertEqual(expanded.read_bytes(), iso.read_bytes())
+            self.assertEqual(Path(games[0]["source_image_path"]), cso)
+
+            again = self.run_route(scratch, [
+                f"--iso={cso}", "--ui-test-events=WAIT_VIEW=supported,15000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+            self.assertNotIn("[PLAYER] Expanding disc image", again.stdout)
+            self.assertIn("supported", [frame["view"] for frame in parse_frames(again.stdout)])
 
     def test_add_to_library_sets_up_an_archive_disc_before_saving_it(self) -> None:
         """ADD TO LIBRARY on an archive disc runs the wizard's staging worker.

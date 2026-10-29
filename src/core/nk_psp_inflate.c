@@ -599,9 +599,12 @@ static int decode_and_check(Bits *b, OutBuf *o, char *err, size_t err_len)
     return rc;
 }
 
-int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
-                   size_t *outlen, size_t expect, size_t cap, char *err,
-                   size_t err_len)
+/* raw_only forces mode 0: the caller knows the stream has no wrapper (a CSO
+ * disc-image block), so a raw stream whose first bytes happen to pass the zlib
+ * header test is never read as zlib. */
+static int nk_inflate_run(const uint8_t *src, size_t srclen, uint8_t **out,
+                          size_t *outlen, size_t expect, size_t cap, char *err,
+                          size_t err_len, int raw_only)
 {
     Bits b;
     OutBuf o;
@@ -651,7 +654,9 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
     o.cap = init_cap;
 
     /* Auto-detect the wrapper. */
-    if (srclen >= 2u && src[0] == 0x1Fu && src[1] == 0x8Bu) {
+    if (raw_only) {
+        mode = 0;
+    } else if (srclen >= 2u && src[0] == 0x1Fu && src[1] == 0x8Bu) {
         mode = 2;
     } else if (srclen >= 2u && (src[0] & 0x0Fu) == 8u &&
                (((uint32_t)src[0] << 8) | (uint32_t)src[1]) % 31u == 0u) {
@@ -849,4 +854,18 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
     *out = o.data;
     *outlen = o.len;
     return NK_INFLATE_OK;
+}
+
+int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
+                   size_t *outlen, size_t expect, size_t cap, char *err,
+                   size_t err_len)
+{
+    return nk_inflate_run(src, srclen, out, outlen, expect, cap, err, err_len, 0);
+}
+
+int nk_psp_inflate_raw(const uint8_t *src, size_t srclen, uint8_t **out,
+                       size_t *outlen, size_t expect, size_t cap, char *err,
+                       size_t err_len)
+{
+    return nk_inflate_run(src, srclen, out, outlen, expect, cap, err, err_len, 1);
 }
