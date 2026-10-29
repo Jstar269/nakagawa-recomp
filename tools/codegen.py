@@ -33,6 +33,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
+    static_coverage,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
@@ -3247,6 +3248,8 @@ class RuntimeModuleTranslation:
     # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
     # leading bytes of the file (its header and text), not when the game loads a module.
     overlay_check_len: int = 0
+    # analyze.static_coverage of the module's own link space (None when untranslatable).
+    coverage: dict | None = None
     overlay_check_fnv1a64: int = 0
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
@@ -3399,7 +3402,47 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     finally:
         ADDRESS_SPACE = previous_space
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
+    module_stubbed = {a for a, _ in module.stubbed}
+    module.coverage = static_coverage(
+        elf, ranges, known,
+        translated={a for a, _ in module.functions} - module_stubbed,
+        interpreted=module_stubbed)
     return module
+
+
+COVERAGE_TOTAL_FIELDS = (
+    "executable_words", "owned_words", "unowned_words", "translated_words",
+    "interpreter_words", "other_owned_words", "functions", "functions_translated",
+    "functions_interpreter", "jump_table_candidates", "unresolved_indirect_edges",
+)
+
+
+def write_coverage_report(path, images, module_translations):
+    """Write what this run translated, per image and in total (``<game>_recomp_coverage.json``).
+
+    The numbers come from analyze.static_coverage over the same entries and executable
+    spans code emission used; ``translated_share`` is translated words over owned words.
+    A runtime module that could not be translated at all is listed with its reason.
+    """
+    import json
+    rows = list(images)
+    for module in module_translations:
+        if module.coverage is not None:
+            rows.append({"image": module.name, "runtime_module": True, **module.coverage})
+        else:
+            rows.append({"image": module.name, "runtime_module": True,
+                         "unsupported_reason": module.unsupported_reason})
+    total = {field: sum(row.get(field, 0) for row in rows) for field in COVERAGE_TOTAL_FIELDS}
+    owned = total["owned_words"]
+    total["translated_share"] = round(total["translated_words"] / owned, 6) if owned else None
+    report = {"schema_version": 1, "total": total, "images": rows}
+    with open(path, "w", encoding="ascii", newline="\n") as output:
+        output.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    print("CODEGEN_COVERAGE " + " ".join(
+        f"{field}={total[field]}" for field in
+        ("owned_words", "unowned_words", "translated_words", "interpreter_words",
+         "functions", "functions_interpreter"))
+          + f" translated_share={total['translated_share']}")
 
 
 SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
@@ -4061,6 +4104,13 @@ def main(argv):
             sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
 
     primary_emitted = tuple(sorted(set(emitted)))
+    primary_stubbed = {a for a, _ in stubbed}
+    coverage_images = [{
+        "image": "executable",
+        **static_coverage(elf, ranges, analyzed,
+                          translated=set(primary_emitted) - primary_stubbed,
+                          interpreted=primary_stubbed | omit_aot.addrs),
+    }]
 
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
@@ -4150,6 +4200,12 @@ def main(argv):
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+        extra_stubbed = {a for a, _ in stubbed} & extra_known
+        coverage_images.append({
+            "image": os.path.basename(extra_elf_path),
+            **static_coverage(extra_elf, extra_ranges, extra_known,
+                              translated=extra_known - extra_stubbed, interpreted=extra_stubbed),
+        })
 
     # Runtime-placed modules: translated in their own link spaces, registered
     # only as descriptors, and bound by the module loader at the base the guest
@@ -4276,6 +4332,8 @@ def main(argv):
         for module in module_translations:
             for a, r in sorted(module.stubbed):
                 f.write(f"{module.name}@0x{a:08x} {r}\n")
+
+    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations)
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"

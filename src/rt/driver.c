@@ -498,6 +498,9 @@ int main(int argc, char **argv) {
     sr_profile_init();
     /* Fired-patch report (#1274) at an ordinary exit; the _Exit paths call it directly. */
     (void)atexit(sr_compat_report);
+    /* Execution share at every exit: the _Exit paths reach it through sr_perf_shutdown. */
+    sr_exec_share_arm();
+    (void)atexit(sr_exec_share_report);
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;
@@ -702,7 +705,9 @@ have_image:;
         }
         if (sr_perf_enabled) sr_perf_guest_begin();
         if (sr_perf_enabled) sr_perf_aot_begin(entry);
+        int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
         sr_call_body(fn, &s);
+        sr_exec_leave(exec_previous);
         if (sr_perf_enabled) sr_perf_aot_end();
         if (sr_perf_enabled) sr_perf_guest_end();
     }

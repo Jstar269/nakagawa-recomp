@@ -136,6 +136,7 @@ PROJECT_AUTHORED = (
     f"{GAME}_recomp.c",
     f"{GAME}_recomp_funcs.h",
     f"{GAME}_recomp_stubs.txt",
+    f"{GAME}_recomp_coverage.json",
     f"{GAME}_image.bin",
     f"{GAME}_imports.toml",
     "sr_title_config.h",
