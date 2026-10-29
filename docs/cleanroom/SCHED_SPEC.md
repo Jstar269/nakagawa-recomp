@@ -182,7 +182,12 @@ table or stack-arena capacity fails with a zero UID, never a partial
 thread [C5]. Entry-function return is thread exit (the guest has no other
 way out of its root call) [C5]. Terminate removes eligibility without
 deleting the object; delete removes the object; double-delete and
-terminate-after-delete fail closed [C3], [C5].
+terminate-after-delete fail closed [C3], [C5]. A new thread's k0 points at
+the top 0x100 bytes of its own stack, and that block is zero except the
+thread UID at +0xc0, the stack base at +0xc8 and all-ones words at +0xf8 and
++0xfc, also when the stack reuses memory an earlier thread wrote (measured:
+docs/HARDWARE_ORACLE.md PSP-THREAD-K0-001). The scheduler keeps no libc state
+of its own for a thread.
 
 ### 3.2 Priority selection and preemption
 
@@ -472,6 +477,7 @@ rationale, per the reading rule in §0.
 | `sched_change_current_thread_attr` | §3.1 | `sceKernelChangeCurrentThreadAttr`. Applies `clear_mask` and `set_mask` to the running thread's attribute word and returns the PSP status code; the bit meanings are PSP ABI facts [C6]. |
 | `sched_transfer_begin` | §3.2 | Opens the single device-transfer window for the calling thread on `obj`, the DMA HLE's active transfer. Returns 1, or 0 when a window is already open, `obj` is zero, or no thread is current. The window carries no guest time: it stays open through the next scheduling decision that selects another thread, closes at the decision after that, and closes at once when no other thread is runnable. Closing wakes every thread blocked on `obj`, as `sched_wake` does. Project decision: the PSP measured the ordering (a second thread's Try returns BUSY while the transfer is pending, and its blocking call waits), not the transfer's duration in guest time (public issue #303). |
 | `sched_transfer_pending` | §3.2 | Read-only query: returns 1 while the window opened on `obj` is open and writes its owner's UID when `owner_uid` is not NULL; otherwise returns 0. Project decision, as for `sched_transfer_begin` (public issue #303). |
+| `sched_preempt_timer_start` | §3.2 | Starts the preemption timer for a paced run; the driver calls it once after `sched_init`, and turbo runs and the selftests never start it. While a guest thread runs, the timer ends its slice when the earliest timed wait of a stronger waiting thread runs out, so that thread wins at the running thread's next yield point under the strict-priority rule. Equal and weaker waiters never end a slice. When the host thread cannot be created, the scheduler reports it once and keeps the slice count as the only boundary. Project decision: the timer stands in for the interrupt that preempts the running thread on an expired wait [C5]; the host thread writes only the slice counter (public issue #1296). |
 | `sched_rotate_thread_ready_queue` | §3.2 | `sceKernelRotateThreadReadyQueue`. Rotates the ready queue at the given priority, where zero selects the caller's priority. Rotation reorders only threads of equal priority; strict priority still decides between levels [C5]. |
 | `sched_alarm_set` | §3.4 | `sceKernelSetAlarm`. The delay is relative to the guest timeline (§3.4). Returns an alarm UID, or an error at or above 0x80000000 when no alarm slot can be allocated [C5]. The handler runs at the deadline in interrupt context with the common word in `$a0`; a nonzero return re-arms the same alarm that many microseconds later, and zero ends it [C5], [C6]. |
 | `sched_alarm_cancel` | §3.4 | `sceKernelCancelAlarm`. Returns zero when the alarm is cancelled. Returns SCHED_ERROR_UNKNOWN_ALMID for an unknown UID, for a one-shot alarm that has already run, and for an alarm that ended through its handler's return value [C5]. |
@@ -492,7 +498,6 @@ rationale, per the reading rule in §0.
 | `sched_wait_cancel_object` | §3.5 | Completes the waiters on `object` with `result`, as the object deletion and cancel paths require [C5]. |
 | `sched_wait_vblank_cb` | §3.7 | Callback-aware display wait. A nonzero `wait_start` selects WaitVblankStart semantics, which always block to the next start edge. Zero selects WaitVblank semantics, which return at once inside the interval [C6]. |
 | `sr_cpu_for_callbacks` | §3.8 | Returns the `CpuState` that callback dispatch runs on, the shared register file bound by `sched_init` (§1). Returns NULL before that binding [C1]. |
-| `g_master_reent` | §3.9 | Exported global holding the master libc reent address. A launcher-role thread sets it at its libc registration, and the title binding sets it while it is still zero; later threads copy from it when they initialise their own reent. Project decision: the launcher-role seeding follows the role capture rule of §3.9, and the title binding is title configuration (§3.9). |
 | `sr_cpustate_abi_version` | §3.10 | Exported constant equal to `SR_CPUSTATE_ABI_VERSION` in `recomp.h`. `tools/mem_debug.py` reads it by name to identify the `CpuState` layout of an attached build. The value is fixed by the header, not chosen by the scheduler [C12]. |
 | `sched_vbl_paced` | §4 | Host pacing query: returns true when vblank pacing is active, in which case the presenter's frame-pacing step returns early (`src/rt/gui.c`). This is host performance behaviour outside the PSP contract (§4). The `SR_NOVBPACE` value rule is pinned by `NovbpaceSemanticsTests`. Project decision. |
 | `sched_pause_request` | §3.4 | Latches a player pause for the next legal scheduler boundary; a request latched by a VBLANK the idle scheduler delivers is entered before the thread that edge woke resumes. The host stall freezes guest time and shifts the host-clock anchors on resume. Project decision, as summarized by public issue #1171. |

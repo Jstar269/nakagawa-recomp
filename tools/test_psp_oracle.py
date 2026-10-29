@@ -2450,7 +2450,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2464,6 +2464,14 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(routes.get("vfpu-compare"), "68")
+
+    def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("thread-k0-block"), "116")
 
     def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)

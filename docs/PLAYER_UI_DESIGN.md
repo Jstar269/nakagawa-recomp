@@ -304,8 +304,9 @@ an indeterminate bar and CANCEL. The whole card fits the 960 x 540 minimum windo
 
 Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
 button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
-volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
-saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
+volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, CHECK FOR UPDATES, then
+the controller and the saves folder as captions; CHECK FOR UPDATES opens the Updates card and asks GitHub, see
+[`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
@@ -382,8 +383,8 @@ dialog card the build and error screens use. Copying the disc's files at Verify 
 game is built and played, and the PSP fonts are imported in Settings > PSP fonts, so the step chips name only those
 four steps. The older Fonts and Ready step states remain only for state-only callers and the old renderer.
 Options ("Online and developer options", [`ONLINE_FEATURES.md`](ONLINE_FEATURES.md)) comes right after Welcome because it needs no game: two switch rows (a
-220 px button reading "Online mode: On" or "Off", accent while on, with its sentence beside it), the note that this
-version has no online features yet, then CONTINUE (the default focus, so Enter never flips a switch), SKIP and BACK. A strip of step chips sits at the top (current: accent fill; done:
+220 px button reading "Online mode: On" or "Off", accent while on, with its sentence beside it), the note that news
+and reports aren't built yet, then CONTINUE (the default focus, so Enter never flips a switch), SKIP and BACK. A strip of step chips sits at the top (current: accent fill; done:
 `ready` edge and a check); each step has one primary action first, then Back and Cancel. Every control returns
 `PLAYER_UI_ACTION_WIZARD` with an op that `main.c` runs through the handlers the existing wizard calls. The Welcome
 step says the privacy promise once. The left rail below is the target layout for a later pass:

@@ -6996,18 +6996,7 @@ static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSM
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode);
 
-/* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
- *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
- *  (2) the launcher thread (uid 0x110 / 0x111) after the worker dissolves
- *  (3) the VBLANK handler inside engine_Shutdown: it calls sceKernelExitGame(0), which on
- *      a real PSP terminates the process and never returns. We must NOT return from this
- *      syscall when invoked from interrupt context (cur_uid==0): sched_thread_sleep() is
- *      a no-op there, the call falls through back into the callback body, the body
- *      reaches ExitGame again, and the recomp arms an infinite countdown of redundant
- *      GAMELOG messages per vblank (smoke_*.err saw 9497 ExitGames in one run from a
- *      single chain ending at the same PC). Behavioural fix: interrupt-context ExitGame
- *      is a host-process _exit. Thread-context ExitGame stays a thread sleep so the
- *      worker / launcher can be observed across subsequent yields. */
+/* sceKernelExitGame terminates the guest process in thread and interrupt contexts. */
 static uint32_t h_ExitGame(CpuState *s) {
     /* sceKernelExitGame takes no argument (PSPSDK psploadexec.h declares
      * `void sceKernelExitGame(void)`; PPSSPP registers NID 0x05572a5f with the
@@ -7080,13 +7069,9 @@ static uint32_t h_ExitGame(CpuState *s) {
         fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
                 s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
         fflush(stderr);
-        /* Give the host a chance to drain. Without this, stdio buffers get truncated by
-         * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
-        sr_host_sleep_ms(50);
-        fflush(NULL);
-        _exit(code);
+        exit(code);
     }
-    sr_trace_close(); fflush(NULL); sr_host_sleep_ms(50); _exit(code);
+    exit(code);
     return code; /* unreachable, keeps the handler signature honest */
 }
 
@@ -12302,9 +12287,36 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
-UTILITY_DIALOG_HANDLERS(h_NetDialog, s_net_dialog)
-UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
-UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
+/* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
+static uint32_t h_NetDialogInit(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x38u && size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
+    return utility_dialog_init(&s_net_dialog, A0);
+}
+static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
+static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_net_dialog); }
+static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
+/* PSPAutotests utility/dialog/sizes lists the storage dialog versions. */
+static uint32_t utility_storage_init(UtilityDialog *d, uint32_t param) {
+    if (!param || !sr_guest_span_readable(param, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(param);
+    int valid = d->kind == UTILITY_GAMEDATA ? (size == 0x590u || size == 0x598u) :
+        (size == 0x50u || size == 0x54u || size == 0x64u);
+    if (!valid || !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size))
+        return 0x80110004u;
+    return utility_dialog_init(d, param);
+}
+static uint32_t h_GamedataDialogInit(CpuState *s) { return utility_storage_init(&s_gamedata_dialog, A0); }
+static uint32_t h_GamedataDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_gamedata_dialog); }
+static uint32_t h_SharingDialogInit(CpuState *s) { return utility_storage_init(&s_sharing_dialog, A0); }
+static uint32_t h_SharingDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_sharing_dialog); }
+static uint32_t h_SharingDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_sharing_dialog); }
+static uint32_t h_SharingDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_sharing_dialog); }
 
 /* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
  * box (osk_win.c) or, for automation, from a scripted answer.
@@ -12518,7 +12530,13 @@ static int osk_collect(void) {
 /* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
  * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
+    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. Check the
+     * size word first, then the entire version before retaining the guest address. */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(A0);
+    if ((size != 0x40u && size != 0x44u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {

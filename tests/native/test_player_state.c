@@ -214,6 +214,24 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+/* The whole file as a NUL-terminated string; the caller frees it. */
+static char *read_text_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    char *text;
+    long length;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length >= 0);
+    rewind(file);
+    text = (char *)malloc((size_t)length + 1u);
+    assert(text != NULL);
+    assert(fread(text, 1, (size_t)length, file) == (size_t)length);
+    text[length] = '\0';
+    fclose(file);
+    return text;
+}
+
 #define TEST_ISO_SECTOR_BYTES 2048u
 #define TEST_ISO_MAX_NODES 2048u
 #define TEST_ISO_MODULE_BYTES 128u
@@ -6410,8 +6428,7 @@ int main(int argc, char **argv) {
            default, and none of them moves network_mode off offline. */
         player_app_init(s_app2);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(s_app2->settings.online_news && s_app2->settings.online_reports);
         s_app2->settings.online_mode = true;
         s_app2->settings.online_news = false;
         s_app2->settings.developer_mode = true;
@@ -6419,8 +6436,7 @@ int main(int argc, char **argv) {
         player_app_init(s_app2);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
-        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
-               s_app2->settings.online_reports);
+        assert(!s_app2->settings.online_news && s_app2->settings.online_reports);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
         write_text_file(test_settings_path,
                         "{\"schema_version\": 2, \"network_mode\": \"online\", "
@@ -6429,6 +6445,41 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
+        /* Check for updates at start (AGENTS.md section 5): off by default and
+           after a reset, saved and read back once the user turns it on, and a
+           value that is not a boolean keeps it off. */
+        player_app_init(s_app2);
+        assert(!s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "\"check_updates_at_start\": false") != NULL);
+            free(saved);
+        }
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        s_app2->settings_path[0] = '\0';
+        player_app_toggle_update_check_at_start(s_app2);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.check_updates_at_start);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"check_updates_at_start\": \"yes\"}");
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.check_updates_at_start);
+        /* The retired online-mode "Update check" part is no longer written. */
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved && strstr(saved, "online_updates") == NULL);
+            free(saved);
+        }
 
         remove(test_settings_path);
         free(s_app);
@@ -6489,7 +6540,7 @@ int main(int argc, char **argv) {
         dev->active_view = VIEW_ONLINE_SETTINGS;
         assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
         dev->settings.online_mode = true;
-        assert(player_app_focus_count(dev) == 7);
+        assert(player_app_focus_count(dev) == 6); /* + news, reports */
 
         /* The wizard step: Welcome -> Options -> Select game, and skipping
            turns both off. Every first run passes through it: it needs no game. */

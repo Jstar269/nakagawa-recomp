@@ -76,6 +76,8 @@ int sched_liveness_owner_counts(uint32_t uid, uint64_t *decisions,
 void sched_liveness_set_starvation_limit(unsigned limit);
 #endif
 
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <stdio.h>
@@ -299,15 +301,6 @@ static WaitInvocation *s_wait_invocations;
 static SrWaitHandle s_wait_sequence;
 static void sched_wait_abandon_owner(TCB *owner);
 static void sched_wait_record_wake(TCB *owner, int terminal, uint32_t result);
-
-typedef struct {
-    uint32_t uid;
-    uint32_t k0;
-    uint32_t state_ptr;
-    int in_use;
-} HostLibcThreadRecord;
-
-static HostLibcThreadRecord s_libc_threads[MAXTHREADS];
 
 static int      s_ntcb = 0;
 static int      s_cur = -1;      /* index of running thread, -1 = scheduler */
@@ -544,6 +537,7 @@ static void vtime_refresh(void);
 static uint32_t s_pending_vblanks;
 
 static void scheduler_service_pending(void);
+static void sched_preempt_timer_arm(void);
 static void sched_alarm_reset(void);
 static void scheduler_add_time(uint64_t delta);
 static uint64_t scheduler_deadline_after(uint64_t delta);
@@ -679,13 +673,12 @@ static void stack_range_release(uint32_t base, uint32_t size) {
  * must use the white-box reset_sched() helper in sched_selftest.c, which
  * is NOT compiled into the production binary.
  *
- * What sched_init resets: TCB array, host libc thread table, scheduling
+ * What sched_init resets: TCB array, scheduling
  *   counters (s_ntcb, s_cur, s_last_pick, s_tick), s_root_seen, interrupt
  *   state, and the sr_timeslice.
  * What sched_init intentionally does NOT reset (they must persist after init
  *   or are owned by the caller):
  *   - g_root/worker/launcher_uid (populated dynamically at create time);
- *   - g_master_reent (set during launcher registration);
  *   - none of the stack ranges survive this one-shot initialization; later
  *     deletion returns ranges through the allocator below;
  *   - s_gp (global pointer seeded by the driver from the module header);
@@ -716,7 +709,6 @@ void sched_init(CpuState *cpu) {
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
 
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
@@ -2233,141 +2225,19 @@ static void coro_body(void *param) {
     }
 }
 
-uint32_t g_master_reent;
-
-/* Host-side registry of live guest threads, keyed by k0, holding (k0, state_ptr) pairs in
- * host memory instead of guest RAM. */
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
 extern void sr_hle_release_thread_resources(uint32_t thread_uid);
-
-static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
-    /* Copy master thread's reent structure to initialize the new thread's reent.
-     * This inherits the initialized allocator context. A thread holding the ROOT or
-     * LAUNCHER role keeps its own independently-initialized reent: root has the
-     * CRT-provided master reent; a launcher initializes its own from its guest entry.
-     * Both tests are role tests, not UID-number tests -- with no captured role every
-     * thread takes the ordinary inheriting path. */
-    if (!sched_uid_is_root(uid) && !sched_uid_is_launcher(uid)) {
-        if (g_master_reent != 0u && sr_inrange(g_master_reent) && sr_inrange(g_master_reent + 1024u) &&
-            (MEM_R32(g_master_reent) != 0u || MEM_R32(g_master_reent + 4u) != 0u)) {
-            for (uint32_t offset = 0; offset < 1024; offset += 4) {
-                MEM_W32(state_ptr + offset, MEM_R32(g_master_reent + offset));
-            }
-            /* +0x148 is a self-pointer field within the reent structure (points to
-             * a sub-structure at +0x14c). The copied value from the master reent
-             * still points into the master's buffer; rewrite it to this thread's
-             * equivalent offset. All other pointer fields in the 0x400-byte copy
-             * that are relative-to-reent are similarly remapped by the guest's own
-             * initializer (f_000118a0) when the thread entry runs. */
-            MEM_W32(state_ptr + 0x148u, state_ptr + 0x14cu);
-        } else {
-            fprintf(stderr, "WARNING: init_guest_reent: g_master_reent=0x%08x unmapped or "
-                    "zero -- leaving new thread uid=0x%x reent at zero\n",
-                    g_master_reent, uid);
-        }
-    }
-    /* Write the thread UID to state_ptr + 0x37c after the copy resolves.
-     * guest per-thread lookup reads this field to identify the current thread UID. */
-    MEM_W32(state_ptr + 0x37cu, uid);
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE init_guest_reent: uid=0x%x state_ptr=0x%x uid_at_37c=0x%x\n",
-                uid, state_ptr, MEM_R32(state_ptr + 0x37cu));
-    }
-}
-
-/* register_libc_thread: record (k0, state_ptr, uid) in the host-owned s_libc_threads table
- * and initialize the thread's reent structure (init_guest_reent). The runtime writes nothing into
- * the guest's own per-thread reent table: a guest thread that registers itself does so through
- * its own code.
- *
- * Returns 0 on success, -1 if the host table is full (structurally impossible in production
- * because s_libc_threads has MAXTHREADS slots and there can never be more live records than
- * live TCBs; the -1 path exists so the selftest can exercise exhaustion without aborting). */
-static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
-    int slot = -1;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use && s_libc_threads[i].k0 == k0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) {
-        for (int i = 0; i < MAXTHREADS; i++) {
-            if (!s_libc_threads[i].in_use) {
-                slot = i;
-                break;
-            }
-        }
-        if (slot < 0) {
-            fprintf(stderr, "ERROR: Host libc thread table full (MAXTHREADS=%d), could not register thread uid=0x%x\n", MAXTHREADS, uid);
-            return -1;
-        }
-        s_libc_threads[slot].uid = uid;
-        s_libc_threads[slot].k0 = k0;
-        s_libc_threads[slot].state_ptr = state_ptr;
-        s_libc_threads[slot].in_use = 1;
-    } else {
-        s_libc_threads[slot].uid = uid;
-        s_libc_threads[slot].state_ptr = state_ptr;
-    }
-
-    /* Only a thread that actually holds the LAUNCHER role seeds the master reent.
-     * This was a UID-number test, so in a build with no launcher binding an ordinary
-     * thread that happened to be allocated the historical launcher UID took over the
-     * master reent for every later thread. */
-    if (sched_uid_is_launcher(uid)) {
-        g_master_reent = state_ptr;
-        sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->launcher_thread_entry,
-                        "launcher reent ownership");
-    }
-
-    init_guest_reent(state_ptr, uid);
-
-    if (getenv("SR_THLOG")) {
-        fprintf(stderr, "DEBUG: Registered thread uid=0x%x in host libc table slot %d: k0=0x%x state_ptr=0x%x\n",
-                uid, slot, k0, state_ptr);
-    }
-    if (getenv("SR_REENT_TRACE")) {
-        uint32_t bucket = (uid == 0u) ? 0u : (uid % 32u);
-        fprintf(stderr, "REENT_TRACE host_register: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
-                uid, k0, state_ptr, bucket, slot);
-    }
-    return 0;
-}
 
 static TCB *tcb_by_uid(uint32_t uid);
 static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority, uint32_t stack_size);
 
-static void unregister_libc_thread(uint32_t k0) {
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use && s_libc_threads[i].k0 == k0) {
-            uint32_t state_ptr = s_libc_threads[i].state_ptr;
-            uint32_t uid = s_libc_threads[i].uid;
-            if (getenv("SR_REENT_TRACE")) {
-                uint32_t bucket = (uid == 0u) ? 0u : (uid % 32u);
-                fprintf(stderr, "REENT_TRACE host_unregister: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
-                        uid, k0, state_ptr, bucket, i);
-            }
-            s_libc_threads[i].uid = 0;
-            s_libc_threads[i].k0 = 0;
-            s_libc_threads[i].state_ptr = 0;
-            s_libc_threads[i].in_use = 0;
-            if (getenv("SR_THLOG")) {
-                fprintf(stderr, "DEBUG: Unregistered thread k0=0x%x from host libc table slot %d\n", k0, i);
-            }
-            return;
-        }
-    }
-}
-
 /* Thread-owned host resources have one owner and one release point.  Exit and
- * termination release the libc/reent/callback state, while DeleteThread also
+ * termination release the callback and wait state, while DeleteThread also
  * returns the guest stack range.  The flags live on the TCB so a repeated
  * lifecycle call is an observable no-op instead of a second teardown. */
 static void sched_release_thread_resources(TCB *t) {
     unsigned stranded;
     if (!t || t->resources_released) return;
-    if (t->k0_init) unregister_libc_thread(t->k0_init);
     sr_callback_unregister_owner(t->uid);
     sched_wait_abandon_owner(t);
     sr_hle_release_thread_resources(t->uid);
@@ -2398,6 +2268,12 @@ static void sched_release_thread_stack(TCB *t) {
  * with 0xFF on creation". */
 #define SCHED_THREAD_ATTR_NO_FILLSTACK 0x00100000u
 #define SCHED_STACK_FILL_BYTE          0xffu
+/* A thread's k0 block (PSP-THREAD-K0-001): the top 0x100 bytes of its stack. */
+#define SCHED_K0_BLOCK_SIZE            0x100u
+#define SCHED_K0_UID                   0xc0u
+#define SCHED_K0_STACK_BASE            0xc8u
+#define SCHED_K0_ONES_0                0xf8u
+#define SCHED_K0_ONES_1                0xfcu
 /* sceKernelGetThreadStackFreeSize starts counting this many bytes above the low end. */
 #define SCHED_STACK_FREE_SKIP          0x10u
 
@@ -2518,7 +2394,6 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
      * thread is no longer runnable.  Interleaved live stacks remain untouched;
      * the range allocator coalesces only exact adjacent free extents. */
     uint32_t sz = stack_size ? stack_size : 0x40000;
-    const uint32_t tls_size = 0x800u;
     if (sz > UINT32_MAX - 0xffu) {
         fprintf(stderr, "sched_create_thread: stack_size=0x%08x overflows alignment\n", sz);
         t->state = TH_DORMANT;
@@ -2528,15 +2403,11 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         return 0;
     }
     uint32_t user_sz = (sz + 0xffu) & ~0xffu;
-    if (user_sz > UINT32_MAX - tls_size) {
-        fprintf(stderr, "sched_create_thread: stack_size=0x%08x overflows TLS reservation\n", sz);
-        t->state = TH_DORMANT;
-        t->entry = 0;
-        t->started = 0;
-        if (t == &s_tcb[s_ntcb - 1]) s_ntcb--;
-        return 0;
-    }
-    uint32_t reservation = user_sz + tls_size;
+    /* The k0 block takes the top SCHED_K0_BLOCK_SIZE bytes of the stack and the thread's
+     * first frame sits below it. Requests under 0x200 bytes are not measured on hardware;
+     * they get 0x200 so the initial sp stays inside the thread's own stack. */
+    if (user_sz < 0x200u) user_sz = 0x200u;
+    uint32_t reservation = user_sz;
     uint32_t user_base = 0;
     int stack_ok = stack_range_alloc(reservation, &user_base);
     if (stack_ok && s_stack_range_refusal &&
@@ -2594,28 +2465,36 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
      * be demoted to 50 here (#363) against a launcher that out-prioritized the worker and
      * never blocked; under strict priority (pick_next) a launcher that blocks, for example
      * in sceKernelSleepThread after starting its worker, lets that worker run on its own. */
-    /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
-     * sets k0 to a small per-thread control region near the top of the thread stack, and the
-     * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
-     * (The entry thread's saved state is overwritten with the driver's seed in sched_run.)
-     * sz/user_sz/tls_size were validated by the fit check at the top of this function.
-     * The requested PSP stack is entirely user-accessible.  Keep the runtime's
-     * synthetic k0/newlib TLS block in a separate reservation above it; placing
-     * the 0x800-byte TLS block inside an explicitly requested 0x800-byte stack
-     * left small worker threads with SP below their own allocation. */
-    uint32_t k0 = user_base + user_sz;
+    /* Give the thread a stack, the module gp, and its k0 (r26) block. Measured on a PSP-3000
+     * (6.61, docs/HARDWARE_ORACLE.md PSP-THREAD-K0-001): k0 points at the top 0x100 bytes of
+     * the thread's own stack, for the root thread and for new threads alike, and the reported
+     * stack size includes the block. (The entry thread's saved state is overwritten with the
+     * driver's seed in sched_run.) sz/user_sz were validated by the fit check above. */
+    uint32_t k0 = user_base + user_sz - SCHED_K0_BLOCK_SIZE;
     t->stack_base = user_base;
     t->stack_size = user_sz;
     t->stack_reservation = reservation;
     t->stack_released = 0;
     /* A new stack is filled with 0xFF unless the creation attribute has NO_FILLSTACK
-     * (evidence at sched_thread_stack_free_size).  The fill covers the requested stack
-     * only; the runtime's k0/TLS block above it is seeded below. */
-    if (!(t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK))
+     * (evidence at sched_thread_stack_free_size). On a filled stack the lowest word holds the
+     * thread's UID (PSP-THREAD-K0-001, default attribute; the next word reads 0xFFFFFFFF, the
+     * fill). Whether a NO_FILLSTACK stack gets that word is not measured, so it is not written. */
+    if (!(t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK)) {
         memset(SR_HOST(user_base), SCHED_STACK_FILL_BYTE, user_sz);
+        MEM_W32(user_base, t->uid);
+    }
+    /* The kernel writes the whole block for every attribute, also over a reused stack that a
+     * previous thread dirtied (PSP-THREAD-K0-001 K0-REUSE-*): zero except the UID, the stack
+     * base and two all-ones words. In particular k0+4 starts at 0: a title's libc stores its
+     * own per-thread pointer there, and a thread that never stores one reads 0. */
+    memset(SR_HOST(k0), 0, SCHED_K0_BLOCK_SIZE);
+    MEM_W32(k0 + SCHED_K0_UID, t->uid);
+    MEM_W32(k0 + SCHED_K0_STACK_BASE, user_base);
+    MEM_W32(k0 + SCHED_K0_ONES_0, 0xffffffffu);
+    MEM_W32(k0 + SCHED_K0_ONES_1, 0xffffffffu);
     t->resources_released = 0;
     t->k0_init = k0;
-    t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 region */
+    t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 block (not measured) */
     t->saved.r[26] = t->k0_init;
     t->saved.r[29] = t->sp_init;
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
@@ -2623,36 +2502,9 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
     sr_vfpu_thread_ctrl_init(&t->saved);
 
-    /* Seed the thread's TLS region (k0 + 4) to point to its own private reentrancy
-     * structure space (allocated within the k0 region at k0 + 0x10) to prevent cross-thread
-     * stack corruption. We zero-initialize the reentrancy structure to clear stack garbage
-     * and set up the stdin/stdout/stderr pointers mimicking Newlib's __reent_init. */
-    uint32_t state_ptr = k0 + 0x10;
-    memset(SR_HOST(state_ptr), 0, 0x380);
-    MEM_W32(state_ptr + 0x04, state_ptr + 0x268);
-    MEM_W32(state_ptr + 0x08, state_ptr + 0x2c4);
-    MEM_W32(state_ptr + 0x0c, state_ptr + 0x320);
-    MEM_W32(k0 + 4, state_ptr);
-    /* Seed the thread UID field consumed by the configured guest reent lookup. */
-    MEM_W32(state_ptr + 0x37cu, t->uid);
-
-    fprintf(stderr, "DEBUG: sched_create_thread uid=0x%x entry=0x%x k0=0x%x state_ptr=0x%x val=0x%x\n",
-            t->uid, entry, k0, state_ptr, MEM_R32(k0 + 4));
-
-    /* Write stack bounds and state_ptr for exception handling */
-    MEM_W32(k0 + 0, user_base);
-    MEM_W32(k0 + 8, state_ptr);
-
-    /* Register in the host-owned s_libc_threads table and any configured guest reent
-     * hash before the thread's own entry runs. */
-    register_libc_thread(k0, state_ptr, t->uid);
-
-    /* Re-seed the thread UID into the kernel thread info structure at state_ptr + 0x37c.
-     * register_libc_thread() did a 1KB copy from the master reent into state_ptr for any
-     * non-root, non-launcher UID, which CLOBBERED our earlier seed above. The libc reent
-     * lookup (f_00011600) reads MEM[state_ptr + 0x37c] for the UID, so we must
-     * write it again AFTER the copy. */
-    MEM_W32(state_ptr + 0x37cu, t->uid);
+    if (getenv("SR_THLOG"))
+        fprintf(stderr, "DEBUG: sched_create_thread uid=0x%x entry=0x%x k0=0x%x stack=[0x%x,0x%x)\n",
+                t->uid, entry, k0, user_base, user_base + user_sz);
 
     return t->uid;
 }
@@ -2699,7 +2551,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->saved.r[29] = t->sp_init;
     if (arglen != 0u) {
         uint32_t rounded = (arglen + 15u) & ~15u;
-        uint32_t stack_base = MEM_R32(t->k0_init + 0u);
+        uint32_t stack_base = t->stack_base;
         uint32_t src_phys = SR_PHYS(argp);
         uint32_t dst = t->sp_init - rounded;
         uint32_t dst_phys = SR_PHYS(dst);
@@ -2726,10 +2578,6 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
                     t->uid, arglen, argp, stack_base, t->sp_init);
             t->arglen = 0;
         }
-    }
-    if (register_libc_thread(t->k0_init, t->k0_init + 0x10, t->uid) != 0) {
-        t->state = TH_DORMANT;
-        return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
     }
     t->resources_released = 0;
     t->join_waiting = 0;
@@ -3040,10 +2888,129 @@ void sr_t111_dump(void) {
     fflush(stderr);
 }
 
+/* ---- preemption timer (#1296) --------------------------------------------------------
+ * The PSP's thread scheduler is preemptive: when the delay or timed wait of a thread
+ * stronger than the running one runs out, the timer interrupt hands it the CPU at once,
+ * whatever the running thread is doing. Here a guest thread gives up the CPU only at its
+ * SR_YIELD points, and a yield point enters sr_yield only once every TIMESLICE of them,
+ * so a weaker thread busy in compiled code kept a stronger due thread waiting for that
+ * whole stretch: Hot Shots Tennis's priority-16 sound thread waited tens of milliseconds
+ * behind its priority-40 game thread, and the sound queue ran dry.
+ *
+ * The timer stands in for that interrupt. While a guest thread runs, the scheduler
+ * publishes the earliest deadline among the waiting threads stronger than it. A host
+ * thread sleeps until that moment and then ends the running slice, so the next SR_YIELD
+ * enters sr_yield, which promotes the expired wait and switches under the unchanged
+ * strict-priority rule. Equal and weaker waiters are left out: on the PSP their expiry
+ * does not take the CPU from the running thread either. Only paced runs have the timer
+ * (turbo time does not follow the host clock), and only the driver starts it, so the
+ * deterministic selftests see the same yields as before. */
+enum { SCHED_PREEMPT_TIMER_OFF = 0, SCHED_PREEMPT_TIMER_THREAD, SCHED_PREEMPT_TIMER_MANUAL };
+static int s_preempt_timer_mode;
+static SDL_Mutex *s_preempt_timer_mutex;
+static SDL_Condition *s_preempt_timer_cond;
+static uint64_t s_preempt_timer_at_ns = UINT64_MAX;   /* host ns; under the mutex in THREAD mode */
+static uint64_t s_preempt_timer_published = UINT64_MAX;   /* the guest thread's last published value */
+
+/* The earliest wake deadline (guest us) of a waiting thread stronger than the running one. */
+static uint64_t sched_preempt_timer_target_us(void) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return SCHED_WAIT_FOREVER;
+    const int priority = s_tcb[s_cur].priority;
+    uint64_t at = SCHED_WAIT_FOREVER;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (i == s_cur || t->suspended || t->priority >= priority) continue;
+        if ((t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ) && t->wake < at) at = t->wake;
+    }
+    return at;
+}
+
+/* End the running slice when the published deadline has come: the interrupt edge. */
+static void sched_preempt_timer_check(uint64_t now_ns) {
+    if (s_preempt_timer_at_ns == UINT64_MAX || now_ns < s_preempt_timer_at_ns) return;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+}
+
+/* Publish the deadline for the thread that is running now. Called on the guest's host
+ * thread wherever the running thread or its stronger waiters can have changed: a switch
+ * into a thread, a yield that kept it, a change of its priority. */
+static void sched_preempt_timer_arm(void) {
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_OFF) return;
+    const uint64_t at_us = sched_preempt_timer_target_us();
+    uint64_t at_ns = UINT64_MAX;
+    if (at_us != SCHED_WAIT_FOREVER && at_us <= (UINT64_MAX - s_clock_epoch_ns) / 1000u)
+        at_ns = s_clock_epoch_ns + at_us * 1000u;
+    if (at_ns == s_preempt_timer_published) return;
+    const int earlier = at_ns < s_preempt_timer_published;
+    s_preempt_timer_published = at_ns;
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_MANUAL) {
+        s_preempt_timer_at_ns = at_ns;
+        return;
+    }
+    SDL_LockMutex(s_preempt_timer_mutex);
+    s_preempt_timer_at_ns = at_ns;
+    /* A later deadline needs no wake: the timer thread finds it when its current
+     * wait ends, and goes back to sleep without ending a slice. */
+    if (earlier) SDL_SignalCondition(s_preempt_timer_cond);
+    SDL_UnlockMutex(s_preempt_timer_mutex);
+}
+
+static int SDLCALL sched_preempt_timer_main(void *unused) {
+    (void)unused;
+    SDL_LockMutex(s_preempt_timer_mutex);
+    for (;;) {
+        const uint64_t at = s_preempt_timer_at_ns;
+        if (at == UINT64_MAX) {
+            SDL_WaitCondition(s_preempt_timer_cond, s_preempt_timer_mutex);
+            continue;
+        }
+        const uint64_t now = SDL_GetTicksNS();
+        if (now >= at) {
+            sched_preempt_timer_check(now);
+            continue;
+        }
+        const uint64_t wait = at - now;
+        if (wait > 4000000u) {
+            /* A far deadline: a condition wait that an earlier one can cut short. Its
+             * millisecond timeout is coarse, so stop short and finish below. */
+            const uint64_t ms = (wait - 3000000u) / 1000000u;
+            SDL_WaitConditionTimeout(s_preempt_timer_cond, s_preempt_timer_mutex,
+                                     ms > INT32_MAX ? INT32_MAX : (int32_t)ms);
+        } else {
+            /* A near deadline: a precise host sleep, in steps short enough that a still
+             * earlier deadline published meanwhile is seen within one step. */
+            SDL_UnlockMutex(s_preempt_timer_mutex);
+            SDL_DelayNS(wait < 1000000u ? wait : 1000000u);
+            SDL_LockMutex(s_preempt_timer_mutex);
+        }
+    }
+    return 0;
+}
+
+void sched_preempt_timer_start(void) {
+    pace_setup();
+    if (!s_pace_on || s_preempt_timer_mode != SCHED_PREEMPT_TIMER_OFF) return;
+    s_preempt_timer_mutex = SDL_CreateMutex();
+    s_preempt_timer_cond = SDL_CreateCondition();
+    SDL_Thread *thread = s_preempt_timer_mutex && s_preempt_timer_cond
+        ? SDL_CreateThread(sched_preempt_timer_main, "nk-preempt-timer", NULL) : NULL;
+    if (!thread) {
+        fprintf(stderr, "sched: preemption timer unavailable (no host thread); a stronger due thread "
+                        "waits for the running thread's next scheduler boundary\n");
+        return;
+    }
+    SDL_DetachThread(thread);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_THREAD;
+}
+
 void sr_yield(CpuState *s) {
     /* A fiber switch with a recorded tail transfer would let another thread's drain run
      * it on the wrong guest state (#855). */
     sr_tail_assert_empty("tail-transfer-live-at-yield");
+    /* The slice ended, by its count or by the preemption timer: whatever the timer
+     * held is spent, so the next arm publishes afresh. */
+    s_preempt_timer_published = UINT64_MAX;
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3248,9 +3215,10 @@ void sr_yield(CpuState *s) {
             fflush(stderr);
             }
         }
+        sched_preempt_timer_arm();
         return;
     }
-    if (!s_dispatch_enabled) return;
+    if (!s_dispatch_enabled) { sched_preempt_timer_arm(); return; }
     memcpy(&t->saved, s, sizeof(CpuState));
     if (t->state == TH_RUNNING) t->state = TH_READY;
     s_pause_switch_from_yield = 1;
@@ -3556,7 +3524,6 @@ int sched_reset_for_loadexec(void) {
 
     sr_aot_return_boundaries_reset();
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
@@ -3565,7 +3532,6 @@ int sched_reset_for_loadexec(void) {
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
-    g_master_reent = 0u;
     s_tick = 0;
     s_gp = 0u;
     s_guest_reset_requested = 0;
@@ -4233,9 +4199,11 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
         sched_promote_expired_waits();
         sched_rotation_mark(s_cur);
         sched_yield_current_behind_peers();
+        sched_preempt_timer_arm();   /* which waiters are stronger than it has changed */
     } else {
         t->rot_head = 0;
         sched_preempt();
+        sched_preempt_timer_arm();   /* a waiter may now be stronger than the running thread */
     }
     return 0;
 }
@@ -4944,6 +4912,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         t->state = TH_RUNNING;
         sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
+        sched_preempt_timer_arm();          /* this thread's stronger waiters, for the timer */
         if (!t->started) {
             t->started = 1;
             /* Guest calls become native C calls, so a deep guest call chain needs a deep host

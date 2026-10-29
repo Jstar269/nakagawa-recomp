@@ -235,6 +235,8 @@ else ifeq ($(CASE),ge-timing)
 CASE_ID = 114
 else ifeq ($(CASE),cpu-timing)
 CASE_ID = 115
+else ifeq ($(CASE),thread-k0-block)
+CASE_ID = 116
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
