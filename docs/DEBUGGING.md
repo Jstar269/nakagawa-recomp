@@ -95,9 +95,24 @@ The summary fields mean:
 - `aot_to_interpreter_count` and `interpreter_to_aot_count` count completed tier hand-offs. Each
   direction retains a deterministic, bounded top-16 table keyed by guest PC and reason. The table
   is an aggregate heavy-hitter sample, not a per-transition log; the total counts remain exact.
-- `vfpu` counts fallback operations, family classification, fallback time, and failures. Native AOT
-  VFPU execution has no separate per-instruction timer yet, so AOT VFPU time is not inferred from
-  total guest time; this boundary is in the works (#282).
+- `vfpu` counts fallback operations, family classification, fallback time, and failures.
+  `vfpu.aot_families` covers native AOT VFPU code, which runs inline, so there is no call to time.
+  It is filled only in a `PERF_AOT_INSTRUCTIONS=1` census build; otherwise its status is
+  `not_compiled` and the `aot_vfpu_time` boundary stays `partial`.
+  - Families are by primary opcode: `load`, `store`, `vfpu0` (0x18), `vfpu1` (0x19), `vfpu3`
+    (0x1b), `vfpu4` (0x34), `matrix` (0x3c), `prefix_imm` (0x37), and `move_control` (0x12, 0x3f).
+  - `count` per family is exact.
+  - Time is sampled. One VFPU instruction in `stride` (64) is timed from its start to the next
+    instruction's start. One scalar instruction in `baseline_stride` (1024) is timed the same
+    way, as the baseline: the hook plus an ordinary instruction.
+  - A sample counts only when the next instruction is at `pc + 4`, so no branch, call, return or
+    dispatch lands in it.
+  - `estimated_ns` is `count * max(0, mean_ns - baseline_mean_ns)`: the family's cost above an
+    ordinary instruction. It is an estimate from samples. The host clock's tick (100 ns for QPC
+    on Windows) is longer than most instructions, so individual samples are quantized and only
+    the means over many samples carry the figure.
+  - The census build's own hook slows every instruction, so compare families with each other and
+    with the same build's `aot_ns`, not with a default build.
 - `scheduler` is global execution residency: running, runnable, blocked, and idle intervals, plus
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
