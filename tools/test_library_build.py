@@ -294,8 +294,8 @@ class LibraryBuildTests(unittest.TestCase):
         rows = decrypt_tool.decrypt_disc(disc, self.data, "TEST70062", runner=runner)
         names = {row["member"]: row["name"] for row in rows}
         self.assertEqual(names, {
-            "/".join(first): iso_inspect.disc_module_path_key(first),
-            "/".join(second): iso_inspect.disc_module_path_key(second),
+            "/".join(first): iso_inspect.disc_module_qualified_name(first),
+            "/".join(second): iso_inspect.disc_module_qualified_name(second),
             "PSP_GAME/USRDIR/data/module/own.prx": "own.prx",
         })
         folder = self.data / "titles" / "TEST70062" / "decrypted"

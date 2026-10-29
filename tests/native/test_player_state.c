@@ -4685,16 +4685,16 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "shared.167b7754.prx") != NULL);
         assert(remove(module_iso_path) == 0);
         {
-            char key[256];
-            assert(player_module_path_key("PSP_GAME/USRDIR/SHARED.PRX", "SHARED.PRX",
-                                          key, sizeof(key)));
-            assert(strcmp(key, "SHARED.bf26060f.PRX") == 0);
-            assert(player_module_path_key("PSP_GAME/USRDIR/data/pspsys/module/libadler.prx",
-                                          "libadler.prx", key, sizeof(key)));
-            assert(strcmp(key, "libadler.1951c218.prx") == 0);
-            assert(player_module_path_key("PSP_GAME/USRDIR/OVL", "OVL", key, sizeof(key)));
-            assert(strcmp(key, "OVL.d0b7d601") == 0);
-            assert(!player_module_path_key("PSP_GAME/USRDIR/OVL", "OVL", key, 8));
+            char host_name[256];
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/SHARED.PRX", "SHARED.PRX",
+                                          host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "SHARED.bf26060f.PRX") == 0);
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/data/pspsys/module/libadler.prx",
+                                          "libadler.prx", host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "libadler.1951c218.prx") == 0);
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/OVL", "OVL", host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "OVL.d0b7d601") == 0);
+            assert(!player_module_qualified_name("PSP_GAME/USRDIR/OVL", "OVL", host_name, 8));
         }
 
         snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-candidate-limit.iso",

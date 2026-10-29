@@ -1473,14 +1473,14 @@ def _native_component(name: str) -> str:
     return name[:-1] if name.endswith(".") else name
 
 
-def disc_module_path_key(member: Sequence[str]) -> str:
+def disc_module_qualified_name(member: Sequence[str]) -> str:
     """The path-qualified host name of the disc file at ``member``.
 
     ``<stem>.<8 hex digits><suffix>``: the digits are the 32-bit FNV-1a hash of the
     member path's bytes ('/'-joined, ASCII letters upper-cased, because the PSP's
     file system matches paths without regard to case), so the name stays readable,
     keeps its suffix and differs for every disc folder. Mirrored by
-    player_module_path_key in src/player/player_state.c.
+    player_module_qualified_name in src/player/player_state.c.
     """
     path_bytes = "/".join(_native_component(part) for part in member).encode(
         "ascii", "surrogateescape").upper()
@@ -1501,7 +1501,7 @@ def disc_module_host_names(
     file name. A file whose name (ASCII case-insensitively) no other file in the walked
     tree carries keeps that name, so a disc without such duplicates names every copy
     exactly as before. Every file sharing a name with another gets its path-qualified
-    name (disc_module_path_key), so two disc folders holding one file name never meet
+    name (disc_module_qualified_name), so two disc folders holding one file name never meet
     in a host folder. The rule reads only the tree, never the files' contents, so the
     player's disc check, the decryption step and the import name each copy the same.
     """
@@ -1513,7 +1513,7 @@ def disc_module_host_names(
     for directory, entry in walked:
         member = directory + (entry.name,)
         unique = counts[_native_component(entry.name).casefold()] == 1
-        names[member] = entry.name if unique else disc_module_path_key(member)
+        names[member] = entry.name if unique else disc_module_qualified_name(member)
     return names
 
 

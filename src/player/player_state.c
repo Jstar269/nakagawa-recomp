@@ -5724,9 +5724,9 @@ static uint32_t player_fnv1a32_upper(const char *text) {
 
 /* The path-qualified host name of a module whose file name another disc file
  * shares: "<stem>.<FNV-1a 32 of the upper-cased disc path, 8 hex>.<suffix>".
- * Mirrors disc_module_path_key in tools/nk_core/iso_inspect.py. Returns false
+ * Mirrors disc_module_qualified_name in tools/nk_core/iso_inspect.py. Returns false
  * when it does not fit `out`. */
-bool player_module_path_key(const char *rel_path, const char *disc_name,
+bool player_module_qualified_name(const char *rel_path, const char *disc_name,
                             char *out, size_t out_size) {
     const char *dot = strrchr(disc_name, '.');
     uint32_t digest = player_fnv1a32_upper(rel_path);
@@ -5767,7 +5767,7 @@ static bool player_assign_module_host_names(NkIsoReader *reader,
     for (size_t i = 0; i < *count; i++) {
         PlayerModuleCandidate *module = &modules[i];
         if (module->shared_name &&
-            (!player_module_path_key(module->rel_path, module->disc_name,
+            (!player_module_qualified_name(module->rel_path, module->disc_name,
                                      module->name, sizeof(module->name)) ||
              !player_module_name_is_safe(module->name))) {
             continue;  /* like an unusable disc name: not a candidate */

@@ -1362,19 +1362,19 @@ int main(int argc, char **argv) {{
             first: build_psp_container(), second: build_psp_container(),
             unique: build_psp_container(),
         })
-        first_key = iso_inspect.disc_module_path_key(tuple(first.split("/")))
-        second_key = iso_inspect.disc_module_path_key(tuple(second.split("/")))
-        self.assertRegex(first_key, r"^shared\.[0-9a-f]{8}\.prx$")
-        self.assertRegex(second_key, r"^SHARED\.[0-9a-f]{8}\.PRX$")
-        self.assertNotEqual(first_key.casefold(), second_key.casefold())
+        first_host = iso_inspect.disc_module_qualified_name(tuple(first.split("/")))
+        second_host = iso_inspect.disc_module_qualified_name(tuple(second.split("/")))
+        self.assertRegex(first_host, r"^shared\.[0-9a-f]{8}\.prx$")
+        self.assertRegex(second_host, r"^SHARED\.[0-9a-f]{8}\.PRX$")
+        self.assertNotEqual(first_host.casefold(), second_host.casefold())
         # The PSP matches paths without regard to case; so does the key.
         self.assertEqual(
-            iso_inspect.disc_module_path_key(tuple(first.upper().split("/"))).casefold(),
-            first_key.casefold(),
+            iso_inspect.disc_module_qualified_name(tuple(first.upper().split("/"))).casefold(),
+            first_host.casefold(),
         )
 
-        expected = {tuple(first.split("/")): first_key,
-                    tuple(second.split("/")): second_key,
+        expected = {tuple(first.split("/")): first_host,
+                    tuple(second.split("/")): second_host,
                     tuple(unique.split("/")): "unique.prx"}
         candidates = list_disc_module_candidates(iso_file)
         self.assertEqual(
@@ -1399,7 +1399,7 @@ int main(int argc, char **argv) {{
     def test_path_qualified_host_name_equal_to_a_real_name_is_refused(self) -> None:
         # The copies would share one host file: a named refusal, never a silent pick.
         first = ("PSP_GAME", "USRDIR", "A", "lib.prx")
-        clash = iso_inspect.disc_module_path_key(first)
+        clash = iso_inspect.disc_module_qualified_name(first)
         iso_file = self.temp_dir / "module-host-name-clash.iso"
         create_test_iso_with_module_tree(iso_file, {
             "/".join(first): build_psp_container(),
