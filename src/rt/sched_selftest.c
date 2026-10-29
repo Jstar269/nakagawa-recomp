@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
  * White-box unit tests for the cooperative scheduler's decision logic and guest-thread
@@ -260,7 +261,6 @@ static CpuState g_cpu_store;
 static void reset_sched(void) {
     memset(g_mem_base, 0, 0x0c000000u);
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
@@ -268,7 +268,6 @@ static void reset_sched(void) {
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
-    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
@@ -910,6 +909,79 @@ static void test_determinism(void) {
     expect(same, "identical scheduler state produces identical decision sequences");
 }
 
+/* ---- preemption timer (#1296) -------------------------------------------------------
+ * A weak thread busy in compiled code reaches sr_yield only once per TIMESLICE yield
+ * points. When a stronger thread's delay runs out in between, the preemption timer ends
+ * the slice, so the stronger thread runs at the next yield point, as the PSP's timer
+ * interrupt would let it. The test drives the timer by hand: the clock is moved past the
+ * deadline and the timer's check runs at that moment, which is what its host thread does.
+ *
+ * MUTANT: drop the sched_preempt_timer_arm() call at the switch-in in sched_run -- nothing
+ *   is published, the slice runs to its count, and the stronger thread runs TIMESLICE
+ *   yields late. MUTANT: compare priorities with <= in sched_preempt_timer_target_us() --
+ *   the equal-priority waiter takes the CPU early and the second cell fails. */
+enum {
+    PT_WEAK_ENTRY = 0x09300000u,
+    PT_WAITER_ENTRY = 0x09300100u,
+    PT_YIELD_PC = 0x09300040u,
+    PT_START_US = 1000u,
+    PT_DELAY_US = 5000u,
+    PT_DUE_AT_YIELD = 10u,
+    PT_YIELDS = 3u * TIMESLICE
+};
+static int g_pt_waiter_priority;
+static unsigned g_pt_yield, g_pt_waiter_ran_at, g_pt_done;
+
+static void preempt_timer_body(CpuState *s) {
+    if (s_tcb[s_cur].entry == PT_WAITER_ENTRY) {
+        sched_delay_current(PT_DELAY_US);
+        g_pt_waiter_ran_at = g_pt_yield;
+        return;
+    }
+    uint32_t waiter = sched_create_thread(PT_WAITER_ENTRY, g_pt_waiter_priority, 0);
+    sched_start_thread(waiter, 0, 0);
+    sched_yield_current_behind_peers();    /* the waiter runs first and parks in its delay */
+    for (g_pt_yield = 0; g_pt_yield < PT_YIELDS; g_pt_yield++) {
+        if (g_pt_yield == PT_DUE_AT_YIELD) {
+            set_host_us(PT_START_US + PT_DELAY_US + 1u);   /* the delay has run out */
+            sched_preempt_timer_check(host_now_ns());
+        }
+        SR_YIELD(s, PT_YIELD_PC);
+    }
+    g_pt_done = 1;
+}
+
+static int preempt_timer_stop(void) { return (int)g_pt_done; }
+
+static unsigned preempt_timer_run(int waiter_priority) {
+    reset_sched();
+    begin_clock_fixture(1, PT_START_US);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_MANUAL;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    g_pt_waiter_priority = waiter_priority;
+    g_pt_yield = 0;
+    g_pt_waiter_ran_at = UINT32_MAX;
+    g_pt_done = 0;
+    g_test_body = preempt_timer_body;
+    sr_sched_stop_requested = preempt_timer_stop;
+    sched_run(PT_WEAK_ENTRY, 0u, 0u);   /* the weak thread runs at priority 32 */
+    sr_sched_stop_requested = NULL;
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_OFF;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    s_host_ns_fn = NULL;
+    return g_pt_waiter_ran_at;
+}
+
+static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
+    expect(preempt_timer_run(16) == PT_DUE_AT_YIELD,
+           "a stronger thread whose delay ran out runs at the weak thread's next yield point");
+    const unsigned equal = preempt_timer_run(32);
+    expect(equal != UINT32_MAX && equal > PT_DUE_AT_YIELD,
+           "an equal-priority waiter whose delay ran out does not take the CPU early");
+}
+
 /* ---- lifecycle tests (real coroutines) --------------------------------------------- */
 
 static void body_returns_42(CpuState *s) {
@@ -1299,6 +1371,34 @@ static void test_dormant_worker_is_not_relaunched_at_vblank(void) {
     expect(compat_hits(id) == 0u, "a dormant worker at VBLANK records no relaunch firing");
 }
 
+/* A created thread's k0 block as a PSP-3000 builds it (docs/HARDWARE_ORACLE.md
+ * PSP-THREAD-K0-001): the top 0x100 bytes of its own stack, zero except the UID, the stack
+ * base and two all-ones words, with k0+4 == 0 whatever role the thread holds. */
+static void expect_k0_block(const TCB *t, const char *who) {
+    char what[160];
+    if (!t) {
+        snprintf(what, sizeof what, "%s: thread exists", who);
+        expect(0, what);
+        return;
+    }
+    const uint32_t k0 = t->k0_init;
+    snprintf(what, sizeof what, "%s: k0 is the top 0x100 bytes of its stack", who);
+    expect(k0 == t->stack_base + t->stack_size - 0x100u, what);
+    snprintf(what, sizeof what, "%s: k0+4 starts at 0", who);
+    expect(MEM_R32(k0 + 4u) == 0u, what);
+    snprintf(what, sizeof what, "%s: k0+0xc0 is the UID and k0+0xc8 the stack base", who);
+    expect(MEM_R32(k0 + 0xc0u) == t->uid && MEM_R32(k0 + 0xc8u) == t->stack_base, what);
+    snprintf(what, sizeof what, "%s: k0+0xf8 and k0+0xfc are all ones", who);
+    expect(MEM_R32(k0 + 0xf8u) == 0xffffffffu && MEM_R32(k0 + 0xfcu) == 0xffffffffu, what);
+    unsigned other = 0;
+    for (uint32_t off = 0; off < 0x100u; off += 4u) {
+        if (off == 0xc0u || off == 0xc8u || off == 0xf8u || off == 0xfcu) continue;
+        if (MEM_R32(k0 + off) != 0u) other++;
+    }
+    snprintf(what, sizeof what, "%s: every other k0 block word is zero", who);
+    expect(other == 0u, what);
+}
+
 /* ---- role-UID capture tests -------------------------------------------------------- */
 
 static void test_role_uid_capture(void) {
@@ -1314,20 +1414,12 @@ static void test_role_uid_capture(void) {
     uint32_t launcher = sched_create_thread(cfg_launcher_entry(), 32, 0x1000u);
     expect(launcher != 0 && g_launcher_uid == launcher,
            "the configured launcher entry captures the launcher uid");
-    TCB *lt = tcb_by_uid(launcher);
-    expect(lt && g_master_reent == lt->k0_init + 0x10u,
-           "launcher registration captures the master reent");
-    /* Seed a recognizable master-reent word, then create a worker: workers clone the
-     * master reent; root/launcher must not. */
-    MEM_W32(g_master_reent + 0u, 0xABCD1234u);
+    /* Roles change no k0 block: the launcher and worker get the block every thread gets. */
+    expect_k0_block(tcb_by_uid(launcher), "launcher");
     uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
     expect(worker != 0 && g_worker_uid == worker,
            "the configured worker entry captures the worker uid");
-    TCB *wt = tcb_by_uid(worker);
-    expect(wt && MEM_R32(wt->k0_init + 0x10u) == 0xABCD1234u,
-           "worker reent is cloned from the master reent");
-    expect(wt && MEM_R32(wt->k0_init + 0x10u + 0x37cu) == worker,
-           "worker uid survives the reent clone at state_ptr+0x37c");
+    expect_k0_block(tcb_by_uid(worker), "worker");
     expect(sched_root_uid() == root && sched_launcher_uid() == launcher &&
            sched_worker_uid() == worker, "role accessors report the captured uids");
 }
@@ -1362,21 +1454,13 @@ static uint32_t create_until_uid(uint32_t wanted, int priority) {
 }
 
 /* Regression A: in a build with no launcher binding, the historical launcher UID is an
- * ordinary thread. It must not seed g_master_reent, must not skip guest reent
- * registration, must not take launcher-only reent initialization, and must leave the
- * launcher role uncaptured. */
+ * ordinary thread: it leaves the launcher role uncaptured and gets an ordinary k0 block. */
 static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY) &&
         sr_title_config()->launcher_thread_entry == HISTORICAL_LAUNCHER_UID) {
         return;   /* would not be an unconfigured build for this address */
     }
     reset_sched();
-    /* Seed a recognizable master reent so "was inherited" is observable, and point the
-     * role global at it the way a real captured launcher would. */
-    g_master_reent = 0x00300000u;
-    MEM_W32(g_master_reent + 0u, 0xFEEDFACEu);
-    uint32_t before_master = g_master_reent;
-
     uint32_t uid = create_until_uid(HISTORICAL_LAUNCHER_UID, 32);
     expect(uid == HISTORICAL_LAUNCHER_UID, "the allocator can still produce UID 0x111");
     if (uid != HISTORICAL_LAUNCHER_UID) return;
@@ -1388,19 +1472,7 @@ static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     expect(sched_launcher_uid() == SR_ROLE_UID_NONE &&
            !sched_role_uid_captured(sched_launcher_uid()),
            "the launcher accessor reports uncaptured");
-    expect(g_master_reent == before_master,
-           "UID 0x111 does not become the master reent by its number alone");
-
-    TCB *t = tcb_by_uid(uid);
-    expect(t != NULL, "the 0x111 thread exists");
-    if (!t) return;
-    uint32_t state_ptr = t->k0_init + 0x10u;
-    expect(MEM_R32(state_ptr + 0x37cu) == uid,
-           "an ordinary thread's reent carries its own UID");
-    /* Launcher-only path: keeping an independently-initialized reent. An ordinary
-     * thread inherits the master reent instead. */
-    expect(MEM_R32(state_ptr) == 0xFEEDFACEu,
-           "UID 0x111 inherits the master reent like any ordinary thread");
+    expect_k0_block(tcb_by_uid(uid), "UID 0x111");
 }
 
 /* Regression B: same, for the historical worker UID. */
@@ -1432,8 +1504,6 @@ static void test_historical_worker_uid_is_ordinary_when_unconfigured(void) {
 static void test_configured_entry_captures_whatever_uid_it_gets(void) {
     if (!cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) return;
     reset_sched();
-    g_master_reent = 0x00300000u;
-    MEM_W32(g_master_reent + 0u, 0xFEEDFACEu);
 
     /* Push the pool along first so the launcher cannot land on a historical number by
      * coincidence: the capture below must be caused by the ENTRY, not by the UID. */
@@ -1453,8 +1523,7 @@ static void test_configured_entry_captures_whatever_uid_it_gets(void) {
                "only the configured launcher's UID holds the launcher role");
     }
     TCB *lt = tcb_by_uid(launcher);
-    expect(lt && g_master_reent == lt->k0_init + 0x10u,
-           "only the captured launcher seeds the master reent");
+    expect_k0_block(lt, "captured launcher");
     expect(lt && lt->priority == 32, "the captured launcher keeps its declared priority");
 }
 
@@ -1520,7 +1589,7 @@ static void test_stack_floor_and_partition_overlap(void) {
     uint32_t first = sched_create_thread(0x2000u, 32, 0x4000u);
     expect(first != 0, "a first thread gets a stack");
     uint32_t floor1 = sched_guest_stack_floor();
-    expect(floor1 < SR_STACK_ARENA_CEIL && floor1 + 0x4000u + 0x800u == SR_STACK_ARENA_CEIL,
+    expect(floor1 < SR_STACK_ARENA_CEIL && floor1 + 0x4000u == SR_STACK_ARENA_CEIL,
            "the stack floor is the new thread's reservation base");
 
     /* The partition reaches just below the current floor: the next stack would land on it. */
@@ -1594,68 +1663,16 @@ static void test_libc_thread_relocation(void) {
     uint32_t worker_uid = sched_create_thread(cfg_role_entry(SR_TITLE_CFG_WORKER_ENTRY, 0x00003000u), 36, 0x1000u);
     expect(worker_uid != 0, "worker create succeeds");
 
-    // Proves: Host libc-thread registration does not modify 0x0030a040..0x0030a0bf
+    // Proves: thread creation does not modify 0x0030a040..0x0030a0bf
     for (int i = 0; i < 16; i++) {
         expect(MEM_R32(base + i * 8) == 0x11111111u * (i + 1), "metadata range field0 unmodified by registration");
         expect(MEM_R32(base + i * 8 + 4) == 0x22222222u * (i + 1), "metadata range field1 unmodified by registration");
     }
 
-    // Proves: Root/launcher/worker registration works under drifted UIDs, and multiple thread registrations do not consume guest metadata slots
-    int registered_count = 0;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use) {
-            registered_count++;
-            uint32_t uid = s_libc_threads[i].uid;
-            expect(uid == root_uid || uid == launcher_uid || uid == worker_uid, "registered thread has valid UID");
-        }
-    }
-    expect(registered_count == 3, "three threads registered in host-owned memory");
-
-    // Proves: Duplicate registration is deterministic
-    TCB *wt = tcb_by_uid(worker_uid);
-    expect(wt != NULL, "worker TCB found");
-    register_libc_thread(wt->k0_init, wt->k0_init + 0x10, wt->uid);
-    int new_registered_count = 0;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use) {
-            new_registered_count++;
-        }
-    }
-    expect(new_registered_count == 3, "duplicate registration does not create new slot");
-
-    // Proves: Host registry records are cleaned/reused correctly (unregistration)
-    unregister_libc_thread(wt->k0_init);
-    int post_unreg_count = 0;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use) {
-            post_unreg_count++;
-        }
-    }
-    expect(post_unreg_count == 2, "unregistration decrements registered count");
-
-    // Proves: Host libc-thread unregistration does not modify that guest region
-    for (int i = 0; i < 16; i++) {
-        expect(MEM_R32(base + i * 8) == 0x11111111u * (i + 1), "metadata range field0 unmodified by unregistration");
-        expect(MEM_R32(base + i * 8 + 4) == 0x22222222u * (i + 1), "metadata range field1 unmodified by unregistration");
-    }
-
-    // Proves: Table exhaustion returns -1 (not abort) and the table stays at MAXTHREADS.
-    // Fill the remaining slots until we get a -1 return, then attempt 5 more.
-    // Exactly 2 slots remain free (root + launcher used 2, worker was unregistered above, so
-    // it left 1 free, but we re-register at root+launcher+worker=3 total, then unregister
-    // worker=2 left.  Actually we have MAXTHREADS-2 free after root+launcher). The exact
-    // accounting doesn't matter: we fill until -1 then confirm table stays at MAXTHREADS.
-    int over_count = 0;
-    for (int i = 0; i < MAXTHREADS + 5; i++) {
-        int rc = register_libc_thread(0xF0000000u + i * 0x1000u, 0xF0000010u + i * 0x1000u, 0x9999u);
-        if (rc < 0) over_count++;
-    }
-    expect(over_count >= 1, "table exhaustion returns -1 at least once");
-    int full_count = 0;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use) full_count++;
-    }
-    expect(full_count == MAXTHREADS, "libc threads array is exactly full at MAXTHREADS after overflow");
+    // Proves: every new thread gets the measured k0 block whatever its role
+    expect_k0_block(tcb_by_uid(root_uid), "root");
+    expect_k0_block(tcb_by_uid(launcher_uid), "launcher");
+    expect_k0_block(tcb_by_uid(worker_uid), "worker");
 }
 
 static struct {
@@ -1761,12 +1778,6 @@ static void cb_sleep_test_body(CpuState *s) {
     sched_thread_sleep_cb();
 }
 
-static void reset_libc_threads(void) {
-    for (int i = 0; i < MAXTHREADS; i++) {
-        s_libc_threads[i].in_use = 0;
-    }
-}
-
 /* Direct regression guard on the production argument-packing helper (recomp.h),
  * independent of the scheduler plumbing above. */
 static void test_callback_abi_packing(void) {
@@ -1860,7 +1871,6 @@ static void test_callback_dispatch_one_preserves_context(void) {
 }
 
 static void test_callbacks_behavioral(void) {
-    reset_libc_threads();
     memset(s_test_callbacks, 0, sizeof(s_test_callbacks));
     s_test_callbacks[0].entry = 0x8888u;
     s_test_callbacks[0].common_arg = 0xaaaa1111u;
@@ -1922,7 +1932,6 @@ static void test_callbacks_behavioral(void) {
 }
 
 static void test_callback_renotifies_itself_dispatched_same_pass(void) {
-    reset_libc_threads();
     memset(s_test_callbacks, 0, sizeof(s_test_callbacks));
     s_test_callbacks[0].entry = 0x9999u;
     s_test_callbacks[0].renotify_once = 1;
@@ -1959,7 +1968,6 @@ static void test_callback_renotifies_itself_dispatched_same_pass(void) {
 }
 
 static void test_callback_auto_deletes_on_nonzero_return(void) {
-    reset_libc_threads();
     memset(s_test_callbacks, 0, sizeof(s_test_callbacks));
     s_test_callbacks[0].entry = 0xaaaa0u;
     s_test_callbacks[0].ret_v0 = 1u;   /* nonzero return -> auto-delete */
@@ -2036,7 +2044,6 @@ static void test_dispatch_callbacks_returns_total_count(void) {
  * SleepCB loop must consume that banked wakeup on its next iteration instead of
  * blocking on it forever. */
 static void test_sleepcb_consumes_wakeup_banked_during_dispatch(void) {
-    reset_libc_threads();
     memset(s_test_callbacks, 0, sizeof(s_test_callbacks));
     s_test_callbacks[0].entry = 0x9999u;
 
@@ -2078,7 +2085,6 @@ static void non_cb_sleep_test_body(CpuState *s) {
 }
 
 static void test_wake_callbacks_no_op_on_non_cb_wait(void) {
-    reset_libc_threads();
     s_test_uid_next = 0x300u;
     uint32_t tid = sched_create_thread(0x2000u, 16, 0x10000u);
     TCB *t = tcb_by_uid(tid);
@@ -2277,6 +2283,51 @@ static void test_interrupt_frame_is_restored(void) {
  * waiter exists, and the scheduler is driven repeatedly. The asserted invariant is
  * ownership, not a rate: virtual time never exceeds the sampled host time merely
  * because a waiter would like it to. */
+/* #1296: a timed wait that comes due between the idle pick and the idle wait's clock sample
+ * runs at once. It used to fall into the vblank branch and wait up to a whole period on the
+ * host. MUTANT: without the due-thread return, the first check reads 16683 us (the next
+ * vblank) instead of 1200 us. */
+static void test_idle_wait_runs_a_wait_that_came_due(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;                /* the next vblank, 16.7 ms out */
+    int waiter = mk(0x234u, TH_WAIT_DELAY, 16);
+    s_tcb[waiter].wake = 1000u;
+    s_cur = -1;
+    set_host_us(1200u);                       /* its deadline passed after the idle pick */
+    sched_idle_wait();
+    expect(g_test_host_ns == 1200000u,
+           "idle wait: a timed wait already due costs no host wait");
+    expect(pick_next() == waiter && s_tcb[waiter].state == TH_READY,
+           "idle wait: the next pick runs the thread whose wait came due");
+
+    /* A suspended thread's due deadline cannot be run, so the idle wait still waits. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int held = mk(0x235u, TH_WAIT_DELAY, 16);
+    s_tcb[held].wake = 1000u;
+    s_tcb[held].suspended = 1;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns >= 16683333u,
+           "idle wait: a suspended thread's due deadline still waits for the vblank");
+
+    /* A deadline ahead of the vblank keeps its precise sleep. */
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    s_vbl_next_ns = 16683333u;
+    int sleeper = mk(0x236u, TH_WAIT_DELAY, 16);
+    s_tcb[sleeper].wake = 5000u;
+    s_cur = -1;
+    set_host_us(1200u);
+    sched_idle_wait();
+    expect(g_test_host_ns == 5000000u,
+           "idle wait: a future deadline before the vblank is slept to exactly");
+    s_host_ns_fn = NULL;
+}
+
 static void test_paced_vtime_is_host_anchored(void) {
     reset_sched();
     begin_clock_fixture(1, 0u);
@@ -4829,8 +4880,8 @@ static void test_loadexec_retires_scheduler_world(void) {
            "LoadExec reset destroys old TCBs and leaves no current guest thread");
     expect(tcb_by_uid(s_loadexec_reset_child_uid) == NULL &&
            g_root_uid == SR_ROLE_UID_NONE && g_worker_uid == SR_ROLE_UID_NONE &&
-           g_launcher_uid == SR_ROLE_UID_NONE && g_master_reent == 0u,
-           "LoadExec reset retires sibling threads and per-program role/libc state");
+           g_launcher_uid == SR_ROLE_UID_NONE,
+           "LoadExec reset retires sibling threads and per-program role state");
 
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     g_cpu_store.r[28] = 0x1234abc0u;
@@ -4891,6 +4942,7 @@ int main(int argc, char **argv) {
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
     test_determinism();
+    test_preempt_timer_hands_cpu_to_stronger_due_thread();
     test_entry_return_is_thread_exit();
     test_negative_entry_return_normalizes_to_illegal_argument();
     test_wait_timeout_entry_return_normalizes_to_illegal_argument();
@@ -4933,6 +4985,7 @@ int main(int argc, char **argv) {
     test_pending_interrupts_progress_and_resume();
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
+    test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();
     test_busy_guest_observes_every_display_period();
     test_masked_window_keeps_the_enabled_backlog();

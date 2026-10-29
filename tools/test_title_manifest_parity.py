@@ -122,6 +122,31 @@ class TitleManifestParityTests(unittest.TestCase):
             self.assertIn("host readiness injection is not supported yet", output)
             self.assertNotIn("#", output)
 
+    def test_retired_hle_assist_bindings_have_named_native_migration_error(self):
+        retired = {
+            "frame_ready_latch_addr": 0x08905004,
+            "display_bringup": {"malloc_entry": 0x08901000},
+            "runtime_sync": {"config_base": 0x08903000},
+        }
+        for field, value in retired.items():
+            with self.subTest(field=field):
+                manifest = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+                manifest.setdefault("runtime_bindings", {"schema_version": 1})
+                manifest["runtime_bindings"][field] = value
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path = Path(tmpdir) / f"legacy-{field}.json"
+                    path.write_text(json.dumps(manifest), encoding="utf-8")
+                    py_ok, py_output = self._run_python(path)
+                    c_ok, c_output = self._run_native(path)
+                for accepted, output, parser in (
+                    (py_ok, py_output, "Python"),
+                    (c_ok, c_output, "native"),
+                ):
+                    self.assertFalse(accepted, f"{parser} parser accepted retired {field}")
+                    self.assertIn("HLE_TITLE_ASSIST_RETIRED", output)
+                    self.assertIn(field, output)
+                    self.assertNotIn("#", output)
+
     def test_loose_root_bindings_and_failures_have_native_python_parity(self):
         base = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
         base["filesystem"]["loose_content_roots"] = [

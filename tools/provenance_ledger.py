@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Build and validate the explicit public provenance ledger.
 
@@ -149,6 +150,9 @@ ALLOWED_CLASSES = frozenset({
 #: External policy-delta authority schema (``--policy-delta-authority``).
 POLICY_DELTA_KIND = "policy-delta-authority"
 POLICY_DELTA_SCHEMA_VERSION = 1
+#: V2 is V1 plus rule changes, each bound to the exact before and after value
+#: of its field. A path-only delta keeps using V1.
+POLICY_DELTA_RULE_SCHEMA_VERSION = 2
 
 #: Deterministic handling is reserved for data/documentation/config material
 #: that a path rule alone can certify.  The surfaces below are executable,
@@ -233,6 +237,81 @@ def _classify_policy_delta(baseline_document: dict, candidate_document: dict) ->
     }
 
 
+def policy_rule_value_sha256(document: dict, key: str) -> str | None:
+    """Digest of one policy field's value, in the canonical form ``_policy_value_equal`` compares.
+
+    ``None`` means the field is absent from that document.
+    """
+    if key not in document:
+        return None
+    return hashlib.sha256(
+        json.dumps(document[key], sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value)
+
+
+def _read_rule_changes(
+    entries: object, *, baseline_policy_bytes: bytes, candidate_policy_bytes: bytes,
+) -> list[str]:
+    """Check V2 rule changes against both policies and return their field names.
+
+    Each entry is ``{"key", "baseline_sha256", "candidate_sha256"}``: the field and
+    the digests of its exact value before and after (``null`` when absent on that
+    side). A name alone would let an authority approve any replacement of the
+    field; the two digests bind the one replacement the maintainer reviewed.
+    """
+    if not isinstance(entries, list) or not entries:
+        raise RefreshError(
+            "POLICY_DELTA_AUTHORITY_INVALID",
+            "V2 rule_changes must list at least one bound rule change; a path-only delta uses V1",
+        )
+    try:
+        baseline_document = json.loads(baseline_policy_bytes.decode("utf-8"))
+        candidate_document = json.loads(candidate_policy_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"cannot read a bound policy: {error}") from error
+    if not isinstance(baseline_document, dict) or not isinstance(candidate_document, dict):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "bound policies must be JSON objects")
+    keys = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"key", "baseline_sha256", "candidate_sha256"}:
+            raise RefreshError(
+                "POLICY_DELTA_AUTHORITY_INVALID",
+                "each V2 rule change must carry exactly key, baseline_sha256 and candidate_sha256",
+            )
+        key = entry["key"]
+        if not isinstance(key, str) or not key or key in ("include_paths", "exclude_paths"):
+            raise RefreshError(
+                "POLICY_DELTA_AUTHORITY_INVALID",
+                f"rule change key {key!r} must name a policy field other than the path lists",
+            )
+        if key in keys:
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"rule change {key!r} is listed twice")
+        for side in ("baseline_sha256", "candidate_sha256"):
+            if entry[side] is not None and not _is_sha256(entry[side]):
+                raise RefreshError(
+                    "POLICY_DELTA_AUTHORITY_INVALID",
+                    f"rule change {key!r} {side} must be a lowercase sha256 or null",
+                )
+        if entry["baseline_sha256"] == entry["candidate_sha256"]:
+            raise RefreshError(
+                "POLICY_DELTA_AUTHORITY_INVALID",
+                f"rule change {key!r} binds the same value on both sides",
+            )
+        for side, document in (("baseline_sha256", baseline_document), ("candidate_sha256", candidate_document)):
+            actual = policy_rule_value_sha256(document, key)
+            if entry[side] != actual:
+                raise RefreshError(
+                    "POLICY_DELTA_RULE_VALUE_MISMATCH",
+                    f"rule change {key!r} binds a different {side.split('_')[0]} value; actual sha256 is {actual}",
+                )
+        keys.append(key)
+    return keys
+
+
 def _read_policy_delta_authority(
     path: Path,
     *,
@@ -247,7 +326,11 @@ def _read_policy_delta_authority(
     allowed rule change: rule/control fields are bound by key name only, which
     is too weak to authorize a whole replacement of that rule surface -- the
     candidate policy must differ from the baseline only by explicit
-    include/exclude path-list entries.
+    include/exclude path-list entries.  V2 carries rule changes, each bound to
+    the digests of its field's exact baseline and candidate values
+    (``_read_rule_changes``).  Either version returns the same normalized
+    delta, with ``rule_changes`` as field names, so callers compare it with
+    ``_classify_policy_delta`` unchanged.
     """
     trusted = _external_input(path, candidate_root=candidate_root, label="policy delta authority")
     document = _read_json_file(trusted, code="POLICY_DELTA_AUTHORITY_INVALID")
@@ -256,10 +339,13 @@ def _read_policy_delta_authority(
             "POLICY_DELTA_AUTHORITY_INVALID",
             f"policy delta authority must declare kind {POLICY_DELTA_KIND!r}",
         )
-    if document.get("schema_version") != POLICY_DELTA_SCHEMA_VERSION:
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version not in (
+            POLICY_DELTA_SCHEMA_VERSION, POLICY_DELTA_RULE_SCHEMA_VERSION):
         raise RefreshError(
             "POLICY_DELTA_AUTHORITY_INVALID",
-            f"policy delta authority schema_version must be {POLICY_DELTA_SCHEMA_VERSION}",
+            f"policy delta authority schema_version must be {POLICY_DELTA_SCHEMA_VERSION} "
+            f"or {POLICY_DELTA_RULE_SCHEMA_VERSION}",
         )
     expected_baseline = document.get("baseline_policy_sha256")
     if not isinstance(expected_baseline, str) or len(expected_baseline) != 64 \
@@ -294,20 +380,32 @@ def _read_policy_delta_authority(
             "policy delta authority must carry an allowed_delta object",
         )
     expected_keys = {"include_added", "include_removed", "exclude_added", "exclude_removed", "rule_changes"}
+    path_keys = expected_keys - {"rule_changes"}
     if set(allowed) != expected_keys or not all(
         isinstance(allowed[key], list) and all(isinstance(item, str) for item in allowed[key])
-        for key in expected_keys
+        for key in (path_keys if schema_version == POLICY_DELTA_RULE_SCHEMA_VERSION else expected_keys)
     ):
         raise RefreshError(
             "POLICY_DELTA_AUTHORITY_INVALID",
-            "allowed_delta must carry exactly the five string-list delta keys",
+            "allowed_delta must carry exactly the five delta keys, path lists as string lists",
         )
-    if allowed["rule_changes"]:
-        raise RefreshError(
-            "POLICY_DELTA_AUTHORITY_INVALID",
-            "V1 refuses rule/control policy changes: allowed rule_changes must be empty",
+    if schema_version == POLICY_DELTA_SCHEMA_VERSION:
+        if allowed["rule_changes"]:
+            raise RefreshError(
+                "POLICY_DELTA_AUTHORITY_INVALID",
+                "V1 refuses rule/control policy changes: allowed rule_changes must be empty; "
+                "a rule change needs a V2 authority that binds its values",
+            )
+        rule_changes: list[str] = []
+    else:
+        rule_changes = _read_rule_changes(
+            allowed["rule_changes"],
+            baseline_policy_bytes=baseline_policy_bytes,
+            candidate_policy_bytes=candidate_policy_bytes,
         )
-    return {key: sorted(set(allowed[key])) for key in sorted(expected_keys)}
+    normalized = {key: sorted(set(allowed[key])) for key in sorted(path_keys)}
+    normalized["rule_changes"] = sorted(rule_changes)
+    return dict(sorted(normalized.items()))
 
 
 def _control_path(root: Path, relative: str, *, code: str) -> Path:

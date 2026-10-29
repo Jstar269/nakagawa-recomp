@@ -194,12 +194,15 @@ else ifeq ($(CASE),hle-audio-src)
 CASE_ID = 102
 else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
-# 106-107: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
-# #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells.
+# 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
+# #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
+# #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
 else ifeq ($(CASE),hle-issues-batch)
 CASE_ID = 106
 else ifeq ($(CASE),hle-intr-cells)
 CASE_ID = 107
+else ifeq ($(CASE),vfpu-forms)
+CASE_ID = 108
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -228,6 +231,8 @@ else ifeq ($(CASE),ge-timing)
 CASE_ID = 114
 else ifeq ($(CASE),cpu-timing)
 CASE_ID = 115
+else ifeq ($(CASE),thread-k0-block)
+CASE_ID = 116
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -411,6 +416,9 @@ TARGET = $(BUILD_DIR)/hle_issues_batch
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-intr-cells)
 TARGET = $(BUILD_DIR)/hle_intr_cells
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-forms)
+TARGET = $(BUILD_DIR)/vfpu_forms
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)

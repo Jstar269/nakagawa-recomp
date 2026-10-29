@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 import copy
 import io
@@ -22,7 +22,7 @@ from test_codegen_fp_convert import _synthetic_elf
 ROUTE_CLEAN_WORD = 0x60000000
 # Reserved VFPU4 jump form: codegen raises Unsupported and sr_vfpu_interp
 # returns SR_VFPU_OTHER, so a route containing it must fail the route census.
-ROUTE_OTHER_WORD = 0xD3E00000
+ROUTE_OTHER_WORD = 0xD3E08080
 # jr ra; nop -- ends the synthetic route body; neither word is VFPU.
 ROUTE_TAIL = (0x03E00008, 0x00000000)
 
@@ -117,8 +117,8 @@ class VfpuCoverageCensusTests(unittest.TestCase):
     def test_named_vfpu4_identity_rows_are_unimplemented_and_fail_closed(self):
         cases = (
             (0x01, 0x00, 0x0000, "vrnds"),
-            (0x01, 0x02, 0x0000, "vrndf1"),
-            (0x01, 0x03, 0x0000, "vrndf2"),
+            (0x01, 0x02, 0x0080, "vrndf1"),
+            (0x01, 0x03, 0x8000, "vrndf2"),
             (0x01, 0x01, 0x8080, "vrndi"),
         )
         words = tuple((0x34 << 26) | (rs << 21) | (rt << 16) | size_bits
@@ -157,6 +157,23 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         self.assertIsNone(rows[0]["boundary_issue"])
         self.assertEqual(rows[0]["differential_tests"],
                          ["vfpu-interp-selftest:check_vrndi_rule_cells"])
+
+    def test_vfpu_forms_are_direct_in_both_lanes_at_measured_widths(self):
+        # PSP-VFPU-FORMS-001 (issue #326): the two retail stops (FF III vh2f.p, Super
+        # Stardust Portable vwbn.s) and the other measured forms agree as direct in both
+        # lanes and name the selftest that pins them; other widths agree as unsupported.
+        direct = (0xD0330080, 0xD0330008, 0xD0380100, 0xD0456041, 0xD0450088, 0xD37F0007,
+                  0xD0220000, 0xD0230000)
+        records = census.classify_words(direct)
+        for record in records:
+            with self.subTest(word=f"0x{record['word']:08x}"):
+                self.assertTrue(record["interpreter_supported"])
+                self.assertEqual(census.agreement_status(record), "agree-supported-direct")
+        for row in census._make_rows(records):
+            self.assertEqual(row["compatibility_disposition"], "aot-direct")
+            self.assertIn("vfpu-interp-selftest:check_vfpu_forms_measured", row["differential_tests"])
+        closed = census.classify_words((0xD0338088, 0xD0380088, 0xD0458008, 0xD37F0088, 0xD0220080))
+        self.assertEqual(census.validate_agreement(closed)["agree-unsupported"], len(closed))
 
     def test_measured_vfpu9_forms_agree_as_interpreter_routes(self):
         # PSP-3000 measured forms (2026-10-24, issue #326): both lanes support the
@@ -211,7 +228,7 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             census.validate_agreement((mutated,))
 
     def test_agreement_gate_catches_unsupported_form_with_no_fallback_call(self):
-        word = (0x34 << 26) | (31 << 21)
+        word = (0x34 << 26) | (31 << 21) | 0x8080  # vwbn.q: no measured rule
         record = census.classify_words((word,))[0]
         mutated = copy.deepcopy(record)
         mutated["aot_emitted"] = ""
@@ -283,7 +300,7 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             path.write_text(
                 json.dumps([
                     {"word": "0x60000000", "count": 4},
-                    {"word": "0xd3e00000", "count": 2},
+                    {"word": "0xd3e08080", "count": 2},
                 ]),
                 encoding="ascii",
             )
@@ -292,7 +309,7 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertEqual(report["total_count"], 6)
             dispositions = {entry["word"]: entry["disposition"] for entry in report["entries"]}
             self.assertEqual(dispositions["0x60000000"], "aot-direct")
-            self.assertEqual(dispositions["0xd3e00000"], "unsupported-encoding")
+            self.assertEqual(dispositions["0xd3e08080"], "unsupported-encoding")
             output = io.StringIO()
             with redirect_stdout(output):
                 rc = census.main(["--encodings", str(path)])

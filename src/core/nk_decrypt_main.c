@@ -122,6 +122,9 @@ static int file_present(const char *path)
 
 /* --------------------------- diagnostics ------------------------------ */
 
+/* Prints the status word for `rc` (plus the context's message when there is
+ * one) and returns the matching process exit code. Callers return that value
+ * from main(), so the word and the code are what the Python tooling sees. */
 static int print_diagnostic(int rc, const NkPspCtx *ctx)
 {
     const char *entry = (ctx != NULL && ctx->missing_entry[0] != '\0')
@@ -285,10 +288,10 @@ static int cmd_kat(const char *vector)
  * entry it needs.  Returns 0, or the exit code after printing why. */
 static int load_keys(NkKeystore *ks, const char *key_path)
 {
-    char kerr[256];
+    char key_err[256];
     if (key_path == NULL) {
-        if (nk_keystore_load_builtin(ks, kerr, sizeof(kerr)) != NK_PSP_OK) {
-            printf("INTERNAL_ERROR %s\n", kerr);
+        if (nk_keystore_load_builtin(ks, key_err, sizeof(key_err)) != NK_PSP_OK) {
+            printf("INTERNAL_ERROR %s\n", key_err);
             return 9;
         }
         return 0;
@@ -298,8 +301,8 @@ static int load_keys(NkKeystore *ks, const char *key_path)
                "store\n", key_path);
         return 0;
     }
-    if (nk_keystore_load_file(ks, key_path, kerr, sizeof(kerr)) != NK_PSP_OK) {
-        printf("KEYFILE_INVALID %s\n", kerr);
+    if (nk_keystore_load_file(ks, key_path, key_err, sizeof(key_err)) != NK_PSP_OK) {
+        printf("KEYFILE_INVALID %s\n", key_err);
         return 6;
     }
     return 0;
@@ -327,7 +330,7 @@ static int cmd_probe(const char *in_path, const char *key_path)
     NkContainerInfo info;
     NkKeystore *ks = NULL;
     char entries[8][80];
-    int n;
+    int entry_count;
     int i;
     int rc;
 
@@ -361,11 +364,11 @@ static int cmd_probe(const char *in_path, const char *key_path)
     }
 
     printf("container %s\n", kind_name(info.kind));
-    n = nk_container_key_entries(&info, ks, entries, 8);
-    for (i = 0; i < n; i++) {
+    entry_count = nk_container_key_entries(&info, ks, entries, 8);
+    for (i = 0; i < entry_count; i++) {
         printf("%s\n", entries[i]);
     }
-    if (n == 0) {
+    if (entry_count == 0) {
         printf("(no key entries needed)\n");
     }
     nk_keystore_free(ks);
@@ -431,8 +434,6 @@ static int cmd_decrypt(const char *key_path, const char *in_path,
     free(data);
     return 0;
 }
-
-/* ------------------------------ main ----------------------------------- */
 
 /* ---------------------------- npumdimg --------------------------------- */
 

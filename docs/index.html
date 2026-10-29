@@ -8,7 +8,9 @@
   bar's colours, and the favicon is the mark.
 
   Layout: one calm column under a deep-blue top bar; sections are separated by space and hairlines, with a
-  Dolphin-style download table. New releases go in as the first row of that table, with the "Latest" badge.
+  Dolphin-style download table. New releases go in as the first row of that table, with the "Latest" badge. A row
+  gives its date and size twice: in their own cells, and in the version cell's meta line, which replaces those two
+  columns on a phone.
 
   Theme: every colour is a custom property on :root. The light set is the default; the dark set applies under
   prefers-color-scheme: dark unless the visitor picked Light, and whenever they picked Dark. Every section and the
@@ -142,6 +144,14 @@
     .dl .latest { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid currentColor; border-radius: 999px;
       padding: 0 7px; margin-left: 4px; vertical-align: 1px; }
     .dl tbody tr + tr td { border-top: 1px solid var(--line); }
+    .dl .plat, .dl .meta, .dl td.rel, .dl td.size { white-space: nowrap; }
+    .dl .meta { display: none; font-size: 13px; color: var(--muted); font-weight: 400; }
+    .dl td:last-child { text-align: right; }
+    /* A phone has no room for four columns: the date and size move under the platform. */
+    @media (max-width: 559.98px) {
+      .dl .rel, .dl .size { display: none; }
+      .dl .meta { display: block; }
+    }
     .btn { display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 16px; border-radius: 6px;
       background: var(--accent); color: var(--accent-fg); font-weight: 650; text-decoration: none; white-space: nowrap; }
     .small { font-size: 14px; color: var(--muted); margin: 12px 0 0; }
@@ -205,11 +215,11 @@
         <h2 id="dl-h">Download</h2>
         <div class="dl-wrap">
           <table class="dl">
-            <thead><tr><th scope="col">Version</th><th scope="col">Released</th><th scope="col">Size</th><th scope="col"><span class="visually-hidden">Download</span></th></tr></thead>
+            <thead><tr><th scope="col">Version</th><th scope="col" class="rel">Released</th><th scope="col" class="size">Size</th><th scope="col"><span class="visually-hidden">Download</span></th></tr></thead>
             <tbody><tr>
-              <td class="ver">v0.0.1 <span class="latest">Latest</span><span class="plat">Windows 11, 64-bit</span></td>
-              <td>Oct 2026</td>
-              <td>285 MB</td>
+              <td class="ver">v0.0.1 <span class="latest">Latest</span><span class="plat">Windows 11, 64-bit</span><span class="meta">Oct 2026 · 285 MB</span></td>
+              <td class="rel">Oct 2026</td>
+              <td class="size">285 MB</td>
               <td><a class="btn" href="https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1">Download</a></td>
             </tr></tbody>
           </table>

@@ -197,6 +197,21 @@ def _bounded_text(data: bytes) -> tuple[str, bool]:
     return clipped.decode("utf-8", errors="replace").replace("\r\n", "\n"), truncated
 
 
+def _probe_identity(
+    name: str, status: str, resolved: Path, binary_sha256: str, size: int, args: tuple[str, ...]
+) -> dict[str, Any]:
+    """The fields every probe result starts with, in the order the JSON report lists them."""
+    return {
+        "name": name,
+        "status": status,
+        "resolved_name": resolved.name,
+        "path_sha256": hashlib.sha256(str(resolved).encode("utf-8")).hexdigest(),
+        "binary_sha256": binary_sha256,
+        "size": size,
+        "command_args": list(args),
+    }
+
+
 def probe_executable(
     name: str,
     path: Path,
@@ -217,28 +232,12 @@ def probe_executable(
         status = execution["status"]
         if status == "exec_error":
             result = {
-                "name": name,
-                "status": "exec_error",
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
+                **_probe_identity(name, "exec_error", resolved, binary_sha256, size, args),
                 "error": execution["error"],
             }
         elif status == "timeout":
             result = {
-                "name": name,
-                "status": "timeout",
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
+                **_probe_identity(name, "timeout", resolved, binary_sha256, size, args),
                 "timeout_seconds": PROBE_TIMEOUT_SECONDS,
                 "stdout": _sanitize_output(
                     _bounded_text(execution["stdout"])[0],
@@ -263,19 +262,16 @@ def probe_executable(
                 stderr, include_paths=include_paths, resolved=resolved
             )
             result = {
-                "name": name,
-                "status": (
+                **_probe_identity(
+                    name,
                     "output_limit"
                     if status == "output_limit"
-                    else ("ok" if execution["returncode"] == 0 else "nonzero")
+                    else ("ok" if execution["returncode"] == 0 else "nonzero"),
+                    resolved,
+                    binary_sha256,
+                    size,
+                    args,
                 ),
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
                 "returncode": execution["returncode"],
                 "stdout": stdout,
                 "stderr": stderr,
@@ -295,28 +291,12 @@ def probe_executable(
             )
         except subprocess.TimeoutExpired:
             result = {
-                "name": name,
-                "status": "timeout",
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
+                **_probe_identity(name, "timeout", resolved, binary_sha256, size, args),
                 "timeout_seconds": PROBE_TIMEOUT_SECONDS,
             }
         except OSError as exc:
             result = {
-                "name": name,
-                "status": "exec_error",
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
+                **_probe_identity(name, "exec_error", resolved, binary_sha256, size, args),
                 "error": _safe_error(exc),
             }
         else:
@@ -329,15 +309,14 @@ def probe_executable(
                 stderr, include_paths=include_paths, resolved=resolved
             )
             result = {
-                "name": name,
-                "status": "ok" if completed.returncode == 0 else "nonzero",
-                "resolved_name": resolved.name,
-                "path_sha256": hashlib.sha256(
-                    str(resolved).encode("utf-8")
-                ).hexdigest(),
-                "binary_sha256": binary_sha256,
-                "size": size,
-                "command_args": list(args),
+                **_probe_identity(
+                    name,
+                    "ok" if completed.returncode == 0 else "nonzero",
+                    resolved,
+                    binary_sha256,
+                    size,
+                    args,
+                ),
                 "returncode": completed.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
