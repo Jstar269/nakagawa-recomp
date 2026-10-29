@@ -761,7 +761,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee59291cd294f93095188abc3871f5a25d25877b010a9840b2f3afac2e3cab5c"
+      "sha256": "a0108213e49dd690df418acad58077b8fdd4f1da7a65c74d03cbb761470f5e2c"
     },
     {
       "path": "assets/fonts/ui/chakra-petch/ChakraPetch-Bold.ttf",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2349ac35ffb0d4f69a81814cf6f92327c90bebf7faf18075804caee48945182"
+      "sha256": "d2af63be2ed55b774f3756c56768c797f1630c1cf0cf5429d29262bdbefc2b42"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -2176,7 +2176,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "633cad7fee964bcfb9df2397e3d8017cbbbb693ac4081061d0cee83e093e8712"
+      "sha256": "06dd244c76b10cc72501370468d5ad5a7d90ddc126c9d35d9999a4ce25691dc7"
     },
     {
       "path": "fixtures/fonts/README.md",
@@ -5675,7 +5675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9eafaa1a680697cbb0a1264efc61ee349d391c0fdb47951fd441dfe2489a090"
+      "sha256": "a5a4aed5360286636bdd86784d845a67c4851e5d73e736e8abd0d34fe2c530e4"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -5687,7 +5687,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93a088d8cd463d58ca102340541ad16e8fed530a6f003cfe40f812f7c17753bd"
+      "sha256": "45d806e251e192b35500d27f47f12b5ee5cbbe1033970b110628de049f2e785d"
     },
     {
       "path": "src/rt/fp_convert.h",
@@ -9079,7 +9079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "992bf767037789d09239ab1298ce8b7f95d8b5ade12dfda24e5282e53d9fc71b"
+      "sha256": "64aa7eae79b74461030503fd55048c7a3e95a50cfc9c7c09775eafe0a8b2d18c"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9688,7 +9688,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967c27f67d9ea6b844fbdbbb54cc965df79486d1fe59c8cf88a6dde5e5539300"
+      "sha256": "9448284af14d8de73916be86b6473a60373bacba6779722655208246eb2c7549"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -12737,7 +12737,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2e6bd8004f177826741f9450535e86dc03be012d059771edc5932a757e6007d0"
+      "sha256": "4293ffd0239c5c18d31296ac44067e93075b9ea75095dc626ca15bd43ab40512"
     },
     {
       "path": "tools/format_portability_check.py",
@@ -14834,7 +14834,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "074f176f545617b5181fbaf8737922939d1bb0a83380df4b23a21a83c8d56a8e"
+      "sha256": "c8ee3258e4a48d37c42c1b825328e5b197bab5c01d8ad90c6b92475ad2ce9524"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -14846,7 +14846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "32fe35b4c69c75b029c47c7d44695ab6de33785d28255a7e5af53f1bf077465c"
+      "sha256": "430b25a4ada6930a17dc300b18653a2c391e49280a2704bcbe33335d14283f8c"
     },
     {
       "path": "tools/test_font_provisioning.py",

@@ -3471,7 +3471,7 @@ static void test_flight_recorder_thread_snapshot(void) {
     size = file ? fread(bundle, 1u, sizeof(bundle) - 1u, file) : 0u;
     if (file) fclose(file);
     bundle[size] = '\0';
-    expect(size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
+    expect(size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL,
            "thread snapshot: the bundle is schema 6");
     expect(strstr(bundle, "\"threads\": [") != NULL, "thread snapshot: the bundle has a threads block");
 

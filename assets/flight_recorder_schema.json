@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v6",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v7",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"enum": [1, 2, 3, 4, 5, 6]},
+    "schema_version": {"enum": [1, 2, 3, 4, 5, 6, 7]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3 to 6 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3 to 7 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
       "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
@@ -39,21 +39,44 @@
         "enabled_classes": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 9,
+          "maxItems": 10,
           "uniqueItems": true,
-          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]}
+          "items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present", "watch"]}
         },
         "limit": {"type": "integer", "minimum": 1, "maximum": 4096},
         "recorded": {"type": "integer", "minimum": 0},
         "dropped": {"type": "integer", "minimum": 0},
+        "watch_range": {
+          "type": ["object", "null"],
+          "description": "Schema 7 only. The SR_WATCH range the watch class records (address and length in bytes, at most 64), or null when the watch class is off. It bounds what the watch class can see, so it is part of the capture policy.",
+          "additionalProperties": false,
+          "required": ["address", "length"],
+          "properties": {
+            "address": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+            "length": {"type": "integer", "minimum": 1, "maximum": 64}
+          }
+        },
         "triggers": {
           "type": "object",
-          "description": "Armed terminal triggers and whether one fired. first_unsupported_nid arms the unknown-NID stop (no handler); a named refusal never fires a trigger in schema 5 or 6 and never ends the record. fired is 1 only for a fatal, unknown-NID, or watchdog-hang terminal.",
+          "description": "Armed terminal triggers and whether one fired. first_unsupported_nid arms the unknown-NID stop (no handler); a named refusal never fires a trigger in schema 5 to 7 and never ends the record. fired is 1 only for a fatal, unknown-NID, watchdog-hang or (schema 7) trigger terminal. Schema 7 adds the SR_FLIGHT_TRIGGER mode: none, pc (the first event whose guest pc operand is pc), ge-draw (the ge_draw-th GE draw), watch (the first watch-change event) or checkpoint (the occurrence-th event of kind, then after more events). Each parameter is null unless its mode is armed.",
           "additionalProperties": false,
           "required": ["first_fatal", "first_unsupported_nid", "fired"],
           "properties": {
             "first_fatal": {"type": "boolean"},
             "first_unsupported_nid": {"type": "boolean"},
+            "mode": {"enum": ["none", "pc", "ge-draw", "watch", "checkpoint"]},
+            "pc": {"type": ["integer", "null"], "minimum": 0, "maximum": 4294967295},
+            "ge_draw": {"type": ["integer", "null"], "minimum": 1, "maximum": 4294967295},
+            "checkpoint": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "required": ["kind", "occurrence", "after"],
+              "properties": {
+                "kind": {"type": "integer", "minimum": 1, "maximum": 31},
+                "occurrence": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+                "after": {"type": "integer", "minimum": 0, "maximum": 4095}
+              }
+            },
             "fired": {"type": "integer", "minimum": 0, "maximum": 1}
           }
         }
@@ -65,8 +88,8 @@
       "required": ["reason", "sequence", "kind", "arg0"],
       "properties": {
         "reason": {
-          "enum": ["running", "exit", "budget", "hang", "fatal", "unsupported-nid"],
-          "description": "running: no terminal yet (a provisional record written at a named refusal, so a run killed later is not reported under that refusal). exit: normal exit. budget: the SR_EXIT_AT_VBLANK vblank budget was reached (arg0 is the vblank). hang: the no-frame watchdog aborted (arg0 is the vblanks without a frame). fatal: a fatal event. unsupported-nid: an NID with no handler ended the run (kind 13). Schema 1 to 4 bundles use only running, exit, fatal and unsupported-nid; unsupported-nid there may also be a frozen named refusal (kind 2)."
+          "enum": ["running", "exit", "budget", "hang", "fatal", "unsupported-nid", "trigger"],
+          "description": "running: no terminal yet (a provisional record written at a named refusal, so a run killed later is not reported under that refusal). exit: normal exit. budget: the SR_EXIT_AT_VBLANK vblank budget was reached (arg0 is the vblank). hang: the no-frame watchdog aborted (arg0 is the vblanks without a frame). fatal: a fatal event. unsupported-nid: an NID with no handler ended the run (kind 13). trigger (schema 7): the armed SR_FLIGHT_TRIGGER mode matched the event at sequence; kind is that event's kind and arg0 the mode's argument (pc: the pc; ge-draw: the draw ordinal; watch: the store address; checkpoint: the occurrence). Schema 1 to 4 bundles use only running, exit, fatal and unsupported-nid; unsupported-nid there may also be a frozen named refusal (kind 2)."
         },
         "sequence": {"type": "integer", "minimum": 0},
         "kind": {"type": "integer", "minimum": 0, "maximum": 4294967295},
@@ -75,7 +98,7 @@
     },
     "refusals": {
       "type": "object",
-      "description": "Schema 5 and 6 only. Named refusals: calls the runtime answered with a registered error while the guest kept running. Each one is a counted event and never ends the record. first_nid and first_pc name the first refusal (null when count is 0). nids lists each refused NID once, in first-seen order, with its count, capped at 32 entries; nids_unlisted counts refusals of further NIDs past that cap. count is the sum of the nids counts plus nids_unlisted.",
+      "description": "Schema 5 to 7 only. Named refusals: calls the runtime answered with a registered error while the guest kept running. Each one is a counted event and never ends the record. first_nid and first_pc name the first refusal (null when count is 0). nids lists each refused NID once, in first-seen order, with its count, capped at 32 entries; nids_unlisted counts refusals of further NIDs past that cap. count is the sum of the nids counts plus nids_unlisted.",
       "additionalProperties": false,
       "required": ["count", "first_nid", "first_pc", "first_sequence", "nids", "nids_unlisted"],
       "properties": {
@@ -101,7 +124,7 @@
     },
     "threads": {
       "type": "array",
-      "description": "Schema 6 only. Terminal thread snapshot: one entry per guest thread that exists when the bundle is written (deleted threads are skipped), in thread-table order, so a thread that blocked before the retained event window still shows what it waits on. Empty when the runtime registered no scheduler. All values are scalars the scheduler holds; nothing is read from guest memory. why uses the scheduler's thread-dump classification. wait_type is the PSP waitType ReferThreadStatus reports (0 when not waiting). wait_object is the waited object (0 outside an object wait). block_nid is the import the thread last blocked in, null if its last block happened outside any import or it never blocked. pc and ra are the saved registers, or the live ones for the running thread. waited_us is the virtual time since the current wait began (null when not waiting or when the start is unknown); deadline_us is the virtual time left on a timed wait (null for an untimed wait or no wait).",
+      "description": "Schema 6 and 7 only. Terminal thread snapshot: one entry per guest thread that exists when the bundle is written (deleted threads are skipped), in thread-table order, so a thread that blocked before the retained event window still shows what it waits on. Empty when the runtime registered no scheduler. All values are scalars the scheduler holds; nothing is read from guest memory. why uses the scheduler's thread-dump classification. wait_type is the PSP waitType ReferThreadStatus reports (0 when not waiting). wait_object is the waited object (0 outside an object wait). block_nid is the import the thread last blocked in, null if its last block happened outside any import or it never blocked. pc and ra are the saved registers, or the live ones for the running thread. waited_us is the virtual time since the current wait began (null when not waiting or when the start is unknown); deadline_us is the virtual time left on a timed wait (null for an untimed wait or no wait).",
       "maxItems": 128,
       "items": {
         "type": "object",
@@ -145,10 +168,10 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"enum": [1, 2, 3, 4, 5, 6]},
+          "schema_version": {"enum": [1, 2, 3, 4, 5, 6, 7]},
           "sequence": {"type": "integer", "minimum": 1},
-          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
-          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present. Kind 30 is an SR_NAN_TRAP origin (fault class, never a trigger): arg0 is the guest pc, arg1 packs the domain (1 FPU, 2 VFPU) in bits 0-7, the result (1 NaN, 2 +Inf, 3 -Inf) in bits 8-15 and the destination register in bits 16-23, arg2 is the lane of the first non-finite result word, and arg3 is the VBLANK count."},
+          "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present", "watch"]},
+          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present. Kind 30 is an SR_NAN_TRAP origin (fault class, never a trigger): arg0 is the guest pc, arg1 packs the domain (1 FPU, 2 VFPU) in bits 0-7, the result (1 NaN, 2 +Inf, 3 -Inf) in bits 8-15 and the destination register in bits 16-23, arg2 is the lane of the first non-finite result word, and arg3 is the VBLANK count. Kind 31 is a watch change (watch class, schema 7): arg0 is the storing pc, arg1 the store address, arg2 packs the store width (bits 0-7) and bit 8, set when every watched byte the store covers had a known earlier value, and arg3 is the stored value."},
           "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: list address; GE list operations: list id; SetFrameBuf/present: framebuffer address."},
           "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: command address; enqueue: stall address; SetFrameBuf/present: pixel format."},
           "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: primitive type; SetFrameBuf/present: stride."},
@@ -171,6 +194,10 @@
             "then": {"properties": {"class": {"const": "fault"}}}
           },
           {
+            "if": {"properties": {"kind": {"const": 31}}, "required": ["kind"]},
+            "then": {"properties": {"class": {"const": "watch"}}}
+          },
+          {
             "if": {"properties": {"schema_version": {"const": 1}}, "required": ["schema_version"]},
             "then": {
               "allOf": [
@@ -180,7 +207,7 @@
             }
           },
           {
-            "if": {"properties": {"schema_version": {"enum": [2, 3, 4, 5, 6]}}, "required": ["schema_version"]},
+            "if": {"properties": {"schema_version": {"enum": [2, 3, 4, 5, 6, 7]}}, "required": ["schema_version"]},
             "then": {
               "if": {
                 "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
@@ -231,6 +258,40 @@
       }
     },
     {
+      "if": {"properties": {"schema_version": {"const": 7}}, "required": ["schema_version"]},
+      "then": {
+        "required": ["refusals", "threads"],
+        "properties": {
+          "events": {"items": {"properties": {"schema_version": {"const": 7}}}},
+          "recorder": {
+            "required": ["watch_range"],
+            "properties": {"triggers": {"required": ["mode", "pc", "ge_draw", "checkpoint"]}}
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"schema_version": {"enum": [1, 2, 3, 4, 5, 6]}}, "required": ["schema_version"]},
+      "then": {
+        "properties": {
+          "recorder": {
+            "allOf": [
+              {"not": {"required": ["watch_range"]}},
+              {"properties": {"enabled_classes": {"items": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]}}}},
+              {"properties": {"triggers": {"allOf": [
+                {"not": {"required": ["mode"]}},
+                {"not": {"required": ["pc"]}},
+                {"not": {"required": ["ge_draw"]}},
+                {"not": {"required": ["checkpoint"]}}
+              ]}}}
+            ]
+          },
+          "terminal": {"properties": {"reason": {"enum": ["running", "exit", "budget", "hang", "fatal", "unsupported-nid"]}}},
+          "events": {"items": {"properties": {"class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]}}}}
+        }
+      }
+    },
+    {
       "if": {"properties": {"schema_version": {"enum": [1, 2, 3, 4, 5]}}, "required": ["schema_version"]},
       "then": {"not": {"required": ["threads"]}}
     },
@@ -250,7 +311,7 @@
       ]}}}
     },
     {
-      "if": {"properties": {"schema_version": {"enum": [3, 4, 5, 6]}}, "required": ["schema_version"]},
+      "if": {"properties": {"schema_version": {"enum": [3, 4, 5, 6, 7]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["source_date_epoch", "build_id"]},
         {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},

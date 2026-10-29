@@ -1171,6 +1171,200 @@ class ThreadSnapshotTests(unittest.TestCase):
             )
 
 
+def v7_triggers(mode="none", *, pc=None, ge_draw=None, checkpoint=None, fired=0):
+    return {"first_fatal": True, "first_unsupported_nid": True, "mode": mode, "pc": pc,
+            "ge_draw": ge_draw, "checkpoint": checkpoint, "fired": fired}
+
+
+def v7_bundle(events, *, triggers=None, reason="exit", sequence=None, kind=0, arg0=0,
+              classes=None, watch_range=None, limit=8, dropped=0):
+    for record in events:
+        record["schema_version"] = 7
+    bundle = make_bundle(
+        events, recorded=len(events) + dropped, dropped=dropped, terminal_reason=reason,
+        terminal_sequence=sequence, terminal_kind=kind, terminal_arg0=arg0, version=7,
+        triggers=triggers if triggers is not None else v7_triggers(),
+    )
+    if classes is not None:
+        bundle["recorder"]["enabled_classes"] = classes
+    bundle["recorder"]["limit"] = limit
+    bundle["recorder"]["watch_range"] = watch_range
+    bundle["refusals"] = v5_refusals([])
+    bundle["threads"] = []
+    return bundle
+
+
+PC_TRIGGER = 0x08804010
+
+
+def v7_hle(sequence, pc, value=0):
+    return event(sequence, "hle", kind=1, arg0=0x12345678, arg2=pc, arg3=pc + 8, version=7,
+                 arguments=[value, 2, 3, 4], return_value=0)
+
+
+class TriggerPolicySchemaTests(unittest.TestCase):
+    """Schema 7 (#320, folded from #1433): trigger modes and the watch class."""
+
+    def _pc_triggered(self, *, value=0):
+        events = [event(1, "sched", kind=3, version=7), v7_hle(2, PC_TRIGGER - 8, value),
+                  v7_hle(3, PC_TRIGGER)]
+        return v7_bundle(events, triggers=v7_triggers("pc", pc=PC_TRIGGER, fired=1),
+                         reason="trigger", sequence=3, kind=1, arg0=PC_TRIGGER)
+
+    def test_untriggered_schema_7_bundle_validates(self):
+        flight_diff.validate_bundle(v7_bundle([event(1, "sched", kind=3, version=7)]))
+
+    def test_pc_triggered_bundle_validates(self):
+        flight_diff.validate_bundle(self._pc_triggered())
+
+    def test_schema_7_requires_the_trigger_policy(self):
+        bundle = v7_bundle([event(1, "sched", kind=3, version=7)])
+        del bundle["recorder"]["triggers"]["mode"]
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "missing required property 'mode'"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_6_cannot_carry_schema_7_fields(self):
+        base = v6_bundle([event(1, "sched", kind=3, version=6)], threads=[], sequence=1)
+        cases = {
+            "watch class": lambda b: b["recorder"]["enabled_classes"].append("watch"),
+            "trigger mode": lambda b: b["recorder"]["triggers"].update(mode="none"),
+            "watch range": lambda b: b["recorder"].update(watch_range=None),
+            "trigger terminal": lambda b: b["terminal"].update(reason="trigger"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                bundle = copy.deepcopy(base)
+                mutate(bundle)
+                with self.assertRaises(flight_diff.FlightDiffError):
+                    flight_diff.validate_bundle(bundle)
+
+    def test_trigger_terminal_needs_an_armed_mode(self):
+        bundle = self._pc_triggered()
+        bundle["recorder"]["triggers"] = v7_triggers(fired=1)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "needs an armed trigger mode"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_parameters_are_set_exactly_for_their_mode(self):
+        bundle = v7_bundle([event(1, "sched", kind=3, version=7)],
+                           triggers=v7_triggers("none", pc=PC_TRIGGER))
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "pc is set exactly when"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_pc_trigger_must_name_the_first_event_at_its_pc(self):
+        wrong_pc = self._pc_triggered()
+        wrong_pc["recorder"]["triggers"]["pc"] = PC_TRIGGER - 8
+        wrong_pc["terminal"]["arg0"] = PC_TRIGGER - 8
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "names an event at the armed pc"):
+            flight_diff.validate_bundle(wrong_pc)
+        late = self._pc_triggered()
+        late["events"][1]["arg2"] = PC_TRIGGER
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "first event at the armed pc"):
+            flight_diff.validate_bundle(late)
+
+    def test_record_freezes_at_a_non_checkpoint_trigger(self):
+        bundle = self._pc_triggered()
+        bundle["terminal"]["sequence"] = 2
+        bundle["recorder"]["triggers"]["pc"] = PC_TRIGGER - 8
+        bundle["terminal"]["arg0"] = PC_TRIGGER - 8
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "freezes at the trigger"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_checkpoint_window_is_bounded_by_after_and_the_limit(self):
+        events = [event(index, "sched", kind=3 if index % 2 else 4, version=7)
+                  for index in range(1, 6)]
+        checkpoint = {"kind": 3, "occurrence": 2, "after": 2}
+        bundle = v7_bundle(events, triggers=v7_triggers("checkpoint", checkpoint=checkpoint, fired=1),
+                           reason="trigger", sequence=3, kind=3, arg0=2, classes=["sched"])
+        flight_diff.validate_bundle(bundle)
+        too_long = copy.deepcopy(bundle)
+        too_long["recorder"]["triggers"]["checkpoint"]["after"] = 1
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "end of its window"):
+            flight_diff.validate_bundle(too_long)
+        past_limit = copy.deepcopy(bundle)
+        past_limit["recorder"]["triggers"]["checkpoint"]["after"] = 8
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "shorter than the limit"):
+            flight_diff.validate_bundle(past_limit)
+        wrong_occurrence = copy.deepcopy(bundle)
+        wrong_occurrence["recorder"]["triggers"]["checkpoint"]["occurrence"] = 1
+        wrong_occurrence["terminal"]["arg0"] = 1
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "fires at the armed occurrence"):
+            flight_diff.validate_bundle(wrong_occurrence)
+
+    def test_ge_draw_trigger_fires_at_its_ordinal(self):
+        events = [event(1, "ge", kind=20, version=7), event(2, "ge", kind=25, arg3=3, version=7),
+                  event(3, "ge", kind=25, arg3=4, version=7)]
+        bundle = v7_bundle(events, triggers=v7_triggers("ge-draw", ge_draw=2, fired=1),
+                           reason="trigger", sequence=3, kind=25, arg0=2, classes=["ge"])
+        flight_diff.validate_bundle(bundle)
+        bundle["recorder"]["triggers"]["ge_draw"] = 3
+        bundle["terminal"]["arg0"] = 3
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "armed draw ordinal"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_watch_changes_stay_inside_the_recorded_range(self):
+        watch_range = {"address": 0x08A00000, "length": 8}
+        change = event(1, "watch", kind=31, arg0=0x08800100, arg1=0x08A00006, arg2=4,
+                       arg3=0xAABBCCDD, version=7)
+        bundle = v7_bundle([change], classes=["watch"], watch_range=watch_range)
+        flight_diff.validate_bundle(bundle)
+        outside = copy.deepcopy(bundle)
+        outside["events"][0]["arg1"] = 0x08A00008
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "does not touch the recorded watch range"):
+            flight_diff.validate_bundle(outside)
+        stray = copy.deepcopy(bundle)
+        stray["events"][0]["arg2"] = 4 | (1 << 9)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "width and the known bit only"):
+            flight_diff.validate_bundle(stray)
+        no_class = copy.deepcopy(bundle)
+        no_class["recorder"]["enabled_classes"] = ["hle"]
+        no_class["events"] = []
+        no_class["recorder"]["recorded"] = 0
+        no_class["terminal"]["sequence"] = 0
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "exactly when the watch class is on"):
+            flight_diff.validate_bundle(no_class)
+
+    def test_differing_trigger_parameters_or_watch_ranges_are_incomparable(self):
+        baseline = self._pc_triggered()
+        other = self._pc_triggered()
+        other["recorder"]["triggers"]["pc"] = PC_TRIGGER - 8
+        other["terminal"]["arg0"] = PC_TRIGGER - 8
+        other["terminal"]["sequence"] = 2
+        other["events"] = other["events"][:2]
+        other["recorder"]["recorded"] = 2
+        with self.assertRaises(flight_diff.BundleIncomparable) as raised:
+            flight_diff.diff_bundles(baseline, other, "sequence")
+        self.assertTrue(any("trigger policies differ" in reason for reason in raised.exception.reasons))
+        change = event(1, "watch", kind=31, arg1=0x08A00000, arg2=4, version=7)
+        left = v7_bundle([change], classes=["watch"],
+                         watch_range={"address": 0x08A00000, "length": 8})
+        right = copy.deepcopy(left)
+        right["recorder"]["watch_range"]["length"] = 4
+        with self.assertRaises(flight_diff.BundleIncomparable) as raised:
+            flight_diff.diff_bundles(left, right, "sequence")
+        self.assertTrue(any("watch ranges differ" in reason for reason in raised.exception.reasons))
+
+    def test_cli_names_the_trigger_and_decodes_a_watch_change(self):
+        watch_range = {"address": 0x08A00000, "length": 8}
+        left = v7_bundle([event(1, "watch", kind=31, arg0=0x08800100, arg1=0x08A00000, arg2=4,
+                                arg3=0x11223344, version=7)],
+                         triggers=v7_triggers("watch", fired=1), reason="trigger", sequence=1,
+                         kind=31, arg0=0x08A00000, classes=["watch"], watch_range=watch_range)
+        right = copy.deepcopy(left)
+        right["events"][0]["arg3"] = 0x11223345
+        with tempfile.TemporaryDirectory() as temp:
+            left_path = Path(temp) / "left.json"
+            right_path = Path(temp) / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"), str(left_path),
+                 str(right_path)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, flight_diff.EXIT_DIVERGENCE, result.stdout + result.stderr)
+        self.assertIn("trigger mode: watch", result.stdout)
+        self.assertIn("kind=watch-change (31)", result.stdout)
+        self.assertIn("address=0x08a00000 width=4 value=0x11223344 first-write", result.stdout)
+
+
 # Host primitives that sleep, yield the host thread or wait, and the guest scheduler's own
 # entry points. The recorder runs inside guest scheduling decisions, so calling any of them
 # would let logging change guest-visible timing (#320 acceptance 5).

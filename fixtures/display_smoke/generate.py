@@ -837,6 +837,7 @@ def run(
     gui: bool = False,
     offscreen: bool = False,
     flight_output: Path | None = None,
+    flight_trigger: str | None = None,
 ) -> int:
     # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
     # CHILD resolve the executable/image paths against ROOT rather than the
@@ -891,6 +892,11 @@ def run(
             # the host clock, so the gate bounds that count while keeping guest evidence exact.
             "SR_FPS_CAP": "30",
         })
+        # An inherited trigger or watch range would change what the bundle retains.
+        for key in ("SR_FLIGHT_TRIGGER", "SR_WATCH"):
+            env.pop(key, None)
+        if flight_trigger is not None:
+            env["SR_FLIGHT_TRIGGER"] = flight_trigger
     completed = subprocess.run(
         command, cwd=run_cwd, env=env, capture_output=True, text=True
     )
@@ -1233,8 +1239,8 @@ def flight_smoke(build_dir: Path) -> int:
         for label, bundle, run_dir in (
             ("first", first, first_dir), ("second", second, second_dir)
         ):
-            if bundle["schema_version"] != 6:
-                raise RuntimeError(f"{label} flight bundle is not schema v6")
+            if bundle["schema_version"] != 7:
+                raise RuntimeError(f"{label} flight bundle is not schema v7")
             if bundle["recorder"]["enabled_classes"] != ["ge", "present"]:
                 raise RuntimeError(f"{label} flight bundle has unexpected class coverage")
             if bundle["recorder"]["dropped"] != 0:
@@ -1277,11 +1283,41 @@ def flight_smoke(build_dir: Path) -> int:
                 f"mutated draw count was not localized: {divergence.stdout}{divergence.stderr}"
             )
 
+        # The ge-draw trigger mode (#320) on the production GE path: the record freezes at
+        # the first PRIM, while the run itself still finishes with its exact pixel.
+        trigger_dir = temp / "trigger"
+        trigger_dir.mkdir()
+        trigger_path = trigger_dir / "flight.json"
+        run(build_dir, gui=True, offscreen=True, flight_output=trigger_path,
+            flight_trigger="ge-draw:1")
+        triggered = json.loads(trigger_path.read_text(encoding="utf-8"))
+        validated = subprocess.run(
+            [sys.executable, "-c",
+             "import json, sys; sys.path.insert(0, sys.argv[1]); import flight_diff; "
+             "flight_diff.validate_bundle(json.load(open(sys.argv[2], encoding='utf-8')))",
+             str(ROOT / "tools"), str(trigger_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if validated.returncode != 0:
+            raise RuntimeError(f"ge-draw trigger bundle is malformed: {validated.stderr}")
+        terminal = triggered["terminal"]
+        last = triggered["events"][-1] if triggered["events"] else {}
+        draws = [event for event in triggered["events"]
+                 if event["class"] == "ge" and event["kind"] == 25]
+        if (terminal["reason"] != "trigger" or terminal["kind"] != 25 or terminal["arg0"] != 1
+                or triggered["recorder"]["triggers"]["mode"] != "ge-draw"
+                or triggered["recorder"]["triggers"]["ge_draw"] != 1
+                or len(draws) != 1 or last is not draws[-1]
+                or terminal["sequence"] != last.get("sequence")
+                or triggered["recorder"]["recorded"] != terminal["sequence"]):
+            raise RuntimeError(f"ge-draw trigger did not freeze at the first draw: {terminal}")
+
     print(
         f"DISPLAY_FLIGHT_SMOKE status=PASS ge=4 set_framebuf={frames} "
         f"host_present={host_present_counts[0]},{host_present_counts[1]} "
         f"bounds={frames // 2}..{frames} pixel_frames={pixel_frames[0]},{pixel_frames[1]} "
-        "pixels=EXACT identical=MATCH mutation=FIRST_GE_DRAW_COUNT"
+        "pixels=EXACT identical=MATCH mutation=FIRST_GE_DRAW_COUNT "
+        f"trigger=GE_DRAW_1@{terminal['sequence']}"
     )
     return 0
 

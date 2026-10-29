@@ -33690,7 +33690,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -33763,6 +33763,100 @@ static void test_flight_recorder_trace(void) {
     remove(output);
     sr_flight_test_disable();
     hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+}
+
+/* Schema 7 trigger modes (#320, folded from #1433) on production producers: the pc mode
+ * stops at an HLE import dispatched through sr_syscall, and a checkpoint stops after its
+ * window of scheduler picks. Each freeze writes the bundle and the run keeps going. */
+static void test_flight_recorder_trigger_modes(void) {
+    const char *output = "flight_recorder_trigger_selftest.json";
+    SrFlightSnapshot snapshot;
+    SrFlightEvent flight_event;
+    CpuState cpu;
+    TCB *first;
+    uint32_t module_uid;
+    char bundle[16384];
+    size_t bundle_size;
+    FILE *bundle_file;
+
+    remove(output);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", output);
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_SCHED, 16u);
+    expect(sr_flight_test_trigger("pc:0x08804010") == 1, "trigger: the pc spec is accepted");
+    sr_hle_init();
+    sr_hle_test_module_reset();
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
+    first = fixture_thread(0x320u, TH_READY, 20);
+    s_cur = (int)(first - s_tcb);
+    (void)pick_next();
+    module_uid = sr_hle_test_register_module("trigger.prx", 0u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    cpu.pc = 0x08804000u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "trigger: an import at another pc runs");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 0u && snapshot.trigger_mode == SR_FLIGHT_TRIGGER_PC &&
+               snapshot.trigger_match_sequence == 0u,
+           "trigger: an import at another pc does not fire the pc mode");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    cpu.pc = 0x08804010u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "trigger: the import at the armed pc still runs");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_TRIGGER &&
+               snapshot.terminal_arg == 0x08804010u &&
+               snapshot.terminal_sequence == snapshot.recorded &&
+               snapshot.trigger_match_sequence == snapshot.recorded,
+           "trigger: the pc mode freezes at the import dispatched at the armed pc");
+    expect(sr_flight_event_at((uint32_t)sr_flight_event_count() - 1u, &flight_event) != 0 &&
+               flight_event.kind == SR_FLIGHT_KIND_HLE_IMPORT && flight_event.arg2 == 0x08804010u &&
+               flight_event.has_return != 0u && flight_event.arguments[0] == module_uid,
+           "trigger: the frozen import keeps its arguments and return value");
+    s_cur = -1;
+    (void)pick_next();
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == snapshot.terminal_sequence,
+           "trigger: nothing is recorded after a pc freeze");
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"trigger\"") != NULL &&
+               strstr(bundle, "\"mode\": \"pc\", \"pc\": 142622736") != NULL &&
+               strstr(bundle, "\"return_value\": 0}") != NULL,
+           "trigger: the pc bundle names its policy, its trigger terminal and the return value");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* checkpoint: the second scheduler pick, then two more events, in a ring of four. */
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_SCHED, 4u);
+    expect(sr_flight_test_trigger("checkpoint:3:2:2") == 1, "trigger: the checkpoint spec is accepted");
+    first = fixture_thread(0x321u, TH_READY, 20);
+    for (int i = 0; i < 4; ++i) {
+        s_cur = -1;
+        (void)pick_next();
+    }
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_TRIGGER &&
+               snapshot.terminal_kind == SR_FLIGHT_KIND_SCHED_PICK && snapshot.terminal_arg == 2u &&
+               snapshot.recorded == snapshot.terminal_sequence + 2u &&
+               snapshot.retained == 4u && snapshot.trigger_after_remaining == 0u,
+           "trigger: the checkpoint window closes two events after the second pick");
+    expect(sr_flight_event_at(0u, &flight_event) != 0 &&
+               flight_event.sequence + 1u == snapshot.terminal_sequence,
+           "trigger: the ring keeps limit-1-after events before the checkpoint");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* A refused spec disables the recorder rather than capture under another stop rule. */
+    sr_flight_test_reset(SR_FLIGHT_CLASS_SCHED, 4u);
+    expect(sr_flight_test_trigger("checkpoint:3:1:4") == 0 && !sr_flight_class_enabled(SR_FLIGHT_CLASS_SCHED),
+           "trigger: a window as long as the ring is refused and disables the recorder");
+    sr_flight_test_disable();
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+    (void)first;
 }
 
 static size_t flight_refusal_read_bundle(const char *path, char *bundle, size_t capacity) {
@@ -33993,7 +34087,7 @@ static void test_flight_recorder_thread_snapshot(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL &&
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL &&
                strstr(bundle, "\"threads\": [") != NULL,
            "thread snapshot: the exit bundle is schema 6 with a threads block");
     snprintf(needle, sizeof(needle),
@@ -37559,6 +37653,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();
+    test_flight_recorder_trigger_modes();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
     test_flight_recorder_refusals_are_events_not_terminals();

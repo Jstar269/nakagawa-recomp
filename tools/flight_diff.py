@@ -14,7 +14,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "assets" / "flight_recorder_schema.json"
-CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "media", "fault", "fatal", "ge", "present")
+CLASS_ORDER = ("hle", "unsupported", "sched", "prx", "media", "fault", "fatal", "ge", "present",
+               "watch")
 EVENT_KIND_NAMES = {
     1: "hle-import",
     2: "unsupported-nid",
@@ -46,6 +47,7 @@ EVENT_KIND_NAMES = {
     28: "present-set-framebuf",
     29: "present-frame",
     30: "nan-origin",
+    31: "watch-change",
 }
 
 # SR_FLIGHT_KIND_NAN_ORIGIN (issue #320): arg1 packs domain (bits 0-7), result class
@@ -248,6 +250,9 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
             _fail("$.terminal", "an untriggered bundle must terminate at exit")
     if version >= 6:
         _validate_threads(bundle["threads"])
+    if version >= 7:
+        _validate_watch_events(bundle)
+        _validate_trigger_policy(bundle)
 
 
 def _nan_origin_operands(event: dict[str, Any]) -> tuple[int, int, int]:
@@ -280,7 +285,7 @@ def _validate_nan_origin_events(events: list[dict[str, Any]]) -> None:
 # A schema 5 terminal is what ended the run. Only a fatal, an unknown NID with no handler, or a
 # watchdog hang fires a trigger; a clean exit, a vblank budget stop, or a record still running
 # (a provisional write) does not. A named refusal never ends the record at all.
-SCHEMA5_FIRED_REASONS = frozenset({"fatal", "unsupported-nid", "hang"})
+SCHEMA5_FIRED_REASONS = frozenset({"fatal", "unsupported-nid", "hang", "trigger"})
 SCHEMA5_UNFIRED_REASONS = frozenset({"exit", "budget", "running"})
 
 
@@ -289,7 +294,7 @@ def _validate_schema5_terminal(fired: int, reason: str) -> None:
         if reason == "budget":
             _fail("$.terminal", "a budget stop ends without a fired trigger")
         if reason not in SCHEMA5_FIRED_REASONS:
-            _fail("$.terminal", "a fired trigger must end in a fatal, unsupported-nid or hang terminal")
+            _fail("$.terminal", "a fired trigger must end in a fatal, unsupported-nid, hang or trigger terminal")
         return
     if reason == "hang":
         _fail("$.terminal", "a watchdog hang is a fired trigger")
@@ -319,6 +324,139 @@ def _validate_threads(threads: list[dict[str, Any]]) -> None:
         _fail("$.threads", "each thread is listed once")
     if sum(1 for thread in threads if thread["state"] == "running") > 1:
         _fail("$.threads", "at most one thread is running")
+
+
+# Schema 7 watch class and trigger modes (issue #320; folded from #1433).
+WATCH_CHANGE_KIND = 31
+WATCH_CHANGE_CLASS = "watch"
+WATCH_KNOWN_BIT = 1 << 8
+GE_DRAW_KIND = 25
+
+
+def _kind_class(kind: int) -> str | None:
+    """The class an event kind belongs to, as src/rt/flight_recorder.c kind_class() has it."""
+    if kind == 1:
+        return "hle"
+    if kind == 2:
+        return "unsupported"
+    if 3 <= kind <= 5:
+        return "sched"
+    if 6 <= kind <= 9:
+        return "prx"
+    if kind in (10, 30):
+        return "fault"
+    if 11 <= kind <= 17:
+        return "fatal"
+    if kind in (18, 19):
+        return "media"
+    if 20 <= kind <= 27:
+        return "ge"
+    if kind in (28, 29):
+        return "present"
+    if kind == WATCH_CHANGE_KIND:
+        return WATCH_CHANGE_CLASS
+    return None
+
+
+def _event_pc(event: dict[str, Any]) -> int | None:
+    """The guest pc operand the pc trigger mode matches, for the kinds that carry one.
+
+    Only kinds recorded by a non-terminal path are listed: an HLE import (arg2), a named
+    refusal (arg3), a GE list dequeue (arg1), the LLE exception entry (arg1), a NaN origin
+    (arg0) and a watch change (arg0).
+    """
+    field = {1: "arg2", 2: "arg3", 21: "arg1", 10: "arg1", 30: "arg0", 31: "arg0"}.get(event["kind"])
+    return None if field is None else event[field]
+
+
+def _validate_watch_events(bundle: dict[str, Any]) -> None:
+    """A watch change lies in the recorded watch range and packs only width and the known bit."""
+    recorder = bundle["recorder"]
+    watch_range = recorder["watch_range"]
+    if (watch_range is not None) != (WATCH_CHANGE_CLASS in recorder["enabled_classes"]):
+        _fail("$.recorder.watch_range", "a watch range is recorded exactly when the watch class is on")
+    for index, event in enumerate(bundle["events"]):
+        if event["kind"] != WATCH_CHANGE_KIND:
+            continue
+        path = f"$.events[{index}]"
+        if event["class"] != WATCH_CHANGE_CLASS:
+            _fail(path, "a watch-change event belongs to the watch class")
+        width = event["arg2"] & 0xFF
+        if event["arg2"] & ~(0xFF | WATCH_KNOWN_BIT) or width == 0:
+            _fail(path, "watch-change arg2 packs a nonzero width and the known bit only")
+        start = watch_range["address"]
+        if event["arg1"] >= start + watch_range["length"] or event["arg1"] + width <= start:
+            _fail(path, "watch-change store does not touch the recorded watch range")
+
+
+_TRIGGER_PARAMETERS = (("pc", "pc"), ("ge-draw", "ge_draw"), ("checkpoint", "checkpoint"))
+
+
+def _validate_trigger_policy(bundle: dict[str, Any]) -> None:
+    """Schema 7: the armed mode, its parameters and a trigger terminal agree with the events."""
+    recorder = bundle["recorder"]
+    triggers = recorder["triggers"]
+    mode = triggers["mode"]
+    enabled = set(recorder["enabled_classes"])
+    for name, key in _TRIGGER_PARAMETERS:
+        if (mode == name) != (triggers[key] is not None):
+            _fail("$.recorder.triggers", f"{key} is set exactly when the mode is {name}")
+    if mode == "watch" and WATCH_CHANGE_CLASS not in enabled:
+        _fail("$.recorder.triggers", "the watch mode needs the watch class")
+    if mode == "ge-draw" and "ge" not in enabled:
+        _fail("$.recorder.triggers", "the ge-draw mode needs the ge class")
+    checkpoint = triggers["checkpoint"]
+    if checkpoint is not None:
+        checkpoint_class = _kind_class(checkpoint["kind"])
+        if checkpoint_class is None or checkpoint_class == "fatal":
+            _fail("$.recorder.triggers", "a checkpoint names a non-fatal event kind")
+        if checkpoint_class not in enabled:
+            _fail("$.recorder.triggers", "a checkpoint kind belongs to an enabled class")
+        if checkpoint["after"] >= recorder["limit"]:
+            _fail("$.recorder.triggers", "a checkpoint window is shorter than the limit")
+
+    terminal = bundle["terminal"]
+    if terminal["reason"] != "trigger":
+        return
+    if mode == "none":
+        _fail("$.terminal", "a trigger terminal needs an armed trigger mode")
+    events = bundle["events"]
+    by_sequence = {event["sequence"]: event for event in events}
+    matched = by_sequence.get(terminal["sequence"])
+    if matched is None:
+        _fail("$.terminal", "a trigger terminal names a retained event")
+    if matched["kind"] != terminal["kind"]:
+        _fail("$.terminal", "a trigger terminal kind is the kind of the event it names")
+    before = [event for event in events if event["sequence"] < matched["sequence"]]
+    after = [event for event in events if event["sequence"] > matched["sequence"]]
+    complete = recorder["dropped"] == 0
+    if mode == "pc":
+        if _event_pc(matched) != triggers["pc"] or terminal["arg0"] != triggers["pc"]:
+            _fail("$.terminal", "a pc trigger names an event at the armed pc")
+        if any(_event_pc(event) == triggers["pc"] for event in before):
+            _fail("$.terminal", "a pc trigger fires at the first event at the armed pc")
+    elif mode == "ge-draw":
+        if matched["class"] != "ge" or matched["kind"] != GE_DRAW_KIND \
+                or terminal["arg0"] != triggers["ge_draw"]:
+            _fail("$.terminal", "a ge-draw trigger names the armed GE draw")
+        draws = sum(1 for event in before if event["class"] == "ge" and event["kind"] == GE_DRAW_KIND)
+        if (draws + 1 != triggers["ge_draw"]) if complete else (draws + 1 > triggers["ge_draw"]):
+            _fail("$.terminal", "a ge-draw trigger fires at the armed draw ordinal")
+    elif mode == "watch":
+        if matched["class"] != WATCH_CHANGE_CLASS or matched["kind"] != WATCH_CHANGE_KIND \
+                or terminal["arg0"] != matched["arg1"]:
+            _fail("$.terminal", "a watch trigger names a watch change and its address")
+        if any(event["kind"] == WATCH_CHANGE_KIND for event in before):
+            _fail("$.terminal", "a watch trigger fires at the first watch change")
+    else:
+        if matched["kind"] != checkpoint["kind"] or terminal["arg0"] != checkpoint["occurrence"]:
+            _fail("$.terminal", "a checkpoint trigger names the armed kind and occurrence")
+        seen = sum(1 for event in before if event["kind"] == checkpoint["kind"])
+        if (seen + 1 != checkpoint["occurrence"]) if complete else (seen + 1 > checkpoint["occurrence"]):
+            _fail("$.terminal", "a checkpoint trigger fires at the armed occurrence")
+    window = checkpoint["after"] if mode == "checkpoint" else 0
+    if len(after) > window:
+        _fail("$.events", "the record freezes at the trigger or at the end of its window")
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
@@ -391,13 +529,23 @@ def _nan_origin_detail(event: dict[str, Any]) -> str:
             f"lane={event['arg2']} vbl={event['arg3']}")
 
 
+def _watch_change_detail(event: dict[str, Any]) -> str:
+    """The decoded store of a watch-change event: where it ran, what it wrote, how wide."""
+    if event["kind"] != WATCH_CHANGE_KIND or event["class"] != WATCH_CHANGE_CLASS:
+        return ""
+    known = "change" if event["arg2"] & WATCH_KNOWN_BIT else "first-write"
+    return (f" pc=0x{event['arg0']:08x} address=0x{event['arg1']:08x} "
+            f"width={event['arg2'] & 0xFF} value=0x{event['arg3']:08x} {known}")
+
+
 def _event_identity(event: dict[str, Any] | None) -> str:
     if event is None:
         return "<absent>"
     kind = event["kind"]
     name = EVENT_KIND_NAMES.get(kind, "unknown-kind")
     return f"event index {event['sequence'] - 1} class={event['class']} kind={name} ({kind}) " \
-           f"sequence={event['sequence']}" + _nan_origin_detail(event)
+           f"sequence={event['sequence']}" + _nan_origin_detail(event) \
+        + _watch_change_detail(event)
 
 
 def _event_field_differences(
@@ -443,6 +591,12 @@ def _comparability_reasons(baseline: dict[str, Any], candidate: dict[str, Any]) 
             f"{_trigger_policy(baseline['recorder'])} vs "
             f"{_trigger_policy(candidate['recorder'])}; different capture-stop "
             "semantics do not bound the same retained window"
+        )
+    if baseline["recorder"].get("watch_range") != candidate["recorder"].get("watch_range"):
+        reasons.append(
+            "watch ranges differ: "
+            f"{baseline['recorder'].get('watch_range')} vs "
+            f"{candidate['recorder'].get('watch_range')}; the watch class saw different bytes"
         )
     for name, bundle in (("baseline", baseline), ("candidate", candidate)):
         dropped = bundle["recorder"]["dropped"]
@@ -589,6 +743,26 @@ def _enabled_classes(bundle: dict[str, Any]) -> str:
     return ", ".join(classes) if classes else "<none>"
 
 
+def _trigger_line(bundle: dict[str, Any]) -> str:
+    """The armed schema 7 trigger mode; comparability pins both sides to the same policy."""
+    triggers = bundle["recorder"]["triggers"]
+    mode = triggers.get("mode", "none")
+    if mode == "none":
+        return ""
+    if mode == "pc":
+        armed = f"pc=0x{triggers['pc']:08x}"
+    elif mode == "ge-draw":
+        armed = f"ge-draw={triggers['ge_draw']}"
+    elif mode == "checkpoint":
+        checkpoint = triggers["checkpoint"]
+        name = EVENT_KIND_NAMES.get(checkpoint["kind"], "unknown-kind")
+        armed = (f"checkpoint={name} ({checkpoint['kind']}) occurrence={checkpoint['occurrence']} "
+                 f"after={checkpoint['after']}")
+    else:
+        armed = "watch"
+    return f"trigger mode: {armed}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compare two source-safe flight-recorder bundles")
     parser.add_argument("baseline", type=Path)
@@ -611,6 +785,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"identity baseline: {_identity_fields(baseline)}")
     print(f"identity candidate: {_identity_fields(candidate)}")
     print(f"enabled classes: {_enabled_classes(baseline)}")
+    trigger = _trigger_line(baseline)
+    if trigger:
+        print(trigger)
     if divergence is None:
         print(f"{MATCH}: {len(baseline['events'])} events aligned by {args.align}; "
               "agrees on these enabled classes and the terminal outcome")
