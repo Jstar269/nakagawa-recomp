@@ -136,6 +136,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
 | `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
 | `llvm_ir.py` | Structured LLVM IR builder mirroring the LLVM C API data model (module, function, block, builder). |
+| `lowering_plan.py` | Backend-neutral lowering plan of one function: decoded operations and resolved transfers (#330). |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
@@ -337,6 +338,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_profile_isolation.py` | A profile-free run must inherit no title-specific behavior. |
 | `test_codegen_llvm.py` | The LLVM backend: lowering order, recorded fallbacks, default output unchanged, runtime ABI and layout. |
 | `test_llvm_ir.py` | The structured LLVM IR builder: type checks, linking, renames and LLVM's verifier. |
+| `test_lowering_plan.py` | The lowering plan: decoding, and the drift guard against `emit_function` over a real build. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
 | `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |

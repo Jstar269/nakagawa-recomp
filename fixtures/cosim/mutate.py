@@ -484,21 +484,17 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
         # inverted one loops until the harness aborts, which locates nothing.
         "llvm-wrong-branch",
         "LLVM BACKEND: bne/bnel lowered with the inverted condition",
-        [(
-            'return b.icmp("ne", self.R(cg.rs(w)), self.R(cg.rt(w)))',
-            'return b.icmp("eq", self.R(cg.rs(w)), self.R(cg.rt(w)))',
-            1,
-        )],
+        [('"ne": "ne",', '"ne": "eq",', 1)],
         target="llvm-backend",
     ),
     Mutant(
         "llvm-lost-delay-slot",
         "LLVM BACKEND: a conditional branch drops its delay slot",
         [(
-            "        if not likely:\n"
-            "            self.delay_slot(ds, dsw)\n",
-            "        if not likely:\n"
-            "            pass\n",
+            "            if not t.likely:\n"
+            "                self.instruction(t.slot)\n",
+            "            if not t.likely:\n"
+            "                pass\n",
             1,
         )],
         target="llvm-backend",
@@ -506,11 +502,13 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "llvm-likely-slot-always-runs",
         "LLVM BACKEND: a not-taken branch-likely still runs its delay slot",
-        [(
-            "        likely = cg.is_likely(w)\n",
-            "        likely = False\n",
-            1,
-        )],
+        [
+            ("            if not t.likely:\n", "            if True:\n", 1),
+            ("            if t.likely:\n"
+             "                self.instruction(t.slot)\n",
+             "            if False:\n"
+             "                self.instruction(t.slot)\n", 1),
+        ],
         target="llvm-backend",
     ),
     Mutant(
@@ -524,16 +522,16 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
         target="llvm-backend",
     ),
     Mutant(
-        # The zero-extending loads only: a lost `lw $ra` would end the run at the stack
-        # census before the comparison could name the instruction.
+        # The zero-extending narrow loads only: a lost `lw $ra` would end the run at the
+        # stack census before the comparison could name the instruction.
         "llvm-missing-load-write",
         "LLVM BACKEND: lbu/lhu never write their destination register",
         [(
-            "                value = b.sext(b.trunc(value, narrow), L.i32)\n"
-            "            self.W(t, value)\n",
-            "                value = b.sext(b.trunc(value, narrow), L.i32)\n"
-            "            if op not in (0x24, 0x25):\n"
-            "                self.W(t, value)\n",
+            "                value = b.sext(b.trunc(value, L.i8 if op.width == 1 else L.i16), L.i32)\n"
+            "            self.W(d, value)\n",
+            "                value = b.sext(b.trunc(value, L.i8 if op.width == 1 else L.i16), L.i32)\n"
+            "            if op.aux or op.width == 4:\n"
+            "                self.W(d, value)\n",
             1,
         )],
         target="llvm-backend",
@@ -542,18 +540,18 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
         "llvm-computed-transfer-timing",
         "LLVM BACKEND: jalr reads its target after the delay slot (PR #126 regression)",
         [(
-            "            latched = self.R(a)                                # PR #126: latched at the transfer\n"
-            "            self.begin(addr, w)\n"
-            "            if d != 0:\n"
-            "                self.W(d, link_value)\n"
+            "            latched = self.R(t.target_reg)                     # PR #126: latched at the transfer\n"
+            "            self.begin(t.addr, t.word)\n"
+            "            if t.link_reg is not None:\n"
+            "                self.W(t.link_reg, link_value)\n"
             "            self.end()\n"
-            "            self.delay_slot(ds, dsw)\n",
-            "            self.begin(addr, w)\n"
-            "            if d != 0:\n"
-            "                self.W(d, link_value)\n"
+            "            self.instruction(t.slot)\n",
+            "            self.begin(t.addr, t.word)\n"
+            "            if t.link_reg is not None:\n"
+            "                self.W(t.link_reg, link_value)\n"
             "            self.end()\n"
-            "            self.delay_slot(ds, dsw)\n"
-            "            latched = self.R(a)\n",
+            "            self.instruction(t.slot)\n"
+            "            latched = self.R(t.target_reg)\n",
             1,
         )],
         target="llvm-backend",
@@ -573,7 +571,7 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
         "LLVM BACKEND: a dispatched jalr CALL names the wrong resume PC",
         [(
             '                self.call("dispatch_call", self.s, latched, link_value)\n',
-            '                self.call("dispatch_call", self.s, latched, self.c32((addr + 12) & 0xFFFFFFFF))\n',
+            '                self.call("dispatch_call", self.s, latched, self.c32((t.addr + 12) & 0xFFFFFFFF))\n',
             1,
         )],
         target="llvm-backend",

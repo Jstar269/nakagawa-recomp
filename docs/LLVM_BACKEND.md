@@ -22,22 +22,48 @@ mingw-w64-ucrt-x86_64-llvm-tools` ([`SETUP.md`](SETUP.md#optional-llvm-backend))
 ## Pipeline
 
 ```text
-analyzer ──> codegen.function_flow ──> C emitter ─────────────────────> <g>_recomp_<n>.c ──> GCC ──┐
-             (ownership: blocks,        │                                (declares, registers      │
-              labels, continuations)    └─> LLVM lowering (per function)  and wraps LLVM bodies)    ├─> link
-                                             tools/codegen_llvm.py ──> <g>_recomp_<n>.ll            │
-                                                                        │                            │
+analyzer ──> codegen.function_flow ──> C emitter (emit_function) ─────> <g>_recomp_<n>.c ──> GCC ──┐
+             (ownership: blocks,   │                                     (declares, registers      │
+              labels, continuations)└─> lowering plan (per function)      and wraps LLVM bodies)    ├─> link
+                                        tools/lowering_plan.py                                      │
+                                          └─> LLVM renderer ──> <g>_recomp_<n>.ll                   │
+                                              tools/codegen_llvm.py     │                           │
                     src/rt/llvm_abi.c ──Clang -emit-llvm──> llvm_abi.bc ┴─> llvm-link ──> Clang -c ─┘
 ```
 
 Every function goes through the C emitter first. If the C emitter refuses an encoding, the
 function stays its fail-closed stub whatever the backend. If it translates, and the
-backend is `llvm`, `tools/codegen_llvm.py` lowers the same function from the same inputs:
-`function_flow`'s instruction set, native labels and continuation exits, the entry
-catalog, resume owners and dispatch boundaries. The backend never rediscovers MIPS
-structure, so the two backends cannot disagree about ownership. #305's analysis IR
-(`tools/analysis_ir.py`) is a projection of the same CFG report and is advisory by its own
-contract; it does not feed either backend.
+backend is `llvm`, `tools/lowering_plan.py` builds the function's **lowering plan** from
+the same inputs the C emitter uses (`function_flow`'s instruction set, native labels and
+continuation exits, the entry catalog, resume owners and dispatch boundaries) and
+`tools/codegen_llvm.py` renders that plan. The plan is backend-neutral: each instruction
+is an `Op` naming its semantic operation and operands, and each control instruction a
+`Transfer` with its kind (checked CALL, dispatched CALL, TAIL record, return, in-body
+edge), target, symbol, link register, condition and delay slot resolved. The renderer
+decodes no MIPS and makes no transfer decision.
+
+### One representation for both backends
+
+The design rule (maintainer, 2026-10-29) is that every backend lowers from the same analysis
+representation, so a semantic fix lands once and the backends cannot drift. Where that
+stands in this stage:
+
+- The LLVM backend lowers only from the plan.
+- The C emitter does not consume the plan yet: `emit_function` and `effect()` still make
+  the same decisions and spell each operation as C text themselves. Until they render the
+  plan, `tools/test_lowering_plan.py` compares every plan with what `emit_function` emits
+  for the same function over a real codegen run (native labels, continuation exits,
+  checked CALLs, dispatched CALLs, TAIL records, returns and preemption points), so a rule
+  changed on one side fails there.
+- The plan is built from codegen's ownership, not from #305's analysis IR
+  (`tools/analysis_ir.py`, PR #1642). That IR is a module-wide projection of the
+  analyzer's CFG report and, by its own contract, advisory: codegen does not read it, so
+  neither backend can lower from it today.
+
+The next steps, in order: move `emit_function` onto the plan and `effect()`'s
+per-instruction C onto `Op` (one decision site, two renderers); then build the plan from
+the shared analysis IR once codegen consumes that IR (#305's successor), with the plan as
+its per-function lowering view.
 
 A function the backend does not lower keeps its C body unchanged, and the reason goes to
 `<g>_recomp_llvm.json` (`codegen_llvm.py check-manifest` prints it). Nothing is dropped or
@@ -168,6 +194,8 @@ header or library vendored or shipped later gets the usual pin, `PROVENANCE.md` 
 
 ## Not yet done
 
+- The C emitter rendering the lowering plan, and the plan built from the shared analysis
+  IR ([above](#one-representation-for-both-backends)).
 - Lowering for the FPU, VFPU, COP0, `eret` and the `--lle-cpu` exception path.
 - Register promotion inside the IR (above), and IR-side fast paths that do not depend on
   linking the ABI bitcode.
