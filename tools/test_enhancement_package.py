@@ -1026,6 +1026,13 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                           combined)
             self.assertIn('sr_enhancement_file_register("data/param/timing.csv", nk_enh_file_sha_0, '
                           f"nk_enh_file_data_0, {len(rewritten)}u)", combined)
+            if GCC:
+                # The start-up block is C the runtime build compiles; check it is valid C.
+                checked = subprocess.run(
+                    [GCC, "-std=gnu11", "-fsyntax-only", "-Wall", "-Werror", "-Wno-unused-function",
+                     f"-I{ROOT / 'src' / 'rt'}", f"-I{out_dir}", str(out_dir / "out.c")],
+                    capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr[-2000:])
 
             refusals = (
                 ("no-data-root", None, [], "need --enhancement-data-root"),

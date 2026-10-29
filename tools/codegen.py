@@ -778,7 +778,7 @@ def _enhancement_data_lines() -> list[str]:
             f"    if (!sr_guest_span_writable({addr}, {n}u) ||",
             f"        memcmp(sr_host_address({addr}), nk_enh_data_stock_{i}, {n}u) != 0) {{",
             f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data site {sid} at 0x%08x does not hold '
-            f'its stock bytes; the run stops here\n", (unsigned)({addr}));',
+            f'its stock bytes; the run stops here\\n", (unsigned)({addr}));',
             "        exit(1);",
             "    }",
             f"    memcpy(sr_host_address({addr}), nk_enh_data_new_{i}, {n}u);",
@@ -788,7 +788,7 @@ def _enhancement_data_lines() -> list[str]:
             f'    if (!sr_enhancement_file_register("{path}", nk_enh_file_sha_{i}, '
             f"nk_enh_file_data_{i}, {len(data)}u)) {{",
             f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data file {fid} was refused; '
-            'the run stops here\n");',
+            'the run stops here\\n");',
             "        exit(1);",
             "    }",
         ]
