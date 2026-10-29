@@ -119,7 +119,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `oracle_matrix.py` (the one-command build, stage, qualify and run matrix), `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -493,6 +493,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
+| `test_oracle_matrix.py` | One-command PSP oracle matrix: per-boot epochs, identity-bound acceptance, crash containment and the intervention state. |
 | `test_psp_issue_matrix.py` | Issue classification matrix: manifest-backed classes and fixture coverage. |
 | `test_psp_leaf_parsers.py` | Fail-closed tests for the PSP-IO, PSP-AUDIO and PSP-CACHE parsers. |
 | `test_insn_trace.py` | Real-PSP instruction-trace differential: fixture words, probe layout, log conversion, Nakagawa traces and a codegen mutation caught at its first step. |
