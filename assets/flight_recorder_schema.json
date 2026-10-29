@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v5",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v6",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"enum": [1, 2, 3, 4, 5]},
+    "schema_version": {"enum": [1, 2, 3, 4, 5, 6]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3, 4 and 5 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3 to 6 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
       "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
@@ -48,7 +48,7 @@
         "dropped": {"type": "integer", "minimum": 0},
         "triggers": {
           "type": "object",
-          "description": "Armed terminal triggers and whether one fired. first_unsupported_nid arms the unknown-NID stop (no handler); a named refusal never fires a trigger in schema 5 and never ends the record. fired is 1 only for a fatal, unknown-NID, or watchdog-hang terminal.",
+          "description": "Armed terminal triggers and whether one fired. first_unsupported_nid arms the unknown-NID stop (no handler); a named refusal never fires a trigger in schema 5 or 6 and never ends the record. fired is 1 only for a fatal, unknown-NID, or watchdog-hang terminal.",
           "additionalProperties": false,
           "required": ["first_fatal", "first_unsupported_nid", "fired"],
           "properties": {
@@ -75,7 +75,7 @@
     },
     "refusals": {
       "type": "object",
-      "description": "Schema 5 only. Named refusals: calls the runtime answered with a registered error while the guest kept running. Each one is a counted event and never ends the record. first_nid and first_pc name the first refusal (null when count is 0). nids lists each refused NID once, in first-seen order, with its count, capped at 32 entries; nids_unlisted counts refusals of further NIDs past that cap. count is the sum of the nids counts plus nids_unlisted.",
+      "description": "Schema 5 and 6 only. Named refusals: calls the runtime answered with a registered error while the guest kept running. Each one is a counted event and never ends the record. first_nid and first_pc name the first refusal (null when count is 0). nids lists each refused NID once, in first-seen order, with its count, capped at 32 entries; nids_unlisted counts refusals of further NIDs past that cap. count is the sum of the nids counts plus nids_unlisted.",
       "additionalProperties": false,
       "required": ["count", "first_nid", "first_pc", "first_sequence", "nids", "nids_unlisted"],
       "properties": {
@@ -99,6 +99,44 @@
         "nids_unlisted": {"type": "integer", "minimum": 0}
       }
     },
+    "threads": {
+      "type": "array",
+      "description": "Schema 6 only. Terminal thread snapshot: one entry per guest thread that exists when the bundle is written (deleted threads are skipped), in thread-table order, so a thread that blocked before the retained event window still shows what it waits on. Empty when the runtime registered no scheduler. All values are scalars the scheduler holds; nothing is read from guest memory. why uses the scheduler's thread-dump classification. wait_type is the PSP waitType ReferThreadStatus reports (0 when not waiting). wait_object is the waited object (0 outside an object wait). block_nid is the import the thread last blocked in, null if its last block happened outside any import or it never blocked. pc and ra are the saved registers, or the live ones for the running thread. waited_us is the virtual time since the current wait began (null when not waiting or when the start is unknown); deadline_us is the virtual time left on a timed wait (null for an untimed wait or no wait).",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["uid", "priority", "state", "suspended", "why", "wait_type", "wait_object", "block_nid", "pc", "ra", "waited_us", "deadline_us"],
+        "properties": {
+          "uid": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "priority": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+          "state": {"enum": ["dormant", "ready", "running", "wait-delay", "wait-object"]},
+          "suspended": {"type": "boolean"},
+          "why": {"enum": ["none", "sleep", "delay", "vblank", "ctrl", "thread-end", "object"]},
+          "wait_type": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "wait_object": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "block_nid": {"type": ["integer", "null"], "minimum": 0, "maximum": 4294967295},
+          "pc": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "ra": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "waited_us": {"type": ["integer", "null"], "minimum": 0},
+          "deadline_us": {"type": ["integer", "null"], "minimum": 0}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"state": {"enum": ["dormant", "ready", "running"]}}, "required": ["state"]},
+            "then": {"properties": {"why": {"const": "none"}, "wait_type": {"const": 0}, "wait_object": {"const": 0}, "waited_us": {"type": "null"}, "deadline_us": {"type": "null"}}}
+          },
+          {
+            "if": {"properties": {"state": {"const": "wait-delay"}}, "required": ["state"]},
+            "then": {"properties": {"why": {"const": "delay"}, "wait_object": {"const": 0}}}
+          },
+          {
+            "if": {"properties": {"state": {"const": "wait-object"}}, "required": ["state"]},
+            "then": {"properties": {"why": {"enum": ["sleep", "vblank", "ctrl", "thread-end", "object"]}}}
+          }
+        ]
+      }
+    },
     "events": {
       "type": "array",
       "maxItems": 4096,
@@ -107,7 +145,7 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"enum": [1, 2, 3, 4, 5]},
+          "schema_version": {"enum": [1, 2, 3, 4, 5, 6]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
           "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present. Kind 30 is an SR_NAN_TRAP origin (fault class, never a trigger): arg0 is the guest pc, arg1 packs the domain (1 FPU, 2 VFPU) in bits 0-7, the result (1 NaN, 2 +Inf, 3 -Inf) in bits 8-15 and the destination register in bits 16-23, arg2 is the lane of the first non-finite result word, and arg3 is the VBLANK count."},
@@ -142,7 +180,7 @@
             }
           },
           {
-            "if": {"properties": {"schema_version": {"enum": [2, 3, 4, 5]}}, "required": ["schema_version"]},
+            "if": {"properties": {"schema_version": {"enum": [2, 3, 4, 5, 6]}}, "required": ["schema_version"]},
             "then": {
               "if": {
                 "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
@@ -186,6 +224,17 @@
       }
     },
     {
+      "if": {"properties": {"schema_version": {"const": 6}}, "required": ["schema_version"]},
+      "then": {
+        "required": ["refusals", "threads"],
+        "properties": {"events": {"items": {"properties": {"schema_version": {"const": 6}}}}}
+      }
+    },
+    {
+      "if": {"properties": {"schema_version": {"enum": [1, 2, 3, 4, 5]}}, "required": ["schema_version"]},
+      "then": {"not": {"required": ["threads"]}}
+    },
+    {
       "if": {"properties": {"schema_version": {"enum": [1, 2, 3, 4]}}, "required": ["schema_version"]},
       "then": {
         "not": {"required": ["refusals"]},
@@ -201,7 +250,7 @@
       ]}}}
     },
     {
-      "if": {"properties": {"schema_version": {"enum": [3, 4, 5]}}, "required": ["schema_version"]},
+      "if": {"properties": {"schema_version": {"enum": [3, 4, 5, 6]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["source_date_epoch", "build_id"]},
         {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},

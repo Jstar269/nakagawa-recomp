@@ -182,7 +182,12 @@ table or stack-arena capacity fails with a zero UID, never a partial
 thread [C5]. Entry-function return is thread exit (the guest has no other
 way out of its root call) [C5]. Terminate removes eligibility without
 deleting the object; delete removes the object; double-delete and
-terminate-after-delete fail closed [C3], [C5].
+terminate-after-delete fail closed [C3], [C5]. A new thread's k0 points at
+the top 0x100 bytes of its own stack, and that block is zero except the
+thread UID at +0xc0, the stack base at +0xc8 and all-ones words at +0xf8 and
++0xfc, also when the stack reuses memory an earlier thread wrote (measured:
+docs/HARDWARE_ORACLE.md PSP-THREAD-K0-001). The scheduler keeps no libc state
+of its own for a thread.
 
 ### 3.2 Priority selection and preemption
 
@@ -458,6 +463,8 @@ rationale, per the reading rule in §0.
 | Symbol | Section | Contract |
 | --- | --- | --- |
 | `sched_dump_threads` | §0 | Diagnostic dump of the thread table, carried over under §0. It reads scheduler state and guest memory for logging and changes no guest-visible state. Project decision: a carry-over diagnostic with no PSP semantics. |
+| `sr_import_nid` | §0 | NID of the import the running guest thread is inside, valid while `sr_import_active` is nonzero. `sr_syscall` sets it around its handler and restores the outer value on return; the scheduler keeps it per thread across switches and records it at each block for the flight recorder's thread snapshot. It changes no guest-visible state. Project decision: a diagnostic with no PSP semantics (public issue #320). |
+| `sr_import_active` | §0 | Nonzero while the running guest thread is inside an import, under the same rules as `sr_import_nid`. A block outside any import records no import NID. It changes no guest-visible state. Project decision: a diagnostic with no PSP semantics (public issue #320). |
 | `s_cpu` | §1 | Shared `CpuState` pointer that the running thread's register file follows. Within the scheduler it is written only by `sched_init`, and it is NULL before that call [C1]. |
 | `sr_thread_k0` | §3.1 | Returns the running thread's initial k0 value, or zero when no thread is current, the same rule as `sched_current_uid` [C6]. Generated code calls it only as the fallback for an out-of-window `$k0` (`tools/codegen.py`). |
 | `sched_create_thread_ex` | §3.1 | Extended create that also takes an attribute word and a name. Failure follows `sched_create_thread`: a zero UID and no partial thread on exhaustion [C5]. The attribute word and name are PSP ABI inputs [C6]; this spec defines no further meaning for them. |
@@ -493,7 +500,6 @@ rationale, per the reading rule in §0.
 | `sched_wait_cancel_object` | §3.5 | Completes the waiters on `object` with `result`, as the object deletion and cancel paths require [C5]. |
 | `sched_wait_vblank_cb` | §3.7 | Callback-aware display wait. A nonzero `wait_start` selects WaitVblankStart semantics, which always block to the next start edge. Zero selects WaitVblank semantics, which return at once inside the interval [C6]. |
 | `sr_cpu_for_callbacks` | §3.8 | Returns the `CpuState` that callback dispatch runs on, the shared register file bound by `sched_init` (§1). Returns NULL before that binding [C1]. |
-| `g_master_reent` | §3.9 | Exported global holding the master libc reent address. A launcher-role thread sets it at its libc registration, and the title binding sets it while it is still zero; later threads copy from it when they initialise their own reent. Project decision: the launcher-role seeding follows the role capture rule of §3.9, and the title binding is title configuration (§3.9). |
 | `sr_cpustate_abi_version` | §3.10 | Exported constant equal to `SR_CPUSTATE_ABI_VERSION` in `recomp.h`. `tools/mem_debug.py` reads it by name to identify the `CpuState` layout of an attached build. The value is fixed by the header, not chosen by the scheduler [C12]. |
 | `sched_vbl_paced` | §4 | Host pacing query: returns true when vblank pacing is active, in which case the presenter's frame-pacing step returns early (`src/rt/gui.c`). This is host performance behaviour outside the PSP contract (§4). The `SR_NOVBPACE` value rule is pinned by `NovbpaceSemanticsTests`. Project decision. |
 | `sched_pause_request` | §3.4 | Latches a player pause for the next legal scheduler boundary; a request latched by a VBLANK the idle scheduler delivers is entered before the thread that edge woke resumes. The host stall freezes guest time and shifts the host-clock anchors on resume. Project decision, as summarized by public issue #1171. |

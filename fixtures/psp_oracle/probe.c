@@ -145,8 +145,10 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_GE_TIMING 114
 /* #1296: CPU instruction-class and per-frame syscall timing; synthetic buffers only. */
 #define PSP_ORACLE_CASE_CPU_TIMING 115
+/* #363: a new thread's k0 block (does the kernel zero k0+4?); see run_thread_k0_block. */
+#define PSP_ORACLE_CASE_THREAD_K0_BLOCK 116
 /* #1595: __sceSasInit on a core that is already initialized; see run_sas_init. */
-#define PSP_ORACLE_CASE_SAS_INIT 116
+#define PSP_ORACLE_CASE_SAS_INIT 117
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -378,6 +380,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/ge_timing_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 #define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+#define PROBE_HOST0_LOG "host0:/thread_k0_block_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
@@ -3406,6 +3410,156 @@ static void run_thread_exit_delete(int emulated) {
     for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
         run_exit_delete_cell(emulated, cells[i].id, cells[i].status,
                              cells[i].method);
+    }
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+/* The k0 block of a thread (#363). The kernel points k0 at a per-thread block
+   near the top of the thread's stack; libc code keeps per-thread state in it
+   (a reent pointer at k0+4 in the title this answers for). Question: does
+   sceKernelCreateThread hand a new thread a block with k0+4 == 0, even when
+   the stack memory it reuses was dirtied by an earlier thread?
+
+   K0-MAIN       the probe's own thread.
+   K0-FRESH      a new thread: k0, its stack span, sp at entry, k0+4, nonzero
+                 words in the block, 0xffffffff words below sp (the default
+                 stack fill) and the two lowest stack words.
+   K0-FRESH-Wnn  the 64 words from k0, in four rows of 16.
+   K0-REUSE-*    thread D fills its stack below sp with 0xa5a5a5a5 and stores
+                 0xa5a5a5a5 at k0+4 (what the title's launcher does with a
+                 reent pointer), exits and is deleted; thread R of the same
+                 size and attribute (0, NO_FILLSTACK 0x00100000, CLEAR_STACK
+                 0x00200000) is then created and reports its stack base, k0,
+                 k0+4 and how many 0xa5a5a5a5 words survived.
+   The lowest K0_GUARD_WORDS stack words are never written or counted: on a
+   PSP-3000 (6.61) the first launch hung after thread D overwrote them, so
+   the kernel keeps state there (K0-FRESH reports the two lowest words).
+   Reads stay inside each thread's own stack span and k0 block; the only
+   writes are D's own stack between the guard words and sp, and its k0+4.
+   PASS = every create, start and wait succeeded; the values are data. */
+#define K0_WORDS 64u
+#define K0_STACK 0x4000u
+#define K0_ATTR_NOFILL 0x00100000u
+#define K0_ATTR_CLEAR 0x00200000u
+#define K0_FILL 0xa5a5a5a5u
+#define K0_SP_GAP 256u
+#define K0_GUARD_WORDS 16u
+typedef struct {
+    uint32_t k0, base, size, sp, w1, nonzero, ff_words, fill_words, scanned, low0, low1;
+    uint32_t words[K0_WORDS];
+} K0Report;
+static K0Report g_k0_report;
+static int g_k0_dirty;
+static uint32_t k0_read(void) {
+    uint32_t v;
+    __asm__ volatile("move %0, $k0" : "=r"(v));
+    return v;
+}
+static uint32_t k0_sp(void) {
+    uint32_t v;
+    __asm__ volatile("move %0, $sp" : "=r"(v));
+    return v;
+}
+static void k0_capture(K0Report *r) {
+    memset(r, 0, sizeof(*r));
+    r->k0 = k0_read();
+    r->sp = k0_sp();
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (sceKernelReferThreadStatus(sceKernelGetThreadId(), &info) == 0) {
+        r->base = (uint32_t)(uintptr_t)info.stack;
+        r->size = (uint32_t)info.stackSize;
+    }
+    /* Only a k0 inside this thread's own stack span is read. */
+    if (r->base && r->k0 >= r->base && r->k0 + K0_WORDS * 4u <= r->base + r->size) {
+        const volatile uint32_t *b = (const volatile uint32_t *)(uintptr_t)r->k0;
+        for (uint32_t i = 0; i < K0_WORDS; i++) {
+            r->words[i] = b[i];
+            if (b[i]) r->nonzero++;
+        }
+        r->w1 = r->words[1];
+    }
+    if (r->base && r->sp > r->base + K0_SP_GAP + K0_GUARD_WORDS * 4u &&
+        r->sp <= r->base + r->size) {
+        const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)r->base;
+        r->low0 = w[0];
+        r->low1 = w[1];
+        w += K0_GUARD_WORDS;
+        r->scanned = (r->sp - K0_SP_GAP - r->base) / 4u - K0_GUARD_WORDS;
+        for (uint32_t i = 0; i < r->scanned; i++) {
+            if (w[i] == 0xffffffffu) r->ff_words++;
+            if (w[i] == K0_FILL) r->fill_words++;
+        }
+    }
+}
+static int k0_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    k0_capture(&g_k0_report);
+    if (g_k0_dirty && g_k0_report.scanned) {
+        volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_k0_report.base + K0_GUARD_WORDS;
+        for (uint32_t i = 0; i < g_k0_report.scanned; i++) w[i] = K0_FILL;
+        const K0Report *r = &g_k0_report;
+        if (r->k0 >= r->base && r->k0 + K0_WORDS * 4u <= r->base + r->size)
+            ((volatile uint32_t *)(uintptr_t)r->k0)[1] = K0_FILL;
+    }
+    return 0;
+}
+/* Create, run to completion and delete one thread: 0 or the first error. */
+static int k0_run(int emulated, const char *step, uint32_t attr, int dirty) {
+    g_k0_dirty = dirty;
+    probe_step(emulated, "thread-k0-block", step);
+    SceUID t = sceKernelCreateThread("k0probe", k0_entry, 32, K0_STACK, attr, NULL);
+    if (t < 0) return (int)t;
+    int rc = sceKernelStartThread(t, 0, NULL);
+    if (rc >= 0) {
+        SceUInt timeout = 2000000;
+        rc = sceKernelWaitThreadEnd(t, &timeout);
+    }
+    const int del = sceKernelDeleteThread(t);
+    return rc < 0 ? rc : (del < 0 ? del : 0);
+}
+static void run_thread_k0_block(int emulated) {
+    static const char *const word_rows[4] = {
+        "K0-FRESH-W00", "K0-FRESH-W10", "K0-FRESH-W20", "K0-FRESH-W30"};
+    static const struct {
+        const char *id;
+        uint32_t attr;
+    } reuse[3] = {
+        {"K0-REUSE-DEF", 0u},
+        {"K0-REUSE-NOFILL", K0_ATTR_NOFILL},
+        {"K0-REUSE-CLEAR", K0_ATTR_CLEAR},
+    };
+    K0Report r;
+    k0_capture(&r);
+    const uint32_t mo[6] = {r.k0, r.base, r.size, r.base + r.size - r.k0, r.w1, r.nonzero};
+    emit_record_extended(emulated, "PSP-THREAD-K0-001", "K0-MAIN", "PASS", r.k0, mo, 6);
+
+    const int rc = k0_run(emulated, "fresh", 0u, 0);
+    r = g_k0_report;
+    const uint32_t fo[11] = {r.k0, r.base, r.size, r.sp, r.base + r.size - r.k0, r.w1,
+                             r.nonzero, r.ff_words, r.scanned, r.low0, r.low1};
+    emit_record_extended(emulated, "PSP-THREAD-K0-001", "K0-FRESH", rc == 0 ? "PASS" : "FAIL",
+                         (uint32_t)rc, fo, 11);
+    for (uint32_t row = 0; row < 4; row++) {
+        emit_record_extended(emulated, "PSP-THREAD-K0-001", word_rows[row],
+                             rc == 0 ? "PASS" : "FAIL", (uint32_t)rc, r.words + row * 16u, 16);
+    }
+
+    for (uint32_t i = 0; i < 3; i++) {
+        const int rd = k0_run(emulated, "reuse-dirty", reuse[i].attr, 1);
+        const K0Report d = g_k0_report;
+        const int rr = rd == 0 ? k0_run(emulated, "reuse-read", reuse[i].attr, 0) : rd;
+        const K0Report *q = &g_k0_report;
+        uint32_t differ = 0;
+        for (uint32_t w = 0; w < K0_WORDS; w++) differ += q->words[w] != r.words[w];
+        const uint32_t ro[9] = {d.base, d.k0, q->base, q->k0, q->w1, q->fill_words, d.scanned,
+                                q->ff_words, differ};
+        emit_record_extended(emulated, "PSP-THREAD-K0-001", reuse[i].id,
+                             (rd == 0 && rr == 0) ? "PASS" : "FAIL",
+                             (uint32_t)(rd != 0 ? rd : rr), ro, 9);
     }
 }
 #endif
@@ -11732,6 +11886,8 @@ int main(int argc, char *argv[]) {
     run_ge_timing(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
     run_cpu_timing(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
+    run_thread_k0_block(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
     run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
 #else

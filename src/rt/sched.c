@@ -207,9 +207,25 @@ typedef struct {
     uint32_t stack_base;          /* user-visible stack range, excluding synthetic TLS */
     uint32_t stack_size;          /* aligned user-visible stack bytes */
     uint32_t stack_reservation;   /* user stack plus synthetic TLS reservation */
+    /* Flight-recorder thread snapshot (schema 6). import_active/import_nid hold this
+     * thread's sr_import_active/sr_import_nid while it is switched out, so a block records
+     * the import the thread itself is inside, never another thread's. */
+    int      import_active;
+    uint32_t import_nid;
+    int      has_block_nid;       /* the last block happened inside an import */
+    uint32_t block_nid;           /* NID of that import */
+    int      block_start_valid;   /* block_start_us is the start of the current wait */
+    uint64_t block_start_us;      /* virtual time the current wait began */
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
+
+/* The import the running guest thread is inside (recomp.h). sr_syscall sets the pair around
+ * its handler and restores the outer pair on return; sched_run swaps it per thread. */
+uint32_t sr_import_nid;
+int      sr_import_active;
+
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out);
 
 int (*sr_sched_stop_requested)(void) = NULL;
 const SrPauseHost *sr_sched_pause_host = NULL;
@@ -301,15 +317,6 @@ static WaitInvocation *s_wait_invocations;
 static SrWaitHandle s_wait_sequence;
 static void sched_wait_abandon_owner(TCB *owner);
 static void sched_wait_record_wake(TCB *owner, int terminal, uint32_t result);
-
-typedef struct {
-    uint32_t uid;
-    uint32_t k0;
-    uint32_t state_ptr;
-    int in_use;
-} HostLibcThreadRecord;
-
-static HostLibcThreadRecord s_libc_threads[MAXTHREADS];
 
 static int      s_ntcb = 0;
 static int      s_cur = -1;      /* index of running thread, -1 = scheduler */
@@ -682,13 +689,12 @@ static void stack_range_release(uint32_t base, uint32_t size) {
  * must use the white-box reset_sched() helper in sched_selftest.c, which
  * is NOT compiled into the production binary.
  *
- * What sched_init resets: TCB array, host libc thread table, scheduling
+ * What sched_init resets: TCB array, scheduling
  *   counters (s_ntcb, s_cur, s_last_pick, s_tick), s_root_seen, interrupt
  *   state, and the sr_timeslice.
  * What sched_init intentionally does NOT reset (they must persist after init
  *   or are owned by the caller):
  *   - g_root/worker/launcher_uid (populated dynamically at create time);
- *   - g_master_reent (set during launcher registration);
  *   - none of the stack ranges survive this one-shot initialization; later
  *     deletion returns ranges through the allocator below;
  *   - s_gp (global pointer seeded by the driver from the module header);
@@ -700,6 +706,7 @@ static void sched_transfer_reset(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
+    sr_flight_set_thread_source(sched_flight_thread_source);
     sr_aot_return_boundaries_reset();
     for (int i = 0; i < MAXTHREADS; i++)
         sr_aot_return_boundary_stack_destroy(&s_tcb[i].aot_return_boundary_stack);
@@ -719,7 +726,6 @@ void sched_init(CpuState *cpu) {
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
 
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
@@ -2236,141 +2242,19 @@ static void coro_body(void *param) {
     }
 }
 
-uint32_t g_master_reent;
-
-/* Host-side registry of live guest threads, keyed by k0, holding (k0, state_ptr) pairs in
- * host memory instead of guest RAM. */
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
 extern void sr_hle_release_thread_resources(uint32_t thread_uid);
-
-static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
-    /* Copy master thread's reent structure to initialize the new thread's reent.
-     * This inherits the initialized allocator context. A thread holding the ROOT or
-     * LAUNCHER role keeps its own independently-initialized reent: root has the
-     * CRT-provided master reent; a launcher initializes its own from its guest entry.
-     * Both tests are role tests, not UID-number tests -- with no captured role every
-     * thread takes the ordinary inheriting path. */
-    if (!sched_uid_is_root(uid) && !sched_uid_is_launcher(uid)) {
-        if (g_master_reent != 0u && sr_inrange(g_master_reent) && sr_inrange(g_master_reent + 1024u) &&
-            (MEM_R32(g_master_reent) != 0u || MEM_R32(g_master_reent + 4u) != 0u)) {
-            for (uint32_t offset = 0; offset < 1024; offset += 4) {
-                MEM_W32(state_ptr + offset, MEM_R32(g_master_reent + offset));
-            }
-            /* +0x148 is a self-pointer field within the reent structure (points to
-             * a sub-structure at +0x14c). The copied value from the master reent
-             * still points into the master's buffer; rewrite it to this thread's
-             * equivalent offset. All other pointer fields in the 0x400-byte copy
-             * that are relative-to-reent are similarly remapped by the guest's own
-             * initializer (f_000118a0) when the thread entry runs. */
-            MEM_W32(state_ptr + 0x148u, state_ptr + 0x14cu);
-        } else {
-            fprintf(stderr, "WARNING: init_guest_reent: g_master_reent=0x%08x unmapped or "
-                    "zero -- leaving new thread uid=0x%x reent at zero\n",
-                    g_master_reent, uid);
-        }
-    }
-    /* Write the thread UID to state_ptr + 0x37c after the copy resolves.
-     * guest per-thread lookup reads this field to identify the current thread UID. */
-    MEM_W32(state_ptr + 0x37cu, uid);
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE init_guest_reent: uid=0x%x state_ptr=0x%x uid_at_37c=0x%x\n",
-                uid, state_ptr, MEM_R32(state_ptr + 0x37cu));
-    }
-}
-
-/* register_libc_thread: record (k0, state_ptr, uid) in the host-owned s_libc_threads table
- * and initialize the thread's reent structure (init_guest_reent). The runtime writes nothing into
- * the guest's own per-thread reent table: a guest thread that registers itself does so through
- * its own code.
- *
- * Returns 0 on success, -1 if the host table is full (structurally impossible in production
- * because s_libc_threads has MAXTHREADS slots and there can never be more live records than
- * live TCBs; the -1 path exists so the selftest can exercise exhaustion without aborting). */
-static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
-    int slot = -1;
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use && s_libc_threads[i].k0 == k0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) {
-        for (int i = 0; i < MAXTHREADS; i++) {
-            if (!s_libc_threads[i].in_use) {
-                slot = i;
-                break;
-            }
-        }
-        if (slot < 0) {
-            fprintf(stderr, "ERROR: Host libc thread table full (MAXTHREADS=%d), could not register thread uid=0x%x\n", MAXTHREADS, uid);
-            return -1;
-        }
-        s_libc_threads[slot].uid = uid;
-        s_libc_threads[slot].k0 = k0;
-        s_libc_threads[slot].state_ptr = state_ptr;
-        s_libc_threads[slot].in_use = 1;
-    } else {
-        s_libc_threads[slot].uid = uid;
-        s_libc_threads[slot].state_ptr = state_ptr;
-    }
-
-    /* Only a thread that actually holds the LAUNCHER role seeds the master reent.
-     * This was a UID-number test, so in a build with no launcher binding an ordinary
-     * thread that happened to be allocated the historical launcher UID took over the
-     * master reent for every later thread. */
-    if (sched_uid_is_launcher(uid)) {
-        g_master_reent = state_ptr;
-        sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->launcher_thread_entry,
-                        "launcher reent ownership");
-    }
-
-    init_guest_reent(state_ptr, uid);
-
-    if (getenv("SR_THLOG")) {
-        fprintf(stderr, "DEBUG: Registered thread uid=0x%x in host libc table slot %d: k0=0x%x state_ptr=0x%x\n",
-                uid, slot, k0, state_ptr);
-    }
-    if (getenv("SR_REENT_TRACE")) {
-        uint32_t bucket = (uid == 0u) ? 0u : (uid % 32u);
-        fprintf(stderr, "REENT_TRACE host_register: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
-                uid, k0, state_ptr, bucket, slot);
-    }
-    return 0;
-}
 
 static TCB *tcb_by_uid(uint32_t uid);
 static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority, uint32_t stack_size);
 
-static void unregister_libc_thread(uint32_t k0) {
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (s_libc_threads[i].in_use && s_libc_threads[i].k0 == k0) {
-            uint32_t state_ptr = s_libc_threads[i].state_ptr;
-            uint32_t uid = s_libc_threads[i].uid;
-            if (getenv("SR_REENT_TRACE")) {
-                uint32_t bucket = (uid == 0u) ? 0u : (uid % 32u);
-                fprintf(stderr, "REENT_TRACE host_unregister: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
-                        uid, k0, state_ptr, bucket, i);
-            }
-            s_libc_threads[i].uid = 0;
-            s_libc_threads[i].k0 = 0;
-            s_libc_threads[i].state_ptr = 0;
-            s_libc_threads[i].in_use = 0;
-            if (getenv("SR_THLOG")) {
-                fprintf(stderr, "DEBUG: Unregistered thread k0=0x%x from host libc table slot %d\n", k0, i);
-            }
-            return;
-        }
-    }
-}
-
 /* Thread-owned host resources have one owner and one release point.  Exit and
- * termination release the libc/reent/callback state, while DeleteThread also
+ * termination release the callback and wait state, while DeleteThread also
  * returns the guest stack range.  The flags live on the TCB so a repeated
  * lifecycle call is an observable no-op instead of a second teardown. */
 static void sched_release_thread_resources(TCB *t) {
     unsigned stranded;
     if (!t || t->resources_released) return;
-    if (t->k0_init) unregister_libc_thread(t->k0_init);
     sr_callback_unregister_owner(t->uid);
     sched_wait_abandon_owner(t);
     sr_hle_release_thread_resources(t->uid);
@@ -2401,6 +2285,12 @@ static void sched_release_thread_stack(TCB *t) {
  * with 0xFF on creation". */
 #define SCHED_THREAD_ATTR_NO_FILLSTACK 0x00100000u
 #define SCHED_STACK_FILL_BYTE          0xffu
+/* A thread's k0 block (PSP-THREAD-K0-001): the top 0x100 bytes of its stack. */
+#define SCHED_K0_BLOCK_SIZE            0x100u
+#define SCHED_K0_UID                   0xc0u
+#define SCHED_K0_STACK_BASE            0xc8u
+#define SCHED_K0_ONES_0                0xf8u
+#define SCHED_K0_ONES_1                0xfcu
 /* sceKernelGetThreadStackFreeSize starts counting this many bytes above the low end. */
 #define SCHED_STACK_FREE_SKIP          0x10u
 
@@ -2521,7 +2411,6 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
      * thread is no longer runnable.  Interleaved live stacks remain untouched;
      * the range allocator coalesces only exact adjacent free extents. */
     uint32_t sz = stack_size ? stack_size : 0x40000;
-    const uint32_t tls_size = 0x800u;
     if (sz > UINT32_MAX - 0xffu) {
         fprintf(stderr, "sched_create_thread: stack_size=0x%08x overflows alignment\n", sz);
         t->state = TH_DORMANT;
@@ -2531,15 +2420,11 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         return 0;
     }
     uint32_t user_sz = (sz + 0xffu) & ~0xffu;
-    if (user_sz > UINT32_MAX - tls_size) {
-        fprintf(stderr, "sched_create_thread: stack_size=0x%08x overflows TLS reservation\n", sz);
-        t->state = TH_DORMANT;
-        t->entry = 0;
-        t->started = 0;
-        if (t == &s_tcb[s_ntcb - 1]) s_ntcb--;
-        return 0;
-    }
-    uint32_t reservation = user_sz + tls_size;
+    /* The k0 block takes the top SCHED_K0_BLOCK_SIZE bytes of the stack and the thread's
+     * first frame sits below it. Requests under 0x200 bytes are not measured on hardware;
+     * they get 0x200 so the initial sp stays inside the thread's own stack. */
+    if (user_sz < 0x200u) user_sz = 0x200u;
+    uint32_t reservation = user_sz;
     uint32_t user_base = 0;
     int stack_ok = stack_range_alloc(reservation, &user_base);
     if (stack_ok && s_stack_range_refusal &&
@@ -2597,28 +2482,36 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
      * be demoted to 50 here (#363) against a launcher that out-prioritized the worker and
      * never blocked; under strict priority (pick_next) a launcher that blocks, for example
      * in sceKernelSleepThread after starting its worker, lets that worker run on its own. */
-    /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
-     * sets k0 to a small per-thread control region near the top of the thread stack, and the
-     * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
-     * (The entry thread's saved state is overwritten with the driver's seed in sched_run.)
-     * sz/user_sz/tls_size were validated by the fit check at the top of this function.
-     * The requested PSP stack is entirely user-accessible.  Keep the runtime's
-     * synthetic k0/newlib TLS block in a separate reservation above it; placing
-     * the 0x800-byte TLS block inside an explicitly requested 0x800-byte stack
-     * left small worker threads with SP below their own allocation. */
-    uint32_t k0 = user_base + user_sz;
+    /* Give the thread a stack, the module gp, and its k0 (r26) block. Measured on a PSP-3000
+     * (6.61, docs/HARDWARE_ORACLE.md PSP-THREAD-K0-001): k0 points at the top 0x100 bytes of
+     * the thread's own stack, for the root thread and for new threads alike, and the reported
+     * stack size includes the block. (The entry thread's saved state is overwritten with the
+     * driver's seed in sched_run.) sz/user_sz were validated by the fit check above. */
+    uint32_t k0 = user_base + user_sz - SCHED_K0_BLOCK_SIZE;
     t->stack_base = user_base;
     t->stack_size = user_sz;
     t->stack_reservation = reservation;
     t->stack_released = 0;
     /* A new stack is filled with 0xFF unless the creation attribute has NO_FILLSTACK
-     * (evidence at sched_thread_stack_free_size).  The fill covers the requested stack
-     * only; the runtime's k0/TLS block above it is seeded below. */
-    if (!(t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK))
+     * (evidence at sched_thread_stack_free_size). On a filled stack the lowest word holds the
+     * thread's UID (PSP-THREAD-K0-001, default attribute; the next word reads 0xFFFFFFFF, the
+     * fill). Whether a NO_FILLSTACK stack gets that word is not measured, so it is not written. */
+    if (!(t->attr & SCHED_THREAD_ATTR_NO_FILLSTACK)) {
         memset(SR_HOST(user_base), SCHED_STACK_FILL_BYTE, user_sz);
+        MEM_W32(user_base, t->uid);
+    }
+    /* The kernel writes the whole block for every attribute, also over a reused stack that a
+     * previous thread dirtied (PSP-THREAD-K0-001 K0-REUSE-*): zero except the UID, the stack
+     * base and two all-ones words. In particular k0+4 starts at 0: a title's libc stores its
+     * own per-thread pointer there, and a thread that never stores one reads 0. */
+    memset(SR_HOST(k0), 0, SCHED_K0_BLOCK_SIZE);
+    MEM_W32(k0 + SCHED_K0_UID, t->uid);
+    MEM_W32(k0 + SCHED_K0_STACK_BASE, user_base);
+    MEM_W32(k0 + SCHED_K0_ONES_0, 0xffffffffu);
+    MEM_W32(k0 + SCHED_K0_ONES_1, 0xffffffffu);
     t->resources_released = 0;
     t->k0_init = k0;
-    t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 region */
+    t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 block (not measured) */
     t->saved.r[26] = t->k0_init;
     t->saved.r[29] = t->sp_init;
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
@@ -2626,36 +2519,9 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
     sr_vfpu_thread_ctrl_init(&t->saved);
 
-    /* Seed the thread's TLS region (k0 + 4) to point to its own private reentrancy
-     * structure space (allocated within the k0 region at k0 + 0x10) to prevent cross-thread
-     * stack corruption. We zero-initialize the reentrancy structure to clear stack garbage
-     * and set up the stdin/stdout/stderr pointers mimicking Newlib's __reent_init. */
-    uint32_t state_ptr = k0 + 0x10;
-    memset(SR_HOST(state_ptr), 0, 0x380);
-    MEM_W32(state_ptr + 0x04, state_ptr + 0x268);
-    MEM_W32(state_ptr + 0x08, state_ptr + 0x2c4);
-    MEM_W32(state_ptr + 0x0c, state_ptr + 0x320);
-    MEM_W32(k0 + 4, state_ptr);
-    /* Seed the thread UID field consumed by the configured guest reent lookup. */
-    MEM_W32(state_ptr + 0x37cu, t->uid);
-
-    fprintf(stderr, "DEBUG: sched_create_thread uid=0x%x entry=0x%x k0=0x%x state_ptr=0x%x val=0x%x\n",
-            t->uid, entry, k0, state_ptr, MEM_R32(k0 + 4));
-
-    /* Write stack bounds and state_ptr for exception handling */
-    MEM_W32(k0 + 0, user_base);
-    MEM_W32(k0 + 8, state_ptr);
-
-    /* Register in the host-owned s_libc_threads table and any configured guest reent
-     * hash before the thread's own entry runs. */
-    register_libc_thread(k0, state_ptr, t->uid);
-
-    /* Re-seed the thread UID into the kernel thread info structure at state_ptr + 0x37c.
-     * register_libc_thread() did a 1KB copy from the master reent into state_ptr for any
-     * non-root, non-launcher UID, which CLOBBERED our earlier seed above. The libc reent
-     * lookup (f_00011600) reads MEM[state_ptr + 0x37c] for the UID, so we must
-     * write it again AFTER the copy. */
-    MEM_W32(state_ptr + 0x37cu, t->uid);
+    if (getenv("SR_THLOG"))
+        fprintf(stderr, "DEBUG: sched_create_thread uid=0x%x entry=0x%x k0=0x%x stack=[0x%x,0x%x)\n",
+                t->uid, entry, k0, user_base, user_base + user_sz);
 
     return t->uid;
 }
@@ -2702,7 +2568,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->saved.r[29] = t->sp_init;
     if (arglen != 0u) {
         uint32_t rounded = (arglen + 15u) & ~15u;
-        uint32_t stack_base = MEM_R32(t->k0_init + 0u);
+        uint32_t stack_base = t->stack_base;
         uint32_t src_phys = SR_PHYS(argp);
         uint32_t dst = t->sp_init - rounded;
         uint32_t dst_phys = SR_PHYS(dst);
@@ -2730,10 +2596,6 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
             t->arglen = 0;
         }
     }
-    if (register_libc_thread(t->k0_init, t->k0_init + 0x10, t->uid) != 0) {
-        t->state = TH_DORMANT;
-        return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
-    }
     t->resources_released = 0;
     t->join_waiting = 0;
     t->join_result_valid = 0;
@@ -2741,6 +2603,12 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->join_result = 0;
     t->suspended = 0;
     t->rot_head = 0;
+    t->import_active = 0;
+    t->import_nid = 0;
+    t->has_block_nid = 0;
+    t->block_nid = 0;
+    t->block_start_valid = 0;
+    t->block_start_us = 0;
     t->state = TH_READY;
     return 0;
 }
@@ -3445,6 +3313,16 @@ static int sched_blocklog_on(void) {
     return sched_env_switch(&enabled, "SR_BLOCKLOG");
 }
 
+/* Every path that parks a thread in TH_WAIT_DELAY or TH_WAIT_OBJ notes the block here, for
+ * the flight recorder's thread snapshot: the import the thread is inside (none when it
+ * blocks outside any import, never a stale NID) and the virtual time its wait began. */
+static void sched_note_block(TCB *t) {
+    t->has_block_nid = sr_import_active != 0;
+    t->block_nid = sr_import_active ? sr_import_nid : 0u;
+    t->block_start_us = s_vtime_us;
+    t->block_start_valid = 1;
+}
+
 void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
@@ -3461,6 +3339,7 @@ void sched_delay_current(uint64_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, 0u, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_DELAY;
     /* Real microseconds of virtual time; any positive delay yields at least once. */
     t->wake = wake;
@@ -3474,6 +3353,7 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3493,6 +3373,7 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3679,7 +3560,6 @@ int sched_reset_for_loadexec(void) {
 
     sr_aot_return_boundaries_reset();
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
@@ -3688,7 +3568,6 @@ int sched_reset_for_loadexec(void) {
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
-    g_master_reent = 0u;
     s_tick = 0;
     s_gp = 0u;
     s_guest_reset_requested = 0;
@@ -4010,6 +3889,7 @@ void sched_thread_sleep(void) {
     if (t->wakeups > 0) { t->wakeups--; return; }   /* pending wakeup: don't block */
     t->sleeping = 1;
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = t->uid;       /* sleep marker: woken only by sched_thread_wakeup(uid) */
     t->wake = SCHED_WAIT_FOREVER;
@@ -4047,6 +3927,7 @@ void sched_thread_sleep_cb(void) {
             continue;
         }
         memcpy(&t->saved, s_cpu, sizeof(CpuState));
+        sched_note_block(t);
         t->state = TH_WAIT_OBJ;
         t->wait_obj = t->uid;
         t->wake = SCHED_WAIT_FOREVER;
@@ -4124,6 +4005,66 @@ static uint32_t psp_wait_type(const TCB *t) {
      * time because the waited UID alone does not identify its type. */
     if (t->state == TH_WAIT_OBJ) return t->wait_kind ? (uint32_t)t->wait_kind : PSP_WAIT_OBJECT;
     return PSP_WAIT_NONE;
+}
+
+/* Flight-recorder thread source (registered by sched_init). The index-th thread that exists
+ * (deleted slots skipped) as scalars only: state, the wait reason sched_dump_threads()
+ * prints, the waitType ReferThreadStatus reports, the import the thread last blocked in, and
+ * how long its current wait has run in virtual time. A running thread reports the live CPU
+ * pc and ra; every other thread its saved ones. */
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out) {
+    uint32_t seen = 0u;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        if (seen++ != index) continue;
+        const int waiting = t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ;
+        const uint64_t now = s_vtime_us;
+        memset(out, 0, sizeof(*out));
+        out->uid = t->uid;
+        out->priority = (int32_t)t->priority;
+        switch (t->state) {
+            case TH_READY:      out->state = SR_FLIGHT_THREAD_READY; break;
+            case TH_RUNNING:    out->state = SR_FLIGHT_THREAD_RUNNING; break;
+            case TH_WAIT_DELAY: out->state = SR_FLIGHT_THREAD_WAIT_DELAY; break;
+            case TH_WAIT_OBJ:   out->state = SR_FLIGHT_THREAD_WAIT_OBJECT; break;
+            case TH_DORMANT:
+            default:            out->state = SR_FLIGHT_THREAD_DORMANT; break;
+        }
+        out->suspended = t->suspended ? 1u : 0u;
+        if (t->state == TH_WAIT_OBJ) {
+            if (t->join_waiting)                     out->why = SR_FLIGHT_WHY_THREAD_END;
+            else if (t->sleeping)                    out->why = SR_FLIGHT_WHY_SLEEP;
+            else if (t->wait_obj == CTRL_WAIT_OBJ)   out->why = SR_FLIGHT_WHY_CTRL;
+            else if (t->wait_obj == VBLANK_WAIT_OBJ) out->why = SR_FLIGHT_WHY_VBLANK;
+            else                                     out->why = SR_FLIGHT_WHY_OBJECT;
+            out->wait_object = t->wait_obj;
+        } else if (t->state == TH_WAIT_DELAY) {
+            out->why = SR_FLIGHT_WHY_DELAY;
+        } else {
+            out->why = SR_FLIGHT_WHY_NONE;
+        }
+        out->wait_type = psp_wait_type(t);
+        out->has_block_nid = t->has_block_nid ? 1u : 0u;
+        out->block_nid = t->has_block_nid ? t->block_nid : 0u;
+        if (i == s_cur && t->state == TH_RUNNING && s_cpu) {
+            out->pc = s_cpu->pc;
+            out->ra = s_cpu->r[31];
+        } else {
+            out->pc = t->saved.pc;
+            out->ra = t->saved.r[31];
+        }
+        if (waiting && t->block_start_valid && now >= t->block_start_us) {
+            out->has_waited = 1u;
+            out->waited_us = now - t->block_start_us;
+        }
+        if (waiting && t->wake != SCHED_WAIT_FOREVER) {
+            out->has_deadline = 1u;
+            out->deadline_us = t->wake > now ? t->wake - now : 0u;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 /* Latch the PSP waitType for the current thread's next object block; the
@@ -5094,6 +5035,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
         sr_rt_phase = t->rt_phase;
+        sr_import_active = t->import_active;
+        sr_import_nid = t->import_nid;
         if (sr_perf_enabled) {
             sr_perf_sched_state(SR_PERF_SCHED_RUNNING, t->uid);
             sr_perf_sched_switch(previous_uid, t->uid);
@@ -5105,6 +5048,10 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         t->rt_phase = sr_rt_phase;
+        t->import_active = sr_import_active;
+        t->import_nid = sr_import_nid;
+        sr_import_active = 0;
+        sr_import_nid = 0;
         g_hle_depth = 0;
         /* A coroutine cannot destroy itself from inside sched_exit_current;
          * reap it as soon as control is back on the scheduler coroutine. This

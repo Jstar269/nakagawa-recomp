@@ -50,6 +50,10 @@ fast paths using fixed synthetic buffers. It runs at 333/166 MHz and restores
 the boot clocks before teardown; raw measurements are retained in the private
 host0 log.
 
+`CASE=thread-k0-block` (`PSP-THREAD-K0-001`, 9 records) reads k0 and the
+64-word k0 block of the probe thread and of new threads, and checks whether a
+thread that reuses a dirtied stack still starts with k0+4 == 0 (#363).
+
 Bounded follow-up cases for issues #69, #311, and #303 are `CASE=ge-nan`,
 `CASE=audio-query`, and `CASE=dma-cells`; these remain `NOT_RUN`. The
 `CASE=delay-zero` records were measured on the accepted 2026-10-01 PSPLink
