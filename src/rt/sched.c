@@ -1145,9 +1145,7 @@ void sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
 /* Run the game's VBLANK interrupt handler (a guest function) on a dedicated interrupt context.
  * It usually calls sceKernelWakeupThread, readying the game thread. Called by the scheduler
  * when no thread is runnable (i.e. once per simulated frame). */
-uint32_t sr_vblank_handler(void);
-uint32_t sr_vblank_arg(void);
-uint32_t sr_vblank_no(void);
+int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
 /* The deadline a thread carries when nothing but a signal can release it.
  * Named so the "infinite waits never expire" rule in
  * sched_promote_expired_waits() is checkable rather than a bare -1. */
@@ -1630,6 +1628,24 @@ int sr_vblank_quantum_due(void) {
 }
 static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 
+/* The host window's event pump runs on host time, at most one display period apart, from
+ * both the scheduler loop and sr_yield. Counting guest yields was not enough: a thread that
+ * waits in short delays (a title's GE-lock poll calls DelayThreadCB(50) in a loop) blocks
+ * before its slice ends, so sr_yield rarely ran, the window went unpumped for seconds and
+ * Windows marked it "Not responding" while the guest was stalled. */
+#define SCHED_HOST_PUMP_PERIOD_NS 16683333u
+static uint64_t s_host_pump_ns;
+static int s_host_pump_valid;
+static void sched_pump_host_window(void) {
+    extern void gui_pump(void);
+    if (!gui_on()) return;
+    uint64_t now = host_now_ns();
+    if (s_host_pump_valid && now - s_host_pump_ns < SCHED_HOST_PUMP_PERIOD_NS) return;
+    s_host_pump_ns = now;
+    s_host_pump_valid = 1;
+    gui_pump();
+}
+
 /* Microseconds of virtual time until the next vblank is due (0 when overdue). */
 static uint64_t vblank_due_us(void) {
     pace_setup();
@@ -1696,11 +1712,13 @@ static void deliver_vblank(void) {
      * one. Measured on the flagship title screen against PPSSPP: 55.16 vs 30.0 game
      * frames/s before (1.84x), 27.75 after. */
 
-    uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
     if (sched_vblog_on() && (++vb % 1) == 0) {
-        fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
+        uint32_t h0 = 0u, a0 = 0u;
+        int first = sr_vblank_subintr(0u, &h0, &a0);
+        fprintf(stderr, "vblank #%llu (handler0=0x%x) prims=%u\n", vb, first > 0 ? h0 : 0u,
+                g_frame_prims);
     }
     g_frame_prims = 0;
 
@@ -1725,41 +1743,49 @@ static void deliver_vblank(void) {
     }
     CpuState save;
     memcpy(&save, s_cpu, sizeof(CpuState));
-    /* An interrupt frame is a nested call on the interrupted register file,
-     * not a zeroed synthetic process. Set only the ABI fields owned by the
-     * handler and restore the complete frame after it returns. */
-    memcpy(s_cpu, &save, sizeof(CpuState));
-    s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
-    s_cpu->r[28] = s_gp;
-    /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
-     * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
-     * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
-     * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
-     * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
-    s_cpu->r[4] = sr_vblank_no();
-    s_cpu->r[5] = sr_vblank_arg();
-    s_cpu->r[31] = 0;
-    s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
-    s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && sched_cbsnap_on()) {
-        /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
-         * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
-        fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
-                h, s_cpu->r[4], save.pc, save.r[29]);
-        fprintf(stderr, "  insn[entry  ]=0x%08x insn[entry+4]=0x%08x insn[entry+8]=0x%08x\n",
-                MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
-        fflush(stderr);
-    }
     uint32_t interrupt_fatal_target = 0u;
-    int interrupt_fatal = h
-        ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
-                                         &interrupt_fatal_target)
-        : 0;
-    if (h && sched_cbsnap_on()) {
-        fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
-                h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
-        fflush(stderr);
+    int interrupt_fatal = 0;
+    /* Every registered and enabled VBLANK sub-interrupt handler runs on this VBLANK, in
+     * sub-interrupt number order (the order is UNMEASURED on the PSP). A title can keep
+     * several at once, for example its frame counter on 0 and a video player's on 1. */
+    for (uint32_t no = 0u; !interrupt_fatal; no++) {
+        uint32_t h = 0u, arg = 0u;
+        int sub = sr_vblank_subintr(no, &h, &arg);
+        if (sub < 0) break;
+        if (sub == 0) continue;
+        /* An interrupt frame is a nested call on the interrupted register file,
+         * not a zeroed synthetic process. Set only the ABI fields owned by the
+         * handler; the complete frame is restored after the last handler returns. */
+        memcpy(s_cpu, &save, sizeof(CpuState));
+        s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
+        s_cpu->r[28] = s_gp;
+        /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
+         * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
+         * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
+         * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
+         * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
+        s_cpu->r[4] = no;
+        s_cpu->r[5] = arg;
+        s_cpu->r[31] = 0;
+        s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
+        s_cpu->pc = h;
+        if (sched_cbsnap_on()) {
+            /* VBLANK sub-interrupt pre-snapshot. The entry here is an InterruptManager
+             * sub-interrupt handler (interrupt 30), not a s_callbacks[] slot. */
+            fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
+                    h, s_cpu->r[4], save.pc, save.r[29]);
+            fprintf(stderr, "  insn[entry  ]=0x%08x insn[entry+4]=0x%08x insn[entry+8]=0x%08x\n",
+                    MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
+            fflush(stderr);
+        }
+        interrupt_fatal = sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
+                                                         &interrupt_fatal_target);
+        if (sched_cbsnap_on()) {
+            fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
+                    h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
+            fflush(stderr);
+        }
     }
     extern int sr_vblank_dispatch_registered(void);
     /* Deliver every active callback slot in stable slot/registration order.  A callback
@@ -3085,10 +3111,7 @@ void sr_yield(CpuState *s) {
     if ((s_tick & 0xff) == 0) vtime_refresh(); /* observation only; time already progressed above */
     t111_trace(s);
     /* Pump messages if we are spinning/loading and not calling gui_present. */
-    if (gui_on() && (s_tick & 0x7f) == 0) {
-        extern void gui_pump(void);
-        gui_pump();
-    }
+    sched_pump_host_window();
     /* The PSP VBLANK is an interrupt source: time crossing its deadline latches
      * the bit, and only the eligible-delivery phase runs the handler. */
     scheduler_latch_due_events();
@@ -4916,6 +4939,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
+        sched_pump_host_window();   /* every pass, so a guest that only waits still pumps */
         if (sched_dump && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
