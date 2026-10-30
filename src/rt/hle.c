@@ -5993,9 +5993,18 @@ static SrPsmfPlayer *psmf_slot(uint32_t guest, int create) {
     if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; freeSlot->h264=-1; return freeSlot; }
     return NULL;
 }
+/* A ScePsmfPlayer is one guest word: Create stores the player's handle in it and Delete clears
+ * it, and every other call names the player by that word's value, not by where the word is.  A
+ * title may copy the word into its own thread structures and pass the copy, which on a PSP names
+ * the same player.  The handle stored is the address Create was given, as PPSSPP
+ * Core/HLE/scePsmf.cpp (3f40ddc8) does; what the PSP library stores there is unmeasured, and no
+ * title is known to read it as anything but a handle. */
 static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
     s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
-    return psmf_slot(guest, create);
+    if (create) return psmf_slot(guest, create);
+    if (!guest || !sr_guest_span_readable(guest, 4u)) return NULL;
+    uint32_t handle = MEM_R32(guest);
+    return handle ? psmf_slot(handle, 0) : NULL;
 }
 static void psmf_flush(SrPsmfPlayer *p) {
     if (!p) return;
@@ -6512,7 +6521,7 @@ void sr_hle_test_psmf_log_tick(uint32_t guest) {
 }
 
 void sr_hle_test_psmf_log_release(uint32_t guest) {
-    SrPsmfPlayer *p = psmf_find(guest, 0);
+    SrPsmfPlayer *p = psmf_slot(guest, 0);
     if (!p) return;
     psmf_flush(p);
     if (p->producer) sr_psmf_producer_close(p->producer);
@@ -6984,7 +6993,7 @@ static uint32_t h_PsmfCreate(CpuState *s) {
     /* Parameters are checked before a slot is claimed, so a refused create keeps nothing;
      * creating over a live control block gives the old player's decoder and producer back
      * and starts a fresh player (issue #279). */
-    SrPsmfPlayer *p=psmf_find(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
+    s_psmf_calls++; SrPsmfPlayer *p=psmf_slot(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
     psmf_player_release(p); p=psmf_slot(A0,1); if(!p)return PSMF_ERR_PARAM;
     p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
