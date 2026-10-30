@@ -26,8 +26,8 @@ SECTOR_SIZE = 2048
 PVD_SECTOR = 16
 ISO_MAGIC = b"\x01CD001\x01"
 SFO_MAGIC = b"\x00PSF\x01\x01\x00\x00"
+# Also bounds a directory's entry count: every record is at least 34 bytes.
 MAX_DIRECTORY_BYTES = 512 * 1024
-MAX_DIRECTORY_ENTRIES = 4096
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
@@ -1159,8 +1159,6 @@ def _read_iso_directory_entries(
             is_directory=is_directory,
             multi_extent=bool(record[25] & 0x80),
         ))
-        if len(entries) > MAX_DIRECTORY_ENTRIES:
-            raise IsoInspectionError("ISO directory exceeds the supported entry count")
     return entries
 
 
