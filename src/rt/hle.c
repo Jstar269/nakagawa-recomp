@@ -4812,7 +4812,57 @@ typedef struct {
     int host_served;
     uint32_t gp;
     const SrModuleCode *code;
+    /* The kernel's record of a guest-placed module, filled from its ELF and the loader's
+     * relocated image when it was placed (sceKernelQueryModuleInfo). has_info is 0 for a
+     * module placed any other way, which then has no such record. */
+    int has_info;
+    SrMainModuleRecord info;
 } LoadedModule;
+
+/* Text/data/bss sizes of a PRX image as the kernel's loader sums them (uOFW
+ * src/kd/loadcore/loadelf.c): with a section table, CheckElfSectionPRX -- PROGBITS sections
+ * flagged exactly ALLOC|EXECINSTR or ALLOC are text, WRITE|ALLOC data, NOBITS WRITE|ALLOC
+ * bss; without one, CheckElfSection -- PT_LOAD file bytes are text when executable and data
+ * otherwise, memory past the file bytes bss. Returns 0 when the headers are malformed. */
+static int prx_text_data_bss(const unsigned char *elf, size_t len, uint32_t *text,
+                             uint32_t *data, uint32_t *bss) {
+    uint64_t t = 0, d = 0, b = 0;
+    if (!elf || len < 52u || memcmp(elf, "\177ELF\1\1", 6) != 0) return 0;
+    uint32_t phoff, shoff; uint16_t phentsize, phnum, shentsize, shnum, shstrndx;
+    memcpy(&phoff, elf + 28, 4); memcpy(&shoff, elf + 32, 4);
+    memcpy(&phentsize, elf + 42, 2); memcpy(&phnum, elf + 44, 2);
+    memcpy(&shentsize, elf + 46, 2); memcpy(&shnum, elf + 48, 2); memcpy(&shstrndx, elf + 50, 2);
+    if (shoff > 0u) {
+        if (shnum == 0u || shstrndx >= shnum || shentsize < 40u ||
+            (uint64_t)shoff + (uint64_t)shentsize * shnum > len)
+            return 0;
+        for (uint32_t i = 0; i < shnum; i++) {
+            const unsigned char *sh = elf + shoff + (size_t)i * shentsize;
+            uint32_t type, flags, size;
+            memcpy(&type, sh + 4, 4); memcpy(&flags, sh + 8, 4); memcpy(&size, sh + 20, 4);
+            if (type == 1u) {                                   /* SHT_PROGBITS */
+                if (flags == 6u || flags == 2u) t += size;      /* ALLOC|EXECINSTR, ALLOC */
+                else if (flags == 3u) d += size;                /* WRITE|ALLOC */
+            } else if (type == 8u && flags == 3u) {             /* SHT_NOBITS, WRITE|ALLOC */
+                b += size;
+            }
+        }
+    } else {
+        if (phentsize < 32u || (uint64_t)phoff + (uint64_t)phentsize * phnum > len) return 0;
+        for (uint32_t i = 0; i < phnum; i++) {
+            const unsigned char *ph = elf + phoff + (size_t)i * phentsize;
+            uint32_t type, filesz, memsz, flags;
+            memcpy(&type, ph, 4); memcpy(&filesz, ph + 16, 4); memcpy(&memsz, ph + 20, 4);
+            memcpy(&flags, ph + 24, 4);
+            if (type != 1u) continue;
+            if (flags & 1u) t += filesz; else d += filesz;
+            if (filesz < memsz) b += memsz - filesz;
+        }
+    }
+    if (t > UINT32_MAX || d > UINT32_MAX || b > UINT32_MAX) return 0;
+    *text = (uint32_t)t; *data = (uint32_t)d; *bss = (uint32_t)b;
+    return 1;
+}
 
 /* Live module records and resident images. Guest-placed modules are bound in the
  * dispatch registry, which holds SR_MODULE_CODE_MAX_BOUND images at once; the loader's
@@ -5577,6 +5627,8 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     s_prx_staging = 1;
     int rc = sr_prx_load_from_memory(bytes, size, base, &img, err, sizeof(err));
     s_prx_staging = 0;
+    uint32_t text_size = 0, data_size = 0, bss_size = 0;
+    const int sized = rc == 0 && prx_text_data_bss(bytes, size, &text_size, &data_size, &bss_size);
     free(bytes);
     const char *refusal = NULL;
     if (rc != 0) {
@@ -5641,6 +5693,25 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     mod->module_stop = module_stop;
     mod->image_base = image;
     mod->image_end = image + span;
+    memset(&mod->info, 0, sizeof(mod->info));
+    mod->has_info = sized && img.nseg <= 4u;
+    if (mod->has_info) {
+        mod->info.nsegment = img.nseg;
+        for (uint32_t i = 0; i < img.nseg; i++) {
+            mod->info.segment_addr[i] = img.segs[i].guest_addr;
+            mod->info.segment_size[i] = img.segs[i].mem_size;
+        }
+        mod->info.entry_addr = img.entry;
+        mod->info.gp_value = img.gp;
+        mod->info.text_addr = image;
+        mod->info.text_size = text_size;
+        mod->info.data_size = data_size;
+        mod->info.bss_size = bss_size;
+        mod->info.attribute = img.attr;
+        mod->info.version[0] = img.version[0];
+        mod->info.version[1] = img.version[1];
+        memcpy(mod->info.name, img.modname, sizeof(mod->info.name));
+    }
     sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
     sr_prx_image_free(&img);
     return 0;
@@ -7449,6 +7520,102 @@ static uint32_t h_GetModuleIdByAddress(CpuState *s) {
 static uint32_t h_GetModuleId(CpuState *s) {
     uint32_t uid = module_uid_at(s->r[31]);
     return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
+
+/* The main module's kernel record, registered by the generated sr_register_all() when the
+ * ELF has a SceModuleInfo (tools/codegen.py main_module_record). NULL when it has none, and
+ * again after LoadExec replaces the program. */
+static const SrMainModuleRecord *s_main_module_record;
+
+#define SCE_MODULE_PRIVILEGE_LEVELS        0x1e00u   /* MS|USB_WLAN|APP|VSH|KERNEL */
+#define SCE_KERNEL_MODULE_INIT_PRIORITY    32
+#define SCE_KERNEL_TH_USER_DEFAULT_STACK   0x40000u
+#define SCE_KERNEL_TH_USER_MODE            0x80000000u
+
+/* The module manager creates the module-start thread from the record (uOFW
+ * src/kd/modulemgr/modulemgr.c, _StartModule): the declared module_start_thread_parameter
+ * priority, stack size and attribute, or the module-init priority 32 and the 256 KiB user
+ * stack when the module declares none; the attribute's top nibble is cleared and the
+ * user-mode bit set, and the thread is named "SceModmgrStart" and runs with the module's gp.
+ * A game's main module is a user module: the loader refuses to boot one whose privilege
+ * level is not user (uOFW src/kd/loadcore/loadelf.c, sceKernelProbeExecutableObject). */
+void sr_main_module_register(const SrMainModuleRecord *record) {
+    s_main_module_record = record;
+    if (!record) return;
+    int priority = SCE_KERNEL_MODULE_INIT_PRIORITY;
+    uint32_t stack_size = 0u, attr = 0u;
+    if (record->has_start_thread_param) {
+        priority = (int)record->start_thread_priority;
+        stack_size = record->start_thread_stack_size;
+        attr = record->start_thread_attr;
+    }
+    if (stack_size == 0u) stack_size = SCE_KERNEL_TH_USER_DEFAULT_STACK;
+    attr = (attr & ~0xf0000000u) | SCE_KERNEL_TH_USER_MODE;
+    sched_set_module_start_thread(priority, stack_size, attr, "SceModmgrStart",
+                                  record->gp_value);
+}
+
+/* sceKernelQueryModuleInfo(uid, info), from uOFW src/kd/modulemgr/queryModule.c (MIT):
+ * interrupt context, then a 96-byte user buffer, then (compiled SDK 2.80 or later) a size of
+ * 64 (SceKernelModuleInfoV1) or 96 (SceKernelModuleInfo), then the module. The first 64 bytes
+ * are always written; attribute (privilege bits cleared), version and name only for size 96.
+ * The main module answers from its generated record, and a module the runtime placed itself
+ * from the record taken when it was placed. Any other loaded module's record holds no segment
+ * table, text/data/bss sizes, attribute, version or name, so it is refused by name rather than
+ * answered with partial values; so is a main module built without a record. */
+#define SCE_KERNEL_ERROR_CANNOT_GET_MODULE_INFO 0x8002014au
+static uint32_t h_QueryModuleInfo(CpuState *s) {
+    const uint32_t uid = A0, info = A1;
+    if (sched_is_intr_context()) return 0x80020064u;      /* CANNOT_BE_CALLED_FROM_INTERRUPT */
+    if (info == 0u || !sr_guest_span_writable(info, 96u)) return 0x800200d3u; /* ILLEGAL_ADDR */
+    const uint32_t size = MEM_R32(info);
+    if ((sr_sdkver_get(&g_sdk_version) & 0xffff0000u) >= 0x02080000u && size != 64u && size != 96u)
+        return 0x800201bcu;                               /* ILLEGAL_SIZE */
+    const int is_main = uid != 0u && uid == s_main_module_uid &&
+                        sr_loaded_base() < sr_loaded_end();
+    const SrMainModuleRecord *r = s_main_module_record;
+    if (!is_main) {
+        const LoadedModule *mod = find_loaded_module(uid);
+        if (!mod) return SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+        if (mod->has_info) {
+            r = &mod->info;
+            goto answer;
+        }
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is a module the runtime did not place, whose record holds no segment table, sizes, "
+                        "attribute, version or name; refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!r) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is the main module, but this build carries no record of it (the "
+                        "ELF has no SceModuleInfo); refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+answer:
+    MEM_W8(info + 4u, (uint8_t)r->nsegment);
+    for (uint32_t i = 0; i < 4u; i++) {
+        MEM_W32(info + 8u + 4u * i, r->segment_addr[i]);
+        MEM_W32(info + 24u + 4u * i, r->segment_size[i]);
+    }
+    MEM_W32(info + 40u, r->entry_addr);
+    MEM_W32(info + 44u, r->gp_value);
+    MEM_W32(info + 48u, r->text_addr);
+    MEM_W32(info + 52u, r->text_size);
+    MEM_W32(info + 56u, r->data_size);
+    MEM_W32(info + 60u, r->bss_size);
+    if (size == 96u) {
+        MEM_W16(info + 64u, (uint16_t)(r->attribute & ~SCE_MODULE_PRIVILEGE_LEVELS));
+        MEM_W8(info + 66u, r->version[0]);
+        MEM_W8(info + 67u, r->version[1]);
+        int ended = 0;                                    /* strncpy: copy, then NUL pad */
+        for (uint32_t i = 0; i < 27u; i++) {
+            if (!ended && r->name[i] == 0u) ended = 1;
+            MEM_W8(info + 68u + i, ended ? 0u : r->name[i]);
+        }
+        MEM_W8(info + 95u, 0u);
+    }
+    return 0;
 }
 
 static uint32_t h_StopModule_Trace(CpuState *s) {
@@ -15192,6 +15359,7 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 
 void sr_hle_test_module_reset(void) {
     s_main_module_uid = 0u;
+    s_main_module_record = NULL;
     s_deferred_self_stop_uid = 0u;
     s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
@@ -28581,6 +28749,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
+    sr_hle_register(0x748cbed9, "sceKernelQueryModuleInfo", h_QueryModuleInfo);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
@@ -29498,6 +29667,10 @@ static void loadexec_reset_user_partition(void) {
 }
 
 void sr_hle_loadexec_reset_guest_state(void) {
+    /* The replacement program is a module record of its own; the old main module's record
+     * and module-start thread parameters no longer apply. */
+    s_main_module_record = NULL;
+    sched_set_module_start_thread(SCE_KERNEL_MODULE_INIT_PRIORITY, 0u, 0u, NULL, 0u);
     if (s_loadexec_request.args) free(s_loadexec_request.args);
     memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
     s_loadexec_pending = 0;
