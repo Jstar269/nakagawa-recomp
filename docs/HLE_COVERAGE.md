@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 14 |
-| `ppsspp-derived` | 108 | 90 |
+| `ppsspp-derived` | 109 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 295 | 200 |
-| `unverified` | 190 | 51 |
-| total | 657 | 355 |
+| `synthetic` | 297 | 200 |
+| `unverified` | 189 | 51 |
+| total | 659 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -160,6 +160,7 @@ belongs to without the census's own grouping.
 | `0x27e22ec2` | `sceKernelResumeDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x27eb27b8` | `sceIoLseek` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x27f6e642` | `sceFontGetNumFontList` | font | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_font_list_contract`; note |
+| `0x281928a9` | `sceNetTerm` | network | `synthetic` | HLE selftest dispatch |
 | `0x289d82fe` | `sceDisplaySetFrameBuf` | display | `synthetic` | HLE selftest dispatch |
 | `0x28a8e98a` | `sceRegGetKeyValue` | system | `synthetic` | HLE selftest dispatch |
 | `0x28b6489c` | `sceKernelDeleteSema` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
@@ -418,6 +419,7 @@ belongs to without the census's own grouping.
 | `0x884c9f90` | `sceKernelTrySendMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
+| `0x89360950` | `sceNetEtherNtostr` | network | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_named_refusals` |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
@@ -567,7 +569,7 @@ belongs to without the census's own grouping.
 | `0xc492f751` | `sceUtilityGameSharingInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc5768d02` | `sceRegGetKeyInfoByName` | system | `synthetic` | HLE selftest dispatch |
 | `0xc58bcd9e` | `sceNetAdhocMatchingGetMembers` | network | `unverified` | no recorded evidence |
-| `0xc6183d47` | `sceUmdActivate` | umd | `unverified` | no recorded evidence |
+| `0xc6183d47` | `sceUmdActivate` | umd | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xc629af26` | `sceUtilityLoadAvModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc68d9437` | `sceKernelStartVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
 | `0xc69bebce` | `sceOpenPSIDGetOpenPSID` | system | `unverified` | no recorded evidence |
