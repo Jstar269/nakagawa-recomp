@@ -129,7 +129,9 @@ report SKIP with the printed reason, while a missing PSPDEV toolchain does not.
 Current fail-closed limits are deliberate:
 
 - the analyzer accepts at most one explicit extra executable span;
-- an explicit span cannot yet be combined with a nonzero executable base; and
+- an explicit span is written in guest addresses, and the analyzer refuses one for an
+  image that `GAME_BASE` relocates (a fixed-address or base-zero image takes it as
+  written); and
 - only the generator's current `hst` and `none` profile choices are accepted.
 
 The manager adapter is deliberately fail-closed: this slice accepts only the

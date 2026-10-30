@@ -630,6 +630,13 @@
     "name": "sceFontGetNumFontList",
     "status": "partial"
   },
+  "0x281928a9": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNetTerm",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0x289d82fe": {
     "classification": "dedicated",
     "handler": "h_DisplaySetFrameBuf",
@@ -2211,6 +2218,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x89360950": {
+    "classification": "dedicated",
+    "handler": "h_NetEtherNtostr",
+    "name": "sceNetEtherNtostr",
+    "status": "partial"
+  },
   "0x89aa9906": {
     "classification": "dedicated",
     "handler": "h_IoOpenAsync",
@@ -3130,7 +3143,7 @@
     "classification": "dedicated",
     "handler": "h_UmdActivate",
     "name": "sceUmdActivate",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc629af26": {
     "classification": "dedicated",
