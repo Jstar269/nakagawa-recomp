@@ -29,12 +29,20 @@ class UmdWakeupIsolationTests(unittest.TestCase):
     def test_ready_signal_only_wakes_umd_waiters_and_notifies_registered_callback(self):
         body = function_body("sr_umd_signal_ready")
         self.assertIn("sched_wake(0x554D44u)", body)
-        # The ready signal restores the measured activated drive state (0x32) and notifies the
-        # callback with that state.
+        # The ready signal restores the measured activated drive state (0x32) before it
+        # notifies the callback. The callback argument follows the compiled SDK version
+        # (0x22 with none set, 0x32 otherwise); hle_thread_selftest checks both values.
         self.assertRegex(HLE_SOURCE, r"\bUMD_STAT_ACTIVE\s*=\s*0x32u\b")
+        self.assertRegex(HLE_SOURCE, r"\bUMD_STAT_DEACTIVATED\s*=\s*0x12u\b")
         self.assertIn("s_umd_drive_stat = UMD_STAT_ACTIVE;", body)
-        self.assertIn("sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat)", body)
+        self.assertIn("g_sdk_version != 0u", body)
+        self.assertIn("sr_callback_notify(s_umd_cb_uid, callback_stat)", body)
         self.assertLess(body.index("s_umd_drive_stat = UMD_STAT_ACTIVE;"),
+                        body.index("sr_callback_notify(s_umd_cb_uid, callback_stat)"))
+
+    def test_deactivate_notifies_the_deactivated_drive_state(self):
+        body = function_body("h_UmdDeactivate")
+        self.assertLess(body.index("s_umd_drive_stat = UMD_STAT_DEACTIVATED;"),
                         body.index("sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat)"))
         self.assertNotRegex(body, r"\bsched_thread_wakeup\s*\(")
 

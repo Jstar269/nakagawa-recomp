@@ -570,7 +570,7 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_umd_unregister_callback",
             "PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version",
         ],
-        "limitation": "the callback notification and pre-SDK-version PRESENT|READY state are host-selftested; the activation result and argument checks are not hardware measured",
+        "limitation": "the callback argument follows PPSSPP (0x22 when no compiled SDK version is set, 0x32 otherwise) and is host-selftested, not hardware measured; the activation result and argument checks are not hardware measured either",
     },
     "h_UmdDeactivate": {
         "status": "partial",
@@ -578,7 +578,7 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
             "hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)",
         ],
-        "limitation": "moves the modeled drive to the measured deactivated state 0x12 and notifies PRESENT|READY through the host-selftested callback path; its own return value (0) and argument checks are not hardware measured",
+        "limitation": "moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured",
     },
     "h_UmdUnRegisterUMDCallBack": {
         "status": "partial",
@@ -613,7 +613,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_named_refusals",
         ],
-        "limitation": "formats a readable six-byte MAC address into the bounded 18-byte PSPSDK text form without a network stack; invalid pointer precedence and the complete text domain are not hardware measured",
+        "limitation": "formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured",
     },
     "h_IoDopen": {
         "status": "partial",

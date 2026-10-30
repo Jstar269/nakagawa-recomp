@@ -9555,8 +9555,8 @@ static void test_umd_unregister_callback(void) {
     expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u &&
                sr_syscall(&cpu, NID_CHECK_CALLBACK) == 1u &&
                s_oracle_callback_calls == 1 &&
-               s_oracle_callback_arg2 == 0x22u,
-           "UMD deactivate callbacks receive PRESENT|READY (0x22)");
+               s_oracle_callback_arg2 == 0x12u,
+           "UMD deactivate callbacks receive the deactivated drive state (0x12)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = cbid;

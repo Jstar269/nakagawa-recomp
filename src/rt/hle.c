@@ -13774,11 +13774,9 @@ static uint32_t s_umd_cb_uid = 0;
  * The waits below read this state, so a wait for READY after a deactivate blocks until
  * sceUmdActivate signals the drive ready again. */
 enum {
-    UMD_STAT_PRESENT = 0x02u,
-    UMD_STAT_INITED = 0x10u,
-    UMD_STAT_READY = 0x20u,
-    UMD_STAT_ACTIVE = UMD_STAT_PRESENT | UMD_STAT_INITED | UMD_STAT_READY,
-    UMD_STAT_DEACTIVATED = UMD_STAT_PRESENT | UMD_STAT_INITED
+    UMD_STAT_PRESENT = 0x02u, UMD_STAT_INITED = 0x10u, UMD_STAT_READY = 0x20u,
+    UMD_STAT_ACTIVE = 0x32u,       /* PRESENT | INITED | READY */
+    UMD_STAT_DEACTIVATED = 0x12u   /* PRESENT | INITED */
 };
 static uint32_t s_umd_drive_stat = UMD_STAT_ACTIVE;
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -13831,9 +13829,10 @@ static void sr_umd_signal_ready(void) {
     s_umd_drive_stat = UMD_STAT_ACTIVE;
     sched_wake(0x554D44u);
     if (s_umd_cb_uid) {
-        /* PPSSPP's compiled-SDK gate is observable here: titles that report
-         * SDK version 0 receive PRESENT|READY, while newer titles also receive
-         * INITED. Coded Arms' module loader waits specifically for 0x22. */
+        /* The callback argument follows PPSSPP's model (sceUmd.cpp __KernelUmdActivate), not
+         * a measurement: a module that never set a compiled SDK version receives
+         * PRESENT|READY (0x22), a newer one also INITED (0x32). A title's loader that waits
+         * for exactly 0x22 needs the first form. */
         uint32_t callback_stat = UMD_STAT_PRESENT | UMD_STAT_READY;
         if (g_sdk_version != 0u) callback_stat |= UMD_STAT_INITED;
         (void)sr_callback_notify(s_umd_cb_uid, callback_stat);
@@ -13903,9 +13902,11 @@ static uint32_t h_UmdActivate(CpuState *s) {
 static uint32_t h_UmdDeactivate(CpuState *s) {
     (void)s;
     s_umd_drive_stat = UMD_STAT_DEACTIVATED;
+    /* The callback receives the deactivated state 0x12, as PPSSPP's __KernelUmdDeactivate
+     * notifies (its PSP_UMD_READY is this file's INITED bit, 0x10). The callback argument
+     * itself is not measured; the drive state is. */
     if (s_umd_cb_uid)
-        (void)sr_callback_notify(s_umd_cb_uid,
-                                 UMD_STAT_PRESENT | UMD_STAT_READY);
+        (void)sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat);
     return 0;
 }
 
