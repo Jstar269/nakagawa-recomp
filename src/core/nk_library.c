@@ -732,3 +732,126 @@ NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
 
     return res;
 }
+
+/* locks/library.lock beside the library file, as tools/nk_cli.py names it. */
+static bool library_lock_paths(const char *library_path, char *dir, size_t dir_len,
+                               char *file, size_t file_len) {
+    const char *slash = NULL;
+    for (const char *p = library_path; *p; p++) {
+        if (*p == '/' || *p == '\\') slash = p;
+    }
+    char sep = nk_platform_path_separator();
+    int n = slash ? snprintf(dir, dir_len, "%.*s%clocks", (int)(slash - library_path),
+                             library_path, sep)
+                  : snprintf(dir, dir_len, "locks");
+    if (n < 0 || (size_t)n >= dir_len) return false;
+    n = snprintf(file, file_len, "%s%clibrary.lock", dir, sep);
+    return n >= 0 && (size_t)n < file_len;
+}
+
+NkResult nk_library_lock_acquire(NkFileLock *lock, const char *library_path,
+                                 unsigned timeout_ms) {
+    if (!lock) return NK_ERROR_GENERIC;
+    memset(lock, 0, sizeof(*lock));
+    if (!library_path || !*library_path) return NK_ERROR_GENERIC;
+    char dir[NK_MAX_PATH];
+    char path[NK_MAX_PATH + 16];
+    if (!library_lock_paths(library_path, dir, sizeof(dir), path, sizeof(path))) {
+        return NK_ERROR_PATH_TOO_LONG;
+    }
+    if (!nk_platform_mkdir_p_private(dir)) return NK_ERROR_IO;
+    return nk_platform_file_lock_acquire(lock, path, timeout_ms) ? NK_OK : NK_ERROR_IO;
+}
+
+/* lib takes the saved records: its own keep their order, as saved where the file
+   has them, then come the ones another writer added. An own record the file does
+   not have (a sample, or one an earlier save could not write) stays, except the
+   removed one. view is scratch space of the same size. */
+static void library_adopt(NkLibrary *lib, const NkLibrary *saved, const char *removed,
+                          NkLibrary *view) {
+    view->count = 0;
+    for (int i = 0; i < lib->count && view->count < NK_MAX_GAMES; i++) {
+        const NkGameEntry *own = &lib->entries[i];
+        if (removed && strcmp(own->disc_id, removed) == 0) continue;
+        const NkGameEntry *on_disk = own->is_sample
+            ? NULL : nk_library_find_by_disc_id(saved, own->disc_id);
+        view->entries[view->count++] = on_disk ? *on_disk : *own;
+    }
+    for (int i = 0; i < saved->count && view->count < NK_MAX_GAMES; i++) {
+        if (!nk_library_find_by_disc_id(view, saved->entries[i].disc_id)) {
+            view->entries[view->count++] = saved->entries[i];
+        }
+    }
+    int previous = lib->count;
+    memcpy(lib->entries, view->entries, (size_t)view->count * sizeof(lib->entries[0]));
+    if (previous > view->count) {
+        memset(&lib->entries[view->count], 0,
+               (size_t)(previous - view->count) * sizeof(lib->entries[0]));
+    }
+    lib->count = view->count;
+}
+
+/* Puts entry, or removes disc_id when entry is NULL, in the file under the lock. */
+static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const char *disc_id,
+                               const char *file_path) {
+    char target[NK_MAX_PATH];
+    if (file_path) {
+        snprintf(target, sizeof(target), "%s", file_path);
+    } else if (lib->library_path[0]) {
+        snprintf(target, sizeof(target), "%s", lib->library_path);
+    } else {
+        if (!nk_platform_get_path(NK_PATH_DATA, target, sizeof(target))) return NK_ERROR_IO;
+        size_t used = strlen(target);
+        int written = snprintf(target + used, sizeof(target) - used, "%clibrary.json",
+                               nk_platform_path_separator());
+        if (written < 0 || (size_t)written >= sizeof(target) - used) return NK_ERROR_PATH_TOO_LONG;
+    }
+
+    NkLibrary *disk = (NkLibrary *)malloc(sizeof(*disk));
+    NkLibrary *view = (NkLibrary *)malloc(sizeof(*view));
+    if (!disk || !view) {
+        free(disk);
+        free(view);
+        return NK_ERROR_OUT_OF_MEMORY;
+    }
+    NkFileLock lock;
+    NkResult res = nk_library_lock_acquire(&lock, target, NK_LIBRARY_LOCK_TIMEOUT_MS);
+    if (res == NK_OK) {
+        res = nk_library_load(disk, target);
+        if (res == NK_ERROR_NEWER_SCHEMA) {
+            lib->newer_schema_version = disk->newer_schema_version;
+        } else {
+            if (res != NK_OK) {
+                /* Neither the file nor its .bak reads: nothing on disk can be kept,
+                   so lib is the library, as nk_library_save would write it. */
+                memcpy(disk->entries, lib->entries,
+                       (size_t)lib->count * sizeof(lib->entries[0]));
+                disk->count = lib->count;
+            }
+            res = entry ? nk_library_add_or_update(disk, entry)
+                        : nk_library_remove(disk, disc_id);
+            if (res == NK_OK) {
+                res = nk_library_save(disk, target);
+            } else if (!entry && res == NK_ERROR_FILE_NOT_FOUND) {
+                res = NK_OK;  /* another writer removed it already */
+            }
+            if (res == NK_OK) library_adopt(lib, disk, disc_id, view);
+        }
+        nk_platform_file_lock_release(&lock);
+    }
+    free(view);
+    free(disk);
+    return res;
+}
+
+NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path) {
+    if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
+    return library_commit(lib, entry, NULL, file_path);
+}
+
+NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
+                                  const char *file_path) {
+    if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
+    return library_commit(lib, NULL, disc_id, file_path);
+}

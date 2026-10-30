@@ -4,6 +4,7 @@
 #ifndef NK_LIBRARY_H
 #define NK_LIBRARY_H
 
+#include "nk_platform.h"
 #include "nk_types.h"
 #include <stdbool.h>
 
@@ -42,11 +43,41 @@ void nk_library_init(NkLibrary *lib);
    newer file. */
 NkResult nk_library_load(NkLibrary *lib, const char *file_path);
 
-/* Save library to disk atomically. If file_path is NULL, uses lib->library_path.
+/* Save library to disk atomically, replacing whatever the file holds. A writer
+   that shares the file with others changes it through nk_library_commit_entry or
+   nk_library_commit_remove instead. If file_path is NULL, uses lib->library_path.
    Refuses with NK_ERROR_NEWER_SCHEMA, writing nothing, when the file there (or its
    .bak) was written by a newer player, and keeps an older file as
    library.json.v<N>.bak before replacing it. */
 NkResult nk_library_save(const NkLibrary *lib, const char *file_path);
+
+/* How long a library write waits for another writer before it gives up. */
+#define NK_LIBRARY_LOCK_TIMEOUT_MS 30000u
+
+/* Take the per-user library lock for the library file at library_path, waiting
+   up to timeout_ms (0 tries once): locks/library.lock in the folder that holds
+   library.json, the lock tools/nk_cli.py's bring-up holds while it reads, changes
+   and saves the file. NK_ERROR_IO when another holder keeps it that long or the
+   lock file cannot be opened. Release it with nk_platform_file_lock_release. */
+NkResult nk_library_lock_acquire(NkFileLock *lock, const char *library_path,
+                                 unsigned timeout_ms);
+
+/* Write one entry to the library file under the library lock (#1768): the file
+   is read again, entry replaces the record with its disc_id or is added, and the
+   result is saved, so a title another writer added since lib was loaded is kept.
+   lib then holds the saved records, in its own order with new ones after; its
+   own records the file does not have (its samples, or one an earlier save could
+   not write) stay in memory. A file a newer player wrote is refused
+   (NK_ERROR_NEWER_SCHEMA); one that cannot be read at all, nor its .bak, is
+   replaced from lib as nk_library_save would. If file_path is NULL, uses
+   lib->library_path, then the default library. */
+NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path);
+
+/* Remove one entry from the library file the same way. An entry another writer
+   already removed is not an error. */
+NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
+                                  const char *file_path);
 
 /* Add or update a game entry in the library (keyed by disc_id) */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
