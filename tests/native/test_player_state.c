@@ -2331,6 +2331,8 @@ static void test_error_cards_are_plain(void) {
                   "a processor feature") == 0);
     assert(strcmp(player_runtime_stop_feature("null-code-pointer"),
                   "a processor feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("aot-return-target-mismatch"),
+                  "a processor feature") == 0);
     assert(strcmp(player_runtime_stop_feature("unsupported-import-scekernelfoo"),
                   "a system feature") == 0);
     assert(strcmp(player_runtime_stop_feature("some-new-boundary"), "a system feature") == 0);
