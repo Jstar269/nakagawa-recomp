@@ -984,7 +984,10 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
         return false;
     }
 
-    NkResult save_res = nk_library_save(&app->library, NULL);
+    /* Written under the library lock from what the file holds now, so a title
+       another writer (a bring-up building into this data folder) added since the
+       library was loaded is kept (#1768). */
+    NkResult save_res = nk_library_commit_entry(&app->library, game, NULL);
     player_app_sync_library(app);
     return save_res == NK_OK;
 }
@@ -2523,7 +2526,8 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
     if (nk_library_remove(&app->library, disc_id) != NK_OK) return false;
-    if (nk_library_save(&app->library, NULL) != NK_OK) {
+    /* Under the library lock, from what the file holds now (#1768). */
+    if (nk_library_commit_remove(&app->library, disc_id, NULL) != NK_OK) {
         player_app_sync_library(app);
         return false;
     }
@@ -3858,7 +3862,8 @@ bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work) {
          * time stays in memory and the library file is left as the user made it. */
         if (app->library.library_path[0] && !app->games[game_index].is_sample) {
             nk_library_add_or_update(&app->library, &app->games[game_index]);
-            nk_library_save(&app->library, app->library.library_path);
+            nk_library_commit_entry(&app->library, &app->games[game_index],
+                                    app->library.library_path);
         }
     }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
@@ -5126,7 +5131,7 @@ bool player_app_adopt_profile_executable(PlayerApp *app, int game_index) {
                        game->disc_id, leaf);
     if (nk_library_add_or_update(&app->library, game) == NK_OK &&
         app->library.library_path[0]) {
-        (void)nk_library_save(&app->library, app->library.library_path);
+        (void)nk_library_commit_entry(&app->library, game, app->library.library_path);
     }
     return true;
 }

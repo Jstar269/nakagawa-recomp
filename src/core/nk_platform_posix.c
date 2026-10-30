@@ -12,6 +12,9 @@
    the BSDs. */
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
+/* flock() is BSD, not POSIX: glibc declares it only with _DEFAULT_SOURCE; musl
+   and the BSDs declare it anyway. */
+#define _DEFAULT_SOURCE
 #define _FILE_OFFSET_BITS 64
 
 #include "nk_platform.h"
@@ -23,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/types.h>
@@ -355,6 +359,50 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode) {
     FILE *file = fdopen(fd, mode);
     if (!file) close(fd);
     return file;
+}
+
+bool nk_platform_file_lock_acquire(NkFileLock *lock, const char *path, unsigned timeout_ms) {
+    if (!lock) return false;
+    memset(lock, 0, sizeof(*lock));
+    lock->fd = -1;
+    if (!path || !*path) return false;
+    int flags = O_RDWR | O_CREAT;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = open(path, flags, 0600);
+    if (fd < 0) return false;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) break;
+        int error = errno;
+        if (error == EINTR) continue;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long elapsed_ms = (long long)(now.tv_sec - start.tv_sec) * 1000LL +
+                               (now.tv_nsec - start.tv_nsec) / 1000000L;
+        if (error != EWOULDBLOCK || elapsed_ms >= (long long)timeout_ms) {
+            close(fd);
+            return false;
+        }
+        struct timespec pause = {0, 50L * 1000000L};
+        nanosleep(&pause, NULL);
+    }
+    lock->fd = fd;
+    lock->held = true;
+    return true;
+}
+
+void nk_platform_file_lock_release(NkFileLock *lock) {
+    if (!lock || !lock->held) return;
+    flock(lock->fd, LOCK_UN);
+    close(lock->fd);
+    lock->fd = -1;
+    lock->held = false;
 }
 
 static char s_app_data_dir_override[NK_MAX_PATH];

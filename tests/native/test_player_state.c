@@ -2479,6 +2479,63 @@ static void test_sample_entries_never_reach_library_json(void) {
     printf("[PLAYER_STATE_TEST] sample entries stay out of library.json PASS\n");
 }
 
+/* Another writer, such as a bring-up building into the same data folder, can add
+ * a title to library.json after the player read it. The player's next add or
+ * removal must keep that title (#1768): it re-reads the file under the library
+ * lock and changes only its own entry. */
+static void test_library_writes_keep_titles_another_writer_added(void) {
+    printf("[PLAYER_STATE_TEST] Subtest: library writes keep titles another writer added\n");
+    char cache[512];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache, sizeof(cache)));
+    char path[1024];
+    snprintf(path, sizeof(path), "%s%cshared_library.json", cache,
+             nk_platform_path_separator());
+    remove(path);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(strlen(path) < sizeof(app->library.library_path));
+    strcpy(app->library.library_path, path);
+    GameRecord first;
+    seed_entry(&first, "TEST00051", "Synthetic First Title");
+    assert(player_app_add_game(app, &first));
+
+    /* The other writer adds a title to the file. */
+    static NkLibrary other;  /* too large for the stack (NK_MAX_GAMES) */
+    NkGameEntry added;
+    assert(nk_library_load(&other, path) == NK_OK);
+    seed_entry(&added, "TEST00052", "Synthetic Title Added Elsewhere");
+    assert(nk_library_add_or_update(&other, &added) == NK_OK);
+    assert(nk_library_save(&other, path) == NK_OK);
+
+    GameRecord second;
+    seed_entry(&second, "TEST00053", "Synthetic Second Title");
+    assert(player_app_add_game(app, &second));
+
+    static NkLibrary loaded;  /* too large for the stack (NK_MAX_GAMES) */
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 3);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00052") != NULL);
+    assert(player_app_find_game_by_disc_id(app, "TEST00052") >= 0);
+
+    /* A removal keeps a title added after the add above, too. */
+    assert(nk_library_load(&other, path) == NK_OK);
+    seed_entry(&added, "TEST00054", "Synthetic Title Added Later");
+    assert(nk_library_add_or_update(&other, &added) == NK_OK);
+    assert(nk_library_save(&other, path) == NK_OK);
+    assert(player_app_remove_game(app, player_app_find_game_by_disc_id(app, "TEST00051")));
+
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 3);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00051") == NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00054") != NULL);
+
+    remove(path);
+    free(app);
+    printf("[PLAYER_STATE_TEST] library writes keep titles another writer added PASS\n");
+}
+
 static int player_state_package_builder_child(int argc, char **argv) {
     if (argc < 4 || strcmp(argv[2], "build-package") != 0) return 90;
     const char *disc_id = argv[3];
@@ -5428,6 +5485,7 @@ int main(int argc, char **argv) {
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
     test_sample_entries_never_reach_library_json();
+    test_library_writes_keep_titles_another_writer_added();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
