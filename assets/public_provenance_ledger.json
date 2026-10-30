@@ -1918,7 +1918,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "93741c09f11b11c81e14a5e5fb554e798c40ab17b5c68132a52fb0ad4ce462d8"
+      "sha256": "1ee5ecda4fe9e462c0d9429ae7c66784f62de6fa8f50c919dc1723c1e17c544b"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -2140,7 +2140,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc313c55826c3c1d623bbfac7efa64097d7ca00a56030505c83899e9c0744a41"
+      "sha256": "7055c7035c751ea236dd6b6b3fae7a0892dcc4f1fe88000d358f9e1a9f340531"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
