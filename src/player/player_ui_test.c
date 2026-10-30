@@ -665,6 +665,9 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
            "next_package=%d next_expect=%s launch_pending=%d next_focus=%u "
+           "outdated=%d outdated_scanned=%d rebuild_prompt=%d rebuild_banner=%d "
+           "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
+           "rebuild_queue_paused=%d prompt_version=%s "
            "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
@@ -736,6 +739,14 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->last_error.details_copied ? 1 : 0,
            next_package, next_expect, app->launch_pending ? 1 : 0,
            g_ui_test_next_ui != NULL ? player_ui_nk_test_focus(g_ui_test_next_ui) : 0u,
+           player_app_outdated_count(app), app->outdated.scanned ? 1 : 0,
+           player_app_rebuild_prompt_visible(app) ? 1 : 0,
+           player_app_rebuild_banner_visible(app) ? 1 : 0,
+           player_app_rebuild_reminder_visible(app) ? 1 : 0,
+           app->rebuild_queue.count, app->rebuild_queue.active ? 1 : 0,
+           app->rebuild_queue.paused ? 1 : 0,
+           app->settings.rebuild_prompt_version[0] ? app->settings.rebuild_prompt_version
+                                                   : "none",
            player_input_class_name(app->wizard.preflight.input.input_class),
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",

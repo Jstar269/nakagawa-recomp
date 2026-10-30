@@ -400,6 +400,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_native_host_backends.py` | Run the host-backend native tests from the Python gate. |
 | `test_flash0_font.py` | The read-only flash0: font device selftest, through the built runtime. |
 | `test_platform_ladder.py` | Regressions for the source-owned second-platform workload ladder. |
+| `test_platform_seam.py` | Keeps host `#ifdef`s in `src/player` and `src/core` inside the platform layer, against an explicit allowlist. |
 | `test_prx_loader_cleanroom.py` | Clean-room black-box tests for the PRX loader. |
 | `test_prx_reloc_model.py` | Pins the relocation model to the runtime PRX loader byte for byte at several bases. |
 | `test_ref_run_elf_hardening.py` | Malformed-input regression tests for the standalone reference ELF runner. |
@@ -447,6 +448,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_android_build.py` | Static checks of the Android build (`android/`, #360) against the desktop build, with no SDK: the NDK runtime inventory matches the Makefile's runtime link. |
 | `test_app_icon.py` | The committed app icon is a fresh drawing of the brand SVG, the C drawer draws the same pixels, and the Windows builds link it. |
 | `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |

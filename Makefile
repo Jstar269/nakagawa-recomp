@@ -939,7 +939,9 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # The presenter also publishes its captures through the presenter-neutral
 # capture service (sr_capture_*, src/rt/fbcap.c), the same hard dependency.
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies both.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c \
+# Its event pump runs through sr_coro_call_on_thread_stack (src/rt/sr_coro.c), which Android
+# needs for JNI; a selftest without coroutines calls straight through it.
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/sr_coro.c \
                src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -1115,6 +1117,7 @@ PUBLIC_TARGETS := \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
+	coro-selftest-asm \
 	hle-thread-selftest \
 	aot-return-boundary-thread-selftest \
 	hle-thread-selftest-build \
@@ -1246,7 +1249,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
-HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors
+HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors and nk_minisign_verify against real minisign output
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-overlay-host-selftest := build and run the in-game overlay host on SDL3_ttf, real key events and the SDL_Renderer backend (#1159)
@@ -1255,6 +1258,7 @@ HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (s
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
+HELP_DESCRIPTION_coro-selftest-asm := run the coroutine selftest on the Android stack-switch backend (POSIX hosts)
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
 HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
@@ -2131,10 +2135,29 @@ NK_PLAYER_BUILD_EPOCH := $(or $(SR_SOURCE_DATE_EPOCH),$(strip $(shell "$(PYTHON)
 NK_PLAYER_BUILD_COMMIT := $(shell "$(PYTHON)" -c "import sys; print(sys.argv[1][:7])" "$(SR_SOURCE_COMMIT)")
 NK_PLAYER_IDENTITY_DEFS := $(if $(NK_PLAYER_BUILD_EPOCH),-DNK_PLAYER_BUILD_EPOCH=$(NK_PLAYER_BUILD_EPOCH)LL,) $(if $(strip $(NK_PLAYER_BUILD_COMMIT)),-DNK_PLAYER_BUILD_COMMIT=\"$(strip $(NK_PLAYER_BUILD_COMMIT))\",)
 PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),-DNK_UI_WITH_SDL_TTF,) $(NK_PLAYER_IDENTITY_DEFS)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c src/player/update_check.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
+# Check for updates verifies a minisign signature over each release's checksum file
+# (src/player/update_check.h) with nk_minisign_verify (src/core/nk_sig.c) on the
+# vendored Monocypher Ed25519 and BLAKE2b code.
+UPDATE_SIG_SRCS := src/core/nk_sig.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
+# The update-signing public key (docs/RELEASE_SIGNING.md): the minisign public key the
+# owner commits as this file. When it is there, its base64 line is compiled into the
+# player and the update check's test as NK_UPDATE_SIGNING_KEY; when it is not, the build
+# carries no key and the player never downloads an update. A file that is there but is
+# not a minisign public key (an optional "untrusted comment: " line, then one base64 line
+# of "Ed", an 8-byte key ID and a 32-byte Ed25519 key) stops the build. The key comes
+# only from this committed file, so two builds of one commit embed the same key.
+NK_UPDATE_KEY_FILE := assets/update_signing_key.pub
+NK_UPDATE_KEY_LINE := $(if $(wildcard $(NK_UPDATE_KEY_FILE)),$(strip $(shell "$(PYTHON)" -c "import base64, sys; lines = [l.strip() for l in open(sys.argv[1], encoding='ascii').read().splitlines() if l.strip()]; key = lines[-1] if 1 <= len(lines) <= 2 and (len(lines) == 1 or lines[0].startswith('untrusted comment: ')) else ''; raw = base64.b64decode(key, validate=True) if len(key) == 56 else b''; print(key if len(raw) == 42 and raw[:2] == b'Ed' else '')" "$(NK_UPDATE_KEY_FILE)")),)
+ifneq ($(wildcard $(NK_UPDATE_KEY_FILE)),)
+ifeq ($(NK_UPDATE_KEY_LINE),)
+$(error $(NK_UPDATE_KEY_FILE) is not a minisign public key; see docs/RELEASE_SIGNING.md)
+endif
+endif
+NK_UPDATE_KEY_DEFS := $(if $(NK_UPDATE_KEY_LINE),-DNK_UPDATE_SIGNING_KEY=\"$(NK_UPDATE_KEY_LINE)\",)
+PLAYER_SRCS := src/player/main.c src/player/player_host.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c src/player/update_check.c $(UPDATE_SIG_SRCS) $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
 # The UI regression tests' scripted-event harness; only $(PLAYER_UI_TEST_EXE) links it.
 PLAYER_UI_TEST_SRCS := src/player/player_ui_test.c
-PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
+PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt -Ithird_party/monocypher $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 # Both icon objects come from this one rule; windres finds the icon beside the script.
 ifeq ($(OS),Windows_NT)
@@ -2145,9 +2168,9 @@ endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
+$(PLAYER_EXE): $(PLAYER_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/player_host.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h src/core/nk_user_data_schema.h src/core/nk_sig.h $(wildcard $(NK_UPDATE_KEY_FILE)) $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(NK_UPDATE_KEY_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(LIBCHDR_LIB) $(PLAYER_EXTRA_LIBS) $(REPRODUCIBLE_LINK_FLAG) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
@@ -2158,9 +2181,9 @@ player: $(PLAYER_EXE)
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) $(PLAYER_UI_TEST_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/player/player_ui_test.h src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) $(PLAYER_UI_TEST_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_LIB) src/player/player_ui_test.h src/core/nk_disc_expand.h src/core/nk_disc_chd.h src/player/player_state.h src/player/player_host.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/player/update_check.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h src/core/nk_user_data_schema.h src/core/nk_sig.h $(wildcard $(NK_UPDATE_KEY_FILE))
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) $(PLAYER_UI_TEST_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(NK_UPDATE_KEY_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) $(PLAYER_UI_TEST_SRCS) $(PLAYER_CHD_SRCS) $(LIBCHDR_INC) $(LIBCHDR_LIB) -lSDL3 $(PLAYER_EXTRA_LIBS) $(REPRODUCIBLE_LINK_FLAG) -o $@
 
 # The regressions are independent player processes, so they run as parallel shards
 # (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
@@ -2637,8 +2660,25 @@ native-core-tests: ge-cpu-profile-validate-selftest
 coro-selftest:
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/coro_selftest.exe \
 		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
-		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
+		$(if $(filter Windows_NT,$(OS)),-lpsapi,-lm)
 	$(BUILD_DIR)/coro_selftest.exe
+
+# The same selftest on the stack-switch backend Android uses (bionic has no swapcontext), built
+# for this POSIX host with SR_CORO_BACKEND_ASM. x86-64 and AArch64 System V hosts only; the
+# Windows fiber backend has no such variant, so the target refuses there.
+coro-selftest-asm:
+ifeq ($(OS),Windows_NT)
+	$(error coro-selftest-asm needs a POSIX host (Linux or WSL); Windows uses Win32 fibers)
+else
+	$(CC) $(CFLAGS) -DSR_CORO_BACKEND_ASM -o $(BUILD_DIR)/coro_selftest_asm.exe \
+		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) -lm
+	$(BUILD_DIR)/coro_selftest_asm.exe
+endif
+
+native-core-tests: coro-selftest
+ifneq ($(OS),Windows_NT)
+native-core-tests: coro-selftest-asm
+endif
 
 # ge-raster-ref-selftest — project-authored GE triangle setup and rasterization
 # reference model (issue #696): 12.4 snapping, top-left coverage with a tiling
@@ -3233,8 +3273,10 @@ endef
 
 # Check for updates: answers from a fake transport and the recorded Releases API fixture,
 # never the internet (AGENTS.md section 5). Runs from the repository root for the fixture.
+# It signs with a TEST-ONLY key of its own and, when the build embeds the update-signing
+# key, checks that the embedded key reads back.
 define UPDATE_CHECK_TEST_BIN_CMD
-$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c src/player/update_check.c \
+$(CC) $(NC_CFLAGS_PLAYER) -Ithird_party/monocypher $(NK_UPDATE_KEY_DEFS) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c src/player/update_check.c $(UPDATE_SIG_SRCS) \
 	tests/native/native_test_isolation.c tests/native/test_update_check.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_update_check$(EXE_EXT)
 endef
 
@@ -3331,7 +3373,8 @@ clay-layout-selftest:
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
 # nk_ed25519_verify (src/core/nk_sig.c) on the vendored Monocypher Ed25519 check,
-# against the RFC 8032 section 7.1 vectors. Nothing in the player links it yet.
+# against the RFC 8032 section 7.1 vectors, and nk_minisign_verify against real
+# minisign output made with a TEST-ONLY key. The player's update check links both.
 ED25519_VERIFY_SELFTEST_SRCS := src/core/nk_sig.c third_party/monocypher/monocypher.c \
 	third_party/monocypher/monocypher-ed25519.c tests/native/test_nk_sig.c
 define ED25519_VERIFY_SELFTEST_CMD

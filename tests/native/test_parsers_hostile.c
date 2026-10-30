@@ -335,11 +335,16 @@ static void test_hostile_library_json(const char *test_dir) {
     write_test_file(fpath, json_no_schema, strlen(json_no_schema));
     assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
 
-    /* 2. Unsupported schema_version */
+    /* 2. Unsupported schema_version: a newer one is refused by name (a later player
+       wrote it), an impossible one as malformed. */
     printf("[HOSTILE_TEST] Subtest 2: unsupported schema_version\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%cbad_schema_future.json", test_dir, nk_platform_path_separator());
     const char json_future_schema[] = "{\n  \"schema_version\": 999,\n  \"games\": []\n}";
     write_test_file(fpath, json_future_schema, strlen(json_future_schema));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_NEWER_SCHEMA);
+    assert(nk_library_count(&lib) == 0 && lib.newer_schema_version == 999);
+    const char json_zero_schema[] = "{\n  \"schema_version\": 0,\n  \"games\": []\n}";
+    write_test_file(fpath, json_zero_schema, strlen(json_zero_schema));
     assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
 
     /* 3. Unterminated string literal */

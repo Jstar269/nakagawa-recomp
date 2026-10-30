@@ -467,6 +467,8 @@ NkUiTtf *nk_ui_ttf_create(const char *const *library_paths, size_t count) {
     static const char *const default_name = "SDL3_ttf.dll";
 #elif defined(__APPLE__)
     static const char *const default_name = "libSDL3_ttf.0.dylib";
+#elif defined(__ANDROID__)
+    static const char *const default_name = "libSDL3_ttf.so";   /* APK libraries carry no version */
 #else
     static const char *const default_name = "libSDL3_ttf.so.0";
 #endif

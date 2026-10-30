@@ -26,7 +26,7 @@ Each row is something you are about to do. Find yours and read what it points to
 
 | When you are about to | Read |
 | --- | --- |
-| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md), [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md) |
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
 | Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
@@ -70,6 +70,7 @@ Each row is something you are about to do. Find yours and read what it points to
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
 - [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) — Linux/WSL development commands and gate inventory (issue #306).
+- [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md) — building and running the Android app (issue #360).
 - [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md) — authentic-vs-enhanced
   boundary, declarative frame-rate rescale packages, fail-closed stock-digest verification,
   and separate AOT cache epochs.
@@ -126,6 +127,8 @@ a target and what isn't built yet.
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — the notes of the
   v0.0.1 release, kept as released.
+- [`RELEASE_SIGNING.md`](RELEASE_SIGNING.md) — the owner's update-signing key and
+  how each release's checksum file is signed for the player's update download.
 
 ## Archive
 
@@ -223,6 +226,7 @@ Every substantial document carries one status.
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |
 | `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
+| `ANDROID_DEVELOPMENT.md` | CURRENT | Android build, emulator run and status (issue #360) |
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `LLVM_BACKEND.md` | CURRENT | Opt-in LLVM IR backend (#330): design, first-stage scope, verification and the in-process stage |
@@ -244,6 +248,7 @@ Every substantial document carries one status.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | CURRENT | Notes of the v0.0.1 release, kept as released |
+| `RELEASE_SIGNING.md` | CURRENT | Update-signing key procedure (minisign, offline) and what the player checks before an update download |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
 | `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |

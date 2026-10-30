@@ -170,10 +170,12 @@ class BuildWiringTests(unittest.TestCase):
         self.assertIn("target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)", cmake)
 
     def test_other_systems_set_the_window_icon_at_run_time(self) -> None:
+        # The icon is built in the player's host seam; main.c only asks for it.
+        host = (ROOT / "src" / "player" / "player_host.c").read_text(encoding="utf-8")
+        self.assertIn("nk_ui_app_icon_rgba(sizes[i]", host)
+        self.assertIn("SDL_SetWindowIcon(window, icon)", host)
         main = (ROOT / "src" / "player" / "main.c").read_text(encoding="utf-8")
-        self.assertIn("nk_ui_app_icon_rgba(sizes[i]", main)
-        self.assertIn("SDL_SetWindowIcon(window, icon)", main)
-        self.assertIn("    player_set_window_icon(window);\n", main)
+        self.assertIn("    player_host_set_window_icon(window);\n", main)
 
 
 if __name__ == "__main__":
