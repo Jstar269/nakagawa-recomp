@@ -110,6 +110,12 @@ bool nk_platform_set_app_data_dir_override(const char *path);
 /* The host's local time zone: its standard offset from UTC in minutes (east of UTC positive)
  * and whether daylight saving is in effect now. False when the host does not say. */
 bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now);
+/* The operating system's own display preferences, read on every call so a change takes effect
+ * without a restart. On Windows, reduced motion is "Animation effects" turned off
+ * (SPI_GETCLIENTAREAANIMATION) and high contrast is a contrast theme in use (SPI_GETHIGHCONTRAST).
+ * Elsewhere the player reads no such setting and both are false. */
+bool nk_platform_prefers_reduced_motion(void);
+bool nk_platform_high_contrast(void);
 /* Resolve the canonical per-user data directory without creating it. */
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
 /* nk_platform_get_path's folder for `type`, without creating it. */

@@ -35,9 +35,14 @@ so we use its contrast and target-size values as a guide for the launcher only.
 
 ### Input
 
-- **Keyboard and mouse** in the launcher: arrow keys move, Enter selects, Esc goes back, Space opens a screen's
-  extra options, `Q` and `E` switch tabs, Tab and Shift+Tab move focus in order, `O` adds a disc image, `S` opens Settings, `F11` or Alt+Enter
-  toggles full screen. The mouse works everywhere but is never required.
+- **Keyboard and mouse** in the launcher: arrow keys move, Enter selects, Esc or Backspace goes back, Space opens a
+  screen's extra options, `Q` and `E` switch tabs, Tab and Shift+Tab move focus in order, Home and End go to the
+  first and last game in the library, `/` or Ctrl+F finds a game, `O` adds a disc image, `S` opens Settings, `F11` or
+  Alt+Enter toggles full screen. The mouse works everywhere but is never required, and its back button goes back too.
+- **Finding a game.** The library's FIND button, Space or the pad's west button opens a find box that narrows the
+  library to the games whose name or disc ID holds what you type. A controller types with an on-screen keyboard; a
+  hardware keyboard, and the system's input methods, type directly. Esc or B clears it. The SORT button orders the
+  library by recently played, name or recently added.
 - **Controllers** the operating system exposes through SDL3 (Xbox, PlayStation and Switch-style pads): D-pad to move,
   the bottom face button to select, the right face button to go back, shoulder buttons to switch tabs.
 - **Prompts match what you are using.** The prompt bar at the bottom of each screen shows keyboard keycaps, or the
@@ -54,16 +59,25 @@ so we use its contrast and target-size values as a guide for the launcher only.
 ### Seeing the launcher
 
 - **One dark theme** with a near-black ground and light text. Secondary text is 7.6:1 against the ground; the focus
-  ring is 15.3:1.
+  ring, in the brand blue, is 7.2:1 against the ground and at least 6.1:1 against any surface it surrounds.
 - **Fonts** are the project's own open fonts (Geist, Geist Mono, Chakra Petch, with Noto Sans JP as a fallback,
   all SIL Open Font License). Body text is 15 pixels at 100% scale. The Latin and Japanese scripts are covered;
   other scripts may show as missing glyphs.
 - **The window resizes.** The layout reflows by width: the grid goes from one to six columns, margins narrow below
   900 pixels, and there is a minimum window size.
-- **Display scale** follows your operating system's scale for the window automatically, so text and targets grow with
-  Windows' "Scale" setting.
-- **Reduce motion.** *Settings > Reduce motion* freezes the animated background waves and turns pulses and
-  sweeps into cuts. It is saved as `reduce_motion` in the player's `settings.json`.
+- **Interface size.** *Settings > Accessibility > Interface size* follows Windows' "Scale" setting by default
+  (Automatic), or makes text and targets 100, 125, 150 or 200% as large. The launcher keeps its 1280 x 720 layout,
+  so a larger size needs a larger window: 150% needs 1920 x 1080, as launcher fullscreen (F11) on a 1080p screen. It is saved as
+  `interface_size` in the player's `settings.json` (0 is Automatic).
+- **High-contrast focus.** *Settings > Accessibility > High contrast* draws the focus ring in white between black
+  lines, so it shows on any background. Automatic, the default, turns it on while Windows uses a contrast theme. It
+  is saved as `high_contrast_focus` (`auto`, `on` or `off`).
+- **Reduce motion.** *Settings > Accessibility > Reduce motion* holds the animated background waves still and
+  turns pulses and sweeps into cuts. Automatic, the default, follows Windows' *Animation effects* setting. It is
+  saved as `reduce_motion_choice` (`auto`, `on` or `off`); `reduce_motion` is still written, true only for On, for
+  older players. A file from an older player keeps its On, and its Off, which was the default, becomes Automatic.
+- **Windows' settings apply at once.** The launcher reads the contrast theme and *Animation effects* every frame,
+  so a change in Windows takes effect without a restart.
 - **Volume** has its own setting (*Settings > Game volume*), separate from any volume setting inside a game.
 - **Status and errors are words first.** Every error screen has a plain-language title, a "what to do" sentence and
   a named recovery button. A disc the player cannot use is explained, not just refused.
@@ -82,8 +96,8 @@ We know about each of these. They are open work, not a promise of dates. Each is
 | Limitation | What it means for you | Workaround |
 | --- | --- | --- |
 | **No screen-reader support.** The launcher draws its own interface with SDL3 and Vulkan and does not expose an accessibility tree to NVDA, JAWS or Narrator. | A screen reader cannot read the library, wizard, settings or error screens. | None inside the player. The documentation is plain Markdown. Setup can be done from the command line: see [`docs/SETUP.md`](docs/SETUP.md) and `python tools/nk_cli.py`. |
-| **No user control of text size, UI scale or contrast.** The design system can scale the layout 90% to 150% for text and 100% to 200% for the UI, and has a high-contrast focus ring. The player does not expose these yet: text size is fixed at 100%, scale follows the display, and the focus ring is the standard one. | You cannot make launcher text larger than your operating system's display scale makes it. | Raise Windows' display scale or resolution. |
-| **The player ignores system preferences** for high contrast, reduced motion and text size. | Windows' own settings for these do not change the player. | Turn on *Reduce motion* in the player's Settings. |
+| **Text cannot grow on its own.** *Interface size* scales text and controls together, and the launcher keeps its 1280 x 720 layout, so the size cannot grow beyond what the window holds. | In a 1280 x 720 window every size looks the same; text larger than the layout allows needs a larger window or display. | Maximise the window, or raise Windows' display scale. |
+| **Windows' contrast themes change only the focus ring.** A contrast theme turns on the high-contrast focus ring, but the launcher keeps its own colours. | The rest of the launcher does not take a contrast theme's colours. | None yet. |
 | **No light theme and no colour-blind palette.** | The launcher is always the dark theme. Status is already word-and-shape, so meaning is kept, but the accent and status colours are fixed. | None yet. |
 | **Launcher shortcuts are fixed.** The in-game keys mirror a PSP by default (`X`, `Z`, `A`, `S`, `Q`, `W`, Enter, Shift, arrow keys; see [`docs/SETUP.md`](docs/SETUP.md)), and you can change them on the Controls page in Settings (choose **KEYBOARD**, [#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)). The launcher's own keys, and Esc, F1 and F3 in a game, can't be changed. | Moving around the launcher with other keys needs a controller or an external remapping tool. | Use a controller (any SDL3 pad), or a system-level key remapper. |
 | **No captions, subtitles or transcripts.** The player shows whatever a game shows. Spoken or musical content in a game is not captioned. | If a game relies on sound for information, the player adds nothing to replace it. | None. |

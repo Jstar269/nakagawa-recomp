@@ -628,6 +628,10 @@ static int test_event_construction(void) {
     CHECK(n == 1 && ev[0].type == NK_UI_EV_PAGE && ev[0].dir == NK_UI_DIR_LEFT, "Page previous is PAGE/left");
     n = nk_ui_input_button(&in, NK_UI_BTN_PAGE_NEXT, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.8, ev, 4);
     CHECK(n == 1 && ev[0].type == NK_UI_EV_PAGE && ev[0].dir == NK_UI_DIR_RIGHT, "Page next is PAGE/right");
+    n = nk_ui_input_button(&in, NK_UI_BTN_FIRST, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.9, ev, 4);
+    CHECK(n == 1 && ev[0].type == NK_UI_EV_EDGE && ev[0].dir == NK_UI_DIR_UP, "First is EDGE/up");
+    n = nk_ui_input_button(&in, NK_UI_BTN_LAST, true, 4, NK_UI_PAD_LETTERS_A_EAST, 3.95, ev, 4);
+    CHECK(n == 1 && ev[0].type == NK_UI_EV_EDGE && ev[0].dir == NK_UI_DIR_DOWN, "Last is EDGE/down");
     CHECK(nk_ui_input_button(&in, (NkUiInputButton)99, true, 0, NK_UI_PAD_NEUTRAL, 0.0, ev, 4) == 0u,
           "an unknown button is ignored");
     CHECK(nk_ui_input_button(&in, NK_UI_BTN_BACK, true, 4, NK_UI_PAD_NEUTRAL, 4.0, ev, 0) == 0u,
@@ -1258,6 +1262,35 @@ static int test_sdl_translation(void) {
           "Page Up is the previous page");
     e = key_event(SDLK_PAGEUP, false, false, 0);
     (void)tr(&s, &e, 3.71);
+    e = key_event(SDLK_HOME, true, false, 0);
+    n = tr(&s, &e, 3.72);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_EDGE && g_out[0].dir == NK_UI_DIR_UP,
+          "Home goes to the first item");
+    e = key_event(SDLK_HOME, false, false, 0);
+    (void)tr(&s, &e, 3.73);
+    e = key_event(SDLK_END, true, false, 0);
+    n = tr(&s, &e, 3.74);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_EDGE && g_out[0].dir == NK_UI_DIR_DOWN,
+          "End goes to the last item");
+    e = key_event(SDLK_END, false, false, 0);
+    (void)tr(&s, &e, 3.75);
+    e = key_event(SDLK_BACKSPACE, true, false, 0);
+    n = tr(&s, &e, 3.76);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_BACK, "Backspace is Back, as Esc is");
+    e = key_event(SDLK_BACKSPACE, false, false, 0);
+    (void)tr(&s, &e, 3.77);
+    {
+        SDL_Event x1;
+        memset(&x1, 0, sizeof(x1));
+        x1.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        x1.button.button = SDL_BUTTON_X1;
+        x1.button.down = true;
+        n = tr(&s, &x1, 3.78);
+        CHECK(n == 1 && g_out[0].type == NK_UI_EV_BACK, "the mouse's back button is Back");
+        x1.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        x1.button.down = false;
+        (void)tr(&s, &x1, 3.79);
+    }
     e = key_event(SDLK_Z, true, false, 0);
     CHECK(tr(&s, &e, 4.0) == 0u, "an unmapped key is ignored");
 

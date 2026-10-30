@@ -105,8 +105,10 @@ static int test_no_platform_headers(void) {
 static int test_theme_tokens(void) {
     const NkUiTheme *theme = nk_ui_theme_n1();
     CHECK(theme != NULL, "N1 theme must be available");
-    CHECK(theme->accent_dark == 0xD7F24AFFu, "dark N1 accent token");
-    CHECK(theme->accent_light == 0x6E9600FFu, "light N1 accent token");
+    CHECK(theme->accent_dark == 0x6B9FF0FFu, "dark N1 accent token: the site's dark accent");
+    CHECK(theme->accent_light == 0x2F6FD0FFu, "light N1 accent token: the site's light accent");
+    CHECK(theme->focus == theme->accent_dark, "the focus ring is the accent");
+    CHECK(theme->info == 0xC29AF4FFu, "info is violet, apart from the blue accent");
     CHECK(theme->ready == 0x2DD4BFFFu, "Ready teal token");
     CHECK(theme->warning == 0xDBB024FFu, "warning gold token");
     CHECK(theme->ink == 0x10151CFFu && theme->paper == 0xF5F7FAFFu,
@@ -1300,7 +1302,7 @@ static int test_image_command(void) {
     return 1;
 }
 
-/* The app icon: a transparent rounded corner, the ink tile, a lime block and the
+/* The app icon: a transparent rounded corner, the ink tile, a blue block and the
    paper bar, row padding left alone, and refusals for sizes it does not draw. */
 static int test_app_icon(void) {
     enum { SIZE = 64, STRIDE = SIZE * 4 + 12 };
@@ -1310,7 +1312,7 @@ static int test_app_icon(void) {
 #define ICON_PIXEL(x, y) (rgba + (size_t)(y) * STRIDE + (size_t)(x) * 4u)
     CHECK(ICON_PIXEL(0, 0)[3] == 0u, "the rounded corner stays transparent");
     CHECK(memcmp(ICON_PIXEL(32, 3), "\x10\x15\x1C\xFF", 4) == 0, "ink tile above the mark");
-    CHECK(memcmp(ICON_PIXEL(15, 50), "\xD7\xF2\x4A\xFF", 4) == 0, "lime block, bottom left");
+    CHECK(memcmp(ICON_PIXEL(15, 50), "\x6B\x9F\xF0\xFF", 4) == 0, "blue block, bottom left");
     CHECK(memcmp(ICON_PIXEL(47, 32), "\xF5\xF7\xFA\xFF", 4) == 0, "paper bar, right");
     CHECK(ICON_PIXEL(SIZE, 10)[0] == 0xABu && ICON_PIXEL(SIZE, 10)[11] == 0xABu,
           "the row padding is not written");

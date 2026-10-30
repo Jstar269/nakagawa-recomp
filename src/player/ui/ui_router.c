@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define PLAYER_UI_ROUTE_DEPTH_MAX 16u
 
@@ -158,6 +159,21 @@ void player_ui_version_line(const char *version, long long epoch, char *out, siz
     } else {
         (void)snprintf(out, cap, "v%s (dev build)", version);
     }
+}
+
+void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
+                             NkUiPromptStyle prompt_style) {
+    NkUiPrefs prefs;
+    if (ui == NULL || viewport == NULL || display == NULL) {
+        return;
+    }
+    viewport->ui_scale_pct = display->interface_size_pct;
+    viewport->text_size_pct = 100;
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = display->reduce_motion;
+    prefs.high_contrast_focus = display->high_contrast_focus;
+    prefs.prompt_style = prompt_style;
+    nk_ui_set_prefs(ui, &prefs);
 }
 
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active) {

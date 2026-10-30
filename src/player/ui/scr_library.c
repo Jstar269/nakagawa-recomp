@@ -38,6 +38,12 @@
 #define LIBRARY_ID_DEMOS_EYEBROW 0x10000072u
 #define LIBRARY_ID_DEMOS_LEAD 0x10000073u
 #define LIBRARY_ID_DEMOS_ROW_BASE 0x10000080u
+#define LIBRARY_ID_FIND 0x10000090u
+#define LIBRARY_ID_FIND_FIELD 0x10000091u
+#define LIBRARY_ID_FIND_TEXT 0x10000092u
+#define LIBRARY_ID_FIND_KEYS 0x10000093u
+#define LIBRARY_ID_FIND_ROW_BASE 0x100000A0u
+#define LIBRARY_ID_NO_MATCH 0x100000B0u
 #define LIBRARY_ID_REBUILD 0x10000008u
 #define LIBRARY_ID_REBUILD_TEXT 0x10000009u
 
@@ -49,7 +55,14 @@
 #define LIBRARY_EMPTY_CARD_HEIGHT 300.0f
 /* The LIBRARY heading's line height (NK_UI_TYPE_DISPLAY), reserved when working
    out how much room is left for the grid or the empty card. */
-#define LIBRARY_HEADING_ROW_HEIGHT 32.0f
+#define LIBRARY_HEADING_ROW_HEIGHT NK_UI_CONTROL_HEIGHT_SMALL /* its FIND, SORT and pager buttons */
+/* The find box: the field row and four rows of keys, with the gap above. */
+#define LIBRARY_FIND_KEY_ROWS 4u
+#define LIBRARY_FIND_KEYS_PER_ROW 10u
+#define LIBRARY_FIND_HEIGHT                                                              \
+    (NK_UI_SPACE_4 + NK_UI_CONTROL_HEIGHT + NK_UI_SPACE_2 +                               \
+     (float)LIBRARY_FIND_KEY_ROWS * NK_UI_CONTROL_HEIGHT +                               \
+     (float)(LIBRARY_FIND_KEY_ROWS - 1u) * NK_UI_SPACE_1)
 /* The library notice under the heading (two NK_UI_TYPE_BODY lines) and its gap. */
 #define LIBRARY_ID_NOTICE 0x10000026u
 #define LIBRARY_NOTICE_ROW_HEIGHT (44.0f + NK_UI_SPACE_4)
@@ -141,8 +154,10 @@ static float library_demos_height(size_t demo_count, size_t columns) {
            (float)(rows - 1u) * NK_UI_TILE_ROW_GAP;
 }
 
-size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
-                                              size_t demo_count, size_t *columns_out) {
+/* Cards that fit the grid under the heading, with TEST THIS PC under it, or
+   with the find box over it. */
+static size_t library_page_size(float logical_width, float logical_height, bool finding,
+                                size_t demo_count, size_t *columns_out) {
     float width = logical_width > 80.0f ? logical_width : 1280.0f;
     float height = logical_height > 80.0f ? logical_height : 800.0f;
     size_t columns = library_columns(width);
@@ -151,16 +166,27 @@ size_t player_ui_library_page_size_with_demos(float logical_width, float logical
     size_t rows;
     tile_height = library_tile_height(library_tile_width(width, columns));
     /* Window minus the bars, the body padding, the heading row and the TEST THIS
-       PC section under the grid. */
+       PC section under the grid, or the find box over it. */
     grid_height = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
                   NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM - LIBRARY_HEADING_ROW_HEIGHT -
-                  NK_UI_SPACE_4 - library_demos_height(demo_count, columns);
+                  NK_UI_SPACE_4 -
+                  (finding ? LIBRARY_FIND_HEIGHT : library_demos_height(demo_count, columns));
     rows = grid_height > tile_height
         ? (size_t)((grid_height + NK_UI_TILE_ROW_GAP) / (tile_height + NK_UI_TILE_ROW_GAP))
         : 1u;
     if (rows < 1u) rows = 1u;
     if (columns_out != NULL) *columns_out = columns;
     return columns * rows;
+}
+
+size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
+                                              size_t demo_count, size_t *columns_out) {
+    return library_page_size(logical_width, logical_height, false, demo_count, columns_out);
+}
+
+size_t player_ui_library_page_size_finding(float logical_width, float logical_height,
+                                           size_t *columns_out) {
+    return library_page_size(logical_width, logical_height, true, 0u, columns_out);
 }
 
 size_t player_ui_library_page_size(float logical_width, float logical_height,
@@ -177,54 +203,165 @@ size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count) {
     return demos;
 }
 
-size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
-                                       size_t index) {
-    size_t position = 0u;
-    if (titles == NULL || index >= count || titles[index].is_demo) return count;
-    for (size_t i = 0u; i < index; ++i) {
-        if (!titles[i].is_demo) ++position;
-    }
-    return position;
+size_t player_ui_library_grid_count(const PlayerUiLibraryModel *model) {
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (model->grid != NULL) return model->grid_count;
+    return model->title_count - player_ui_library_demo_count(model->titles, model->title_count);
 }
 
-/* The title shown at grid position `position` (the position-th title that is
-   not a demo), or `count` when there is none. */
-static size_t library_grid_title(const PlayerUiTitle *titles, size_t count, size_t position) {
-    for (size_t i = 0u; titles != NULL && i < count; ++i) {
-        if (titles[i].is_demo) continue;
+size_t player_ui_library_grid_title(const PlayerUiLibraryModel *model, size_t position) {
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (model->grid != NULL) {
+        return position < model->grid_count && model->grid[position] < model->title_count
+            ? model->grid[position] : model->title_count;
+    }
+    for (size_t i = 0u; i < model->title_count; ++i) {
+        if (model->titles[i].is_demo) continue;
         if (position == 0u) return i;
         --position;
     }
-    return count;
+    return model->title_count;
+}
+
+size_t player_ui_library_grid_position(const PlayerUiLibraryModel *model, size_t index) {
+    size_t position = 0u;
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (index >= model->title_count) return model->title_count;
+    if (model->grid != NULL) {
+        for (; position < model->grid_count; ++position) {
+            if (model->grid[position] == index) return position;
+        }
+        return model->title_count;
+    }
+    if (model->titles[index].is_demo) return model->title_count;
+    for (size_t i = 0u; i < index; ++i) {
+        if (!model->titles[i].is_demo) ++position;
+    }
+    return position;
 }
 
 static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
-static void library_prompts(NkUi *ui, bool has_titles) {
+static void library_prompts(NkUi *ui, bool has_titles, bool finding) {
     static const NkUiPromptItem with_titles[] = {
         {NK_UI_PROMPT_ACT_MOVE, "Move"},
         {NK_UI_PROMPT_ACT_CONFIRM, "Open"},
+        {NK_UI_PROMPT_ACT_OPTIONS, "Find"},
         {NK_UI_PROMPT_ACT_MENU, "Settings"}
+    };
+    static const NkUiPromptItem find[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"},
+        {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Clear"}
     };
     static const NkUiPromptItem empty[] = {
         {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
         {NK_UI_PROMPT_ACT_MENU, "Settings"}
     };
+    if (finding) {
+        nk_ui_prompt_bar(ui, LIBRARY_ID_PROMPTS, "", find, sizeof(find) / sizeof(find[0]));
+        return;
+    }
     nk_ui_prompt_bar(ui, LIBRARY_ID_PROMPTS, "",
                      has_titles ? with_titles : empty,
                      has_titles ? sizeof(with_titles) / sizeof(with_titles[0])
                                 : sizeof(empty) / sizeof(empty[0]));
 }
 
+/* The on-screen keyboard's keys, row by row; a space is the space key. */
+static const char *const k_find_rows[LIBRARY_FIND_KEY_ROWS] = {
+    "1234567890", "QWERTYUIOP", "ASDFGHJKL-", "ZXCVBNM.' "
+};
+
+/* The find box: what is typed, DONE, and the keyboard for a controller or the
+   mouse. A hardware keyboard types straight into it. */
+static PlayerUiAction library_find_box(NkUi *ui, const PlayerUiLibraryModel *model) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u);
+    NkUiLayout layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(),
+                                    NK_UI_SPACE_2);
+    if (!nk_ui_begin_container(ui, LIBRARY_ID_FIND, &layout, NULL)) return result;
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                     NK_UI_SPACE_3);
+        row.align_y = NK_UI_ALIGN_CENTER;
+        if (nk_ui_begin_container(ui, LIBRARY_ID_FIND_FIELD, &row, NULL)) {
+            NkUiLayout field = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(),
+                                           sizing_fixed(NK_UI_CONTROL_HEIGHT), 0.0f);
+            NkUiStyle style;
+            const char *query = safe_text(model->find_query, "");
+            memset(&style, 0, sizeof(style));
+            style.fill_rgba = theme->surface_high;
+            style.border_rgba = theme->line_strong;
+            style.border_width = NK_UI_BORDER_HAIRLINE;
+            style.corner_radius = NK_UI_RADIUS_CONTROL;
+            field.align_y = NK_UI_ALIGN_CENTER;
+            field.padding_left = NK_UI_SPACE_4;
+            field.padding_right = NK_UI_SPACE_4;
+            if (nk_ui_begin_container(ui, LIBRARY_ID_FIND_FIELD + 0x100u, &field, &style)) {
+                char shown[96];
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY,
+                                                query[0] != '\0' ? theme->paper : theme->muted);
+                text.wrap = false;
+                if (query[0] != '\0') {
+                    (void)snprintf(shown, sizeof(shown), "%s|", query);
+                } else {
+                    (void)snprintf(shown, sizeof(shown), "Type a name or disc ID");
+                }
+                nk_ui_text(ui, LIBRARY_ID_FIND_TEXT, shown, &text);
+                nk_ui_end_container(ui);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_FIND_DONE, "Done", NK_UI_BUTTON_PRIMARY)) {
+                result = action(PLAYER_UI_ACTION_FIND_KEY, PLAYER_UI_FIND_DONE);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    /* Key rows sit 4 px apart, so a row of cards still fits under the box at
+       the 1280 x 720 design size. */
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fit(), sizing_fit(), NK_UI_SPACE_1);
+    if (nk_ui_begin_container(ui, LIBRARY_ID_FIND_KEYS, &layout, NULL)) {
+        for (uint32_t r = 0u; r < LIBRARY_FIND_KEY_ROWS; ++r) {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_2);
+            if (!nk_ui_begin_container(ui, LIBRARY_ID_FIND_ROW_BASE + r, &row, NULL)) continue;
+            for (uint32_t k = 0u; k < LIBRARY_FIND_KEYS_PER_ROW; ++k) {
+                char label[8];
+                char key = k_find_rows[r][k];
+                NkUiId id = (NkUiId)(PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE +
+                                     r * LIBRARY_FIND_KEYS_PER_ROW + k);
+                (void)snprintf(label, sizeof(label), "%s", key == ' ' ? "Space" : "");
+                if (key != ' ') {
+                    label[0] = key;
+                    label[1] = '\0';
+                }
+                if (nk_ui_button(ui, id, label, NK_UI_BUTTON_ROW)) {
+                    result = action(PLAYER_UI_ACTION_FIND_KEY, (size_t)(unsigned char)key);
+                }
+            }
+            if (r + 1u == LIBRARY_FIND_KEY_ROWS &&
+                nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + LIBRARY_FIND_KEY_ROWS *
+                                                                       LIBRARY_FIND_KEYS_PER_ROW,
+                             "Delete", NK_UI_BUTTON_ROW)) {
+                result = action(PLAYER_UI_ACTION_FIND_KEY, PLAYER_UI_FIND_DELETE);
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    nk_ui_end_container(ui);
+    return result;
+}
+
 /* The empty library: one card that says what to do, with the one action. It
    leaves out its icon when TEST THIS PC needs the room below it. */
 static PlayerUiAction library_empty(NkUi *ui, bool with_icon) {
     static const NkUiShape disc[] = {
-        {NK_UI_SHAPE_CIRCLE, 0xD7F24AFFu, 0.0f, 0u, {32.0f, 32.0f, 16.5f}},
+        {NK_UI_SHAPE_CIRCLE, 0x6B9FF0FFu, 0.0f, 0u, {32.0f, 32.0f, 16.5f}},
         {NK_UI_SHAPE_CIRCLE, 0x18202BFFu, 0.0f, 0u, {32.0f, 32.0f, 13.5f}},
-        {NK_UI_SHAPE_CIRCLE, 0xD7F24AFFu, 0.0f, 0u, {32.0f, 32.0f, 4.0f}}
+        {NK_UI_SHAPE_CIRCLE, 0x6B9FF0FFu, 0.0f, 0u, {32.0f, 32.0f, 4.0f}}
     };
     static const NkUiShapeArt disc_art = {0.0f, 0.0f, 64.0f, 64.0f, disc, 3u};
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -436,8 +573,9 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
        apart, under TEST THIS PC. */
     demo_count = model->titles != NULL
         ? player_ui_library_demo_count(model->titles, model->title_count) : 0u;
-    game_count = model->titles != NULL ? model->title_count - demo_count : 0u;
-    has_games = game_count > 0u;
+    game_count = player_ui_library_grid_count(model);
+    /* While finding, the grid shows the matches, even none. */
+    has_games = game_count > 0u || model->find_open;
 
     (void)nk_ui_waves_element(ui, LIBRARY_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
@@ -457,8 +595,9 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
     if (nk_ui_begin_container(ui, LIBRARY_ID_BODY, &layout, NULL)) {
         size_t columns = model->columns > 0u ? model->columns : 1u;
         size_t page_size;
-        /* The add card ends the grid, so it counts as one more item to page. */
-        size_t item_count = has_games ? game_count + 1u : 0u;
+        /* The add card ends the grid, so it counts as one more item to page; the
+           find box's matches have none. */
+        size_t item_count = model->find_open ? game_count : has_games ? game_count + 1u : 0u;
         size_t page_count;
         size_t start;
         size_t visible;
@@ -477,7 +616,10 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
         if (nk_ui_begin_container(ui, LIBRARY_ID_HEAD, &layout, NULL)) {
             nk_ui_text_role(ui, LIBRARY_ID_HEADING, "LIBRARY", NK_UI_TYPE_DISPLAY,
                             theme->paper);
-            if (has_games) {
+            if (model->find_open) {
+                (void)snprintf(count_text, sizeof(count_text), "%zu of %zu title%s", game_count,
+                               model->game_total, model->game_total == 1u ? "" : "s");
+            } else if (has_games) {
                 (void)snprintf(count_text, sizeof(count_text), "%zu title%s",
                                game_count, game_count == 1u ? "" : "s");
             } else {
@@ -495,6 +637,19 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 }
             }
             nk_ui_spacer(ui, LIBRARY_ID_HEAD_SPACER, sizing_grow(), sizing_fixed(1.0f));
+            if (has_games && !model->find_open &&
+                nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_FIND, "Find",
+                             NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                result = action(PLAYER_UI_ACTION_FIND_OPEN, 0u);
+            }
+            if (has_games && model->sort_label != NULL) {
+                char sort[64];
+                (void)snprintf(sort, sizeof(sort), "Sort: %s", model->sort_label);
+                if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_SORT, sort,
+                                 NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                    result = action(PLAYER_UI_ACTION_CYCLE_SORT, 0u);
+                }
+            }
             /* The check at start found a newer version: one quiet button, never a
                screen of its own. */
             if (model->update_notice != NULL &&
@@ -564,7 +719,19 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                             theme->warning);
         }
 
-        if (!has_games) {
+        if (model->find_open) {
+            PlayerUiAction key = library_find_box(ui, model);
+            if (key.kind != PLAYER_UI_ACTION_NONE) result = key;
+        }
+        if (model->find_open && game_count == 0u) {
+            char none[160];
+            NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY, theme->muted);
+            (void)snprintf(none, sizeof(none), "No games match \"%s\".",
+                           safe_text(model->find_query, ""));
+            nk_ui_text(ui, LIBRARY_ID_NO_MATCH, nk_ui_text_clamp(ui, none, &text,
+                                                              width - 2.0f * gutter, 1),
+                       &text);
+        } else if (!has_games) {
             /* Room for the card under the heading, above TEST THIS PC. */
             float room = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
                          NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM -
@@ -597,8 +764,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                         size_t index;
                         if (local >= visible) break;
                         index = start + local < game_count
-                            ? library_grid_title(model->titles, model->title_count,
-                                                 start + local)
+                            ? player_ui_library_grid_title(model, start + local)
                             : model->title_count;
                         if (index < model->title_count) {
                             const PlayerUiTitle *title = &model->titles[index];
@@ -629,13 +795,13 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 nk_ui_end_container(ui);
             }
         }
-        {
+        if (!model->find_open) {
             PlayerUiAction demo = library_demos(ui, model, width, columns);
             if (demo.kind != PLAYER_UI_ACTION_NONE) result = demo;
         }
         nk_ui_end_container(ui);
     }
-    library_prompts(ui, has_games);
+    library_prompts(ui, has_games, model->find_open);
     nk_ui_end_container(ui);
     return result;
 }
