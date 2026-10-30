@@ -1865,6 +1865,32 @@ static void test_stack_floor_and_partition_overlap(void) {
     sched_set_stack_range_refusal(NULL);
 }
 
+/* With several free blocks the highest one that holds the request is used, carved from its
+ * top, even when a lower block would also hold it. */
+static void test_stack_placement_prefers_the_highest_free_block(void) {
+    reset_sched();
+    uint32_t a = sched_create_thread(0x9200u, 32, 0x1000u);
+    uint32_t b = sched_create_thread(0x9204u, 32, 0x1000u);
+    uint32_t c = sched_create_thread(0x9208u, 32, 0x1000u);
+    TCB *ta = tcb_by_uid(a), *tb = tcb_by_uid(b), *tc = tcb_by_uid(c);
+    expect(ta && tb && tc && ta->stack_base == SR_STACK_ARENA_CEIL - 0x1000u &&
+               tb->stack_base == SR_STACK_ARENA_CEIL - 0x2000u &&
+               tc->stack_base == SR_STACK_ARENA_CEIL - 0x3000u,
+           "successive stacks descend from the partition top");
+    if (!ta || !tb || !tc) return;
+    const uint32_t a_base = ta->stack_base, c_base = tc->stack_base;
+    expect(sched_delete_thread(a) == 0u && sched_delete_thread(c) == 0u,
+           "the top and bottom threads are deleted");
+    uint32_t d = sched_create_thread(0x920cu, 32, 0x1000u);
+    TCB *td = tcb_by_uid(d);
+    expect(td != NULL && td->stack_base == a_base,
+           "a new stack takes the highest free block, not the lower one below the live stack");
+    uint32_t e = sched_create_thread(0x9210u, 32, 0x1000u);
+    TCB *te = tcb_by_uid(e);
+    expect(te != NULL && te->stack_base == c_base,
+           "with the top block used, the next stack comes from the top of the block below");
+}
+
 /* ---- sr_coro primitive tests ------------------------------------------------------- */
 
 static int g_dead_body_ran;
@@ -5379,6 +5405,7 @@ int main(int argc, char **argv) {
     test_uid_zero_is_never_a_role();
     test_stack_exhaustion_fails_create();
     test_stack_floor_and_partition_overlap();
+    test_stack_placement_prefers_the_highest_free_block();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();
