@@ -763,6 +763,33 @@ class WindowsCompilerCacheTests(unittest.TestCase):
             "\n".join(_ci_job_blocks()["classify"]),
         )
 
+    def test_no_pull_request_context_can_reach_a_save(self) -> None:
+        # Cache poisoning guard: a pull request's code must never write the cache main
+        # restores. CI has no pull_request_target trigger (which runs with the base
+        # branch's ref), every step that writes the cache is gated on the classifier's
+        # save_compiler_cache alone (tools/test_ci_paths.py proves it is false for every
+        # pull-request event), and no step uses the full actions/cache action, whose
+        # post step would save on any event.
+        ci = _workflow_text("ci.yml")
+        self.assertNotIn("pull_request_target", ci)
+        self.assertNotRegex(ci, r"uses: actions/cache@[0-9a-f]{40}[^\n]*\n(?:\s+with:\n)?\s+path:[^\n]*ccache")
+        writes = [self.TRIM, self.SAVE]
+        for job, lines in _ci_job_blocks().items():
+            step = None
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- name: "):
+                    step = stripped[len("- name: "):]
+                if "actions/cache/save@" in stripped or "--evict-older-than" in stripped:
+                    with self.subTest(job=job, step=step):
+                        self.assertEqual(job, "windows_runtime")
+                        self.assertIn(step, writes)
+        for step in (self.trim, self.save):
+            condition = " ".join(line.strip() for line in step.splitlines() if line.strip().startswith(("if:", "${{")))
+            self.assertIn("needs.classify.outputs.save_compiler_cache == 'true'", condition)
+            self.assertNotIn("github.event_name", condition)
+            self.assertNotIn("||", condition, "nothing may widen the save condition")
+
     def test_the_cache_never_leaves_its_job_or_its_own_steps(self) -> None:
         allowed = {"Set up MSYS2 UCRT64", self.KEY, self.SETUP, self.TRIM, self.REPORT}
         for job, lines in _ci_job_blocks().items():

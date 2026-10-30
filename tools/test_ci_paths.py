@@ -367,6 +367,30 @@ class CiPathAdversarialTests(unittest.TestCase):
                     result = classify(["src/rt/hle.c"], event_name=event_name)
                 self.assertEqual(result["save_compiler_cache"], expected)
 
+    def test_no_pull_request_context_can_save_the_compiler_cache(self) -> None:
+        # Cache poisoning guard (#735): code from a pull request must never write the
+        # cache main restores. pull_request_target runs with GITHUB_REF set to the base
+        # branch, so the ref alone is not enough; the event decides first. This holds
+        # through the CLI the workflow runs, which reads GITHUB_EVENT_NAME.
+        refs = ("refs/heads/main", "refs/pull/7/merge", "refs/pull/7/head",
+                "refs/heads/gh-readonly-queue/main/pr-7", "refs/heads/feature")
+        for event_name in ("pull_request", "pull_request_target", "pull_request_review",
+                           "merge_group", "workflow_run", "issue_comment"):
+            for ref in refs:
+                with self.subTest(event=event_name, ref=ref):
+                    with patch.dict(os.environ, {"GITHUB_REF": ref}):
+                        self.assertEqual(
+                            classify(["src/rt/hle.c"], event_name=event_name)["save_compiler_cache"], "false")
+        with tempfile.TemporaryDirectory() as scratch:
+            output_path = Path(scratch) / "github_output"
+            env = {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "pull_request_target"}
+            with patch.dict(os.environ, env), patch.object(ci_paths_module.subprocess, "run") as run, \
+                    patch("sys.stdout"):
+                run.return_value.stdout = "M\tsrc/rt/hle.c\n"
+                ci_paths_module.main(["--github-output", str(output_path)])
+            values = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(values["save_compiler_cache"], "false")
+
     def test_git_extraction_retains_deleted_and_renamed_paths(self) -> None:
         status = "D\tsrc/rt/removed.c\nR100\tsrc/rt/old.c\tdocs/new.md\n"
         self.assertEqual(
