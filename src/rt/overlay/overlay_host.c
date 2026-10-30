@@ -253,6 +253,9 @@ bool nk_overlay_host_draw(NkOverlayHost *host, SDL_Renderer *renderer, float dis
     scale = nk_ui_scale_for_viewport(&host->viewport);
     memset(&prefs, 0, sizeof(prefs));
     prefs.prompt_style = nk_ui_input_prompt_style(&host->input.input);
+    /* The runtime is not told the player's Reduce motion choice, so the
+       overlay never eases: a cut is right for everyone, a move is not. */
+    prefs.reduce_motion = true;
     nk_ui_set_prefs(host->ui, &prefs);
     nk_ui_sdl_input_set_event_scale(&host->input,
                                     (pixels_per_point > 0.0f ? pixels_per_point

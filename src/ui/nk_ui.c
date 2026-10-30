@@ -36,7 +36,20 @@ typedef struct {
     NkUiPromptSpec prompt;
     NkUiShapeArt art;
     NkUiImageArt image;
+    float image_alpha;      /* how far the image has faded in, 0..1 */
 } NkUiCustomSlot;
+
+/* A picture's fade: art that reaches a place already on screen eases in over
+   NK_UI_MOTION_SLOW. Kept per picture element while it is drawn. */
+#define NK_UI_ART_FADES 64u
+typedef struct {
+    NkUiId id;
+    const NkUiImage *cover;
+    const NkUiImage *contain;
+    double start_s;         /* when it began to fade in */
+    bool fading;            /* it began to fade in; else it was there at once */
+    bool seen;              /* drawn in this frame */
+} NkUiArtFade;
 
 #define NK_UI_CUSTOM_SLOTS 96u
 /* A wheel notch scrolls three 16 px lines, Windows' default of three lines a
@@ -95,8 +108,14 @@ struct NkUi {
     size_t laid_count;
     NkUiId open_scroller;
     NkUiId scroller_stack[64];
+    NkUiId container_ids[64];   /* the open containers, outermost first */
     float wheel_notches;
     bool scroll_moving;
+    bool transitioning;     /* a transition ran in the last frame's layout */
+    uint32_t ring_generation; /* the focus ring's element; a new one cuts to a new page */
+    NkUiArtFade art_fades[NK_UI_ART_FADES];
+    size_t art_fade_count;
+    bool art_fading;        /* a picture is still fading in this frame */
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -137,6 +156,9 @@ void nk_ui_clay_set_pointer(void *clay, float x, float y, bool down);
 void nk_ui_clay_scroll_to(void *clay, NkUiId id, float offset);
 bool nk_ui_clay_scroll_state(void *clay, NkUiId id, NkUiScrollState *out);
 bool nk_ui_clay_wheel_scrolls(void *clay);
+bool nk_ui_clay_transitioning(void *clay);
+/* Container `id`, open in this frame, was not in the last frame's layout. */
+bool nk_ui_clay_appeared(void *clay, NkUiId id);
 void nk_ui_clay_set_debug(void *clay, bool enabled);
 float nk_ui_clay_update_scroll(void *clay, const NkUiId *ids, size_t count, float wheel_px,
                                float delta_s);
@@ -585,12 +607,20 @@ static void nk_ui_register_scroller(NkUi *ui, NkUiId id) {
 
 static bool nk_ui_open(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style,
                        const NkUiFloating *floating) {
+    NkUiStyle cut;
+    /* Reduce motion: every change is a cut. */
+    if (ui != NULL && ui->prefs.reduce_motion && style != NULL && style->transition != 0u) {
+        cut = *style;
+        cut.transition = 0u;
+        style = &cut;
+    }
     if (ui == NULL || !ui->frame_open || layout == NULL || ui->container_depth >= 64u ||
         !(floating != NULL ? nk_ui_clay_open_floating(ui->clay, id, layout, style, floating)
                            : nk_ui_clay_open_container(ui->clay, id, layout, style))) {
         return false;
     }
     ui->scroller_stack[ui->container_depth] = ui->open_scroller;
+    ui->container_ids[ui->container_depth] = id;
     if (layout->scroll) {
         if (ui->scroll_count == NK_UI_SCROLL_MAX) {
             ui->frame_ok = false;
@@ -875,7 +905,9 @@ void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height) {
 
 /* One band of the ring: a floating border around the open container, `expand`
    outside it, over everything else, clipped as the container is, and taking
-   no pointer. Its draw commands carry the control's id. */
+   no pointer. Its draw commands carry the control's id. The band is the same
+   Clay element on every control, so when focus moves Clay sees it change
+   parent and eases it from the old control to the new one. */
 static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, float width,
                             float radius, uint32_t rgba) {
     NkUiLayout layout;
@@ -888,13 +920,16 @@ static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, fl
     style.border_rgba = rgba;
     style.border_width = width;
     style.corner_radius = radius;
+    style.transition = NK_UI_TRANSITION_BOX;
+    style.transition_s = (float)NK_UI_MOTION_FAST;
     memset(&ring, 0, sizeof(ring));
     ring.expand = expand;
     ring.z = NK_UI_Z_RING;
     ring.passthrough = true;
     ring.clip_to_parent = true;
     ring.draw_id = id;
-    if (nk_ui_open(ui, nk_ui_child_id(id, part), &layout, &style, &ring)) {
+    if (nk_ui_open(ui, nk_ui_child_id((NkUiId)ui->ring_generation, part), &layout, &style,
+                   &ring)) {
         nk_ui_end_container(ui);
     }
 }
@@ -910,6 +945,12 @@ void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius) {
         return;
     }
     radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    /* A control that was not on screen in the last frame (a new page) gets a
+       new ring, which Clay shows at once: it does not fly in from where the
+       last page left it. */
+    if (nk_ui_clay_appeared(ui->clay, id)) {
+        ++ui->ring_generation;
+    }
     if (ui->prefs.high_contrast_focus) {
         float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
         nk_ui_ring_band(ui, id, 0xF0u, outer, outer, radius + outer, 0x000000FFu);
@@ -1031,6 +1072,54 @@ bool nk_ui_shapes(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
     return true;
 }
 
+/* How far picture `id` has faded in. Art that reaches a container already on
+   screen in the last frame (a disc's picture read after its card was drawn)
+   or that changes in place eases in over NK_UI_MOTION_SLOW; art that comes
+   with its container, a new page's, is there at once, and so is any under
+   Reduce motion. */
+static float nk_ui_art_alpha(NkUi *ui, NkUiId id, const NkUiImageArt *art) {
+    NkUiArtFade *fade = NULL;
+    double t;
+    size_t i;
+    for (i = 0u; i < ui->art_fade_count; ++i) {
+        if (ui->art_fades[i].id == id) {
+            fade = &ui->art_fades[i];
+            break;
+        }
+    }
+    if (fade == NULL) {
+        if (ui->art_fade_count == NK_UI_ART_FADES) {
+            return 1.0f;
+        }
+        fade = &ui->art_fades[ui->art_fade_count++];
+        memset(fade, 0, sizeof(*fade));
+        fade->id = id;
+        fade->cover = art->cover;
+        fade->contain = art->contain;
+        fade->fading = ui->container_depth > 0u &&
+                       !nk_ui_clay_appeared(ui->clay, ui->container_ids[ui->container_depth - 1u]);
+        fade->start_s = ui->now_s;
+    } else if (fade->cover != art->cover || fade->contain != art->contain) {
+        fade->cover = art->cover;
+        fade->contain = art->contain;
+        fade->fading = true;
+        fade->start_s = ui->now_s;
+    }
+    fade->seen = true;
+    if (!fade->fading || ui->prefs.reduce_motion) {
+        return 1.0f;
+    }
+    t = (ui->now_s - fade->start_s) / NK_UI_MOTION_SLOW;
+    if (!(t < 1.0)) {
+        fade->fading = false;
+        return 1.0f;
+    }
+    ui->art_fading = true;
+    t = t > 0.0 ? 1.0 - t : 1.0;
+    /* Clay's ease-out, as the other transitions use. */
+    return (float)(1.0 - t * t * t);
+}
+
 bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
                      const NkUiImageArt *art) {
     NkUiCustomSlot *slot;
@@ -1044,6 +1133,7 @@ bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
     }
     slot->kind = NK_UI_CUSTOM_SLOT_IMAGE;
     slot->image = *art;
+    slot->image_alpha = nk_ui_art_alpha(ui, id, art);
     memset(&layout, 0, sizeof(layout));
     layout.width = width;
     layout.height = height;
@@ -1079,9 +1169,11 @@ static NkUiPixelRect nk_ui_image_fit(const NkUiImage *image, float cx, float cy,
 
 /* Cover: the picture fills the element, cropped by a scissor. Contain: the
    icon fits inside contain_scale of the element, centred. */
-static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkUiRect rect,
-                              float density, uint32_t id) {
+static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, float alpha,
+                              NkUiRect rect, float density, uint32_t id) {
     NkUiPixelRect box = nk_ui_round_rect(rect, density);
+    /* White at the fade's alpha: the backends draw an image tinted by it. */
+    uint32_t tint = 0xFFFFFF00u | (uint32_t)(alpha * 255.0f + 0.5f);
     float cx = (float)(box.x0 + box.x1) * 0.5f;
     float cy = (float)(box.y0 + box.y1) * 0.5f;
     float box_w = (float)(box.x1 - box.x0);
@@ -1093,7 +1185,7 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
         if (!nk_ui_draw_add_scissor(draw, true, box, id) ||
             !nk_ui_draw_add_image(draw, art->cover,
                                   nk_ui_image_fit(art->cover, cx, cy, box_w, box_h, true),
-                                  0xFFFFFFFFu, id) ||
+                                  tint, id) ||
             !nk_ui_draw_add_scissor(draw, false, box, id)) {
             return false;
         }
@@ -1104,7 +1196,7 @@ static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkU
         if (!nk_ui_draw_add_image(draw, art->contain,
                                   nk_ui_image_fit(art->contain, cx, cy, box_w * scale,
                                                   box_h * scale, false),
-                                  0xFFFFFFFFu, id)) {
+                                  tint, id)) {
             return false;
         }
     }
@@ -1179,7 +1271,8 @@ static bool nk_ui_paint_custom(void *user, void *data, NkUiRect rect, float dens
         return nk_ui_paint_shapes(&ui->draw, &slot->art, rect, density, element_id);
     }
     if (slot->kind == NK_UI_CUSTOM_SLOT_IMAGE) {
-        return nk_ui_paint_image(&ui->draw, &slot->image, rect, density, element_id);
+        return nk_ui_paint_image(&ui->draw, &slot->image, slot->image_alpha, rect, density,
+                                 element_id);
     }
     return true;
 }
@@ -1234,9 +1327,34 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             ui->frame_ok = false;
         }
     }
-    if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density, (float)ui->frame_delta_s,
-                        nk_ui_paint_custom, ui)) {
-        ui->frame_ok = false;
+    /* Clay adds the frame's time to a transition from the frame it starts on.
+       The time since the last frame was idle when nothing was moving then, so
+       a transition starting now gets one frame of it, not the whole wait for
+       input, and begins its course where it should. */
+    {
+        double transition_delta = ui->frame_delta_s;
+        if (!ui->transitioning && transition_delta > NK_UI_MOTION_FRAME) {
+            transition_delta = NK_UI_MOTION_FRAME;
+        }
+        if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density, (float)transition_delta,
+                            nk_ui_paint_custom, ui)) {
+            ui->frame_ok = false;
+        }
+    }
+    ui->transitioning = nk_ui_clay_transitioning(ui->clay) || ui->art_fading;
+    /* A picture not drawn this frame starts afresh when it comes back. */
+    {
+        size_t kept = 0u;
+        size_t i;
+        for (i = 0u; i < ui->art_fade_count; ++i) {
+            if (ui->art_fades[i].seen) {
+                ui->art_fades[kept] = ui->art_fades[i];
+                ui->art_fades[kept].seen = false;
+                ++kept;
+            }
+        }
+        ui->art_fade_count = kept;
+        ui->art_fading = false;
     }
     memcpy(ui->laid_ids, ui->scroll_ids, ui->scroll_count * sizeof(ui->scroll_ids[0]));
     ui->laid_count = ui->scroll_count;
@@ -1275,6 +1393,20 @@ bool nk_ui_next_wake(const NkUi *ui, double *at_s) {
         *at_s = frame / 30.0;
     }
     return true;
+}
+
+double nk_ui_wait_s(const NkUi *ui, double now_s, double idle_s) {
+    double wake;
+    double wait = idle_s;
+    if (ui == NULL || !isfinite(idle_s) || idle_s < 0.0) {
+        return 0.0;
+    }
+    if (nk_ui_in_motion(ui)) {
+        wait = NK_UI_MOTION_FRAME;
+    } else if (isfinite(now_s) && nk_ui_next_wake(ui, &wake)) {
+        wait = wake - now_s;
+    }
+    return wait < 0.0 ? 0.0 : wait < idle_s ? wait : idle_s;
 }
 
 NkUiId nk_ui_focused(const NkUi *ui) {
@@ -1356,6 +1488,10 @@ bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out) {
 
 bool nk_ui_scroll_in_motion(const NkUi *ui) {
     return ui != NULL && ui->scroll_moving;
+}
+
+bool nk_ui_in_motion(const NkUi *ui) {
+    return ui != NULL && (ui->scroll_moving || ui->transitioning);
 }
 
 bool nk_ui_hovered(const NkUi *ui, NkUiId id) {

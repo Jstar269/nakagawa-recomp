@@ -109,10 +109,13 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 
 ### Focus
 
-- The ring is drawn by the core outside the focused element, so nothing moves when focus moves: 3 px
+- The ring is drawn by the core outside the focused element, so the layout never moves when focus moves: 3 px
   `accent_dark`, 3 px gap, radius = the element's radius + 6. It is a Clay floating element on the control, drawn
   over everything else and clipped like the control, so a control half scrolled out of a list shows half a ring
   (`test_focus_ring_floats` in `tests/native/test_nk_ui_core.c`).
+- The ring is one element whichever control has it, so when focus moves Clay sees it change parent and eases it
+  across over `NK_UI_MOTION_FAST`. A control that was not on screen in the last frame, a new page's, gets a new ring
+  at once rather than one flying in from the last page (`test_focus_ring_moves`).
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines. The
   launcher draws it when Settings > Accessibility > High contrast is On, or Automatic while Windows uses a contrast
   theme.
@@ -137,7 +140,7 @@ A list longer than its room is a scroll container (`NkUiLayout.scroll`), scrolle
 three of its 16 px lines; a drag with the mouse held, or a finger, moves it with the pointer and a fling keeps going a
 moment; a drag that scrolls more than 8 px is no click on the control it started on. A control inside it that takes
 focus, by key, pad or pointer, is scrolled fully into view, by the least it takes. The launcher draws at 60 Hz while a
-list still moves (`player_ui_nk_in_motion`) and waits for input again once it settles. A wheel over anything else is
+list, or anything else, still moves (`player_ui_nk_wait_ms`) and waits for input again once it settles. A wheel over anything else is
 the screen's own: the library turns its page with it. Only the lines a long list shows are laid out, with spacers
 for the rest, so its length costs nothing (`test_scroll_container` in `tests/native/test_nk_ui_core.c`).
 
@@ -197,6 +200,32 @@ Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (t
 crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
 The waves step at 30 Hz. Reduce motion (the setting, or with it on Automatic, Windows' Animation effects turned
 off) makes every duration a cut and holds the waves on one frame. Nothing ever needs motion to be understood.
+
+The launcher's loop asks nk_ui how long it may wait for input (`nk_ui_wait_s`, `test_wait_follows_motion`): one
+display frame while something moves, until the waves' next 30 Hz step while they play, else 50 ms. It used to wait
+50 ms whenever nothing scrolled, so the waves stepped at 20 Hz.
+
+Moves and colour changes are Clay transitions: a container's `NkUiStyle.transition` names what eases (its colours,
+its box) and `transition_s` over how long, with Clay's ease-out, from its old value to its new one. A container's
+first frame and its last are cuts. Under Reduce motion nk_ui leaves the transition out, so the change is a cut.
+
+- The focus ring eases to the newly focused control over fast (see Focus).
+- Hover, press and focus fills of buttons, game cards, the add card and tab labels ease over fast
+  (`test_hover_fill_eases`).
+- The 3 px tab rule is one element in the active tab's slot and slides to a newly active tab over base
+  (`test_tab_rule_slides`).
+- A disc's picture that arrives on a card already on screen, read after the card was drawn, or that changes in
+  place, fades in over slow. One that comes with its card, on a new page, is there at once (`test_art_fades_in`).
+  A picture is an nk_ui custom element, which Clay transitions cannot fade, so nk_ui eases the alpha it draws it
+  with, on Clay's ease-out curve.
+
+Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle
+when nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and
+starts its course at the beginning. nk_ui gives Clay the layout's size at the start of every frame, as Clay's
+lifecycle asks: Clay holds moves back on a frame whose size changed, and given the size only on a resize it took
+every frame for one. The in-game overlay keeps its motion cut: the runtime is not told the player's Reduce motion
+choice. The goldens are stills at a clock that never moves, so their contexts cut motion too; the motion itself is
+tested at a moving clock in `tests/native/test_nk_ui_core.c`.
 
 ### Background waves
 
@@ -572,4 +601,9 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 4. The in-game overlay's pages have their own gates: `mingw32-make nk-ui-overlay-screens-selftest` (flow, focus,
    fit at those three sizes, and `fixtures/nk_ui/overlay.golden`; rewrite it with
    `build/test_overlay_screens --write-goldens`) and `mingw32-make nk-ui-overlay-host-selftest` (the runtime host on
-   SDL3_ttf, the bundled fonts and real key events).
+   SDL3_ttf, the bundled fonts and real key events). `mingw32-make nk-ui-overlay-screens-capture
+   NK_UI_CAPTURE_DIR=<dir>` saves every overlay page, the developer pages included, at those three sizes, drawn as
+   the overlay host draws them, for review by eye.
+   - The Controls page lays its rows out in two tables side by side on a window under 720 px tall, so all ten
+     show at once. One scrolling list would hide rows that a controller reaches only by focusing them, and the
+     rows are read, not chosen.

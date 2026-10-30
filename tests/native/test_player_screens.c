@@ -56,6 +56,17 @@ static void set_test_viewport(NkUi *ui, int width, int height) {
     nk_ui_set_viewport(ui, &viewport);
 }
 
+/* The goldens are stills drawn at a clock that never moves, where a
+   transition would stay at its first frame: their contexts cut motion, as
+   Reduce motion does. test_nk_ui_core covers the motion itself. */
+static void set_still_prefs(NkUi *ui, NkUiPromptStyle style) {
+    NkUiPrefs prefs;
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.prompt_style = style;
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+}
+
 static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
@@ -961,6 +972,7 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     ui = nk_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
+    set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
     memset(&model, 0, sizeof(model));
     model.page_size = player_ui_library_page_size(1280.0f, 800.0f, &model.columns);
     model.logical_width = 1280.0f;
@@ -1026,24 +1038,17 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
         nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     }
     /* The prompt bar in each input mode: keyboard and mouse, then a pad. */
-    {
-        NkUiPrefs prefs;
-        memset(&prefs, 0, sizeof(prefs));
-        prefs.prompt_style = NK_UI_PROMPT_KEYCAPS;
-        nk_ui_set_prefs(ui, &prefs);
-        if (!append_case(out, cap, used, "library-prompts-keyboard", ui, &model, NULL)) {
-            nk_ui_destroy(ui);
-            return false;
-        }
-        prefs.prompt_style = NK_UI_PROMPT_LETTERS_A_SOUTH;
-        nk_ui_set_prefs(ui, &prefs);
-        if (!append_case(out, cap, used, "library-prompts-controller", ui, &model, NULL)) {
-            nk_ui_destroy(ui);
-            return false;
-        }
-        prefs.prompt_style = NK_UI_PROMPT_NEUTRAL;
-        nk_ui_set_prefs(ui, &prefs);
+    set_still_prefs(ui, NK_UI_PROMPT_KEYCAPS);
+    if (!append_case(out, cap, used, "library-prompts-keyboard", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
     }
+    set_still_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH);
+    if (!append_case(out, cap, used, "library-prompts-controller", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
+    }
+    set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
     /* The demos that come with Nakagawa sit under TEST THIS PC: under the
        first-start card while there are no games, under the grid once there are. */
     nk_ui_focus(ui, 0u);
@@ -1496,6 +1501,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     ui = nk_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
+    set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
     model.title = &fixture;
     model.title_index = 0u;
     for (size_t i = 0u;
