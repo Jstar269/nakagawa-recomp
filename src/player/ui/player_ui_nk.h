@@ -280,9 +280,11 @@ typedef enum {
     PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER   /* open the folder the disc's files go in */
 } PlayerUiWizardOp;
 
+/* One row of a disc's checks, in plain words (player_preflight_label and
+   friends); the check's code stays in the developer log. */
 typedef struct {
-    const char *status;   /* OK, MISSING, ... */
-    const char *code;
+    const char *status;   /* "Ready", "Not built yet", "Can't use", ... */
+    const char *name;     /* "Game program", "Game build", ... */
     const char *message;
     uint32_t rgba;        /* the status word's colour */
 } PlayerUiCheckRow;
