@@ -6526,6 +6526,7 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR, 0x600u);
     MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
     expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
@@ -6734,6 +6735,11 @@ static void test_utility_dialog_single_slot(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
            "the finished message dialog accepts ShutdownStart");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, 0x601u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110004u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "savedata rejects an unknown parameter version without claiming the slot");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a savedata InitStart before the shut-down message dialog reports NONE is refused");
@@ -6753,12 +6759,15 @@ static void test_utility_dialog_single_slot(void) {
            "the message dialog that gave up the slot answers WRONG_TYPE");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
            "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "savedata ShutdownStart at NONE returns INVALID_STATUS");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_UPDATE, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
-           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+           "savedata Update at NONE returns INVALID_STATUS without re-arming");
 
     /* Each remaining type takes the free slot in turn and gives it back at NONE. */
     for (size_t i = 0; i < count; i++) {
@@ -6877,6 +6886,47 @@ static void test_msg_dialog_answer_field(void) {
     expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + OPTIONS) == 0xa5a5a5a5u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + BUTTON_PRESSED) == 0x5a5a5a5au,
            "a V1 block has no buttonPressed: nothing past its 572 bytes is written");
+}
+
+static void test_savedata_older_parameter_versions(void) {
+    CpuState cpu;
+    static const uint32_t sizes[] = {0x5c8u, 0x5dcu};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        sr_hle_test_osk_slot_reset();
+        utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x5fcu, 1u); /* outside either version */
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+                   utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+                   MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+               "older savedata versions ignore absent GETSIZE tail fields");
+        sr_hle_test_osk_slot_reset();
+        extern uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
+        static const uint32_t modes[] = {8u, 11u, 12u, 22u};
+        for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+            utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+            MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]);
+            MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, modes[m]);
+            for (uint32_t off = sizes[i]; off < 0x600u; off += 4u)
+                MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + off, 1u);
+            expect(sr_savedata_execute_sized(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]) == 0u,
+                   "savedata modes ignore pointers outside the declared parameter version");
+        }
+        const uint32_t edge = 0x0c000000u - sizes[i];
+        utility_param_block(edge, sizes[i]);
+        MEM_W32(edge, sizes[i]);
+        MEM_W32(edge + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, edge) == 0u &&
+                   utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+                   MEM_R32(edge + 0x1cu) == 0u,
+               "older savedata block may end exactly at the guest arena boundary");
+        sr_hle_test_osk_slot_reset();
+        MEM_W32(edge + 4u, sizes[i]);
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, edge + 4u) == 0x80110004u,
+               "older savedata block crossing the guest arena boundary is rejected");
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static void test_utility_dialog_status_sequence(void) {
@@ -37341,6 +37391,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
+    test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
