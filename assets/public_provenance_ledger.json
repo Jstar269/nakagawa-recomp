@@ -2188,7 +2188,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "361a78d528c4776b3bcc9ed5fab58e1867931d76a6bc642b503055ac77d1a72f"
+      "sha256": "a3582ceef070478accdbb2555a3d06f20c6585272ef4041521d9e20127094755"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -14630,7 +14630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b57d3d39e6784c0e2d3baf81c9cb57fa8e5b8d603005c07ca863e9d4303f70aa"
+      "sha256": "8051943ef8dcaffe1883a835ed1a9f87c7d0c2a9f7f893c47134b6869cb741ec"
     },
     {
       "path": "tools/test_cpu_lle.py",

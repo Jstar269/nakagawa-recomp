@@ -755,6 +755,9 @@ def gate_options(mutant: Mutant) -> dict[str, bool | str | None]:
 
 BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER,
              "split-generator": GENERATOR}
+#: How each lane's unmutated gate is named in the campaign report, in report order.
+BASELINE_LABELS = {"interpreter": "baseline", "split-generator": "split baseline",
+                   "scheduler": "AOT boundary baseline"}
 
 
 def plan_lanes(mutants: tuple[Mutant, ...] | list[Mutant],
@@ -873,9 +876,9 @@ def main(argv: list[str] | None = None) -> int:
         for number, (_, indices) in enumerate(lanes)
         for position, index in enumerate(indices)
     }
-    cosim_lanes = sum(1 for target, _ in lanes if target == "interpreter")
-    print(f"COSIM_MUTATION lanes={len(lanes)} ({cosim_lanes} cosim, "
-          f"{len(lanes) - cosim_lanes} scheduler)")
+    counts = {name: sum(1 for target, _ in lanes if target == name) for name in BASELINE_LABELS}
+    print(f"COSIM_MUTATION lanes={len(lanes)} ({counts['interpreter']} cosim, "
+          f"{counts['split-generator']} split, {counts['scheduler']} scheduler)")
     print("COSIM_MUTATION baseline: the unmutated sources must pass in every lane")
 
     killed = 0
@@ -895,16 +898,14 @@ def main(argv: list[str] | None = None) -> int:
             verdict, detail = baseline.result()
             if verdict != "ok":
                 failed = True
-                label = "baseline" if target == "interpreter" else "AOT boundary baseline"
-                print(f"COSIM_MUTATION FAIL: {label} verdict={verdict} "
+                print(f"COSIM_MUTATION FAIL: {BASELINE_LABELS[target]} verdict={verdict} "
                       f"in {root.as_posix()}\n{detail}", file=sys.stderr)
         if failed:
             stop.set()
             return 1
-        if cosim_lanes:
-            print("COSIM_MUTATION baseline=OK")
-        if cosim_lanes < len(lanes):
-            print("COSIM_MUTATION AOT boundary baseline=OK")
+        for name, label in BASELINE_LABELS.items():
+            if counts[name]:
+                print(f"COSIM_MUTATION {label}=OK")
 
         # Report in campaign order whatever order the lanes finish in.
         for index, mutant in enumerate(MUTANTS):
