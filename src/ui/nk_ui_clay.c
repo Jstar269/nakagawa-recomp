@@ -241,28 +241,34 @@ bool nk_ui_clay_error_kind(int type, const char **kind) {
     }
 }
 
+/* The error bit of a render command nk_ui does not draw, beside Clay's own
+   error types. */
+#define NK_UI_CLAY_UNDRAWN_BIT (1u << 31)
+
+/* Records an error for this frame and reports it once a frame, and not again
+   while it repeats frame after frame. */
+static void nk_ui_clay_report(NkUiClay *clay, uint32_t bit, NkUiLayoutError report) {
+    bool ongoing = ((clay->frame_errors | clay->previous_errors) & bit) != 0u;
+    if (report.fatal) {
+        clay->failed = true;
+    }
+    clay->frame_errors |= bit;
+    if (!ongoing && clay->report_error != NULL) {
+        clay->report_error(clay->report_user, &report);
+    }
+}
+
 static void nk_ui_clay_error(Clay_ErrorData error) {
     NkUiClay *clay = (NkUiClay *)error.userData;
     NkUiLayoutError report;
     unsigned type = (unsigned)error.errorType;
-    uint32_t bit = type < 32u ? 1u << type : 0u;
-    bool ongoing;
     if (clay == NULL) {
         return;
     }
     report.fatal = nk_ui_clay_error_kind((int)type, &report.kind);
-    if (report.fatal) {
-        clay->failed = true;
-    }
-    /* Once a frame, and not again while it repeats frame after frame. */
-    ongoing = ((clay->frame_errors | clay->previous_errors) & bit) != 0u;
-    clay->frame_errors |= bit;
-    if (ongoing || clay->report_error == NULL) {
-        return;
-    }
     report.text = error.errorText.chars;
     report.text_length = error.errorText.length > 0 ? (size_t)error.errorText.length : 0u;
-    clay->report_error(clay->report_user, &report);
+    nk_ui_clay_report(clay, type < 31u ? 1u << type : 0u, report);
 }
 
 static uint16_t nk_ui_clay_u16(float value) {
@@ -856,10 +862,19 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
                            density, id);
             }
             break;
-        case CLAY_RENDER_COMMAND_TYPE_IMAGE:
         case CLAY_RENDER_COMMAND_TYPE_NONE:
-        default:
             break;
+        default: {
+            /* nk_ui declares no Clay image or overlay-colour element: pictures
+               are custom elements (nk_ui_image_art). A command it cannot draw
+               drops the frame, so a picture never just goes missing. */
+            static const char text[] = "A render command nk_ui does not draw: an image "
+                                       "or overlay-colour element.";
+            NkUiLayoutError report = {"UNDRAWN_RENDER_COMMAND", text, sizeof(text) - 1u, true};
+            nk_ui_clay_report(clay, NK_UI_CLAY_UNDRAWN_BIT, report);
+            ok = false;
+            break;
+        }
         }
     }
     clay->start_count = 0u;

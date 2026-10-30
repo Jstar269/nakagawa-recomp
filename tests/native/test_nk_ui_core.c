@@ -1548,6 +1548,49 @@ static int test_layout_errors_reported(void) {
     return 1;
 }
 
+/* nk_ui draws pictures as its own custom elements. A Clay image element (here
+   declared straight through Clay, as nothing in nk_ui does) is a command the
+   draw list cannot carry: the frame is dropped and reported, never drawn
+   with the picture silently missing. */
+static int test_undrawn_command_is_reported(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    LayoutErrorLog log;
+    NkUiConfig config;
+    NkUiLayout layout;
+    NkUi *ui;
+    int picture = 0;
+    memset(&log, 0, sizeof(log));
+    log.all_have_text = true;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.report_error = record_layout_error;
+    config.report_user = &log;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create undrawn-command context");
+    set_test_window(ui);
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        Clay_ElementDeclaration image;
+        memset(&image, 0, sizeof(image));
+        image.layout.sizing.width = CLAY_SIZING_FIXED(10.0f);
+        image.layout.sizing.height = CLAY_SIZING_FIXED(10.0f);
+        image.image.imageData = &picture;
+        Clay__OpenElementWithId(Clay_GetElementId(CLAY_STRING("test.image")));
+        Clay__ConfigureOpenElement(image);
+        Clay__CloseElement();
+        nk_ui_end_container(ui);
+    }
+    CHECK(nk_ui_end(ui) == NULL, "a frame with a Clay image element is dropped");
+    CHECK(log.count == 1 && strcmp(log.kinds, "UNDRAWN_RENDER_COMMAND ") == 0 && log.fatal == 1 &&
+          log.all_have_text, "and the command it could not draw is reported");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -1564,7 +1607,8 @@ int main(int argc, char **argv) {
         !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
         !test_pointer_respects_clip() || !test_scroll_container() ||
         !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
-        !test_layout_debug() || !test_pointer_state_once_a_frame()) {
+        !test_layout_debug() || !test_pointer_state_once_a_frame() ||
+        !test_undrawn_command_is_reported()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

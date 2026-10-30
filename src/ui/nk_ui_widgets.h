@@ -77,6 +77,12 @@ typedef struct {
     float contain_scale;
 } NkUiImageArt;
 
+/* A picture is one nk_ui custom element, not a Clay image element: it layers a
+   cover picture (filling the element, cropped) under a contain picture
+   (fitted whole, centred, at contain_scale), both snapped to whole device
+   pixels. Clay's image element holds one picture, has no cover fit, and keeps
+   an aspect ratio by deriving the height from the width only, so it could not
+   draw these without the same fitting in every backend. */
 bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
                      const NkUiImageArt *art);
 

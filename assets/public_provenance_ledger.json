@@ -1621,7 +1621,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7459ad021a5ecac81b813bbf21e9639ddb23b2d0bf40729e045358cf688ca617"
+      "sha256": "87ffaca613f107238a1fd8af5c418d6f97ad7d40885d672b881e5190daa450a6"
     },
     {
       "path": "docs/PORTING.md",
@@ -10182,7 +10182,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "00144a0d022e0f2045dbdeec072848b06a707ed0e6aa42e174a23e604b26307e"
+      "sha256": "a6bdbbdd22f06580b8329a29099e51d71b6519e8a6f32c3cb256e4163d0affb1"
     },
     {
       "path": "src/ui/nk_ui_draw.c",
@@ -10422,7 +10422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "170e576f30097002e2c3d8f176587a86dad1c2eaaa8f47491d2be7feb4b6ed1f"
+      "sha256": "a6675c8fe64c7dd90f3c6f76a6eb1c1b709133a6c14754260ca5c31caa322793"
     },
     {
       "path": "src/ui/shaders/shader_manifest.json",
@@ -10734,7 +10734,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8f0d033642351f2a7ba9a45cb034e4c047950b2cb3f0542a13db813b776ae679"
+      "sha256": "9b0d551a265425bc8e32782e2ad5374bbc6a314c15ba1f986a4d59dbff099483"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",

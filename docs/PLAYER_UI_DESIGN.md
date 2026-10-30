@@ -235,7 +235,10 @@ decode falls back to the project-drawn geometric form, which tests and SDL-free 
 Disc art is read on a background thread from the user's own disc image, one disc at a time, and decoded with
 stb_image (`third_party/stb/`) inside fixed limits (512 x 512 for `ICON0.PNG`, 1024 x 1024 for `PIC1.PNG`, 1 MiB
 encoded). It lives in memory only: nothing is written to disk or kept in the repository, and a disc without art, or
-art that fails the checks, keeps the placeholder.
+art that fails the checks, keeps the placeholder. A picture is drawn by nk_ui itself (`nk_ui_image_art`): a cover
+picture fills the art panel, cropped, and a contain picture (the icon) sits whole over it, both snapped to whole
+device pixels. Clay's image elements hold one picture each, cannot crop to fill, and keep an aspect ratio only by
+deriving the height from the width, so they would not make this simpler.
 
 Optional launcher sounds (Kenney's CC0 "Interface Sounds": a tick when focus moves, a chime on confirm, a click on
 back) are off by default; **UI sounds** in Settings (`ui_sounds` in `settings.json`) turns them on. While they are off
