@@ -2668,6 +2668,41 @@ static int av_info_is(uint32_t last, uint32_t video, uint32_t audio, uint32_t pc
            MEM_R32(AV_INFO + 16) == ver;
 }
 
+/* A player is named by the handle Create stores in its ScePsmfPlayer word, not by the word's
+ * address: a copy of the word passed from another structure names the same player, a word
+ * holding anything else names none, and Delete ends the player for every copy. */
+#define AV_PLAYER_COPY 0x08607000u
+static void test_player_handle_word(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "psmf-handle stream builds"); return; }
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0 &&
+              MEM_R32(AV_PLAYER) != 0u,
+          "psmf-handle: Create stores a handle in the player word");
+    MEM_W32(AV_PLAYER_COPY, MEM_R32(AV_PLAYER));
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER_COPY, AV_PATH, 0, 0, 0) == 0,
+          "psmf-handle: a copy of the player word sets the PSMF");
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == 2u,
+          "psmf-handle: the original word sees the state the copy set (STANDBY)");
+    memset(SR_HOST(AV_INFO), 0xcc, 20u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER_COPY, AV_INFO, 0, 0, 0) == 0 &&
+              MEM_R32(AV_INFO + 4u) == 1u,
+          "psmf-handle: the copy reads the player's PSMF info");
+    MEM_W32(AV_PLAYER_COPY + 4u, MEM_R32(AV_PLAYER) + 4u);
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER_COPY + 4u, 0, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-handle: a word holding another value names no player");
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0 && MEM_R32(AV_PLAYER) == 0u,
+          "psmf-handle: Delete clears the player word");
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER_COPY, 0, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-handle: a copy of a deleted player's word names no player");
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
 /* The info is the opened PSMF's header as the player parsed it: the last picture's time
  * (the header duration less one picture), the video and audio stream counts, no PCM streams,
  * and the player version (0 when every video stream carries an EP map, 1 otherwise).  The
@@ -3657,6 +3692,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
     test_player_get_psmf_info();
+    test_player_handle_word();
     test_psmf_player_display_in_vram_mirrors();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
