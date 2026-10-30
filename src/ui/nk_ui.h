@@ -140,6 +140,18 @@ typedef struct {
                    NkUiGlyphBitmap *out);
 } NkUiTextBackend;
 
+/* A layout error Clay reported. Most leave the layout incomplete (an element,
+   word or byte that did not fit, an internal error): those are fatal and
+   nk_ui_end drops the frame. A duplicate id, a floating element without its
+   parent, or a percentage over 100% still lays out a whole frame, so it is
+   drawn and the error is only reported. */
+typedef struct {
+    const char *kind;   /* Clay's error type without its prefix, e.g. "DUPLICATE_ID" */
+    const char *text;   /* Clay's explanation: text_length bytes, not NUL-terminated */
+    size_t text_length;
+    bool fatal;
+} NkUiLayoutError;
+
 typedef struct {
     NkUiHostKind host;
     size_t arena_bytes; /* 0 selects Clay_MinMemorySize(). */
@@ -150,6 +162,11 @@ typedef struct {
        screenshots carry no user name. The rewrite must never grow its input;
        it writes at most out_size bytes, NUL included. NULL draws text as given. */
     size_t (*display_text)(const char *in, char *out, size_t out_size);
+    /* Receives each layout error when it starts: an error that repeats every
+       frame is reported again only after a frame without it. NULL ignores
+       them; a fatal one still drops its frame. */
+    void (*report_error)(void *user, const NkUiLayoutError *error);
+    void *report_user;
 } NkUiConfig;
 
 /* The only theme shipped today. The pointer is static, never NULL, and stays

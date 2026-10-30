@@ -197,8 +197,34 @@ int main(void)
         }
     }
 
+    /* A layout past the element limit fills the element-id map. The next
+       layout, back under the limit, reuses the slots pruning freed and lays
+       out without an error. */
+    Clay_BeginLayout();
+    for (int i = 0; i < Clay_GetMaxElementCount() + 16; ++i) {
+        CLAY(CLAY_IDI("crowd", (uint32_t)i), {
+            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(1.0f),
+                                    .height = CLAY_SIZING_FIXED(1.0f) } },
+        }) {}
+    }
+    (void)Clay_EndLayout(0.0f);
+    clay_error_count = 0;
+    Clay_BeginLayout();
+    CLAY(CLAY_ID("after-crowd"), {
+        .layout = { .sizing = { .width = CLAY_SIZING_FIXED(30.0f),
+                                .height = CLAY_SIZING_FIXED(20.0f) } },
+    }) {}
+    (void)Clay_EndLayout(0.0f);
+    if (clay_error_count != 0 ||
+        !expect_rectangle("after-crowd", CLAY_ID("after-crowd"), 0.0f, 0.0f, 30.0f, 20.0f)) {
+        fprintf(stderr, "FAIL: the layout after a full element-id map did not recover\n");
+        free(memory);
+        return EXIT_FAILURE;
+    }
+
     free(memory);
     puts("Clay layout selftest passed: root, padding, child gap, fixed children, grow child, "
-         "wrapped text kept whole in an overfull column, and an oversized arena request refused");
+         "wrapped text kept whole in an overfull column, an oversized arena request refused, "
+         "and a layout after a full element-id map");
     return EXIT_SUCCESS;
 }

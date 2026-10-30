@@ -5273,7 +5273,7 @@ int main(int argc, char *argv[]) {
     PlayerUiNk *next_ui = NULL;
     if (ui_next_requested) {
         char ui_error[256] = "";
-        next_ui = player_ui_nk_create(renderer, window,
+        next_ui = player_ui_nk_create(renderer, window, &app,
                                       ui_error, sizeof(ui_error));
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         s_ui_test_next_ui = next_ui;

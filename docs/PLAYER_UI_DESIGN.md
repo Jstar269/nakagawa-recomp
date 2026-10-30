@@ -142,6 +142,13 @@ long text with `nk_ui_text_clamp` instead of clipping it.
 Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
 wrapping, as one line, so compressing an overfull column squeezed the paragraph back and the next block painted over
 its later lines; the vendored `clay.h` carries the wrapped height into the minimum (`third_party/clay/PROVENANCE.md`).
+Clay's layout errors are for developers: the launcher writes each one to the developer log (`ui` source) with Clay's
+own text, and the in-game overlay writes it to stderr, once when it starts and not again while it repeats frame after
+frame. A duplicate id, a floating element without its parent, or a percentage over 100% still lays out a whole frame,
+so that frame is drawn. Every other error leaves elements, words or memory out of the layout; that frame is dropped and
+the window shows the ground colour until a whole frame comes back (`test_layout_errors_reported` in
+`tests/native/test_nk_ui_core.c`).
+
 `test_every_screen_fits_the_window` in `tests/native/test_player_screens.c` lays every screen out in launcher windows
 of 1280 x 720, 960 x 540, 1366 x 705 and 853 x 480 pixels and fails when a box or text run leaves the window or text
 is painted over.

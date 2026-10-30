@@ -43,7 +43,11 @@ typedef struct {
     NkUiTextBackend text;
     float density;
     bool frame_open;
-    bool failed;
+    bool failed;                /* a fatal layout error this frame */
+    void (*report_error)(void *user, const NkUiLayoutError *error);
+    void *report_user;
+    uint32_t frame_errors;      /* one bit per Clay_ErrorType raised this frame */
+    uint32_t previous_errors;   /* the same for the frame before */
 } NkUiClay;
 
 static int nk_ui_clay_clamp_int(double value) {
@@ -179,11 +183,72 @@ static Clay_Dimensions nk_ui_clay_measure(Clay_StringSlice text,
 bool nk_ui_clay_text_styled(void *opaque_clay, NkUiId id, const char *text, size_t length,
                             const NkUiTextStyle *style);
 
+/* Names a Clay error type and returns whether it is fatal. After a duplicate
+   id Clay keeps the first element under that id, a floating element whose
+   parent is missing is laid out from the root, and a percentage over 100% is
+   laid out as given: the frame is whole. Every other type leaves elements,
+   words or memory out of the layout, and a type this table does not know is
+   treated the same way. */
+bool nk_ui_clay_error_kind(int type, const char **kind) {
+    switch (type) {
+    case CLAY_ERROR_TYPE_TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED:
+        *kind = "TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED";
+        return true;
+    case CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED:
+        *kind = "ARENA_CAPACITY_EXCEEDED";
+        return true;
+    case CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED:
+        *kind = "ELEMENTS_CAPACITY_EXCEEDED";
+        return true;
+    case CLAY_ERROR_TYPE_TEXT_MEASUREMENT_CAPACITY_EXCEEDED:
+        *kind = "TEXT_MEASUREMENT_CAPACITY_EXCEEDED";
+        return true;
+    case CLAY_ERROR_TYPE_DUPLICATE_ID:
+        *kind = "DUPLICATE_ID";
+        return false;
+    case CLAY_ERROR_TYPE_FLOATING_CONTAINER_PARENT_NOT_FOUND:
+        *kind = "FLOATING_CONTAINER_PARENT_NOT_FOUND";
+        return false;
+    case CLAY_ERROR_TYPE_PERCENTAGE_OVER_1:
+        *kind = "PERCENTAGE_OVER_1";
+        return false;
+    case CLAY_ERROR_TYPE_INTERNAL_ERROR:
+        *kind = "INTERNAL_ERROR";
+        return true;
+    case CLAY_ERROR_TYPE_UNBALANCED_OPEN_CLOSE:
+        *kind = "UNBALANCED_OPEN_CLOSE";
+        return true;
+    case CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED:
+        *kind = "HASH_MAP_CAPACITY_EXCEEDED";
+        return true;
+    default:
+        *kind = "UNKNOWN";
+        return true;
+    }
+}
+
 static void nk_ui_clay_error(Clay_ErrorData error) {
     NkUiClay *clay = (NkUiClay *)error.userData;
-    if (clay != NULL) {
+    NkUiLayoutError report;
+    unsigned type = (unsigned)error.errorType;
+    uint32_t bit = type < 32u ? 1u << type : 0u;
+    bool ongoing;
+    if (clay == NULL) {
+        return;
+    }
+    report.fatal = nk_ui_clay_error_kind((int)type, &report.kind);
+    if (report.fatal) {
         clay->failed = true;
     }
+    /* Once a frame, and not again while it repeats frame after frame. */
+    ongoing = ((clay->frame_errors | clay->previous_errors) & bit) != 0u;
+    clay->frame_errors |= bit;
+    if (ongoing || clay->report_error == NULL) {
+        return;
+    }
+    report.text = error.errorText.chars;
+    report.text_length = error.errorText.length > 0 ? (size_t)error.errorText.length : 0u;
+    clay->report_error(clay->report_user, &report);
 }
 
 static uint16_t nk_ui_clay_u16(float value) {
@@ -217,7 +282,9 @@ static Clay_SizingAxis nk_ui_clay_sizing(NkUiSizing sizing) {
 }
 
 void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
-                        const NkUiTextBackend *text) {
+                        const NkUiTextBackend *text,
+                        void (*report_error)(void *user, const NkUiLayoutError *error),
+                        void *report_user) {
     NkUiClay *clay;
     size_t minimum;
     Clay_Arena arena;
@@ -247,6 +314,8 @@ void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
         clay->text = *text;
     }
     clay->density = 1.0f;
+    clay->report_error = report_error;
+    clay->report_user = report_user;
     previous = Clay_GetCurrentContext();
     arena = Clay_CreateArenaWithCapacityAndMemory(arena_bytes, clay->memory);
     errors.errorHandlerFunction = nk_ui_clay_error;
@@ -306,6 +375,8 @@ bool nk_ui_clay_begin(void *opaque_clay) {
     clay->previous_context = Clay_GetCurrentContext();
     Clay_SetCurrentContext(clay->context);
     clay->failed = false;
+    clay->previous_errors = clay->frame_errors;
+    clay->frame_errors = 0u;
     clay->frame_open = true;
     Clay_BeginLayout();
     return true;
@@ -485,10 +556,19 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
     }
     Clay_SetCurrentContext(clay->context);
     commands = Clay_EndLayout(delta_s);
+    /* Past its element limit Clay drops the elements that do not fit and
+       stops closing elements, so the only error it raises is the unbalanced
+       open and close that follows. Report the cause too. */
+    if (clay->context->booleanWarnings.maxElementsExceeded) {
+        nk_ui_clay_error((Clay_ErrorData){
+            CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED,
+            CLAY_STRING("Layout elements exceeded the maximum element count."), clay});
+    }
     if (clay->failed) {
         ok = false;
     }
-    for (i = 0; i < commands.length; ++i) {
+    /* A fatal error leaves nothing worth drawing. */
+    for (i = 0; ok && i < commands.length; ++i) {
         Clay_RenderCommand *command = &commands.internalArray[i];
         Clay_BoundingBox box = command->boundingBox;
         NkUiRect rect = {box.x, box.y, box.width, box.height};
@@ -499,7 +579,7 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
             const float radii[4] = {corner->topLeft, corner->topRight,
                                     corner->bottomRight, corner->bottomLeft};
             ok = nk_ui_draw_add_rect_corners(draw, rect, density, radii,
-                nk_ui_clay_color(command->renderData.rectangle.backgroundColor), id) && ok;
+                nk_ui_clay_color(command->renderData.rectangle.backgroundColor), id);
             break;
         }
         case CLAY_RENDER_COMMAND_TYPE_BORDER: {
@@ -512,7 +592,7 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
             const float radii[4] = {corner->topLeft, corner->topRight,
                                     corner->bottomRight, corner->bottomLeft};
             ok = nk_ui_draw_add_border_corners(draw, rect, density, (float)thickness, radii,
-                nk_ui_clay_color(command->renderData.border.color), id) && ok;
+                nk_ui_clay_color(command->renderData.border.color), id);
             break;
         }
         case CLAY_RENDER_COMMAND_TYPE_TEXT: {
@@ -522,27 +602,24 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
             ok = nk_ui_draw_add_text_spaced(draw, bounds, text->stringContents.chars,
                 (size_t)text->stringContents.length, nk_ui_clay_font(text->fontId), pixel_size,
                 floorf(nk_ui_clay_spacing(text->fontId) * density + 0.5f),
-                nk_ui_clay_color(text->textColor), id) && ok;
+                nk_ui_clay_color(text->textColor), id);
             break;
         }
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START:
-            ok = nk_ui_draw_add_scissor(draw, true, nk_ui_clay_round_scissor(box, density), id) && ok;
+            ok = nk_ui_draw_add_scissor(draw, true, nk_ui_clay_round_scissor(box, density), id);
             break;
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END:
-            ok = nk_ui_draw_add_scissor(draw, false, nk_ui_clay_round_scissor(box, density), id) && ok;
+            ok = nk_ui_draw_add_scissor(draw, false, nk_ui_clay_round_scissor(box, density), id);
             break;
         case CLAY_RENDER_COMMAND_TYPE_CUSTOM:
             if (paint != NULL && command->renderData.custom.customData != NULL) {
                 ok = paint(paint_user, command->renderData.custom.customData, rect,
-                           density, id) && ok;
+                           density, id);
             }
             break;
         case CLAY_RENDER_COMMAND_TYPE_IMAGE:
         case CLAY_RENDER_COMMAND_TYPE_NONE:
         default:
-            break;
-        }
-        if (!ok) {
             break;
         }
     }

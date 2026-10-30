@@ -809,8 +809,9 @@ bool player_ui_build_date(long long epoch, char *out, size_t cap);
    negative (no SOURCE_DATE_EPOCH and no commit time at build). */
 void player_ui_version_line(const char *version, long long epoch, char *out, size_t cap);
 
+/* app receives the launcher's layout errors in its developer log. */
 PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
-                                struct SDL_Window *window,
+                                struct SDL_Window *window, PlayerApp *app,
                                 char *error, size_t error_size);
 /* False when this build was compiled without the SDL_Renderer or SDL3_ttf
    support player_ui_nk_create needs, so it can never succeed here. */

@@ -11,6 +11,7 @@
 #include "nk_ui_widgets.h"
 #include "backend/nk_ui_sdlr.h"
 #include "backend/nk_ui_vk.h"
+#include "clay.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #include <string.h>
 
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
+bool nk_ui_clay_error_kind(int type, const char **kind);
 
 #define CHECK(condition, message) do { \
     if (!(condition)) { \
@@ -319,6 +321,9 @@ static int dump_synthetic_frame(const char *scale_name, int pixel_w, int pixel_h
     config.text = &fixed;
     ui = nk_ui_create(&config);
     CHECK(ui != NULL, "create Clay-backed nk_ui context");
+    /* Every field, min_logical_w and min_logical_h included: a stale minimum
+       layout lowers the density. */
+    memset(&viewport, 0, sizeof(viewport));
     viewport.pixel_w = pixel_w;
     viewport.pixel_h = pixel_h;
     viewport.display_scale = display_scale;
@@ -925,6 +930,122 @@ static int test_display_text_rules(void) {
     return 1;
 }
 
+/* Every Clay error type has a name, and only the ones that leave a whole
+   layout keep their frame. A type Clay adds later is fatal until it is named. */
+static int test_layout_error_kinds(void) {
+    static const struct {
+        int type;
+        const char *kind;
+        bool fatal;
+    } expected[] = {
+        {CLAY_ERROR_TYPE_TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED,
+         "TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED", true},
+        {CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED, "ARENA_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED, "ELEMENTS_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_TEXT_MEASUREMENT_CAPACITY_EXCEEDED,
+         "TEXT_MEASUREMENT_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_DUPLICATE_ID, "DUPLICATE_ID", false},
+        {CLAY_ERROR_TYPE_FLOATING_CONTAINER_PARENT_NOT_FOUND,
+         "FLOATING_CONTAINER_PARENT_NOT_FOUND", false},
+        {CLAY_ERROR_TYPE_PERCENTAGE_OVER_1, "PERCENTAGE_OVER_1", false},
+        {CLAY_ERROR_TYPE_INTERNAL_ERROR, "INTERNAL_ERROR", true},
+        {CLAY_ERROR_TYPE_UNBALANCED_OPEN_CLOSE, "UNBALANCED_OPEN_CLOSE", true},
+        {CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED, "HASH_MAP_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED + 1, "UNKNOWN", true}
+    };
+    size_t i;
+    for (i = 0; i < sizeof(expected) / sizeof(expected[0]); ++i) {
+        const char *kind = NULL;
+        bool fatal = nk_ui_clay_error_kind(expected[i].type, &kind);
+        if (kind == NULL || strcmp(kind, expected[i].kind) != 0 || fatal != expected[i].fatal) {
+            fprintf(stderr, "FAIL: Clay error type %d is %s (%s), expected %s (%s)\n",
+                    expected[i].type, kind != NULL ? kind : "(none)",
+                    fatal ? "fatal" : "drawn", expected[i].kind,
+                    expected[i].fatal ? "fatal" : "drawn");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typedef struct {
+    int count;
+    int fatal;
+    char kinds[256];   /* every kind reported, space-separated */
+    bool all_have_text;
+} LayoutErrorLog;
+
+static void record_layout_error(void *user, const NkUiLayoutError *error) {
+    LayoutErrorLog *log = (LayoutErrorLog *)user;
+    size_t used = strlen(log->kinds);
+    ++log->count;
+    if (error->fatal) ++log->fatal;
+    (void)snprintf(log->kinds + used, sizeof(log->kinds) - used, "%s ", error->kind);
+    if (error->text == NULL || error->text_length == 0u) log->all_have_text = false;
+}
+
+/* One frame of `spacers` spacers under a root, the first `duplicates` of them
+   sharing one id. Returns whether nk_ui_end kept the frame. */
+static bool layout_error_frame(NkUi *ui, double now_s, size_t spacers, size_t duplicates) {
+    NkUiLayout layout;
+    size_t i;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    nk_ui_begin(ui, now_s);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        for (i = 0; i < spacers; ++i) {
+            NkUiId id = i < duplicates ? 2u : (NkUiId)(100u + i);
+            nk_ui_spacer(ui, id, (NkUiSizing){NK_UI_SIZE_FIXED, 4.0f, 0.0f, 0.0f},
+                         (NkUiSizing){NK_UI_SIZE_FIXED, 1.0f, 0.0f, 0.0f});
+        }
+        nk_ui_end_container(ui);
+    }
+    return nk_ui_end(ui) != NULL;
+}
+
+/* A duplicate id still lays out a whole frame: it is drawn and reported once
+   when it starts, not every frame it repeats. Past Clay's element limit the
+   layout is incomplete, so that frame is dropped, and the next whole frame is
+   drawn again. */
+static int test_layout_errors_reported(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    LayoutErrorLog log;
+    NkUiConfig config;
+    NkUi *ui;
+    memset(&log, 0, sizeof(log));
+    log.all_have_text = true;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.report_error = record_layout_error;
+    config.report_user = &log;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create context with an error reporter");
+    CHECK(layout_error_frame(ui, 1.0, 3u, 2u), "a frame with a duplicate id is drawn");
+    CHECK(log.count == 1 && strcmp(log.kinds, "DUPLICATE_ID ") == 0 && log.fatal == 0 &&
+          log.all_have_text, "the duplicate id is reported as drawn, with Clay's text");
+    CHECK(layout_error_frame(ui, 2.0, 3u, 2u) && log.count == 1,
+          "a duplicate id that repeats the next frame is not reported again");
+    CHECK(layout_error_frame(ui, 3.0, 3u, 0u) && log.count == 1, "a clean frame reports nothing");
+    CHECK(layout_error_frame(ui, 4.0, 3u, 2u) && log.count == 2,
+          "a duplicate id that comes back is reported again");
+    /* Clay raises no error of its own past the limit; it also stops closing
+       elements, so the frame is unbalanced too. */
+    CHECK(!layout_error_frame(ui, 5.0, 9000u, 0u), "a frame past the element limit is dropped");
+    CHECK(strstr(log.kinds, "ELEMENTS_CAPACITY_EXCEEDED ") != NULL &&
+          log.fatal == log.count - 2 && log.all_have_text,
+          "the element limit is reported as fatal");
+    {
+        int reported = log.count;
+        CHECK(layout_error_frame(ui, 6.0, 3u, 0u) && log.count == reported,
+              "the next whole frame is drawn again");
+    }
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -937,7 +1058,8 @@ int main(int argc, char **argv) {
         !test_click_needs_press_and_release_on_one_control() ||
         !test_control_owns_horizontal() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command() || !test_app_icon() ||
-        !test_display_text_rules()) {
+        !test_display_text_rules() || !test_layout_error_kinds() ||
+        !test_layout_errors_reported()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

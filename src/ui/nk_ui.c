@@ -86,7 +86,9 @@ struct NkUi {
 };
 
 void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
-                        const NkUiTextBackend *text);
+                        const NkUiTextBackend *text,
+                        void (*report_error)(void *user, const NkUiLayoutError *error),
+                        void *report_user);
 void nk_ui_clay_destroy(void *clay);
 bool nk_ui_clay_set_dimensions(void *clay, float width, float height, float density);
 bool nk_ui_clay_begin(void *clay);
@@ -272,6 +274,8 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     NkUiTextBackend fixed;
     const NkUiTheme *theme;
     size_t arena_bytes = 0;
+    void (*report_error)(void *user, const NkUiLayoutError *error) = NULL;
+    void *report_user = NULL;
     if (ui == NULL) {
         return NULL;
     }
@@ -302,9 +306,12 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     ui->scale = nk_ui_scale_for_viewport(&ui->viewport);
     if (config != NULL) {
         arena_bytes = config->arena_bytes;
+        report_error = config->report_error;
+        report_user = config->report_user;
     }
     ui->clay = nk_ui_clay_create(arena_bytes, ui->scale.logical_w,
-                                 ui->scale.logical_h, &ui->text);
+                                 ui->scale.logical_h, &ui->text,
+                                 report_error, report_user);
     if (ui->clay == NULL) {
         nk_ui_draw_buffer_destroy(&ui->draw);
         nk_ui_focus_graph_destroy(ui->focus_graph);
