@@ -1109,10 +1109,15 @@ def lint_tools_index(repo_root: pathlib.Path = ROOT) -> list[str]:
             )
             continue
         first_line[name] = lineno
+    # A module without a row carries its own index entry: the first paragraph of its
+    # module docstring (lint_docs.py --tools-index prints the full index). New tools use
+    # that, so independent pull requests stop conflicting on this table (#1673).
     for name in sorted(modules - set(first_line)):
+        if lint_docs.tool_module_summary(repo_root / TOOLS_DIR / name):
+            continue
         errors.append(
-            f"{TOOLS_DIR}/README.md: tracked module {TOOLS_DIR}/{name} is not indexed in the "
-            "tool module index; add it to the marked index section"
+            f"{TOOLS_DIR}/README.md: tracked module {TOOLS_DIR}/{name} has no index entry; "
+            "give it a module docstring whose first paragraph says what it does"
         )
     for name in sorted(set(first_line) - modules):
         errors.append(
@@ -1200,9 +1205,25 @@ class TestToolsModuleIndex(unittest.TestCase):
             )
             self.assertEqual(
                 lint_tools_index(root),
-                [f"{TOOLS_DIR}/README.md: tracked module {TOOLS_DIR}/beta.py is not indexed in the "
-                 "tool module index; add it to the marked index section"],
+                [f"{TOOLS_DIR}/README.md: tracked module {TOOLS_DIR}/beta.py has no index entry; "
+                 "give it a module docstring whose first paragraph says what it does"],
             )
+
+            # A docstring too short to say anything is not an entry either.
+            (tools / "beta.py").write_text('"""Beta."""\nBETA = 1\n', encoding="utf-8")
+            self.assertEqual(len(lint_tools_index(root)), 1)
+
+            # A real docstring summary is the module's index entry, with no README row.
+            (tools / "beta.py").write_text(
+                '"""Compute the beta report for the synthetic fixture.\n\nDetails.\n"""\n'
+                "BETA = 1\n", encoding="utf-8")
+            self.assertEqual(lint_tools_index(root), [])
+            self.assertEqual(
+                lint_docs.tools_index_rows(root),
+                [("alpha.py", "does alpha"),
+                 ("beta.py", "Compute the beta report for the synthetic fixture.")],
+            )
+            (tools / "beta.py").write_text("BETA = 1\n", encoding="utf-8")
 
             # The subpackage module is out of the top-level set, so indexing beta clears
             # the report; the subpackage itself is already listed.
