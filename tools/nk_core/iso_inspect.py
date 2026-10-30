@@ -539,10 +539,24 @@ def plan_guest_module_layout(
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
+# Identity strings that name the disc exactly. TITLE is shown to a person and is
+# decoded tolerantly; these two are never repaired.
+_EXACT_TEXT_KEYS = frozenset({"DISC_ID", "DISC_VERSION"})
 
 
-def parse_param_sfo(data: bytes) -> Dict[str, str]:
-    """Parse a bounded PSP PARAM.SFO structure."""
+def parse_param_sfo(data: bytes, *, warnings: list[str] | None = None) -> Dict[str, str]:
+    """Parse a bounded PSP PARAM.SFO structure.
+
+    The header, index table and key table must be sound, and so must the values of
+    DISC_ID, TITLE and DISC_VERSION. Three departures that leave the disc's identity
+    intact are tolerated, each with a note appended to ``warnings``: the value of
+    another key that lies past the end of the file is skipped; a UTF-8 string
+    (format 0x0204) ends at its first NUL, so bytes left after it are not part of
+    the value; and a TITLE or other display string that is not UTF-8 is decoded
+    with U+FFFD replacements, the note keeping its raw bytes. DISC_ID and
+    DISC_VERSION are never repaired.
+    Mirrors nk_iso_parse_sfo_buffer in src/core/nk_iso.c.
+    """
     if len(data) < 20 or data[:8] != SFO_MAGIC:
         return {}
 
@@ -584,10 +598,21 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             raise IsoInspectionError("PARAM.SFO key is not ASCII") from exc
 
         if data_offset > len(data) - data_table_start:
-            raise IsoInspectionError("PARAM.SFO data offset is outside the data table")
+            bounds_problem = "PARAM.SFO data offset is outside the data table"
+        elif data_len > len(data) - data_table_start - data_offset:
+            bounds_problem = "PARAM.SFO data length exceeds the buffer"
+        else:
+            bounds_problem = None
+        if bounds_problem is not None:
+            if key_name in _IDENTITY_KEYS:
+                raise IsoInspectionError(bounds_problem)
+            if warnings is not None:
+                warnings.append(
+                    f"{bounds_problem} for key '{key_name}' (offset {data_offset}, "
+                    f"length {data_len}, file {len(data)} bytes); the key was not read"
+                )
+            continue
         data_start = data_table_start + data_offset
-        if data_len > len(data) - data_start:
-            raise IsoInspectionError("PARAM.SFO data length exceeds the buffer")
         if max_len < data_len:
             raise IsoInspectionError("PARAM.SFO data length exceeds max length")
         raw_value = data[data_start : data_start + data_len]
@@ -602,7 +627,15 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             )
 
         if param_fmt == SFO_FMT_UTF8:
-            value_bytes = raw_value.rstrip(b"\0")
+            # A NUL-terminated string: the value ends at its first NUL.
+            terminator = raw_value.find(b"\0")
+            value_bytes = raw_value if terminator < 0 else raw_value[:terminator]
+            leftover = raw_value[terminator + 1:] if terminator >= 0 else b""
+            if any(leftover) and warnings is not None:
+                warnings.append(
+                    f"SFO key '{key_name}' has {len(leftover)} byte(s) after its "
+                    f"terminating NUL (raw {leftover.hex()}); they are not part of the value"
+                )
         elif param_fmt == SFO_FMT_UTF8_SPECIAL:
             value_bytes = raw_value
         else:
@@ -612,7 +645,16 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             try:
                 value = value_bytes.decode("utf-8")
             except UnicodeDecodeError as exc:
-                raise IsoInspectionError(f"SFO key '{key_name}' is not valid UTF-8") from exc
+                if key_name in _EXACT_TEXT_KEYS:
+                    raise IsoInspectionError(
+                        f"SFO key '{key_name}' is not valid UTF-8"
+                    ) from exc
+                value = value_bytes.decode("utf-8", errors="replace")
+                if warnings is not None:
+                    warnings.append(
+                        f"SFO key '{key_name}' is not valid UTF-8; it is shown with U+FFFD "
+                        f"replacement characters (raw {value_bytes.hex()})"
+                    )
         elif param_fmt == SFO_FMT_UINT32:
             if data_len < 4:
                 raise IsoInspectionError(f"SFO key '{key_name}' has a short integer value")
@@ -769,6 +811,12 @@ def inspect_iso(
             raise IsoInspectionError("Not a valid ISO9660 image (missing PVD descriptor)")
 
         volume_id = pvd_data[40:72].decode("latin-1", errors="replace").rstrip("\x00 ")
+        # What the disc carries outside the standard but a PSP still reads; each
+        # note says what was tolerated, so nothing is silently repaired.
+        format_warnings: list[str] = []
+        root_note = _pvd_root_record_note(pvd_data)
+        if root_note is not None:
+            format_warnings.append(root_note)
         sfo_entry = _lookup_iso_file(f, size_bytes, ("PSP_GAME", "PARAM.SFO"))
 
         if sfo_entry is None:
@@ -782,7 +830,7 @@ def inspect_iso(
             if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
                 raise IsoInspectionError("PSP_GAME/PARAM.SFO has an unsupported size")
             raw_sfo = _read_iso_extent(f, size_bytes, sfo_lba, sfo_size, 0, sfo_size)
-            sfo_dict = parse_param_sfo(raw_sfo)
+            sfo_dict = parse_param_sfo(raw_sfo, warnings=format_warnings)
             disc_id = _canonical_disc_id(sfo_dict.get("DISC_ID", ""))
             title = sfo_dict.get("TITLE", "")
             version = sfo_dict.get("DISC_VERSION", "1.00")
@@ -841,6 +889,15 @@ def inspect_iso(
                         "Register it with --register-local-compatibility-record after reviewing the local inputs."
                     )
 
+        container_metadata: dict[str, object] = {
+            "format": "iso9660",
+            "volume_id": volume_id,
+            "size_bytes": size_bytes,
+            "pvd_sector": PVD_SECTOR,
+            "sector_size": SECTOR_SIZE,
+        }
+        if format_warnings:
+            container_metadata["format_warnings"] = format_warnings
         return IsoMetadata(
             disc_id=disc_id,
             title=title,
@@ -850,13 +907,7 @@ def inspect_iso(
             size_bytes=size_bytes,
             matched_profile=matched,
             param_sfo_facts=sfo_facts,
-            container_metadata={
-                "format": "iso9660",
-                "volume_id": volume_id,
-                "size_bytes": size_bytes,
-                "pvd_sector": PVD_SECTOR,
-                "sector_size": SECTOR_SIZE,
-            },
+            container_metadata=container_metadata,
             qualification_error=qualification_error,
         )
 
@@ -1094,6 +1145,34 @@ def _extent_from_record(record: bytes, file_size: int) -> tuple[int, int, bool]:
     name_size = record[32]
     if 33 + name_size > record[0]:
         raise IsoInspectionError("truncated ISO directory identifier")
+    return _extent_fields(record, file_size)
+
+
+def _pvd_root_extent(pvd: bytes, file_size: int) -> tuple[int, int, bool]:
+    """Locate the root directory from the primary volume descriptor.
+
+    ECMA-119 8.4.18 fixes the root directory record at BP 157-190 of the descriptor,
+    so its length byte and identifier are fixed by the standard and say nothing a
+    reader needs. Only the extent location, data length and file flags locate the
+    root, which is all the native reader (nk_iso_reader_open) reads too; some
+    rebuilt images copy a longer record's length byte there.
+    """
+    return _extent_fields(pvd[156:190], file_size)
+
+
+def _pvd_root_record_note(pvd: bytes) -> str | None:
+    """Describe a root directory record that is not the standard 34-byte form."""
+    length, name_size = pvd[156], pvd[188]
+    if length == 34 and name_size == 1 and pvd[189] == 0:
+        return None
+    return (
+        "The primary volume descriptor's root directory record is not the standard "
+        f"34-byte record (length byte {length}, identifier length {name_size}); "
+        "its extent location and length were used."
+    )
+
+
+def _extent_fields(record: bytes, file_size: int) -> tuple[int, int, bool]:
     lba_le = int.from_bytes(record[2:6], "little")
     lba_be = int.from_bytes(record[6:10], "big")
     size_le = int.from_bytes(record[10:14], "little")
@@ -1191,7 +1270,7 @@ def list_iso_directory(
             pvd = stream.read(SECTOR_SIZE)
             if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
                 raise IsoInspectionError("missing primary volume descriptor")
-            lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
+            lba, size, is_directory = _pvd_root_extent(pvd, file_size)
             if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
                 raise IsoInspectionError("root directory is not a bounded directory extent")
             for index, component in enumerate(path):
@@ -1223,7 +1302,7 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
     pvd = stream.read(SECTOR_SIZE)
     if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
         raise IsoInspectionError("missing primary volume descriptor")
-    lba, size, is_dir = _extent_from_record(pvd[156:190], file_size)
+    lba, size, is_dir = _pvd_root_extent(pvd, file_size)
     if not is_dir or size == 0 or size > MAX_DIRECTORY_BYTES:
         raise IsoInspectionError("root directory is not a bounded directory extent")
 
