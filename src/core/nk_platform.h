@@ -95,6 +95,23 @@ bool nk_platform_mkdir_p(const char *dir_path);
 bool nk_platform_mkdir_p_private(const char *dir_path);
 FILE *nk_platform_fopen_private(const char *path, const char *mode);
 
+/* An exclusive lock on a file that other programs lock too: Win32 locks byte 0
+   with LockFileEx, which excludes Python's msvcrt.locking on it; POSIX uses
+   flock, which excludes Python's fcntl.flock. The file is created when missing
+   and left in place. The OS releases the lock when its holder exits. */
+typedef struct {
+    void *native_handle;  /* Win32 */
+    int fd;               /* POSIX */
+    bool held;
+} NkFileLock;
+
+/* Take the lock on path, trying again every 50 ms for up to timeout_ms (0 tries
+   once). False when another holder keeps it that long or the file cannot be
+   opened. */
+bool nk_platform_file_lock_acquire(NkFileLock *lock, const char *path, unsigned timeout_ms);
+/* Release a lock; one not held is left alone. */
+void nk_platform_file_lock_release(NkFileLock *lock);
+
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 

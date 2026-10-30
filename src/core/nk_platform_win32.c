@@ -480,6 +480,48 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode) {
     return _wfopen(wpath, wmode);
 }
 
+bool nk_platform_file_lock_acquire(NkFileLock *lock, const char *path, unsigned timeout_ms) {
+    if (!lock) return false;
+    memset(lock, 0, sizeof(*lock));
+    lock->fd = -1;
+    WCHAR wpath[32768];
+    if (!path || !*path || !utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0]))) {
+        return false;
+    }
+    /* Shared opens: the other holders open the same file while this one is open. */
+    HANDLE handle = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    ULONGLONG start = GetTickCount64();
+    for (;;) {
+        OVERLAPPED at_zero;
+        memset(&at_zero, 0, sizeof(at_zero));
+        if (LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
+                       &at_zero)) {
+            break;
+        }
+        if (GetLastError() != ERROR_LOCK_VIOLATION || GetTickCount64() - start >= timeout_ms) {
+            CloseHandle(handle);
+            return false;
+        }
+        Sleep(50);
+    }
+    lock->native_handle = handle;
+    lock->held = true;
+    return true;
+}
+
+void nk_platform_file_lock_release(NkFileLock *lock) {
+    if (!lock || !lock->held) return;
+    OVERLAPPED at_zero;
+    memset(&at_zero, 0, sizeof(at_zero));
+    UnlockFileEx((HANDLE)lock->native_handle, 0, 1, 0, &at_zero);
+    CloseHandle((HANDLE)lock->native_handle);
+    lock->native_handle = NULL;
+    lock->held = false;
+}
+
 /* Reads an environment variable through the wide API as UTF-8. The narrow CRT
  * getenv() yields active-code-page bytes, which strict UTF-8 path consumers refuse. */
 static bool env_get_utf8(const WCHAR *name, char *out_utf8, size_t max_utf8_bytes) {

@@ -331,6 +331,84 @@ static void test_nk_library_null_path_default_routing(void) {
     remove(bak_file);
 }
 
+/* A commit re-reads the file under the library lock and changes only its own
+ * entry (#1768): a title another writer saved since is kept, in the file and in
+ * the caller's library, and the caller's in-memory samples stay out of the file. */
+static void test_nk_library_commit_keeps_other_writers_titles(void) {
+    printf("[NATIVE_TEST] Testing library commits keep another writer's titles...\n");
+    char path[NATIVE_TEST_PATH_MAX];
+    snprintf(path, sizeof(path), "%s%ccommit_library.json", native_test_get_root(),
+             nk_platform_path_separator());
+    remove(path);
+
+    static NkLibrary mine;  /* too large for the stack (NK_MAX_GAMES) */
+    static NkLibrary other;
+    static NkLibrary loaded;
+    nk_library_init(&mine);
+    NkGameEntry entry;
+    seed_game_entry(&entry, "SAMPLE001", "In-memory sample");
+    entry.is_sample = true;
+    assert(nk_library_add_or_update(&mine, &entry) == NK_OK);
+    seed_game_entry(&entry, "COMMIT001", "First");
+    assert(nk_library_commit_entry(&mine, &entry, path) == NK_OK);
+
+    assert(nk_library_load(&other, path) == NK_OK);
+    seed_game_entry(&entry, "COMMIT002", "Saved by another writer");
+    assert(nk_library_add_or_update(&other, &entry) == NK_OK);
+    assert(nk_library_save(&other, path) == NK_OK);
+
+    seed_game_entry(&entry, "COMMIT003", "Third");
+    assert(nk_library_commit_entry(&mine, &entry, path) == NK_OK);
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 3);
+    assert(nk_library_find_by_disc_id(&loaded, "SAMPLE001") == NULL);
+    assert(nk_library_count(&mine) == 4);
+    assert(strcmp(nk_library_get(&mine, 0)->disc_id, "SAMPLE001") == 0);
+    assert(nk_library_get(&mine, 0)->is_sample);
+    assert(strcmp(nk_library_get(&mine, 1)->disc_id, "COMMIT001") == 0);
+    assert(nk_library_find_by_disc_id(&mine, "COMMIT002") != NULL);
+
+    assert(nk_library_commit_remove(&mine, "COMMIT002", path) == NK_OK);
+    /* Already gone: another writer's removal is not an error. */
+    assert(nk_library_commit_remove(&mine, "COMMIT002", path) == NK_OK);
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 2);
+    assert(nk_library_find_by_disc_id(&loaded, "COMMIT002") == NULL);
+    assert(nk_library_count(&mine) == 3);
+    assert(nk_library_find_by_disc_id(&mine, "COMMIT002") == NULL);
+
+    char bak_path[NATIVE_TEST_PATH_MAX + 8];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", path);
+    remove(path);
+    remove(bak_path);
+}
+
+/* The library lock has one holder at a time. It is locks/library.lock beside
+ * library.json, the file tools/nk_cli.py's bring-up locks too. */
+static void test_nk_library_lock_has_one_holder(void) {
+    printf("[NATIVE_TEST] Testing the library lock...\n");
+    char sep = nk_platform_path_separator();
+    char path[NATIVE_TEST_PATH_MAX];
+    snprintf(path, sizeof(path), "%s%clock_library.json", native_test_get_root(), sep);
+    char lock_path[NATIVE_TEST_PATH_MAX + 32];
+    snprintf(lock_path, sizeof(lock_path), "%s%clocks%clibrary.lock", native_test_get_root(),
+             sep, sep);
+
+    NkFileLock first;
+    NkFileLock second;
+    assert(nk_library_lock_acquire(&first, path, 0) == NK_OK);
+    assert(first.held);
+    assert(nk_platform_file_exists(lock_path));
+    assert(nk_library_lock_acquire(&second, path, 0) == NK_ERROR_IO);
+    assert(!second.held);
+    nk_platform_file_lock_release(&first);
+    assert(nk_library_lock_acquire(&second, path, 0) == NK_OK);
+    nk_platform_file_lock_release(&second);
+    nk_platform_file_lock_release(&second);  /* releasing twice is harmless */
+    assert(nk_library_lock_acquire(NULL, path, 0) == NK_ERROR_GENERIC);
+    assert(nk_library_lock_acquire(&first, "", 0) == NK_ERROR_GENERIC);
+}
+
 static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     printf("[NATIVE_TEST] Testing nk_library corrupt load handling and backup recovery...\n");
 
@@ -480,6 +558,8 @@ int main(void) {
     test_nk_library_full_library_round_trip();
     test_nk_library_null_path_default_routing();
     test_nk_library_corrupt_load_and_backup_recovery();
+    test_nk_library_commit_keeps_other_writers_titles();
+    test_nk_library_lock_has_one_holder();
     test_nk_font_classify_verdict();
 
     /* Catalog SIZE is deliberately not asserted here. It is a literal that every
