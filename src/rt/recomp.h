@@ -1866,6 +1866,13 @@ int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
 typedef void (*SrSchedThreadExitHook)(uint32_t uid);
 void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+/* Watchdog thread-dump detail: hle.c names the kernel object an object wait is on (returns
+ * 0 when no object has the uid) and the NID of an import; sr_syscall reports each import's
+ * return on the current thread. */
+typedef int (*SrSchedWaitDescriber)(uint32_t thread_uid, uint32_t obj, char *out, size_t cap);
+typedef const char *(*SrSchedNidNamer)(uint32_t nid);
+void     sched_set_watchdog_describers(SrSchedWaitDescriber describe, SrSchedNidNamer name);
+void     sched_note_import_return(uint32_t nid, uint32_t ret);
 /* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the earliest guest-time deadline of a
  * list the modelled GE is still drawing (SCHED_WAIT_FOREVER-style UINT64_MAX when none), and
  * the interrupt-service step that completes every due list.  With no hooks registered --
