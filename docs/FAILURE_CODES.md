@@ -166,6 +166,7 @@ The **Where** column of each table names the places a code can appear:
 | Code | Where | Meaning |
 | --- | --- | --- |
 | `BUILD_PACKAGE_FAILED` | report | The package could not be assembled. |
+| `ENHANCEMENT_UNAVAILABLE` | player | 60 FPS game logic is on for the game, but its enhancement package is missing or not valid. |
 | `PACKAGE_AMBIENT_ENHANCEMENT` | route | An enhancement setting from the environment would change the package; it must be explicit. |
 | `PACKAGE_BUILD_FAILED` | route, player | The package build failed; the problem report's reason gives the tool's message. |
 | `PACKAGE_BUILD_INCOMPLETE` | route | The build finished without every file the package needs. |
@@ -224,7 +225,7 @@ The **Where** column of each table names the places a code can appear:
 | `RUNTIME_NO_NEW_FRAMES` | player | The game presented no new frame for a long stretch, and it was stopped from the stall notice. |
 | `RUNTIME_NO_PICTURE` | player | The game kept presenting frames, but every one was dark for a long stretch, and it was stopped from the stall notice. |
 | `RUNTIME_PREMATURE_EXIT` | player | The game's process exited within 500 ms of starting, whatever its exit code. |
-| `RUNTIME_SEMANTIC_BOUNDARY` | player | The game reached a feature Nakagawa does not run yet; the [stop boundary](#stop-boundaries) names it. |
+| `RUNTIME_SEMANTIC_BOUNDARY` | report, player | The game reached a feature Nakagawa does not run yet; the [stop boundary](#stop-boundaries) names it. |
 | `RUNTIME_START_TIMEOUT` | player | The game's process wrote no boot event within the start time limit, so the player stopped it. |
 | `RUNTIME_TRACE_UNAVAILABLE` | report | The runtime could not read a usable reference trace. |
 | `RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP` | report | The run's time budget ended while the game was still running, before it set up its display. |
@@ -289,6 +290,7 @@ The **Where** column of each table names the places a code can appear:
 | `UPDATE_CHECKSUM_CONFLICT` | player | The release's checksum file and GitHub's checksum disagree. |
 | `UPDATE_CHECKSUM_INVALID` | player | The release's checksum file is not in the expected form. |
 | `UPDATE_CHECKSUM_MISSING` | player | The release publishes no checksum for its Windows ZIP. |
+| `UPDATE_CHECKSUM_WRONG_FILE` | player | The release's checksum file is for another file than its Windows ZIP. |
 | `UPDATE_DOWNLOAD_CANCELLED` | player | The update download was cancelled. |
 | `UPDATE_DOWNLOAD_REMOVED` | player | The checked download is no longer in its folder. |
 | `UPDATE_HASH_MISMATCH` | player | The download did not match the release's SHA-256. |
@@ -300,11 +302,16 @@ The **Where** column of each table names the places a code can appear:
 | `UPDATE_INSTALL_NOT_WRITABLE` | player | The install folder is not writable. |
 | `UPDATE_INSTALL_PATH` | player | The folder for the new version has too long a path. |
 | `UPDATE_NO_RELEASES` | player | GitHub lists no release yet. |
+| `UPDATE_NO_SIGNING_KEY` | player | This build carries no update signing key, so it fetches no update. |
 | `UPDATE_NO_WINDOWS_ZIP` | player | The release has no Windows ZIP. |
 | `UPDATE_OFFLINE` | player | GitHub could not be reached. |
 | `UPDATE_PLATFORM_UNSUPPORTED` | player | Checking for updates works on Windows only. |
 | `UPDATE_REDIRECT_REJECTED` | player | GitHub redirected to a host the updater does not use. |
 | `UPDATE_SAVE_FAILED` | player | The download could not be saved. |
+| `UPDATE_SIGNATURE_INVALID` | player | The release's signature does not match its checksum file. |
+| `UPDATE_SIGNATURE_MISSING` | player | The release has no signature for its checksum file. |
+| `UPDATE_SIGNATURE_UNKNOWN_KEY` | player | The release is signed with a key this build does not know. |
+| `UPDATE_SIGNATURE_UNREADABLE` | player | The release's signature file is not in the expected form. |
 | `UPDATE_START_FAILED` | player | An update step could not start. |
 | `UPDATE_UNPACK_FAILED` | player | Windows' archive tool did not start. |
 | `UPDATE_UNPACK_UNAVAILABLE` | player | Windows' archive tool was not found. |
