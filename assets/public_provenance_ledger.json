@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0093eedd23eefa351e1c220a2466dd0154a91cdeb0021ff3febece8413247bb9"
+      "sha256": "15e42ee9d69b93b5e0ffc5a77d977a56b88a6136a76289101b98dd11708cc5b0"
     },
     {
       "path": "docs/CODE_TOUR.md",

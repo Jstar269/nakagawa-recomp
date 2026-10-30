@@ -942,7 +942,8 @@ it was woken by a desk batch or a merge group, or for a push to `main`. Every ot
 pull request's analysis stays on `ubuntu-26.04`, so ordinary traffic cannot fill the
 pool ahead of a landing.
 
-Every other run, a fork's pull request above all, gets `ubuntu-24.04`. Two repository
+Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
+or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
 variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
 must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
 old. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
