@@ -2782,6 +2782,80 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             },
         )
 
+    def _write_control_export(self) -> None:
+        """Commit the export in its control form, as the real producers do: no tree-wide fields."""
+        self.regenerate_export()
+        export_path = self.repo.root / verifier.EXPORT_PATH
+        if export_path.is_file():
+            full = json.loads(export_path.read_text(encoding="utf-8"))
+            self.repo.write(verifier.EXPORT_PATH, _canonical(public_export.build_control_document(full)))
+
+    def _claims_ledger_for(self, head: str) -> dict:
+        """The claims-only form (#1673) of the ledger generated for ``head``."""
+        self.repo.before_commit = self._write_control_export
+        self.run_ephemeral(head)
+        generated = json.loads(
+            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+        )
+        return provenance_ledger.claims_ledger(generated)
+
+    def _fatal_codes(self, verdict: dict) -> set[str]:
+        return {finding["code"] for finding in verdict["findings"] if finding["fatal"]}
+
+    def test_claims_ledger_survives_an_unrelated_source_edit(self) -> None:
+        """The point of #1673: editing a file leaves a claims-only ledger untouched."""
+        claims = self._claims_ledger_for(self.base)
+        self.assertEqual(claims["schema_version"], provenance_ledger.CLAIMS_LEDGER_SCHEMA_VERSION)
+        self.assertFalse(any("sha256" in entry for entry in claims["entries"]))
+        self.repo.branch("claims-ledger", self.base)
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(claims))
+        self.repo.commit("commit the claims-only ledger")
+        self.repo.write("src/rt/core.c", b"int core(void) { return 41; }\n")
+        head = self.repo.commit("edit a source file, ledger untouched")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        generated = json.loads(
+            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+        )
+        entry = next(item for item in generated["entries"] if item["path"] == "src/rt/core.c")
+        self.assertEqual(entry["sha256"], _sha(b"int core(void) { return 41; }\n"),
+                         "the hosted output still binds the edited bytes")
+
+    def test_claims_ledger_cannot_change_a_claim(self) -> None:
+        claims = self._claims_ledger_for(self.base)
+        claims["entries"][0]["evidence"] = {"source": "candidate"}
+        self.repo.branch("forged-claims", self.base)
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(claims))
+        head = self.repo.commit("forge a claim in the claims-only ledger")
+
+        self.assertIn("LEGACY_CONTROL_MISMATCH", self._fatal_codes(self.run_ephemeral(head)))
+
+    def test_claims_ledger_must_carry_no_hash(self) -> None:
+        """A half-converted ledger is refused, not read as either form."""
+        claims = self._claims_ledger_for(self.base)
+        claims["entries"][0]["sha256"] = "0" * 64
+        self.repo.branch("mixed-claims", self.base)
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(claims))
+        head = self.repo.commit("claims-only ledger that keeps one hash")
+
+        codes = self._fatal_codes(self.run_ephemeral(head))
+        self.assertIn("LEDGER_SCHEMA", codes)
+        self.assertIn("LEGACY_CONTROL_MISMATCH", codes)
+
+    def test_claims_ledger_must_cover_every_protected_path(self) -> None:
+        claims = self._claims_ledger_for(self.base)
+        dropped = claims["entries"].pop(0)["path"]
+        self.repo.branch("short-claims", self.base)
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(claims))
+        head = self.repo.commit("claims-only ledger missing an entry")
+
+        verdict = self.run_ephemeral(head)
+        self.assertIn("LEGACY_CONTROL_MISMATCH", self._fatal_codes(verdict))
+        self.assertIn(("LEDGER_COVERAGE", dropped),
+                      {(finding["code"], finding["path"]) for finding in verdict["findings"]})
+
     def test_stale_legacy_controls_cannot_hide_the_fresh_hash(self) -> None:
         self.repo.branch("stale-legacy", self.base)
         changed = b"int core(void) { return 99; }\n"
