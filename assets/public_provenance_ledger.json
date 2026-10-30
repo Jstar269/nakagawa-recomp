@@ -1567,7 +1567,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1bd3a59ff06e6c03c64fbd6b82fc19ce01abd3b2a08f42985a71e5e7ed9aa90"
+      "sha256": "6709181b35908ef88dee8f48282ab9ff5a1310860b3503a26e2297b3da00434a"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
@@ -1585,7 +1585,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "833148056505257dddcca255c7891cea602f965aaa5d24fb570dc4e80b22202b"
+      "sha256": "3a045f0d6c180b96e58a5600393bd413d0284fa687c4e8f67a042c9a81804498"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -12766,7 +12766,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "abb12367720bfd58103c21d4180ba266f9de6c5f758c4fd92d473d59005c3de4"
+      "sha256": "6f3437bfd017d7d36dabace6533a35308889b2be7dcc4938145066da52ea32c1"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -15299,7 +15299,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "46d800b23213d4165de3f78932a1f581b16d2ddfdbbbbb0676736ca93077177b"
+      "sha256": "be478597307a57743c3ac6b195eb187f921f08004b84f8022757e0d64c4b1ae1"
     },
     {
       "path": "tools/test_frame_capture_check.py",
@@ -15852,7 +15852,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cf693a260740116ee67971f0589c399f80554ea11de6ff4f5e12fb4ccfff3f66"
+      "sha256": "675908d79e84bd770ec9b791d76607b611e3cdd28dbe1e421ef8f345e23dea39"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
@@ -16657,7 +16657,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fbd3de83157659266b26a1e76e988e701b54126e54747d0fae0059aaabac3b93"
+      "sha256": "eee27bb8534b8339702da6ffc40ee393d12e4e495594bcb558f346deea6c4e2c"
     },
     {
       "path": "tools/test_scratch_dir.py",
@@ -17390,7 +17390,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1355ea96141b709a9dc0d843efb07e0cf7f9d1c7e97813838471aba9eddb084f"
+      "sha256": "e4795a3d2f87ed8cddedea2c1adfb02c80e32c89f12487fd80c821a6f5f771b2"
     },
     {
       "path": "tools/ttf2pgf.py",
