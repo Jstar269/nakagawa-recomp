@@ -31,7 +31,7 @@ static const SDL_Color COLOR_TEXT_MUTED    = { 148, 163, 184, 255 }; /* #94a3b8 
 static const SDL_Color COLOR_TEXT_DIM      = { 100, 116, 139, 255 }; /* #64748b */
 static const SDL_Color COLOR_EMERALD       = { 16,  185, 129, 255 }; /* #10b981 */
 static const SDL_Color COLOR_EMERALD_HOVER = { 5,   150, 105, 255 };
-static const SDL_Color COLOR_LIME          = { 132, 204,  22, 255 }; /* #84cc16 */
+static const SDL_Color COLOR_ACCENT        = { 107, 159, 240, 255 }; /* #6b9ff0, the brand blue */
 static const SDL_Color COLOR_AMBER         = { 245, 158,  11, 255 }; /* #f59e0b */
 static const SDL_Color COLOR_RED           = { 239,  68,  68, 255 }; /* #ef4444 */
 static const SDL_Color COLOR_BLUE          = { 59,  130, 246, 255 }; /* #3b82f6 */
@@ -1528,12 +1528,12 @@ static bool draw_button_focused(SDL_Renderer *ren, float x, float y, float w, fl
             uint64_t t = SDL_GetTicks() / 350;
             pulse = (t % 2 == 0) ? 1.0f : 0.55f;
         }
-        SDL_Color ring = COLOR_LIME;
+        SDL_Color ring = COLOR_ACCENT;
         ring.a = (Uint8)(255.0f * pulse);
         draw_rounded_outline(ren, x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f, 9.0f, ring);
     }
     if (activated) {
-        draw_filled_rect(ren, x + 2.0f, y + 2.0f, w - 4.0f, 2.0f, COLOR_LIME);
+        draw_filled_rect(ren, x + 2.0f, y + 2.0f, w - 4.0f, 2.0f, COLOR_ACCENT);
     }
 
     /* Fit the label with real text metrics so proportional fonts center. */
@@ -1569,7 +1569,7 @@ static void draw_status_pill_focused(SDL_Renderer *ren, float x, float y,
     draw_rounded_outline(ren, x, y, w, h, 7.0f, COLOR_CARD_BORDER);
     if (focused) {
         draw_rounded_outline(ren, x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f,
-                             9.0f, COLOR_LIME);
+                             9.0f, COLOR_ACCENT);
     }
     float base_len = ui_font_text_width(label, 1.0f);
     if (base_len < 1.0f) base_len = 1.0f;
@@ -1844,7 +1844,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     draw_rect_outline(ren, 0, 63.0f, w, 1.0f, COLOR_CARD_BORDER);
 
     /* Logo Dot */
-    draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_LIME);
+    draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_ACCENT);
     draw_text(ren, 52.0f, 16.0f, "NAKAGAWA RECOMP", 1.8f, COLOR_TEXT_WHITE);
     if (w >= 700.0f) {
         draw_text(ren, 52.0f, 40.0f, "PSP RECOMPILATION PLAYER", 1.0f, COLOR_TEXT_MUTED);
@@ -1859,13 +1859,13 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     if (app->is_game_running && w >= 1100.0f) {
         char pid_str[64];
         snprintf(pid_str, sizeof(pid_str), "GAME ACTIVE (PID %d)", app->launch_session.process.process_id);
-        draw_badge(ren, 460.0f, 20.0f, pid_str, COLOR_LIME);
+        draw_badge(ren, 460.0f, 20.0f, pid_str, COLOR_ACCENT);
     }
 
     /* Leave the Settings header's Build Tools/Settings action group clear. */
     if (w >= 1000.0f) {
         if (app->settings.controller_connected) {
-            draw_badge(ren, w - 480.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
+            draw_badge(ren, w - 480.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_ACCENT);
         } else {
             draw_badge(ren, w - 480.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
         }
@@ -1875,7 +1875,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
          * action group by construction. */
         const char *compact_label = app->settings.controller_connected ? "PAD OK" : "KEYBOARD";
         draw_badge(ren, w - 278.0f - 8.0f - badge_width(compact_label), 20.0f, compact_label,
-                   app->settings.controller_connected ? COLOR_LIME : COLOR_TEXT_DIM);
+                   app->settings.controller_connected ? COLOR_ACCENT : COLOR_TEXT_DIM);
     }
 
     /* Settings Button. Mouse-driven; keyboard/gamepad users press S/START
@@ -2049,11 +2049,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     }
     bool showcase_demo = player_game_is_showcase(game);
     if (showcase_demo && hero_w >= 760.0f) {
-        draw_badge(ren, hero_x + 350.0f, hero_y + 28.0f, "SHOWCASE DEMO", COLOR_LIME);
+        draw_badge(ren, hero_x + 350.0f, hero_y + 28.0f, "SHOWCASE DEMO", COLOR_ACCENT);
     }
     if (hero_w >= 760.0f) {
         draw_badge(ren, hero_x + (showcase_demo ? 510.0f : 350.0f), hero_y + 28.0f,
-                   fps_label(app->settings.fps_cap), COLOR_LIME);
+                   fps_label(app->settings.fps_cap), COLOR_ACCENT);
     }
     /* Game Icon: loaded from disc ICON0.PNG or generated monogram badge fallback */
     if (hero_w >= 900.0f && hero_h >= 200.0f) {
@@ -2402,7 +2402,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_rounded_fill(ren, card_x, card_y, cw, ch, 8.0f, bg);
         draw_rounded_outline(ren, card_x, card_y, cw, ch, 8.0f, border);
         if (active && app->focus_index < focus) {
-            draw_rounded_outline(ren, card_x - 2.0f, card_y - 2.0f, cw + 4.0f, ch + 4.0f, 10.0f, COLOR_LIME);
+            draw_rounded_outline(ren, card_x - 2.0f, card_y - 2.0f, cw + 4.0f, ch + 4.0f, 10.0f, COLOR_ACCENT);
         }
 
         draw_badge(ren, card_x + 12.0f, card_y + 12.0f,
@@ -3299,7 +3299,7 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         char dev_line[128];
         snprintf(dev_line, sizeof(dev_line), "Connected: %s",
                  app->settings.controller_name[0] ? app->settings.controller_name : "Controller");
-        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 76.0f, dev_line, 0.95f, card_w - 64.0f, COLOR_LIME);
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 76.0f, dev_line, 0.95f, card_w - 64.0f, COLOR_ACCENT);
     } else {
         draw_text(ren, card_x + 32.0f, card_y + 76.0f,
                   "No controller connected (keyboard navigation active; defaults shown)",
@@ -3321,7 +3321,7 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
         draw_text_ellipsized(ren, card_x + 32.0f, card_y + 94.0f, scope_line,
                              0.95f, card_w - 64.0f,
                              input_settings_is_title_scope(&app->input_settings)
-                                 ? COLOR_LIME : COLOR_TEXT_MUTED);
+                                 ? COLOR_ACCENT : COLOR_TEXT_MUTED);
     }
 
     float content_y = card_y + 112.0f;
@@ -3373,7 +3373,7 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
                          app->input_settings.calib.sampled_rest_y,
                          app->input_settings.calib.sampled_rest_lt,
                          app->input_settings.calib.sampled_rest_rt);
-                draw_text(ren, cal_card_x, cal_card_y + 205.0f, live_rest_info, 0.95f, COLOR_LIME);
+                draw_text(ren, cal_card_x, cal_card_y + 205.0f, live_rest_info, 0.95f, COLOR_ACCENT);
 
                 bool cancel_focused = (app->focus_index == 0);
                 if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "CANCEL CALIBRATION", false, in, cancel_focused)) {
@@ -3449,8 +3449,8 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
 
                 draw_text(ren, cal_card_x, cal_card_y + 140.0f, res_x, 1.05f, COLOR_TEXT_WHITE);
                 draw_text(ren, cal_card_x, cal_card_y + 170.0f, res_y, 1.05f, COLOR_TEXT_WHITE);
-                draw_text(ren, cal_card_x, cal_card_y + 200.0f, res_tl, 1.05f, COLOR_LIME);
-                draw_text(ren, cal_card_x, cal_card_y + 230.0f, res_tr, 1.05f, COLOR_LIME);
+                draw_text(ren, cal_card_x, cal_card_y + 200.0f, res_tl, 1.05f, COLOR_ACCENT);
+                draw_text(ren, cal_card_x, cal_card_y + 230.0f, res_tr, 1.05f, COLOR_ACCENT);
 
                 bool accept_focused = (app->focus_index == 0);
                 if (draw_button_focused(ren, cal_card_x, cal_btn_y, 220.0f, 38.0f, "ACCEPT CALIBRATION", true, in, accept_focused)) {
@@ -3705,7 +3705,7 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     char coord_buf[128];
     snprintf(coord_buf, sizeof(coord_buf), "Raw: (%6d, %6d)  PSP: (%3u, %3u)", rx, ry, psp_x, psp_y);
     bool stick_active = (psp_x != 128 || psp_y != 128);
-    draw_text(ren, right_x, mon_y + 22.0f, coord_buf, 0.88f, stick_active ? COLOR_LIME : COLOR_TEXT_MUTED);
+    draw_text(ren, right_x, mon_y + 22.0f, coord_buf, 0.88f, stick_active ? COLOR_ACCENT : COLOR_TEXT_MUTED);
 
     /* Deadzone Box */
     float box_sz = 100.0f;
@@ -3732,13 +3732,13 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     /* Live stick position dot */
     float dot_x = center_x + (float)rx / 32767.0f * 44.0f;
     float dot_y = center_y + (float)ry / 32767.0f * 44.0f;
-    SDL_Color dot_col = stick_active ? COLOR_LIME : COLOR_TEXT_WHITE;
+    SDL_Color dot_col = stick_active ? COLOR_ACCENT : COLOR_TEXT_WHITE;
     draw_filled_rect(ren, dot_x - 3.0f, dot_y - 3.0f, 6.0f, 6.0f, dot_col);
 
     /* Status badge beside visualizer */
     float stat_x = box_x + box_sz + 16.0f;
     if (stick_active) {
-        draw_badge(ren, stat_x, box_y + 10.0f, "STICK: ACTIVE", COLOR_LIME);
+        draw_badge(ren, stat_x, box_y + 10.0f, "STICK: ACTIVE", COLOR_ACCENT);
     } else {
         draw_badge(ren, stat_x, box_y + 10.0f, "STICK: DEADZONE", COLOR_TEXT_DIM);
     }
@@ -4873,7 +4873,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             snprintf(ctrl_txt, sizeof(ctrl_txt), "Controller: %s (%s)",
                      app->settings.controller_connected ? app->settings.controller_name : "Keyboard / Mouse",
                      app->settings.controller_connected ? "Connected" : "Ready");
-            draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
+            draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_ACCENT);
 
             draw_text(ren, card_x + 48.0f, spec_y + 66.0f,
                       "Japanese/Korean slots and all Latin indices (fallbacks are shown):",

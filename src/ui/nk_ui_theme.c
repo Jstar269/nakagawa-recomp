@@ -9,15 +9,15 @@ static const NkUiTheme g_n1_theme = {
     0x0B0F14FFu, /* page / surface */
     0x121821FFu,
     0x18202BFFu,
-    0xD7F24AFFu, /* dark surface accent */
-    0x6E9600FFu, /* light surface accent */
-    0xB4D134FFu,
+    0x6B9FF0FFu, /* dark surface accent */
+    0x2F6FD0FFu, /* light surface accent */
+    0x4F86DCFFu,
     0x2DD4BFFFu, /* Ready */
     0xDBB024FFu, /* warning */
-    0x6CB6FFFFu,
+    0xC29AF4FFu, /* info */
     0xFF7B72FFu,
     0x9AA4B2FFu,
-    0xD7F24AFFu,
+    0x6B9FF0FFu, /* focus */
     0x1C232DFFu, /* line */
     0x2E3846FFu, /* line_strong */
     0x6B7684FFu, /* dim */
@@ -28,7 +28,7 @@ static const NkUiTheme g_n1_theme = {
     0xC9D6E3FFu, /* art_label */
     0x3A4552FFu, /* placeholder */
     0x1F2613FFu, /* capture */
-    0xDDF465FFu  /* accent_hover */
+    0x8FB8F2FFu  /* accent_hover */
 };
 
 const NkUiTheme *nk_ui_theme_n1(void) {

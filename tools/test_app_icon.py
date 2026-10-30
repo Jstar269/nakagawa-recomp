@@ -73,7 +73,7 @@ class CommittedIconTests(unittest.TestCase):
 
         self.assertEqual(pixel(0, 0)[3], 0, "the rounded corner stays transparent")
         self.assertEqual(pixel(32, 3), (0x10, 0x15, 0x1C, 255), "ink above the mark")
-        self.assertEqual(pixel(15, 50), (0xD7, 0xF2, 0x4A, 255), "lime block, bottom left")
+        self.assertEqual(pixel(15, 50), (0x6B, 0x9F, 0xF0, 255), "blue block, bottom left")
         self.assertEqual(pixel(47, 32), (0xF5, 0xF7, 0xFA, 255), "paper bar, right")
         self.assertEqual(pixel(14, 14), (0xF5, 0xF7, 0xFA, 255),
                          "the diagonal crosses the top block, as in the SVG")
@@ -112,7 +112,9 @@ class CDrawerTests(unittest.TestCase):
                 points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
             else:
                 points = list(zip(values[0::2], values[1::2], strict=True))
-            colour = {"NK_UI_ACCENT_RGBA": (0xD7, 0xF2, 0x4A), "NK_UI_PAPER_RGBA": (0xF5, 0xF7, 0xFA)}[rgba]
+            value = re.search(r"#define " + rgba + r" 0x([0-9A-Fa-f]{6})FFu", text)
+            self.assertIsNotNone(value, rgba)
+            colour = tuple(bytes.fromhex(value.group(1)))
             shapes.append((colour, points))
         _, svg_shapes = make_app_icon.load_mark()
         self.assertEqual(len(shapes), len(svg_shapes))

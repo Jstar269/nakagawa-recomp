@@ -222,9 +222,9 @@ static void library_prompts(NkUi *ui, bool has_titles) {
    leaves out its icon when TEST THIS PC needs the room below it. */
 static PlayerUiAction library_empty(NkUi *ui, bool with_icon) {
     static const NkUiShape disc[] = {
-        {NK_UI_SHAPE_CIRCLE, 0xD7F24AFFu, 0.0f, 0u, {32.0f, 32.0f, 16.5f}},
+        {NK_UI_SHAPE_CIRCLE, 0x6B9FF0FFu, 0.0f, 0u, {32.0f, 32.0f, 16.5f}},
         {NK_UI_SHAPE_CIRCLE, 0x18202BFFu, 0.0f, 0u, {32.0f, 32.0f, 13.5f}},
-        {NK_UI_SHAPE_CIRCLE, 0xD7F24AFFu, 0.0f, 0u, {32.0f, 32.0f, 4.0f}}
+        {NK_UI_SHAPE_CIRCLE, 0x6B9FF0FFu, 0.0f, 0u, {32.0f, 32.0f, 4.0f}}
     };
     static const NkUiShapeArt disc_art = {0.0f, 0.0f, 64.0f, 64.0f, disc, 3u};
     const NkUiTheme *theme = nk_ui_theme(ui);

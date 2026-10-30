@@ -20,9 +20,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PLAYER_UI_READY 0x2DD4BFFFu
-#define PLAYER_UI_WARNING 0xDBB024FFu
-#define PLAYER_UI_INFO 0x6CB6FFFFu
+/* Status colours, from the theme's tokens. */
+#define PLAYER_UI_READY (nk_ui_theme_n1()->ready)
+#define PLAYER_UI_WARNING (nk_ui_theme_n1()->warning)
+#define PLAYER_UI_INFO (nk_ui_theme_n1()->info)
 #define PLAYER_UI_TITLE_CAP MAX_LIBRARY_GAMES
 #define PLAYER_UI_PREREQ_CAP PACKAGE_BUILDER_MAX_PREREQUISITES
 /* A blocking check's reason (up to its 2048-byte message) and the next step. */

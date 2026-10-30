@@ -110,7 +110,7 @@ On Windows this needs WSL 2 and PSPDEV ([steps](docs/SETUP.md#showcase-demos-on-
 
 ## Matching decompilations
 
-[![hst-decomp code matched](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJstar269%2Fhst-decomp%2Fmain%2Fdocs%2Fobjdiff-report.json&query=%24.measures.matched_code_percent&suffix=%25&label=hst-decomp%20code%20matched&color=6E9600)](https://github.com/Jstar269/hst-decomp)
+[![hst-decomp code matched](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJstar269%2Fhst-decomp%2Fmain%2Fdocs%2Fobjdiff-report.json&query=%24.measures.matched_code_percent&suffix=%25&label=hst-decomp%20code%20matched&color=2F6FD0)](https://github.com/Jstar269/hst-decomp)
 
 [hst-decomp](https://github.com/Jstar269/hst-decomp) rebuilds the code of Hot Shots Tennis: Get a Grip as C and C++
 that compiles back to the original bytes. [lbp-psp-decomp](https://github.com/Jstar269/lbp-psp-decomp) does the same

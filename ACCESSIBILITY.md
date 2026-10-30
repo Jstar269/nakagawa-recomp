@@ -54,7 +54,7 @@ so we use its contrast and target-size values as a guide for the launcher only.
 ### Seeing the launcher
 
 - **One dark theme** with a near-black ground and light text. Secondary text is 7.6:1 against the ground; the focus
-  ring is 15.3:1.
+  ring, in the brand blue, is 7.2:1 against the ground and at least 6.1:1 against any surface it surrounds.
 - **Fonts** are the project's own open fonts (Geist, Geist Mono, Chakra Petch, with Noto Sans JP as a fallback,
   all SIL Open Font License). Body text is 15 pixels at 100% scale. The Latin and Japanese scripts are covered;
   other scripts may show as missing glyphs.
