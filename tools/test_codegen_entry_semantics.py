@@ -50,8 +50,11 @@ FRAME_SIZE = 0x70
 # src/rt/recomp.h and src/rt/guest_interp.c, with the stand-in dispatch() running a
 # computed target to completion. The header also stands in for the entry host-stack check
 # of bodies that make direct calls (#855): these harnesses run no scheduler or guest fiber,
-# where the production check has nothing to bound either.
+# where the production check has nothing to bound either. A computed jr/jalr to 0 stops the
+# run, as sr_null_code_pointer does (#1375).
 _TAIL_PROTOCOL_HEADER = """\
+#define SR_CODE_POINTER(s, target, transfer_pc) \\
+    do { (void)(s); (void)(transfer_pc); if ((target) == 0u) __builtin_trap(); } while (0)
 typedef void (*TestBodyFn)(CpuState *);
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
