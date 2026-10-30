@@ -239,6 +239,18 @@ else ifeq ($(CASE),ge-timing)
 CASE_ID = 114
 else ifeq ($(CASE),cpu-timing)
 CASE_ID = 115
+# 122: the #326 VFPU funnel add and average words (vfad, vavg; probe_hle_issues.c),
+# measured as case 118 before dma-timing took that number.
+else ifeq ($(CASE),vfpu-funnel)
+CASE_ID = 122
+# 125: the #326 VFPU sort words (vsrt1-vsrt4; probe_hle_issues.c), measured as case 120
+# before intr-cause took that number.
+else ifeq ($(CASE),vfpu-sort)
+CASE_ID = 125
+# 121: the #326 second VFPU forms batch (vrnds, wide vrndi/vrndf1/vrndf2, vf2h, vc2i;
+# probe_hle_issues.c).
+else ifeq ($(CASE),vfpu-forms2)
+CASE_ID = 121
 else ifeq ($(CASE),thread-k0-block)
 CASE_ID = 116
 else ifeq ($(CASE),sas-init)
@@ -446,6 +458,15 @@ TARGET = $(BUILD_DIR)/vfpu_forms
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),intr-cause)
 TARGET = $(BUILD_DIR)/intr_cause
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-funnel)
+TARGET = $(BUILD_DIR)/vfpu_funnel
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-sort)
+TARGET = $(BUILD_DIR)/vfpu_sort
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),vfpu-forms2)
+TARGET = $(BUILD_DIR)/vfpu_forms2
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
 # same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.
