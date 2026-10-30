@@ -1566,7 +1566,7 @@ class TestPresenterContract(unittest.TestCase):
         # One keyboard decision gates both the skipped fast path and the sync that replaces it,
         # so sync_sdl_input() cannot open or close the keyboard between the two.
         self.assertIn("int osk_open = sr_osk_overlay_active();", sdl)
-        self.assertIn("int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);", sdl)
+        self.assertIn("int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);", sdl)
         self.assertLess(sdl.index("if (osk_open) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
         self.assertLess(sdl.index("gegpu_sync_guest_fb(&d)"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
         # Only FAILED declines the frame; the failure is reported to the armed capture and the
@@ -1619,7 +1619,7 @@ class TestPresenterContract(unittest.TestCase):
         # Only the two intended returns carry the code: the unprepared target and the failed present.
         self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
         self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
-        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }", present)
         # The GE selftest drives the present-failure path through the existing fault seam.
         self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
         self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)
