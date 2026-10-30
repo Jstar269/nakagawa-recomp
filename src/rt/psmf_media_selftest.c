@@ -63,6 +63,7 @@ int sr_hle_test_psmf_video_eos_gate(int producer_eof, uint32_t player_queue_coun
                                     uint32_t producer_queue_depth,
                                     uint32_t producer_buffered);
 uint32_t sr_hle_test_psmf_video_submit_limit(int producer_eof);
+void sr_hle_test_set_psmfplayer_lib_version(uint32_t version);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -2672,7 +2673,8 @@ static int av_info_is(uint32_t last, uint32_t video, uint32_t audio, uint32_t pc
  * and the player version (0 when every video stream carries an EP map, 1 otherwise).  The
  * refusals are ILLEGAL_ADDR for an unusable player or info address and INVALID_STATUS for an
  * unknown player or one whose PSMF is not set; a refused call writes nothing.  The width and
- * height words are never written (two-argument contract). */
+ * height words are written only when the loaded libpsmfplayer build is 0x03090510, and then only
+ * where the pointer is usable; any other build keeps the two-argument contract (#279). */
 static void test_player_get_psmf_info(void) {
     uint32_t size = 0;
     uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
@@ -2712,6 +2714,25 @@ static void test_player_get_psmf_info(void) {
           "psmf-info: last picture time, one video and one audio stream, no PCM, version 0");
     CHECK(guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
           "psmf-info: the width and height words are left untouched");
+
+    /* Build 0x03090510 writes the video size; any other build does not. */
+    sr_hle_test_set_psmfplayer_lib_version(0x03090510u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0 &&
+              MEM_R32(AV_INFO + 20u) == FIX_W_MBS * 16u && MEM_R32(AV_INFO + 24u) == FIX_H_MBS * 16u,
+          "psmf-info: libpsmfplayer 0x03090510 writes the video width and height");
+    memset(SR_HOST(AV_INFO + 20u), 0xcc, 8u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0x0bfffffeu, 0) == 0 &&
+              guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: 0x03090510 skips a null or unusable width or height pointer");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, 0, 0) == 0 &&
+              MEM_R32(AV_INFO + 20u) == FIX_W_MBS * 16u && guest_bytes_are(AV_INFO + 24u, 4u, 0xcc),
+          "psmf-info: 0x03090510 writes the width alone when only that pointer is usable");
+    memset(SR_HOST(AV_INFO + 20u), 0xcc, 8u);
+    sr_hle_test_set_psmfplayer_lib_version(0x03090500u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0 &&
+              guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: another libpsmfplayer build leaves the width and height words untouched");
+    sr_hle_test_set_psmfplayer_lib_version(0u);
     CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
           "psmf-info: the player starts");
     memset(SR_HOST(AV_INFO), 0xcc, 20u);
