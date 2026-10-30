@@ -216,6 +216,7 @@ void main() {
     ivec4 spx = ivec4(0);
     if ((flags & 8192) != 0) {
         spx = ivec4(texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0) * 255.0 + 0.5);
+        if (fbfmt == 0) spx.a = 0;   /* a 565 pixel's stencil reads 0 (ge.c, PSP-GE-RASTER-001) */
         int smask = (pc.bl.z >> 16) & 0xFF, sref = (pc.bl.z >> 8) & 0xFF;
         int ref = sref & smask, val = spx.a & smask, sfunc = pc.bl.z & 7;
         bool pass;
@@ -242,6 +243,7 @@ void main() {
      * the 16-bit lattice snap applies to the blend RESULT, like the hardware store. */
     if ((flags & 4096) != 0 && !stencil_fail) {
         ivec4 dpx = ivec4(texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0) * 255.0 + 0.5);
+        if (fbfmt == 0) dpx.a = 0;   /* blending reads a 565 pixel's alpha as 0 (ge.c read_fb_px) */
         ivec3 s   = ivec3(col.rgb + 0.5);
         int   sa  = int(col.a + 0.5);
         int   sf  = pc.bl.x & 0xFF, df = (pc.bl.x >> 8) & 0xFF, eq = (pc.bl.x >> 16) & 7;
