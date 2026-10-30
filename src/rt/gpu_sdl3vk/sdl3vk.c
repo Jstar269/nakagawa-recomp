@@ -1460,9 +1460,9 @@ static int prescale_ensure(int w, int h) {
 static void draw_profile_hud(SDL_Renderer *ren, int w, int h, double game_fps, double per_frame,
                              double vblank_hz) {
     static const Uint8 part_rgb[4][3] = {
-        {215, 242, 74},   /* cpu */
-        {219, 176, 36},   /* GE wait */
-        {108, 182, 255},  /* present */
+        {107, 159, 240},  /* cpu: the accent */
+        {219, 176, 36},   /* GE wait: warning */
+        {194, 154, 244},  /* present: info */
         {70, 80, 95},     /* idle */
     };
     const SrPerfHistory *history = sr_perf_history();

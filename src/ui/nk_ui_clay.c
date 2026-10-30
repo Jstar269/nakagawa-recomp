@@ -42,6 +42,7 @@ typedef struct {
     size_t memory_size;
     NkUiTextBackend text;
     float density;
+    Clay_Dimensions dimensions; /* the layout's size, given to Clay as each frame begins */
     bool frame_open;
     bool failed;                /* a fatal layout error this frame */
     void (*report_error)(void *user, const NkUiLayoutError *error);
@@ -55,7 +56,18 @@ typedef struct {
         float offset;
     } starts[NK_UI_SCROLL_MAX];
     size_t start_count;
+    bool transitioning;         /* a transition ran in the last layout */
 } NkUiClay;
+
+/* Clay calls a transition's handler, with no user pointer, for each element
+   still transitioning while Clay_EndLayout runs; nk_ui_clay_end clears this
+   before the layout and reads it after, on the thread that lays out. */
+static bool g_nk_ui_clay_eased;
+
+static bool nk_ui_clay_ease(Clay_TransitionCallbackArguments arguments) {
+    g_nk_ui_clay_eased = true;
+    return Clay_EaseOut(arguments);
+}
 
 /* Clay moves a scroll container 10 px per unit of wheel delta. */
 #define NK_UI_CLAY_WHEEL_UNIT 10.0f
@@ -340,9 +352,9 @@ void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
     arena = Clay_CreateArenaWithCapacityAndMemory(arena_bytes, clay->memory);
     errors.errorHandlerFunction = nk_ui_clay_error;
     errors.userData = clay;
-    clay->context = Clay_Initialize(arena,
-        (Clay_Dimensions){width > 0.0f ? width : 1.0f,
-                          height > 0.0f ? height : 1.0f}, errors);
+    clay->dimensions = (Clay_Dimensions){width > 0.0f ? width : 1.0f,
+                                         height > 0.0f ? height : 1.0f};
+    clay->context = Clay_Initialize(arena, clay->dimensions, errors);
     if (clay->context == NULL) {
         Clay_SetCurrentContext(previous);
         free(clay->memory);
@@ -382,7 +394,7 @@ bool nk_ui_clay_set_dimensions(void *opaque_clay, float width, float height, flo
         clay->density = density;
         Clay_ResetMeasureTextCache();
     }
-    Clay_SetLayoutDimensions((Clay_Dimensions){width, height});
+    clay->dimensions = (Clay_Dimensions){width, height};
     Clay_SetCurrentContext(previous);
     return true;
 }
@@ -398,6 +410,11 @@ bool nk_ui_clay_begin(void *opaque_clay) {
     clay->previous_errors = clay->frame_errors;
     clay->frame_errors = 0u;
     clay->frame_open = true;
+    /* Every frame, as Clay's lifecycle asks: Clay compares the size with the
+       last frame's, and only on the frame it changes does it skip moving
+       transitions (a resize moves everything at once). Given only when the
+       window resized, the flag stayed set and no element ever eased. */
+    Clay_SetLayoutDimensions(clay->dimensions);
     Clay_BeginLayout();
     return true;
 }
@@ -476,6 +493,24 @@ static bool nk_ui_clay_open(NkUiClay *clay, NkUiId id, const NkUiLayout *layout,
         declaration.border.width.right = nk_ui_clay_u16(style->border_width);
         declaration.border.width.top = nk_ui_clay_u16(style->border_width);
         declaration.border.width.bottom = nk_ui_clay_u16(style->border_width);
+        /* A change of target eases there; an element's first frame and its
+           last are cuts (no enter or exit state). */
+        if (style->transition != 0u && isfinite(style->transition_s) &&
+            style->transition_s > 0.0f) {
+            uint32_t properties = 0u;
+            if (style->transition & NK_UI_TRANSITION_COLOR) {
+                properties |= CLAY_TRANSITION_PROPERTY_BACKGROUND_COLOR |
+                              CLAY_TRANSITION_PROPERTY_BORDER_COLOR;
+            }
+            if (style->transition & NK_UI_TRANSITION_BOX) {
+                properties |= CLAY_TRANSITION_PROPERTY_BOUNDING_BOX;
+            }
+            declaration.transition.handler = nk_ui_clay_ease;
+            declaration.transition.duration = style->transition_s;
+            declaration.transition.properties = (Clay_TransitionProperty)properties;
+            declaration.transition.interactionHandling =
+                CLAY_TRANSITION_ALLOW_INTERACTIONS_WHILE_TRANSITIONING_POSITION;
+        }
     }
     /* nk_ui opens and closes a container in separate calls, which the CLAY()
        macro's scope cannot span, so the glue makes the calls the macro makes. */
@@ -668,6 +703,11 @@ bool nk_ui_clay_scroll_state(void *opaque_clay, NkUiId id, NkUiScrollState *out)
 /* Whether the wheel at the pointer scrolls something: a vertical scroll
    container under it (a screen's, or one in Clay's layout inspector) has more
    content than room. */
+bool nk_ui_clay_transitioning(void *opaque_clay) {
+    const NkUiClay *clay = (const NkUiClay *)opaque_clay;
+    return clay != NULL && clay->transitioning;
+}
+
 bool nk_ui_clay_wheel_scrolls(void *opaque_clay) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_Context *restore;
@@ -765,6 +805,17 @@ NkUiId nk_ui_clay_pointer_target(void *opaque_clay, bool (*accept)(void *user, N
     return target;
 }
 
+bool nk_ui_clay_appeared(void *opaque_clay, NkUiId id) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    const Clay_LayoutElementHashMapItem *item;
+    if (clay == NULL || !clay->frame_open || id == 0u) {
+        return false;
+    }
+    Clay_SetCurrentContext(clay->context);
+    item = Clay__GetHashMapItem(nk_ui_clay_container_id(id).id);
+    return item != &Clay_LayoutElementHashMapItem_DEFAULT && item->appearedThisFrame;
+}
+
 bool nk_ui_clay_element_rect(void *opaque_clay, NkUiId id, NkUiRect *out) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_Context *restore;
@@ -800,7 +851,9 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
         return false;
     }
     Clay_SetCurrentContext(clay->context);
+    g_nk_ui_clay_eased = false;
     commands = Clay_EndLayout(delta_s);
+    clay->transitioning = g_nk_ui_clay_eased;
     /* Past its element limit Clay drops the elements that do not fit and
        stops closing elements, so the only error it raises is the unbalanced
        open and close that follows. Report the cause too. */

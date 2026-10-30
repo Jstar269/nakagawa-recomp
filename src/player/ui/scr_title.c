@@ -1566,17 +1566,18 @@ static bool wizard_box_begin(NkUi *ui, uint32_t edge) {
     return nk_ui_begin_container(ui, WIZ_ID_BOX, &box, &style);
 }
 
-/* One option switch: a button reading "Name: On" or "Name: Off" (accent while
-   on) with its sentence beside it. Returns true when activated. */
-static bool wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
-                          const char *sentence, bool on, float width) {
+/* A setting's button, "Name: value", with the sentence that explains it beside
+   it; the button is filled while the setting is in effect. Returns true when
+   the button is activated. */
+static bool wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
+                         const char *value, const char *sentence, bool on, float width) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
     char label[48];
     bool pressed = false;
     row.align_y = NK_UI_ALIGN_CENTER;
-    (void)snprintf(label, sizeof(label), "%s: %s", name, on ? "On" : "Off");
+    (void)snprintf(label, sizeof(label), "%s: %s", name, value);
     if (!nk_ui_begin_container(ui, text_id, &row, NULL)) return false;
     {
         NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(220.0f), sizing_fit(), 0.0f);
@@ -1590,6 +1591,13 @@ static bool wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
                nk_ui_text_clamp(ui, sentence, &text, width - 220.0f - NK_UI_SPACE_4, 2), &text);
     nk_ui_end_container(ui);
     return pressed;
+}
+
+/* One option switch: a button reading "Name: On" or "Name: Off" (accent while
+   on) with its sentence beside it. Returns true when activated. */
+static bool wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
+                          const char *sentence, bool on, float width) {
+    return wizard_value(ui, id, text_id, name, on ? "On" : "Off", sentence, on, width);
 }
 
 typedef struct {
@@ -2467,10 +2475,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              model->launcher_fullscreen, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN);
             }
-            if (settings_row(ui, 7u, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION, "Reduce motion",
-                             settings_on_off(model->reduce_motion), model->reduce_motion,
-                             name_width)) {
-                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION);
+            if (settings_row(ui, 7u, PLAYER_UI_ID_SETTINGS_ACCESSIBILITY, "Accessibility",
+                             "Size, contrast, motion", false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY);
             }
             if (settings_row(ui, 8u, PLAYER_UI_ID_SETTINGS_UI_SOUNDS, "Menu sounds",
                              settings_on_off(model->ui_sounds), model->ui_sounds, name_width)) {
@@ -2797,6 +2804,62 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
     }
 }
 
+/* Settings > Accessibility: the interface size, the high-contrast focus ring and
+   Reduce motion. Each button steps through its values; Automatic follows the
+   system, and the sentence says what the system asks for now. */
+static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
+                                   PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    const char *system = safe_text(model->system_name, "your system");
+    char sentence[256];
+    flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+    nk_ui_text_role(ui, FLOW_ID_TITLE, "Accessibility", NK_UI_TYPE_TITLE, theme->paper);
+    nk_ui_text_role(ui, FLOW_ID_LEAD,
+                    "These change the launcher, not a running game. Automatic follows the "
+                    "matching setting of your system, and changes when it does.",
+                    NK_UI_TYPE_BODY_S, theme->muted);
+    if (wizard_box_begin(ui, 0u)) {
+        (void)snprintf(sentence, sizeof(sentence),
+                       "Grows text and controls in a large enough window. Display scale in "
+                       "%s: %d%%.",
+                       system, model->system_scale_pct);
+        if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE, SET_ID_TEXT + 0x300u,
+                         "Interface size", safe_text(model->interface_size, "Automatic"),
+                         sentence, false, inner - 32.0f)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE);
+        }
+        (void)snprintf(sentence, sizeof(sentence),
+                       "A white ring between black lines marks the selection. High contrast "
+                       "in %s: %s.",
+                       system, model->system_high_contrast ? "on" : "off");
+        if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST, SET_ID_TEXT + 0x304u,
+                         "High contrast", safe_text(model->high_contrast_choice, "Automatic"),
+                         sentence, model->high_contrast, inner - 32.0f)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST);
+        }
+        (void)snprintf(sentence, sizeof(sentence),
+                       "Holds the background still; pulses and sweeps become cuts. "
+                       "Animations in %s: %s.",
+                       system, model->system_reduced_motion ? "off" : "on");
+        if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION, SET_ID_TEXT + 0x308u,
+                         "Reduce motion", safe_text(model->reduce_motion_choice, "Automatic"),
+                         sentence, model->reduce_motion, inner - 32.0f)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION);
+        }
+        nk_ui_end_container(ui);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+}
+
 /* The Settings pages that are a dialog card over the flow frame. */
 static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float width,
                             float height, PlayerUiAction *result) {
@@ -2871,6 +2934,9 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 nk_ui_end_container(ui);
             }
         }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY:
+        settings_accessibility(ui, model, inner, result);
         break;
     case PLAYER_UI_SETTINGS_PAGE_NOTICES:
         flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Third-party notices", theme->accent_dark);

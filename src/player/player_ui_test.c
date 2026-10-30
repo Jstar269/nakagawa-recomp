@@ -43,7 +43,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
         { "build_cache", VIEW_BUILD_CACHE },
         { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES },
-        { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET }
+        { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET },
+        { "accessibility_settings", VIEW_ACCESSIBILITY_SETTINGS }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -345,15 +346,25 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
         s_ui_test_mouse_y = (float)y;
         return 1;
     }
-    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
+    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0 ||
+        strcmp(token, "MOUSE_X1_DOWN") == 0 || strcmp(token, "MOUSE_X1_UP") == 0) {
         /* As SDL reports a real click: at the pointer, with its button state. */
-        event->type = strcmp(token, "MOUSE_DOWN") == 0
+        event->type = strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_X1_DOWN") == 0
             ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-        event->button.button = SDL_BUTTON_LEFT;
+        event->button.button = strncmp(token, "MOUSE_X1", 8) == 0 ? SDL_BUTTON_X1
+                                                                  : SDL_BUTTON_LEFT;
         event->button.down = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         event->button.clicks = 1u;
         event->button.x = s_ui_test_mouse_x;
         event->button.y = s_ui_test_mouse_y;
+        return 1;
+    }
+    if (strncmp(token, "TEXT=", 5) == 0) {
+        /* Typed text, as SDL reports it while text input is on. */
+        static char text[64];
+        (void)snprintf(text, sizeof(text), "%s", token + 5);
+        event->type = SDL_EVENT_TEXT_INPUT;
+        event->text.text = text;
         return 1;
     }
     if (strncmp(token, "KEY_", 4) == 0) {
@@ -368,6 +379,8 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
             { "PAGEDOWN", SDLK_PAGEDOWN, SDL_SCANCODE_PAGEDOWN }, { "C", SDLK_C, SDL_SCANCODE_C },
             { "S", SDLK_S, SDL_SCANCODE_S }, { "O", SDLK_O, SDL_SCANCODE_O },
             { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
+            { "BACKSPACE", SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE },
+            { "D", SDLK_D, SDL_SCANCODE_D }, { "SLASH", SDLK_SLASH, SDL_SCANCODE_SLASH },
             { "F12", SDLK_F12, SDL_SCANCODE_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -386,6 +399,7 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
             { "SOUTH", SDL_GAMEPAD_BUTTON_SOUTH },
             { "NORTH", SDL_GAMEPAD_BUTTON_NORTH },
             { "EAST", SDL_GAMEPAD_BUTTON_EAST },
+            { "WEST", SDL_GAMEPAD_BUTTON_WEST },
             { "DPAD_LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT },
             { "DPAD_RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
             { "DPAD_UP", SDL_GAMEPAD_BUTTON_DPAD_UP },
@@ -465,6 +479,7 @@ const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_UPDATES: return "updates";
     case VIEW_CONFIRM_FACTORY_RESET: return "confirm_factory_reset";
+    case VIEW_ACCESSIBILITY_SETTINGS: return "accessibility_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }

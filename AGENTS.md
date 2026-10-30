@@ -121,9 +121,9 @@ the full rules.
 - Every commit an AI tool helped with ends with one `Assisted-by: <tool> (<model>)` line per tool,
   for example `Assisted-by: Cursor (Claude Sonnet 5.5)`. Never `Co-Authored-By:` for an AI
   ([details](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).
-- Every commit carries a DCO sign-off from the human contributor. The agent does not add it: the
-  person reviews the final diff and signs off themselves, with `git commit -s` or
-  `git commit --amend -s --no-edit` before pushing ([DCO policy](docs/DCO_POLICY.md)).
+- The person submitting it confirms in the template that they have the right to submit the change
+  under GPL-3.0-or-later. A DCO sign-off is optional; if the person wants one, they review the final
+  diff and add it themselves (`git commit -s`). The agent never adds it ([DCO policy](docs/DCO_POLICY.md)).
 - It says where every new file came from (next section).
 
 ### New files: what to put in the pull request

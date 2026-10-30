@@ -15,14 +15,17 @@
 
 #include <SDL3/SDL.h>
 
+#include <ctype.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define PLAYER_UI_READY 0x2DD4BFFFu
-#define PLAYER_UI_WARNING 0xDBB024FFu
-#define PLAYER_UI_INFO 0x6CB6FFFFu
+/* Status colours, from the theme's tokens. */
+#define PLAYER_UI_READY (nk_ui_theme_n1()->ready)
+#define PLAYER_UI_WARNING (nk_ui_theme_n1()->warning)
+#define PLAYER_UI_INFO (nk_ui_theme_n1()->info)
 #define PLAYER_UI_TITLE_CAP MAX_LIBRARY_GAMES
 #define PLAYER_UI_PREREQ_CAP PACKAGE_BUILDER_MAX_PREREQUISITES
 /* A blocking check's reason (up to its 2048-byte message) and the next step. */
@@ -89,6 +92,18 @@ struct PlayerUiNk {
     NkUiViewport viewport;
     size_t library_page;
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
+    /* The library grid in its sort order: indices into titles, no demos; while
+       the find box is open, only the games that match. */
+    size_t library_grid[PLAYER_UI_TITLE_CAP];
+    size_t library_grid_count;
+    size_t library_game_total;
+    /* The library's find box: open, what is typed, and whether SDL's text
+       input is on for it. */
+    bool find_open;
+    char find_query[64];
+    bool find_text_input;
+    /* The control the box focuses, on the first frame that lays it out. */
+    NkUiId find_focus;
     char status_text[PLAYER_UI_TITLE_CAP][256];
     char library_page_label[64];
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
@@ -106,6 +121,7 @@ struct PlayerUiNk {
     char input_summary[128];
     char title_input_summary[128];
     char settings_controller[160];
+    char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
     /* The factory reset check's folders, looked up when the check opens. */
@@ -393,7 +409,7 @@ static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
            view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
-           view == VIEW_CONFIRM_FACTORY_RESET;
+           view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -420,8 +436,15 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
-bool player_ui_nk_in_motion(const PlayerUiNk *player) {
-    return player != NULL && nk_ui_scroll_in_motion(player->ui);
+uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
+    double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    double wait_s;
+    if (player == NULL) {
+        return idle_ms;
+    }
+    /* Rounded up: a frame drawn a millisecond early would find nothing due. */
+    wait_s = nk_ui_wait_s(player->ui, now_s, (double)idle_ms / 1000.0);
+    return (uint32_t)ceil(wait_s * 1000.0);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
@@ -691,7 +714,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
         fflush(stdout);
     }
 #endif
-    model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+    model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
     return player_ui_screen_disc(player->ui, &model);
@@ -710,6 +733,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     memset(&model, 0, sizeof(model));
     switch (app->active_view) {
         case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
+        case VIEW_ACCESSIBILITY_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY; break;
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
@@ -753,8 +777,22 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.fullscreen = app->settings.fullscreen;
     model.volume = app->settings.master_volume;
     model.ui_sounds = app->settings.ui_sounds;
-    model.reduce_motion = app->settings.reduce_motion;
     model.launcher_fullscreen = app->settings.launcher_fullscreen;
+    if (app->settings.interface_size_pct > 0) {
+        snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
+                 app->settings.interface_size_pct);
+        model.interface_size = player->settings_interface_size;
+    } else {
+        model.interface_size = "Automatic";
+    }
+    model.high_contrast_choice = player_system_choice_label(app->settings.high_contrast_choice);
+    model.reduce_motion_choice = player_system_choice_label(app->settings.reduce_motion_choice);
+    model.high_contrast = player_app_high_contrast_focus(app);
+    model.reduce_motion = player_app_reduce_motion(app);
+    model.system_name = nk_platform_host_kind() == NK_HOST_WINDOWS ? "Windows" : "your system";
+    model.system_scale_pct = (int)(player->viewport.display_scale * 100.0f + 0.5f);
+    model.system_high_contrast = app->system_high_contrast;
+    model.system_reduced_motion = app->system_reduced_motion;
     snprintf(player->settings_controller, sizeof(player->settings_controller), "%s",
              app->settings.controller_connected
                  ? (app->settings.controller_name[0] != '\0' ? app->settings.controller_name
@@ -1121,7 +1159,7 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         for (int i = first; i < count && model.line_count < 4u; ++i) {
             model.lines[model.line_count++] = package_builder_get_output_line(build, i);
         }
-        model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+        model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         return player_ui_screen_build(player->ui, &model);
@@ -1255,6 +1293,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_SETTINGS:
                 /* Back from one of its pages, focus the button that opened it. */
                 focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
+                    : player->last_view == VIEW_ACCESSIBILITY_SETTINGS
+                        ? PLAYER_UI_ID_SETTINGS_ACCESSIBILITY
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
                     : player->last_view == VIEW_BUILD_CACHE ||
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
@@ -1306,6 +1346,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 }
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
+            case VIEW_ACCESSIBILITY_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS:
             /* The safe answer, Keep everything, has the focus. */
@@ -1393,12 +1434,117 @@ size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap)
     return count;
 }
 
+/* The library's find box. From a hardware keyboard, which types straight into
+   it, focus goes to DONE, so Enter moves on to the matches; otherwise to the
+   on-screen keyboard's Q, ready for a controller or the mouse. */
+static void player_ui_find_open(PlayerUiNk *player, bool from_keyboard) {
+    player->find_open = true;
+    player->find_query[0] = '\0';
+    player->library_page = 0u;
+    player->find_focus = from_keyboard ? PLAYER_UI_ID_LIBRARY_FIND_DONE
+                                       : PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 10u;
+}
+
+/* Clears and closes the box; focus goes back to FIND. */
+static void player_ui_find_close(PlayerUiNk *player) {
+    player->find_open = false;
+    player->find_query[0] = '\0';
+    player->library_page = 0u;
+    player->find_focus = PLAYER_UI_ID_LIBRARY_FIND;
+}
+
+/* Adds one character as UTF-8, when it fits whole; control characters are
+   not typed. */
+static void player_ui_find_type(PlayerUiNk *player, uint32_t codepoint) {
+    char bytes[4];
+    size_t n;
+    size_t length = strlen(player->find_query);
+    if (codepoint < 0x20u || codepoint == 0x7Fu || codepoint > 0x10FFFFu) return;
+    if (codepoint < 0x80u) {
+        bytes[0] = (char)codepoint;
+        n = 1u;
+    } else if (codepoint < 0x800u) {
+        bytes[0] = (char)(0xC0u | (codepoint >> 6));
+        bytes[1] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 2u;
+    } else if (codepoint < 0x10000u) {
+        bytes[0] = (char)(0xE0u | (codepoint >> 12));
+        bytes[1] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+        bytes[2] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 3u;
+    } else {
+        bytes[0] = (char)(0xF0u | (codepoint >> 18));
+        bytes[1] = (char)(0x80u | ((codepoint >> 12) & 0x3Fu));
+        bytes[2] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+        bytes[3] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 4u;
+    }
+    if (length + n >= sizeof(player->find_query)) return;
+    memcpy(player->find_query + length, bytes, n);
+    player->find_query[length + n] = '\0';
+    player->library_page = 0u;
+}
+
+/* Removes the last character, all of its UTF-8 bytes. */
+static void player_ui_find_delete(PlayerUiNk *player) {
+    size_t length = strlen(player->find_query);
+    while (length > 0u && ((unsigned char)player->find_query[length - 1u] & 0xC0u) == 0x80u) {
+        --length;
+    }
+    if (length > 0u) --length;
+    player->find_query[length] = '\0';
+    player->library_page = 0u;
+}
+
+bool player_ui_nk_find_open(const PlayerUiNk *player) {
+    return player != NULL && player->ready && player->find_open &&
+           nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY;
+}
+
 bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     NkUiEvent translated[8];
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
     now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    if (player_ui_nk_find_open(player)) {
+        /* The box takes what is typed: SDL's text input brings the characters,
+           Backspace deletes one, and a printable key is not also a shortcut
+           (D, Q, E). Esc or the pad's B clears and closes it, below. */
+        if (event->type == SDL_EVENT_TEXT_INPUT && event->text.text != NULL) {
+            const char *cursor = event->text.text;
+            const unsigned char *bytes = (const unsigned char *)cursor;
+            for (size_t i = 0u; bytes[i] != 0u;) {
+                uint32_t codepoint = bytes[i];
+                size_t extra = codepoint >= 0xF0u ? 3u : codepoint >= 0xE0u ? 2u
+                    : codepoint >= 0xC0u ? 1u : 0u;
+                if (extra > 0u) codepoint &= 0x3Fu >> extra;
+                for (size_t k = 1u; k <= extra && bytes[i + k] != 0u; ++k) {
+                    codepoint = (codepoint << 6) | (bytes[i + k] & 0x3Fu);
+                }
+                player_ui_find_type(player, codepoint);
+                i += 1u + extra;
+                while (bytes[i] != 0u && (bytes[i] & 0xC0u) == 0x80u) ++i;
+            }
+            return true;
+        }
+        if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
+            bool control = (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0;
+            if (event->key.key == SDLK_BACKSPACE) {
+                if (event->type == SDL_EVENT_KEY_DOWN) player_ui_find_delete(player);
+                return true;
+            }
+            if (!control && event->key.key >= 0x20u && event->key.key < 0x7Fu) return true;
+        }
+    } else if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat &&
+               nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
+               player->library_game_total > 0u &&
+               (event->key.key == SDLK_SLASH ||
+                (event->key.key == SDLK_F && (event->key.mod & SDL_KMOD_CTRL) != 0))) {
+        /* "/" or Ctrl+F opens the box from a hardware keyboard. */
+        player_ui_find_open(player, true);
+        return true;
+    }
     count = nk_ui_sdl_input_translate(&player->input, event, now_s,
                                      translated,
                                      sizeof(translated) / sizeof(translated[0]));
@@ -1409,7 +1555,9 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
                    !translated[i].repeat && player->pending_sound < 0) {
             player->pending_sound = PLAYER_UI_SOUND_CONFIRM;
         }
-        if (translated[i].type == NK_UI_EV_BACK) {
+        if (translated[i].type == NK_UI_EV_BACK && player_ui_nk_find_open(player)) {
+            if (translated[i].down) player_ui_find_close(player);
+        } else if (translated[i].type == NK_UI_EV_BACK) {
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_handle_event(player->router, &translated[i]);
         } else {
@@ -1816,36 +1964,113 @@ static void player_ui_title_art(PlayerUiNk *player, const PlayerApp *app, size_t
 #endif
 }
 
-/* The title at grid position `position` (counting titles that are not demos),
-   or `count` when the position holds no title. */
-static size_t player_ui_library_title_at(const PlayerUiTitle *titles, size_t count,
-                                         size_t position) {
-    for (size_t i = 0u; i < count; ++i) {
-        if (titles[i].is_demo) continue;
-        if (position == 0u) return i;
-        --position;
+/* Sorts the library grid: the user's games (not the demos) in the order the
+   settings ask for. */
+static const PlayerApp *g_sort_app;
+
+/* "YYYY-MM-DD HH:MM" when the game was played, as player_state stamps it, or
+   NULL for "Never" and older records. */
+static const char *player_ui_played_at(const GameRecord *game) {
+    return game->last_played[0] >= '0' && game->last_played[0] <= '9' ? game->last_played : NULL;
+}
+
+/* By name, ignoring ASCII case, then by disc id, so the order is stable. */
+static int player_ui_compare_name(const void *a, const void *b) {
+    const GameRecord *x = &g_sort_app->games[*(const size_t *)a];
+    const GameRecord *y = &g_sort_app->games[*(const size_t *)b];
+    const unsigned char *p = (const unsigned char *)x->title_name;
+    const unsigned char *q = (const unsigned char *)y->title_name;
+    while (*p != '\0' && tolower(*p) == tolower(*q)) {
+        ++p;
+        ++q;
     }
-    return count;
+    if (tolower(*p) != tolower(*q)) return tolower(*p) < tolower(*q) ? -1 : 1;
+    return strcmp(x->disc_id, y->disc_id);
+}
+
+/* The most recently played first (the stamp sorts as text); games never
+   played after them, in the order they were added, as the library was shown
+   before it had a sort. */
+static int player_ui_compare_played(const void *a, const void *b) {
+    size_t i = *(const size_t *)a;
+    size_t j = *(const size_t *)b;
+    const char *x = player_ui_played_at(&g_sort_app->games[i]);
+    const char *y = player_ui_played_at(&g_sort_app->games[j]);
+    if (x != NULL && y != NULL && strcmp(x, y) != 0) return strcmp(y, x);
+    if ((x == NULL) != (y == NULL)) return x == NULL ? 1 : -1;
+    return i < j ? -1 : i > j ? 1 : 0;
+}
+
+/* The library keeps games in the order they were added: the last added first. */
+static int player_ui_compare_added(const void *a, const void *b) {
+    size_t x = *(const size_t *)a;
+    size_t y = *(const size_t *)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+/* Whether `text` holds `query`, ignoring ASCII case. */
+static bool player_ui_contains(const char *text, const char *query) {
+    size_t length = strlen(query);
+    for (const char *start = text; *start != '\0'; ++start) {
+        size_t i = 0u;
+        while (i < length && start[i] != '\0' &&
+               tolower((unsigned char)start[i]) == tolower((unsigned char)query[i])) {
+            ++i;
+        }
+        if (i == length) return true;
+    }
+    return length == 0u;
+}
+
+static void player_ui_library_order(PlayerUiNk *player, const PlayerApp *app, size_t count) {
+    size_t n = 0u;
+    size_t total = 0u;
+    for (size_t i = 0u; i < count; ++i) {
+        if (player->titles[i].is_demo) continue;
+        ++total;
+        /* The find box keeps the games whose name or disc ID holds what is typed. */
+        if (player->find_open &&
+            !player_ui_contains(app->games[i].title_name, player->find_query) &&
+            !player_ui_contains(app->games[i].disc_id, player->find_query)) {
+            continue;
+        }
+        player->library_grid[n++] = i;
+    }
+    player->library_grid_count = n;
+    player->library_game_total = total;
+    g_sort_app = app;
+    qsort(player->library_grid, n, sizeof(player->library_grid[0]),
+          app->settings.library_sort == PLAYER_LIBRARY_SORT_NAME ? player_ui_compare_name
+          : app->settings.library_sort == PLAYER_LIBRARY_SORT_ADDED ? player_ui_compare_added
+          : player_ui_compare_played);
+    g_sort_app = NULL;
+}
+
+/* The library's titles and grid, for the grid helpers. */
+static PlayerUiLibraryModel player_ui_library_view(const PlayerUiNk *player, size_t count) {
+    PlayerUiLibraryModel view;
+    memset(&view, 0, sizeof(view));
+    view.titles = player->titles;
+    view.title_count = count;
+    view.grid = player->library_grid;
+    view.grid_count = player->library_grid_count;
+    return view;
 }
 
 /* The disc art of the games on the library page shown: grid positions
-   [page * page_size, (page + 1) * page_size), counting the titles that are not
-   demos, as the library screen lays them out. */
+   [page * page_size, (page + 1) * page_size), as the library screen lays
+   them out. Every page shows the demos. */
 static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
                                        size_t count, size_t page, size_t page_size) {
     size_t first;
-    size_t position = 0u;
     if (page_size == 0u || page > SIZE_MAX / page_size) return;
     first = page * page_size;
     for (size_t i = 0u; i < count; ++i) {
-        if (player->titles[i].is_demo) {
-            player_ui_note_shown(player, i);  /* every page shows the demos */
-            continue;
-        }
-        if (position >= first && position < first + page_size) {
-            player_ui_title_art(player, app, i, false);
-        }
-        ++position;
+        if (player->titles[i].is_demo) player_ui_note_shown(player, i);
+    }
+    for (size_t position = first;
+         position < player->library_grid_count && position - first < page_size; ++position) {
+        player_ui_title_art(player, app, player->library_grid[position], false);
     }
 }
 
@@ -1863,10 +2088,11 @@ static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
 static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t page_size,
                                         size_t slots, size_t page) {
     NkUiId focused = nk_ui_focused(player->ui);
+    PlayerUiLibraryModel view = player_ui_library_view(player, count);
     size_t index = player_ui_focused_title_index(focused, count);
     size_t slot = SIZE_MAX;
     if (index < count) {
-        size_t position = player_ui_library_grid_position(player->titles, count, index);
+        size_t position = player_ui_library_grid_position(&view, index);
         if (position < count) slot = position % page_size;
     } else if (focused == PLAYER_UI_ID_LIBRARY_ADD) {
         slot = (slots - 1u) % page_size;
@@ -1875,8 +2101,7 @@ static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t
     if (slot != SIZE_MAX) {
         size_t position = page * page_size + slot;
         if (position >= slots) position = slots - 1u;
-        index = position + 1u < slots
-            ? player_ui_library_title_at(player->titles, count, position) : count;
+        index = position + 1u < slots ? player_ui_library_grid_title(&view, position) : count;
         nk_ui_focus(player->ui, index < count ? PLAYER_UI_ID_LIBRARY_ITEM(index)
                                               : PLAYER_UI_ID_LIBRARY_ADD);
     }
@@ -1913,26 +2138,40 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         return false;
     }
     (void)SDL_GetWindowSize(window, &window_w, &window_h);
+    if (player_ui_nk_find_open(player) != player->find_text_input) {
+        /* SDL's text input is on while the find box is open, so typing (and an
+           input method's text) reaches it; off otherwise. */
+        player->find_text_input = player_ui_nk_find_open(player);
+        if (player->find_text_input) {
+            (void)SDL_StartTextInput(window);
+        } else {
+            (void)SDL_StopTextInput(window);
+        }
+    }
     display_scale = SDL_GetWindowDisplayScale(window);
     if (!(display_scale > 0.0f)) display_scale = 1.0f;
     player->viewport.pixel_w = pixel_w;
     player->viewport.pixel_h = pixel_h;
     player->viewport.display_scale = display_scale;
-    player->viewport.ui_scale_pct = 0;
-    player->viewport.text_size_pct = 100;
+    {
+        /* Prompts follow the last input device ("Match input"), and an Automatic
+           accessibility setting follows the system's, read every frame so a
+           change there applies at once. */
+        PlayerUiDisplay display;
+        player_app_read_system_preferences(app);
+        memset(&display, 0, sizeof(display));
+        display.reduce_motion = player_app_reduce_motion(app);
+        display.high_contrast_focus = player_app_high_contrast_focus(app);
+        display.interface_size_pct = app->settings.interface_size_pct;
+        player_ui_apply_display(player->ui, &player->viewport, &display,
+                                nk_ui_input_prompt_style(&player->input.input));
+    }
     /* The launcher's screens are laid out for at least its design size
        (1280 x 720); a smaller window, down to the 960 x 540 minimum, draws the
        same layout smaller instead of pushing buttons off the window. */
     player->viewport.min_logical_w = (float)PLAYER_UI_DESIGN_WIDTH;
     player->viewport.min_logical_h = (float)PLAYER_UI_DESIGN_HEIGHT;
     scale = nk_ui_scale_for_viewport(&player->viewport);
-    {
-        /* Prompts follow the last input device ("Match input"). */
-        NkUiPrefs prefs;
-        memset(&prefs, 0, sizeof(prefs));
-        prefs.prompt_style = nk_ui_input_prompt_style(&player->input.input);
-        nk_ui_set_prefs(player->ui, &prefs);
-    }
     point_to_pixel = window_w > 0 ? (float)pixel_w / (float)window_w
                                   : display_scale;
     nk_ui_sdl_input_set_event_scale(&player->input,
@@ -2038,21 +2277,37 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         size_t demo_count;
         size_t games;
         size_t slots;
+        PlayerUiLibraryModel view;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
         player_ui_fill_titles(player, app, count);
+        if (!player->find_open && nk_ui_take_event(player->ui, NK_UI_EV_OPTIONS, NULL) &&
+            player_ui_library_demo_count(player->titles, count) < count) {
+            /* The library's Options action (the pad's west button, Space) is Find. */
+            player_ui_find_open(player, false);
+        }
+        if (player->find_focus != 0u) {
+            /* This frame lays the box out (or FIND, once it closed). */
+            nk_ui_focus(player->ui, player->find_focus);
+            player->find_focus = 0u;
+        }
+        player_ui_library_order(player, app, count);
+        view = player_ui_library_view(player, count);
         /* The grid holds the user's games and ends with the add card, so it has
            one slot more than games; the demos sit under it, under TEST THIS PC. */
         demo_count = player_ui_library_demo_count(player->titles, count);
-        games = count - demo_count;
-        page_size = player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
-                                                           demo_count, &columns);
-        slots = games > 0u ? games + 1u : 0u;
+        games = player->library_grid_count;
+        /* While finding, the box takes TEST THIS PC's room, and the grid is the
+           matches alone, without the add card. */
+        page_size = player->find_open
+            ? player_ui_library_page_size_finding(scale.logical_w, scale.logical_h, &columns)
+            : player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
+                                                     demo_count, &columns);
+        slots = player->find_open ? games : games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(
                 nk_ui_focused(player->ui), count);
             if (focused_index < count) {
-                size_t position = player_ui_library_grid_position(player->titles, count,
-                                                                  focused_index);
+                size_t position = player_ui_library_grid_position(&view, focused_index);
                 app->selected_game_index = (int)focused_index;
                 if (position < count) player->library_page = position / page_size;
             }
@@ -2061,8 +2316,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player->library_page = (slots - 1u) / page_size;
         }
         if (player->library_focus_pending) {
-            size_t position = player_ui_library_grid_position(
-                player->titles, count, player->library_focus_index);
+            size_t position = player_ui_library_grid_position(&view, player->library_focus_index);
             player->library_focus_pending = false;
             if (position < count) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
@@ -2098,11 +2352,24 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player_ui_library_turn_page(player, count, page_size, slots, page);
             }
         }
+        if (games > 0u) {
+            /* Home and End: the first game, or the last on the last page. */
+            NkUiNavDir dir = NK_UI_DIR_NONE;
+            while (nk_ui_take_event(player->ui, NK_UI_EV_EDGE, &dir)) {
+                size_t position = dir == NK_UI_DIR_DOWN ? games - 1u : 0u;
+                size_t index = player_ui_library_grid_title(&view, position);
+                if (index >= count) continue;
+                player->library_page = position / page_size;
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(index));
+                app->selected_game_index = (int)index;
+            }
+        }
         player_ui_library_page_art(player, app, count, player->library_page, page_size);
-        PlayerUiLibraryModel model;
-        memset(&model, 0, sizeof(model));
-        model.titles = player->titles;
-        model.title_count = count;
+        PlayerUiLibraryModel model = view;
+        model.sort_label = player_library_sort_label(app->settings.library_sort);
+        model.find_open = player->find_open;
+        model.find_query = player->find_query;
+        model.game_total = player->library_game_total;
         model.page_index = player->library_page;
         model.page_size = page_size;
         model.columns = columns;
@@ -2147,6 +2414,27 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 ++player->library_page;
             }
             action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_FIND_OPEN) {
+            player_ui_find_open(player, false);
+            action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_FIND_KEY) {
+            if (action.title_index == PLAYER_UI_FIND_DONE) {
+                /* Done: on to the first match, the box stays open with it. */
+                nk_ui_focus(player->ui, games > 0u
+                                            ? PLAYER_UI_ID_LIBRARY_ITEM(player->library_grid[0])
+                                            : PLAYER_UI_ID_LIBRARY_FIND_DONE);
+            } else if (action.title_index == PLAYER_UI_FIND_DELETE) {
+                player_ui_find_delete(player);
+            } else {
+                player_ui_find_type(player, (uint32_t)action.title_index);
+            }
+            action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SORT) {
+            /* The next frame lays the grid out in the new order, from its
+               first page; focus stays on the button. */
+            player_app_cycle_library_sort(app);
+            player->library_page = 0u;
+            action.kind = PLAYER_UI_ACTION_NONE;
         }
     } else if (route == PLAYER_UI_ROUTE_TITLE) {
         int index = app->selected_game_index;
@@ -2180,7 +2468,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
             model.stalled_game_dark_picture = app->stalled_game_dark_picture;
-            model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+            model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {

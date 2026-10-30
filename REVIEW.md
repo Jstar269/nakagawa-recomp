@@ -53,8 +53,8 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
 - New `assets/public_source_profile.json` entries for files the same PR adds, provided
   the attestation check passed on the head. Otherwise flag them as unauthorized public
   paths.
-- Missing `Signed-off-by:` on maintainer or maintainer-directed agent commits covered by
-  `docs/DCO_POLICY.md` section 5.1. Other contributors still require DCO 1.1 sign-off.
+- Missing `Signed-off-by:` on any commit. A DCO sign-off is optional for every contributor
+  (`docs/DCO_POLICY.md` section 4); an unticked template box is a question for the author, not a finding.
 - Merge commits from `main` into a PR branch; shared branches are not rebased or force-pushed.
 - Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_unavailable.c` is
   the active public-safe SDL3 host-audio backend.

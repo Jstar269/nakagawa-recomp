@@ -51,7 +51,7 @@ moves or deletes it.
 ### Step 4: Settings persist across a restart
 
 1. Open Settings: click the **SETTINGS** tab, or press `S`.
-2. Change a setting, for example **Resolution**, **Frame pacing** or **Reduce motion**.
+2. Change a setting, for example **Resolution**, **Frame pacing**, or **Reduce motion** under **Accessibility**.
 3. Leave Settings with **DONE**.
 4. Quit the player (press `Esc` in the library, or close the window).
 5. Start `build/nakagawa_player.exe` again and reopen Settings.

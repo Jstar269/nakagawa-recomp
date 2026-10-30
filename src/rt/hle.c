@@ -18385,6 +18385,13 @@ static uint32_t h_IoOpen(CpuState *s) {
     if (rc != 0u) return rc;
     return h_io_open_path(path, A1, -1);
 }
+static int io_host_seek(FILE *host, uint32_t offset) {
+#ifdef _WIN32
+    return _fseeki64(host, (int64_t)offset, SEEK_SET);
+#else
+    return fseeko(host, (off_t)offset, SEEK_SET);
+#endif
+}
 /* Read an entire user font through the descriptor's actual backing, including ISO and archives. */
 static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size) {
     char path[512];
@@ -18432,7 +18439,17 @@ static uint32_t h_IoWrite(CpuState *s) {
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
-    fseek(f->host, (long)f->off, SEEK_SET);
+    if (count > UINT32_MAX - f->off) {
+        /* A seek may leave the position anywhere in 32 bits; a write that would carry it
+         * past them stops at the same boundary as such a seek (#1380). */
+        static atomic_flag reported = ATOMIC_FLAG_INIT;
+        if (!atomic_flag_test_and_set_explicit(&reported, memory_order_acq_rel))
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_WRITE_OUT_OF_RANGE: sceIoWrite beyond the "
+                    "descriptor's 32-bit position is not supported yet (0x80010086)\n");
+        return 0x80010086u;
+    }
+    if (io_host_seek(f->host, f->off) != 0) return 0x80010005u;  /* host I/O error */
     uint8_t tmp[4096]; uint32_t done = 0;
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
@@ -18515,11 +18532,12 @@ static uint32_t h_IoRead(CpuState *s) {
         if (perf_started) sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
         return done;
     }
-    if (f->off + count > f->size) count = f->size - f->off;
+    if (f->off >= f->size) return 0u;
+    if (count > f->size - f->off) count = f->size - f->off;
     /* Read in chunks straight into guest memory, from the host file or the ISO. */
     uint8_t tmp[4096];
     uint32_t done = 0;
-    if (f->host) fseek(f->host, (long)f->off, SEEK_SET);
+    if (f->host && io_host_seek(f->host, f->off) != 0) return 0x80010005u;
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
         if (f->host) { size_t got = fread(tmp, 1, n, f->host); if (got < n) n = (uint32_t)got; }
@@ -18542,26 +18560,24 @@ static uint32_t h_IoRead(CpuState *s) {
     }
     return done;
 }
-/* Destination of a seek on a file descriptor (#1380). PSP-IO-001 measured SEEK_SET 32,
- * SEEK_CUR -16 and SEEK_END 0 inside a 64-byte host0 file. A destination before the start
- * or past the end has no measured result, so it is refused with the named not-supported
- * code and the position is left unchanged instead of being clamped and reported as success.
- * WHENCE is already validated (< 3). */
+/* Destination of a seek on a file descriptor (#1380). pspautotests tests/io/file at
+ * f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 for a destination before the start
+ * and accepts one past the end (a read there returns 0). The descriptor keeps a 32-bit
+ * position, so a destination beyond it is the named not-supported boundary. A refused seek
+ * leaves the position unchanged. WHENCE is already validated (< 3). */
 static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
-    static atomic_uint reported;
+    static atomic_flag reported = ATOMIC_FLAG_INIT;
     int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
-    unsigned side = offset < -base ? 1u :
-                    offset > (int64_t)f->size - base ? 2u : 0u;
-    if (side == 0u) {
+    if (offset < -base) return 0xffffffffu;
+    if (offset <= (int64_t)UINT32_MAX - base) {
         *position = (uint32_t)(base + offset);
         return 0u;
     }
-    if (!(atomic_fetch_or_explicit(&reported, side, memory_order_acq_rel) & side))
+    if (!atomic_flag_test_and_set_explicit(&reported, memory_order_acq_rel))
         fprintf(stderr,
-                "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination %s the file "
-                "is unmeasured (0x80010086)\n",
-                api, side == 1u ? "before the start of" : "past the end of");
+                "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination beyond the "
+                "descriptor's 32-bit position is not supported yet (0x80010086)\n", api);
     return 0x80010086u;
 }
 static uint32_t h_IoLseek32(CpuState *s) {
@@ -18681,7 +18697,8 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         if (!in || inlen < 4) return 0x80010016;
         uint32_t count = MEM_R32(in);
         if (!out || count > outlen) return 0x80010016;
-        if (f->off + count > f->size) count = f->size - f->off;
+        if (f->off >= f->size) return 0u;
+        if (count > f->size - f->off) count = f->size - f->off;
         uint64_t perf_started = sr_perf_now_ns();
         if (f->enhancement_data) {
             if (!sr_guest_span_writable(out, count)) return 0x80010016u;
@@ -18716,7 +18733,7 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         }
         uint8_t tmp[4096];
         uint32_t done = 0;
-        if (f->host) fseek(f->host, (long)f->off, SEEK_SET);
+        if (f->host && io_host_seek(f->host, f->off) != 0) return 0x80010005u;
         while (done < count) {
             uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
             if (f->host) { size_t got = fread(tmp, 1, n, f->host); if (got < n) n = (uint32_t)got; }

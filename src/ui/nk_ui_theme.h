@@ -20,15 +20,15 @@ struct NkUiTheme {
     uint32_t surface;        /* #0B0F14 window ground (page) */
     uint32_t surface_raised; /* #121821 bars, cards, panels */
     uint32_t surface_high;   /* #18202B controls, focused rows, chips */
-    uint32_t accent_dark;    /* #D7F24A tennis green: focus, primary action */
-    uint32_t accent_light;   /* #6E9600 accent on a light surface (reserved) */
-    uint32_t accent_pressed; /* #B4D134 pressed primary button */
+    uint32_t accent_dark;    /* #6B9FF0 brand blue: focus, primary action */
+    uint32_t accent_light;   /* #2F6FD0 accent on a light surface (reserved) */
+    uint32_t accent_pressed; /* #4F86DC pressed primary button */
     uint32_t ready;          /* #2DD4BF Ready; never the accent */
     uint32_t warning;        /* #DBB024 needs setup */
-    uint32_t info;           /* #6CB6FF experimental, untested */
+    uint32_t info;           /* #C29AF4 experimental, untested (violet, apart from the accent) */
     uint32_t error;          /* #FF7B72 unsupported, failed, remove */
     uint32_t muted;          /* #9AA4B2 secondary text (7.6:1 on the page) */
-    uint32_t focus;          /* #D7F24A focus ring */
+    uint32_t focus;          /* #6B9FF0 focus ring */
     uint32_t line;           /* #1C232D hairlines and card edges */
     uint32_t line_strong;    /* #2E3846 control and chip borders */
     uint32_t dim;            /* #6B7684 disabled text and footnotes only */
@@ -38,8 +38,8 @@ struct NkUiTheme {
     uint32_t art_scrim;      /* page at 72% under a badge on title art */
     uint32_t art_label;      /* #C9D6E3 labels drawn over title art */
     uint32_t placeholder;    /* #3A4552 outline of an art placeholder */
-    uint32_t capture;        /* #1F2613 a row waiting for a button press */
-    uint32_t accent_hover;   /* #DDF465 primary button under the pointer */
+    uint32_t capture;        /* #223046 a row waiting for a button press */
+    uint32_t accent_hover;   /* #8FB8F2 primary button under the pointer (the site's --mark) */
 };
 
 /* nk_ui_theme_n1() is declared in nk_ui.h. */
@@ -112,6 +112,7 @@ struct NkUiTheme {
 #define NK_UI_MOTION_MUSIC_FADE_IN 1.00
 #define NK_UI_MOTION_MUSIC_FADE_OUT 0.45
 #define NK_UI_MOTION_WAVE_FRAME (1.0 / 30.0) /* waves redraw at most at 30 Hz */
+#define NK_UI_MOTION_FRAME (1.0 / 60.0)      /* one frame at the display rate a motion draws at */
 
 /* ---- Fonts ----------------------------------------------------------------- */
 /* Font slots the host registers (assets/fonts/ui, all SIL OFL 1.1). Slots 4-7
