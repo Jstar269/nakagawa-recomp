@@ -48,6 +48,11 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/ge_cpu_profile_validate_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest --strip-cache-disabled",
     "build/mygame/coro_selftest",
+) + (
+    # The stack-switch backend Android uses runs only on POSIX hosts (the Makefile's
+    # ifneq ($(OS),Windows_NT)); Windows uses Win32 fibers.
+    () if os.name == "nt" else ("build/mygame/coro_selftest_asm",)
+) + (
     "build/mygame/ge_raster_ref_selftest",
     "build/test_pgf_public",
     "build/test_core_catalog",
