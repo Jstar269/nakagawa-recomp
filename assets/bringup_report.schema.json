@@ -20,6 +20,18 @@
     "exit_classification"
   ],
   "properties": {
+    "build_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_revision", "command", "title_id", "artifact_sha256", "compiler_identity", "compile_result"],
+      "properties": {
+        "source_revision": { "type": "string" },
+        "command": { "type": "string" },
+        "title_id": { "type": "string" },
+        "artifact_sha256": { "type": "string" },
+        "compiler_identity": { "type": "string" },
+        "compile_result": { "const": "PASS" }
+      }
+    },
     "schema_version": { "const": 1 },
     "reached_stage": {
       "enum": ["none", "inspect", "prepare_import", "analyze", "codegen", "compile", "build_package", "launch"]

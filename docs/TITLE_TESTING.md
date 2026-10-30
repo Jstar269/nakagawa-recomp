@@ -46,12 +46,13 @@ python tools/title_qualification.py validate [--manifest PATH] [--input-profile 
 python tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json [--input-profile PATH] [--timeout SECONDS]
 ```
 
-The Make target is the end-to-end build-and-launch command: it rebuilds the display
-fixture and player before running `smoke`. A report from the Python `smoke` command
-keeps `stages.compile` at `NOT_RUN`, even when an executable is present, because that
-command cannot prove the artifact was freshly compiled. The Make target's build steps
-run before `smoke`, but nothing records them in the report; their console output is the
-only evidence that this invocation compiled the executable.
+The Make target forces a fresh fixture and player build before launch. The report records
+`build_evidence`: source revision, command identity, executable SHA-256, compiler
+identity (the package cache compiler identity), and compile result. The verifier
+`validate --report PATH` requires that evidence and checks the current staged artifact
+against its digest. A direct `smoke` run does not build and its report is therefore
+not accepted as build qualification evidence. The source revision identifies HEAD;
+uncommitted source changes are not represented by that revision.
 
 Exit status 2 means different things per command. For `validate` it means at least
 one candidate failed validation, and the first problem in each failing candidate is
@@ -118,14 +119,9 @@ The report keeps these signals distinct:
 - `inspect` records whether the public manifest, input profile, declarations, and
   staged-artifact check passed. The normative manifest and profile checks also have
   the standalone `title-qualification` command.
-- `prepare_import`, `analyze`, `codegen`, `compile`, and `build_package` remain
-  `NOT_RUN` in the Python smoke report. The bring-up schema has no separate
-  `publish` stage; `build_package` is the package-build stage and is also
-  `NOT_RUN` here. The end-to-end Make target separately generates and builds the
-  synthetic display fixture and native player before invoking the smoke. Its build
-  output is the evidence for those Make steps, not evidence that the Python smoke
-  performed title code generation, compilation, or package publication. A
-  pre-existing executable is not treated as proof of compilation.
+- `compile` is `PASS` only when the build-and-smoke command successfully rebuilt the
+  fixture. Direct `smoke` leaves it `NOT_RUN`. `prepare_import`, `analyze`, `codegen`,
+  and `build_package` remain `NOT_RUN`; the build does not claim package publication.
 - `launch` records the native player run. The saved `player-output.log` identifies
   the spawned runtime and the report's failure class names launch problems.
 - `presentation.status`, `presentation.frame_submissions`, and `presentation.backend`
