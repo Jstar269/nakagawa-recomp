@@ -6,9 +6,17 @@
  * The player asks GitHub's public Releases API which Nakagawa versions exist,
  * only when the user presses Check for updates or has turned on the check at
  * start. The request is anonymous: no ID, no hardware or game information.
- * Downloading the newer Windows ZIP is a second, separate click; the ZIP is
- * checked against the release's published SHA-256 (and GitHub's own digest of
- * the asset when the API lists one) and deleted on any mismatch. Install only
+ * Downloading the newer Windows ZIP is a second, separate click. It first fetches
+ * the release's checksum file "<zip>.sha256" and its minisign signature
+ * "<zip>.sha256.minisig", and checks the signature over the checksum file's exact
+ * bytes with the update-signing public key built into this player
+ * (docs/RELEASE_SIGNING.md). Only a valid signature from that key makes the
+ * checksum trusted; the checksum must then name this release's ZIP, whose name
+ * carries the version, so an older signed checksum served for a newer release
+ * fails. The ZIP is checked against that SHA-256 (and GitHub's own digest of the
+ * asset when the API lists one) and deleted on any mismatch. A missing, unreadable
+ * or invalid signature fails closed, and so does a build with no key built in: it
+ * still checks for updates but offers only the release page. Install only
  * unpacks the verified ZIP into a new folder; it never replaces the running
  * version and never touches the user's data, which lives in the per-user data
  * folders, not in the install folder.
@@ -21,6 +29,7 @@
 #ifndef NAKAGAWA_UPDATE_CHECK_H
 #define NAKAGAWA_UPDATE_CHECK_H
 
+#include "nk_sig.h"
 #include "package_builder.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -42,9 +51,11 @@ extern "C" {
 #define NK_UPDATE_DOWNLOAD_PREFIX "https://github.com/" NK_UPDATE_REPOSITORY "/releases/download/"
 #define NK_UPDATE_USER_AGENT "NakagawaRecomp/UpdateCheck"
 
-/* The largest answers read into memory: the release list and a checksum file. */
+/* The largest answers read into memory: the release list, a checksum file and its
+   signature (four short lines; the trusted comment is one line of text). */
 #define NK_UPDATE_MAX_RELEASES_BYTES (4u * 1024u * 1024u)
 #define NK_UPDATE_MAX_CHECKSUM_BYTES 4096u
+#define NK_UPDATE_MAX_SIGNATURE_BYTES 4096u
 
 /* A Semantic Versioning 2.0.0 version. A tag may start with "v"; build
    metadata (+...) is accepted and ignored, as the standard says. */
@@ -81,6 +92,9 @@ typedef struct {
     bool has_checksum;        /* the release lists "<zip>.sha256" */
     char checksum_url[512];
     uint64_t checksum_size;
+    bool has_signature;       /* the release lists "<zip>.sha256.minisig" */
+    char signature_url[512];
+    uint64_t signature_size;
 } NkUpdateRelease;
 
 typedef struct {
@@ -99,29 +113,45 @@ bool nk_update_parse_releases(const char *json, size_t length, NkUpdateRelease *
    formatting are dropped, links keep their text. */
 void nk_update_short_notes(const char *markdown, char *out, size_t out_size);
 
-/* Reads a "<sha256>  <file name>" checksum file for file_name. */
+/* Reads a "<sha256>  <file name>" checksum file for file_name: UPDATE_CHECKSUM_INVALID
+   when it is not one, UPDATE_CHECKSUM_WRONG_FILE when it names another file. */
 bool nk_update_parse_checksum(const char *text, size_t length, const char *file_name,
                               char out_sha256[65], NkUpdateError *error);
 
-/* The SHA-256 the ZIP must have: the release's checksum file, which must agree
-   with GitHub's own digest of the ZIP when the API lists one. A release with
-   no checksum file is refused (CHECKSUM_MISSING). */
-bool nk_update_expected_sha256(const NkUpdateRelease *release, const char *checksum_text,
-                               size_t checksum_length, char out_sha256[65],
-                               NkUpdateError *error);
+/* The update-signing public key built into this player: the minisign public key
+   the build read from assets/update_signing_key.pub (the NK_UPDATE_SIGNING_KEY
+   define; docs/RELEASE_SIGNING.md). False when the build had none: such a build
+   never downloads an update (UPDATE_NO_SIGNING_KEY). */
+bool nk_update_builtin_signing_key(NkMinisignKey *out);
+
+/* The SHA-256 the ZIP must have. In order: signing_key must be given (NULL:
+   UPDATE_NO_SIGNING_KEY); the release must list its checksum file
+   (UPDATE_CHECKSUM_MISSING) and that file's signature (UPDATE_SIGNATURE_MISSING);
+   signature_text must be a valid minisign signature by signing_key over exactly
+   checksum_text, trusted comment included (UPDATE_SIGNATURE_UNREADABLE,
+   _UNKNOWN_KEY or _INVALID); only then is the checksum read, and it must name
+   release->zip_name (UPDATE_CHECKSUM_INVALID, _WRONG_FILE) and agree with GitHub's
+   own digest of the ZIP when the API lists one (UPDATE_CHECKSUM_CONFLICT). */
+bool nk_update_expected_sha256(const NkUpdateRelease *release, const NkMinisignKey *signing_key,
+                               const char *checksum_text, size_t checksum_length,
+                               const char *signature_text, size_t signature_length,
+                               char out_sha256[65], NkUpdateError *error);
 
 /* Asks GitHub for the release list and compares the newest with current_version. */
 bool nk_update_check(PackageHttpOpen transport, void *transport_context,
                      const char *current_version, NkUpdateCheckResult *result,
                      NkUpdateError *error);
 
-/* Downloads the release's Windows ZIP into downloads_dir and verifies it. On
-   success out_zip_path names the verified file; on any failure nothing is left
-   behind. progress may cancel by returning false. */
+/* Downloads the release's Windows ZIP into downloads_dir and verifies it: the
+   checksum file and its signature first (nk_update_expected_sha256, with
+   signing_key; NULL asks for nothing and fails with UPDATE_NO_SIGNING_KEY), then
+   the ZIP. On success out_zip_path names the verified file; on any failure nothing
+   is left behind. progress may cancel by returning false. */
 bool nk_update_download(PackageHttpOpen transport, void *transport_context,
-                        const NkUpdateRelease *release, const char *downloads_dir,
-                        PackageDownloadContinue progress, void *progress_context,
-                        char *out_zip_path, size_t out_zip_path_size, NkUpdateError *error);
+                        const NkUpdateRelease *release, const NkMinisignKey *signing_key,
+                        const char *downloads_dir, PackageDownloadContinue progress,
+                        void *progress_context, char *out_zip_path, size_t out_zip_path_size,
+                        NkUpdateError *error);
 
 /* The folder Install unpacks zip_name into: beside the running version's folder
    when the player runs from a release ZIP's bin folder (exe_dir), otherwise in

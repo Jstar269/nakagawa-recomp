@@ -746,8 +746,14 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             model.update_notes = newest->notes;
             model.update_page_url = newest->page_url;
             model.update_has_zip = newest->has_zip;
-            model.update_can_download = nk_update_install_supported() &&
-                                        newest->has_zip && update->check.newer;
+            if (nk_update_install_supported()) {
+                /* Download is offered only when the ZIP can be checked: a key in this
+                   build and a signature in the release (update_check.h). */
+                model.update_unverifiable = !update->can_verify;
+                model.update_unsigned = !newest->has_signature;
+                model.update_can_download = newest->has_zip && update->check.newer &&
+                                            update->can_verify && newest->has_signature;
+            }
             model.update_zip_name = newest->zip_name;
             model.update_zip_bytes = newest->zip_size;
         }
@@ -1219,7 +1225,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
                         focus = nk_update_install_supported() &&
-                                app->update.check.newest.has_zip
+                                app->update.check.newest.has_zip &&
+                                app->update.check.newest.has_signature &&
+                                app->update.can_verify
                             ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
                         break;
                     case PLAYER_UPDATE_DOWNLOADING: focus = PLAYER_UI_ID_UPDATE_CANCEL; break;
