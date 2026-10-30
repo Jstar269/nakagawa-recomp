@@ -10,14 +10,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Clay is vendored as upstream wrote it: C99 plus anonymous unions and empty
+   initializers, with a few unused locals and mixed-sign compares. Its warnings
+   are silenced here, at the one place it is compiled, and nowhere else. */
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable: 4244 4305)
+/* 4244/4305 narrowing, 4201 nameless union, 4189 unused local, 4018/4389 sign. */
+#pragma warning(disable: 4244 4305 4201 4189 4018 4389)
 #endif
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
@@ -192,36 +199,21 @@ static uint16_t nk_ui_clay_u16(float value) {
 }
 
 static Clay_SizingAxis nk_ui_clay_sizing(NkUiSizing sizing) {
-    Clay_SizingAxis axis;
-    memset(&axis, 0, sizeof(axis));
+    float min = isfinite(sizing.min) && sizing.min > 0.0f ? sizing.min : 0.0f;
+    float max = isfinite(sizing.max) && sizing.max > min ? sizing.max : FLT_MAX;
     switch (sizing.kind) {
     case NK_UI_SIZE_FIXED:
-        axis.type = CLAY__SIZING_TYPE_FIXED;
-        axis.size.minMax.min = sizing.value > 0.0f ? sizing.value : 0.0f;
-        axis.size.minMax.max = axis.size.minMax.min;
-        break;
-    case NK_UI_SIZE_PERCENT:
-        axis.type = CLAY__SIZING_TYPE_PERCENT;
-        axis.size.percent = isfinite(sizing.value) && sizing.value > 0.0f ? sizing.value : 0.0f;
-        if (axis.size.percent > 1.0f) {
-            axis.size.percent = 1.0f;
-        }
-        break;
+        return CLAY_SIZING_FIXED(sizing.value > 0.0f ? sizing.value : 0.0f);
+    case NK_UI_SIZE_PERCENT: {
+        float percent = isfinite(sizing.value) && sizing.value > 0.0f ? sizing.value : 0.0f;
+        return CLAY_SIZING_PERCENT(percent > 1.0f ? 1.0f : percent);
+    }
     case NK_UI_SIZE_GROW:
-        axis.type = CLAY__SIZING_TYPE_GROW;
-        axis.size.minMax.min = isfinite(sizing.min) && sizing.min > 0.0f ? sizing.min : 0.0f;
-        axis.size.minMax.max = isfinite(sizing.max) && sizing.max > axis.size.minMax.min ?
-                               sizing.max : FLT_MAX;
-        break;
+        return CLAY_SIZING_GROW(min, max);
     case NK_UI_SIZE_FIT:
     default:
-        axis.type = CLAY__SIZING_TYPE_FIT;
-        axis.size.minMax.min = isfinite(sizing.min) && sizing.min > 0.0f ? sizing.min : 0.0f;
-        axis.size.minMax.max = isfinite(sizing.max) && sizing.max > axis.size.minMax.min ?
-                               sizing.max : FLT_MAX;
-        break;
+        return CLAY_SIZING_FIT(min, max);
     }
-    return axis;
 }
 
 void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
@@ -328,7 +320,6 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
     }
     Clay_SetCurrentContext(clay->context);
     memset(&declaration, 0, sizeof(declaration));
-    declaration.id = Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.container"), id);
     /* The draw list names elements by their nk_ui id, not Clay's hash. */
     declaration.userData = (void *)(uintptr_t)id;
     declaration.layout.sizing.width = nk_ui_clay_sizing(layout->width);
@@ -380,7 +371,9 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
         declaration.border.width.top = nk_ui_clay_u16(style->border_width);
         declaration.border.width.bottom = nk_ui_clay_u16(style->border_width);
     }
-    Clay__OpenElement();
+    /* nk_ui opens and closes a container in separate calls, which the CLAY()
+       macro's scope cannot span, so the glue makes the calls the macro makes. */
+    Clay__OpenElementWithId(Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.container"), id));
     Clay__ConfigureOpenElement(declaration);
     return true;
 }
@@ -424,7 +417,6 @@ bool nk_ui_clay_text_styled(void *opaque_clay, NkUiId id, const char *text, size
     }
     Clay_SetCurrentContext(clay->context);
     memset(&declaration, 0, sizeof(declaration));
-    declaration.id = Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.text"), id);
     /* A wrapping run takes the row's width so its lines break there; a
        one-line run fits its text. */
     declaration.layout.sizing.width = nk_ui_clay_sizing((NkUiSizing){
@@ -449,9 +441,9 @@ bool nk_ui_clay_text_styled(void *opaque_clay, NkUiId id, const char *text, size
     contents.isStaticallyAllocated = false;
     contents.length = (int32_t)length;
     contents.chars = text;
-    Clay__OpenElement();
+    Clay__OpenElementWithId(Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.text"), id));
     Clay__ConfigureOpenElement(declaration);
-    Clay__OpenTextElement(contents, Clay__StoreTextElementConfig(text_config));
+    Clay__OpenTextElement(contents, text_config);
     Clay__CloseElement();
     return true;
 }
@@ -482,7 +474,7 @@ bool nk_ui_clay_element_rect(void *opaque_clay, NkUiId id, NkUiRect *out) {
 }
 
 bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
-                    NkUiClayPaint paint, void *paint_user) {
+                    float delta_s, NkUiClayPaint paint, void *paint_user) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_RenderCommandArray commands;
     Clay_Context *restore;
@@ -492,7 +484,7 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
         return false;
     }
     Clay_SetCurrentContext(clay->context);
-    commands = Clay_EndLayout();
+    commands = Clay_EndLayout(delta_s);
     if (clay->failed) {
         ok = false;
     }

@@ -232,9 +232,12 @@ class LibraryBuildTests(unittest.TestCase):
                          "every bring-up runs after its disc check, even a failed one")
         records = self.by_source(result)
         self.assertEqual(records["ok-test70050.iso"]["decrypt_step"],
-                         {"files": 2, "failed": ["A.PRX"], "first_failure": "refused"})
+                         {"files": 2, "failed": ["A.PRX"], "first_failure": "refused",
+                          "first_failure_code": "IO_FAILURE"})
         self.assertIn("synthetic engine failure",
                       records["ok-test70051.iso"]["decrypt_step"]["first_failure"])
+        self.assertEqual(records["ok-test70051.iso"]["decrypt_step"]["first_failure_code"],
+                         "INTERNAL_ERROR")
         self.assertEqual(result["counts"], {"BUILT": 2})
 
     def test_decrypt_disc_writes_the_executable_where_the_player_reads_it(self) -> None:
@@ -251,8 +254,9 @@ class LibraryBuildTests(unittest.TestCase):
 
         rows = decrypt_tool.decrypt_disc(encrypted, self.data, "test70060", runner=runner)
         target = self.data / "titles" / "TEST70060" / "decrypted" / "EBOOT.elf"
-        self.assertEqual([(row["member"], row["name"], row["status"]) for row in rows],
-                         [("PSP_GAME/SYSDIR/EBOOT.BIN", "EBOOT.elf", 0)])
+        self.assertEqual([(row["member"], row["name"], row["status"], row["code"])
+                          for row in rows],
+                         [("PSP_GAME/SYSDIR/EBOOT.BIN", "EBOOT.elf", 0, None)])
         self.assertEqual(seen, [b"~PSP"])
         self.assertEqual(target.read_bytes(), b"decrypted")
         again = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
@@ -267,10 +271,60 @@ class LibraryBuildTests(unittest.TestCase):
         target.unlink()
         with mock.patch.object(iso_inspect, "list_disc_module_candidates", side_effect=refused):
             rows = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
-        self.assertEqual([(row["name"], row["status"]) for row in rows],
-                         [("(guest modules)", -1), ("EBOOT.elf", 0)])
+        self.assertEqual([(row["name"], row["status"], row["code"]) for row in rows],
+                         [("(guest modules)", -1, "GUEST_MODULE_DISCOVERY_FAILED"),
+                          ("EBOOT.elf", 0, None)])
         self.assertIn("DUPLICATE_DISC_MODULE_BASENAME", rows[0]["message"])
         self.assertTrue(target.is_file())
+
+    def test_the_manifest_names_where_each_first_launch_stopped(self) -> None:
+        stages = {stage: {"status": "PASS", "duration_ms": 1} for stage in library_build.STAGES}
+        stages["launch"]["status"] = "FAIL"
+        record = library_build.summarize_report({
+            "reached_stage": "launch", "stages": stages, "failure_class": "RUNTIME_SEMANTIC_BOUNDARY",
+            "exit_classification": "EXITED_NONZERO", "runtime_output_kind": "SEMANTIC_BOUNDARY",
+            "runtime_boundary": "target-not-executable", "process_exit_code": 1,
+            "presentation": {"status": "NO_FRAME_SUBMISSIONS", "frame_submissions": 0},
+        })
+        self.assertEqual(record["outcome"], "BUILT")
+        self.assertEqual(record["launch"]["runtime_boundary"], "target-not-executable")
+        record.update(source="a/a.iso", disc_id="TEST70001", title="Synthetic")
+        markdown = library_build.render_markdown({
+            "titles": [record], "counts": {"BUILT": 1}, "started_at": "t0", "updated_at": "t1",
+            "user_data_root": "data",
+        })
+        self.assertIn("## Where first launches stopped", markdown)
+        self.assertIn("| RUNTIME_SEMANTIC_BOUNDARY | `target-not-executable` | 1 |", markdown)
+
+    def test_decrypt_disc_keeps_one_module_name_in_two_folders_apart(self) -> None:
+        # Each encrypted module is decrypted to its own host name: the disc file name
+        # when no other module-tree file carries it, else its path-qualified name, the
+        # names the import and the player's disc check look for.
+        from nk_core import iso_inspect
+        from test_iso_parity import build_psp_container, create_test_iso_with_module_tree
+        disc = self.discs / "shared-name.iso"
+        first = ("PSP_GAME", "USRDIR", "data", "module", "lib.prx")
+        second = ("PSP_GAME", "USRDIR", "atad", "module", "lib.prx")
+        create_test_iso_with_module_tree(disc, {
+            "/".join(first): build_psp_container() + b"first",
+            "/".join(second): build_psp_container() + b"second",
+            "PSP_GAME/USRDIR/data/module/own.prx": build_psp_container(),
+        }, disc_id="TEST70062")
+
+        def runner(source: Path, destination: Path) -> tuple[int, str]:
+            destination.write_bytes(source.read_bytes())
+            return 0, "ok"
+
+        rows = decrypt_tool.decrypt_disc(disc, self.data, "TEST70062", runner=runner)
+        names = {row["member"]: row["name"] for row in rows}
+        self.assertEqual(names, {
+            "/".join(first): iso_inspect.disc_module_qualified_name(first),
+            "/".join(second): iso_inspect.disc_module_qualified_name(second),
+            "PSP_GAME/USRDIR/data/module/own.prx": "own.prx",
+        })
+        folder = self.data / "titles" / "TEST70062" / "decrypted"
+        self.assertTrue((folder / names["/".join(first)]).read_bytes().endswith(b"first"))
+        self.assertTrue((folder / names["/".join(second)]).read_bytes().endswith(b"second"))
 
     def test_the_default_job_count_follows_the_cpus(self) -> None:
         self.assertEqual(library_build.default_jobs(None), 1)

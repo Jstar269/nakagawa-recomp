@@ -67,6 +67,8 @@ struct NkUi {
     bool pointer_down;
     NkUiId pointer_press_id;
     double now_s;
+    double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
+    bool frame_clock_started;
     unsigned container_depth;
     uint32_t text_color_stack[64];
     uint32_t text_color;
@@ -99,7 +101,7 @@ bool nk_ui_clay_text(void *clay, NkUiId id, const char *text, size_t length,
                      int font, int size_px, uint32_t rgba);
 bool nk_ui_clay_element_rect(void *clay, NkUiId id, NkUiRect *out);
 bool nk_ui_clay_end(void *clay, NkUiDrawBuffer *draw, float density,
-                    NkUiClayPaint paint, void *paint_user);
+                    float delta_s, NkUiClayPaint paint, void *paint_user);
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
 
 static void nk_ui_consume_event(NkUi *ui, size_t index) {
@@ -413,7 +415,12 @@ void nk_ui_begin(NkUi *ui, double now_s) {
     nk_ui_focus_begin_frame(ui->focus_graph);
     ui->focus_entry_count = 0u;
     nk_ui_draw_buffer_reset(&ui->draw);
-    ui->now_s = isfinite(now_s) ? now_s : 37.0;
+    now_s = isfinite(now_s) ? now_s : 37.0;
+    /* Clay's time-based layout advances by the time since the last frame. The
+       first frame, and a clock that stands still or steps back, add none. */
+    ui->frame_delta_s = ui->frame_clock_started && now_s > ui->now_s ? now_s - ui->now_s : 0.0;
+    ui->frame_clock_started = true;
+    ui->now_s = now_s;
     ui->container_depth = 0;
     ui->text_color = ui->theme.paper;
     ui->frame_ok = true;
@@ -1046,7 +1053,7 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             ui->frame_ok = false;
         }
     }
-    if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density,
+    if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density, (float)ui->frame_delta_s,
                         nk_ui_paint_custom, ui)) {
         ui->frame_ok = false;
     }

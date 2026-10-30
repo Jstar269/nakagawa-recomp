@@ -20,6 +20,18 @@
     "exit_classification"
   ],
   "properties": {
+    "build_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_revision", "command", "title_id", "artifact_sha256", "compiler_identity", "compile_result"],
+      "properties": {
+        "source_revision": { "type": "string" },
+        "command": { "type": "string" },
+        "title_id": { "type": "string" },
+        "artifact_sha256": { "type": "string" },
+        "compiler_identity": { "type": "string" },
+        "compile_result": { "const": "PASS" }
+      }
+    },
     "schema_version": { "const": 1 },
     "reached_stage": {
       "enum": ["none", "inspect", "prepare_import", "analyze", "codegen", "compile", "build_package", "launch"]
@@ -62,8 +74,7 @@
         "GUEST_MODULE_DISCOVERY_FAILED",
         "DISC_FILES_STAGE_FAILED",
         "RUNTIME_HLE_REGISTRY_UNAVAILABLE",
-        "ANALYSIS_FAILED",
-        "ANALYZER_FAILURE_UNCLASSIFIED",
+        "ANALYZER_INTERNAL_ERROR",
         "ANALYZER_IMPORT_NID_TABLE_MISSING",
         "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED",
         "ANALYZER_IMPORT_REGIONS_MISMATCH",
@@ -80,6 +91,7 @@
         "UNSUPPORTED_IMPORT",
         "UNSUPPORTED_INSTRUCTION",
         "UNRESOLVED_DISPATCH_TARGET",
+        "RUNTIME_SEMANTIC_BOUNDARY",
         "EXITED_ZERO_BEFORE_HLE",
         "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP",
         "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP",
@@ -93,6 +105,7 @@
         "RUNTIME_TRACE_UNAVAILABLE",
         "RUNTIME_ARGUMENT_FAILURE",
         "NATIVE_RUNTIME_CRASH",
+        "LOOSE_CONTENT_ROOTS_UNAVAILABLE",
         "LAUNCH_FAILED",
         "LAUNCH_TIMEOUT",
         "HEADLESS_UNAVAILABLE"
@@ -112,7 +125,12 @@
       "items": { "$ref": "#/$defs/runtime_import" }
     },
     "runtime_output_kind": {
-      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "SEMANTIC_BOUNDARY", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "runtime_boundary": {
+      "description": "The runtime's last named stop in a run that exited nonzero: its boundary code, line tag, or the import it refused as called.",
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,95}$"
     },
     "presentation": {
       "type": "object",

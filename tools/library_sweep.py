@@ -104,7 +104,7 @@ _PUBLIC_AGGREGATE_REQUIRED_KEYS = _PUBLIC_AGGREGATE_V1_REQUIRED_KEYS | frozenset
     "timed_out_with_unknown_stage",
     "stage_duration_ms",
 })
-_PUBLIC_AGGREGATE_OPTIONAL_KEYS = _PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS
+_PUBLIC_AGGREGATE_OPTIONAL_KEYS = _PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS | {"comparison_identity"}
 _PUBLIC_COVERAGE_REQUIRED_KEYS = frozenset({
     "iso_count",
     "completed_routes",
@@ -130,12 +130,16 @@ _PUBLIC_COMPARISON_REASONS = frozenset({
     "source_identity_changed",
     "time_budget_changed",
     "input_count_changed",
+    "comparison_identity_missing",
+    "comparison_identity_changed",
+    "optional_inputs_unverified",
     "same_source_and_input_count",
 })
 _SWEEP_RUN_STATUSES = frozenset({"COMPLETED", "TIMED_OUT", "NO_REPORT"})
 _PUBLIC_LIBRARY_FAMILY_SOURCE = ROOT / "tools" / "nid_corpus.json"
 _PUBLIC_LIBRARY_MODULE_PREFIX = re.compile(r"^(?:_+)?(sce[A-Z][a-z0-9]*)")
-_PUBLIC_BLOCKER_CODE_SOURCE = ROOT / "assets" / "bringup_report.schema.json"
+_PUBLIC_BLOCKER_CODE_SOURCE = ROOT / "assets" / "failure_codes.json"
+_PUBLIC_ISSUE_NUMBER_SOURCE = ROOT / "assets" / "bringup_report.schema.json"
 _PUBLIC_SWEEP_BLOCKER_CODES = frozenset({
     "SWEEP_TIME_BUDGET",
     "SWEEP_ROUTE_FAILED",
@@ -176,16 +180,26 @@ _PUBLIC_LIBRARY_FAMILIES = _load_public_library_families()
 
 
 def _load_public_blocker_codes() -> frozenset[str]:
-    """Load report failure classes and the runner's public synthetic boundaries."""
+    """Load report failure classes and the runner's public synthetic boundaries.
+
+    Both come from the failure-code taxonomy (docs/FAILURE_CODES.md): the codes a bring-up
+    report carries, plus the runner's own boundaries, which the taxonomy must list too.
+    """
     try:
         payload = json.loads(_PUBLIC_BLOCKER_CODE_SOURCE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("public blocker-code vocabulary is unavailable") from exc
-    failure_class = payload.get("properties", {}).get("failure_class")
-    codes = failure_class.get("enum") if isinstance(failure_class, dict) else None
-    if not isinstance(codes, list) or any(not isinstance(code, str) for code in codes):
+    codes = payload.get("codes") if isinstance(payload, dict) else None
+    if not isinstance(codes, dict) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("in"), list)
+        for entry in codes.values()
+    ):
         raise RuntimeError("public blocker-code vocabulary is malformed")
-    return frozenset(codes) | _PUBLIC_SWEEP_BLOCKER_CODES
+    report = {code for code, entry in codes.items() if "report" in entry["in"]}
+    library = {code for code, entry in codes.items() if "library" in entry["in"]}
+    if not _PUBLIC_SWEEP_BLOCKER_CODES <= library:
+        raise RuntimeError("public blocker-code vocabulary is missing a sweep boundary")
+    return frozenset(report) | _PUBLIC_SWEEP_BLOCKER_CODES
 
 
 _PUBLIC_BLOCKER_CODES = _load_public_blocker_codes()
@@ -194,7 +208,7 @@ _PUBLIC_BLOCKER_CODES = _load_public_blocker_codes()
 def _load_public_issue_numbers() -> frozenset[int]:
     """Load the non-networked issue allowlist from the public report schema."""
     try:
-        payload = json.loads(_PUBLIC_BLOCKER_CODE_SOURCE.read_text(encoding="utf-8"))
+        payload = json.loads(_PUBLIC_ISSUE_NUMBER_SOURCE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("public issue-number vocabulary is unavailable") from exc
     issue_numbers = payload.get("properties", {}).get("issue_numbers")
@@ -297,11 +311,45 @@ def _iso_files(iso_root: Path) -> list[Path]:
     )
 
 
+def _default_comparison_identity() -> dict:
+    return {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+            "decrypted_titles": False, "title_manifests": False}
+
+
+def _optional_input_fingerprint(path: Path | None) -> str | None:
+    """A private fingerprint of one optional input (--decrypted-titles or --title-manifests).
+
+    SHA-256 over each file's path relative to the input, its size and its modification time, in
+    path order; None when the input is not given. It is kept only in the private checkpoint, so a
+    run with the same private inputs resumes; the public summary still cannot verify them.
+    """
+    if path is None:
+        return None
+    root = path.resolve(strict=False)
+    if root.is_file():
+        files, base = [root], root.parent
+    elif root.is_dir():
+        files = sorted((item for item in root.rglob("*") if item.is_file()),
+                       key=lambda item: item.relative_to(root).as_posix())
+        base = root
+    else:
+        files, base = [], root
+    digest = hashlib.sha256(b"nakagawa-sweep-optional-input-v1\0")
+    for item in files:
+        stat = item.stat()
+        digest.update(f"{item.relative_to(base).as_posix()}\0{stat.st_size}\0"
+                      f"{stat.st_mtime_ns}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _read_existing_rows(
     path: Path,
     source_commit: str,
     source_fingerprint: str,
     source_keys: set[str],
+    time_budget_seconds: int | None = None,
+    comparison_identity: dict | None = None,
+    optional_input_fingerprints: dict | None = None,
 ) -> dict[str, dict]:
     if not path.is_file():
         return {}
@@ -340,6 +388,18 @@ def _read_existing_rows(
         existing_keys.add(key)
         if key in source_keys:
             retained[key] = row
+    if time_budget_seconds is not None:
+        if comparison_identity is None:
+            comparison_identity = _default_comparison_identity()
+        optional_inputs = comparison_identity["decrypted_titles"] or comparison_identity["title_manifests"]
+        if (
+            payload.get("time_budget_seconds") != time_budget_seconds
+            or payload.get("comparison_identity") != comparison_identity
+            or (optional_inputs
+                and payload.get("optional_input_fingerprints") != optional_input_fingerprints)
+        ):
+            print("Existing checkpoint has different or missing comparison settings; starting fresh.")
+            return {}
     return retained
 
 
@@ -1033,6 +1093,17 @@ def _validate_public_aggregate(payload: object) -> dict:
     if not isinstance(time_budget, int) or isinstance(time_budget, bool) or time_budget < 1:
         raise ValueError("public aggregate time_budget_seconds is invalid")
 
+    identity = payload.get("comparison_identity")
+    if "comparison_identity" in payload and (
+        not isinstance(identity, dict)
+        or set(identity) != {"launch_timeout_seconds", "decrypted_titles", "title_manifests"}
+        or type(identity["launch_timeout_seconds"]) is not int
+        or not 1 <= identity["launch_timeout_seconds"] <= MAX_LAUNCH_TIMEOUT_SECONDS
+        or type(identity["decrypted_titles"]) is not bool
+        or type(identity["title_manifests"]) is not bool
+    ):
+        raise ValueError("public aggregate comparison identity is invalid")
+
     coverage = payload["coverage"]
     if not isinstance(coverage, dict):
         raise ValueError("public aggregate coverage must be an object")
@@ -1237,6 +1308,9 @@ def _validate_public_aggregate(payload: object) -> dict:
                     "source_identity_changed",
                     "time_budget_changed",
                     "input_count_changed",
+                    "comparison_identity_missing",
+                    "comparison_identity_changed",
+                    "optional_inputs_unverified",
                 }
                 or stage_delta_map is not None
                 or completed_routes_delta is not None
@@ -1445,7 +1519,10 @@ def _public_aggregate(
     total_isos: int,
     *,
     previous_aggregate: dict | None = None,
+    comparison_identity: dict | None = None,
 ) -> dict:
+    if comparison_identity is None:
+        comparison_identity = _default_comparison_identity()
     _validate_sweep_rows(rows)
     if not isinstance(total_isos, int) or isinstance(total_isos, bool) or total_isos < len(rows):
         raise ValueError("public aggregate total ISO count is smaller than the number of recorded rows")
@@ -1501,6 +1578,7 @@ def _public_aggregate(
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
+        "comparison_identity": comparison_identity,
         "coverage": {
             "iso_count": total_isos,
             "recorded_routes": len(rows),
@@ -1548,7 +1626,9 @@ def _public_aggregate(
         )
         same_budget = previous_aggregate["time_budget_seconds"] == time_budget_seconds
         same_input_count = previous_coverage["iso_count"] == current_coverage["iso_count"]
-        if same_source and same_budget and same_input_count:
+        same_identity = previous_aggregate.get("comparison_identity") == comparison_identity
+        optional_inputs = comparison_identity["decrypted_titles"] or comparison_identity["title_manifests"]
+        if same_source and same_budget and same_input_count and same_identity and not optional_inputs:
             comparison_status = "MATCHED"
             comparison_reason = "same_source_and_input_count"
             previous_high_water = (
@@ -1566,7 +1646,13 @@ def _public_aggregate(
             )
         else:
             comparison_status = "NEW_BASELINE"
-            if not same_source:
+            if "comparison_identity" not in previous_aggregate:
+                comparison_reason = "comparison_identity_missing"
+            elif not same_identity:
+                comparison_reason = "comparison_identity_changed"
+            elif optional_inputs:
+                comparison_reason = "optional_inputs_unverified"
+            elif not same_source:
                 comparison_reason = "source_identity_changed"
             elif not same_budget:
                 comparison_reason = "time_budget_changed"
@@ -1603,13 +1689,20 @@ def _write_outputs(
     ran_this_invocation: int,
     resumed_this_invocation: int,
     previous_aggregate: dict | None = None,
+    comparison_identity: dict | None = None,
+    optional_input_fingerprints: dict | None = None,
 ) -> None:
+    if comparison_identity is None:
+        comparison_identity = _default_comparison_identity()
     _validate_sweep_rows(rows)
     private_payload = {
         "schema_version": 2,
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
+        "comparison_identity": comparison_identity,
+        # Private only (never in the public summary): lets a run with optional inputs resume.
+        "optional_input_fingerprints": optional_input_fingerprints,
         "updated_at_utc": _utc_now(),
         "coverage": {
             "iso_count": total_isos,
@@ -1625,6 +1718,7 @@ def _write_outputs(
         time_budget_seconds,
         total_isos,
         previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     private_document = _json_document_bytes(private_payload)
     if len(private_document) > _SWEEP_RESUME_JSON_MAX_BYTES:
@@ -1674,8 +1768,14 @@ def run_sweep(
     private_path = private_dir / "library-sweep.json"
     previous_aggregate = _read_previous_public_aggregate(previous_public_output)
     source_keys = {_source_key(path, iso_root) for path in paths}
+    comparison_identity = {"launch_timeout_seconds": launch_timeout_seconds,
+                           "decrypted_titles": decrypted_titles is not None,
+                           "title_manifests": title_manifests is not None}
+    optional_input_fingerprints = {"decrypted_titles": _optional_input_fingerprint(decrypted_titles),
+                                   "title_manifests": _optional_input_fingerprint(title_manifests)}
     rows_by_key = _read_existing_rows(
-        private_path, source_commit, source_fingerprint, source_keys
+        private_path, source_commit, source_fingerprint, source_keys,
+        time_budget_seconds, comparison_identity, optional_input_fingerprints
     )
     path_by_key = {_source_key(path, iso_root): path for path in paths}
     for key, row in list(rows_by_key.items()):
@@ -1693,6 +1793,8 @@ def run_sweep(
         private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=0,
         resumed_this_invocation=previous_rows, previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
+        optional_input_fingerprints=optional_input_fingerprints,
     )
     for index, iso_path in enumerate(paths, start=1):
         key = _source_key(iso_path, iso_root)
@@ -1837,6 +1939,8 @@ def run_sweep(
             private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
             list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
             resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
+            comparison_identity=comparison_identity,
+            optional_input_fingerprints=optional_input_fingerprints,
         )
         print(f"[{index}/{len(paths)}] {row['furthest_stage']} ({run_status})")
 
@@ -1854,6 +1958,8 @@ def run_sweep(
         private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
         resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
+        optional_input_fingerprints=optional_input_fingerprints,
     )
     return result
 
@@ -1963,6 +2069,11 @@ def merge_private_reports(
     source_commit = first["source_commit"]
     source_fingerprint = first["source_fingerprint"]
     time_budget = first["time_budget_seconds"]
+    comparison_identity = first.get("comparison_identity")
+    if not isinstance(comparison_identity, dict):
+        raise ValueError("private shard report has missing or invalid comparison identity; rerun the shard")
+    if comparison_identity.get("decrypted_titles") or comparison_identity.get("title_manifests"):
+        raise ValueError("private shard optional input identity cannot be verified")
     rows_by_key: dict[str, dict] = {}
     total_isos = 0
     ran_count = 0
@@ -1972,6 +2083,7 @@ def merge_private_reports(
             report["source_commit"] != source_commit
             or report["source_fingerprint"] != source_fingerprint
             or report["time_budget_seconds"] != time_budget
+            or report.get("comparison_identity") != comparison_identity
         ):
             raise ValueError("private shard reports do not share source and budget identity")
         total_isos += report["coverage"]["iso_count"]
@@ -1999,6 +2111,7 @@ def merge_private_reports(
         ran_this_invocation=ran_count,
         resumed_this_invocation=resumed_count,
         previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     return {
         "private_report": str(private_path),

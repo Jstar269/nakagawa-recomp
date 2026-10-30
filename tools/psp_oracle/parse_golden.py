@@ -1782,6 +1782,91 @@ _register_campaign_probe(
     {case: (17 if case.startswith("rndf") else 13) for case in VFPU_FORMS_CASES},
 )
 
+# vfpu-funnel (118, probe_hle_issues.c): the #326 funnel add and average words, two passes.
+# Every row is emitted on every run, so the stream is fixed-shape: per pass, vfad then vavg,
+# each at .p, .t and .q (one step per form and size), over 26 operand sets, each under no S
+# prefix and the two TN_PFX forms. Rows are <form>-p<pass>-<size>-<i>-<prefix>, 13 words each.
+VFPU_FUNNEL_FORMS = ("fad", "avg")
+VFPU_FUNNEL_SIZES = ("p", "t", "q")
+VFPU_FUNNEL_PREFIXES = ("none", "p1", "p2")
+VFPU_FUNNEL_OPERAND_SETS = 26
+VFPU_FUNNEL_PASSES = 2
+VFPU_FUNNEL_CASES = tuple(
+    f"{form}-p{p}-{size}-{i}-{pfx}"
+    for p in range(VFPU_FUNNEL_PASSES)
+    for form in VFPU_FUNNEL_FORMS
+    for size in VFPU_FUNNEL_SIZES
+    for i in range(VFPU_FUNNEL_OPERAND_SETS)
+    for pfx in VFPU_FUNNEL_PREFIXES
+)
+_register_campaign_probe(
+    "vfpu-funnel", "PSP-VFPU-FUNNEL-001", VFPU_FUNNEL_CASES,
+    {case: 13 for case in VFPU_FUNNEL_CASES},
+)
+
+# vfpu-sort (120, probe_hle_issues.c): the #326 vsrt1.q to vsrt4.q words, two passes. Every
+# row is emitted on every run, so the stream is fixed-shape: per pass, the four forms (one
+# step each) over 24 operand sets, each under no S prefix and the two TN_PFX forms. Rows are
+# <form>-p<pass>-<i>-<prefix>, 13 words each.
+VFPU_SORT_FORMS = ("srt1", "srt2", "srt3", "srt4")
+VFPU_SORT_PREFIXES = ("none", "p1", "p2")
+VFPU_SORT_OPERAND_SETS = 24
+VFPU_SORT_PASSES = 2
+VFPU_SORT_CASES = tuple(
+    f"{form}-p{p}-{i}-{pfx}"
+    for p in range(VFPU_SORT_PASSES)
+    for form in VFPU_SORT_FORMS
+    for i in range(VFPU_SORT_OPERAND_SETS)
+    for pfx in VFPU_SORT_PREFIXES
+)
+_register_campaign_probe(
+    "vfpu-sort", "PSP-VFPU-SORT-001", VFPU_SORT_CASES,
+    {case: 13 for case in VFPU_SORT_CASES},
+)
+
+# vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
+# row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
+# words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at
+# .p, .t and .q from eight RCX states (<wrndi|wrndf1|wrndf2>-p<pass>-<p|t|q>-<k>, 20 words),
+# vf2h.p and vf2h.q over 28 operand quads and vc2i.s over 10 byte words, each under no S
+# prefix and the two TN_PFX forms (f2h-p<pass>-<p|q>-<i>-<pfx> and c2i-p<pass>-<i>-<pfx>, 13
+# words).
+VFPU_FORMS2_SEEDS = 24
+VFPU_FORMS2_SEED_STATES = ("a", "b")
+VFPU_FORMS2_DRAW_STEMS = ("wrndi", "wrndf1", "wrndf2")
+VFPU_FORMS2_DRAW_SIZES = ("p", "t", "q")
+VFPU_FORMS2_DRAW_STATES = 8
+VFPU_FORMS2_F2H_SIZES = ("p", "q")
+VFPU_FORMS2_F2H_QUADS = 28
+VFPU_FORMS2_C2I_OPERANDS = 10
+VFPU_FORMS2_PREFIXES = ("none", "p1", "p2")
+VFPU_FORMS2_PASSES = 2
+VFPU_FORMS2_SEED_WORDS = 25
+VFPU_FORMS2_DRAW_WORDS = 20
+VFPU_FORMS2_CELL_WORDS = 13
+
+
+def _vfpu_forms2_pass_cases(p: int) -> tuple[str, ...]:
+    rnds = tuple(f"rnds-p{p}-{i}-{s}" for i in range(VFPU_FORMS2_SEEDS)
+                 for s in VFPU_FORMS2_SEED_STATES)
+    draws = tuple(f"{stem}-p{p}-{size}-{k}" for stem in VFPU_FORMS2_DRAW_STEMS
+                  for size in VFPU_FORMS2_DRAW_SIZES for k in range(VFPU_FORMS2_DRAW_STATES))
+    f2h = tuple(f"f2h-p{p}-{size}-{i}-{x}" for size in VFPU_FORMS2_F2H_SIZES
+                for i in range(VFPU_FORMS2_F2H_QUADS) for x in VFPU_FORMS2_PREFIXES)
+    c2i = tuple(f"c2i-p{p}-{i}-{x}" for i in range(VFPU_FORMS2_C2I_OPERANDS)
+                for x in VFPU_FORMS2_PREFIXES)
+    return rnds + draws + f2h + c2i
+
+
+VFPU_FORMS2_CASES = tuple(case for p in range(VFPU_FORMS2_PASSES)
+                          for case in _vfpu_forms2_pass_cases(p))
+_register_campaign_probe(
+    "vfpu-forms2", "PSP-VFPU-FORMS2-001", VFPU_FORMS2_CASES,
+    {case: (VFPU_FORMS2_SEED_WORDS if case.startswith("rnds-")
+            else VFPU_FORMS2_DRAW_WORDS if case.startswith("wrnd")
+            else VFPU_FORMS2_CELL_WORDS) for case in VFPU_FORMS2_CASES},
+)
+
 # ge-sample (109, probe_ge_sample.c): the #282 GE texture sample-point cells. Every draw is
 # emitted on every run, so the stream is fixed-shape: per mapping, primitive (triangle pair
 # or sprite), filter and texture, one `-draw` record (the GE wait outcome, 7 words) and one
@@ -1799,6 +1884,69 @@ GE_SAMPLE_CASES = tuple(case for draw in GE_SAMPLE_DRAWS
 _register_campaign_probe(
     "ge-sample", "PSP-GE-SAMPLE-001", GE_SAMPLE_CASES,
     {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
+)
+
+# dma-timing (118, probe_dmac_timing.c): the #303 DMAC transfer-time and busy-channel cells.
+# Every cell is emitted on every run, so the stream is fixed-shape: t-<pair>-<api>-<size>
+# for the four main-RAM/VRAM pairs, both APIs and nine sizes (13 words), a-<src offset>-
+# <dst offset>-<size> for eleven alignments at two sizes (13 words), then b1 (11), the five
+# b2 cells (12), the two b3 cells (17), the six b4 cells (15), then c1-try-<size> and
+# c2-memcpy-<size> for thirteen sizes (13), the five b5 cells (16), c3-try-<size> for eleven
+# sizes between 0x100 and 0x200 (13), t2-<pair>-m-<size> for six more sizes (13), sixteen
+# c4-<size>-<src offset>-<dst offset> byte-level Try cells (16) and six more alignment pairs
+# (13).
+DMA_TIMING_PAIRS = ("rr", "rv", "vr", "vv")
+DMA_TIMING_APIS = ("m", "t")
+DMA_TIMING_SIZES = (0x10, 0x40, 0x100, 0x400, 0x1000, 0x4000, 0x10000, 0x40000, 0x100000)
+DMA_TIMING_ALIGN = ((0, 0), (1, 0), (0, 1), (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
+                    (4, 0), (0, 4), (32, 0))
+DMA_TIMING_ALIGN_SIZES = (0x1000, 0x10000)
+DMA_TIMING_B2_CELLS = ("b2-try-null", "b2-try-zero", "b2-memcpy-null", "b2-memcpy-zero",
+                       "b2-try-valid")
+DMA_TIMING_B3_CELLS = ("b3-second-higher", "b3-second-lower")
+DMA_TIMING_B4_CELLS = tuple(f"b4-{pair}-{size:06x}" for pair in ("vv", "rr")
+                            for size in (0x10000, 0x40000, 0x100000))
+DMA_TIMING_T_CASES = tuple(f"t-{pair}-{api}-{size:06x}" for pair in DMA_TIMING_PAIRS
+                           for api in DMA_TIMING_APIS for size in DMA_TIMING_SIZES)
+DMA_TIMING_A_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN
+                           for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_C_SIZES = (0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000,
+                      0x4000, 0x8000, 0x10000)
+DMA_TIMING_C1_CASES = tuple(f"c1-try-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_C2_CASES = tuple(f"c2-memcpy-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_B5_CELLS = ("b5-vv-010000", "b5-vv-040000", "b5-vv-100000", "b5-rr-040000",
+                       "b5-rr-0c0000")
+DMA_TIMING_C3_SIZES = (0x101, 0x104, 0x108, 0x110, 0x120, 0x140, 0x180, 0x1C0, 0x1F0, 0x1FC,
+                       0x1FF)
+DMA_TIMING_C3_CASES = tuple(f"c3-try-{size:06x}" for size in DMA_TIMING_C3_SIZES)
+DMA_TIMING_T2_SIZES = (0x200, 0x800, 0x2000, 0x8000, 0x20000, 0x80000)
+DMA_TIMING_T2_CASES = tuple(f"t2-{pair}-m-{size:06x}" for pair in DMA_TIMING_PAIRS
+                            for size in DMA_TIMING_T2_SIZES)
+DMA_TIMING_C4 = ((0x109, 0, 0), (0x10C, 0, 0), (0x10F, 0, 0), (0x1F1, 0, 0), (0x1F4, 0, 0),
+                 (0x1F8, 0, 0), (0x1FC, 0, 0), (0x1FF, 0, 0), (0x201, 0, 0), (0x20C, 0, 0),
+                 (0x10004, 0, 0), (0x200, 1, 0), (0x200, 0, 1), (0x200, 4, 4), (0x1FC, 4, 4),
+                 (0x108, 0, 1))
+DMA_TIMING_C4_CASES = tuple(f"c4-{size:06x}-{src:02x}-{dst:02x}" for size, src, dst in DMA_TIMING_C4)
+DMA_TIMING_ALIGN2 = ((2, 0), (0, 2), (3, 0), (8, 0), (0, 8), (12, 0))
+DMA_TIMING_A2_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN2
+                            for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_CASES = (DMA_TIMING_T_CASES + DMA_TIMING_A_CASES + ("b1-try-dest",)
+                    + DMA_TIMING_B2_CELLS + DMA_TIMING_B3_CELLS + DMA_TIMING_B4_CELLS
+                    + DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_B5_CELLS
+                    + DMA_TIMING_C3_CASES + DMA_TIMING_T2_CASES + DMA_TIMING_C4_CASES
+                    + DMA_TIMING_A2_CASES)
+_register_campaign_probe(
+    "dma-timing", "PSP-DMAC-002", DMA_TIMING_CASES,
+    {
+        **{case: 13 for case in DMA_TIMING_T_CASES + DMA_TIMING_A_CASES},
+        "b1-try-dest": 11,
+        **{case: 12 for case in DMA_TIMING_B2_CELLS},
+        **{case: 17 for case in DMA_TIMING_B3_CELLS},
+        **{case: 15 for case in DMA_TIMING_B4_CELLS},
+        **{case: 13 for case in DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_A2_CASES
+           + DMA_TIMING_C3_CASES + DMA_TIMING_T2_CASES},
+        **{case: 16 for case in DMA_TIMING_B5_CELLS + DMA_TIMING_C4_CASES},
+    },
 )
 
 # insn-trace (119, probe_insn_trace.c): the #312 real-PSP instruction trace. Per fixture of
@@ -1833,6 +1981,66 @@ INTR_CAUSE_CASES = tuple(f"cause-enabled-{i}" for i in range(INTR_CAUSE_ENABLED)
 _register_campaign_probe(
     "intr-cause", "PSP-INTR-CAUSE-001", INTR_CAUSE_CASES,
     {case: (4 if case.startswith("cause-window-") else 6) for case in INTR_CAUSE_CASES},
+)
+
+# ge-raster (123, probe_ge_sample.c): the #343 GE raster corpus. The cells are the gr_cells
+# table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order. Per
+# cell, one `-draw` record (9 words: the GE wait outcome, the list length and the window's
+# FNV-1a 64 digest, low word first) and one record per window row y 0..3 (16 pixels, x 16..31).
+GE_RASTER_CELLS = (
+    "b-sa-isa", "b-fix", "b-fix-ff", "b-dc-sc", "b-idc-isc", "b-da-ida", "b-2sa-2isa",
+    "b-2isa-2sa", "b-2da-2ida", "b-sub-sa-fix", "b-rsub-sa-isa", "b-min", "b-max", "b-abs",
+    "b-eq6", "b-eq7", "b-fac11-15", "b565-sa-isa", "b5551-sa-isa", "b4444-sa-isa",
+    "b565-da-ida", "b-2sa-fix0", "b-2isa-fix0", "b-2da-fix0", "b-ffix-2isa", "b-ffix-2ida",
+    "b5551-da-ida", "b4444-da-ida", "at-f0", "at-f1", "at-f2", "at-f3", "at-f4", "at-f5",
+    "at-f6", "at-f7", "at-mask", "at-gt0", "ct-never", "ct-always", "ct-eq", "ct-ne",
+    "ct-eq-mix", "st-f0", "st-f1", "st-f2", "st-f3", "st-f4", "st-f5", "st-f6", "st-f7",
+    "st-op0", "st-op1", "st-op2", "st-op3", "st-op4", "st-op5", "st-op6", "st-op7", "st-mask",
+    "st4444-incr", "st4444-decr", "st4444-repl", "st4444-lt", "st5551-incr", "st5551-decr",
+    "st5551-repl7f", "st5551-inv", "st565-repl", "st565-eq0", "z-f0", "z-f1", "z-f2", "z-f3",
+    "z-f4", "z-f5", "z-f6", "z-f7", "z-lt-st", "z-gt-st", "tf-mod-rgb", "tf-mod-rgb-x2",
+    "tf-mod-rgba", "tf-mod-rgba-x2", "tf-dec-rgb", "tf-dec-rgb-x2", "tf-dec-rgba",
+    "tf-dec-rgba-x2", "tf-bld-rgb", "tf-bld-rgb-x2", "tf-bld-rgba", "tf-bld-rgba-x2",
+    "tf-rep-rgb", "tf-rep-rgb-x2", "tf-rep-rgba", "tf-rep-rgba-x2", "tf-add-rgb",
+    "tf-add-rgb-x2", "tf-add-rgba", "tf-add-rgba-x2", "tf-mod-rgba-w", "tf-mod-rgba-1",
+    "tfa-mod-rgba", "tfa-dec-rgba", "tfa-bld-rgba", "tfa-rep-rgba", "tfa-add-rgba",
+    "tfa-mod-rgb", "tx-5650", "tx-5551", "tx-4444", "tx-c8-8888", "tx-c8-sh4", "tx-c8-5551",
+    "tx-c4-4444", "tx-c4-off3", "tx-c4-bw48", "tx-c4-bw64", "tx-8888-bw20", "tx-c8-bw24",
+    "wr-c-neg", "wr-w-neg", "wr-uw-vc", "wr-c-big", "wr-w-big", "wr-w-min4", "wr-w-neg-lin",
+    "wr-c-neg-lin", "e-tri0", "e-tri1", "e-tri2", "e-tri3", "e-tri4", "e-tri5", "e-tri6",
+    "e-tri7", "e-line0", "e-line1", "e-line2", "e-line3", "e-points", "fmt-565", "fmt-5551",
+    "fmt-4444", "dth-565", "dth-5551", "dth-4444", "dth-8888", "dth-565-b", "msk-8888",
+    "msk-565", "msk-4444", "msk-8888-st", "lo-0", "lo-1", "lo-2", "lo-3", "lo-4", "lo-5",
+    "lo-6", "lo-7", "lo-8", "lo-9", "lo-10", "lo-11", "lo-12", "lo-13", "lo-14", "lo-15",
+    "lo-565-xor", "clr-c", "clr-a", "clr-ca", "clr-ca-msk", "clr-ca-dth565", "clr-ca-dth8888",
+    "clr-c-565", "clr-ca-blend", "clr-ca-atest", "clr-a-4444", "xf-tri", "xf-plain", "fog-a",
+    "fog-b", "fog-c", "fog-k0-b", "fog-k0-c", "fog-k1-b", "fog-k1-c",
+)
+GE_RASTER_ROWS = tuple(range(4))
+GE_RASTER_CASES = tuple(case for cell in GE_RASTER_CELLS
+                        for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))
+_register_campaign_probe(
+    "ge-raster", "PSP-GE-RASTER-001", GE_RASTER_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_RASTER_CASES},
+)
+
+# module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
+# stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
+# 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper
+# thread is created, the helper's creation, the helper's later refer-status of module_start's
+# thread id, the free sizes after a 50 ms sleep, the sceKernelGetThreadmanIdList thread list
+# summary (count, stored, old thread in list, helper in list, both thread ids) and the
+# helper's own refer-status.
+MODULE_START_CASES = (
+    "ms-self", "ms-mem-pre", "ms-helper-create", "ms-mem-created",
+    "ms-refer-after", "ms-mem-after", "ms-idlist", "ms-helper-self",
+)
+MODULE_START_OUT_COUNTS = {
+    "ms-self": 27, "ms-mem-pre": 2, "ms-helper-create": 3, "ms-mem-created": 2,
+    "ms-refer-after": 27, "ms-mem-after": 2, "ms-idlist": 6, "ms-helper-self": 27,
+}
+_register_campaign_probe(
+    "module-start", "PSP-MODULE-START-001", MODULE_START_CASES, MODULE_START_OUT_COUNTS,
 )
 
 VFPU_TRANSCENDENTAL_OPS = (
@@ -2053,7 +2261,8 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.
-HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "intr-cause"})
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "intr-cause", "vfpu-forms2",
+                                   "vfpu-funnel", "vfpu-sort"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (

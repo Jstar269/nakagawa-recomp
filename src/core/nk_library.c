@@ -6,6 +6,7 @@
 #include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
+#include "nk_user_data_schema.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,13 +143,26 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         target = default_path;
     }
 
+    /* A library a newer player wrote is never replaced, and an older one is kept
+       as library.json.v<N>.bak first (nk_user_data_schema.h). The .bak rotation
+       below copies the primary over the .bak, so a newer .bak is refused too. */
+    char bak_path[NK_MAX_PATH + 8];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
+    if (nk_user_data_file_version(bak_path, (size_t)NK_LIBRARY_MAX_BYTES) >
+        NK_LIBRARY_SCHEMA_VERSION) {
+        return NK_ERROR_NEWER_SCHEMA;
+    }
+    NkResult guard = nk_user_data_prepare_replace(target, NK_LIBRARY_SCHEMA_VERSION,
+                                                  (size_t)NK_LIBRARY_MAX_BYTES, NULL);
+    if (guard != NK_OK) return guard;
+
     char tmp_path[NK_MAX_PATH + 8];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", target);
 
     FILE *f = nk_lib_fopen(tmp_path, "wb");
     if (!f) return NK_ERROR_IO;
 
-    fprintf(f, "{\n  \"schema_version\": 1,\n  \"games\": [\n");
+    fprintf(f, "{\n  \"schema_version\": %d,\n  \"games\": [\n", NK_LIBRARY_SCHEMA_VERSION);
 
     /* Bundled samples are in memory only and are never written. */
     int persisted_total = 0;
@@ -221,9 +235,6 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     fclose(f);
 
     /* Promote the temp file over the target, keeping the previous file as .bak. */
-    char bak_path[NK_MAX_PATH + 8];
-    snprintf(bak_path, sizeof(bak_path), "%s.bak", target);
-
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wtmp[32768];
     WCHAR wtarget[32768];
@@ -407,7 +418,11 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     fclose(f);
     buf[read_bytes] = '\0';
 
-    /* The schema version is mandatory; an unknown one is refused, not guessed at. */
+    /* The schema version is mandatory; an unknown one is refused, not guessed at.
+       A version below this build's would be migrated forward here one step at a
+       time (none exists yet: version 1 is the first); a newer one is refused by
+       name so nk_library_load neither falls back to an older .bak nor lets a
+       save replace it. */
     const char *schema_pos = strstr(buf, "\"schema_version\"");
     if (!schema_pos) {
         free(buf);
@@ -421,8 +436,13 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     schema_pos = skip_whitespace(schema_pos + 1);
     char *schema_end = NULL;
     long version = strtol(schema_pos, &schema_end, 10);
-    if (schema_end == schema_pos || version != 1) {
-        /* Unsupported or malformed schema version: fail closed */
+    if (schema_end != schema_pos && version > NK_LIBRARY_SCHEMA_VERSION) {
+        free(buf);
+        lib->newer_schema_version = version;
+        return NK_ERROR_NEWER_SCHEMA;
+    }
+    if (schema_end == schema_pos || version != NK_LIBRARY_SCHEMA_VERSION) {
+        /* Malformed or pre-version-1 schema: fail closed so the .bak is tried. */
         free(buf);
         return NK_ERROR_GENERIC;
     }
@@ -673,12 +693,21 @@ NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
                 snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
                 return NK_OK;
             }
+            if (bres == NK_ERROR_NEWER_SCHEMA) {
+                long newer = lib->newer_schema_version;
+                nk_library_init(lib);
+                snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+                lib->newer_schema_version = newer;
+                return bres;
+            }
         }
         return NK_OK;
     }
 
     NkResult res = nk_library_load_from_file(lib, target);
-    if (res != NK_OK) {
+    /* A newer player wrote the primary: the .bak is older, and loading it would
+       let the next save replace the newer library. It is refused by name. */
+    if (res != NK_OK && res != NK_ERROR_NEWER_SCHEMA) {
         /* Primary corrupted or invalid: attempt automatic recovery from .bak */
         if (nk_platform_file_exists(bak_path)) {
             nk_library_init(lib);
@@ -687,13 +716,18 @@ NkResult nk_library_load(NkLibrary *lib, const char *file_path) {
                 snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
                 return NK_OK;
             }
+            if (bres == NK_ERROR_NEWER_SCHEMA) res = bres;
         }
+    }
+    if (res != NK_OK) {
         /* Neither the primary nor the backup loaded. A failed parse can still
            have accumulated the entries it read before giving up, and those are
            not a library a caller may act on -- saving them back would write the
            truncation to disk. Hand back an empty library with the error. */
+        long newer = lib->newer_schema_version;
         nk_library_init(lib);
         snprintf(lib->library_path, sizeof(lib->library_path), "%s", target);
+        if (res == NK_ERROR_NEWER_SCHEMA) lib->newer_schema_version = newer;
     }
 
     return res;

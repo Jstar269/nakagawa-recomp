@@ -127,7 +127,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `oracle_matrix.py` (the one-command build, stage, qualify and run matrix), `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -140,8 +140,12 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `prxload.py` | Rebase a PRX/ELF at a base address and write a flat image. |
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
+| `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
+| `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
+| `llvm_ir.py` | Structured LLVM IR builder mirroring the LLVM C API data model (module, function, block, builder). |
+| `lowering_plan.py` | Backend-neutral lowering plan of one function: decoded operations and resolved transfers (#330). |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
@@ -329,6 +333,7 @@ harness changes no compiler default. Findings belong in issue #317.
 
 | Module | Purpose |
 | --- | --- |
+| `test_analysis_ir.py` | Analysis IR parity with codegen's CFG report, JSON round trip, annotation comparison and `explain` (#305). |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
@@ -343,7 +348,11 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_nan_trap.py` | Tests for the NaN/Inf origin diagnostic. |
 | `test_codegen_no_shadow_stubs.py` | Guard the removal of two code-shadowing custom stubs. |
 | `test_codegen_profile_isolation.py` | A profile-free run must inherit no title-specific behavior. |
+| `test_codegen_llvm.py` | The LLVM backend: lowering order, recorded fallbacks, default output unchanged, runtime ABI and layout. |
+| `test_llvm_ir.py` | The structured LLVM IR builder: type checks, linking, renames and LLVM's verifier. |
+| `test_lowering_plan.py` | The lowering plan: decoding, and the drift guard against `emit_function` over a real build. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
+| `test_codegen_register_promotion.py` | Opt-in local register promotion (`--promote-registers`, #284): loads, write-backs at every boundary, and the line safety check. |
 | `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |
@@ -391,6 +400,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_native_host_backends.py` | Run the host-backend native tests from the Python gate. |
 | `test_flash0_font.py` | The read-only flash0: font device selftest, through the built runtime. |
 | `test_platform_ladder.py` | Regressions for the source-owned second-platform workload ladder. |
+| `test_platform_seam.py` | Keeps host `#ifdef`s in `src/player` and `src/core` inside the platform layer, against an explicit allowlist. |
 | `test_prx_loader_cleanroom.py` | Clean-room black-box tests for the PRX loader. |
 | `test_prx_reloc_model.py` | Pins the relocation model to the runtime PRX loader byte for byte at several bases. |
 | `test_ref_run_elf_hardening.py` | Malformed-input regression tests for the standalone reference ELF runner. |
@@ -423,6 +433,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_enhancement_package.py` | Unit tests for the enhancement package schema and validator. |
+| `test_failure_codes.py` | The failure-code taxonomy (`assets/failure_codes.json`, `docs/FAILURE_CODES.md`) agrees with the report schema and every code emitter. |
 | `test_font_provisioning.py` | Firmware font provisioning: structural validation and the local cache contract. |
 | `test_generic_title_planning_proof.py` | Planning proof: the tracked title is unchanged while a synthetic second title flows generically. |
 | `test_hle_title_config_behavior.py` | Production-path regressions for the title-qualified HLE bindings. |
@@ -437,6 +448,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_android_build.py` | Static checks of the Android build (`android/`, #360) against the desktop build, with no SDK: the NDK runtime inventory matches the Makefile's runtime link. |
 | `test_app_icon.py` | The committed app icon is a fresh drawing of the brand SVG, the C drawer draws the same pixels, and the Windows builds link it. |
 | `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
@@ -503,6 +515,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
+| `test_oracle_matrix.py` | One-command PSP oracle matrix: per-boot epochs, identity-bound acceptance, crash containment and the intervention state. |
 | `test_psp_issue_matrix.py` | Issue classification matrix: manifest-backed classes and fixture coverage. |
 | `test_psp_leaf_parsers.py` | Fail-closed tests for the PSP-IO, PSP-AUDIO and PSP-CACHE parsers. |
 | `test_insn_trace.py` | Real-PSP instruction-trace differential: fixture words, probe layout, log conversion, Nakagawa traces and a codegen mutation caught at its first step. |

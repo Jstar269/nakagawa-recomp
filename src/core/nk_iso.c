@@ -20,6 +20,7 @@
 #endif
 
 #include "nk_iso.h"
+#include "../rt/prx_loader.h"
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
 #include "nk_platform.h"
 #endif
@@ -63,7 +64,6 @@
 #define NK_ISO_MAX_DIR_BYTES (512u * 1024u)
 #define NK_ISO_MAX_SFO_BYTES (64u * 1024u)
 #define NK_ISO_MAX_EXECUTABLE_BYTES (512u * 1024u * 1024u)
-#define NK_ISO_MAX_ELF_PROGRAM_HEADERS 128u
 
 /* SFO Header Magic: \x00PSF */
 static const uint8_t SFO_MAGIC[8] = { 0x00, 'P', 'S', 'F', 0x01, 0x01, 0x00, 0x00 };
@@ -664,35 +664,72 @@ static bool sfo_key_is_identity(const char *key) {
         || strcmp(key, "DISC_VERSION") == 0;
 }
 
+/* The UTF-8 sequence at data[index] (Unicode table 3-7). Returns the bytes it spans
+ * and sets *valid. An ill-formed sequence spans its maximal subpart: the lead byte
+ * and the continuation bytes that were still acceptable, at least one byte. That is
+ * the unit one U+FFFD replaces, as Python's decoder does. */
+static size_t sfo_utf8_sequence(const uint8_t *data, size_t size, size_t index, bool *valid) {
+    uint8_t first = data[index];
+    uint8_t low = 0x80u;
+    uint8_t high = 0xbfu;
+    size_t needed;
+    *valid = false;
+    if (first <= 0x7fu) {
+        *valid = true;
+        return 1;
+    }
+    if (first >= 0xc2u && first <= 0xdfu) {
+        needed = 1;
+    } else if (first >= 0xe0u && first <= 0xefu) {
+        needed = 2;
+        if (first == 0xe0u) low = 0xa0u;
+        if (first == 0xedu) high = 0x9fu;
+    } else if (first >= 0xf0u && first <= 0xf4u) {
+        needed = 3;
+        if (first == 0xf0u) low = 0x90u;
+        if (first == 0xf4u) high = 0x8fu;
+    } else {
+        return 1;
+    }
+    size_t taken = 1;
+    for (size_t step = 0; step < needed; step++) {
+        if (index + taken >= size) return taken;
+        uint8_t next = data[index + taken];
+        if (next < (step == 0 ? low : 0x80u) || next > (step == 0 ? high : 0xbfu)) return taken;
+        taken++;
+    }
+    *valid = true;
+    return taken;
+}
+
 static bool sfo_utf8_valid(const uint8_t *data, size_t size) {
     size_t index = 0;
     while (index < size) {
-        uint8_t first = data[index++];
-        if (first <= 0x7fu) continue;
-        if (first >= 0xc2u && first <= 0xdfu) {
-            if (index >= size || (data[index] & 0xc0u) != 0x80u) return false;
-            index++;
-            continue;
-        }
-        if (first >= 0xe0u && first <= 0xefu) {
-            if (index + 1 >= size || (data[index] & 0xc0u) != 0x80u ||
-                (data[index + 1] & 0xc0u) != 0x80u) return false;
-            if ((first == 0xe0u && data[index] < 0xa0u) ||
-                (first == 0xedu && data[index] >= 0xa0u)) return false;
-            index += 2;
-            continue;
-        }
-        if (first >= 0xf0u && first <= 0xf4u) {
-            if (index + 2 >= size || (data[index] & 0xc0u) != 0x80u ||
-                (data[index + 1] & 0xc0u) != 0x80u ||
-                (data[index + 2] & 0xc0u) != 0x80u) return false;
-            if ((first == 0xf0u && data[index] < 0x90u) ||
-                (first == 0xf4u && data[index] >= 0x90u)) return false;
-            index += 3;
-            continue;
-        }
-        return false;
+        bool valid;
+        index += sfo_utf8_sequence(data, size, index, &valid);
+        if (!valid) return false;
     }
+    return true;
+}
+
+/* Copies a display string as UTF-8, each ill-formed subsequence replaced by U+FFFD.
+ * False when the result and its NUL do not fit in dest_size bytes. */
+static bool sfo_utf8_display_copy(const uint8_t *data, size_t size, char *dest,
+                                  size_t dest_size) {
+    static const uint8_t replacement[3] = { 0xefu, 0xbfu, 0xbdu };
+    size_t out = 0;
+    size_t index = 0;
+    while (index < size) {
+        bool valid;
+        size_t span = sfo_utf8_sequence(data, size, index, &valid);
+        const uint8_t *bytes = valid ? data + index : replacement;
+        size_t count = valid ? span : sizeof(replacement);
+        if (count >= dest_size - out) return false;
+        memcpy(dest + out, bytes, count);
+        out += count;
+        index += span;
+    }
+    dest[out] = '\0';
     return true;
 }
 
@@ -719,6 +756,150 @@ static void sfo_copy_disc_id(char *dest, size_t dest_size, const char *value) {
         dest[output++] = (char)(c >= 'a' && c <= 'z' ? c - ('a' - 'A') : c);
     }
     dest[output] = '\0';
+}
+
+/* SHA-256 (FIPS 180-4); declared in nk_iso.h. */
+static uint32_t nk_sha256_rotr(uint32_t value, unsigned int amount) {
+    return (value >> amount) | (value << (32u - amount));
+}
+
+static void nk_sha256_transform(NkSha256 *ctx, const uint8_t block[64]) {
+    static const uint32_t k[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    };
+    uint32_t words[64];
+    for (size_t i = 0; i < 16; i++) {
+        words[i] = ((uint32_t)block[i * 4] << 24) |
+                   ((uint32_t)block[i * 4 + 1] << 16) |
+                   ((uint32_t)block[i * 4 + 2] << 8) |
+                   (uint32_t)block[i * 4 + 3];
+    }
+    for (size_t i = 16; i < 64; i++) {
+        uint32_t s0 = nk_sha256_rotr(words[i - 15], 7) ^
+                      nk_sha256_rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
+        uint32_t s1 = nk_sha256_rotr(words[i - 2], 17) ^
+                      nk_sha256_rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+
+    uint32_t a = ctx->state[0], b = ctx->state[1], c = ctx->state[2], d = ctx->state[3];
+    uint32_t e = ctx->state[4], f = ctx->state[5], g = ctx->state[6], h = ctx->state[7];
+    for (size_t i = 0; i < 64; i++) {
+        uint32_t sum1 = nk_sha256_rotr(e, 6) ^ nk_sha256_rotr(e, 11) ^ nk_sha256_rotr(e, 25);
+        uint32_t choose = (e & f) ^ (~e & g);
+        uint32_t t1 = h + sum1 + choose + k[i] + words[i];
+        uint32_t sum0 = nk_sha256_rotr(a, 2) ^ nk_sha256_rotr(a, 13) ^ nk_sha256_rotr(a, 22);
+        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = sum0 + majority;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+void nk_sha256_init(NkSha256 *ctx) {
+    static const uint32_t initial[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+    };
+    memcpy(ctx->state, initial, sizeof(initial));
+    ctx->bit_count = 0;
+    ctx->block_len = 0;
+}
+
+void nk_sha256_update(NkSha256 *ctx, const uint8_t *data, size_t len) {
+    ctx->bit_count += (uint64_t)len * 8u;
+    while (len > 0) {
+        size_t room = sizeof(ctx->block) - ctx->block_len;
+        size_t take = len < room ? len : room;
+        memcpy(ctx->block + ctx->block_len, data, take);
+        ctx->block_len += take;
+        data += take;
+        len -= take;
+        if (ctx->block_len == sizeof(ctx->block)) {
+            nk_sha256_transform(ctx, ctx->block);
+            ctx->block_len = 0;
+        }
+    }
+}
+
+void nk_sha256_finish(NkSha256 *ctx, uint8_t digest[32]) {
+    uint64_t bits = ctx->bit_count;
+    ctx->block[ctx->block_len++] = 0x80;
+    if (ctx->block_len > 56) {
+        memset(ctx->block + ctx->block_len, 0, sizeof(ctx->block) - ctx->block_len);
+        nk_sha256_transform(ctx, ctx->block);
+        ctx->block_len = 0;
+    }
+    memset(ctx->block + ctx->block_len, 0, 56 - ctx->block_len);
+    for (size_t i = 0; i < 8; i++) {
+        ctx->block[63 - i] = (uint8_t)(bits >> (i * 8));
+    }
+    nk_sha256_transform(ctx, ctx->block);
+    for (size_t i = 0; i < 8; i++) {
+        digest[i * 4] = (uint8_t)(ctx->state[i] >> 24);
+        digest[i * 4 + 1] = (uint8_t)(ctx->state[i] >> 16);
+        digest[i * 4 + 2] = (uint8_t)(ctx->state[i] >> 8);
+        digest[i * 4 + 3] = (uint8_t)ctx->state[i];
+    }
+}
+
+/* A normalised nine-character ID that is its own library key: a retail ID
+ * (U[CL] or NP plus two letters, then five digits; RETAIL_DISC_ID in
+ * tools/nk_core/synthetic_disc_ids.py) or one of the project's synthetic TEST
+ * IDs. Any other ID belongs to a non-retail disc, keyed by its contents
+ * (disc_id_library_key in tools/nk_core/iso_inspect.py). */
+static bool nk_disc_id_keyed_as_is(const char *id) {
+    if (!id || strlen(id) != 9u || !sfo_disc_id_valid(id)) return false;
+    for (size_t i = 0; i < 4u; i++) {
+        if (id[i] < 'A' || id[i] > 'Z') return false;
+    }
+    return (id[0] == 'U' && (id[1] == 'C' || id[1] == 'L')) ||
+           (id[0] == 'N' && id[1] == 'P') || memcmp(id, "TEST", 4) == 0;
+}
+
+void nk_non_retail_disc_key(const uint8_t digest[32], char out_key[10]) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8u; i++) value = (value << 8) | digest[i];
+    value %= (uint64_t)26u * 26u * 26u * 100000u;
+    uint32_t digits = (uint32_t)(value % 100000u);
+    uint32_t letters = (uint32_t)(value / 100000u);
+    out_key[0] = NK_NON_RETAIL_KEY_PREFIX;
+    out_key[1] = (char)('A' + letters / 676u);
+    out_key[2] = (char)('A' + (letters / 26u) % 26u);
+    out_key[3] = (char)('A' + letters % 26u);
+    for (int i = 8; i >= 4; i--) {
+        out_key[i] = (char)('0' + digits % 10u);
+        digits /= 10u;
+    }
+    out_key[9] = '\0';
+}
+
+bool nk_disc_id_is_non_retail_key(const char *disc_id) {
+    if (!disc_id || strlen(disc_id) != 9u || disc_id[0] != NK_NON_RETAIL_KEY_PREFIX) {
+        return false;
+    }
+    for (size_t i = 1; i < 9u; i++) {
+        char c = disc_id[i];
+        if (i < 4u ? (c < 'A' || c > 'Z') : (c < '0' || c > '9')) return false;
+    }
+    return true;
 }
 
 bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata *meta) {
@@ -749,9 +930,17 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         while (key_len < key_limit && key[key_len] != '\0') key_len++;
         if (key_len == key_limit) return false;
 
-        if (data_off > sfo_size - data_table_off) return false;
+        /* A value that lies past the end of the file cannot be read. For DISC_ID,
+         * TITLE and DISC_VERSION that refuses the SFO; another key is left unread,
+         * since the disc's identity does not depend on it (parse_param_sfo in
+         * tools/nk_core/iso_inspect.py notes it). */
+        if (data_off > sfo_size - data_table_off ||
+            data_len > sfo_size - data_table_off - data_off) {
+            if (sfo_key_is_identity(key)) return false;
+            continue;
+        }
         size_t abs_data_off = (size_t)data_table_off + data_off;
-        if (data_len > sfo_size - abs_data_off || max_len < data_len) return false;
+        if (max_len < data_len) return false;
         const uint8_t *raw_value = &sfo[abs_data_off];
 
         if (sfo_key_is_identity(key) && data_fmt != SFO_FMT_UTF8 &&
@@ -765,44 +954,73 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
         size_t value_len = data_fmt == SFO_FMT_UTF8 ||
             data_fmt == SFO_FMT_UTF8_SPECIAL ? (size_t)data_len : 0;
         if (data_fmt == SFO_FMT_UTF8) {
-            while (value_len > 0 && raw_value[value_len - 1] == 0) value_len--;
+            /* A NUL-terminated string ends at its first NUL; bytes after it are not
+             * part of the value. */
+            const uint8_t *terminator = (const uint8_t *)memchr(raw_value, 0, value_len);
+            if (terminator) value_len = (size_t)(terminator - raw_value);
         }
-        if ((data_fmt == SFO_FMT_UTF8 || data_fmt == SFO_FMT_UTF8_SPECIAL) &&
-            !sfo_utf8_valid(raw_value, value_len)) {
+        /* DISC_ID and DISC_VERSION name the disc exactly and are never repaired.
+         * TITLE is shown to a person: ill-formed UTF-8 there is shown as U+FFFD. */
+        bool exact_text = strcmp(key, "DISC_ID") == 0 || strcmp(key, "DISC_VERSION") == 0;
+        if (exact_text && !sfo_utf8_valid(raw_value, value_len)) {
             snprintf(meta->error_message, sizeof(meta->error_message),
                 "SFO key '%.32s' is not valid UTF-8", key);
             return false;
         }
         if (data_fmt == SFO_FMT_UINT32 && data_len < 4) return false;
-        bool stored_value = strcmp(key, "DISC_ID") == 0 ||
-            strcmp(key, "TITLE") == 0 || strcmp(key, "DISC_VERSION") == 0;
-        if (value_len >= sizeof(meta->title_name)) {
-            if (stored_value) {
+        bool is_title = strcmp(key, "TITLE") == 0;
+        if (!exact_text && !is_title) continue;
+
+        char value[NK_MAX_TITLE_LEN];
+        if (is_title) {
+            if (!sfo_utf8_display_copy(raw_value, value_len, value, sizeof(value))) {
                 snprintf(meta->error_message, sizeof(meta->error_message),
                     "SFO key '%.32s' is too long", key);
                 return false;
             }
-            continue;
+        } else {
+            if (value_len >= sizeof(value)) {
+                snprintf(meta->error_message, sizeof(meta->error_message),
+                    "SFO key '%.32s' is too long", key);
+                return false;
+            }
+            if (value_len > 0) memcpy(value, raw_value, value_len);
+            value[value_len] = '\0';
         }
 
-        char value[NK_MAX_TITLE_LEN];
-        if (value_len > 0) memcpy(value, raw_value, value_len);
-        value[value_len] = '\0';
-
         if (strcmp(key, "DISC_ID") == 0) {
-            if (!sfo_disc_id_valid(value)) {
-                snprintf(meta->error_message, sizeof(meta->error_message),
-                    "SFO key 'DISC_ID' does not contain a valid 9-character ID");
-                return false;
-            }
+            /* The disc's own ID: 1 to 31 printable ASCII characters that do not
+               normalise to nothing (disc_id_library_key in iso_inspect.py). It is
+               kept as it is; a nine-character ID is also named in disc_id, and
+               nk_iso_inspect decides whether that is the library key. */
             char normalized[NK_MAX_DISC_ID_LEN];
-            sfo_copy_disc_id(normalized, sizeof(normalized), value);
-            if (meta->disc_id[0] != '\0' && strcmp(meta->disc_id, normalized) != 0) {
+            bool printable = value_len > 0 && value_len < sizeof(meta->sfo_disc_id);
+            for (size_t i = 0; printable && i < value_len; i++) {
+                printable = raw_value[i] >= 0x20u && raw_value[i] <= 0x7eu;
+            }
+            if (printable) {
+                sfo_copy_disc_id(normalized, sizeof(normalized), value);
+                printable = normalized[0] != '\0';
+            }
+            if (!printable) {
                 snprintf(meta->error_message, sizeof(meta->error_message),
-                    "Conflicting duplicate SFO key 'DISC_ID' rejected as ambiguous");
+                    "SFO key 'DISC_ID' is not 1 to 31 printable ASCII characters");
                 return false;
             }
-            memcpy(meta->disc_id, normalized, strlen(normalized) + 1);
+            if (meta->sfo_disc_id[0] != '\0') {
+                char previous[NK_MAX_DISC_ID_LEN];
+                sfo_copy_disc_id(previous, sizeof(previous), meta->sfo_disc_id);
+                if (strcmp(previous, normalized) != 0) {
+                    snprintf(meta->error_message, sizeof(meta->error_message),
+                        "Conflicting duplicate SFO key 'DISC_ID' rejected as ambiguous");
+                    return false;
+                }
+                continue;
+            }
+            memcpy(meta->sfo_disc_id, value, value_len + 1);
+            if (sfo_disc_id_valid(normalized)) {
+                memcpy(meta->disc_id, normalized, strlen(normalized) + 1);
+            }
         } else if (strcmp(key, "TITLE") == 0) {
             if (meta->title_name[0] != '\0' && strcmp(meta->title_name, value) != 0) {
                 snprintf(meta->error_message, sizeof(meta->error_message),
@@ -918,6 +1136,9 @@ static NkResult nk_iso_inspect_pbp(FILE *f, uint64_t file_size,
     snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_PACKAGE_UNSUPPORTED");
     return NK_ERROR_INVALID_ISO;
 }
+
+static bool nk_iso_non_retail_identity(const char *iso_path, const uint8_t *sfo,
+                                       uint32_t sfo_size, NkIsoMetadata *meta);
 
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
@@ -1194,11 +1415,19 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         nk_fseek64(f, (int64_t)sfo_offset, SEEK_SET);
         if (fread(sfo_buf, 1, sfo_size, f) != sfo_size ||
             !nk_iso_parse_sfo_buffer(sfo_buf, sfo_size, out_meta) ||
-            !sfo_disc_id_valid(out_meta->disc_id)) {
+            out_meta->sfo_disc_id[0] == '\0') {
             if (out_meta->error_message[0] == '\0') {
                 snprintf(out_meta->error_message, sizeof(out_meta->error_message),
                     "PSP_GAME/PARAM.SFO is malformed");
             }
+            free(sfo_buf);
+            fclose(f);
+            return NK_ERROR_INVALID_ISO;
+        }
+        /* A retail or synthetic ID is its own key; any other disc is keyed by
+           its contents, or refused when it has no main executable to read. */
+        if (!nk_disc_id_keyed_as_is(out_meta->disc_id) &&
+            !nk_iso_non_retail_identity(iso_path, sfo_buf, sfo_size, out_meta)) {
             free(sfo_buf);
             fclose(f);
             return NK_ERROR_INVALID_ISO;
@@ -1280,6 +1509,64 @@ static bool nk_iso_read_extent_exact(NkIsoReader *reader, uint32_t lba,
     return nk_iso_reader_read(reader, lba, offset, dst, bytes) == (int)bytes;
 }
 
+static void nk_iso_sha256_update_u64(NkSha256 *ctx, uint64_t value) {
+    uint8_t bytes[8];
+    for (size_t i = 0; i < 8u; i++) bytes[i] = (uint8_t)(value >> (8u * i));
+    nk_sha256_update(ctx, bytes, sizeof(bytes));
+}
+
+/* Keys a non-retail disc by its contents (_non_retail_identity in
+ * tools/nk_core/iso_inspect.py): SHA-256 over a domain tag, then PARAM.SFO and
+ * PSP_GAME/SYSDIR/EBOOT.BIN, each preceded by its length as a little-endian
+ * 64-bit integer. Nothing on the disc is changed. Without a readable EBOOT.BIN
+ * the disc cannot be told apart from other discs and is refused. */
+static bool nk_iso_non_retail_identity(const char *iso_path, const uint8_t *sfo,
+                                       uint32_t sfo_size, NkIsoMetadata *meta) {
+    static const char domain[] = "nakagawa-non-retail-disc-key-v1";
+    enum { CHUNK = 64 * 1024 };
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    uint8_t *buffer = (uint8_t *)malloc(CHUNK);
+    uint32_t lba = 0, size = 0;
+    bool is_directory = false;
+    bool ok = reader && buffer &&
+        nk_iso_reader_lookup(reader, "PSP_GAME/SYSDIR/EBOOT.BIN", &lba, &size,
+                             &is_directory) == 0 &&
+        !is_directory && size > 0 && size <= NK_ISO_MAX_EXECUTABLE_BYTES &&
+        nk_iso_extent_span_valid(reader, lba, size, 0, size);
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    nk_sha256_update(&ctx, (const uint8_t *)domain, sizeof(domain));
+    nk_iso_sha256_update_u64(&ctx, sfo_size);
+    nk_sha256_update(&ctx, sfo, sfo_size);
+    nk_iso_sha256_update_u64(&ctx, size);
+    for (uint32_t offset = 0; ok && offset < size;) {
+        uint32_t count = size - offset < (uint32_t)CHUNK ? size - offset : (uint32_t)CHUNK;
+        ok = nk_iso_read_extent_exact(reader, lba, size, offset, buffer, count);
+        if (ok) nk_sha256_update(&ctx, buffer, count);
+        offset += count;
+    }
+    free(buffer);
+    if (reader) nk_iso_reader_close(reader);
+    if (!ok) {
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "PARAM.SFO names this disc '%s', which is not a retail disc ID, and "
+                 "PSP_GAME/SYSDIR/EBOOT.BIN is missing or unreadable, so the disc "
+                 "cannot be identified by its contents", meta->sfo_disc_id);
+        return false;
+    }
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    nk_sha256_finish(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        meta->identity_sha256[i * 2u] = hex[digest[i] >> 4];
+        meta->identity_sha256[i * 2u + 1u] = hex[digest[i] & 15u];
+    }
+    meta->identity_sha256[64] = '\0';
+    nk_non_retail_disc_key(digest, meta->disc_id);
+    meta->non_retail = true;
+    return true;
+}
+
 /* The PSP ELF32/MIPS image layout rule, shared by every reader in this tree.
  * Python mirrors it in tools/nk_core/iso_inspect.py (_elf32_mips_layout_violation);
  * tests/parity keep the two in step. Returns NULL when the image is usable, or
@@ -1289,6 +1576,19 @@ typedef struct {
     uint64_t start;
     uint64_t end;
 } NkElfLoadSpan;
+
+static const char *nk_elf32_mips_program_table_violation(
+    NkElfImageRead read, void *context, uint64_t image_size, uint32_t phoff,
+    uint16_t phnum, uint32_t entry, uint16_t type, bool module,
+    uint8_t *program_headers, NkElfLoadSpan *spans);
+
+static int nk_elf_load_span_compare(const void *left, const void *right) {
+    const NkElfLoadSpan *a = (const NkElfLoadSpan *)left;
+    const NkElfLoadSpan *b = (const NkElfLoadSpan *)right;
+    if (a->start != b->start) return a->start < b->start ? -1 : 1;
+    if (a->end != b->end) return a->end < b->end ? -1 : 1;
+    return 0;
+}
 
 const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
                                            uint64_t image_size, bool module) {
@@ -1302,7 +1602,7 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
     uint16_t type = read_le16(header + 16);
     uint16_t machine = read_le16(header + 18);
     uint32_t version = read_le32(header + 20);
-    uint32_t entry = read_le32(header + 24);
+    uint32_t entry = 0;  /* the start entry, resolved below (sr_prx_start_entry) */
     uint32_t phoff = read_le32(header + 28);
     uint32_t shoff = read_le32(header + 32);
     uint16_t ehsize = read_le16(header + 40);
@@ -1317,8 +1617,10 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         machine != 8 || version != 1 || ehsize != sizeof(header)) {
         return "header-fields";
     }
-    if (phentsize != 32 || phnum == 0 || phnum > NK_ISO_MAX_ELF_PROGRAM_HEADERS ||
-        phoff < ehsize) {
+    /* e_phnum is 16 bits and the table must lie inside the image (checked
+       next): no smaller cap, since a separate executable on a disc can carry
+       well over a hundred entries. */
+    if (phentsize != 32 || phnum == 0 || phoff < ehsize) {
         return "program-table-fields";
     }
     uint64_t phend = 0;
@@ -1337,15 +1639,28 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         return "section-table-bounds";
     }
 
-    uint8_t program_headers[NK_ISO_MAX_ELF_PROGRAM_HEADERS * 32u];
-    if (!read(context, phoff, program_headers, (uint32_t)phentsize * phnum)) {
+    /* Both buffers are sized by phnum (at most 65535 entries, inside the image). */
+    uint8_t *program_headers = (uint8_t *)malloc((size_t)phnum * 32u);
+    NkElfLoadSpan *spans = (NkElfLoadSpan *)malloc((size_t)phnum * sizeof(*spans));
+    const char *violation = nk_elf32_mips_program_table_violation(
+        read, context, image_size, phoff, phnum, entry, type, module,
+        program_headers, spans);
+    free(spans);
+    free(program_headers);
+    return violation;
+}
+
+static const char *nk_elf32_mips_program_table_violation(
+    NkElfImageRead read, void *context, uint64_t image_size, uint32_t phoff,
+    uint16_t phnum, uint32_t entry, uint16_t type, bool module,
+    uint8_t *program_headers, NkElfLoadSpan *spans) {
+    if (!program_headers || !spans) return "image-read-failed";
+    if (!read(context, phoff, program_headers, (uint32_t)phnum * 32u)) {
         return "image-read-failed";
     }
 
     bool have_load = false;
-    bool entry_executable = false;
     bool code_segment = false;
-    NkElfLoadSpan spans[NK_ISO_MAX_ELF_PROGRAM_HEADERS];
     uint32_t span_count = 0;
     for (uint16_t i = 0; i < phnum; i++) {
         const uint8_t *ph = program_headers + (size_t)i * 32u;
@@ -1370,31 +1685,31 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         span_count++;
         have_load = true;
         bool executable = (p_flags & 1u) != 0;
-        if (executable && entry >= p_vaddr && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
         if (executable && p_filesz > 0) code_segment = true;
     }
     if (!have_load) return "no-load-segment";
 
     /* Loadable segments must not overlap: sorted by (start, end), any overlap
-       shows between neighbours. Insertion sort keeps the bounded array simple. */
-    for (uint32_t i = 1; i < span_count; i++) {
-        NkElfLoadSpan current = spans[i];
-        uint32_t j = i;
-        while (j > 0 && (spans[j - 1].start > current.start ||
-                         (spans[j - 1].start == current.start &&
-                          spans[j - 1].end > current.end))) {
-            spans[j] = spans[j - 1];
-            j--;
-        }
-        spans[j] = current;
-    }
+       shows between neighbours. */
+    qsort(spans, span_count, sizeof(*spans), nk_elf_load_span_compare);
     for (uint32_t i = 0; i + 1 < span_count; i++) {
         if (spans[i].end > spans[i + 1].start) return "segment-overlap";
     }
 
     if (module && type == 0xFFA0u) return code_segment ? NULL : "no-code-segment";
+    /* The PSP starts an executable at its module_start export, not at e_entry
+       (sr_prx_start_entry in src/rt/prx_loader.h); that is the address that must be executable. */
+    const char *start_violation = sr_prx_start_entry(read, context, image_size, &entry);
+    if (start_violation) return start_violation;
+    bool entry_executable = false;
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *ph = program_headers + (size_t)i * 32u;
+        uint32_t p_vaddr = read_le32(ph + 8);
+        if (read_le32(ph + 0) == 1u && (read_le32(ph + 24) & 1u) != 0 && entry >= p_vaddr &&
+            (uint64_t)entry < (uint64_t)p_vaddr + read_le32(ph + 20)) {
+            entry_executable = true;
+        }
+    }
     return entry_executable ? NULL : "entry-not-executable";
 }
 
@@ -1512,8 +1827,11 @@ NkResult nk_iso_classify_executables(const char *iso_path,
         out_report->selected = NK_ISO_EXEC_SELECTION_EBOOT;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),
                  "EBOOT.BIN");
-    } else if (out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+    } else if ((out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED ||
+                out_report->eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO) &&
                out_report->boot.kind == NK_ISO_EXEC_MIPS_ELF32) {
+        /* A zero-filled EBOOT.BIN is the placeholder prototype and development discs carry
+         * beside their plain BOOT.BIN (tools/nk_core/iso_inspect.py has the same rule). */
         out_report->selected = NK_ISO_EXEC_SELECTION_BOOT;
         out_report->boot_fallback = true;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),

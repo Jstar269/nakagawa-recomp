@@ -13,6 +13,7 @@
 
 #include "nk_launch.h"
 #include "nk_font_slots.h"
+#include "../rt/prx_loader.h"
 #include "generated/nk_title_catalog.h"
 #include "../rt/recomp.h"
 #include <stdio.h>
@@ -39,6 +40,13 @@ static uint16_t launch_read_u16(const uint8_t *p) {
 static uint32_t launch_read_u32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* SrPrxImageRead over an open staged file. */
+static bool launch_file_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {
+    FILE *file = (FILE *)context;
+    return nk_fseek64(file, (int64_t)offset, SEEK_SET) == 0 &&
+           fread(dst, 1, bytes, file) == bytes;
 }
 
 static void launch_error(char *error_message, size_t error_message_size,
@@ -670,7 +678,15 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
         return NK_ERROR_INVALID_EXECUTABLE;
     }
 
-    uint32_t entry_point = launch_read_u32(header + 24);
+    /* The PSP starts the executable at its module_start export, not at e_entry
+       (sr_prx_start_entry in src/rt/prx_loader.h); the title manifest records that start entry. */
+    uint32_t entry_point = 0;
+    if (sr_prx_start_entry(launch_file_read, file, (uint64_t)raw_size, &entry_point) != NULL) {
+        fclose(file);
+        launch_error(error_message, error_message_size,
+                     "staged ELF module info or export table is outside the file");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
     uint32_t program_header_offset = launch_read_u32(header + 28);
     uint16_t program_header_size = launch_read_u16(header + 42);
     uint16_t program_header_count = launch_read_u16(header + 44);
@@ -930,6 +946,16 @@ static bool launch_package_directory_exists(const char *root, const char *disc_i
            nk_platform_dir_exists(package_root);
 }
 
+bool nk_launch_package_dir_name(const NkGameEntry *game, char *out, size_t out_size) {
+    if (out && out_size) out[0] = '\0';
+    if (!game || !memchr(game->enhancement_package_id, '\0',
+                         sizeof(game->enhancement_package_id))) {
+        return false;
+    }
+    return nk_title_manifest_package_dir_name(game->disc_id, game->enhancement_package_id,
+                                              out, out_size);
+}
+
 NkRuntimePackageStatus nk_launch_validate_runtime_package(
     const char *user_data_root,
     const NkGameEntry *game,
@@ -945,9 +971,15 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
        inputs. Their companion ISO is generated with the package and does not
        need a per-user source-media identity. Other samples and library entries
        retain the live-media identity check. */
+    if (!memchr(game->enhancement_package_id, '\0', sizeof(game->enhancement_package_id))) {
+        if (reason && reason_size) snprintf(reason, reason_size,
+            "The enhancement package id is not a valid package name.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
     const char *source_iso_path = game->is_showcase_package ? NULL : game->iso_path;
     return nk_title_manifest_validate_aot_package(
-        user_data_root, game->disc_id, game->title_id, game->is_experimental,
+        user_data_root, game->disc_id, game->enhancement_package_id, game->title_id,
+        game->is_experimental,
         game->selected_executable, game->disc_version, source_iso_path,
         SR_CPUSTATE_ABI_VERSION, out_info,
         reason, reason_size);
@@ -962,9 +994,14 @@ bool nk_launch_runtime_package_cache_identity(
         if (out_identity) out_identity[0] = '\0';
         return false;
     }
+    if (!memchr(game->enhancement_package_id, '\0', sizeof(game->enhancement_package_id))) {
+        if (out_identity) out_identity[0] = '\0';
+        return false;
+    }
     const char *source_iso_path = game->is_showcase_package ? NULL : game->iso_path;
     return nk_title_manifest_aot_package_cache_identity(
-        user_data_root, game->disc_id, game->title_id, game->is_experimental,
+        user_data_root, game->disc_id, game->enhancement_package_id, game->title_id,
+        game->is_experimental,
         game->selected_executable, game->disc_version, source_iso_path,
         SR_CPUSTATE_ABI_VERSION, out_identity);
 }
@@ -1016,6 +1053,13 @@ NkResult nk_launch_prepare_session(
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
     snprintf(session->game_title, sizeof(session->game_title), "%s", game->title_name);
+    if (!memchr(game->enhancement_package_id, '\0', sizeof(game->enhancement_package_id))) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "The enhancement package id is not a valid package name.");
+        return NK_ERROR_UNSUPPORTED_TITLE;
+    }
+    snprintf(session->enhancement_package_id, sizeof(session->enhancement_package_id), "%s",
+             game->enhancement_package_id);
     int boot_written = snprintf(session->boot_executable,
                                 sizeof(session->boot_executable), "%s",
                                 boot_executable);
@@ -1052,6 +1096,13 @@ NkResult nk_launch_prepare_session(
                  package_info.executable_path);
         snprintf(session->image_path, sizeof(session->image_path), "%s",
                  package_info.image_path);
+    } else if (game->enhancement_package_id[0]) {
+        /* The user chose the enhanced build: it launches or the launch fails.
+           Neither the authentic package nor a developer layout stands in. */
+        snprintf(session->last_error, sizeof(session->last_error), "%s",
+                 package_error[0] ? package_error : "The enhanced runtime package is not valid.");
+        return package_status == NK_RUNTIME_PACKAGE_MISSING
+            ? NK_ERROR_FILE_NOT_FOUND : NK_ERROR_UNSUPPORTED_TITLE;
     } else if (launch_package_directory_exists(root, game->disc_id)) {
         snprintf(session->last_error, sizeof(session->last_error), "%s",
                  package_error[0] ? package_error :
@@ -1310,6 +1361,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                  session->iso_path);
         identity.is_experimental = session->experimental_package;
         identity.is_showcase_package = session->showcase_package;
+        snprintf(identity.enhancement_package_id, sizeof(identity.enhancement_package_id),
+                 "%s", session->enhancement_package_id);
         NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
             session->package_root, &identity, &current, gate_error,
             sizeof(gate_error));
@@ -1443,8 +1496,12 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         envp[env_count++] = env_launcher_display;
     }
     envp[env_count++] = env_volume;
-    /* Always set, so an inherited value cannot opt a launch in. */
-    envp[env_count++] = session->config.experimental_60hz ? "SR_EXPERIMENTAL_60HZ=1" : "SR_EXPERIMENTAL_60HZ=0";
+    /* Always set, so an inherited value cannot opt a launch in. On only for the
+       enhanced build, the one variant whose rewritten sites read it
+       (docs/ENHANCEMENT_CONTRACT.md section 9.1); the authentic package always
+       runs with it off. */
+    envp[env_count++] = session->enhancement_package_id[0] ? "SR_EXPERIMENTAL_60HZ=1"
+                                                           : "SR_EXPERIMENTAL_60HZ=0";
     /* Likewise developer mode (#314): the game's developer HUD and pause pages follow the
        launcher's setting, never an inherited value. */
     envp[env_count++] = session->config.developer_mode ? "SR_DEVELOPER_MODE=1" : "SR_DEVELOPER_MODE=0";

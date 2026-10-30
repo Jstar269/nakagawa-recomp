@@ -109,6 +109,10 @@ typedef struct {
     /* Set by the caller before package_builder_start: the build compiles every system
        library itself and leaves the shared library cache untouched (#1306). */
     bool no_shared_libraries;
+    /* Set by the caller before package_builder_start: the enhancement package of
+       the enhanced build to write, packages/<disc_id>-enhanced-<id>; the build
+       runs with --experimental-60hz. Empty builds the authentic package. */
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
     /* Set by the caller before package_builder_start: the verified release bundle
        (#1285) whose msys64/ucrt64/bin leads the build child's PATH. Empty selects
        <user data root>/prerequisites, the per-user download. */
@@ -367,6 +371,11 @@ bool package_builder_clear_shared_library_cache(const char *data_root,
  * make elsewhere. tools/title_codegen_plan.py defaults to the same name, so the
  * player's preflight looks for the tool the build will actually call. */
 const char *package_builder_make_tool_name(void);
+
+/* Whether this host has the pinned build-tool download (the prerequisite consent
+ * card): Windows only. Elsewhere the build runs the system's python, gcc and make,
+ * and a missing one is reported by package_builder_toolchain_missing. */
+bool package_builder_toolchain_download_available(void);
 
 /* Pure: report the first missing build tool (python, gcc, then the make
  * package_builder_make_tool_name names). Returns false and clears the outputs

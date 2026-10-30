@@ -66,6 +66,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "../core/nk_font.h"    /* owner font import/cache path */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 #include "audio_resample.h"
+#include "vfpu_tables.h"        /* sr_vfpu_sha256: enhancement data-file digests */
 
 #include <math.h>
 #include <stdint.h>
@@ -1744,20 +1745,37 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
     return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
+static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid, const char *modname,
+                                          uint32_t sdk_version);
+
 /* with_start == 0 writes a library module with no start routine: the system library
  * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
  * one function under `export_nid`. */
 static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid) {
+    return write_runtime_module_prx_named(path, flavour, with_start, export_nid, "rtplaced", 0u);
+}
+
+/* The module info names the module `modname`. A start-less module with a nonzero
+ * sdk_version also exports the module_sdk_version variable (NID 0x11B97506) from its system
+ * library, holding sdk_version, as SDK-built library modules do. */
+#define RT_SDK_VERSION_WORD 0x1D0u
+static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid, const char *modname,
+                                          uint32_t sdk_version) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
-    /* A start-less module's single system-library address sits at table + 4. */
+    const int sdk_var = !with_start && sdk_version != 0u;
+    /* A start-less module's single system-library address sits at table + 4; with the
+     * version variable, the two addresses follow the two NIDs at table + 8 and + 12. */
     const uint32_t sites[RT_RELOC_COUNT] = {
         RT_MODINFO + 32u, RT_MODINFO + 36u, RT_MODINFO + 40u, RT_MODINFO + 44u,
         RT_MODINFO + 48u, RT_LIBENT + 12u, RT_LIBENT + 16u, RT_LIBENT + 28u,
-        with_start ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u, RT_SYSLIB_TABLE + 12u,
-        RT_LIB_TABLE + 4u, RT_DATA_PTR,
+        with_start ? RT_SYSLIB_TABLE + 8u : sdk_var ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u,
+        RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
+    if (strlen(modname) >= 27u) return 0;
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
     memset(image, 0, sizeof(image));
@@ -1794,7 +1812,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
     fixture_wr16(seg + RT_MODINFO + 0, 0);
     seg[RT_MODINFO + 2] = 1;
     seg[RT_MODINFO + 3] = 1;
-    memcpy(seg + RT_MODINFO + 4, "rtplaced", 9);
+    memcpy(seg + RT_MODINFO + 4, modname, strlen(modname) + 1u);
     fixture_wr32(seg + RT_MODINFO + 32, RT_GP_LINK);
     fixture_wr32(seg + RT_MODINFO + 36, RT_LIBENT);
     fixture_wr32(seg + RT_MODINFO + 40, RT_LIBENT_END);
@@ -1825,6 +1843,14 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xCEE05613u);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    }
+    if (sdk_var) {
+        /* {0 vars -> 1 var}: NIDs stop, module_sdk_version; then their addresses. */
+        seg[RT_LIBENT + 9] = 1;
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0x11B97506u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 8, RT_STOP);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_SDK_VERSION_WORD);
+        fixture_wr32(seg + RT_SDK_VERSION_WORD, sdk_version);
     }
     fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
@@ -1980,6 +2006,7 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     sr_module_code_reset();
 }
 
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -2047,6 +2074,28 @@ static void test_runtime_placed_modules(void) {
     expect(sr_hle_resolve_late_import(RT_EXPORT_NID) == base + RT_QUERY &&
                sr_hle_test_started_export(RT_EXPORT_NID) == 0u,
            "runtime placement: exports resolve at the placed address, not linked before start");
+    {
+        /* sceKernelQueryModuleInfo answers a module the runtime placed from the record taken
+         * at placement: segments, gp and text address at the placed base, and the sizes of a
+         * section-less PRX from its program headers (uOFW loadelf.c CheckElfSection). */
+        const uint32_t QBUF = 0x09000000u;
+        CpuState q;
+        const int caller = s_cur;
+        TCB *qt = fixture_thread(0x5152u, TH_RUNNING, 32);
+        qt->started = 1;
+        s_cur = (int)(qt - s_tcb);
+        memset(SR_HOST(QBUF), 0xa5, 96u);
+        MEM_W32(QBUF, 96u);
+        memset(&q, 0, sizeof(q)); q.r[4] = uid; q.r[5] = QBUF;
+        expect(sr_syscall(&q, 0x748cbed9u) == 0u && MEM_R8(QBUF + 4u) == 1u &&
+                   MEM_R32(QBUF + 8u) == base && MEM_R32(QBUF + 24u) == RT_MEM_SPAN &&
+                   MEM_R32(QBUF + 44u) == base + RT_GP_LINK && MEM_R32(QBUF + 48u) == base &&
+                   MEM_R32(QBUF + 52u) == RT_FILE_SPAN && MEM_R32(QBUF + 56u) == 0u &&
+                   MEM_R32(QBUF + 60u) == RT_MEM_SPAN - RT_FILE_SPAN &&
+                   memcmp(SR_HOST(QBUF + 68u), "rtplaced", 9) == 0,
+               "runtime placement: QueryModuleInfo answers the placed module's record");
+        s_cur = caller;
+    }
 
     /* One translation binds one image: a second instance is a named boundary. */
     uint32_t heap_before = sr_hle_test_partition_heap_ptr();
@@ -2132,12 +2181,23 @@ static void test_runtime_placed_modules(void) {
            "runtime placement: a partition other than the user partition fails closed by name");
     MEM_W32(RT_OPTION_ADDR + 4u, 2u);
     MEM_W8(RT_OPTION_ADDR + 16u, 1u);
+    /* Position 1 is High (uOFW modulemgr.c). This fixture's partition is based low, below the
+     * runtime stacks, where no High region is modelled, so it fails closed by name; the High
+     * allocator itself is covered by the memory-block test. */
+    rt_capture_begin();
+    refused = rt_load(alpha_guest, RT_OPTION_ADDR);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-placement-unsupported module=rt-alpha.prx") != NULL &&
+               strstr(out, "below the runtime stacks") != NULL,
+           "runtime placement: High placement in a low-based partition fails closed by name");
+    MEM_W8(RT_OPTION_ADDR + 16u, 3u);
     rt_capture_begin();
     refused = rt_load(alpha_guest, RT_OPTION_ADDR);
     out = rt_capture_end();
     expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
                strstr(out, "guest-module-placement-unsupported module=rt-alpha.prx") != NULL,
-           "runtime placement: High placement fails closed by name");
+           "runtime placement: a position other than Low and High fails closed by name");
     MEM_W32(RT_OPTION_ADDR + 0u, 16u);   /* `position` lies past the declared size */
     uid = rt_load(alpha_guest, RT_OPTION_ADDR);
     expect(uid != 0u && (uid & 0x80000000u) == 0u &&
@@ -2348,6 +2408,48 @@ static void test_runtime_placed_modules(void) {
                    s_rt_stop_calls == stops + 1u &&
                    rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
                "runtime placement: a start-less module still runs its module_stop");
+        remove(nostart_path);
+    }
+
+    /* The scePsmfPlayer library build is the module_sdk_version its module exports, read
+     * where the image was placed (#279): a module of another name leaves it alone, and a
+     * player module without the export clears it. */
+    {
+        extern uint32_t sr_hle_test_psmfplayer_lib_version(void);
+        static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+        static const struct {
+            const char *modname;
+            uint32_t sdk_version;
+            uint32_t recorded;
+            const char *what;
+        } cases[] = {
+            {"rtplaced", 0x03090510u, 0u,
+             "psmfplayer build: a module of another name records no build"},
+            {"scePsmfP_library", 0x03090510u, 0x03090510u,
+             "psmfplayer build: the player module's exported module_sdk_version is recorded"},
+            {"rtplaced", 0x03070110u, 0x03090510u,
+             "psmfplayer build: a later module of another name keeps the recorded build"},
+            {"scePsmfP_library", 0u, 0u,
+             "psmfplayer build: a player module without the export records no build"},
+        };
+        char nostart_path[1024];
+        runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
+        expect(sr_hle_test_psmfplayer_lib_version() == 0u,
+               "psmfplayer build: nothing is recorded before a player module loads");
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            uint32_t placed = 0;
+            expect(write_runtime_module_prx_named(nostart_path, 5u, 0, RT_EXPORT_NID,
+                                                  cases[i].modname, cases[i].sdk_version) &&
+                       runtime_module_identity(nostart_path, &s_rt_nostart_code),
+                   "psmfplayer build: the module fixture is written");
+            uid = rt_load(nostart_guest, 0u);
+            expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                       sr_module_code_is_bound(&s_rt_nostart_code, &placed),
+                   "psmfplayer build: the module fixture loads");
+            expect(sr_hle_test_psmfplayer_lib_version() == cases[i].recorded, cases[i].what);
+            expect(rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+                   "psmfplayer build: the module fixture unloads");
+        }
         remove(nostart_path);
     }
 
@@ -2709,6 +2811,161 @@ static void test_io_open_async_notifies_later_callback(void) {
     expect(sr_hle_test_io_close(&cpu) == 0u, "the async-opened descriptor closes");
     (void)sr_callback_table_unregister(callback_uid);
     nk_remove_utf8(host);
+}
+
+/* An enhancement data file is served rewritten only when the stock bytes it replaces match
+ * (docs/ENHANCEMENT_CONTRACT.md section 9.6); other paths are untouched. */
+static void test_io_enhancement_data_file(void) {
+    extern int sr_hle_test_io_open_enhanced(const char *path, uint32_t *fd);
+    extern void sr_hle_test_enhancement_files_reset(void);
+    enum { BUF_ADDR = 0x09018400u };
+    static const char guest[] = "ms0:/NKENH/TIMING.CSV";
+    static const char other[] = "ms0:/NKENH/OTHER.CSV";
+    static const uint8_t stock[] = "a,30\nb,12\n";
+    static const uint8_t rewritten[] = "a,60\nb,24\n";
+    char host[256];
+    uint8_t digest[32];
+    uint8_t wrong[32];
+    CpuState cpu;
+    uint32_t fd = 0u;
+
+    nk_platform_mkdir_p(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKENH");
+    const char *names[] = {guest, other};
+    for (size_t i = 0; i < 2u; i++) {
+        fd_host_path(host, sizeof(host), names[i]);
+        FILE *fixture = fopen(host, "wb");
+        expect(fixture != NULL, "enhancement data file: fixture is written");
+        if (!fixture) return;
+        fwrite(stock, 1, sizeof(stock) - 1u, fixture);
+        fclose(fixture);
+    }
+    sr_vfpu_sha256(stock, sizeof(stock) - 1u, digest);
+    memset(wrong, 0, sizeof(wrong));
+    sr_hle_test_enhancement_files_reset();
+    expect(sr_enhancement_file_register("NKENH/Timing.csv", digest, rewritten,
+                                        (uint32_t)(sizeof(rewritten) - 1u)) == 1,
+           "enhancement data file: a disc path registers");
+
+    expect(sr_hle_test_io_open_enhanced(guest, &fd) == 1 && fd < 64u,
+           "enhancement data file: the stock file opens rewritten");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = BUF_ADDR;
+    cpu.r[6] = 64u;
+    uint32_t got = sr_hle_test_io_read(&cpu);
+    int same = got == sizeof(rewritten) - 1u;
+    for (uint32_t i = 0; same && i < got; i++) same = MEM_R8(BUF_ADDR + i) == rewritten[i];
+    expect(same, "enhancement data file: reads return the rewritten bytes and size");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+
+    expect(sr_hle_test_io_open_enhanced(other, &fd) == 0 && fd < 64u,
+           "enhancement data file: an unregistered path opens unchanged");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+
+    sr_hle_test_enhancement_files_reset();
+    expect(sr_enhancement_file_register("NKENH/TIMING.CSV", wrong, rewritten,
+                                        (uint32_t)(sizeof(rewritten) - 1u)) == 1,
+           "enhancement data file: a second registration is held");
+    rt_capture_begin();
+    int mismatch = sr_hle_test_io_open_enhanced(guest, &fd);
+    const char *out = rt_capture_end();
+    expect(mismatch == -1 && strstr(out, "ENHANCEMENT_DATA_MISMATCH") != NULL,
+           "enhancement data file: stock bytes that do not match are refused by name");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    (void)sr_hle_test_io_close(&cpu);
+    sr_hle_test_enhancement_files_reset();
+    for (size_t i = 0; i < 2u; i++) {
+        fd_host_path(host, sizeof(host), names[i]);
+        nk_remove_utf8(host);
+    }
+}
+
+/* SR_SAMPLE_SPEC writes one CSV row per vblank: globals, pointer chains, and an empty value
+ * where a chain leaves guest memory (docs/DEBUGGING.md, "Sampling guest state per vblank"). */
+static void test_state_sampler_rows(void) {
+    extern void sr_hle_test_state_sample_vblank(uint32_t vcount);
+    extern void sr_hle_test_state_sample_reset(void);
+    enum { GLOBAL = 0x09018500u, POINTER = 0x09018504u, OBJECT = 0x09018600u };
+    static const char spec_path[] = HLE_BUILD_ROOT "/state_sampler_spec.txt";
+    static const char out_path[] = HLE_BUILD_ROOT "/state_sampler_out.csv";
+    FILE *spec = fopen(spec_path, "w");
+    expect(spec != NULL, "state sampler: spec is written");
+    if (!spec) return;
+    fputs("# comment line\n", spec);
+    fputs("count u32 0x09018500\n", spec);
+    fprintf(spec, "field s16 0x%08x 0x6   # field 6 of the object\n", (unsigned)POINTER);
+    fputs("speed f32 0x09018504 0x8\n", spec);
+    fputs("lost u32 0x7ff00000 0x0\n", spec);
+    fclose(spec);
+    MEM_W32(GLOBAL, 7u);
+    MEM_W32(POINTER, OBJECT);
+    MEM_W16(OBJECT + 6u, (uint16_t)0xfffeu);
+    MEM_W32(OBJECT + 8u, 0x3fc00000u);   /* 1.5f */
+    hle_test_setenv("SR_SAMPLE_SPEC", spec_path);
+    hle_test_setenv("SR_SAMPLE_OUT", out_path);
+    sr_hle_test_state_sample_reset();
+    sr_hle_test_state_sample_vblank(41u);
+    MEM_W32(GLOBAL, 8u);
+    sr_hle_test_state_sample_vblank(42u);
+    sr_hle_test_state_sample_reset();
+    hle_test_setenv("SR_SAMPLE_SPEC", "");
+    hle_test_setenv("SR_SAMPLE_OUT", "");
+    char text[256] = "";
+    FILE *out = fopen(out_path, "r");
+    size_t got = out ? fread(text, 1, sizeof(text) - 1u, out) : 0u;
+    if (out) fclose(out);
+    text[got] = '\0';
+    static const char expected[] = "vblank,count,field,speed,lost\n41,7,-2,1.5,\n42,8,-2,1.5,\n";
+    if (strcmp(text, expected) != 0) fprintf(stderr, "state sampler wrote:\n%s", text);
+    expect(strcmp(text, expected) == 0,
+           "state sampler: one row per vblank with globals, pointer chains and empty misses");
+    remove(spec_path);
+    remove(out_path);
+}
+
+/* 60 FPS logic under 57 updates/s for three seconds in a row is reported as slowed; a fast
+ * second clears it, and a second with no update (a load or a pause) never counts. */
+static void test_enhancement_logic_speed(void) {
+    extern void sr_hle_test_enhancement_speed_vblank(uint32_t vcount);
+    static volatile uint32_t updates;
+    unsigned rate = 99u;
+    updates = 0u;
+    sr_enhancement_register_updates(&updates);
+    uint32_t v = sr_display_vcount();
+    for (int second = 1; second <= 2; second++) {
+        updates += 30u;
+        v += 60u;
+        sr_hle_test_enhancement_speed_vblank(v);
+    }
+    expect(!sr_enhancement_logic_slowed(&rate) && rate == 0u,
+           "logic speed: two slow seconds are not yet reported");
+    updates += 30u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(sr_enhancement_logic_slowed(&rate) && rate == 30u,
+           "logic speed: three seconds at 30 updates/s are reported with their rate");
+    updates += 60u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(!sr_enhancement_logic_slowed(NULL), "logic speed: a full-rate second clears the report");
+    for (int second = 1; second <= 2; second++) {
+        updates += 30u;
+        v += 60u;
+        sr_hle_test_enhancement_speed_vblank(v);
+    }
+    v += 60u;   /* a second with no update: a load or a pause */
+    sr_hle_test_enhancement_speed_vblank(v);
+    updates += 30u;
+    v += 60u;
+    sr_hle_test_enhancement_speed_vblank(v);
+    expect(!sr_enhancement_logic_slowed(NULL),
+           "logic speed: a second without updates restarts the count instead of adding to it");
+    sr_enhancement_register_updates(NULL);
 }
 
 static void test_io_async_and_path_imports(void) {
@@ -3620,6 +3877,9 @@ static void test_fd_namespace(void) {
 
     test_io_async_and_path_imports();
     test_io_open_async_notifies_later_callback();
+    test_io_enhancement_data_file();
+    test_state_sampler_rows();
+    test_enhancement_logic_speed();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */
@@ -4560,15 +4820,84 @@ static void test_ms0_unified_namespace(void) {
     free(save_fs);
 }
 
+/* The watchdog's thread dump names the kernel object an object wait is on: its class, name and
+ * the count or pattern that decides whether the wait can end. A uid no object holds is 0, so
+ * the dump says so instead of guessing. */
+static uint32_t wd_create(uint32_t nid, const char *name, uint32_t a1, uint32_t a2, uint32_t a3) {
+    static uint32_t name_cur = 0x08907000u;
+    CpuState cpu;
+    title_hle_write_cstr(name_cur, name);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name_cur;
+    cpu.r[5] = a1;
+    cpu.r[6] = a2;
+    cpu.r[7] = a3;
+    name_cur += 0x40u;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_watchdog_wait_object_names(void) {
+    extern int sr_hle_test_describe_wait_object(uint32_t, uint32_t, char *, size_t);
+    char out[160];
+    sr_hle_init();
+    uint32_t sema = wd_create(0xd6da4ba1u, "wd-sema", 0u, 0u, 1u);       /* init 0, max 1 */
+    uint32_t evf = wd_create(0x55c20a00u, "wd-flag", 0u, 0x5u, 0u);      /* pattern 5 */
+    uint32_t mutex = wd_create(0xb7d098c6u, "wd-mutex", 0u, 0u, 0u);     /* unlocked */
+    uint32_t mbx = wd_create(0x8125221du, "wd-mbx", 0u, 0u, 0u);
+    expect((sema & 0x80000000u) == 0u && (evf & 0x80000000u) == 0u &&
+               (mutex & 0x80000000u) == 0u && (mbx & 0x80000000u) == 0u,
+           "watchdog names: the four fixture objects are created");
+    expect(sr_hle_test_describe_wait_object(0u, sema, out, sizeof out) &&
+               strstr(out, "semaphore") && strstr(out, "'wd-sema'") &&
+               strstr(out, "count=0 max=1"),
+           "watchdog names: a semaphore wait names the semaphore and its count");
+    expect(sr_hle_test_describe_wait_object(0u, evf, out, sizeof out) &&
+               strstr(out, "event flag") && strstr(out, "'wd-flag'") &&
+               strstr(out, "pattern=0x00000005"),
+           "watchdog names: an event-flag wait names the flag and its pattern");
+    expect(sr_hle_test_describe_wait_object(0u, mutex, out, sizeof out) &&
+               strstr(out, "mutex") && strstr(out, "'wd-mutex'") && strstr(out, "owner=0x0"),
+           "watchdog names: a mutex wait names the mutex and its owner");
+    expect(sr_hle_test_describe_wait_object(0u, mbx, out, sizeof out) &&
+               strstr(out, "message box") && strstr(out, "'wd-mbx'") && strstr(out, "messages=0"),
+           "watchdog names: a message-box wait names the box and its queue");
+    expect(!sr_hle_test_describe_wait_object(0u, 0x7ffff0u, out, sizeof out),
+           "watchdog names: a uid no kernel object holds is not described");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = sema; (void)sr_syscall(&cpu, 0x28b6489cu);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = evf; (void)sr_syscall(&cpu, 0xef9e4c70u);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = mutex; (void)sr_syscall(&cpu, 0xf8170fbeu);
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = mbx; (void)sr_syscall(&cpu, 0x86255adau);
+    }
+    expect(!sr_hle_test_describe_wait_object(0u, sema, out, sizeof out),
+           "watchdog names: a deleted object is no longer described");
+}
+
+static void test_utility_usb_module_state(void) {
+    const uint32_t load = 0x0d5bc6d2u, unload = 0xf64910f0u;
+    CpuState cpu = {0};
+    reset_fixture(); sr_hle_init();
+    expect(sr_hle_test_is_registered(load) && sr_hle_test_is_registered(unload), "USB utility imports are registered");
+    if (!sr_hle_test_is_registered(load) || !sr_hle_test_is_registered(unload)) return;
+    expect(utility_module_call(&cpu, load, 0u) == SCE_ERROR_MODULE_BAD_ID, "USB rejects invalid ID");
+    for (uint32_t id = 1; id <= 5; id++) {
+        expect(utility_module_call(&cpu, unload, id) == SCE_ERROR_MODULE_NOT_LOADED, "USB refuses unload before load");
+        expect(utility_module_call(&cpu, load, id) == 0u, "USB loads a valid module");
+        expect(utility_module_call(&cpu, load, id) == SCE_ERROR_MODULE_ALREADY_LOADED, "USB rejects duplicate load");
+        expect(utility_module_call(&cpu, unload, id) == 0u, "USB unloads a loaded module");
+    }
+}
+
 static void test_utility_av_module_state(void) {
     CpuState cpu;
     sr_hle_init();
 
-    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x2feu) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV load rejects an invalid module ID below the AV range");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x309u) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV load rejects an invalid module ID above the AV range");
-    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x2feu) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV unload rejects an invalid module ID");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x302u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
            "ATRAC3+ load requires AVCODEC to be loaded first");
@@ -4614,15 +4943,88 @@ static void test_utility_av_module_state(void) {
            "AV-specific unload clears the shared AVCODEC state");
 }
 
+/* The non-AV firmware utility modules: net, USB, NP and IrDA IDs load and unload through the
+ * same state, and a module whose dependencies are not loaded yet reports LIBRARY_NOT_FOUND.
+ * Several titles load NET_COMMON or NP_DRM at boot and retry forever on BAD_ID. */
+static void test_utility_module_table(void) {
+    static const uint32_t plain[] = {0x100u, 0x101u, 0x102u, 0x103u, 0x104u, 0x107u, 0x200u,
+                                     0x201u, 0x202u, 0x203u, 0x2ffu, 0x3feu, 0x3ffu, 0x400u,
+                                     0x401u, 0x402u, 0x403u, 0x500u, 0x600u, 0x601u};
+    CpuState cpu;
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(plain) / sizeof(plain[0]); i++) {
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, plain[i]) == 0,
+               "a firmware utility module without dependencies loads");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, plain[i]) ==
+                   SCE_ERROR_MODULE_ALREADY_LOADED,
+               "a second load of the same utility module reports already loaded");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, plain[i]) == 0,
+               "a loaded utility module unloads");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, plain[i]) ==
+                   SCE_ERROR_MODULE_NOT_LOADED,
+               "a second unload of the same utility module reports not loaded");
+    }
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x0ffu) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x109u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x404u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x602u) == SCE_ERROR_MODULE_BAD_ID,
+           "IDs between the known utility modules are BAD_ID");
+
+    /* net_http needs inet, parse_uri and parse_http; net_ssl needs inet. */
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x106u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net_http and net_ssl refuse to load before their dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x102u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x106u) == 0,
+           "net_ssl loads once net_inet is loaded");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x103u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net_http still needs parse_http");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x104u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == 0,
+           "net_http loads with all three dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x108u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x100u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x108u) == 0,
+           "usb_pspcm needs net_common as well as the http stack");
+    {
+        static const uint32_t loaded[] = {0x108u, 0x105u, 0x106u, 0x104u, 0x103u, 0x102u, 0x100u};
+        int all = 1;
+        for (size_t i = 0; i < sizeof(loaded) / sizeof(loaded[0]); i++)
+            all &= utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, loaded[i]) == 0;
+        expect(all, "the net stack unloads in reverse order");
+    }
+
+    /* sceUtilityLoadNetModule numbers the net modules 1..7 and shares their state. */
+#define NID_SCE_UTILITY_LOAD_NET_MODULE 0x1579a159u
+#define NID_SCE_UTILITY_UNLOAD_NET_MODULE 0x64d50c56u
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 0u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 8u) == SCE_ERROR_MODULE_BAD_ID,
+           "net-module numbers outside 1..7 are BAD_ID");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 1u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x100u) == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "net module 1 is NET_COMMON, shared with sceUtilityLoadModule");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 6u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net module 6 is net_http and keeps its dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 2u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x101u) == 0,
+           "net module 2 is NET_ADHOC");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_NET_MODULE, 1u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_NET_MODULE, 1u) == SCE_ERROR_MODULE_NOT_LOADED,
+           "sceUtilityUnloadNetModule unloads once, then reports not loaded");
+#undef NID_SCE_UTILITY_LOAD_NET_MODULE
+#undef NID_SCE_UTILITY_UNLOAD_NET_MODULE
+}
+
 /* Issue #281: a registered unsupported import must return its utility error
  * visibly, with one diagnostic per function even when the guest retries it. */
 static void test_controlled_unsupported_registration(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    uint32_t first = sr_syscall(&cpu, 0x1579a159u);  /* sceUtilityLoadNetModule */
-    uint32_t second = sr_syscall(&cpu, 0x1579a159u);
-    expect(first == 0x80110001u && second == first,
-           "sceUtilityLoadNetModule refuses with SCE_ERROR_UTILITY_INVALID_STATUS on each call");
+    uint32_t first = sr_syscall(&cpu, 0xd5ebbbcdu);  /* __sceSasSetSteepWave */
+    uint32_t second = sr_syscall(&cpu, 0xd5ebbbcdu);
+    expect(first == second && first != 0u,
+           "a controlled refusal returns the same visible error on each call");
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0xb3b5d042u) == 0u,
@@ -5754,7 +6156,6 @@ static void test_unregistered_batch_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
@@ -6980,6 +7381,63 @@ static int msg_dialog_run_to_finished(CpuState *cpu, uint32_t param) {
     for (int frame = 0; frame < 4; frame++)
         if (utility_call(cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u) return 1;
     return 0;
+}
+
+/* sceUtilityMsgDialogAbort against pspautotests tests/utility/msgdialog/abort.expected (2ed7c9c5,
+ * recorded on a PSP). Before this handler the NID was unknown and the title stopped on it. */
+#define NID_MSG_DIALOG_ABORT 0x4928bd96u
+static void test_msg_dialog_abort_sequence(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    expect(sr_hle_test_is_registered(NID_MSG_DIALOG_ABORT), "sceUtilityMsgDialogAbort is registered");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110005u, "Before init: 80110005");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "InitStart: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During init: 80110001");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the dialog becomes visible (status 2)");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "an Update while visible");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Abort: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Twice: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "GetStatus after Abort: 2");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "Update after Abort: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u, "GetStatus after that Update: 3");
+    expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 2u,
+           "the aborted dialog finishes with result 2 (the PPSSPP reference value)");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "Third abort: 80110001");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u, "ShutdownStart: 0");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During shutdown: 80110001");
+    int none = 0;
+    for (int frame = 0; frame < 4 && !none; frame++)
+        none = utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u;
+    expect(none, "the dialog returns to NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "After reset: 80110001");
+}
+
+/* From PR #1607 (superseded by this change): the same abort.expected sequence driven without an
+ * Update before the first Abort, so the RUNNING check does not depend on a prior Update. */
+static void test_msg_dialog_abort_without_update(void) {
+    CpuState cpu;
+    sr_hle_test_osk_slot_reset();
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110005u, "abort before init: wrong type");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "abort test init");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during init refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 1u, "abort test enters running");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u && utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u,
+           "repeated abort accepted while running");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 2u &&
+           utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 3u, "update completes aborted dialog");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort after finish refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 4u &&
+           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 0u &&
+           utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during and after shutdown refused");
+    sr_hle_test_osk_slot_reset();
 }
 
 static void test_msg_dialog_answer_field(void) {
@@ -8631,6 +9089,12 @@ static void test_psp_measured_power_battery_20261024(void) {
                sr_hle_test_is_registered(NID_POWER_LIFE_TIME),
            "scePowerGetBatteryChargingStatus and scePowerGetBatteryLifeTime are registered");
 
+    expect(sr_hle_test_is_registered(0xa85880d0u),
+           "scePowerCheckWlanCoexistenceClock is registered");
+    if (sr_hle_test_is_registered(0xa85880d0u))
+        expect(td24b_dispatch4(0xa85880d0u, 0u, 0u, 0u, 0u) == 0u,
+               "scePowerCheckWlanCoexistenceClock reports the PSP-1000 limit");
+
     /* On AC, battery full: online 1, exists 1, charging 0, status 0, 96 %, low 0, life time 0. */
     expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 1u,
            "on AC scePowerIsPowerOnline reports 1 (measured)");
@@ -8689,6 +9153,147 @@ static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
     expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
            "the accepted request is the CPU clock the getter reports");
     sr_hle_test_power_reset();
+}
+
+/* scePowerSetBusClockFrequency against PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded
+ * on a PSP): from the power-on clocks, 1..111 return 0, -1, 0 and 112 return 0x800001FE, and no
+ * request moves any clock. At a PLL other than 222 the range is not measured and the run stops by
+ * name. Before this handler the NID was unknown and ten titles stopped on it. */
+static void test_power_set_bus_clock_frequency_autotest(void) {
+    enum {
+        NID_POWER_SET_BUS_CLOCK = 0xb8d7b3fbu, NID_POWER_SET_CLOCK = 0x737486f2u,
+        NID_POWER_GET_CPU_INT = 0xfdb5bfe9u, NID_POWER_GET_BUS_INT = 0xbd681969u,
+        NID_POWER_GET_PLL_INT = 0x34f9c463u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    expect(sr_hle_test_is_registered(NID_POWER_SET_BUS_CLOCK), "scePowerSetBusClockFrequency is registered");
+    int all_ok = 1, clocks_held = 1;
+    for (int32_t freq = -1; freq <= 112; freq++) {
+        uint32_t want = (freq >= 1 && freq <= 111) ? 0u : 0x800001feu;
+        if (td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, (uint32_t)freq, 0u, 0u, 0u) != want) all_ok = 0;
+        if (td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) != 222u ||
+            td24b_dispatch4(NID_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) != 111u ||
+            td24b_dispatch4(NID_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) != 222u)
+            clocks_held = 0;
+    }
+    expect(all_ok, "scePowerSetBusClockFrequency accepts 1..111 and refuses -1, 0 and 112 with 0x800001FE");
+    expect(clocks_held, "no bus clock request moves the CPU, bus or PLL clock (222/111/222)");
+    expect(td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, 166u, 0u, 0u, 0u) == 0x800001feu,
+           "a title's 166 MHz request after a refused 333 CPU request is refused at PLL 222");
+    expect(td24b_dispatch4(NID_POWER_SET_CLOCK, 333u, 333u, 166u, 0u) == 0u, "the PLL moves to 333");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_POWER_SET_BUS_CLOCK, 111u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "at PLL 333, where the range is not measured, the request stops the run by name");
+    sr_hle_test_power_reset();
+}
+
+/* sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution against PSPAutotests
+ * tests/rtc/{convert,arithmetic}.expected (2ed7c9c5, recorded on a PSP). Dates go to ticks and
+ * back through sceRtcGetTick / sceRtcSetTick, as the autotests do. Before these handlers the
+ * three NIDs were unknown. */
+enum {
+    RTCT_NID_GET_TICK = 0x6ff40accu, RTCT_NID_SET_TICK = 0x7ed29e40u,
+    RTCT_NID_GET_TIME_T = 0x27c4594cu, RTCT_NID_ADD_YEARS = 0x42842c77u,
+    RTCT_NID_RESOLUTION = 0xc41c2853u,
+    RTCT_DATE = 0x00200300u, RTCT_SRC = 0x00200320u, RTCT_DST = 0x00200330u, RTCT_OUT = 0x00200340u,
+};
+
+static void rtct_date(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec,
+                      uint32_t us) {
+    MEM_W16(RTCT_DATE + 0u, y); MEM_W16(RTCT_DATE + 2u, mo); MEM_W16(RTCT_DATE + 4u, d);
+    MEM_W16(RTCT_DATE + 6u, h); MEM_W16(RTCT_DATE + 8u, mi); MEM_W16(RTCT_DATE + 10u, sec);
+    MEM_W32(RTCT_DATE + 12u, us);
+}
+
+/* checkAddDateValue: the date's tick into src, dest filled with 0x1337, then AddYears. */
+static uint32_t rtct_add_years(uint16_t y, uint16_t mo, uint16_t d, uint32_t us, int32_t years) {
+    rtct_date(y, mo, d, 0u, 0u, 0u, us);
+    expect(td24b_dispatch4(RTCT_NID_GET_TICK, RTCT_DATE, RTCT_SRC, 0u, 0u) == 0u, "the source date converts");
+    MEM_W32(RTCT_DST, 0x1337u); MEM_W32(RTCT_DST + 4u, 0u);
+    return td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, RTCT_SRC, (uint32_t)years, 0u);
+}
+
+static int rtct_dst_is(uint16_t y, uint16_t mo, uint16_t d, uint32_t us) {
+    rtct_date(0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    if (td24b_dispatch4(RTCT_NID_SET_TICK, RTCT_DATE, RTCT_DST, 0u, 0u) != 0u) return 0;
+    return MEM_R16(RTCT_DATE) == y && MEM_R16(RTCT_DATE + 2u) == mo && MEM_R16(RTCT_DATE + 4u) == d &&
+           MEM_R16(RTCT_DATE + 6u) == 0u && MEM_R16(RTCT_DATE + 8u) == 0u &&
+           MEM_R16(RTCT_DATE + 10u) == 0u && MEM_R32(RTCT_DATE + 12u) == us;
+}
+
+static void test_rtc_time_t_add_years_resolution_autotest(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(RTCT_NID_GET_TIME_T) && sr_hle_test_is_registered(RTCT_NID_ADD_YEARS) &&
+               sr_hle_test_is_registered(RTCT_NID_RESOLUTION),
+           "sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution are registered");
+    expect(td24b_dispatch4(RTCT_NID_RESOLUTION, 0u, 0u, 0u, 0u) == 1000000u,
+           "sceRtcGetTickResolution reports 1000000 ticks per second");
+
+    /* convert.expected checkRtcGetTime_t: 2012-09-20 07:12:15.000500 -> 1348125135. */
+    rtct_date(2012u, 9u, 20u, 7u, 12u, 15u, 500u);
+    MEM_W32(RTCT_OUT, 0xdeadbeefu); MEM_W32(RTCT_OUT + 4u, 0xdeadbeefu);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u &&
+               MEM_R32(RTCT_OUT) == 1348125135u && MEM_R32(RTCT_OUT + 4u) == 0xdeadbeefu,
+           "sceRtcGetTime_t writes 1348125135 as one 32-bit word for 2012-09-20 07:12:15.000500");
+    rtct_date(1970u, 1u, 1u, 0u, 0u, 0u, 0u);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u && MEM_R32(RTCT_OUT) == 0u,
+           "sceRtcGetTime_t writes 0 for the epoch");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    rtct_date(1969u, 12u, 31u, 23u, 59u, 59u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2025u, 13u, 1u, 0u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2106u, 2u, 7u, 6u, 28u, 16u, 0u);       /* 2^32 seconds */
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u);
+    rtct_date(2012u, 9u, 20u, 7u, 12u, 15u, 500u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, 0u, 0u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_GET_TIME_T, 0u, RTCT_OUT, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 5u,
+           "sceRtcGetTime_t stops by name before 1970, on a field out of range, past 32 bits and on NULL");
+    rtct_date(2106u, 2u, 7u, 6u, 28u, 15u, 0u);
+    expect(td24b_dispatch4(RTCT_NID_GET_TIME_T, RTCT_DATE, RTCT_OUT, 0u, 0u) == 0u &&
+               MEM_R32(RTCT_OUT) == 0xffffffffu,
+           "sceRtcGetTime_t writes 0xFFFFFFFF for the last second that fits");
+
+    /* arithmetic.expected checkRtcTickAddYears. */
+    expect(rtct_add_years(2012u, 2u, 29u, 445u, 1) == 0u && rtct_dst_is(2013u, 2u, 28u, 445u),
+           "2012-02-29 + 1 year is 2013-02-28");
+    expect(rtct_add_years(2012u, 2u, 29u, 445u, 4) == 0u && rtct_dst_is(2016u, 2u, 29u, 445u),
+           "2012-02-29 + 4 years is 2016-02-29");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -1969) == 0u && rtct_dst_is(1u, 1u, 1u, 445u),
+           "1970 - 1969 years is 0001-01-01, microseconds kept");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -1968) == 0u && rtct_dst_is(2u, 1u, 1u, 445u),
+           "1970 - 1968 years is 0002-01-01");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, 2000) == 0u && rtct_dst_is(3970u, 1u, 1u, 445u),
+           "1970 + 2000 years is 3970-01-01");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -20) == 0u && rtct_dst_is(1950u, 1u, 1u, 445u),
+           "1970 - 20 years is 1950-01-01");
+    expect(rtct_add_years(10u, 1u, 1u, 0u, -9) == 0u && rtct_dst_is(1u, 1u, 1u, 0u),
+           "0010 - 9 years is 0001-01-01");
+    expect(rtct_add_years(9998u, 1u, 1u, 0u, 1) == 0u && rtct_dst_is(9999u, 1u, 1u, 0u),
+           "9998 + 1 year is 9999-01-01");
+    int range_ok = 1;
+    for (uint16_t y = 1850u; y <= 2300u; y += 50u)
+        if (rtct_add_years(y, 1u, 1u, 0u, 1) != 0u || !rtct_dst_is((uint16_t)(y + 1u), 1u, 1u, 0u)) range_ok = 0;
+    expect(range_ok, "1850 to 2300 + 1 year each move one year");
+    expect(rtct_add_years(1970u, 1u, 1u, 445u, -2000) == 0u && MEM_R32(RTCT_DST) == 0x1337u &&
+               MEM_R32(RTCT_DST + 4u) == 0u,
+           "a result below year 1 returns 0 and leaves dest unwritten");
+    expect(rtct_add_years(10u, 1u, 1u, 0u, -10) == 0u && MEM_R32(RTCT_DST) == 0x1337u,
+           "0010 - 10 years returns 0 and leaves dest unwritten");
+    expect(rtct_add_years(9998u, 1u, 1u, 0u, 2) == 0u && MEM_R32(RTCT_DST) == 0x1337u,
+           "a result above year 9999 returns 0 and leaves dest unwritten");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, 0u, RTCT_SRC, 1u, 0u);
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, 0u, 1u, 0u);
+    MEM_W32(RTCT_SRC, 0xffffffffu); MEM_W32(RTCT_SRC + 4u, 0xffffffffu);
+    (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, RTCT_SRC, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcTickAddYears stops by name on NULL pointers and on a source past year 9999");
 }
 
 static void test_psp_measured_rtc_time64_20261024(void) {
@@ -8765,6 +9370,7 @@ static void test_psp_measured_umd_state_20261024(void) {
         NID_UMD_ACTIVATE = 0xc6183d47u,
         NID_UMD_DEACTIVATE = 0xe83742bau,
         NID_UMD_GET_DRIVE_STAT = 0x6b4a146cu,
+        NID_UMD_CHECK_MEDIUM = 0x46ebb729u,
         NID_UMD_WAIT_DRIVE_STAT = 0x8ef08fceu,
         NID_UMD_GET_DISC_INFO = 0x340b7686u,
         INFO = ORACLE_CALLBACK_NAME + 0x200u,
@@ -8781,6 +9387,10 @@ static void test_psp_measured_umd_state_20261024(void) {
            "sceUmdDeactivate and sceUmdGetDriveStat are registered");
     expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
            "the drive state at entry is the measured 0x32");
+    /* PSP-UMDIO-001 umd-state-before / umd-state-after: with a disc inserted,
+     * sceUmdCheckMedium returned 1. */
+    expect(sr_syscall(&cpu, NID_UMD_CHECK_MEDIUM) == 1u,
+           "sceUmdCheckMedium reports the medium present (PSP-UMDIO-001: 1)");
     cpu.r[4] = 1u; cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u,
            "sceUmdDeactivate returns 0");
@@ -9657,6 +10267,34 @@ static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_mi
  * reports, so the two can never disagree, and a setting a game writes through
  * sceReg moves local time at once. Production dispatch only; nothing is
  * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_rfc2822_local(void) {
+    const uint32_t nid = 0x7de6711bu, tick = 0x00200210u, out = 0x00200300u;
+    CpuState cpu = {0};
+    uint32_t rc, reg, cat;
+    reset_fixture(); sr_hle_init(); sysreg_scratch_clean(); sysreg_restart();
+    reg = sysreg_open_registry(2u, &rc);
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &rc);
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u &&
+           sysreg_set_int(cat, "summer_time", 0u) == 0u, "set RTC test zone");
+    expect(sr_hle_test_is_registered(nid), "RFC2822 local time is registered");
+    if (sr_hle_test_is_registered(nid)) {
+        uint64_t epoch = 62135596800000000ull;
+        MEM_W32(tick, (uint32_t)epoch); MEM_W32(tick + 4u, (uint32_t)(epoch >> 32));
+        cpu.r[4] = out; cpu.r[5] = tick;
+        expect(sr_syscall(&cpu, nid) == 0u, "RFC2822 local time succeeds");
+        const char *expected = "Thu, 01 Jan 1970 09:00:00 +0900";
+        int equal = 1;
+        for (size_t i = 0; i <= strlen(expected); i++)
+            if (MEM_R8(out + (uint32_t)i) != (uint8_t)expected[i]) equal = 0;
+        expect(equal, "RFC2822 local time formats the profile zone");
+        cpu.r[4] = 0u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects null output");
+        cpu.r[4] = out; cpu.r[5] = tick + 1u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects unaligned tick");
+    }
+    sysreg_scratch_clean();
+}
+
 static void test_rtc_local_time_follows_the_system_profile(void) {
     uint32_t r = 0u, reg, cat;
     reset_fixture();
@@ -16047,6 +16685,103 @@ static void test_thread_stack_free_size_contract(void) {
     sr_test_guest_fn_reset();
 }
 
+/* sceKernelCheckThreadStack: the caller's $sp minus its stack's low end, against PSPAutotests
+ * tests/threads/threads/stackfree.expected (2ed7c9c5, recorded on a PSP): on a 0x1000-byte
+ * stack a 1 KiB frame reads 0x400 less, with the stack fill or without it, and with the fill
+ * and no 0xFF bytes written the value is 0x10 above GetThreadStackFreeSize; the main thread's
+ * value is above 0x30000. Entered through sr_syscall from guest bodies the real scheduler runs.
+ * Before this handler the NID was unknown and the title stopped on it. */
+#define CTS_NID_CHECK_STACK 0xd13bde95u
+#define CTS_MAIN_ENTRY      0x08a30200u
+#define CTS_WORKER_ENTRY    0x08a30280u
+
+static struct {
+    int main_done;
+    int worker_ran;
+    uint32_t worker_base, worker_size, worker_sp;
+    uint32_t worker_check, worker_check_frame, worker_free_frame;
+} s_cts;
+
+static uint32_t cts_check(CpuState *cpu) { return sfs_call(cpu, CTS_NID_CHECK_STACK, 0u, 0u, 0u, 0u); }
+
+/* A 0x1000-byte thread: its value, then the value and free size with a 1 KiB 0x00 frame. */
+static void cts_worker_fn(CpuState *cpu) {
+    const uint32_t uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(uid);
+    s_cts.worker_ran = 1;
+    s_cts.worker_base = self ? self->stack_base : 0u;
+    s_cts.worker_size = self ? self->stack_size : 0u;
+    s_cts.worker_sp = cpu->r[29];
+    s_cts.worker_check = cts_check(cpu);
+    const uint32_t sp = cpu->r[29];
+    sfs_fill(sp - 0x400u, sp, 0x00u);
+    cpu->r[29] = sp - 0x400u;
+    s_cts.worker_check_frame = cts_check(cpu);
+    s_cts.worker_free_frame = sfs_free(cpu, 0u);
+    cpu->r[29] = sp;
+    cpu->r[2] = 0u;
+}
+
+static void cts_main_fn(CpuState *cpu) {
+    const uint32_t self_uid = sfs_call(cpu, NID_SCE_KERNEL_GET_THREAD_ID, 0u, 0u, 0u, 0u);
+    TCB *self = tcb_by_uid(self_uid);
+    const uint32_t sp = cpu->r[29];
+    expect(self != NULL, "check stack: the main body runs on a scheduler thread");
+    if (!self) return;
+    const uint32_t main_check = cts_check(cpu);
+    expect(main_check == sp - self->stack_base && main_check > 0x00030000u,
+           "check stack: the main thread reads $sp minus its stack's low end, above 0x30000");
+
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, CTS_WORKER_ENTRY,
+                                     0x10u, 0u);
+    expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
+           "check stack: the 0x1000-byte worker starts");
+    expect(s_cts.worker_ran && s_cts.worker_size == 0x1000u &&
+           s_cts.worker_check == s_cts.worker_sp - s_cts.worker_base,
+           "check stack: the worker reads its own $sp minus its own stack's low end");
+    expect(s_cts.worker_check_frame == s_cts.worker_check - 0x400u,
+           "check stack: a 1 KiB frame reads 0x400 less");
+    expect(s_cts.worker_free_frame + 0x10u == s_cts.worker_check_frame,
+           "check stack: with the fill and a 0x00 frame it is 0x10 above GetThreadStackFreeSize");
+
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    cpu->r[29] = self->stack_base - 0x10u;
+    (void)cts_check(cpu);
+    cpu->r[29] = self->stack_base + self->stack_size + 0x10u;
+    (void)cts_check(cpu);
+    cpu->r[29] = sp;
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "check stack: $sp below or above the thread's stack stops the run by name");
+    expect(cts_check(cpu) == main_check, "check stack: back on its stack the value is unchanged");
+    (void)sfs_call(cpu, NID_SCE_KERNEL_DELETE_THREAD, worker, 0u, 0u, 0u);
+    s_cts.main_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void test_check_thread_stack_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    memset(&s_cts, 0, sizeof s_cts);
+    const int registered = sr_hle_test_is_registered(CTS_NID_CHECK_STACK);
+    expect(registered, "check stack: sceKernelCheckThreadStack has its production registration");
+    if (!registered) return;
+    sr_test_register_guest_fn(CTS_MAIN_ENTRY, cts_main_fn);
+    sr_test_register_guest_fn(CTS_WORKER_ENTRY, cts_worker_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(CTS_MAIN_ENTRY, 0u, 0u);
+    expect(s_cts.main_done, "check stack: the main body ran to its end");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    s_cur = -1;
+    (void)sr_syscall(&cpu, CTS_NID_CHECK_STACK);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "check stack: a call with no current thread stops the run by name");
+    sr_test_guest_fn_reset();
+}
+
 static void test_change_current_thread_attr(void) {
     enum {
         NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
@@ -19623,6 +20358,852 @@ static void test_ge_linear_filter_stays_inside_region(void) {
     #undef LIN_TEXEL
 }
 
+/* ==== GE raster cells (PSP-GE-RASTER-001, #343) ====
+ * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
+ * side, CASE=ge-raster) and src/rt/hle_thread_selftest.c (the software GE side);
+ * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
+ * command words over generated patterns (no game data). It draws into the 16x4 window
+ * x 16..31, y 8..11 of a 64x32 colour buffer at VRAM offset GR_FB_OFFSET whose other pixels
+ * are 0 and whose window holds gr_dst() before the list runs. The base state turns every
+ * per-fragment unit off and selects a 16x4 texture drawn 1:1 by a through-mode sprite with
+ * REPLACE/RGBA, so a sprite's source colour is the texel; a cell's words then change only
+ * what it measures. Transform-mode cells (GR_K_FOG, GR_K_XTRI) use identity world and view
+ * matrices and a viewport that maps view x, y back to window pixels. The result is the
+ * window's 64 pixels (16-bit formats zero-extended). */
+
+#define GR_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GR_ZB_OFFSET 0x00110000u   /* VRAM-relative depth buffer, stride 64 */
+#define GR_STRIDE 64u
+#define GR_ROWS 32u
+#define GR_WX 16u                  /* window x 16..31, y 8..11 */
+#define GR_WY 8u
+#define GR_WW 16u
+#define GR_WH 4u
+#define GR_N 64u                   /* pixels in the window, and texels in each texture */
+#define GR_LIST_WORDS 256u
+#define GR_VTX_WORDS 800u
+#define GR_TEX_BYTES 512u          /* room for the largest texture (GR_T_8888W, 320 bytes) */
+#define GR_CLUT_BYTES 1024u
+#define GR_Z 32768.0f              /* depth of every tested through-mode primitive */
+#define GR_RED 0xff0000ffu
+#define GR_GREEN 0xff00ff00u
+
+enum { GR_K_SPRITE, GR_K_ZSPRITE, GR_K_TRI, GR_K_WRAP, GR_K_CLEAR, GR_K_FOG, GR_K_XTRI,
+       GR_K_LINE, GR_K_POINT };
+enum { GR_T_8888, GR_T_5650, GR_T_5551, GR_T_4444, GR_T_CLUT8, GR_T_CLUT4, GR_T_CLUT4W,
+       GR_T_8888W, GR_T_COUNT };
+enum { GR_D_PATTERN, GR_D_WHITE };
+
+/* kind: what is drawn (GR_K_*); psm: framebuffer format; tex: source texture (GR_T_*);
+   dst: window contents before the draw (GR_D_*); arg: the kind's table row, the texture
+   buffer width of a GR_K_SPRITE (0: 16) or, for GR_K_FOG, 1 to give every pixel colour vcol;
+   vcol: vertex colour (ABGR); w: command words applied after the base state, 0 ends them. */
+struct gr_cell {
+    const char *name;
+    uint8_t kind, psm, tex, dst, arg;
+    uint32_t vcol;
+    uint32_t w[6];
+};
+
+#define GR_CELL_COUNT 189u
+static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
+    {"b-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe040c0ffu, 0xe17f3f01u}},
+    {"b-fix-ff", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe0ffffffu, 0xe1ffffffu}},
+    {"b-dc-sc", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000000u}},
+    {"b-idc-isc", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000011u}},
+    {"b-da-ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b-2sa-2isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000076u}},
+    {"b-2isa-2sa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000067u}},
+    {"b-2da-2ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000098u}},
+    {"b-sub-sa-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0001a2u, 0xe1806040u}},
+    {"b-rsub-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000232u}},
+    {"b-min", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000332u}},
+    {"b-max", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000432u}},
+    {"b-abs", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000532u}},
+    {"b-eq6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000632u}},
+    {"b-eq7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000732u}},
+    {"b-fac11-15", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000fbu, 0xe0102030u, 0xe1c0b0a0u}},
+    {"b565-sa-isa", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b5551-sa-isa", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b4444-sa-isa", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b565-da-ida", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b-2sa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a6u, 0xe1000000u}},
+    {"b-2isa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a7u, 0xe1000000u}},
+    {"b-2da-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a8u, 0xe1000000u}},
+    {"b-ffix-2isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00007au, 0xe0ffffffu}},
+    {"b-ffix-2ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00009au, 0xe0ffffffu}},
+    {"b5551-da-ida", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b4444-da-ida", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"at-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8000u}},
+    {"at-f1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8001u}},
+    {"at-f2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8002u}},
+    {"at-f3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8003u}},
+    {"at-f4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8004u}},
+    {"at-f5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8005u}},
+    {"at-f6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8006u}},
+    {"at-f7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8007u}},
+    {"at-mask", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdb3c3007u}},
+    {"at-gt0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff0006u}},
+    {"ct-never", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000000u, 0xd9800000u, 0xda800000u}},
+    {"ct-always", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000001u, 0xd9800000u, 0xda800000u}},
+    {"ct-eq", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000002u, 0xd9800000u, 0xda800000u}},
+    {"ct-ne", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000003u, 0xd9800000u, 0xda800000u}},
+    {"ct-eq-mix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000002u, 0xd9004080u, 0xda00c0c0u}},
+    {"st-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8000u, 0xdd040003u}},
+    {"st-f1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8001u, 0xdd040003u}},
+    {"st-f2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8002u, 0xdd040003u}},
+    {"st-f3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8003u, 0xdd040003u}},
+    {"st-f4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8004u, 0xdd040003u}},
+    {"st-f5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8005u, 0xdd040003u}},
+    {"st-f6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8006u, 0xdd040003u}},
+    {"st-f7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8007u, 0xdd040003u}},
+    {"st-op0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd000000u}},
+    {"st-op1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd010000u}},
+    {"st-op2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st-op3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd030000u}},
+    {"st-op4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st-op5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st-op6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd060000u}},
+    {"st-op7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd070000u}},
+    {"st-mask", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcf05002u, 0xdd050002u}},
+    {"st4444-incr", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st4444-decr", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st4444-repl", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st4444-lt", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8004u, 0xdd040003u}},
+    {"st5551-incr", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st5551-decr", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st5551-repl7f", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff7f01u, 0xdd020000u}},
+    {"st5551-inv", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd030000u}},
+    {"st565-repl", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st565-eq0", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff0002u, 0xdd000000u}},
+    {"z-f0", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000000u}},
+    {"z-f1", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000001u}},
+    {"z-f2", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000002u}},
+    {"z-f3", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000003u}},
+    {"z-f4", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000004u}},
+    {"z-f5", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000005u}},
+    {"z-f6", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000006u}},
+    {"z-f7", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000007u}},
+    {"z-lt-st", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000004u, 0x24000001u, 0xdcff0001u, 0xdd040300u}},
+    {"z-gt-st", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000006u, 0x24000001u, 0xdcff6006u, 0xdd040302u}},
+    {"tf-mod-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000000u, 0xca30a0e0u}},
+    {"tf-mod-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010000u, 0xca30a0e0u}},
+    {"tf-mod-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000100u, 0xca30a0e0u}},
+    {"tf-mod-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010100u, 0xca30a0e0u}},
+    {"tf-dec-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000001u, 0xca30a0e0u}},
+    {"tf-dec-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010001u, 0xca30a0e0u}},
+    {"tf-dec-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000101u, 0xca30a0e0u}},
+    {"tf-dec-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010101u, 0xca30a0e0u}},
+    {"tf-bld-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000002u, 0xca30a0e0u}},
+    {"tf-bld-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010002u, 0xca30a0e0u}},
+    {"tf-bld-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000102u, 0xca30a0e0u}},
+    {"tf-bld-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010102u, 0xca30a0e0u}},
+    {"tf-rep-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000003u, 0xca30a0e0u}},
+    {"tf-rep-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010003u, 0xca30a0e0u}},
+    {"tf-rep-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000103u, 0xca30a0e0u}},
+    {"tf-rep-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010103u, 0xca30a0e0u}},
+    {"tf-add-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000004u, 0xca30a0e0u}},
+    {"tf-add-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010004u, 0xca30a0e0u}},
+    {"tf-add-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000104u, 0xca30a0e0u}},
+    {"tf-add-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010104u, 0xca30a0e0u}},
+    {"tf-mod-rgba-w", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0xffffffffu, {0xc9000100u}},
+    {"tf-mod-rgba-1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x01010101u, {0xc9000100u}},
+    {"tfa-mod-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000100u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-dec-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000101u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-bld-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000102u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-rep-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000103u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-add-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000104u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-mod-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000000u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tx-5650", GR_K_SPRITE, 3u, GR_T_5650, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000000u}},
+    {"tx-5551", GR_K_SPRITE, 3u, GR_T_5551, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000001u}},
+    {"tx-4444", GR_K_SPRITE, 3u, GR_T_4444, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000002u}},
+    {"tx-c8-8888", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff03u}},
+    {"tx-c8-sh4", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc5020f13u}},
+    {"tx-c8-5551", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff01u}},
+    {"tx-c4-4444", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-off3", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc503ff03u}},
+    {"tx-c4-bw48", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 48u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-bw64", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 64u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-8888-bw20", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 20u, 0x9aff7f20u, {0u}},
+    {"tx-c8-bw24", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 24u, 0x9aff7f20u, {0xc3000005u, 0xc500ff03u}},
+    {"wr-c-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u}},
+    {"wr-w-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-uw-vc", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000100u}},
+    {"wr-c-big", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0xc7000101u}},
+    {"wr-w-big", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-w-min4", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-w-neg-lin", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u, 0xc6000101u}},
+    {"wr-c-neg-lin", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u, 0xc6000101u}},
+    {"e-tri0", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri1", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri2", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri3", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 3u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri4", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 4u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri5", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 5u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri6", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 6u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri7", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 7u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line0", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line1", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line2", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line3", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 3u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-points", GR_K_POINT, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"fmt-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"fmt-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"fmt-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"dth-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-8888", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-565-b", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u, 0x21000001u, 0xdf000032u}},
+    {"msk-8888", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe80f55f0u, 0xe90000c3u}},
+    {"msk-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe8f0f0f0u}},
+    {"msk-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe8000f0fu, 0xe90000f0u}},
+    {"msk-8888-st", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe9000f0fu, 0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"lo-0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000000u}},
+    {"lo-1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000001u}},
+    {"lo-2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000002u}},
+    {"lo-3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000003u}},
+    {"lo-4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000004u}},
+    {"lo-5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000005u}},
+    {"lo-6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000006u}},
+    {"lo-7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000007u}},
+    {"lo-8", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000008u}},
+    {"lo-9", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000009u}},
+    {"lo-10", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000au}},
+    {"lo-11", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000bu}},
+    {"lo-12", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000cu}},
+    {"lo-13", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000du}},
+    {"lo-14", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000eu}},
+    {"lo-15", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000fu}},
+    {"lo-565-xor", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000006u}},
+    {"clr-c", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000101u}},
+    {"clr-a", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000201u}},
+    {"clr-ca", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u}},
+    {"clr-ca-msk", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0xe80f55f0u, 0xe90000c3u}},
+    {"clr-ca-dth565", GR_K_CLEAR, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x20000001u}},
+    {"clr-ca-dth8888", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x20000001u}},
+    {"clr-c-565", GR_K_CLEAR, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000101u}},
+    {"clr-ca-blend", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x21000001u, 0xdf000032u}},
+    {"clr-ca-atest", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x22000001u, 0xdb000000u}},
+    {"clr-a-4444", GR_K_CLEAR, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000201u}},
+    {"xf-tri", GR_K_XTRI, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"xf-plain", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"fog-a", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf8040c0u, 0xcdc08000u, 0xce3c9249u}},
+    {"fog-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf0080ffu, 0xcd000000u, 0xce3c8080u}},
+    {"fog-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k0-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k0-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k1-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k1-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd3f0000u, 0xce3c8000u}},
+};
+
+/* GR_K_WRAP texture rectangles: u0, v0 at the left/top edge, u1, v1 at the right/bottom. */
+static const float gr_wrap_uv[3][4] = {
+    {-8.0f, -2.0f, 8.0f, 2.0f}, {12.0f, 3.0f, 28.0f, 7.0f}, {-16.0f, -4.0f, 48.0f, 12.0f},
+};
+
+/* GR_K_TRI: two flat triangles (red, then green), x/y relative to the window origin. */
+static const float gr_tris[8][12] = {
+    {0.0f, 0.0f, 16.0f, 0.0f, 0.0f, 4.0f, 16.0f, 0.0f, 16.0f, 4.0f, 0.0f, 4.0f},
+    {0.5f, 0.5f, 15.5f, 0.5f, 0.5f, 3.5f, 15.5f, 0.5f, 15.5f, 3.5f, 0.5f, 3.5f},
+    {0.25f, 0.25f, 15.75f, 0.25f, 0.25f, 3.75f, 15.75f, 0.25f, 15.75f, 3.75f, 0.25f, 3.75f},
+    {0.96875f, 0.96875f, 15.03125f, 0.03125f, 2.03125f, 3.03125f,
+     8.53125f, 1.46875f, 15.96875f, 3.96875f, 4.46875f, 3.53125f},
+    {0.0f, 0.5f, 16.0f, 1.0f, 0.0f, 1.5f, 0.0f, 2.25f, 16.0f, 2.0f, 16.0f, 3.75f},
+    {0.0f, 0.0f, 7.5f, 0.0f, 7.5f, 4.0f, 7.5f, 0.0f, 16.0f, 4.0f, 7.5f, 4.0f},
+    {0.0f, 2.0f, 8.0f, 0.0f, 16.0f, 2.0f, 0.0f, 2.0f, 16.0f, 2.0f, 8.0f, 4.0f},
+    {0.0f, 0.0f, 0.0f, 4.0f, 16.0f, 0.0f, 16.0f, 0.0f, 0.0f, 4.0f, 16.0f, 4.0f},
+};
+
+/* GR_K_LINE: two lines (red, then green), x/y of both ends relative to the window origin. */
+static const float gr_lines[4][8] = {
+    {0.0f, 0.0f, 16.0f, 0.0f, 0.5f, 2.5f, 15.5f, 2.5f},
+    {0.0f, 0.0f, 15.0f, 3.0f, 2.0f, 3.5f, 13.0f, 0.5f},
+    {3.25f, 0.0f, 3.25f, 4.0f, 10.75f, 0.5f, 12.5f, 3.75f},
+    {15.5f, 3.0f, 0.25f, 0.5f, 12.0f, 3.75f, 9.5f, 0.25f},
+};
+
+/* GR_K_POINT: eight points, alternately red and green. */
+static const float gr_points[16] = {
+    0.0f, 0.0f, 2.5f, 0.0f, 4.25f, 1.0f, 6.75f, 1.5f,
+    8.0f, 2.0f, 10.5f, 2.5f, 12.375f, 3.0f, 14.625f, 3.625f,
+};
+
+/* Pattern byte `i` of stream `seed`: in every stream eight indices carry the edge values,
+   the rest a fixed integer hash. */
+static uint8_t gr_byte(uint32_t seed, uint32_t i)
+{
+    static const uint8_t edge[8] = {0x00u, 0xffu, 0x01u, 0xfeu, 0x7fu, 0x80u, 0x40u, 0xc0u};
+    const uint32_t slot = (i * 5u + seed * 11u) & 63u;
+    if (slot < 8u) {
+        return edge[slot];
+    }
+    uint32_t x = seed * 0x9e3779b9u + i * 0x85ebca6bu + 0x165667b1u;
+    x ^= x >> 15;
+    x *= 0x2c1b3c6du;
+    x ^= x >> 12;
+    x *= 0x297a2d39u;
+    x ^= x >> 15;
+    return (uint8_t)(x >> 24);
+}
+
+/* An ABGR word from streams seed .. seed + 3 (R, G, B, A). */
+static uint32_t gr_rgba(uint32_t seed, uint32_t i)
+{
+    return (uint32_t)gr_byte(seed, i) | ((uint32_t)gr_byte(seed + 1u, i) << 8) |
+           ((uint32_t)gr_byte(seed + 2u, i) << 16) | ((uint32_t)gr_byte(seed + 3u, i) << 24);
+}
+
+/* Window pixel i before the draw, in the cell's framebuffer format. */
+static uint32_t gr_dst(const struct gr_cell *c, uint32_t i)
+{
+    if (c->dst == GR_D_WHITE) {
+        return c->psm == 3u ? 0xffffffffu : 0xffffu;
+    }
+    if (c->psm == 3u) {
+        return gr_rgba(5u, i);
+    }
+    return (uint32_t)gr_byte(9u, i) | ((uint32_t)gr_byte(10u, i) << 8);
+}
+
+/* GR_K_ZSPRITE: the depth window pixel i holds before the tested z = 0x8000 sprite. */
+static uint32_t gr_depth(uint32_t i)
+{
+    static const uint16_t near_ref[8] = {0x8000u, 0x7fffu, 0x8001u, 0x0000u,
+                                         0xffffu, 0x7ffeu, 0x8002u, 0x8000u};
+    if ((i & 3u) == 0u) {
+        return near_ref[(i >> 2) & 7u];
+    }
+    return ((uint32_t)gr_byte(40u, i) << 8) | gr_byte(41u, i);
+}
+
+/* Texture t's bytes (16x4 texels at buffer width 16; GR_T_CLUT4W and GR_T_8888W carry 128
+   and 320 bytes for wider buffers); returns the byte count. */
+static uint32_t gr_texture(uint32_t t, uint8_t *out)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < GR_N; i++) {
+        if (t == GR_T_8888) {
+            const uint32_t v = gr_rgba(1u, i);
+            for (uint32_t b = 0; b < 4u; b++) {
+                out[n++] = (uint8_t)(v >> (8u * b));
+            }
+        } else if (t == GR_T_CLUT8) {
+            out[n++] = gr_byte(13u, i);
+        } else if (t == GR_T_CLUT4) {
+            if (i < GR_N / 2u) {
+                out[n++] = gr_byte(18u, i);
+            }
+        } else if (t == GR_T_CLUT4W) {
+            out[n++] = gr_byte(44u, i);
+            out[n++] = gr_byte(45u, i);
+        } else if (t == GR_T_8888W) {
+            for (uint32_t b = 0; b < 5u; b++) {
+                out[n++] = gr_byte(46u + b, i);
+            }
+        } else {
+            out[n++] = gr_byte(21u + t, i);
+            out[n++] = gr_byte(25u + t, i);
+        }
+    }
+    return n;
+}
+
+/* The CLUT the CLUT8/CLUT4 cells load: 256 8888 entries (512 16-bit ones). */
+static void gr_clut(uint8_t *out)
+{
+    for (uint32_t k = 0; k < GR_CLUT_BYTES / 4u; k++) {
+        const uint32_t v = gr_rgba(30u, k);
+        for (uint32_t b = 0; b < 4u; b++) {
+            out[k * 4u + b] = (uint8_t)(v >> (8u * b));
+        }
+    }
+}
+
+static uint32_t gr_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+/* One through-mode vertex: float u, v; 8888 colour; float x, y, z (vertex type 0x80019f). */
+static uint32_t gr_tvtx(uint32_t *out, float u, float v, uint32_t col, float x, float y, float z)
+{
+    out[0] = gr_fbits(u);
+    out[1] = gr_fbits(v);
+    out[2] = col;
+    out[3] = gr_fbits(x);
+    out[4] = gr_fbits(y);
+    out[5] = gr_fbits(z);
+    return 6u;
+}
+
+/* One transform-mode vertex: 8888 colour; float x, y, z (vertex type 0x19c). The x, y
+   given in window pixels become the view-space x, y that the GR_K_FOG viewport maps back
+   to those pixels: x = 32 + 32 * X and y = 16 + 16 * Y on the 64x32 buffer. */
+static uint32_t gr_xvtx(uint32_t *out, uint32_t col, float x, float y, float z)
+{
+    out[0] = col;
+    out[1] = gr_fbits((x - 32.0f) / 32.0f);
+    out[2] = gr_fbits((y - 16.0f) / 16.0f);
+    out[3] = gr_fbits(z);
+    return 4u;
+}
+
+/* The cell's vertex words; returns the count. */
+static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
+{
+    const float x0 = (float)GR_WX, y0 = (float)GR_WY;
+    const float x1 = x0 + (float)GR_WW, y1 = y0 + (float)GR_WH;
+    uint32_t n = 0;
+    if (c->kind == GR_K_ZSPRITE || c->kind == GR_K_FOG) {
+        /* One 1x1 sprite per window pixel: a depth in clear mode, or a colour at view z = i. */
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const float x = x0 + (float)(i % GR_WW), y = y0 + (float)(i / GR_WW);
+            if (c->kind == GR_K_ZSPRITE) {
+                const float z = (float)gr_depth(i);
+                n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x, y, z);
+                n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x + 1.0f, y + 1.0f, z);
+            } else {
+                const uint32_t col = c->arg == 1u ? c->vcol : gr_rgba(1u, i);
+                n += gr_xvtx(out + n, col, x, y, (float)i);
+                n += gr_xvtx(out + n, col, x + 1.0f, y + 1.0f, (float)i);
+            }
+        }
+    }
+    if (c->kind == GR_K_TRI || c->kind == GR_K_XTRI) {
+        for (uint32_t k = 0; k < 6u; k++) {
+            const uint32_t col = k < 3u ? GR_RED : GR_GREEN;
+            const float x = x0 + gr_tris[c->arg][2u * k], y = y0 + gr_tris[c->arg][2u * k + 1u];
+            n += c->kind == GR_K_TRI ? gr_tvtx(out + n, 0.0f, 0.0f, col, x, y, GR_Z)
+                                     : gr_xvtx(out + n, col, x, y, 0.0f);
+        }
+    } else if (c->kind == GR_K_LINE) {
+        for (uint32_t k = 0; k < 4u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, k < 2u ? GR_RED : GR_GREEN,
+                         x0 + gr_lines[c->arg][2u * k], y0 + gr_lines[c->arg][2u * k + 1u], GR_Z);
+        }
+    } else if (c->kind == GR_K_POINT) {
+        for (uint32_t k = 0; k < 8u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, (k & 1u) ? GR_GREEN : GR_RED,
+                         x0 + gr_points[2u * k], y0 + gr_points[2u * k + 1u], GR_Z);
+        }
+    } else if (c->kind == GR_K_WRAP) {
+        const float *uv = gr_wrap_uv[c->arg];
+        n += gr_tvtx(out + n, uv[0], uv[1], c->vcol, x0, y0, GR_Z);
+        n += gr_tvtx(out + n, uv[2], uv[3], c->vcol, x1, y1, GR_Z);
+    } else if (c->kind != GR_K_FOG) {
+        n += gr_tvtx(out + n, 0.0f, 0.0f, c->vcol, x0, y0, GR_Z);
+        n += gr_tvtx(out + n, (float)GR_WW, (float)GR_WH, c->vcol, x1, y1, GR_Z);
+    }
+    return n;
+}
+
+/* The cell's display list for vertex words at `vtx`, texture t at tex[t] and the CLUT at
+   `clut` (physical addresses); returns the word count. Every state the draw reads is set. */
+static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *tex, uint32_t clut,
+                        uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    /* Clip z = 0 and w = 1 for every vertex, so the view z only feeds fog. */
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    const uint32_t t = tex[c->tex];
+    const uint32_t full = (GR_STRIDE - 1u) | ((GR_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GR_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GR_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GR_W(0x9c, GR_FB_OFFSET);
+    GR_W(0x9d, GR_STRIDE);
+    GR_W(0xd2, c->psm);
+    GR_W(0x9e, GR_ZB_OFFSET);
+    GR_W(0x9f, GR_STRIDE);
+    GR_W(0x15, 0);
+    GR_W(0x16, full);
+    GR_W(0xd4, 0);
+    GR_W(0xd5, full);
+    GR_W(0x4c, 0);
+    GR_W(0x4d, 0);
+    GR_W(0xd6, 0);
+    GR_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GR_W(off_units[i], 0);
+    }
+    GR_W(0x50, 0);              /* flat shading */
+    GR_W(0xd3, 0);              /* clear mode off */
+    GR_W(0xe7, 1);              /* depth writes off */
+    GR_W(0xe8, 0);
+    GR_W(0xe9, 0);
+    GR_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GR_W(0xd8, 1);              /* colour test ALWAYS */
+    GR_W(0xd9, 0);
+    GR_W(0xda, 0);
+    GR_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GR_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GR_W(0xde, 1);              /* depth test ALWAYS */
+    GR_W(0xdf, 0x32u);
+    GR_W(0xe0, 0);
+    GR_W(0xe1, 0);
+    GR_W(0xe6, 3);              /* logic op COPY */
+    GR_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GR_W(0xe3, 0xf3e2u);
+    GR_W(0xe4, 0x0c1du);
+    GR_W(0xe5, 0xe2f3u);
+    GR_W(0xcf, 0);
+    GR_W(0xcd, 0);
+    GR_W(0xce, 0);
+    GR_W(0x55, 0xffffffu);
+    GR_W(0x58, 0xffu);
+    GR_W(0x1e, 1);              /* texture on: UV, linear, one level, 8888 */
+    GR_W(0xc0, 0);
+    GR_W(0xc2, 0);
+    GR_W(0xc3, 3);
+    GR_W(0xa0, t);
+    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | (c->kind == GR_K_SPRITE && c->arg ? c->arg : GR_WW));
+    GR_W(0xb8, (2u << 8) | 4u); /* 16x4 */
+    GR_W(0xc6, 0);              /* nearest */
+    GR_W(0xc7, 0x101u);         /* clamp u and v */
+    GR_W(0xc8, 0);
+    GR_W(0xc9, 0x103u);         /* REPLACE, RGBA */
+    GR_W(0xca, 0);
+    GR_W(0x48, gr_fbits(1.0f) >> 8);
+    GR_W(0x49, gr_fbits(1.0f) >> 8);
+    GR_W(0x4a, 0);
+    GR_W(0x4b, 0);
+    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4 || c->tex == GR_T_CLUT4W ||
+        c->tex == GR_T_8888W) {
+        GR_W(0xb0, clut);
+        GR_W(0xb1, (clut >> 8) & 0x000f0000u);
+        GR_W(0xc5, 0x00ff03u);
+        GR_W(0xc4, GR_CLUT_BYTES / 32u);
+    }
+    GR_W(0xcb, 0);              /* texture flush */
+    GR_W(0x12, 0x0080019fu);    /* through, float uv, 8888 colour, float position */
+    GR_W(0x01, vtx);
+    if (c->kind == GR_K_ZSPRITE) {
+        GR_W(0xe7, 0);
+        GR_W(0xd3, 0x401u);     /* clear mode, depth only: one 1x1 sprite per pixel */
+        GR_W(0x04, (6u << 16) | (2u * GR_N));
+        GR_W(0xd3, 0);
+        GR_W(0xe7, 1);
+        GR_W(0x01, vtx + 2u * GR_N * 24u);
+    }
+    for (uint32_t i = 0; i < 6u && c->w[i] != 0u; i++) {
+        out[n++] = c->w[i];
+    }
+    if (c->kind == GR_K_FOG || c->kind == GR_K_XTRI) {
+        GR_W(0x3a, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GR_W(0x3b, gr_fbits(ident43[i]) >> 8);
+        }
+        GR_W(0x3c, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GR_W(0x3d, gr_fbits(ident43[i]) >> 8);
+        }
+        GR_W(0x3e, 0);
+        for (uint32_t i = 0; i < 16u; i++) {
+            GR_W(0x3f, gr_fbits(proj[i]) >> 8);
+        }
+        GR_W(0x42, gr_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+        GR_W(0x43, gr_fbits(16.0f) >> 8);
+        GR_W(0x44, 0);
+        GR_W(0x45, gr_fbits(2048.0f) >> 8);
+        GR_W(0x46, gr_fbits(2048.0f) >> 8);
+        GR_W(0x47, gr_fbits(32768.0f) >> 8);
+        GR_W(0x4c, (2048u - 32u) << 4);
+        GR_W(0x4d, (2048u - 16u) << 4);
+        GR_W(0x12, 0x0000019cu);  /* transform, 8888 colour, float position */
+        if (c->kind == GR_K_FOG) {
+            GR_W(0x04, (6u << 16) | (2u * GR_N));
+        } else {
+            GR_W(0x04, (3u << 16) | 6u);
+        }
+    } else if (c->kind == GR_K_TRI) {
+        GR_W(0x04, (3u << 16) | 6u);
+    } else if (c->kind == GR_K_LINE) {
+        GR_W(0x04, (1u << 16) | 4u);
+    } else if (c->kind == GR_K_POINT) {
+        GR_W(0x04, 8u);
+    } else {
+        GR_W(0x04, (6u << 16) | 2u);
+    }
+    GR_W(0x0f, 0);
+    GR_W(0x0c, 0);
+#undef GR_W
+    return n;
+}
+
+/* FNV-1a 64 over the window's 64 result words, each little-endian. */
+static uint64_t gr_digest(const uint32_t *px)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GR_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            h ^= (px[i] >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+/* ==== end of the GE raster cells ==== */
+
+/* PSP-GE-RASTER-001 (#343): the window digest each cell left on a PSP-3000 (firmware 6.6.1,
+ * probe case ge-raster, docs/HARDWARE_ORACLE.md). Index k is gr_cells[k]. */
+static const struct {
+    const char *name;
+    uint64_t psp;
+} s_gr_psp[GR_CELL_COUNT] = {
+    {"b-sa-isa", 0xe2e3dd342f1b7aedull},
+    {"b-fix", 0x8ec220832fb9a609ull},
+    {"b-fix-ff", 0xa4df29b706351f0aull},
+    {"b-dc-sc", 0xae80e197b2487b80ull},
+    {"b-idc-isc", 0xc158ab0c9e67248eull},
+    {"b-da-ida", 0xd9612ab5d2b56816ull},
+    {"b-2sa-2isa", 0xf00f5598f5e83a8dull},
+    {"b-2isa-2sa", 0xd66d5d5af2f30cd9ull},
+    {"b-2da-2ida", 0xa847911d0f1e673full},
+    {"b-sub-sa-fix", 0x8759886443b6004full},
+    {"b-rsub-sa-isa", 0x00f648218bafb8f8ull},
+    {"b-min", 0xf21f885e6b14a8b6ull},
+    {"b-max", 0xd1b0e597970e8debull},
+    {"b-abs", 0x4d6f82babe9d8152ull},
+    {"b-eq6", 0x61b0b02428e84441ull},
+    {"b-eq7", 0x61b0b02428e84441ull},
+    {"b-fac11-15", 0x4def31c864814aafull},
+    {"b565-sa-isa", 0xa688406e73344322ull},
+    {"b5551-sa-isa", 0xc13232bb3a0ebe30ull},
+    {"b4444-sa-isa", 0x4aa79875c953edf2ull},
+    {"b565-da-ida", 0x4f0a3a47648a81c7ull},
+    {"b-2sa-fix0", 0x93349d9a477a8aa2ull},
+    {"b-2isa-fix0", 0x0fc0361ab21e8438ull},
+    {"b-2da-fix0", 0xc2b1ff28c04b6cfcull},
+    {"b-ffix-2isa", 0x4753d8fff6a1bc9bull},
+    {"b-ffix-2ida", 0x4973b119622d734cull},
+    {"b5551-da-ida", 0x130ed831ea47c0d5ull},
+    {"b4444-da-ida", 0x7eafc1cb089c2a0aull},
+    {"at-f0", 0x6b417febbd03b2ecull},
+    {"at-f1", 0x61b0b02428e84441ull},
+    {"at-f2", 0xcdc817528c030710ull},
+    {"at-f3", 0x3805351c8739f6fdull},
+    {"at-f4", 0x75af15df6b356590ull},
+    {"at-f5", 0xcd7d40eb15f0ab1cull},
+    {"at-f6", 0x71901108fa18e3b1ull},
+    {"at-f7", 0x2c3737c841f7433dull},
+    {"at-mask", 0xcc38ed26427815fbull},
+    {"at-gt0", 0x96354b2e62a1da37ull},
+    {"ct-never", 0x6b417febbd03b2ecull},
+    {"ct-always", 0x61b0b02428e84441ull},
+    {"ct-eq", 0x10c0807ec120af51ull},
+    {"ct-ne", 0x4475b5231e05efacull},
+    {"ct-eq-mix", 0x4d0afb4fb8bf5a0aull},
+    {"st-f0", 0xb3e5e86b6c945c14ull},
+    {"st-f1", 0xa673adbc5a81af31ull},
+    {"st-f2", 0xaa81ea4dcd87ab12ull},
+    {"st-f3", 0x5e193d5ad9c2e8ebull},
+    {"st-f4", 0xd4290d62c2eb2b52ull},
+    {"st-f5", 0xc2ae2f09fb82c06cull},
+    {"st-f6", 0xbd8efe4f49808d99ull},
+    {"st-f7", 0xb80ae59808ab34d3ull},
+    {"st-op0", 0x61b0b02428e84441ull},
+    {"st-op1", 0x8cce44c95088fe39ull},
+    {"st-op2", 0x8deef11e3a45a095ull},
+    {"st-op3", 0xe28eaf938faee78dull},
+    {"st-op4", 0xa673adbc5a81af31ull},
+    {"st-op5", 0x2e98a36ee874b23cull},
+    {"st-op6", 0x61b0b02428e84441ull},
+    {"st-op7", 0x61b0b02428e84441ull},
+    {"st-mask", 0xfc5213f372a980d8ull},
+    {"st4444-incr", 0x761201d2693253d6ull},
+    {"st4444-decr", 0xda56a206ea639db6ull},
+    {"st4444-repl", 0xf6fa0571670cd636ull},
+    {"st4444-lt", 0x89267a5400327090ull},
+    {"st5551-incr", 0x99788ba9f6d725f6ull},
+    {"st5551-decr", 0x11f6554bd26e93f6ull},
+    {"st5551-repl7f", 0x11f6554bd26e93f6ull},
+    {"st5551-inv", 0xb94551d4a09fff76ull},
+    {"st565-repl", 0x12eb7b0d599b524eull},
+    {"st565-eq0", 0x12eb7b0d599b524eull},
+    {"z-f0", 0x6b417febbd03b2ecull},
+    {"z-f1", 0x61b0b02428e84441ull},
+    {"z-f2", 0x0d4abd68740baa99ull},
+    {"z-f3", 0x8856970cd47244c8ull},
+    {"z-f4", 0xcacab511e92ade03ull},
+    {"z-f5", 0xe0adf135f4b58dfeull},
+    {"z-f6", 0x9ce9403e66b0f8cfull},
+    {"z-f7", 0xe27a10bc7d55a32eull},
+    {"z-lt-st", 0x5e0dbd0e6ba47d80ull},
+    {"z-gt-st", 0x9744cfbf2f4a20b2ull},
+    {"tf-mod-rgb", 0x528021cf7dc9ab2cull},
+    {"tf-mod-rgb-x2", 0xdfd3e8b5cf373522ull},
+    {"tf-mod-rgba", 0x528021cf7dc9ab2cull},
+    {"tf-mod-rgba-x2", 0xdfd3e8b5cf373522ull},
+    {"tf-dec-rgb", 0x61b0b02428e84441ull},
+    {"tf-dec-rgb-x2", 0x718a6690670a04bfull},
+    {"tf-dec-rgba", 0xc3662b29f8e75d67ull},
+    {"tf-dec-rgba-x2", 0xf87b6fb185779d15ull},
+    {"tf-bld-rgb", 0xc322f1a42d989cc0ull},
+    {"tf-bld-rgb-x2", 0xe2ca5f19c4d50788ull},
+    {"tf-bld-rgba", 0xc322f1a42d989cc0ull},
+    {"tf-bld-rgba-x2", 0xe2ca5f19c4d50788ull},
+    {"tf-rep-rgb", 0x61b0b02428e84441ull},
+    {"tf-rep-rgb-x2", 0x718a6690670a04bfull},
+    {"tf-rep-rgba", 0x61b0b02428e84441ull},
+    {"tf-rep-rgba-x2", 0x718a6690670a04bfull},
+    {"tf-add-rgb", 0x3ff03fb3785db8fbull},
+    {"tf-add-rgb-x2", 0x09e444041ba1e76aull},
+    {"tf-add-rgba", 0x3ff03fb3785db8fbull},
+    {"tf-add-rgba-x2", 0x09e444041ba1e76aull},
+    {"tf-mod-rgba-w", 0x61b0b02428e84441ull},
+    {"tf-mod-rgba-1", 0x1f26bf30dbbd11adull},
+    {"tfa-mod-rgba", 0xdc8184067b497b4cull},
+    {"tfa-dec-rgba", 0xd2cfdae5ad35a825ull},
+    {"tfa-bld-rgba", 0xdc8184067b497b4cull},
+    {"tfa-rep-rgba", 0xf50f75b899a90725ull},
+    {"tfa-add-rgba", 0xdc8184067b497b4cull},
+    {"tfa-mod-rgb", 0xd2cfdae5ad35a825ull},
+    {"tx-5650", 0x55191b7986f94bc5ull},
+    {"tx-5551", 0x50fd51ab4a3dc1bdull},
+    {"tx-4444", 0x48a401c483f8a640ull},
+    {"tx-c8-8888", 0xcc8e999943f08733ull},
+    {"tx-c8-sh4", 0xa4539c4c08f2b348ull},
+    {"tx-c8-5551", 0x672d960cefbf2f50ull},
+    {"tx-c4-4444", 0xca1b5888bc0a73b8ull},
+    {"tx-c4-off3", 0xe9f25d4569db9d85ull},
+    {"tx-c4-bw48", 0xc6e98ff96fefe004ull},
+    {"tx-c4-bw64", 0x7839e58d724c70b5ull},
+    {"tx-8888-bw20", 0x9fa773b0a1d72d9bull},
+    {"tx-c8-bw24", 0xb620ae02e7089a79ull},
+    {"wr-c-neg", 0x7c9b1a47a3d70368ull},
+    {"wr-w-neg", 0xb28ae2c44b1f4c09ull},
+    {"wr-uw-vc", 0xc209862396d56a05ull},
+    {"wr-c-big", 0x7e2190ed8778a2d5ull},
+    {"wr-w-big", 0x8b682ff667ebaaedull},
+    {"wr-w-min4", 0xa2e42f222f589b49ull},
+    {"wr-w-neg-lin", 0xb28ae2c44b1f4c09ull},
+    {"wr-c-neg-lin", 0x7c9b1a47a3d70368ull},
+    {"e-tri0", 0xf5a0993ec9228d41ull},
+    {"e-tri1", 0x0eaa42aa6b33ed99ull},
+    {"e-tri2", 0x9a27cacbebcdd6f1ull},
+    {"e-tri3", 0x58a0d3f1740cecf0ull},
+    {"e-tri4", 0xbac04c9003489048ull},
+    {"e-tri5", 0x6d8b51ec978358f3ull},
+    {"e-tri6", 0x44c4675b69c3e467ull},
+    {"e-tri7", 0xf5a0993ec9228d41ull},
+    {"e-line0", 0x4a67f079217de8beull},
+    {"e-line1", 0xa896e3153d5cc0bbull},
+    {"e-line2", 0x5ce41b1df46da45aull},
+    {"e-line3", 0x936dca4d32a5e7b7ull},
+    {"e-points", 0x68c7b5aa88c253a7ull},
+    {"fmt-565", 0x12eb7b0d599b524eull},
+    {"fmt-5551", 0x673de6b93dd90776ull},
+    {"fmt-4444", 0xe4ddad427dc21de6ull},
+    {"dth-565", 0xf0ef3c90518c45fdull},
+    {"dth-5551", 0x12406110445fa3b1ull},
+    {"dth-4444", 0x127c48c1dccd5544ull},
+    {"dth-8888", 0xdd0aecff5f0fa36bull},
+    {"dth-565-b", 0x2f4ed56110282d97ull},
+    {"msk-8888", 0xc554066569201d85ull},
+    {"msk-565", 0xfb76050e8e1f9ebaull},
+    {"msk-4444", 0xe4ddad427dc21de6ull},
+    {"msk-8888-st", 0x324672ef2806c4a1ull},
+    {"lo-0", 0xbe910e17deca3a2dull},
+    {"lo-1", 0xb410e3e5c05ac6ebull},
+    {"lo-2", 0x9f7d03d69cb73583ull},
+    {"lo-3", 0x61b0b02428e84441ull},
+    {"lo-4", 0x62b2029c0cf444d2ull},
+    {"lo-5", 0x6b417febbd03b2ecull},
+    {"lo-6", 0x8f3cc93ed2e25e10ull},
+    {"lo-7", 0x41043d49cee09bd2ull},
+    {"lo-8", 0x24b86f70ebc4230eull},
+    {"lo-9", 0x3c44a6f726c2b570ull},
+    {"lo-10", 0x07610972524b83a8ull},
+    {"lo-11", 0xf50bc89ce82a2c72ull},
+    {"lo-12", 0x274253721c649fbdull},
+    {"lo-13", 0x272bb88f382da21bull},
+    {"lo-14", 0x2254372563da19afull},
+    {"lo-15", 0x74b58b05fdf3eaadull},
+    {"lo-565-xor", 0x7b4ad7adbbf198bcull},
+    {"clr-c", 0x5982dec5529ace6dull},
+    {"clr-a", 0x7c24b06f87d84da0ull},
+    {"clr-ca", 0x6635ffd176aa2b25ull},
+    {"clr-ca-msk", 0xcec5ae97a8e37f30ull},
+    {"clr-ca-dth565", 0x7341485be704cba5ull},
+    {"clr-ca-dth8888", 0xa8195cd6205ffae5ull},
+    {"clr-c-565", 0xf3d7b8b640c9a8a5ull},
+    {"clr-ca-blend", 0x6635ffd176aa2b25ull},
+    {"clr-ca-atest", 0x6635ffd176aa2b25ull},
+    {"clr-a-4444", 0x24ffba3b563c2017ull},
+    {"xf-tri", 0xf5a0993ec9228d41ull},
+    {"xf-plain", 0x61b0b02428e84441ull},
+    {"fog-a", 0xfc6d7b8405af2fa1ull},
+    {"fog-b", 0x8545d166b94e44acull},
+    {"fog-c", 0x5a6d3e6eceb6619bull},
+    {"fog-k0-b", 0x89adaadf98387375ull},
+    {"fog-k0-c", 0x578c3b95de454f25ull},
+    {"fog-k1-b", 0xe3d831492858103dull},
+    {"fog-k1-c", 0x75e634dc776d8575ull},
+};
+
+/* Every PSP-GE-RASTER-001 cell through production dispatch and the software GE, with the
+ * probe's own list, vertices, textures and destination pattern; the window must match the
+ * PSP's digest. A diverging cell prints its software window for comparison with the raw
+ * hardware rows. */
+static void test_ge_raster_cells_match_psp(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    const uint32_t list = 0x08900000u, vtx = 0x08904000u, clut = 0x08918000u;
+    const uint32_t fb = 0x04000000u + GR_FB_OFFSET;
+    uint32_t tex[GR_T_COUNT];
+    for (uint32_t t = 0; t < GR_T_COUNT; t++) {
+        tex[t] = 0x08910000u + t * 0x400u;
+        (void)gr_texture(t, (uint8_t *)SR_HOST(tex[t]));
+    }
+    gr_clut((uint8_t *)SR_HOST(clut));
+    unsigned diverged = 0, names_ok = 1, synced = 1;
+    for (uint32_t k = 0; k < GR_CELL_COUNT; k++) {
+        const struct gr_cell *c = &gr_cells[k];
+        uint32_t px[GR_N];
+        memset(SR_HOST(fb), 0, GR_STRIDE * GR_ROWS * 4u);
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const uint32_t at = (GR_WY + i / GR_WW) * GR_STRIDE + GR_WX + i % GR_WW;
+            if (c->psm == 3u) MEM_W32(fb + at * 4u, gr_dst(c, i));
+            else MEM_W16(fb + at * 2u, (uint16_t)gr_dst(c, i));
+        }
+        (void)gr_vertices(c, (uint32_t *)SR_HOST(vtx));
+        (void)gr_list(c, vtx, tex, clut, (uint32_t *)SR_HOST(list));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = list;
+        const uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        if ((qid & 0xFF000000u) != 0x35000000u || sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) != 0u)
+            synced = 0;
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const uint32_t at = (GR_WY + i / GR_WW) * GR_STRIDE + GR_WX + i % GR_WW;
+            px[i] = c->psm == 3u ? MEM_R32(fb + at * 4u) : (uint32_t)MEM_R16(fb + at * 2u);
+        }
+        if (strcmp(s_gr_psp[k].name, c->name) != 0) names_ok = 0;
+        const uint64_t digest = gr_digest(px);
+        if (digest != s_gr_psp[k].psp) {
+            diverged++;
+            fprintf(stderr, "GE-RASTER %s software=0x%016llx psp=0x%016llx", c->name,
+                    (unsigned long long)digest, (unsigned long long)s_gr_psp[k].psp);
+            for (uint32_t i = 0; i < GR_N; i++)
+                fprintf(stderr, "%s%08x", i % GR_WW ? " " : "\n  ", (unsigned)px[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+    expect(names_ok, "PSP-GE-RASTER-001 digest table rows name the cells in table order");
+    expect(synced, "every PSP-GE-RASTER-001 list is accepted and completes");
+    expect(diverged == 0, "every PSP-GE-RASTER-001 cell matches the PSP window digest");
+}
+
 static void test_ge_guest_sentinel(void) {
     CpuState cpu;
     reset_fixture();
@@ -21344,20 +22925,22 @@ static void test_ge_block_transfer_span_atomicity(void) {
      * can place a 16-bpp linear texture at an odd address whose final row ends
      * exactly ONE byte past the arena. Widening the accepted extent by a single
      * byte is invisible to every other assertion in this file, so pin both sides
-     * of that boundary through the same production decode helper. */
+     * of that boundary through the same production decode helper. Rows are whole
+     * 16-byte lines (ge_tex_row_bytes), so buffer width 8 puts the second row's
+     * texel 16 bytes after the first. */
     state->tex_fmt = 0u;
-    state->tex_bufw = 1u;
+    state->tex_bufw = 8u;
     state->tex_w = 1;
     state->tex_h = 2;
-    state->tex_addr = 0x0bfffffdu;                 /* last row ends at arena_end + 1 */
+    state->tex_addr = 0x0bffffefu;                 /* last row ends at arena_end + 1 */
     memcpy(scratch + arena_bytes, &(uint16_t){0x7fffu}, 2u);
     decoded[0] = 0x55555555u; decoded[1] = 0x66666666u;
     ge_decode_tex_rgba(decoded);
     expect(decoded[0] == 0u && decoded[1] == 0u,
            "a texture rectangle ending one byte past the arena is rejected whole");
 
-    state->tex_addr = 0x0bfffffcu;                 /* last row ends AT arena_end */
-    MEM_W16(0x0bfffffcu, 0xffffu);
+    state->tex_addr = 0x0bffffeeu;                 /* last row ends AT arena_end */
+    MEM_W16(0x0bffffeeu, 0xffffu);
     MEM_W16(0x0bfffffeu, 0xffffu);
     decoded[0] = 0u; decoded[1] = 0u;
     ge_decode_tex_rgba(decoded);
@@ -21697,8 +23280,8 @@ static void test_dmac_semantics(void) {
  *
  * The production scheduler loop (sched_run) runs both guest threads, created
  * and started through the production ThreadMan NIDs, so every wait here is a
- * real scheduler block and wake. The transfer's guest-time duration is
- * unmeasured, so only the measured ordering is asserted. */
+ * real scheduler block and wake. The transfer's measured duration is asserted by
+ * the PSP-DMAC-002 channel tests below. */
 enum {
     DMAC_CC_MAIN_ENTRY = 0x08a30000u,
     DMAC_CC_FIRST_ENTRY = 0x08a30040u,
@@ -21811,7 +23394,7 @@ static void dmac_cc_run(uint32_t first_nid, uint32_t second_nid, int second_bloc
         snprintf(msg, sizeof msg, "PSP %s: BUSY is returned while the first transfer is pending",
                  label);
         expect(!s_dmac_cc_first_done_at_second, msg);
-        snprintf(msg, sizeof msg, "runtime %s: a BUSY Try copies nothing (unmeasured on PSP)",
+        snprintf(msg, sizeof msg, "PSP-DMAC-002 b1 %s: a BUSY Try of whole 16-byte blocks copies nothing",
                  label);
         expect(dmac_span_is(DMAC_CC_DST_SECOND, DMAC_CC_SIZE + 1u, 0u), msg);
     }
@@ -21828,6 +23411,226 @@ static void test_dmac_active_transfer_across_threads(void) {
     dmac_cc_run(NID_SCE_DMAC_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-memcpy-try");
     dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_TRY_MEMCPY, 0, "concurrent-try-try");
     dmac_cc_run(NID_SCE_DMAC_TRY_MEMCPY, NID_SCE_DMAC_MEMCPY, 1, "concurrent-try-memcpy");
+}
+
+/* ---- sceDmac channel model from the PSP-3000 dma-timing probe (#303) ---------
+ *
+ * PSP-DMAC-002 (three acceptance-eligible runs, boots 61-63): with a priority-0x10
+ * thread blocked in a channel transfer, the priority-0x20 main thread finds that
+ *   - a body of at most 0x100 bytes whose source and destination share their address
+ *     modulo 16 bypasses the channel: Try returns 0 with a full copy and a blocking call
+ *     returns 0 without waiting (aligned 0x10..0x10f; 0x110 refused);
+ *   - a refused Try leaves its head and tail bytes copied and nothing else, and nothing
+ *     at all when source and destination differ modulo 16;
+ *   - two blocking callers queued behind the transfer are served in arrival order, the
+ *     weaker one first when it arrived first;
+ *   - a transfer keeps its caller blocked for its measured duration.
+ * Every thread is created and started through the production ThreadMan NIDs and runs
+ * under sched_run, so every wait is a real scheduler block and wake. */
+enum {
+    DCH_MAIN_ENTRY = 0x08a31000u,
+    DCH_T0_ENTRY = 0x08a31040u,
+    DCH_T1_ENTRY = 0x08a31080u,
+    DCH_T2_ENTRY = 0x08a310c0u,
+    DCH_NAME = 0x08a31100u,
+    DCH_SRC = 0x08700000u,
+    DCH_DST0 = 0x08740000u,
+    DCH_DST1 = 0x08780000u,
+    DCH_DST2 = 0x087c0000u,
+    DCH_REGION = 0x00030000u,
+};
+
+typedef struct DchJob {
+    uint32_t nid, dst, src, n, uid, ret;
+    int entered, returned, order;
+    uint64_t enter_us, exit_us, deadline_us;
+} DchJob;
+
+static DchJob s_dch[3];
+static int s_dch_order;
+static int s_dch_done;
+static void (*s_dch_scenario)(void);
+
+static uint32_t dch_call(uint32_t nid, uint32_t dst, uint32_t src, uint32_t n) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = dst;
+    c.r[5] = src;
+    c.r[6] = n;
+    return sr_syscall(&c, nid);
+}
+
+static void dch_run(int k) {
+    DchJob *j = &s_dch[k];
+    j->entered = 1;
+    j->enter_us = s_vtime_us;
+    j->ret = dch_call(j->nid, j->dst, j->src, j->n);
+    j->exit_us = s_vtime_us;
+    j->returned = 1;
+    j->order = ++s_dch_order;
+}
+
+static void dch_t0_fn(CpuState *cpu) { dch_run(0); cpu->r[2] = 0u; }
+static void dch_t1_fn(CpuState *cpu) { dch_run(1); cpu->r[2] = 0u; }
+static void dch_t2_fn(CpuState *cpu) { dch_run(2); cpu->r[2] = 0u; }
+
+static int dch_pending(int k) { return s_dch[k].entered && !s_dch[k].returned; }
+
+static void dch_start(int k, uint32_t priority) {
+    static const uint32_t entries[3] = {DCH_T0_ENTRY, DCH_T1_ENTRY, DCH_T2_ENTRY};
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = DCH_NAME;
+    c.r[5] = entries[k];
+    c.r[6] = priority;
+    c.r[7] = 0x4000u;
+    s_dch[k].uid = sr_syscall(&c, NID_SCE_KERNEL_CREATE_THREAD);
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dch[k].uid;
+    (void)sr_syscall(&c, NID_SCE_KERNEL_START_THREAD);
+    /* A stronger thread runs at once; one blocked in a transfer records the window. */
+    s_dch[k].deadline_us = s_xfer_deadline;
+}
+
+static void dch_join(int k) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = s_dch[k].uid;
+    (void)sr_syscall(&c, hle_selftest_nid("sceKernelWaitThreadEnd"));
+}
+
+static void dch_main_fn(CpuState *cpu) {
+    title_hle_write_cstr(DCH_NAME, "dmac-chan");
+    s_dch_scenario();
+    for (int k = 0; k < 3; k++)
+        if (s_dch[k].uid) dch_join(k);
+    s_dch_done = 1;
+    cpu->r[2] = 0u;
+}
+
+static void dch_setup(void (*scenario)(void)) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(DCH_MAIN_ENTRY, dch_main_fn);
+    sr_test_register_guest_fn(DCH_T0_ENTRY, dch_t0_fn);
+    sr_test_register_guest_fn(DCH_T1_ENTRY, dch_t1_fn);
+    sr_test_register_guest_fn(DCH_T2_ENTRY, dch_t2_fn);
+    memset(s_dch, 0, sizeof s_dch);
+    s_dch_order = 0;
+    s_dch_done = 0;
+    s_dch_scenario = scenario;
+    dmac_fill(DCH_SRC, DCH_REGION);
+    dmac_clear(DCH_DST0, DCH_REGION, 0u);
+    dmac_clear(DCH_DST1, DCH_REGION, 0u);
+    dmac_clear(DCH_DST2, DCH_REGION, 0u);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(DCH_MAIN_ENTRY, 0u, 0u);
+    expect(s_dch_done && s_xfer_obj == 0u,
+           "dmac channel: every guest thread ran to completion and the channel is idle");
+    sr_test_guest_fn_reset();
+}
+
+static void dch_job(int k, uint32_t nid, uint32_t dst, uint32_t src, uint32_t n) {
+    s_dch[k].nid = nid;
+    s_dch[k].dst = dst;
+    s_dch[k].src = src;
+    s_dch[k].n = n;
+}
+
+/* Main-thread results the scenarios record for the checks after sched_run. */
+static uint32_t s_dch_ret[4];
+static int s_dch_pending_after[4];
+
+static void dch_scenario_bypass(void) {
+    dch_job(0, NID_SCE_DMAC_MEMCPY, DCH_DST0, DCH_SRC, 0x10000u);
+    dch_start(0, 0x10u);
+    s_dch_pending_after[0] = dch_pending(0);
+    s_dch_ret[0] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1, DCH_SRC, 0x100u);
+    s_dch_pending_after[1] = dch_pending(0);
+    s_dch_ret[1] = dch_call(NID_SCE_DMAC_MEMCPY, DCH_DST2, DCH_SRC, 0x10fu);
+    s_dch_pending_after[2] = dch_pending(0);
+    s_dch_ret[2] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1 + 0x1000u, DCH_SRC, 0x110u);
+    s_dch_pending_after[3] = dch_pending(0);
+}
+
+static void test_dmac_small_body_bypasses_the_channel(void) {
+    memset(s_dch_ret, 0xff, sizeof s_dch_ret);
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_bypass);
+    expect(s_dch_pending_after[0], "PSP-DMAC-002: the first transfer is pending when main calls");
+    expect(s_dch_ret[0] == 0u && dmac_span_matches(DCH_DST1, 0x100u, 0u) &&
+               MEM_R8(DCH_DST1 + 0x100u) == 0u && s_dch_pending_after[1],
+           "PSP-DMAC-002 c1: a 0x100-byte aligned Try during a pending transfer returns 0 with a full copy");
+    expect(s_dch_ret[1] == 0u && dmac_span_matches(DCH_DST2, 0x10fu, 0u) &&
+               MEM_R8(DCH_DST2 + 0x10fu) == 0u && s_dch_pending_after[2],
+           "PSP-DMAC-002 c2/c4: a 0x10f-byte aligned blocking call returns 0 without waiting");
+    expect(s_dch_ret[2] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST1 + 0x1000u, 0x120u, 0u),
+           "PSP-DMAC-002 c3: a 0x110-byte aligned Try is refused with BUSY and copies nothing");
+    expect(s_dch[0].ret == 0u && dmac_span_matches(DCH_DST0, 0x10000u, 0u),
+           "the first transfer returns 0 after its full copy");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 583u,
+           "PSP-DMAC-002: a 0x10000-byte main-RAM transfer keeps the channel for 583 us (583.04 measured)");
+    expect(s_dch[0].exit_us >= s_dch[0].deadline_us,
+           "the transfer's caller returns no earlier than its window's end");
+}
+
+static void dch_scenario_busy_bytes(void) {
+    dch_job(0, NID_SCE_DMAC_MEMCPY, 0x04000000u, 0x04100000u, 0x100000u);
+    dch_start(0, 0x10u);
+    s_dch_pending_after[0] = dch_pending(0);
+    s_dch_ret[0] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST1 + 4u, DCH_SRC + 4u, 0x1fcu);
+    s_dch_ret[1] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST2, DCH_SRC, 0x1fcu);
+    s_dch_ret[2] = dch_call(NID_SCE_DMAC_TRY_MEMCPY, DCH_DST2 + 0x1000u, DCH_SRC + 1u, 0x200u);
+    s_dch_pending_after[1] = dch_pending(0);
+}
+
+static void test_dmac_refused_try_copies_head_and_tail(void) {
+    memset(s_dch_ret, 0xff, sizeof s_dch_ret);
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_busy_bytes);
+    expect(s_dch_pending_after[0] && s_dch_pending_after[1],
+           "the 1 MiB VRAM transfer is pending throughout main's calls");
+    expect(s_dch_ret[0] == SCE_DMAC_BUSY && dmac_span_matches(DCH_DST1 + 4u, 12u, 4u) &&
+               dmac_span_is(DCH_DST1 + 16u, 0x200u, 0u) && dmac_span_is(DCH_DST1, 4u, 0u),
+           "PSP-DMAC-002 c4-0001fc-04-04: a refused Try copies its 12 head bytes and nothing else");
+    expect(s_dch_ret[1] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST2, 0x1f0u, 0u) &&
+               dmac_span_matches(DCH_DST2 + 0x1f0u, 12u, 0x1f0u) &&
+               MEM_R8(DCH_DST2 + 0x1fcu) == 0u,
+           "PSP-DMAC-002 c4-0001fc-00-00: a refused Try copies its 12 tail bytes and nothing else");
+    expect(s_dch_ret[2] == SCE_DMAC_BUSY && dmac_span_is(DCH_DST2 + 0x1000u, 0x210u, 0u),
+           "PSP-DMAC-002 c4-000200-01-00: a refused Try across a phase difference changes nothing");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 4477u,
+           "PSP-DMAC-002: a 1 MiB VRAM-to-VRAM transfer keeps the channel for 4477 us (4477.33 measured)");
+}
+
+static void dch_scenario_fifo(void) {
+    /* The first transfer: main RAM, source and destination 4 bytes apart modulo 16. */
+    dch_job(0, NID_SCE_DMAC_MEMCPY, DCH_DST0, DCH_SRC + 4u, 0x10000u);
+    dch_job(1, NID_SCE_DMAC_MEMCPY, DCH_DST1, DCH_SRC, 0x400u);
+    dch_job(2, NID_SCE_DMAC_MEMCPY, DCH_DST2, DCH_SRC, 0x400u);
+    dch_start(0, 0x10u);
+    dch_start(1, 0x1cu);   /* queues first, the weaker of the two */
+    s_dch_pending_after[0] = dch_pending(0) && dch_pending(1);
+    dch_start(2, 0x18u);   /* queues second, the stronger */
+    s_dch_pending_after[1] = dch_pending(0) && dch_pending(2);
+}
+
+static void test_dmac_queued_callers_are_served_in_arrival_order(void) {
+    memset(s_dch_pending_after, 0, sizeof s_dch_pending_after);
+    dch_setup(dch_scenario_fifo);
+    expect(s_dch_pending_after[0] && s_dch_pending_after[1],
+           "both blocking callers queued while the first transfer was pending");
+    expect(s_dch[0].order == 1 && s_dch[1].order == 2 && s_dch[2].order == 3,
+           "PSP-DMAC-002 b3: queued callers are served in arrival order, the weaker first");
+    expect(s_dch[1].ret == 0u && s_dch[2].ret == 0u &&
+               dmac_span_matches(DCH_DST1, 0x400u, 0u) && dmac_span_matches(DCH_DST2, 0x400u, 0u),
+           "each queued caller then performs its own full copy and returns 0");
+    expect(s_dch[0].deadline_us == s_dch[0].enter_us + 838u,
+           "PSP-DMAC-002 a-04-00: a 4-byte phase difference adds 0.003895 us per byte (838 us)");
+    expect(s_dch[1].exit_us >= s_dch[0].deadline_us + 58u && s_dch[2].exit_us >= s_dch[1].exit_us + 58u,
+           "each queued caller returns after the transfer ahead of it plus its own (58 us)");
 }
 
 static void test_display_framebuf_latch(void) {
@@ -25940,6 +27743,34 @@ static void selftest_msgpipe_nested_fixture_end(
     s_oracle_mode = fixture->saved_oracle_mode;
 }
 
+/* sceKernelDeleteMsgPipe on a pipe that is not live (#341). PSPAutotests
+ * tests/threads/msgpipe/delete.expected at 2ed7c9c5, recorded on a PSP: the first delete returns
+ * 0, then UID 0, 0xDEADBEEF and the already-deleted UID each return 0x8002019E (UNKNOWN_MPPID). */
+static void test_msgpipe_delete_unknown_ids(void) {
+    const uint32_t GUEST_NAME = 0x08030000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 'd'); MEM_W8(GUEST_NAME + 1u, 0u);
+    TCB *owner = fixture_thread(0x33a20u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 0x100u);
+    expect(pipe != 0u && pipe < 0x80000000u, "DeleteMsgPipe unknown-ID test: a pipe is created");
+    CpuState cpu = {0};
+    cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "DeleteMsgPipe of a live pipe returns 0");
+    const uint32_t dead[3] = { 0u, 0xDEADBEEFu, pipe };
+    const char *what[3] = { "UID 0", "UID 0xDEADBEEF", "the deleted pipe" };
+    for (int i = 0; i < 3; i++) {
+        char msg[128];
+        cpu = (CpuState){0};
+        cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "DeleteMsgPipe of %s returns 0x8002019E (delete.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == SCE_KERNEL_ERROR_UNKNOWN_MPPID, msg);
+    }
+    s_cur = -1;
+}
+
 static void test_msgpipe_nested_callback_wait_scopes(void) {
     const uint32_t GUEST_BUF = 0x08010000u;
     const uint32_t GUEST_OUT = 0x08020000u;
@@ -26598,15 +28429,49 @@ static void test_td23_guest_pointer_validation(void) {
            "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
+/* sceKernelAllocMemoryBlock against pspautotests tests/sysmem/memblock.expected (2ed7c9c5, recorded
+ * on a PSP) and uOFW src/kd/sysmem/memblock.c: types 0 and 1 allocate and every other type returns
+ * 0x800200D8; size 0 and 0xFFFFFFFF return 0x800200D9; an option size other than 4 returns
+ * 0x800200D2; a NULL name returns 0x80020001; type 1 (High) blocks sit at the top, each further
+ * one just below the last at 0x100-byte granularity. Before this change type 1 stopped the run,
+ * NULL names were accepted and the size and option codes were 0x800201BC or a stop. */
+static uint32_t memblock_alloc(uint32_t name, uint32_t type, uint32_t size, uint32_t opt) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = name; cpu.r[5] = type; cpu.r[6] = size; cpu.r[7] = opt;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
+}
+
+static uint32_t memblock_addr(uint32_t uid, uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid; cpu.r[5] = out;
+    MEM_W32(out, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u ? MEM_R32(out) : 0u;
+}
+
+static uint32_t memblock_free(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK);
+}
+
 static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_compiled_sdk_version(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
     const uint32_t options = 0x00280000u;
     const uint32_t addr_out = 0x00280004u;
+    const uint32_t name = 0x00280010u;
+    const uint32_t long_name = 0x00280020u;
     reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
     sr_hle_test_partition_reset();
     sr_hle_init();
     MEM_W32(options, 4u);
+    title_hle_write_cstr(name, "test");
+    title_hle_write_cstr(long_name, "123456789012345678901234567890123456789012345678901234567890");
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -26614,106 +28479,102 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
            "sceKernelFreeMemoryBlock rejects UID zero as unknown");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;          /* name is debug-only and may be NULL */
-    cpu.r[5] = 0u;          /* PSP_SMEM_Low */
-    cpu.r[6] = 0x240u;
-    cpu.r[7] = options;
-    uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
-    expect(uid != 0u && uid < 0x80000000u,
-           "sceKernelAllocMemoryBlock allocates its documented Low placement");
+    uint32_t uid = memblock_alloc(name, 0u, 0x240u, options);
+    expect(uid != 0u && uid < 0x80000000u, "sceKernelAllocMemoryBlock type 0 allocates (Low)");
     if (uid != 0u && uid < 0x80000000u) {
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        cpu.r[5] = addr_out;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u &&
-                   MEM_R32(addr_out) != 0u,
-               "sceKernelGetMemoryBlockAddr writes the allocated guest address");
-
+        expect(memblock_addr(uid, addr_out) != 0u, "sceKernelGetMemoryBlockAddr writes the allocated guest address");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = uid;
         cpu.r[5] = 0x0bffffffu; /* 4-byte output crosses the guest-memory boundary */
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200d3u,
                "sceKernelGetMemoryBlockAddr rejects an invalid output span");
-
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0u,
-               "sceKernelFreeMemoryBlock releases its allocation");
+        expect(memblock_free(uid) == 0u, "sceKernelFreeMemoryBlock releases its allocation");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = uid;
         cpu.r[5] = addr_out;
         expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200cbu,
                "sceKernelGetMemoryBlockAddr rejects a freed UID");
-
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = uid;
-        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
-               "sceKernelFreeMemoryBlock rejects a freed UID");
+        expect(memblock_free(uid) == 0x800200cbu, "sceKernelFreeMemoryBlock rejects a freed UID");
     }
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 1u;          /* valid PSP_SMEM_High, not modeled yet */
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
-           "sceKernelAllocMemoryBlock refuses valid placement kinds without modeled semantics");
+    /* Names: NULL fails with 0x80020001; empty and longer than the name field allocate. */
+    expect(memblock_alloc(0u, 1u, 0x100u, 0u) == 0x80020001u, "a NULL name returns 0x80020001");
+    title_hle_write_cstr(addr_out, "");
+    uint32_t blank = memblock_alloc(addr_out, 1u, 0x100u, 0u);
+    uint32_t longer = memblock_alloc(long_name, 1u, 0x100u, 0u);
+    expect(blank < 0x80000000u && longer < 0x80000000u && memblock_free(blank) == 0u &&
+               memblock_free(longer) == 0u,
+           "an empty name and a 60-byte name allocate");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 5u;          /* outside the documented kind enum */
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d8u,
-           "sceKernelAllocMemoryBlock reports ILLEGAL_MEMBLOCKTYPE for an unknown kind");
+    /* Types: only 0 and 1. */
+    static const uint32_t bad_types[] = {0xffffffffu, 2u, 3u, 4u, 5u, 0x11u, 0x101u, 0x10000001u};
+    int types_ok = 1;
+    for (size_t i = 0; i < sizeof(bad_types) / sizeof(bad_types[0]); i++)
+        if (memblock_alloc(name, bad_types[i], 0x100u, 0u) != 0x800200d8u) types_ok = 0;
+    expect(types_ok, "types -1 and 2 upward return 0x800200D8");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = 0xfffffffcu;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
-           "sceKernelAllocMemoryBlock rejects an unreadable options span");
+    /* Sizes: 0 and -1 fail with 0x800200D9. */
+    expect(memblock_alloc(name, 1u, 0u, 0u) == 0x800200d9u &&
+               memblock_alloc(name, 1u, 0xffffffffu, 0u) == 0x800200d9u,
+           "size 0 and 0xFFFFFFFF return 0x800200D9");
 
-    MEM_W32(options, 0u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800201bcu,
-           "sceKernelAllocMemoryBlock rejects an undersized options header");
+    /* Option sizes: only 4. */
+    static const uint32_t bad_opts[] = {0xffffffffu, 0u, 1u, 2u, 3u, 5u, 0x11u, 0x10000001u};
+    int opts_ok = 1;
+    for (size_t i = 0; i < sizeof(bad_opts) / sizeof(bad_opts[0]); i++) {
+        MEM_W32(options, bad_opts[i]);
+        if (memblock_alloc(name, 1u, 0x100u, options) != 0x800200d2u) opts_ok = 0;
+    }
+    MEM_W32(options, 4u);
+    uint32_t opt4 = memblock_alloc(name, 1u, 0x100u, options);
+    expect(opts_ok && opt4 < 0x80000000u && memblock_free(opt4) == 0u,
+           "an option size other than 4 returns 0x800200D2 and 4 allocates");
+    expect(memblock_alloc(name, 0u, 0x100u, 0xfffffffcu) == 0x800200d3u,
+           "an unreadable option block returns 0x800200D3");
 
-    MEM_W32(options, 8u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = options;
-    uint32_t alloc_stops = sr_hle_test_unmodelled_stops();
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == alloc_stops + 1u,
-           "sceKernelAllocMemoryBlock stops the run by name on unmodeled options extensions");
-
-    MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0x100u;
-    cpu.r[7] = 0x0bfffffcu;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
-           "sceKernelAllocMemoryBlock rejects an incomplete declared options span");
+    /* High: each block of size N lands round_up(N, 0x100) below a 0x100-byte one just placed. */
+    static const struct { uint32_t size, delta; } deltas[] = {
+        {1u, 0x100u}, {5u, 0x100u}, {0x11u, 0x100u}, {0x101u, 0x200u}, {0x1001u, 0x1100u},
+        {0x10001u, 0x10100u},
+    };
+    int deltas_ok = 1;
+    uint32_t high_uids[2 * 6];
+    size_t nhigh = 0;
+    uint32_t top_before = sr_hle_test_partition_bump_top();
+    for (size_t i = 0; i < sizeof(deltas) / sizeof(deltas[0]); i++) {
+        uint32_t u1 = memblock_alloc(name, 1u, 0x100u, 0u);
+        uint32_t u2 = memblock_alloc(name, 1u, deltas[i].size, 0u);
+        if (u1 >= 0x80000000u || u2 >= 0x80000000u) { deltas_ok = 0; continue; }
+        high_uids[nhigh++] = u1;
+        high_uids[nhigh++] = u2;
+        uint32_t a1 = memblock_addr(u1, addr_out), a2 = memblock_addr(u2, addr_out);
+        if (a1 - a2 != deltas[i].delta || (a2 & 0xffu) != 0u) deltas_ok = 0;
+    }
+    expect(deltas_ok, "type 1 blocks stack downward at 0x100-byte granularity (sizes 1..0x10001)");
+    uint32_t lowest = memblock_addr(high_uids[nhigh - 1u], addr_out);
+    expect(sr_hle_test_partition_bump_top() == lowest && lowest < top_before,
+           "Low allocations and the free sizes now stop at the lowest High block");
+    uint32_t low = memblock_alloc(name, 0u, 0x100u, 0u);
+    uint32_t low_addr = memblock_addr(low, addr_out);
+    expect(low < 0x80000000u && low_addr + 0x100u <= lowest, "a Low block still comes from the bottom");
+    int freed_ok = memblock_free(low) == 0u;
+    for (size_t i = 0; i < nhigh; i++)
+        if (memblock_free(high_uids[i]) != 0u) freed_ok = 0;
+    expect(freed_ok && sr_hle_test_partition_bump_top() == top_before,
+           "freeing every High block gives the top of the partition back");
+    uint32_t again = memblock_alloc(name, 1u, 0x100u, 0u);
+    expect(again < 0x80000000u && memblock_addr(again, addr_out) + 0x100u == top_before &&
+               memblock_free(again) == 0u,
+           "a High block after the frees lands at the top again");
 
     sr_hle_test_partition_reset();
     MEM_W32(options, 4u);
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    cpu.r[6] = 0xffffff00u;
-    cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d9u,
+    expect(memblock_alloc(name, 0u, 0xffffff00u, options) == 0x800200d9u,
            "sceKernelAllocMemoryBlock returns MEMBLOCK_ALLOC_FAILED when partition space is exhausted");
+    expect(memblock_alloc(name, 1u, 0xffffff00u, options) == 0x800200d9u,
+           "a High block larger than the arena returns MEMBLOCK_ALLOC_FAILED");
+    s_fixture_loaded_end = 0x00400000u;
+    sr_hle_test_partition_reset();
 
     const uint32_t sdk_version = 0x03070000u;
     memset(&cpu, 0, sizeof(cpu));
@@ -26839,6 +28700,45 @@ static void test_td28_partition_free_reuse(void) {
     expect(addr_z == ((addr_y + 0x500u + 0xFFu) & ~0xFFu), "no-free path block 3 address unchanged");
 }
 
+/* sceKernelGetBlockHeadAddr and sceKernelFreePartitionMemory on a block UID that is not live
+ * (#341). PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5, recorded on a PSP: for a
+ * freed UID, UID 0 and 0xDEADBEEF, GetBlockHeadAddr returns 0 and FreePartitionMemory returns
+ * 0x800200CB (SCE_KERNEL_ERROR_UNKNOWN_UID). A live block's address and its single free are the
+ * control. */
+static void test_partition_unknown_block_codes(void) {
+    extern void sr_hle_test_partition_reset(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_FREE_PART  = 0xb6d61d02u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0x1000u;
+    uint32_t uid = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(uid != 0u && uid < 0x80000000u, "partition unknown-UID test: a control block is allocated");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, NID_GET_HEAD) != 0u, "GetBlockHeadAddr of a live block is its address");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, NID_FREE_PART) == 0u, "FreePartitionMemory of a live block returns 0");
+
+    const uint32_t dead[3] = { uid, 0u, 0xDEADBEEFu };
+    const char *what[3] = { "a freed UID", "UID 0", "UID 0xDEADBEEF" };
+    for (int i = 0; i < 3; i++) {
+        char msg[128];
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "GetBlockHeadAddr of %s returns 0 (partition.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_GET_HEAD) == 0u, msg);
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = dead[i];
+        snprintf(msg, sizeof msg, "FreePartitionMemory of %s returns 0x800200CB (partition.expected)", what[i]);
+        expect(sr_syscall(&cpu, NID_FREE_PART) == 0x800200cbu, msg);
+    }
+    sr_hle_test_partition_reset();
+}
+
 /* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
  * heap_selftest.c covers recomp.c's newlib heap, a different allocator, so the
  * user-partition tests live here next to test_td28_partition_free_reuse. */
@@ -26900,6 +28800,108 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
     expect(between != FAIL && between != 0u,
            "a fixed reservation above the lowest live stack succeeds");
+    s_fixture_loaded_end = 0x00400000u;
+}
+
+/* sceKernelQueryModuleInfo answers the main module from its generated record, as uOFW
+ * queryModule.c fills SceKernelModuleInfo: buffer before size, size 64 or 96 from SDK 2.80,
+ * unknown uid refused, attribute without privilege bits and a NUL-padded name only at size 96.
+ * A loaded module whose record has no segment table is refused by name, not half answered.
+ *
+ * MUTANT: drop the sceKernelQueryModuleInfo registration -- the syscall is an unknown NID
+ *   and the main-module answers fail. */
+extern void sr_hle_test_set_compiled_sdk_version(uint32_t version);
+static void test_query_module_info_answers_main_module_record(void) {
+    const uint32_t NID_GET_ID_BY_ADDR = 0xd8b73127u, NID_QUERY = 0x748cbed9u;
+    const uint32_t BUF = 0x09000000u;
+    static const SrMainModuleRecord rec = {
+        2u, {0x08804000u, 0x08b5c078u, 0u, 0u}, {0x00358074u, 0x00195454u, 0u, 0u},
+        0x08a8cd6cu, 0x08c98d00u, 0x08804000u, 0x0031e7f4u, 0x0003ab68u, 0x0019414cu,
+        0x1207u, {0x01u, 0x02u},
+        {'S','y','n','t','h','M','a','i','n',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+        1u, 0x20u, 0x400u, 0x80000000u,
+    };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08cf14ccu;
+    sr_hle_init();
+    sr_main_module_register(&rec);
+    (void)volatile_mem_current_thread(0x5151u, 32);   /* a thread is calling */
+    expect(s_module_start_stack_size == 0x400u && s_module_start_priority == 0x20 &&
+               s_module_start_attr == 0x80000000u && s_module_start_gp == 0x08c98d00u,
+           "the record's module_start_thread_parameter reaches the module-start thread");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    const uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    sr_hle_test_set_compiled_sdk_version(0x06060010u);
+
+    memset(SR_HOST(BUF), 0xa5, 96u);
+    MEM_W32(BUF, 96u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u, "the main module's info is answered");
+    expect(MEM_R32(BUF) == 96u && MEM_R8(BUF + 4u) == 2u && MEM_R8(BUF + 5u) == 0xa5u,
+           "size is kept, nsegment written, reserved bytes untouched");
+    expect(MEM_R32(BUF + 8u) == 0x08804000u && MEM_R32(BUF + 12u) == 0x08b5c078u &&
+               MEM_R32(BUF + 16u) == 0u && MEM_R32(BUF + 24u) == 0x00358074u &&
+               MEM_R32(BUF + 28u) == 0x00195454u && MEM_R32(BUF + 36u) == 0u,
+           "segment addresses and sizes come from the record");
+    expect(MEM_R32(BUF + 40u) == 0x08a8cd6cu && MEM_R32(BUF + 44u) == 0x08c98d00u &&
+               MEM_R32(BUF + 48u) == 0x08804000u && MEM_R32(BUF + 52u) == 0x0031e7f4u &&
+               MEM_R32(BUF + 56u) == 0x0003ab68u && MEM_R32(BUF + 60u) == 0x0019414cu,
+           "entry, gp, text address and text/data/bss sizes come from the record");
+    expect(MEM_R16(BUF + 64u) == 0x0007u && MEM_R8(BUF + 66u) == 1u && MEM_R8(BUF + 67u) == 2u,
+           "attribute drops the privilege bits; version keeps minor then major");
+    expect(memcmp(SR_HOST(BUF + 68u), "SynthMain", 9) == 0 && MEM_R8(BUF + 77u) == 0u &&
+               MEM_R8(BUF + 94u) == 0u && MEM_R8(BUF + 95u) == 0u,
+           "the name is NUL padded to 27 bytes and terminated");
+
+    memset(SR_HOST(BUF), 0xa5, 96u);
+    MEM_W32(BUF, 64u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u && MEM_R32(BUF + 60u) == 0x0019414cu &&
+               MEM_R32(BUF + 64u) == 0xa5a5a5a5u,
+           "a 64-byte SceKernelModuleInfoV1 gets only the first 64 bytes");
+
+    MEM_W32(BUF, 80u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800201bcu, "another size is ILLEGAL_SIZE from SDK 2.80");
+    sr_hle_test_set_compiled_sdk_version(0x02070010u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0u && MEM_R32(BUF + 64u) == 0xa5a5a5a5u,
+           "before SDK 2.80 the size is not checked and only the V1 part is written");
+    sr_hle_test_set_compiled_sdk_version(0x06060010u);
+
+    const int caller = s_cur;
+    s_cur = -1;
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x80020064u,
+           "interrupt context is refused before anything else");
+    s_cur = caller;
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800200d3u, "a null buffer is ILLEGAL_ADDR");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = 0x0c000000u - 64u;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x800200d3u,
+           "a buffer without 96 writable bytes is ILLEGAL_ADDR");
+    MEM_W32(BUF, 96u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x7fff1234u; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x8002012eu, "an unknown uid is UNKNOWN_MODULE");
+
+    const uint32_t late = sr_hle_test_register_module("late_q.prx", 0x08a10070u, 0u);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = late; cpu.r[5] = BUF;
+    expect(late != 0u && sr_syscall(&cpu, NID_QUERY) == 0x80020002u,
+           "a loaded module the runtime did not place itself is refused by name");
+
+    sr_main_module_register(NULL);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = main_id; cpu.r[5] = BUF;
+    expect(sr_syscall(&cpu, NID_QUERY) == 0x80020002u,
+           "a main module built without a record is refused by name");
+
+    sched_set_module_start_thread(32, 0u, 0u, NULL, 0u);
+    sr_hle_test_set_compiled_sdk_version(0u);
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
     s_fixture_loaded_end = 0x00400000u;
 }
 
@@ -33861,7 +35863,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -33917,16 +35919,16 @@ static void test_flight_recorder_trace(void) {
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL,
                          4u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
-           "controlled unsupported producer returns its named utility error");
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+           "controlled unsupported producer returns its named error");
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 4u && snapshot.trigger_count == 0u &&
                snapshot.refusal_count == 2u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "a named refusal is recorded and counted without ending the recorder");
     expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE &&
-               flight_event.has_return != 0u && flight_event.return_value == 0x80110001u,
+               flight_event.has_return != 0u && flight_event.return_value == 0x80010086u,
            "controlled unsupported HLE return value is retained before its refusal event");
     expect(sr_flight_event_at(1, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_UNSUPPORTED,
@@ -33934,6 +35936,100 @@ static void test_flight_recorder_trace(void) {
     remove(output);
     sr_flight_test_disable();
     hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+}
+
+/* Schema 7 trigger modes (#320, folded from #1433) on production producers: the pc mode
+ * stops at an HLE import dispatched through sr_syscall, and a checkpoint stops after its
+ * window of scheduler picks. Each freeze writes the bundle and the run keeps going. */
+static void test_flight_recorder_trigger_modes(void) {
+    const char *output = "flight_recorder_trigger_selftest.json";
+    SrFlightSnapshot snapshot;
+    SrFlightEvent flight_event;
+    CpuState cpu;
+    TCB *first;
+    uint32_t module_uid;
+    char bundle[16384];
+    size_t bundle_size;
+    FILE *bundle_file;
+
+    remove(output);
+    hle_test_setenv("SR_FLIGHT_OUTPUT", output);
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_SCHED, 16u);
+    expect(sr_flight_test_trigger("pc:0x08804010") == 1, "trigger: the pc spec is accepted");
+    sr_hle_init();
+    sr_hle_test_module_reset();
+    hle_test_setenv("SR_REAL_MODULE_START", "0");
+    first = fixture_thread(0x320u, TH_READY, 20);
+    s_cur = (int)(first - s_tcb);
+    (void)pick_next();
+    module_uid = sr_hle_test_register_module("trigger.prx", 0u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    cpu.pc = 0x08804000u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "trigger: an import at another pc runs");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 0u && snapshot.trigger_mode == SR_FLIGHT_TRIGGER_PC &&
+               snapshot.trigger_match_sequence == 0u,
+           "trigger: an import at another pc does not fire the pc mode");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = module_uid;
+    cpu.pc = 0x08804010u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "trigger: the import at the armed pc still runs");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_TRIGGER &&
+               snapshot.terminal_arg == 0x08804010u &&
+               snapshot.terminal_sequence == snapshot.recorded &&
+               snapshot.trigger_match_sequence == snapshot.recorded,
+           "trigger: the pc mode freezes at the import dispatched at the armed pc");
+    expect(sr_flight_event_at((uint32_t)sr_flight_event_count() - 1u, &flight_event) != 0 &&
+               flight_event.kind == SR_FLIGHT_KIND_HLE_IMPORT && flight_event.arg2 == 0x08804010u &&
+               flight_event.has_return != 0u && flight_event.arguments[0] == module_uid,
+           "trigger: the frozen import keeps its arguments and return value");
+    s_cur = -1;
+    (void)pick_next();
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == snapshot.terminal_sequence,
+           "trigger: nothing is recorded after a pc freeze");
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"trigger\"") != NULL &&
+               strstr(bundle, "\"mode\": \"pc\", \"pc\": 142622736") != NULL &&
+               strstr(bundle, "\"return_value\": 0}") != NULL,
+           "trigger: the pc bundle names its policy, its trigger terminal and the return value");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* checkpoint: the second scheduler pick, then two more events, in a ring of four. */
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_SCHED, 4u);
+    expect(sr_flight_test_trigger("checkpoint:3:2:2") == 1, "trigger: the checkpoint spec is accepted");
+    first = fixture_thread(0x321u, TH_READY, 20);
+    for (int i = 0; i < 4; ++i) {
+        s_cur = -1;
+        (void)pick_next();
+    }
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_TRIGGER &&
+               snapshot.terminal_kind == SR_FLIGHT_KIND_SCHED_PICK && snapshot.terminal_arg == 2u &&
+               snapshot.recorded == snapshot.terminal_sequence + 2u &&
+               snapshot.retained == 4u && snapshot.trigger_after_remaining == 0u,
+           "trigger: the checkpoint window closes two events after the second pick");
+    expect(sr_flight_event_at(0u, &flight_event) != 0 &&
+               flight_event.sequence + 1u == snapshot.terminal_sequence,
+           "trigger: the ring keeps limit-1-after events before the checkpoint");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* A refused spec disables the recorder rather than capture under another stop rule. */
+    sr_flight_test_reset(SR_FLIGHT_CLASS_SCHED, 4u);
+    expect(sr_flight_test_trigger("checkpoint:3:1:4") == 0 && !sr_flight_class_enabled(SR_FLIGHT_CLASS_SCHED),
+           "trigger: a window as long as the ring is refused and disables the recorder");
+    sr_flight_test_disable();
+    hle_test_setenv("SR_FLIGHT_OUTPUT", NULL);
+    (void)first;
 }
 
 static size_t flight_refusal_read_bundle(const char *path, char *bundle, size_t capacity) {
@@ -33961,17 +36057,17 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME) == 0x80020002u,
+    expect(sr_syscall(&cpu, 0x469989adu /* scePower_469989ad, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "a repeated refusal returns the same error");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 0u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "named refusals do not end the record");
     expect(snapshot.refusal_count == 3u && snapshot.refusal_distinct == 2u &&
-               snapshot.refusal_first_nid == 0x1579a159u && snapshot.refusal_first_sequence == 2u,
+               snapshot.refusal_first_nid == 0x39af39a6u && snapshot.refusal_first_sequence == 2u,
            "refusals are counted, and the first refusal is kept in its own field");
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900100u, 0x0000000cu, 0u);
     sr_flight_snapshot(&snapshot);
@@ -33987,11 +36083,11 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "bundle terminal names the later fatal");
     expect(strstr(bundle, "\"refusals\": {\"count\": 3") != NULL,
            "bundle counts every refusal");
-    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x1579a159u);
+    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x469989adu);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -34000,7 +36096,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refusal before a clean exit returns its named error");
     sr_flight_exit(7u);
     sr_flight_snapshot(&snapshot);
@@ -34020,7 +36116,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refusal before any terminal returns its named error");
     bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
     expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"running\"") != NULL &&
@@ -34164,7 +36260,7 @@ static void test_flight_recorder_thread_snapshot(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL &&
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL &&
                strstr(bundle, "\"threads\": [") != NULL,
            "thread snapshot: the exit bundle is schema 6 with a threads block");
     snprintf(needle, sizeof(needle),
@@ -35564,6 +37660,28 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
                MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
            "sceFontNewLib refuses an allocator block overlapping a live library and leaves it intact");
 
+    /* File opening must use the same flash0 VFS fixture as the registry. */
+    expect(sr_hle_test_is_registered(0x57fcb733u), "sceFontOpenUserFile is registered");
+    if (sr_hle_test_is_registered(0x57fcb733u)) {
+        const char *path = "flash0:/font/ltn0.pgf";
+        const uint32_t path_addr = FLT_PARAMS + 0x1000u;
+        for (size_t i = 0; i <= strlen(path); i++) MEM_W8(path_addr + (uint32_t)i, path[i]);
+        s_flt_alloc_ret = FLT_FONT;
+        uint32_t file_font = flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR);
+        expect(file_font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "sceFontOpenUserFile opens a VFS font");
+        if (file_font) expect(flt_call(FLT_NID_CLOSE, file_font, 0u, 0u, 0u) == 0u, "close user file font");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, 0u, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+               "user file rejects a null name");
+        expect(flt_call(0x57fcb733u, 0u, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+               "user file rejects an invalid library");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 0u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80010086u,
+               "user file refuses unimplemented callback mode");
+        const char *missing = "flash0:/font/missing.pgf";
+        for (size_t i = 0; i <= strlen(missing); i++) MEM_W8(path_addr + (uint32_t)i, missing[i]);
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80460005u,
+               "user file reports a missing VFS file");
+    }
+
     s_flt_alloc_ret = FLT_LIB_A + 0x20u;
     expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
                MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
@@ -35616,6 +37734,136 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
                s_flt_free_calls == 1u,
            "a second sceFontDoneLib of the same library fails closed without freeing again");
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
+}
+
+/* sceFontGetNumFontList / sceFontGetFontList against PSPAutotests tests/font/fontlist.expected
+ * (2ed7c9c5, the console's libfont on a PSP): 18 fonts and error 0 for a live library, 0 and
+ * 0x80460002 for a NULL one; GetFontList writes one 0xA8-byte style per font (num 1 writes
+ * exactly one), num -1 and 0 write nothing, a NULL library is 0x80460002 and NULL styles
+ * 0x80460003. Each style is the served registry index's values, the ones sceFontGetFontInfo
+ * reports. The fixture serves no Korean font, so a list reaching index 17 stops by name. Before
+ * these handlers both NIDs were unknown and the title stopped on the first. */
+#define FLT_NID_NUM_LIST  0x27f6e642u
+#define FLT_NID_FONT_LIST 0xbc75d85bu
+#define FLT_STYLES        0x09051000u
+#define FLT_STYLE_SIZE    0xa8u
+
+static int flt_style_matches(uint32_t at, const SrFontRegistryInfo *e) {
+    const float metrics[4] = {
+        (float)e->h_size / 64.0f, (float)e->v_size / 64.0f,
+        (float)e->h_resolution / 64.0f, (float)e->v_resolution / 64.0f,
+    };
+    for (uint32_t i = 0; i < 4u; i++)
+        if (MEM_R32(at + i * 4u) != f0t_float_word(metrics[i])) return 0;
+    return MEM_R32(at + 0x10u) == e->weight && MEM_R16(at + 0x14u) == e->family_code &&
+           MEM_R16(at + 0x16u) == e->style && MEM_R16(at + 0x18u) == e->sub_style &&
+           MEM_R16(at + 0x1au) == e->language_code && MEM_R16(at + 0x1cu) == e->region_code &&
+           MEM_R16(at + 0x1eu) == e->country_code &&
+           f0t_guest_string_field_is(at + 0x20u, 64u, e->font_name) &&
+           f0t_guest_string_field_is(at + 0x60u, 64u, e->file_name) &&
+           MEM_R32(at + 0xa0u) == e->extra_attributes && MEM_R32(at + 0xa4u) == e->expire_date;
+}
+
+static void test_font_list_contract(const Flash0Sources *sources) {
+    expect(sr_hle_test_is_registered(FLT_NID_NUM_LIST) && sr_hle_test_is_registered(FLT_NID_FONT_LIST),
+           "sceFontGetNumFontList and sceFontGetFontList are registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u, "a library opens for the font list");
+
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_NUM_LIST, lib, FLT_ERR, 0u, 0u) == 18u && MEM_R32(FLT_ERR) == 0u,
+           "sceFontGetNumFontList returns 18 and error 0 for a live library");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_NUM_LIST, 0u, FLT_ERR, 0u, 0u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontGetNumFontList returns 0 and error 0x80460002 for a NULL library");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_NUM_LIST, lib, 0u, 0u, 0u);
+    (void)flt_call(FLT_NID_NUM_LIST, FLT_LIB_B, FLT_ERR, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "a NULL error pointer and a library that is not live stop sceFontGetNumFontList by name");
+
+    expect(flt_call(FLT_NID_FONT_LIST, 0u, FLT_STYLES, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "sceFontGetFontList returns 0x80460002 for a NULL library");
+    expect(flt_call(FLT_NID_FONT_LIST, lib, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "sceFontGetFontList returns 0x80460003 for NULL styles");
+    for (uint32_t i = 0; i < FLT_STYLE_SIZE * 19u; i += 4u) MEM_W32(FLT_STYLES + i, 0xddddddddu);
+    expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 0xffffffffu, 0u) == 0u &&
+               flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 0u, 0u) == 0u &&
+               MEM_R32(FLT_STYLES) == 0xddddddddu,
+           "sceFontGetFontList with num -1 or 0 returns 0 and writes nothing");
+
+    uint32_t served = 0u;
+    SrFontRegistryInfo info[SR_FONT_REGISTRY_COUNT];
+    while (served < SR_FONT_REGISTRY_COUNT &&
+           sr_flash0_font_registry_info(sources, served, &info[served]) == SR_FONT_REGISTRY_PRESENT)
+        served++;
+    expect(served > 0u && served < SR_FONT_REGISTRY_COUNT,
+           "the fixture serves the leading indices and leaves a later one unserved");
+    if (served > 0u) {
+        expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 1u, 0u) == 0u &&
+                   flt_style_matches(FLT_STYLES, &info[0]) &&
+                   MEM_R32(FLT_STYLES + FLT_STYLE_SIZE) == 0xddddddddu,
+               "num 1 writes exactly one 0xA8-byte style, index 0's");
+        expect(flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, served, 0u) == 0u,
+               "a list of the served indices returns 0");
+        int all = 1;
+        for (uint32_t i = 0; i < served; i++)
+            if (!flt_style_matches(FLT_STYLES + i * FLT_STYLE_SIZE, &info[i])) all = 0;
+        expect(all && MEM_R32(FLT_STYLES + served * FLT_STYLE_SIZE) == 0xddddddddu,
+               "each style is its registry index's values, in index order, and no more are written");
+    }
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_FONT_LIST, lib, FLT_STYLES, 30u, 0u);
+    (void)flt_call(FLT_NID_FONT_LIST, FLT_LIB_B, FLT_STYLES, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 2u,
+           "a list reaching an unserved index and a library that is not live stop by name");
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u, "the font-list library is retired");
+}
+
+/* sceFontSetAltCharacterCode against PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the
+ * console's libfont on a PSP): 0 for a live library whatever the code, 0x80460002 for a NULL one,
+ * and the fallback a missing glyph takes in sceFontGetCharInfo: height 0 with 0x0000 or 0xFFFF,
+ * the '_' glyph's with 0x005F (the default). Before this handler the NID was unknown. */
+#define FLT_NID_ALT_CHAR 0xee232411u
+#define FLT_CHAR_INFO    0x09052000u
+
+static uint32_t flt_char_height(uint32_t font, uint32_t cc) {
+    for (uint32_t i = 0; i < 0x3cu; i += 4u) MEM_W32(FLT_CHAR_INFO + i, 0xa5a5a5a5u);
+    if (flt_call(FLT_NID_CHAR, font, cc, FLT_CHAR_INFO, 0u) != 0u) return 0xffffffffu;
+    return MEM_R32(FLT_CHAR_INFO + 4u);   /* bitmapHeight */
+}
+
+static void test_font_alt_char_contract(uint32_t served_index) {
+    expect(sr_hle_test_is_registered(FLT_NID_ALT_CHAR), "sceFontSetAltCharacterCode is registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    s_flt_alloc_ret = FLT_FONT;
+    const uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(lib == FLT_LIB_A && font == FLT_FONT, "a library and a font open for the fallback check");
+
+    const uint32_t underscore = flt_char_height(font, 0x5fu);
+    expect(flt_char_height(font, 0xffffu) == underscore,
+           "a new library falls back to 0x005F: a missing glyph reports the '_' glyph's height");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0u, 0u, 0u) == 0u && flt_char_height(font, 0xffffu) == 0u,
+           "with fallback 0x0000 the missing glyph reports height 0");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0xffffffffu, 0u, 0u) == 0u && flt_char_height(font, 0xffffu) == 0u,
+           "-1 is stored as 0xFFFF, itself missing: height 0");
+    expect(flt_call(FLT_NID_ALT_CHAR, lib, 0x1005fu, 0u, 0u) == 0u &&
+               flt_char_height(font, 0xffffu) == underscore,
+           "0x1005F is stored as 16 bits, 0x005F");
+    expect(flt_call(FLT_NID_ALT_CHAR, 0u, 0x5fu, 0u, 0u) == FLT_ERR_INVALID_LIB,
+           "a NULL library returns 0x80460002");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_ALT_CHAR, FLT_LIB_B, 0x5fu, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "a library that is not live stops by name");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u &&
+               flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u,
+           "the fallback-check font and library are retired");
 }
 
 static void test_flash0_font_device(void) {
@@ -35971,6 +38219,8 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        test_font_list_contract(&expected_sources);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
@@ -36269,15 +38519,106 @@ static void test_vtimer_measured_limits_and_base(void) {
     s_vtime_us = saved_vtime;
 }
 
-/* The VTimer handler family and the time setter stay refused by name (issue #325 gates the
- * handlers). Each refusal is a production registration that returns its named code. */
-static void test_vtimer_refusals_are_named(void) {
+/* VTimer time: GetVTimerTimeWide, SetVTimerTimeWide and SetVTimerTime against pspautotests
+ * tests/threads/vtimers/{gettime,settime}.expected (2ed7c9c5, recorded on a PSP). Before these
+ * handlers SetVTimerTime was a named refusal (0x80020002) and the two Wide NIDs were unknown. */
+#define NID_VT_GET_TIME_WIDE 0xc0b3ffd2u
+#define NID_VT_SET_TIME_WIDE 0xfb6425c3u
+
+/* A 64-bit call result: $v0 low, $v1 high. */
+static uint64_t vt_call64(uint32_t nid, uint32_t uid, uint64_t value) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[6] = (uint32_t)value;          /* the aligned 64-bit argument skips a1 */
+    cpu.r[7] = (uint32_t)(value >> 32);
+    cpu.r[3] = 0x5a5a5a5au;
+    uint32_t lo = sr_syscall(&cpu, nid);
+    return ((uint64_t)cpu.r[3] << 32) | lo;
+}
+
+static uint32_t vt_set_time(uint32_t uid, uint64_t value) {
+    MEM_W32(VT_CLOCK, (uint32_t)value);
+    MEM_W32(VT_CLOCK + 4u, (uint32_t)(value >> 32));
+    return vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, uid, VT_CLOCK);
+}
+
+static void test_vtimer_time_wide_and_setters(void) {
+    int saved_pace = s_pace_on;
+    uint64_t saved_vtime = s_vtime_us;
     reset_fixture();
     sr_hle_init();
-    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
-           "SetVTimerTime has a named refusal registration");
-    expect(vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, 0u, 0u) == VT_REFUSED_ERR,
-           "SetVTimerTime returns the named refusal");
+    s_pace_on = 0;
+    s_vtime_us = 2000000u;
+    expect(sr_hle_test_is_registered(NID_VT_GET_TIME_WIDE) &&
+               sr_hle_test_is_registered(NID_VT_SET_TIME_WIDE) &&
+               sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
+           "GetVTimerTimeWide, SetVTimerTimeWide and SetVTimerTime are registered");
+    uint32_t vt = vt_create_named("vt-time");
+    uint32_t gone = vt_create_named("vt-gone");
+    expect(vt_call(NID_VT_DELETE, gone, 0u) == 0u, "a timer to delete deletes");
+
+    /* gettime "Objects (wide)": a new timer reads 0; uid 0, 0xDEADBEEF and deleted read -1. */
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 0u, "GetVTimerTimeWide reads 0 on a new timer");
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, 0u, 0u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, 0xdeadbeefu, 0u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, gone, 0u) == UINT64_MAX,
+           "GetVTimerTimeWide returns -1 in $v0/$v1 for uid 0, an invalid and a deleted uid");
+    /* gettime "Running (wide)": 5 ms running reads 5000, and holds once stopped. */
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    sr_hle_advance_time(5000u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 5000u, "GetVTimerTimeWide reads 5000 after 5 ms");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "the timer stops");
+    sr_hle_advance_time(7000u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 5000u &&
+               vt_time_of(vt, "GetVTimerTime agrees") == 5000u,
+           "GetVTimerTimeWide holds 5000 once stopped, the value GetVTimerTime writes");
+
+    /* settime "Values (wide)": each Set returns the previous time, all 64 bits. */
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 1u) == 5000u, "SetVTimerTimeWide returns the time held before");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0x1234567890123ull) == 1u,
+           "SetVTimerTimeWide returns 1 after 1 was set");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, UINT64_MAX) == 0x1234567890123ull,
+           "SetVTimerTimeWide returns 0x1234567890123 after that was set");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0u) == UINT64_MAX,
+           "SetVTimerTimeWide returns -1 after -1 was set: the full 64 bits round-trip");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(48u) == 0u && MEM_R32(VT_INFO + 36u) == 0u &&
+               vt_info_u64(40u) == 0u,
+           "ReferVTimerStatus reports current 0 after setting 0, still inactive with base 0");
+    /* settime "Objects (wide)": uid 0, invalid and deleted return -1 and change nothing. */
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, 0u, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_SET_TIME_WIDE, 0xdeadbeefu, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_SET_TIME_WIDE, gone, 77u) == UINT64_MAX &&
+               vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 0u,
+           "SetVTimerTimeWide returns -1 for uid 0, an invalid and a deleted uid, changing nothing");
+
+    /* settime "Values": SetVTimerTime swaps the time through its pointer and returns 0. */
+    expect(vt_set_time(vt, 1u) == 0u && vt_clock_u64() == 0u, "SetVTimerTime returns 0 and writes back the old 0");
+    expect(vt_set_time(vt, 0x1234567890123ull) == 0u && vt_clock_u64() == 1u,
+           "SetVTimerTime writes back the old 1");
+    expect(vt_set_time(vt, UINT64_MAX) == 0u && vt_clock_u64() == 0x1234567890123ull,
+           "SetVTimerTime writes back the old 0x1234567890123");
+    expect(vt_set_time(vt, 0u) == 0u && vt_clock_u64() == UINT64_MAX, "SetVTimerTime writes back the old -1");
+    /* settime "Objects": uid 0, invalid and deleted return 0x800201BE and leave the clock. */
+    expect(vt_set_time(0u, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u &&
+               vt_set_time(0xdeadbeefu, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u &&
+               vt_set_time(gone, 0x1337u) == VT_BAD_ID_ERR && vt_clock_u64() == 0x1337u,
+           "SetVTimerTime returns 0x800201BE for uid 0, an invalid and a deleted uid, leaving *time");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, vt, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "SetVTimerTime with a NULL pointer (a crash on the PSP) stops the run by name");
+
+    /* A running timer counts on from the value set. */
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer restarts");
+    sr_hle_advance_time(300u);
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 10000u) == 300u, "Set while running returns the running time");
+    sr_hle_advance_time(250u);
+    expect(vt_call64(NID_VT_GET_TIME_WIDE, vt, 0u) == 10250u, "a running timer counts on from the set value");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 1u,
+           "a Set leaves a running timer running");
+    s_pace_on = saved_pace;
+    s_vtime_us = saved_vtime;
 }
 
 /* VTimer handlers, against pspautotests tests/threads/vtimers/{sethandler,cancelhandler}
@@ -36411,6 +38752,29 @@ static void test_vtimer_handler_runs_at_its_schedule_and_reschedules(void) {
     vth_run_until(2100000u);
     expect(s_vth_calls == 2u, "a cleared handler never runs again");
     expect(s_cur >= 0 && !sched_is_intr_context(), "normal context is restored after the handler");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
+/* settime.expected "While scheduled": a handler due at 20000 on a timer set to 20000 1 ms after
+ * Start does not run inside the Set; it runs on the next pass, and its 100000 return moves the
+ * schedule to 120000. */
+static void test_vtimer_set_time_while_scheduled(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-set");
+    s_vth_returns[0] = 100000u;
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 0u) == 0u, "the timer is set to 0");
+    expect(vth_set(vt, 20000u, VTH_ENTRY, 0x1337u) == 0u, "a handler is scheduled at 20000");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    vth_run_until(2001000u);
+    expect(s_vth_calls == 0u, "After start: 0");
+    expect(vt_call64(NID_VT_SET_TIME_WIDE, vt, 20000u) == 1000u, "the Set returns the 1000 run so far");
+    expect(s_vth_calls == 0u, "After set: 0 (the handler does not run inside the Set)");
+    vth_run_until(2002000u);
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "the timer stops");
+    expect(s_vth_calls == 1u && s_vth_sched[0] == 20000u, "After set and delay: 1, called for 20000");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(56u) == 120000u, "the schedule reads 120000");
     s_cur = -1;
     s_pace_on = saved_pace;
 }
@@ -36625,6 +38989,116 @@ static void test_aot_return_boundary_callback_and_interrupt_scopes(void) {
     sr_test_guest_fn_reset();
 }
 
+/* A guest jr $ra past its own caller (#1034): the return lands at the resume PC of a live
+ * enclosing linked call. Every frame in between is abandoned, the enclosing call continues
+ * with its callee's entry $sp, and nothing is ever unwound across a callback floor or a
+ * dispatch_call frame, whose caller would run its own continuation. */
+static void test_aot_return_boundary_nonlocal_return(void) {
+    enum {
+        OUTER_CALL = 0x08a00010u, OUTER_RESUME = 0x08a00018u,
+        MIDDLE_CALL = 0x08a00110u, MIDDLE_RESUME = 0x08a00118u,
+        INNER_CALL = 0x08a00210u, INNER_RESUME = 0x08a00218u,
+        OUTER_SP = 0x09f00000u, MIDDLE_SP = 0x09effff0u, INNER_SP = 0x09efffc0u,
+    };
+    CpuState cpu = {0};
+    FILE *capture = NULL;
+    int saved_fd = -1;
+    char captured[2048];
+
+    /* One frame between: the middle call is abandoned, the outer call continues. */
+    sr_aot_return_boundaries_reset();
+    cpu.r[29] = OUTER_SP;
+    expect(sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u) == 0,
+           "AOT nonlocal return: the enclosing call begins");
+    cpu.r[29] = MIDDLE_SP;
+    expect(sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u) == 0,
+           "AOT nonlocal return: the middle frame's linked call begins");
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    cpu.r[29] = MIDDLE_SP;  /* the exit block's structural return */
+    expect(sr_aot_return_boundary_end(&cpu) == 1 && cpu.flow_kind == SR_FLOW_NONE,
+           "AOT nonlocal return: the middle frame returns without its continuation");
+    expect(sr_aot_return_boundary_end(&cpu) == 0 && cpu.flow_kind == SR_FLOW_NONE &&
+               cpu.r[29] == OUTER_SP && sr_aot_return_boundary_top == NULL,
+           "AOT nonlocal return: the enclosing call continues with its callee's entry $sp");
+
+    /* Two frames between: both are abandoned in order. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    cpu.r[29] = INNER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    int inner = sr_aot_return_boundary_end(&cpu);
+    int middle = sr_aot_return_boundary_end(&cpu);
+    int outer = sr_aot_return_boundary_end(&cpu);
+    expect(inner == 1 && middle == 1 && outer == 0 && cpu.flow_kind == SR_FLOW_NONE &&
+               cpu.r[29] == OUTER_SP,
+           "AOT nonlocal return: every frame between the return and its target is abandoned");
+
+    /* A callback floor between the return and its target: fail closed, by name. */
+    const char *events_path = HLE_BUILD_ROOT "/aot_nonlocal_return_events.txt";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    remove(events_path);
+    hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    SrAotReturnBoundaryScope scope;
+    sr_aot_return_boundary_scope_begin(&scope);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int floor_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(floor_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: never unwinds across a callback or interrupt floor");
+    expect(!capturing || strstr(captured, "AOT_RETURN_TARGET_MISMATCH") != NULL,
+           "AOT nonlocal return: the refused return names AOT_RETURN_TARGET_MISMATCH");
+    (void)sr_aot_return_boundary_scope_end(&cpu, &scope, "AOT nonlocal return test");
+    {
+        char events[512] = {0};
+        FILE *ev = fopen(events_path, "rb");
+        size_t got = ev ? fread(events, 1, sizeof(events) - 1u, ev) : 0u;
+        if (ev) fclose(ev);
+        events[got] = '\0';
+        expect(strstr(events, "BOOT_EVENT phase=stop reason=semantic-boundary "
+                              "boundary=aot-return-target-mismatch issue=1034") != NULL,
+               "AOT nonlocal return: the refused return writes the player's stop event");
+    }
+    hle_test_setenv("SR_BOOT_EVENT_FILE", NULL);
+    remove(events_path);
+
+    /* A dispatch_call frame between: its caller would continue, so fail closed. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    sr_aot_return_boundary_top->dispatch_owned = 1u;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, OUTER_RESUME);
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int dispatch_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(dispatch_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: never unwinds through a dispatch_call frame");
+
+    /* A target that is no live call's resume stays the named fail-closed stop. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int stray_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(stray_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT nonlocal return: a target outside every live call still fails closed");
+    sr_aot_return_boundaries_reset();
+}
+
 static void test_aot_return_boundary_thread_isolation(void) {
     reset_fixture();
     sr_hle_init();
@@ -36698,6 +39172,7 @@ static void test_aot_return_boundary_thread_isolation(void) {
     sr_aot_return_boundaries_reset();
     sr_test_guest_fn_reset();
     test_aot_return_boundary_callback_and_interrupt_scopes();
+    test_aot_return_boundary_nonlocal_return();
 }
 
 #undef AOT_THREAD_TEST_CHECKED_CALL
@@ -37420,6 +39895,27 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
 
+    if (argc > 1 && strcmp(argv[1], "--rtc-rfc2822-local") == 0) {
+        test_rtc_rfc2822_local();
+        fprintf(stderr, "rtc-rfc2822-local: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--utility-usb") == 0) {
+        test_utility_usb_module_state();
+        fprintf(stderr, "utility-usb: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--power-battery") == 0) {
+        test_psp_measured_power_battery_20261024();
+        fprintf(stderr, "power-battery: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--msgpipe-rendezvous") == 0) {
         test_msgpipe_rendezvous();
         fprintf(stderr, "msgpipe-rendezvous: %d checks, %d failures\n", s_checks, s_failures);
@@ -37501,7 +39997,8 @@ static int hle_selftest_main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--vtimer") == 0) {
         test_vtimer_lifecycle();
         test_vtimer_measured_limits_and_base();
-        test_vtimer_refusals_are_named();
+        test_vtimer_time_wide_and_setters();
+        test_vtimer_set_time_while_scheduled();
         test_vtimer_handler_registration_and_errors();
         test_vtimer_handler_runs_at_its_schedule_and_reschedules();
         test_vtimer_handler_catches_up_and_refuses_cancel_inside();
@@ -37519,6 +40016,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
+    test_utility_usb_module_state();
+    test_utility_module_table();
+    test_watchdog_wait_object_names();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
@@ -37554,6 +40054,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_status_sequence();
     test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
+    test_msg_dialog_abort_sequence();
+    test_msg_dialog_abort_without_update();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
     test_exit_thread_does_not_wake_launcher(0);
@@ -37595,12 +40097,14 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_stall_alias_across_call_return();
     test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
+    test_ge_raster_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
     test_thread_stack_free_size_contract();
+    test_check_thread_stack_contract();
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
@@ -37619,6 +40123,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
     test_dmac_active_transfer_across_threads();
+    test_dmac_small_body_bypasses_the_channel();
+    test_dmac_refused_try_copies_head_and_tail();
+    test_dmac_queued_callers_are_served_in_arrival_order();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
@@ -37629,6 +40136,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_power_battery_20261024();
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
+    test_power_set_bus_clock_frequency_autotest();
+    test_rtc_time_t_add_years_resolution_autotest();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_ctrl_sampling_mode_cycle_matrix();
@@ -37645,6 +40154,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
     test_rtc_local_time_follows_the_system_profile();
+    test_rtc_rfc2822_local();
     test_first_run_time_zone_comes_from_the_host();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
@@ -37679,7 +40189,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_fpl_refer_status();
     test_vtimer_lifecycle();
     test_vtimer_measured_limits_and_base();
-    test_vtimer_refusals_are_named();
+    test_vtimer_time_wide_and_setters();
+    test_vtimer_set_time_while_scheduled();
     test_vtimer_handler_registration_and_errors();
     test_vtimer_handler_runs_at_its_schedule_and_reschedules();
     test_vtimer_handler_catches_up_and_refuses_cancel_inside();
@@ -37738,6 +40249,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();
     test_msgpipe_termination_requeues_readied_waiters();
     test_msgpipe_callback_and_delete();
+    test_msgpipe_delete_unknown_ids();
     test_msgpipe_nested_callback_wait_scopes();
     test_msgpipe_cancel_skips_paused_callback_wait();
     test_td23_guest_pointer_validation();
@@ -37746,7 +40258,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
+    test_partition_unknown_block_codes();
     test_module_id_queries_resolve_owning_module();
+    test_query_module_info_answers_main_module_record();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
@@ -37772,6 +40286,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();
+    test_flight_recorder_trigger_modes();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
     test_flight_recorder_refusals_are_events_not_terminals();

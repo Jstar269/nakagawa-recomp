@@ -203,6 +203,7 @@ def summarize_report(report: dict) -> dict[str, Any]:
             "presentation": presentation.get("status"),
             "frame_submissions": presentation.get("frame_submissions"),
             "runtime_imports": runtime_imports,
+            "runtime_boundary": report.get("runtime_boundary"),
             "failure_class": report.get("failure_class") if built else None,
         },
     }
@@ -313,10 +314,12 @@ class LibraryBuild:
                 try:
                     record.update(self.identify_disc(path))
                     record["identify_error"] = None
+                    record.pop("identify_detail", None)
                 except Exception as exc:  # the bring-up still runs and names its boundary
                     record.update({"disc_id": None, "title": None, "disc_version": None,
                                    "identify_error": getattr(exc, "boundary_code", None)
-                                   or type(exc).__name__})
+                                   or "DISC_IDENTIFY_FAILED",
+                                   "identify_detail": f"{type(exc).__name__}: {exc}"[:300]})
                 self.records[key] = record
             disc_id = record.get("disc_id")
             first = first_by_disc_id.get(disc_id) if disc_id else None
@@ -373,11 +376,18 @@ class LibraryBuild:
             try:
                 rows = self.decrypt(iso, self.user_data_root, record["disc_id"])
                 failed = [row for row in rows if row.get("status") != 0]
-                decrypt_step = {"files": len(rows), "failed": [row["name"] for row in failed],
-                                "first_failure": failed[0].get("message") if failed else None}
+                decrypt_step = {
+                    "files": len(rows), "failed": [row["name"] for row in failed],
+                    "first_failure": failed[0].get("message") if failed else None,
+                    "first_failure_code": (failed[0].get("code")
+                                           or decrypt_tool.status_code(failed[0]["status"]))
+                    if failed else None,
+                }
             except Exception as exc:
                 decrypt_step = {"files": None, "failed": None,
-                                "first_failure": f"{type(exc).__name__}: {exc}"[:300]}
+                                "first_failure": f"{type(exc).__name__}: {exc}"[:300],
+                                "first_failure_code": "IO_FAILURE" if isinstance(exc, OSError)
+                                else "INTERNAL_ERROR"}
             with self.lock:
                 record["decrypt_step"] = decrypt_step
         command = self.command(iso, self.user_data_root, work_dir, self.launch_timeout_seconds)
@@ -505,6 +515,16 @@ def render_markdown(manifest: dict[str, Any]) -> str:
         lines += ["", "## First launch of built titles", "",
                   "| Exit / runtime output / presentation | Titles |", "| --- | --- |"]
         lines += [f"| {key} | {count} |" for key, count in launches.most_common()]
+    stops = Counter(
+        ((record.get("launch") or {}).get("failure_class"),
+         (record.get("launch") or {}).get("runtime_boundary"))
+        for record in titles
+        if record["outcome"] == "BUILT" and (record.get("launch") or {}).get("runtime_boundary")
+    )
+    if stops:
+        lines += ["", "## Where first launches stopped", "", "| Failure | Runtime stop | Titles |",
+                  "| --- | --- | --- |"]
+        lines += [f"| {failure} | `{stop}` | {count} |" for (failure, stop), count in stops.most_common()]
     imports = Counter(name for record in titles for name in record.get("unsupported_imports") or [])
     if imports:
         lines += ["", "## Unsupported imports found at build (top 40)", "",

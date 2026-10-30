@@ -26,16 +26,18 @@ Each row is something you are about to do. Find yours and read what it points to
 
 | When you are about to | Read |
 | --- | --- |
-| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
+| Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md), [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md) |
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
 | Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Qualify a public title through the native player | [`TITLE_TESTING.md`](TITLE_TESTING.md) |
+| Find out what a failure code means, or add one | [`FAILURE_CODES.md`](FAILURE_CODES.md) — every code a report, tool or the player emits, by pipeline stage |
 | Find your way around the code for the first time | [`CODE_TOUR.md`](CODE_TOUR.md) — one game from disc image to a frame on screen, file by file |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`STATUS.md`](STATUS.md) (live GitHub Issues win) |
+| Reopen a design choice that looks settled | [`decisions/README.md`](decisions/README.md) — one-page records of decisions already made, with their reasons |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
 | **Change a `*_posix.c` / `*_win32.c` pair, or code behind a `!_WIN32` guard** | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — hosted CI compiles the POSIX backend on Linux; a Windows-green change can still fail there |
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
@@ -56,6 +58,8 @@ Each row is something you are about to do. Find yours and read what it points to
   native player.
 - [`SHOWCASE.md`](SHOWCASE.md) — the source-owned showcase demos: sources, packaging,
   player discovery, and their profile-zero acceptance status (#309).
+- [`PSPDEV_LOCAL_VERIFICATION.md`](PSPDEV_LOCAL_VERIFICATION.md) — the pinned PSPDEV
+  baseline and the local steps that check a toolchain against it.
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
   inventory of the runtime's and supported tools' parser boundaries, each with its resource limits,
@@ -66,11 +70,14 @@ Each row is something you are about to do. Find yours and read what it points to
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
 - [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) — Linux/WSL development commands and gate inventory (issue #306).
+- [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md) — building and running the Android app (issue #360).
 - [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md) — authentic-vs-enhanced
   boundary, declarative frame-rate rescale packages, fail-closed stock-digest verification,
   and separate AOT cache epochs.
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
   external-input gates.
+- [`LLVM_BACKEND.md`](LLVM_BACKEND.md) — the opt-in LLVM IR code generation backend (#330):
+  structured IR, explicit MIPS semantics, verification, and the in-process stage.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
   source-owned probes are not hardware acceptance without measured provenance.
 - [`research/PSP_THREADING_SEMANTICS.md`](research/PSP_THREADING_SEMANTICS.md) —
@@ -94,6 +101,9 @@ a target and what isn't built yet.
 - [`HLE_COVERAGE.md`](HLE_COVERAGE.md) — the generated verification ledger: the
   evidence class of every registered HLE NID and every executed VFPU form, used to
   choose which HLE to replace with LLE first.
+- [`PROJECT_MODEL.md`](PROJECT_MODEL.md) — the three products in this repository
+  (the HST recompilation, its decompilation and the general toolkit), what each owns,
+  and which way dependencies may point.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
@@ -117,6 +127,8 @@ a target and what isn't built yet.
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — the notes of the
   v0.0.1 release, kept as released.
+- [`RELEASE_SIGNING.md`](RELEASE_SIGNING.md) — the owner's update-signing key and
+  how each release's checksum file is signed for the player's update download.
 
 ## Archive
 
@@ -201,14 +213,25 @@ Every substantial document carries one status.
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `PARSER_SAFETY_INVENTORY.json` | CURRENT | Per-boundary hostile-input/resource and campaign inventory (#319); does not establish issue completion |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
+| `decisions/README.md` | CURRENT | Index of decision records and how to add one |
+| `decisions/0001-llvm-ir-backend.md` | CURRENT | Decision record: LLVM IR for the #330 direct backend |
+| `decisions/0002-shared-analysis-ir.md` | CURRENT | Decision record: One analysis IR for the C and LLVM backends |
+| `decisions/0003-lle-first.md` | CURRENT | Decision record: LLE first; HLE only at the kernel and hardware boundary |
+| `decisions/0004-per-path-provenance.md` | CURRENT | Decision record: Provenance recorded per path |
+| `decisions/0005-non-retail-discs.md` | CURRENT | Decision record: Non-retail discs accepted, labelled, keyed by content hash |
+| `decisions/0006-register-promotion-opt-in.md` | CURRENT | Decision record: Register promotion stays opt-in (#284) |
+| `decisions/0007-no-vfpu-simd.md` | CURRENT | Decision record: No VFPU SIMD fast paths (#292) |
+| `FAILURE_CODES.md` | CURRENT | Failure-code taxonomy: every emitted code by stage; `assets/failure_codes.json` is its machine-readable form |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |
 | `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
+| `ANDROID_DEVELOPMENT.md` | CURRENT | Android build, emulator run and status (issue #360) |
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
+| `LLVM_BACKEND.md` | CURRENT | Opt-in LLVM IR backend (#330): design, first-stage scope, verification and the in-process stage |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
-| `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite only, PSP-side runner unbuilt |
+| `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite and the one-command matrix; PSP-side framed runner unbuilt |
 | `PROVENANCE_MERGE_GATE.md` | CURRENT | Merge-path provenance control (observation mode) |
 | `PUBLICATION_READINESS.md` | CURRENT | Publication gates incl. the trusted refresh workflow |
 | `PUBLIC_SOURCE_PROFILE.md` | CURRENT | Include/exclude policy explanation |
@@ -225,6 +248,7 @@ Every substantial document carries one status.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | CURRENT | Notes of the v0.0.1 release, kept as released |
+| `RELEASE_SIGNING.md` | CURRENT | Update-signing key procedure (minisign, offline) and what the player checks before an update download |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
 | `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |

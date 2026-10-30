@@ -172,6 +172,36 @@ static inline uint32_t sr_vfpu_h2f(uint32_t h) {
     return sign | ((e + 112u) << 23) | (m << 13);
 }
 
+/* PSP-VFPU-FORMS2-001 (PSP-3000, 2026-10-29, issue #326), identity prefixes unless a
+ * helper says otherwise. */
+
+/* vrnds.s: the seed word becomes all four 32-bit components of the random unit and its
+ * 32-bit carry, whatever the state was (96 cells from two different states). The RCX
+ * image is the one sr_vfpu_rnd_step reads and writes. */
+static inline void sr_vfpu_rnd_seed(uint32_t rcx[8], uint32_t seed) {
+    for (int k = 0; k < 8; k++)
+        rcx[k] = (rcx[k] & 0xfff00000u) | (((seed >> (4 * k)) & 0xfu) << 16) |
+                 ((k < 4 ? seed : seed >> 16) & 0xffffu);
+}
+
+/* vf2h: one float32 word to an IEEE half by truncation (round toward zero). A result
+ * below the half normal range, a float denormal included, is a zero of its sign; an
+ * exponent past the half range is an infinity of its sign; a NaN keeps its sign and the
+ * LOW 10 mantissa bits, so 0x7fc00000 becomes 0x7c00 (vh2f's mapping run backwards). */
+static inline uint32_t sr_vfpu_f2h(uint32_t b) {
+    const uint32_t sign = (b >> 16) & 0x8000u, e = (b >> 23) & 0xffu, m = b & 0x7fffffu;
+    if (e == 0xffu) return sign | 0x7c00u | (m & 0x3ffu);
+    const int he = (int)e - 112;
+    if (he >= 31) return sign | 0x7c00u;
+    if (he <= 0) return sign;
+    return sign | ((uint32_t)he << 10) | (m >> 13);
+}
+
+/* vc2i: one byte b to the top byte of a word, the rest zero. */
+static inline uint32_t sr_vfpu_c2i(uint32_t b) {
+    return (b & 0xffu) << 24;
+}
+
 /* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
 static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
     return ((b & 0xffu) * 0x01010101u) >> 1;
@@ -1249,6 +1279,37 @@ typedef struct SrModuleBindDetail {
 #define SR_MODULE_CODE_MAX_BOUND 64u
 
 void sr_module_code_register(const SrModuleCode *code);   /* from generated sr_register_all() */
+/* An enhancement build's rewritten disc file (docs/ENHANCEMENT_CONTRACT.md section 9.6), from
+ * generated sr_register_all() while SR_EXPERIMENTAL_60HZ=1. Returns 0 when it cannot be held. */
+int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha256[32],
+                                 const uint8_t *data, uint32_t size);
+/* An enhancement build's logic-update counter, registered while SR_EXPERIMENTAL_60HZ=1, and
+ * whether that logic has stayed under 60 updates/s long enough to report (section 9.5).
+ * sr_enhancement_logic_slowed() may be called from the presenter thread. */
+void sr_enhancement_register_updates(const volatile uint32_t *counter);
+int sr_enhancement_logic_slowed(unsigned *rate);
+
+/* The kernel's record of the main module, emitted by tools/codegen.py from the ELF (PT_LOAD
+ * segments, SceModuleInfo, section or program headers, and the syslib's
+ * module_start_thread_parameter). Field meanings follow uOFW's SceModule / SceKernelModuleInfo;
+ * addresses are final guest addresses. A build whose ELF has no SceModuleInfo emits none. */
+typedef struct SrMainModuleRecord {
+    uint32_t nsegment;                    /* PT_LOAD segments, at most 4 */
+    uint32_t segment_addr[4];
+    uint32_t segment_size[4];             /* p_memsz */
+    uint32_t entry_addr;
+    uint32_t gp_value;                    /* SceModuleInfo gp */
+    uint32_t text_addr;                   /* first PT_LOAD address */
+    uint32_t text_size, data_size, bss_size;
+    uint32_t attribute;                   /* SceModuleInfo modAttribute */
+    uint8_t  version[2];                  /* modVersion: [0] minor, [1] major */
+    uint8_t  name[27];                    /* modName, NUL padded (SCE_MODULE_NAME_LEN) */
+    uint32_t has_start_thread_param;      /* 1 when module_start_thread_parameter is declared */
+    uint32_t start_thread_priority;
+    uint32_t start_thread_stack_size;
+    uint32_t start_thread_attr;
+} SrMainModuleRecord;
+void sr_main_module_register(const SrMainModuleRecord *record);  /* from generated sr_register_all() */
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
@@ -1330,6 +1391,9 @@ typedef struct SrAotReturnBoundary {
     uint32_t resume_pc;
     uint32_t has_resume_pc;
     uint64_t observed_target;  /* bit 32 marks a captured target, including target 0 */
+    uint32_t call_sp;          /* guest $sp at the call, after its delay slot: the callee's entry $sp */
+    uint32_t dispatch_owned;   /* begun by dispatch_call_aot, whose caller ignores the end result */
+    uint32_t unwinding;        /* abandoned by a guest return to an enclosing linked call */
 } SrAotReturnBoundary;
 
 /* The active AOT return stack follows the running guest fiber. Each TCB owns
@@ -1355,6 +1419,8 @@ extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
 int sr_aot_return_boundary_end(CpuState *s);
+/* How many guest returns past their caller the runtime has unwound (#1034). */
+uint64_t sr_aot_return_unwind_count(void);
 void sr_aot_return_boundaries_reset(void);
 void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other);
 void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack);
@@ -1476,6 +1542,18 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size);
 #define sr_end(s, mem_addr, size) ((void)0)
 #endif
 
+/* Local guest-register promotion (tools/codegen.py --promote-registers, #284): a
+ * promoted instruction writes a C local, and the body writes dirty locals back to
+ * s->r[] at every label, control transfer and other boundary. A build that compiles
+ * the trace hooks in also mirrors each promoted write at once, so the
+ * per-instruction trace and the cosimulation see the architectural register file
+ * after every instruction. Elsewhere the mirror compiles out. */
+#if PERF_AOT_INSTRUCTIONS || defined(SR_INSTRUCTION_TRACE)
+#define SR_PROMO_SYNC(s, i, v) ((s)->r[(i)] = (v))
+#else
+#define SR_PROMO_SYNC(s, i, v) ((void)0)
+#endif
+
 /* HLE boundary marker used by the bring-up driver: a call to an unresolved import stop the
  * traced run so the comparison ends exactly where the reference trace reaches its first syscall. */
 void sr_hle_call(CpuState *s, uint32_t nid);
@@ -1504,6 +1582,17 @@ double   ge_timing_run_clk(void);
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
+/* Diagnostic counters the watchdog and statistics reports print (hle.c). The GE ones
+ * are kept by ge.c, the MPEG ones by mpeg.c. */
+extern uint32_t g_frame_prims;
+extern unsigned long g_ge_list_sig, g_ge_prim_count;
+extern unsigned long g_list_writes, g_list_nonblack, g_list_clearpx;
+extern unsigned long g_ge_list_through_cmds, g_ge_list_transform_cmds;
+extern unsigned long g_ge_list_through_vertices, g_ge_list_transform_vertices;
+extern unsigned long g_ge_list_through_sprites, g_ge_list_transform_sprites;
+extern unsigned long g_ge_pixels;
+extern unsigned long g_tex_samples, g_tex_nonzero;
+extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
  * (sceGeGetCmd returns SCE_KERNEL_ERROR_INVALID_VALUE); an out-of-range index yields 0,
@@ -1667,6 +1756,7 @@ void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+void     gui_pump(void);                         /* service the window's pending events */
 int      gui_headless_acceptance_requested(void);
 int      gui_headless_acceptance_ready(void);
 int      gui_headless_acceptance_complete(void);
@@ -1804,8 +1894,12 @@ typedef struct {
 } SrHostStackWindow;
 extern SrHostStackWindow sr_host_stack_window;
 void  sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame);
-#define SR_HOST_STACK_CHECK(entry) do { \
-    uintptr_t _sr_frame = (uintptr_t)__builtin_frame_address(0); \
+#define SR_HOST_STACK_CHECK(entry) \
+    SR_HOST_STACK_CHECK_FRAME((entry), (uintptr_t)__builtin_frame_address(0))
+/* The same check for a frame address the caller supplies: the LLVM backend (#330) passes
+ * its body's own frame (llvm.frameaddress) through src/rt/llvm_abi.c. */
+#define SR_HOST_STACK_CHECK_FRAME(entry, frame) do { \
+    uintptr_t _sr_frame = (frame); \
     if (__builtin_expect(_sr_frame - sr_host_stack_window.low > sr_host_stack_window.span, 0)) \
         sr_host_stack_entry_slow((entry), _sr_frame); \
 } while (0)
@@ -1867,6 +1961,10 @@ void     sched_init(CpuState *cpu);                 /* CpuState the running thre
 void     sched_preempt_timer_start(void);          /* paced runs: a stronger due thread preempts at once (#1296) */
 int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
 void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
+/* The module-start thread sched_run creates: priority, stack size (0 = the 256 KiB default),
+ * attribute, name and $gp, as the module manager creates it from the module's record. */
+void     sched_set_module_start_thread(int priority, uint32_t stack_size, uint32_t attr,
+                                       const char *name, uint32_t gp);
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name);
@@ -1875,6 +1973,13 @@ int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
 typedef void (*SrSchedThreadExitHook)(uint32_t uid);
 void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+/* Watchdog thread-dump detail: hle.c names the kernel object an object wait is on (returns
+ * 0 when no object has the uid) and the NID of an import; sr_syscall reports each import's
+ * return on the current thread. */
+typedef int (*SrSchedWaitDescriber)(uint32_t thread_uid, uint32_t obj, char *out, size_t cap);
+typedef const char *(*SrSchedNidNamer)(uint32_t nid);
+void     sched_set_watchdog_describers(SrSchedWaitDescriber describe, SrSchedNidNamer name);
+void     sched_note_import_return(uint32_t nid, uint32_t ret);
 /* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the earliest guest-time deadline of a
  * list the modelled GE is still drawing (SCHED_WAIT_FOREVER-style UINT64_MAX when none), and
  * the interrupt-service step that completes every due list.  With no hooks registered --
@@ -1889,6 +1994,22 @@ typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
 typedef void (*SrSchedVtimerServiceOne)(void);
 void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
                                 SrSchedVtimerServiceOne service_one);
+/* hle.c's user-partition overlap test: sched.c refuses a thread stack range it reports. */
+typedef int (*SrSchedStackRangeRefusal)(uint32_t base, uint32_t end);
+void     sched_set_stack_range_refusal(SrSchedStackRangeRefusal refusal);
+CpuState *sr_cpu_for_callbacks(void);               /* the CpuState guest callbacks run on */
+void     sched_dump_threads(void);                  /* the watchdog's thread table, to stderr */
+void     sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
+                                uint32_t *wait, uint32_t *spin);
+/* Callback and VBLANK service hle.c provides to the scheduler. */
+int      sr_thread_has_pending_callbacks(uint32_t thread_uid);
+int      sr_thread_dispatch_callbacks(void);
+int      sr_vblank_dispatch_registered(void);
+void     sr_vblank_tick(void);
+/* The guest VBLANK count (hle.c) and the host audio backend's statistics dump. */
+uint32_t sr_audio_vbl(void);
+void     sr_audio_dump_stats(void);
+void     sr_audio_dump_finish(void);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
@@ -1923,12 +2044,16 @@ int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake r
 int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
 int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
-/* Device transfer window (#303): the current thread starts a transfer whose guest-time
- * duration is unmeasured; the scheduler closes the window at the decision after one
- * other thread was dispatched (at once when none is runnable) and wakes obj's waiters.
- * begin returns 0 when a window is already open or no thread is current. */
-int      sched_transfer_begin(uint32_t obj);
-int      sched_transfer_pending(uint32_t obj, uint32_t *owner_uid); /* 1 while obj's window is open */
+/* Device transfer channel (#303): begin starts the current thread's transfer of
+ * duration_us guest microseconds (0 when another thread holds the channel, waiters are
+ * queued ahead, or no thread is current). At the deadline the scheduler wakes the owner
+ * and hands the channel to the oldest queued waiter (enqueue), which then holds it
+ * reserved (granted) until it begins its own transfer. pending is 1 while the channel is
+ * held, by an open window or a reservation. */
+int      sched_transfer_begin(uint32_t obj, uint32_t duration_us);
+int      sched_transfer_pending(uint32_t obj, uint32_t *owner_uid);
+int      sched_transfer_granted(uint32_t obj);   /* reserved for the current thread */
+int      sched_transfer_enqueue(uint32_t obj);   /* the current thread waits for the channel */
 /* Semantic wait lifetime, independent of SrCoro's executable stack. Only the
  * innermost block attaches to the TCB; callback-parked parents remain live.
  * Detach hooks are object policy and MUST NOT preempt during owner teardown. */
@@ -2088,6 +2213,11 @@ typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
 int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
 uint32_t sched_thread_stack_free_size(uint32_t uid);  /* sceKernelGetThreadStackFreeSize */
+/* The calling thread's user-visible stack range (sceKernelCheckThreadStack); 0 with no thread. */
+int      sched_current_thread_stack_range(uint32_t *base_out, uint32_t *size_out);
+/* High user-partition blocks, carved from the top of the thread-stack arena (sched.c). */
+int      sched_partition_alloc_high(uint32_t size, uint32_t ceiling, uint32_t *base_out);
+void     sched_partition_release_high(uint32_t base, uint32_t size);
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);

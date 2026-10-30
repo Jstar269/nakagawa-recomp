@@ -14,7 +14,7 @@ Tracks #
      `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows), and say what you could not run. -->
 
 - [ ] No game files, decrypted data, traces, private paths or proprietary assets are in this change.
-- [ ] If this changes the launcher or documentation: it follows [ACCESSIBILITY.md](../ACCESSIBILITY.md#contributing-accessibly), or this change does not touch them.
+- [ ] If this changes the launcher or documentation: it follows [ACCESSIBILITY.md](https://github.com/Jstar269/nakagawa-recomp/blob/main/ACCESSIBILITY.md#contributing-accessibly), or this change does not touch them.
 
 ## Only if it applies
 
@@ -30,5 +30,5 @@ Tracks #
 
 ## Contributor Rights Attestation (DCO 1.1)
 
-- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](../docs/DCO_POLICY.md).
-- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md). Outside contributions always need the first box.
+- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).
+- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#51-maintainer-standing-waiver). Outside contributions always need the first box.

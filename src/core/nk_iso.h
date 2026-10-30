@@ -149,7 +149,43 @@ typedef struct {
     /* The image's root holds a PSP_GAME folder record. A valid ISO9660 image
        without one is a disc image of something other than a PSP game. */
     bool has_psp_game_folder;
+    /* The DISC_ID exactly as PARAM.SFO carries it (1 to 31 printable ASCII
+       characters), kept for display and diagnostics. */
+    char sfo_disc_id[NK_MAX_DISC_ID_LEN];
+    /* A disc whose own ID is not a retail ID (a beta, a prototype, an SDK
+       placeholder): disc_id is then the key nk_non_retail_disc_key derived from
+       identity_sha256, the digest of its PARAM.SFO and main executable. */
+    bool non_retail;
+    char identity_sha256[65];
 } NkIsoMetadata;
+
+/* SHA-256 (FIPS 180-4), shared by the disc identity below and the package and
+ * profile identities in nk_title_manifest.c. */
+typedef struct {
+    uint32_t state[8];
+    uint64_t bit_count;
+    uint8_t block[64];
+    size_t block_len;
+} NkSha256;
+void nk_sha256_init(NkSha256 *ctx);
+void nk_sha256_update(NkSha256 *ctx, const uint8_t *data, size_t len);
+void nk_sha256_finish(NkSha256 *ctx, uint8_t digest[32]);
+
+/* Library keys of non-retail discs start with this letter. Retail disc IDs
+ * start with U or N and the project's synthetic IDs with TEST, so a key that
+ * starts with it was always derived from a disc's contents, and the player
+ * labels the disc "Beta / unofficial". The rule and the derivation are
+ * disc_id_library_key and non_retail_disc_key in tools/nk_core/iso_inspect.py;
+ * the two tiers give every disc the same key. */
+#define NK_NON_RETAIL_KEY_PREFIX 'X'
+
+/* Writes the nine-character key of a non-retail disc for its identity digest:
+ * the prefix, then the first eight digest bytes (big-endian) modulo
+ * 26^3 * 10^5 as three letters and five digits. */
+void nk_non_retail_disc_key(const uint8_t digest[32], char out_key[10]);
+
+/* True for a library key nk_non_retail_disc_key made. */
+bool nk_disc_id_is_non_retail_key(const char *disc_id);
 
 /* Inspect a raw PSP ISO9660 disc image directly.
  * Parses PVD, locates PSP_GAME/PARAM.SFO, extracts metadata,
@@ -164,7 +200,8 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
 
 /* Classify PSP_GAME/SYSDIR/EBOOT.BIN and BOOT.BIN using bounded reads from
  * the ISO. A validated plaintext MIPS ELF32 is selected for analysis; BOOT.BIN
- * is selected only when EBOOT.BIN is encrypted and BOOT.BIN is plaintext ELF. */
+ * is selected only when EBOOT.BIN is encrypted or zero-filled and BOOT.BIN is
+ * plaintext ELF. */
 NkResult nk_iso_classify_executables(const char *iso_path,
                                      NkIsoExecutableReport *out_report);
 

@@ -285,16 +285,19 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
     size_t len = strlen(s);
     if (len > 240) return false;
     if (s[0] == '/' || s[0] == '\\' || strchr(s, '\\') != NULL || strchr(s, ':') != NULL) return false;
-    /* strtok() treats repeated and trailing separators as delimiters rather
-       than empty path components. Reject them before tokenization so the
-       native parser agrees with the schema parser and never normalizes an
-       ambiguous path into a different path. */
+    /* Repeated and trailing separators would be empty path components. Reject
+       them before splitting so the native parser agrees with the schema parser
+       and never normalizes an ambiguous path into a different path. */
     if (s[len - 1] == '/' || strstr(s, "//") != NULL) return false;
 
     char temp[256];
     snprintf(temp, sizeof(temp), "%s", s);
-    char *token = strtok(temp, "/");
+    /* Split in place rather than with strtok(), whose hidden state is shared by
+       every thread. */
+    char *token = temp;
     while (token) {
+        char *slash = strchr(token, '/');
+        if (slash) *slash = '\0';
         if (strcmp(token, "") == 0 || strcmp(token, ".") == 0 || strcmp(token, "..") == 0) return false;
         size_t tlen = strlen(token);
         if (token[tlen - 1] == '.' || token[tlen - 1] == ' ') return false;
@@ -319,7 +322,7 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
         for (int r = 0; reserved[r]; r++) {
             if (strcmp(base, reserved[r]) == 0) return false;
         }
-        token = strtok(NULL, "/");
+        token = slash ? slash + 1 : NULL;
     }
     return true;
 }
@@ -2068,113 +2071,7 @@ bool nk_title_manifest_load_overlay(
     return nk_title_manifest_load_overlay_ext(manifest_path, false, error_buf, error_buf_len);
 }
 
-typedef struct {
-    uint32_t state[8];
-    uint64_t bit_count;
-    uint8_t block[64];
-    size_t block_len;
-} NkSha256;
-
-static uint32_t nk_sha256_rotr(uint32_t value, unsigned int amount) {
-    return (value >> amount) | (value << (32u - amount));
-}
-
-static void nk_sha256_transform(NkSha256 *ctx, const uint8_t block[64]) {
-    static const uint32_t k[64] = {
-        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
-        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
-        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
-        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
-        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
-        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
-        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
-        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
-        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
-        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
-        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
-        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
-        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
-        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
-        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
-        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
-    };
-    uint32_t words[64];
-    for (size_t i = 0; i < 16; i++) {
-        words[i] = ((uint32_t)block[i * 4] << 24) |
-                   ((uint32_t)block[i * 4 + 1] << 16) |
-                   ((uint32_t)block[i * 4 + 2] << 8) |
-                   (uint32_t)block[i * 4 + 3];
-    }
-    for (size_t i = 16; i < 64; i++) {
-        uint32_t s0 = nk_sha256_rotr(words[i - 15], 7) ^
-                      nk_sha256_rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
-        uint32_t s1 = nk_sha256_rotr(words[i - 2], 17) ^
-                      nk_sha256_rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
-        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
-    }
-
-    uint32_t a = ctx->state[0], b = ctx->state[1], c = ctx->state[2], d = ctx->state[3];
-    uint32_t e = ctx->state[4], f = ctx->state[5], g = ctx->state[6], h = ctx->state[7];
-    for (size_t i = 0; i < 64; i++) {
-        uint32_t sum1 = nk_sha256_rotr(e, 6) ^ nk_sha256_rotr(e, 11) ^ nk_sha256_rotr(e, 25);
-        uint32_t choose = (e & f) ^ (~e & g);
-        uint32_t t1 = h + sum1 + choose + k[i] + words[i];
-        uint32_t sum0 = nk_sha256_rotr(a, 2) ^ nk_sha256_rotr(a, 13) ^ nk_sha256_rotr(a, 22);
-        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t t2 = sum0 + majority;
-        h = g; g = f; f = e; e = d + t1;
-        d = c; c = b; b = a; a = t1 + t2;
-    }
-    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
-    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
-}
-
-static void nk_sha256_init(NkSha256 *ctx) {
-    static const uint32_t initial[8] = {
-        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
-    };
-    memcpy(ctx->state, initial, sizeof(initial));
-    ctx->bit_count = 0;
-    ctx->block_len = 0;
-}
-
-static void nk_sha256_update(NkSha256 *ctx, const uint8_t *data, size_t len) {
-    ctx->bit_count += (uint64_t)len * 8u;
-    while (len > 0) {
-        size_t room = sizeof(ctx->block) - ctx->block_len;
-        size_t take = len < room ? len : room;
-        memcpy(ctx->block + ctx->block_len, data, take);
-        ctx->block_len += take;
-        data += take;
-        len -= take;
-        if (ctx->block_len == sizeof(ctx->block)) {
-            nk_sha256_transform(ctx, ctx->block);
-            ctx->block_len = 0;
-        }
-    }
-}
-
-static void nk_sha256_finish(NkSha256 *ctx, uint8_t digest[32]) {
-    uint64_t bits = ctx->bit_count;
-    ctx->block[ctx->block_len++] = 0x80;
-    if (ctx->block_len > 56) {
-        memset(ctx->block + ctx->block_len, 0, sizeof(ctx->block) - ctx->block_len);
-        nk_sha256_transform(ctx, ctx->block);
-        ctx->block_len = 0;
-    }
-    memset(ctx->block + ctx->block_len, 0, 56 - ctx->block_len);
-    for (size_t i = 0; i < 8; i++) {
-        ctx->block[63 - i] = (uint8_t)(bits >> (i * 8));
-    }
-    nk_sha256_transform(ctx, ctx->block);
-    for (size_t i = 0; i < 8; i++) {
-        digest[i * 4] = (uint8_t)(ctx->state[i] >> 24);
-        digest[i * 4 + 1] = (uint8_t)(ctx->state[i] >> 16);
-        digest[i * 4 + 2] = (uint8_t)(ctx->state[i] >> 8);
-        digest[i * 4 + 3] = (uint8_t)ctx->state[i];
-    }
-}
+/* SHA-256 (NkSha256, nk_sha256_*) is shared with the disc identity in nk_iso.c. */
 
 static bool nk_manifest_normalize_disc_id(const char *source, char out[10]) {
     if (!source || strlen(source) != 9) return false;
@@ -2190,6 +2087,58 @@ static bool nk_manifest_normalize_disc_id(const char *source, char out[10]) {
     }
     out[9] = '\0';
     return true;
+}
+
+bool nk_title_manifest_enhancement_id_valid(const char *id) {
+    if (!id) return false;
+    size_t length = 0;
+    for (const char *p = id; *p; p++, length++) {
+        unsigned char ch = (unsigned char)*p;
+        bool alnum = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+        if (length >= NK_MAX_ENHANCEMENT_PACKAGE_ID - 1u) return false;
+        if (length == 0 ? !alnum : !(alnum || ch == '.' || ch == '_' || ch == '-')) {
+            return false;
+        }
+    }
+    return length > 0;
+}
+
+bool nk_title_manifest_package_dir_name(const char *disc_id,
+                                        const char *enhancement_package_id,
+                                        char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    char normalized[10];
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+    int written;
+    if (!enhancement_package_id || !enhancement_package_id[0]) {
+        written = snprintf(out, out_size, "%s", normalized);
+    } else {
+        if (!nk_title_manifest_enhancement_id_valid(enhancement_package_id)) return false;
+        written = snprintf(out, out_size, "%s-enhanced-%s", normalized,
+                           enhancement_package_id);
+    }
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+/* "packages<sep><package folder>" for the variant, relative to the user data root. */
+static bool package_variant_relative(const char *disc_id,
+                                     const char *enhancement_package_id,
+                                     char *out, size_t out_size) {
+    char folder[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 16];
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!nk_title_manifest_package_dir_name(disc_id, enhancement_package_id,
+                                            folder, sizeof(folder))) {
+        return false;
+    }
+    int written = snprintf(out, out_size, "packages%c%s",
+                           nk_platform_path_separator(), folder);
+    return written > 0 && (size_t)written < out_size;
 }
 
 static bool nk_manifest_json_escape(const char *source, char *out, size_t out_len) {
@@ -2717,6 +2666,24 @@ static bool package_number(const JsonNode *node, int64_t expected) {
            node->u.num.int_val == expected;
 }
 
+/* True, with the reason in `error`, when `node` holds a format number above the
+ * one this player reads: a later Nakagawa built the package. It is named as
+ * such, before any member check a newer layout would fail, and never mistaken
+ * for a damaged package. The player does not change it; only a rebuild the user
+ * asks for replaces it. */
+static bool package_newer_format(const JsonNode *node, int64_t reads, const char *what,
+                                 char *error, size_t error_size) {
+    if (!node || node->type != JSON_NUMBER || !node->u.num.is_integer ||
+        node->u.num.int_val <= reads) return false;
+    if (error && error_size) {
+        snprintf(error, error_size,
+                 "built by a newer Nakagawa (%s format %lld; this player reads %lld); "
+                 "update Nakagawa to play it, or rebuild it for this one.",
+                 what, (long long)node->u.num.int_val, (long long)reads);
+    }
+    return true;
+}
+
 static bool package_read_json(const char *path, size_t max_bytes,
                               bool *out_exceeds_limit,
                               char **out_text, size_t *out_length,
@@ -3063,6 +3030,7 @@ static bool package_completion_identity(const char *package_root,
 static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -3077,13 +3045,13 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     if (!user_data_root || !*user_data_root || !title_id || !out_identity ||
         !nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
 
-    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_relative[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 32];
     char package_root[NK_MAX_PATH * 2];
     char package_path[NK_MAX_PATH * 2];
     char report_path[NK_MAX_PATH * 2];
     char completion_path[NK_MAX_PATH * 2];
-    if (snprintf(package_relative, sizeof(package_relative), "packages%c%s",
-                 nk_platform_path_separator(), normalized) < 0 ||
+    if (!package_variant_relative(normalized, enhancement_package_id,
+                                  package_relative, sizeof(package_relative)) ||
         !package_join_path(package_root, sizeof(package_root), user_data_root,
                            package_relative) ||
         !package_direct_file(package_root, "package.json", package_path,
@@ -3098,6 +3066,12 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     package_cache_identity_update_text(&identity_ctx, "nk-aot-package-status-v1");
     package_cache_identity_update_text(&identity_ctx, user_data_root);
     package_cache_identity_update_text(&identity_ctx, normalized);
+    /* Only an enhanced build adds its id, so the authentic package's identity
+       is the one it had before enhanced builds had their own folder. */
+    if (enhancement_package_id && enhancement_package_id[0]) {
+        package_cache_identity_update_text(&identity_ctx, "enhancement-package");
+        package_cache_identity_update_text(&identity_ctx, enhancement_package_id);
+    }
     package_cache_identity_update_text(&identity_ctx, title_id);
     package_cache_identity_update_text(&identity_ctx, selected_executable);
     package_cache_identity_update_text(&identity_ctx, current_disc_version);
@@ -3236,6 +3210,7 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
 bool nk_title_manifest_aot_package_cache_identity(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -3246,7 +3221,7 @@ bool nk_title_manifest_aot_package_cache_identity(
 ) {
     uint64_t catalog_epoch = nk_title_catalog_epoch();
     return nk_title_manifest_aot_package_cache_identity_at_epoch(
-        user_data_root, disc_id, title_id, is_experimental,
+        user_data_root, disc_id, enhancement_package_id, title_id, is_experimental,
         selected_executable, current_disc_version, source_iso_path,
         player_abi_version,
         catalog_epoch, out_identity);
@@ -4120,6 +4095,13 @@ static bool package_validate_contract(const JsonNode *package,
     static const char * const object_keys[] = {"path", "sha256", NULL};
     static const char * const object_required[] = {"path", "sha256", NULL};
     const char *value = NULL;
+    if (package_newer_format(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION,
+                             "package", error, error_size) ||
+        package_newer_format(obj_get(obj_get(package, "cache"), "schema_version"),
+                             NK_AOT_CACHE_SCHEMA_VERSION, "package cache", error,
+                             error_size)) {
+        return false;
+    }
     if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
     if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
         !package_number(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION)) {
@@ -4461,6 +4443,12 @@ static bool package_validate_completion(const char *package_root,
         return false;
     }
     const char *value = NULL;
+    if (package_newer_format(obj_get(completion, "schema_version"),
+                             NK_AOT_COMPLETION_SCHEMA_VERSION, "package completion", error,
+                             error_size)) {
+        json_free(completion);
+        return false;
+    }
     if (!package_check_object(completion, "completion-manifest", allowed_keys, required_keys,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
@@ -4806,11 +4794,41 @@ static bool package_catalog_identity_matches(const char *disc_id,
     return matches;
 }
 
+/* A package is the variant its folder names. A build records the enhancement
+   package it applied in the cache's codegen options (enhancement_package_id,
+   tools/nk_core/package_cache.py) and an authentic build records none, so an
+   enhanced build copied into the authentic folder, or one built from another
+   enhancement package, never launches as the variant the user chose. */
+static bool package_validate_variant(const JsonNode *package,
+                                     const char *enhancement_package_id,
+                                     char *error, size_t error_size) {
+    const JsonNode *options = obj_get(obj_get(package, "cache"), "codegen_options");
+    const JsonNode *recorded = obj_get(options, "enhancement_package_id");
+    if (!enhancement_package_id || !enhancement_package_id[0]) {
+        if (recorded || obj_get(options, "enhancement_package_epoch")) {
+            snprintf(error, error_size,
+                     "The package in the authentic package folder is an enhanced build.");
+            return false;
+        }
+        return true;
+    }
+    const char *recorded_id = NULL;
+    if (!package_string(recorded, &recorded_id) ||
+        strcmp(recorded_id, enhancement_package_id) != 0) {
+        snprintf(error, error_size,
+                 "The enhanced package was not built from enhancement package %s.",
+                 enhancement_package_id);
+        return false;
+    }
+    return true;
+}
+
 /* A validation the host cancelled fails with that reason, whatever check the
    abandoned hash fell through to. Only a valid package is ever cached. */
 static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4825,6 +4843,7 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4836,7 +4855,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     size_t reason_size
 ) {
     NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package_checked(
-        user_data_root, disc_id, title_id, is_experimental, selected_executable,
+        user_data_root, disc_id, enhancement_package_id, title_id, is_experimental,
+        selected_executable,
         current_disc_version, source_iso_path, player_abi_version, out_info,
         reason, reason_size);
     if (status != NK_RUNTIME_PACKAGE_OK && manifest_cancelled()) {
@@ -4851,6 +4871,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
 static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     const char *user_data_root,
     const char *disc_id,
+    const char *enhancement_package_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
@@ -4870,6 +4891,12 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     if (!user_data_root || !*user_data_root || !title_id || !*title_id ||
         !nk_manifest_normalize_disc_id(disc_id, normalized)) {
         if (reason && reason_size) snprintf(reason, reason_size, "Library title identity is incomplete.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
+    bool enhanced = enhancement_package_id && enhancement_package_id[0];
+    if (enhanced && !nk_title_manifest_enhancement_id_valid(enhancement_package_id)) {
+        if (reason && reason_size) snprintf(reason, reason_size,
+            "The enhancement package id is not a valid package name.");
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     if (is_experimental) {
@@ -4894,14 +4921,20 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
         }
     }
 
-    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_relative[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 32];
     char package_root[NK_MAX_PATH * 2];
     char package_path[NK_MAX_PATH * 2];
-    snprintf(package_relative, sizeof(package_relative), "packages%c%s",
-             nk_platform_path_separator(), normalized);
+    if (!package_variant_relative(normalized, enhancement_package_id,
+                                  package_relative, sizeof(package_relative))) {
+        if (reason && reason_size) snprintf(reason, reason_size,
+            "The package folder name could not be formed.");
+        return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    }
     if (!package_join_path(package_root, sizeof(package_root), user_data_root, package_relative) ||
         !nk_platform_dir_exists(package_root)) {
-        package_rebuild_reason(reason, reason_size, "Runtime package is missing.");
+        package_rebuild_reason(reason, reason_size,
+            enhanced ? "The enhanced runtime package is missing."
+                     : "Runtime package is missing.");
         return NK_RUNTIME_PACKAGE_MISSING;
     }
     char resolved_package_root[NK_MAX_PATH * 2];
@@ -4969,7 +5002,8 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     char status_identity_digest[65] = "";
     bool status_identity_valid = !is_experimental &&
         nk_title_manifest_aot_package_cache_identity_at_epoch(
-            user_data_root, normalized, title_id, false, selected_executable,
+            user_data_root, normalized, enhancement_package_id, title_id, false,
+            selected_executable,
             current_disc_version, source_iso_path, player_abi_version,
             catalog_epoch,
             status_identity_digest);
@@ -5021,6 +5055,12 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
         package_rebuild_reason(reason, reason_size, parse_error);
         json_free(package);
         return status;
+    }
+    if (!package_validate_variant(package, enhancement_package_id, parse_error,
+                                  sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
     }
     char package_identity_digest[65] = "";
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
@@ -5152,7 +5192,7 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
 #endif
             char status_identity_digest[65] = "";
             if (nk_title_manifest_aot_package_cache_identity_at_epoch(
-                    user_data_root, normalized, title_id, false,
+                    user_data_root, normalized, enhancement_package_id, title_id, false,
                     selected_executable, current_disc_version,
                     source_iso_path, player_abi_version, catalog_epoch,
                     status_identity_digest)) {
@@ -5168,4 +5208,332 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     if (out_info) *out_info = resolved_info;
     if (reason && reason_size) snprintf(reason, reason_size, "Runtime package v1 is valid for %s.", normalized);
     return NK_RUNTIME_PACKAGE_OK;
+}
+
+/* -----------------------------------------------------------------------------
+ * Package build identity: which Nakagawa built a package (owner, 2026-10-29)
+ * -------------------------------------------------------------------------- */
+
+/* The relative paths (forward slashes) a source-tree digest covers, collected
+ * before any file is read so they can be hashed in one sorted order. */
+typedef struct {
+    char **paths;
+    size_t count;
+    size_t capacity;
+    bool failed;
+} PackageSourceList;
+
+typedef struct {
+    PackageSourceList *list;
+    char **pending;          /* directories still to list, relative */
+    size_t pending_count;
+    size_t pending_capacity;
+    const char *parent;      /* the relative directory being listed */
+    bool all_files;          /* assets/vfpu: every file, whatever its suffix */
+} PackageSourceWalk;
+
+static char *package_source_copy(const char *text) {
+    size_t length = strlen(text);
+    char *copy = (char *)malloc(length + 1u);
+    if (copy) memcpy(copy, text, length + 1u);
+    return copy;
+}
+
+static char *package_source_join(const char *parent, const char *name) {
+    size_t parent_length = strlen(parent);
+    size_t name_length = strlen(name);
+    char *joined = (char *)malloc(parent_length + 1u + name_length + 1u);
+    if (!joined) return NULL;
+    memcpy(joined, parent, parent_length);
+    joined[parent_length] = '/';
+    memcpy(joined + parent_length + 1u, name, name_length + 1u);
+    return joined;
+}
+
+/* Takes ownership of item, which may be NULL (an allocation that failed). */
+static bool package_source_push(char ***items, size_t *count, size_t *capacity, char *item) {
+    if (!item) return false;
+    if (*count == *capacity) {
+        size_t grown = *capacity ? *capacity * 2u : 256u;
+        char **resized = (char **)realloc(*items, grown * sizeof(char *));
+        if (!resized) {
+            free(item);
+            return false;
+        }
+        *items = resized;
+        *capacity = grown;
+    }
+    (*items)[(*count)++] = item;
+    return true;
+}
+
+/* Python's Path.suffix: the text from the last dot when that dot neither
+ * starts nor ends the name, compared without case as source_tree_digest's
+ * suffix.lower() does. */
+static bool package_source_suffix_counts(const char *name) {
+    static const char * const suffixes[] = {".c", ".h", ".cpp", ".hpp", NULL};
+    const char *dot = strrchr(name, '.');
+    if (!dot || dot == name || dot[1] == '\0') return false;
+    for (size_t i = 0; suffixes[i]; i++) {
+        if (nk_ascii_casecmp(dot, suffixes[i]) == 0) return true;
+    }
+    return false;
+}
+
+static bool package_source_walk_entry(const char *name, bool is_dir, void *ctx) {
+    PackageSourceWalk *walk = (PackageSourceWalk *)ctx;
+    bool pushed;
+    if (is_dir) {
+        pushed = package_source_push(&walk->pending, &walk->pending_count,
+                                     &walk->pending_capacity,
+                                     package_source_join(walk->parent, name));
+    } else if (walk->all_files || package_source_suffix_counts(name)) {
+        pushed = package_source_push(&walk->list->paths, &walk->list->count,
+                                     &walk->list->capacity,
+                                     package_source_join(walk->parent, name));
+    } else {
+        return true;
+    }
+    if (!pushed) walk->list->failed = true;
+    return pushed;
+}
+
+static bool package_source_absolute(const char *source_root, const char *relative,
+                                    char *out, size_t out_size) {
+    char sep = nk_platform_path_separator();
+    int written = snprintf(out, out_size, "%s%c%s", source_root, sep, relative);
+    if (written <= 0 || (size_t)written >= out_size) return false;
+    if (sep != '/') {
+        for (char *p = out; *p; p++) {
+            if (*p == '/') *p = sep;
+        }
+    }
+    return true;
+}
+
+/* Collect every counted file under source_root/base. A missing base adds
+ * nothing, as the Python digest skips a directory that is not there. */
+static void package_source_collect(const char *source_root, const char *base,
+                                   bool all_files, PackageSourceList *list) {
+    char absolute[NK_MAX_PATH * 2];
+    if (list->failed) return;
+    if (!package_source_absolute(source_root, base, absolute, sizeof(absolute))) {
+        list->failed = true;
+        return;
+    }
+    if (!nk_platform_dir_exists(absolute)) return;
+    /* assets/vfpu counts only as a real directory (is_dir and not is_symlink). */
+    if (all_files && package_path_is_symlink(absolute)) return;
+    PackageSourceWalk walk;
+    memset(&walk, 0, sizeof(walk));
+    walk.list = list;
+    walk.all_files = all_files;
+    if (!package_source_push(&walk.pending, &walk.pending_count, &walk.pending_capacity,
+                             package_source_copy(base))) {
+        list->failed = true;
+    }
+    while (walk.pending_count > 0 && !list->failed) {
+        char *directory = walk.pending[--walk.pending_count];
+        walk.parent = directory;
+        if (!package_source_absolute(source_root, directory, absolute, sizeof(absolute)) ||
+            !nk_platform_list_dir(absolute, package_source_walk_entry, &walk)) {
+            list->failed = true;
+        }
+        free(directory);
+    }
+    while (walk.pending_count > 0) free(walk.pending[--walk.pending_count]);
+    free(walk.pending);
+}
+
+typedef struct {
+    const char *source_root;
+    PackageSourceList *list;
+} PackageBuildRuleWalk;
+
+/* The "mk/<name>.mk" glob: the files directly in mk/ whose name ends in .mk, symlinks left out,
+ * as Path.glob gives them to source_tree_digest. */
+static bool package_build_rule_entry(const char *name, bool is_dir, void *ctx) {
+    PackageBuildRuleWalk *walk = (PackageBuildRuleWalk *)ctx;
+    char relative[NK_MAX_PATH];
+    char absolute[NK_MAX_PATH * 2];
+    size_t length = strlen(name);
+    if (is_dir || length <= 3u || nk_ascii_casecmp(name + length - 3u, ".mk") != 0) return true;
+    int written = snprintf(relative, sizeof(relative), "mk/%s", name);
+    if (written <= 0 || (size_t)written >= sizeof(relative) ||
+        !package_source_absolute(walk->source_root, relative, absolute, sizeof(absolute))) {
+        walk->list->failed = true;
+        return false;
+    }
+    if (package_path_is_symlink(absolute)) return true;
+    if (!package_source_push(&walk->list->paths, &walk->list->count, &walk->list->capacity,
+                             package_source_copy(relative))) {
+        walk->list->failed = true;
+        return false;
+    }
+    return true;
+}
+
+static void package_source_collect_build_rules(const char *source_root, PackageSourceList *list) {
+    char absolute[NK_MAX_PATH * 2];
+    if (list->failed) return;
+    if (!package_source_absolute(source_root, "mk", absolute, sizeof(absolute))) {
+        list->failed = true;
+        return;
+    }
+    if (!nk_platform_dir_exists(absolute)) return;
+    PackageBuildRuleWalk walk = {source_root, list};
+    if (!nk_platform_list_dir(absolute, package_build_rule_entry, &walk)) list->failed = true;
+}
+
+static int package_source_compare(const void *left, const void *right) {
+    return strcmp(*(const char * const *)left, *(const char * const *)right);
+}
+
+/* source_tree_digest in tools/nk_core/package_cache.py, byte for byte: the
+ * sorted relative paths (code point order, which is UTF-8 byte order), each
+ * followed by NUL, the file's bytes and NUL. */
+static bool package_runtime_source_digest(const char *source_root, char out_hex[65]) {
+    /* RUNTIME_SOURCE_DIRECTORIES and RUNTIME_BUILD_RULE_GLOBS (the Makefile and mk/<name>.mk). */
+    static const char * const source_dirs[] = {"src/rt", "src/core", "src/ui", "third_party/clay",
+                                               "third_party/portable-snippets",
+                                               "third_party/stb", NULL};
+    static const uint8_t nul = 0;
+    PackageSourceList list;
+    char absolute[NK_MAX_PATH * 2];
+    memset(&list, 0, sizeof(list));
+    if (package_source_absolute(source_root, "Makefile", absolute, sizeof(absolute)) &&
+        nk_platform_file_exists(absolute) && !nk_platform_dir_exists(absolute) &&
+        !package_path_is_symlink(absolute) &&
+        !package_source_push(&list.paths, &list.count, &list.capacity,
+                             package_source_copy("Makefile"))) {
+        list.failed = true;
+    }
+    package_source_collect_build_rules(source_root, &list);
+    for (size_t i = 0; source_dirs[i]; i++) {
+        package_source_collect(source_root, source_dirs[i], false, &list);
+    }
+    package_source_collect(source_root, "assets/vfpu", true, &list);
+    bool ok = !list.failed;
+    if (ok && list.count > 1) {
+        qsort(list.paths, list.count, sizeof(char *), package_source_compare);
+    }
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    uint8_t *buffer = ok ? (uint8_t *)malloc(65536u) : NULL;
+    if (!buffer) ok = false;
+    for (size_t i = 0; ok && i < list.count; i++) {
+        FILE *file = NULL;
+        if (!package_source_absolute(source_root, list.paths[i], absolute, sizeof(absolute)) ||
+            (file = manifest_fopen(absolute)) == NULL) {
+            ok = false;
+            break;
+        }
+        nk_sha256_update(&ctx, (const uint8_t *)list.paths[i], strlen(list.paths[i]));
+        nk_sha256_update(&ctx, &nul, 1u);
+        size_t count;
+        while ((count = fread(buffer, 1, 65536u, file)) != 0) {
+            if (manifest_cancelled()) {
+                ok = false;
+                break;
+            }
+            nk_sha256_update(&ctx, buffer, count);
+        }
+        if (ferror(file)) ok = false;
+        fclose(file);
+        nk_sha256_update(&ctx, &nul, 1u);
+    }
+    free(buffer);
+    for (size_t i = 0; i < list.count; i++) free(list.paths[i]);
+    free(list.paths);
+    if (!ok) return false;
+    package_identity_finish(&ctx, out_hex);
+    return true;
+}
+
+bool nk_title_manifest_source_build_identity(const char *source_root,
+                                             NkPackageBuildIdentity *out) {
+    static const char * const tools[] = {
+        "tools/analyze.py", "tools/codegen.py", "tools/title_codegen_plan.py"
+    };
+    char absolute[NK_MAX_PATH * 2];
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!source_root || !*source_root || !nk_platform_dir_exists(source_root)) return false;
+    char *const targets[] = {
+        out->analyzer_sha256, out->codegen_sha256, out->planner_sha256
+    };
+    for (size_t i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+        if (!package_source_absolute(source_root, tools[i], absolute, sizeof(absolute)) ||
+            !nk_platform_file_exists(absolute) || !package_hash_file(absolute, targets[i])) {
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+    }
+    if (!package_runtime_source_digest(source_root, out->runtime_source_digest)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return true;
+}
+
+bool nk_title_manifest_aot_package_build_identity(const char *user_data_root,
+                                                  const char *disc_id,
+                                                  NkPackageBuildIdentity *out) {
+    char normalized[10];
+    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_root[NK_MAX_PATH * 2];
+    char resolved_root[NK_MAX_PATH * 2];
+    char package_path[NK_MAX_PATH * 2];
+    char *text = NULL;
+    size_t length = 0;
+    char error[160] = "";
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!user_data_root || !*user_data_root ||
+        !nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+    snprintf(package_relative, sizeof(package_relative), "packages%c%s",
+             nk_platform_path_separator(), normalized);
+    if (!package_join_path(package_root, sizeof(package_root), user_data_root,
+                           package_relative) ||
+        !nk_platform_dir_exists(package_root) ||
+        !nk_platform_absolute_path(package_root, resolved_root, sizeof(resolved_root)) ||
+        !package_path_is_within(user_data_root, resolved_root) ||
+        !package_direct_file(resolved_root, "package.json", package_path,
+                             sizeof(package_path)) ||
+        !package_read_json(package_path, NK_MANIFEST_MAX_BYTES, NULL, &text, &length,
+                           error, sizeof(error))) return false;
+    JsonNode *package = json_parse(text, length, error, sizeof(error));
+    free(text);
+    if (!package) return false;
+    const JsonNode *cache = obj_get(package, "cache");
+    const JsonNode *key = obj_get(cache, "key");
+    const JsonNode *aot = obj_get(obj_get(key, "aot"), "components");
+    const JsonNode *native = obj_get(obj_get(key, "native"), "components");
+    const JsonNode *options = obj_get(cache, "codegen_options");
+    const char *runtime_source = NULL;
+    const char *analyzer = NULL;
+    const char *codegen = NULL;
+    const char *planner = NULL;
+    bool ok = package->type == JSON_OBJECT &&
+        package_sha256(obj_get(native, "runtime_source_digest"), &runtime_source) &&
+        package_sha256(obj_get(aot, "analyzer_sha256"), &analyzer) &&
+        package_sha256(obj_get(aot, "codegen_sha256"), &codegen) &&
+        package_sha256(obj_get(options, "planner_sha256"), &planner);
+    if (ok) {
+        memcpy(out->runtime_source_digest, runtime_source, 65);
+        memcpy(out->analyzer_sha256, analyzer, 65);
+        memcpy(out->codegen_sha256, codegen, 65);
+        memcpy(out->planner_sha256, planner, 65);
+    }
+    json_free(package);
+    return ok;
+}
+
+bool nk_package_build_identity_equal(const NkPackageBuildIdentity *a,
+                                     const NkPackageBuildIdentity *b) {
+    return a && b &&
+        strcmp(a->runtime_source_digest, b->runtime_source_digest) == 0 &&
+        strcmp(a->analyzer_sha256, b->analyzer_sha256) == 0 &&
+        strcmp(a->codegen_sha256, b->codegen_sha256) == 0 &&
+        strcmp(a->planner_sha256, b->planner_sha256) == 0;
 }

@@ -139,6 +139,25 @@ title intake remains tracked in issue #309.
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 
+### Analysis IR view (advisory)
+
+`tools/analysis_ir.py` turns the CFG report that `codegen.py --cfg-report=<path>` writes into a
+module-wide view (#305): basic blocks with their delay slots, callables, resume entries and
+continuations from codegen's `emitted_ownership_map`, the call graph, cross-references (code edges
+and jump-table candidates) and, per instruction, the guest registers it reads and writes and its
+memory access. An encoding the register table does not name stays `gpr_known: false`; nothing is
+guessed. The IR is a projection, never an input: codegen does not read it, building it leaves the
+report unchanged, and `analysis_ir.py verify` fails unless every function, block and instruction
+owner matches the report it came from (`ANALYSIS_IR_PARITY PASS`).
+
+External annotations (`nakagawa-analysis-annotations-v1`: address, kind, source, evidence class
+and confidence) from Ghidra, decomp.me, manual review, runtime traces or hardware are compared
+with the IR by `analysis_ir.py annotate`, which lists agreements, advisories and disagreements and
+counts disagreements backed by runtime or hardware evidence separately. An annotation never adds,
+removes or renames an analyzer fact. `export-annotations` writes the analyzer's own entries in the
+same format, and importing it back gives only agreements. `explain <address>` prints why a word is
+owned, how control reaches it and what annotations say about it.
+
 ### Native title recognition projection
 
 `python tools/title_manifest.py --print-public-catalog` emits an immutable C99
@@ -208,6 +227,32 @@ These tools run on the development host before the native compiler.
 - **Chunking:** generated functions are split into `<game>_recomp_0.c` through
   `<game>_recomp_N.c`. The count is computed from the discovered functions and
   `FUNCS_PER_CHUNK`; it is not fixed to eight HST chunks.
+- **LLVM IR backend (opt-in, #330):** with `--backend=llvm` (`CODEGEN_BACKEND=llvm`),
+  `codegen_llvm.py` lowers each function it supports to LLVM IR in `<game>_recomp_<n>.ll`
+  beside its C chunk, from the same ownership and transfer rules, and keeps the C body,
+  with the reason recorded, for the rest. [`LLVM_BACKEND.md`](LLVM_BACKEND.md) is the design.
+- **Local register promotion (opt-in, #284):** `codegen.py --promote-registers` keeps the guest
+  GPRs that a run of simple instructions touches in C locals (`_gpr<n>`). A GPR is loaded from
+  `s->r[]` before its first read in the run, and every written local is stored back before each
+  label, control transfer, instruction emitted the legacy way and the end of the body, so
+  dispatch, the interpreter floor, HLE, the scheduler and the stale-code redirect always see the
+  architectural register file. An instruction is promoted only when its translated line touches no
+  other guest state than its GPRs, HI and LO, calls only the guest memory accessors, and neither
+  returns nor jumps (`promoted_line_is_safe`); LLE-guarded accesses, FPU, VFPU, COP0, LL/SC and
+  unaligned accesses stay legacy. A trace build mirrors every promoted write at once
+  (`SR_PROMO_SYNC` in `src/rt/recomp.h`), so `mingw32-make cosim-selftest-promoted` compares the
+  whole cosimulation corpus channel for channel. The win comes from the guest stores: they call
+  runtime code, so without promotion the host compiler reloads `s->r[]` after each one. Generated
+  code built at `-O0` gains nothing, so the option only pays off at `-O1` or above. Codegen prints
+  `CODEGEN_PROMOTION` with the promoted, span, load and write-back counts. Making it the default
+  needs all of these: the promoted cosimulation and the production-smoke and profile-zero routes
+  pass; HST and PAC-MAN CE reach the same route results as the legacy build; HST's guest CPU time
+  per frame (`SR_PERF` `cpu_ms`) improves by at least 5% at its qualified `-O1`; and compile time
+  and peak compiler memory grow by at most 10%. Measured on 2026-10-29 (#284): every route still
+  passes, but on HST at `-O1` the guest time outside the GE fell by only about 1.3% (two runs per
+  build). The software GE takes 80% of guest time on that route, so frames sped up by about 0.25%.
+  Chunk objects grew by 0.03%, and PAC-MAN CE at `-O0` was about 11% slower. The option therefore
+  stays off by default; dropping write-backs of dead locals (liveness) is the next step to measure.
 
 ### Verification tools
 
@@ -552,6 +597,22 @@ runs at the live SP.
 The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
 live transfer with a named `TAIL_TRANSFER_FAULT`.
 
+**Entry splitting.** A body owns the code it reaches from its entry. Straight-line fall-through and
+`j` into another entry already leave through TAIL transfers, but a conditional branch, taken or not
+taken, used to carry the body into the other entry's code and translate a copy of it. In a large
+branch-connected region every entry then holds a copy of the whole region (one title: 6,539
+entries in a region of 1.33 million instructions). A body whose walk exceeds
+`REGION_SPLIT_THRESHOLD` instructions (`tools/codegen.py`, `--region-split-threshold=N|off`)
+instead stops at every other entry. A conditional branch into one records a TAIL transfer to that
+entry's own body after the delay slot (annulled on the not-taken path of a branch-likely), and a
+not-taken successor that is one is a continuation, exactly as straight-line fall-through is. A
+branch back to the body's own start stays a loop edge. Every reader of a body's ownership (the
+emitter, the stale-code records, the LLVM backend's lowering plan) gets the same split answer, and
+the LLVM backend lowers a crossing as the same TAIL transfer. Bodies within the threshold are
+byte-identical to the unsplit output. `mingw32-make cosim-selftest-split` runs the cosimulation
+with every body split (`xing_*` cells), and the split-generator mutants show it catches a crossing
+that drops or misplaces its delay slot, ignores its condition or loses its fall-through.
+
 Some paths still nest:
 
 - Interpreter-to-AOT handoffs go through `dispatch()` and add one dispatch per crossing.
@@ -576,11 +637,13 @@ The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully va
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
 allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
 one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
-that starts a transfer stays blocked in the call while the scheduler's transfer window is open;
-another thread's `sceDmacTryMemcpy` then returns BUSY (`0x80000021`) and its blocking
-`sceDmacMemcpy` waits through the scheduler, as measured on a PSP-3000 (#303). The transfer's
-guest-time duration is unmeasured, so the window carries no time: it closes at the scheduling
-decision after one other thread has run, or at once when no other thread is runnable.
+that starts a channel transfer stays blocked in the call for the transfer's measured duration
+(a timing table by size and by main-RAM/VRAM source and destination, with surcharges when source
+and destination differ modulo 16); meanwhile another thread's `sceDmacTryMemcpy` returns BUSY
+(`0x80000021`) and its blocking `sceDmacMemcpy` queues, and queued callers get the channel in
+arrival order. A body of at most 0x100 bytes whose source and destination share their phase
+modulo 16 bypasses the channel. All of this was measured on a PSP-3000 (#303, `PSP-DMAC-001` and
+`PSP-DMAC-002`); the unmeasured choices are listed above `h_DmacMemcpy` in `src/rt/hle.c`.
 
 ### Scheduler / coroutines
 
@@ -757,6 +820,7 @@ cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/11
 | --- | --- | --- |
 | On-screen keyboard text entry (`src/rt/osk_text_entry.c`) | A native worker thread, Windows input-box route only | It publishes an answer and writes no guest memory. The guest takes the answer only from its own `sceUtilityOsk*` update calls, so a paused guest takes nothing. The pause is also refused while the in-window keyboard is open. |
 | Diagnostic stream drain (`src/rt/debug.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, Windows only, started when stdout or stderr is redirected | Every 50 ms it writes the C runtime's buffered stdout and stderr text to the log. It reads no guest memory and writes nothing the guest reads, so a paused guest observes nothing. |
+| Android output pump (`src/core/nk_platform_posix.c`, [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)) | A native thread, Android only, started by `nk_platform_host_startup` | An app process's stdout and stderr go nowhere on Android, so it copies their text, line by line, to the system log and to the run log. It reads no guest memory and writes nothing the guest reads, so a paused guest observes nothing. |
 | Preemption timer (`src/rt/sched.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, paced runs started by the driver | It sleeps until the earliest timed wait of a thread stronger than the running one runs out, then ends the running slice so the next yield point enters the scheduler. It reads no guest memory and writes only the slice counter, which the runtime thread resets at every switch, so a paused guest observes nothing. |
 | SDL audio output (`src/rt/audio_unavailable.c`) | SDL's audio device thread consumes the bound channel streams | The guest reads only the queue depth, on its own calls. A pause stashes each queue and puts back exactly that depth on resume. If the stash fails, the device is paused, so nothing is consumed (`audio-selftest`). |
 | Audio dump (`SR_AUDIODUMP`, postmix callback) | SDL's audio device thread | It writes the mixed output to a host WAV file and reads no guest memory. |
@@ -765,7 +829,7 @@ cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/11
 | GE rendering and readback (`src/rt/gpu_sdl3vk/ge_gpu.c`) | The host GPU | Results reach guest memory only through the read barrier the runtime thread takes before a guest read or a present. Its timing changes when bytes are copied, never what the guest reads. |
 
 Two source guards in `tools/test_sched_invariants.py` keep this table complete. One fails when a
-native thread creator appears outside the keyboard, diagnostic-stream and scheduler files. The other fails when a host callback
+native thread creator appears outside the keyboard, diagnostic-stream, Android output-pump and scheduler files. The other fails when a host callback
 entry appears that is not listed above: SDL audio, timer, event-watch and dialog callbacks, OS
 thread pools, waits, timers, completion routines, and Media Foundation work queues. Before new
 host work is added, its row must say how a paused guest is kept from observing it.

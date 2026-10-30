@@ -118,3 +118,4 @@
     IMPORT_FUNC "ThreadManForUser", 0x8218B4DD, sceKernelReferGlobalProfiler
     IMPORT_FUNC "ThreadManForUser", 0x912354A7, sceKernelRotateThreadReadyQueue
     IMPORT_FUNC "ThreadManForUser", 0xE1619D7C, sceKernelSysClock2USecWide
+    IMPORT_FUNC "ThreadManForUser", 0x94416130, sceKernelGetThreadmanIdList

@@ -201,6 +201,8 @@ typedef struct {
     SrWaitHandle active_wait;    /* only the currently attached semantic block */
     int      resources_released;  /* libc/reent/callback ownership released exactly once */
     int      stack_released;      /* guest stack reservation returned exactly once */
+    int      module_start;        /* sched_run's module_start thread: deleted when its entry
+                                   * returns (PSP-MODULE-START-001) */
     int      join_waiting;        /* current syscall is waiting for join_target */
     int      join_result_valid;  /* target ended while this waiter was blocked */
     uint32_t join_target;
@@ -217,6 +219,12 @@ typedef struct {
     uint32_t block_nid;           /* NID of that import */
     int      block_start_valid;   /* block_start_us is the start of the current wait */
     uint64_t block_start_us;      /* virtual time the current wait began */
+    /* The last import this thread finished, its return value, and how many times in a row
+     * it returned that value: what names a thread that polls a call forever. */
+    int      last_import_valid;
+    uint32_t last_import_nid;
+    uint32_t last_import_ret;
+    uint32_t last_import_repeats;
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
@@ -609,14 +617,20 @@ uint32_t sched_guest_stack_floor(void) { return sched_guest_stack_floor_above(0u
 /* The HLE user partition (hle.c) installs a check that refuses a stack range it has
  * handed out. A callback rather than a link-time reference: several fixtures link
  * sched.c without hle.c, and with no check installed every range is accepted. */
-typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
-static SchedStackRangeRefusal s_stack_range_refusal;
-void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
+static SrSchedStackRangeRefusal s_stack_range_refusal;
+void sched_set_stack_range_refusal(SrSchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
 
+/* A PSP allocates a thread stack from the high end of the user partition: the highest free
+ * block that holds the request, carved from that block's top. Measured on a PSP-3000
+ * (PSP-THREAD-K0-001, docs/HARDWARE_ORACLE.md): the probe's main thread, created by its
+ * module_start, holds [0x09f80000, 0x09fc0000); the module-start thread's own 256 KiB stack
+ * above it was released when module_start returned, and a new 0x4000-byte thread got
+ * [0x09ffc000, 0x0a000000), the top of that released block, not the space directly below
+ * the main thread. The free list is sorted by address, so the search runs from its end. */
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
     if (!base_out || size == 0u) return 0;
-    for (int i = 0; i < s_stack_free_count; i++) {
+    for (int i = s_stack_free_count - 1; i >= 0; i--) {
         StackRange *range = &s_stack_free[i];
         if (range->size < size) continue;
         uint32_t base = range->base + range->size - size;
@@ -677,6 +691,50 @@ static void stack_range_release(uint32_t base, uint32_t size) {
     stack_ranges_update_top();
 }
 
+/* A High block of the user partition (sceKernelAllocMemoryBlock placement 1). A PSP takes High
+ * blocks and thread stacks from the top of the same user partition, so a High block is carved from
+ * this descending arena: the highest address at which a free range holds it below `ceiling` (the
+ * partition's top), which is the PSP_SMEM_High rule. The partition's refusal applies as for a
+ * stack, so a block never reaches memory the partition has handed out. Returns 1 with the block's
+ * low address in *base_out, 0 when no range fits. */
+int sched_partition_alloc_high(uint32_t size, uint32_t ceiling, uint32_t *base_out) {
+    if (!s_stack_allocator_ready) stack_ranges_reset();
+    if (!base_out || size == 0u) return 0;
+    for (int i = s_stack_free_count - 1; i >= 0; i--) {
+        StackRange *range = &s_stack_free[i];
+        uint32_t end = range->base + range->size;
+        if (end > ceiling) end = ceiling;
+        if (end <= range->base || end - range->base < size) continue;
+        uint32_t base = end - size;
+        if (s_stack_range_refusal && s_stack_range_refusal(base, base + size)) return 0;
+        uint32_t range_end = range->base + range->size;
+        if (base + size < range_end) {
+            /* The block sits below the range's top: keep the part above it as its own range. */
+            if (s_stack_free_count >= SR_STACK_RANGE_MAX) return 0;
+            for (int j = s_stack_free_count; j > i + 1; j--) s_stack_free[j] = s_stack_free[j - 1];
+            s_stack_free[i + 1] = (StackRange){base + size, range_end - (base + size)};
+            s_stack_free_count++;
+            range = &s_stack_free[i];
+        }
+        range->size = base - range->base;
+        if (range->size == 0u) {
+            for (int j = i + 1; j < s_stack_free_count; j++)
+                s_stack_free[j - 1] = s_stack_free[j];
+            s_stack_free_count--;
+        }
+        *base_out = base;
+        stack_ranges_update_top();
+        return 1;
+    }
+    return 0;
+}
+
+/* Return a High block to the arena it came from. */
+void sched_partition_release_high(uint32_t base, uint32_t size) { stack_range_release(base, size); }
+
+/* Live High blocks are not thread stacks, so sched_guest_stack_floor_above does not see them; the
+ * partition adds its own (hle.c user_partition_top). */
+
 /* sched_init: one-shot initializer for the cooperative scheduler.
  *
  * SEMANTICS: This function is called ONCE at process startup, before any guest
@@ -704,6 +762,7 @@ static void stack_range_release(uint32_t base, uint32_t size) {
 static uint32_t sr_rt_current_pc(void);
 static uint32_t sr_rt_current_uid(void);
 static void sched_transfer_reset(void);
+static uint64_t sched_transfer_wake_deadline(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
@@ -1045,6 +1104,63 @@ static int sched_guest_hexdump(uint32_t addr, char *out, size_t out_sz) {
 
 /* Diagnostic: dump every thread's state, entry, saved PC, and what it waits on. Reveals a thread
  * blocked on a sema/event that is never signalled (a likely scene-transition gate). */
+/* The watchdog dumps name what a stalled thread is doing. The kernel objects and the NID
+ * names live in hle.c, which installs these when it initializes; without them (the white-box
+ * scheduler selftest) the dumps keep only the scheduler's own fields. */
+static SrSchedWaitDescriber s_wait_describer;
+static SrSchedNidNamer s_nid_namer;
+
+void sched_set_watchdog_describers(SrSchedWaitDescriber describe, SrSchedNidNamer name) {
+    s_wait_describer = describe;
+    s_nid_namer = name;
+}
+
+/* Called by sr_syscall when an import returns on the current thread. */
+void sched_note_import_return(uint32_t nid, uint32_t ret) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return;
+    TCB *t = &s_tcb[s_cur];
+    if (t->last_import_valid && t->last_import_nid == nid && t->last_import_ret == ret) {
+        if (t->last_import_repeats != UINT32_MAX) t->last_import_repeats++;
+    } else {
+        t->last_import_valid = 1;
+        t->last_import_nid = nid;
+        t->last_import_ret = ret;
+        t->last_import_repeats = 1u;
+    }
+}
+
+static const char *sched_nid_label(uint32_t nid, char *buf, size_t cap) {
+    const char *name = s_nid_namer ? s_nid_namer(nid) : NULL;
+    if (name) return name;
+    snprintf(buf, cap, "nid 0x%08x", nid);
+    return buf;
+}
+
+/* One indented line under a thread's dump row: the object an object wait is on, the import
+ * the thread blocked in, and the last import it finished. Printed only when there is
+ * something to say, so the row itself keeps its format. */
+static void sched_dump_thread_detail(const TCB *t) {
+    char obj[160] = "", blocked[96] = "", last[128] = "", nb[24], nl[24];
+    if (t->state == TH_WAIT_OBJ && !t->join_waiting && !t->sleeping &&
+        t->wait_obj != CTRL_WAIT_OBJ && t->wait_obj != VBLANK_WAIT_OBJ) {
+        char what[128];
+        if (s_wait_describer && s_wait_describer(t->uid, t->wait_obj, what, sizeof what))
+            snprintf(obj, sizeof obj, " on %s", what);
+        else
+            snprintf(obj, sizeof obj, " on uid 0x%x (no kernel object has this uid)", t->wait_obj);
+    }
+    if ((t->state == TH_WAIT_OBJ || t->state == TH_WAIT_DELAY) && t->has_block_nid)
+        snprintf(blocked, sizeof blocked, " in %s", sched_nid_label(t->block_nid, nb, sizeof nb));
+    if (t->last_import_valid)
+        snprintf(last, sizeof last, " last import %s -> 0x%08x (x%u)",
+                 sched_nid_label(t->last_import_nid, nl, sizeof nl), t->last_import_ret,
+                 t->last_import_repeats);
+    if (obj[0] || blocked[0] || last[0])
+        fprintf(stderr, "    uid=0x%x waits%s%s%s;%s\n", t->uid, obj[0] || blocked[0] ? "" : " -",
+                obj, blocked, last[0] ? last : " no import returned yet");
+    (void)nb; (void)nl;
+}
+
 void sched_dump_threads(void) {
     static const char *st[] = { "DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ" };
     fprintf(stderr, "--- threads (%d) cur=%d tick=%llu ---\n", s_ntcb, s_cur, (unsigned long long)s_tick);
@@ -1114,6 +1230,7 @@ void sched_dump_threads(void) {
                 t->wait_obj, (unsigned long long)t->wake,
                 why, deadline, t->is_cb_wait, t->wakeups,
                 t->join_waiting ? t->join_target : 0u);
+        sched_dump_thread_detail(t);
     }
 }
 
@@ -1253,8 +1370,6 @@ int sched_wait_vblank(void) {
  * the next start edge is observed. WaitVblank keeps its measured in-window fast
  * return, but services a callback already pending for the caller first. */
 int sched_wait_vblank_cb(int wait_start) {
-    extern int sr_thread_has_pending_callbacks(uint32_t thread_uid);
-    extern int sr_thread_dispatch_callbacks(void);
     if (s_cur < 0 || s_cur >= s_ntcb) {
         /* No current thread means no waiter exists; report it instead of a
          * synthesized "waited and returned 0". Callers map this to CAN_NOT_WAIT. */
@@ -1640,7 +1755,6 @@ static void vblank_clock_reset(void) { s_last_vblank_ns = host_now_ns(); }
 static uint64_t s_host_pump_ns;
 static int s_host_pump_valid;
 static void sched_pump_host_window(void) {
-    extern void gui_pump(void);
     if (!gui_on()) return;
     uint64_t now = host_now_ns();
     if (s_host_pump_valid && now - s_host_pump_ns < SCHED_HOST_PUMP_PERIOD_NS) return;
@@ -1716,7 +1830,6 @@ static void deliver_vblank(void) {
      * frames/s before (1.84x), 27.75 after. */
 
     static unsigned long long vb = 0;
-    extern uint32_t g_frame_prims;
     if (sched_vblog_on() && (++vb % 1) == 0) {
         uint32_t h0 = 0u, a0 = 0u;
         int first = sr_vblank_subintr(0u, &h0, &a0);
@@ -1790,7 +1903,6 @@ static void deliver_vblank(void) {
             fflush(stderr);
         }
     }
-    extern int sr_vblank_dispatch_registered(void);
     /* Deliver every active callback slot in stable slot/registration order.  A callback
      * may delete itself or another slot; the HLE walker snapshots each slot immediately
      * before dispatch, so later slots observe that change on this same VBLANK. */
@@ -1815,7 +1927,6 @@ static void deliver_vblank(void) {
     /* HLE advances the scripted input segment before it latches this VBLANK's
      * pad sample. Check the pause script after that work so a same-VBLANK press
      * can be deferred until the guest reads it and queues its audio stimulus. */
-    extern void sr_vblank_tick(void);
     sr_vblank_tick();
     sched_pause_script_maybe_request();
 }
@@ -2129,6 +2240,8 @@ static SchedIdleState sched_classify_idle(void) {
         if (ge < st.soonest) st.soonest = ge;
         uint64_t vtimer = sched_vtimer_wake_deadline();
         if (vtimer < st.soonest) st.soonest = vtimer;
+        uint64_t xfer = sched_transfer_wake_deadline();
+        if (xfer < st.soonest) st.soonest = xfer;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2272,7 +2385,12 @@ static void coro_body(void *param) {
          * re-enters the body -- but a restart recreates the coroutine, so that resume path
          * is defensive only. */
         if (s_cur >= 0 && &s_tcb[s_cur] == t) {
-            sched_exit_current((int32_t)s_cpu->r[2]);
+            /* The kernel runs a module's module_start in a thread of its own and deletes
+             * that thread, freeing its stack, once module_start returns: measured on a
+             * PSP-3000 (6.61, PSP-MODULE-START-001), where the returned thread's UID answers
+             * UNKNOWN_THID and the user partition gains exactly its 256 KiB stack. */
+            if (t->module_start) sched_exit_current_delete((int32_t)s_cpu->r[2]);
+            else sched_exit_current((int32_t)s_cpu->r[2]);
         } else {
             fprintf(stderr, "coro_body: uid=0x%x returned outside its own schedule slot "
                     "(s_cur=%d) -- parking DORMANT without exit bookkeeping\n", t->uid, s_cur);
@@ -2363,6 +2481,16 @@ uint32_t sched_thread_stack_free_size(uint32_t uid) {
     uint32_t free_bytes = 0;
     while (free_bytes < span && MEM_R8(first + free_bytes) == SCHED_STACK_FILL_BYTE) free_bytes++;
     return free_bytes;
+}
+
+/* The calling thread's user-visible stack: its low end and size, the same range
+ * sched_thread_stack_free_size counts in. Returns 0 when no guest thread is current. */
+int sched_current_thread_stack_range(uint32_t *base_out, uint32_t *size_out) {
+    TCB *t = tcb_by_uid(resolve_thread_uid(0u));
+    if (!t || !t->stack_size) return 0;
+    if (base_out) *base_out = t->stack_base;
+    if (size_out) *size_out = t->stack_size;
+    return 1;
 }
 
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
@@ -2653,40 +2781,55 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     return 0;
 }
 
-/* ---- device transfer window (#303) --------------------------------------------------
- * sceDmacMemcpy and sceDmacTryMemcpy block their caller for the whole transfer, and while
- * it is pending another thread's Try returns BUSY and its blocking call waits for it
- * (PSP-3000 / 6.6.1, 64/64 for each combination; tools/psp_oracle/manifest.json
- * PSP-DMAC-001). The runtime copies at once, and no guest-time duration was measured
- * (the probe recorded caller wall time only), so this window carries NO time. It is an
- * explicit, UNMEASURED ordering window:
+/* ---- device transfer channel (#303) -------------------------------------------------
+ * sceDmacMemcpy and sceDmacTryMemcpy share one DMA channel. Measured on a PSP-3000 /
+ * 6.6.1 (tools/psp_oracle/manifest.json PSP-DMAC-001 and PSP-DMAC-002):
  *
- *   - it opens when the current thread starts a transfer (sched_transfer_begin);
- *   - it stays open through the next scheduling decision that hands the CPU to another
- *     thread, so exactly one dispatch of another runnable thread sees it pending;
- *   - it closes at the decision after that dispatch, or at once when no other thread is
- *     runnable, so a lone caller waits for nothing but its own transfer (never for a
- *     VBLANK or a timer).
+ *   - the caller of a channel transfer stays blocked for the transfer's duration, which
+ *     the device HLE computes from the measured timing table and passes to begin;
+ *   - while it is pending another thread's Try is refused (the HLE returns BUSY) and its
+ *     blocking call waits;
+ *   - callers waiting for the channel are served in arrival order, not by priority (two
+ *     queued callers, 16/16 in both priority orders);
+ *   - the window ends after its duration in guest time, not at a scheduling decision: a
+ *     weaker thread polling Try saw the channel busy until the first call returned.
  *
- * Closing it wakes every thread blocked on the transfer's object: the owner and any
- * blocking caller queued behind it. The scheduler owns only who and until when; the
- * device HLE owns the transfer itself. One window at a time: the two APIs share one
- * modelled channel. */
-static uint32_t s_xfer_obj;        /* the pending transfer's wait object; 0 = none */
-static uint32_t s_xfer_owner_uid;  /* the thread that started it */
-static int      s_xfer_dispatched; /* another thread was selected while it was open */
+ * Model: one window at a time. begin opens it for the current thread with a guest-time
+ * deadline. At the deadline (checked at every scheduling decision, and a wake source
+ * while it is open) the owner is woken and the channel passes to the oldest queued
+ * waiter that is still alive, which holds it RESERVED until it begins its own transfer;
+ * a reservation also counts as pending, so a Try in that gap is refused too. The
+ * scheduler owns who and until when; the device HLE owns the transfer itself. */
+static uint32_t s_xfer_obj;          /* the channel's wait object; 0 = idle */
+static uint32_t s_xfer_owner_uid;    /* the thread that holds the channel; 0 = queue only */
+static int      s_xfer_reserved;     /* handed to owner, which has not begun its transfer */
+static uint64_t s_xfer_deadline;     /* guest us at which an open window ends */
+static uint32_t s_xfer_queue[MAXTHREADS];   /* waiting threads, oldest first */
+static int      s_xfer_queued;
 
 static void sched_transfer_reset(void) {
     s_xfer_obj = 0u;
     s_xfer_owner_uid = 0u;
-    s_xfer_dispatched = 0;
+    s_xfer_reserved = 0;
+    s_xfer_deadline = SCHED_WAIT_FOREVER;
+    s_xfer_queued = 0;
 }
 
-int sched_transfer_begin(uint32_t obj) {
-    if (obj == 0u || s_xfer_obj != 0u || s_cur < 0) return 0;
+static int sched_transfer_thread_live(uint32_t uid) {
+    TCB *t = tcb_by_uid(uid);
+    return t && t->state != TH_DORMANT;
+}
+
+int sched_transfer_begin(uint32_t obj, uint32_t duration_us) {
+    if (obj == 0u || s_cur < 0) return 0;
+    const uint32_t self = s_tcb[s_cur].uid;
+    const int mine = s_xfer_obj == obj && s_xfer_reserved && s_xfer_owner_uid == self;
+    if (!mine && (s_xfer_obj != 0u || s_xfer_queued != 0)) return 0;
+    vtime_refresh();
     s_xfer_obj = obj;
-    s_xfer_owner_uid = s_tcb[s_cur].uid;
-    s_xfer_dispatched = 0;
+    s_xfer_owner_uid = self;
+    s_xfer_reserved = 0;
+    s_xfer_deadline = scheduler_deadline_after(duration_us);
     return 1;
 }
 
@@ -2696,19 +2839,64 @@ int sched_transfer_pending(uint32_t obj, uint32_t *owner_uid) {
     return 1;
 }
 
-/* Part of every scheduling decision, like an expired deadline: closing a window that
- * has run its course restores who is runnable and decides nothing about who runs. */
+int sched_transfer_granted(uint32_t obj) {
+    return obj != 0u && s_xfer_obj == obj && s_xfer_reserved && s_cur >= 0 &&
+           s_xfer_owner_uid == s_tcb[s_cur].uid;
+}
+
+int sched_transfer_enqueue(uint32_t obj) {
+    if (obj == 0u || s_cur < 0 || (s_xfer_obj != 0u && s_xfer_obj != obj)) return 0;
+    const uint32_t self = s_tcb[s_cur].uid;
+    for (int i = 0; i < s_xfer_queued; i++)
+        if (s_xfer_queue[i] == self) return 1;
+    if (s_xfer_queued >= MAXTHREADS) return 0;
+    if (s_xfer_obj == 0u) {          /* nothing holds the channel: hand it over at once */
+        s_xfer_obj = obj;
+        s_xfer_owner_uid = self;
+        s_xfer_reserved = 1;
+        s_xfer_deadline = SCHED_WAIT_FOREVER;
+        return 1;
+    }
+    s_xfer_queue[s_xfer_queued++] = self;
+    return 1;
+}
+
+/* The guest-us deadline of the open window, a wake source while one is open. */
+static uint64_t sched_transfer_wake_deadline(void) {
+    return (s_xfer_obj != 0u && !s_xfer_reserved) ? s_xfer_deadline : SCHED_WAIT_FOREVER;
+}
+
+/* Hand the channel to the oldest queued waiter still alive, or release it. */
+static void sched_transfer_hand_off(void) {
+    const uint32_t obj = s_xfer_obj;
+    while (s_xfer_queued > 0) {
+        const uint32_t next = s_xfer_queue[0];
+        memmove(&s_xfer_queue[0], &s_xfer_queue[1],
+                (size_t)(s_xfer_queued - 1) * sizeof(s_xfer_queue[0]));
+        s_xfer_queued--;
+        if (!sched_transfer_thread_live(next)) continue;
+        s_xfer_owner_uid = next;
+        s_xfer_reserved = 1;
+        s_xfer_deadline = SCHED_WAIT_FOREVER;
+        (void)sched_wake_one_object_waiter(obj, next);
+        return;
+    }
+    sched_transfer_reset();
+}
+
+/* Part of every scheduling decision, like an expired deadline: an open window whose
+ * deadline has passed ends (its owner is woken) and the channel passes on; a reservation
+ * whose holder is gone passes on too. Restores who is runnable; decides nothing about who
+ * runs. */
 static void sched_transfer_window_step(void) {
     if (s_xfer_obj == 0u) return;
-    if (!s_xfer_dispatched) {
-        for (int i = 0; i < s_ntcb; i++)
-            if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
-                s_tcb[i].uid != s_xfer_owner_uid)
-                return;   /* another runnable thread gets the CPU first */
+    if (s_xfer_reserved) {
+        if (!sched_transfer_thread_live(s_xfer_owner_uid)) sched_transfer_hand_off();
+        return;
     }
-    const uint32_t obj = s_xfer_obj;
-    sched_transfer_reset();
-    sched_wake(obj);
+    if (s_vtime_us < s_xfer_deadline) return;
+    (void)sched_wake_one_object_waiter(s_xfer_obj, s_xfer_owner_uid);
+    sched_transfer_hand_off();
 }
 
 /* A timed wait whose deadline has passed -- an elapsed sceKernelDelayThread, or a timed
@@ -2769,6 +2957,8 @@ static void sched_idle_wait(void) {
         soonest = sched_ge_wake_deadline();
     if (any_waiting && sched_vtimer_wake_deadline() < soonest)
         soonest = sched_vtimer_wake_deadline();
+    if (any_waiting && sched_transfer_wake_deadline() < soonest)
+        soonest = sched_transfer_wake_deadline();
     scheduler_progress_time();
     if (s_pace_on && soonest_runnable != SCHED_WAIT_FOREVER && soonest_runnable <= s_vtime_us)
         return;
@@ -2842,7 +3032,6 @@ static int pick_next(void) {
         int i = (start + step) % s_ntcb;
         if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
-            if (s_xfer_obj != 0u && s_tcb[i].uid != s_xfer_owner_uid) s_xfer_dispatched = 1;
             /* A rotation at this priority is consumed by this selection. */
             for (int j = 0; j < s_ntcb; j++)
                 if (s_tcb[j].priority == best_pri) s_tcb[j].rot_head = 0;
@@ -3237,6 +3426,11 @@ void sr_yield(CpuState *s) {
                 uint64_t delta = vtimer_at - s_vtime_us;
                 if (adv == 0 || delta < adv) adv = delta;
             }
+            uint64_t xfer_at = sched_transfer_wake_deadline();
+            if (xfer_at != SCHED_WAIT_FOREVER && xfer_at > s_vtime_us) {
+                uint64_t delta = xfer_at - s_vtime_us;
+                if (adv == 0 || delta < adv) adv = delta;
+            }
             scheduler_add_time(adv);
         }
         scheduler_latch_due_events();
@@ -3272,6 +3466,7 @@ void sr_yield(CpuState *s) {
                         s_tcb[i].priority, s_tcb[i].saved.pc, s_tcb[i].saved.r[31],
                         s_tcb[i].saved.r[19], s_tcb[i].saved.r[2],
                         s_tcb[i].wait_obj, s_tcb[i].wakeups);
+            for (int i = 0; i < s_ntcb; i++) sched_dump_thread_detail(&s_tcb[i]);
             fflush(stderr);
             }
         }
@@ -3643,6 +3838,24 @@ void sched_set_guest_process_gp(uint32_t gp) {
     if (s_cpu) s_cpu->r[28] = gp;
 }
 
+/* The module-start thread's parameters. Until a module record says otherwise they are the
+ * runtime's historical root-thread values: priority 32, the default stack, attribute 0, no name
+ * and the driver-seeded $gp. */
+static int s_module_start_priority = 32;
+static uint32_t s_module_start_stack_size = 0u;
+static uint32_t s_module_start_attr = 0u;
+static const char *s_module_start_name = NULL;
+static uint32_t s_module_start_gp = 0u;
+
+void sched_set_module_start_thread(int priority, uint32_t stack_size, uint32_t attr,
+                                   const char *name, uint32_t gp) {
+    s_module_start_priority = priority;
+    s_module_start_stack_size = stack_size;
+    s_module_start_attr = attr;
+    s_module_start_name = name;
+    s_module_start_gp = gp;
+}
+
 void sched_wait_cancel_object(uint32_t object, uint32_t result) {
     for (WaitInvocation *w = s_wait_invocations; w; w = w->next) {
         if (w->object != object) continue;
@@ -3946,8 +4159,6 @@ void sched_thread_sleep_cb(void) {
     }
     t->sleeping = 1;
     while (t->sleeping) {
-        extern int sr_thread_has_pending_callbacks(uint32_t);
-        extern int sr_thread_dispatch_callbacks(void);
         /* A wakeup delivered while this thread was dispatching callbacks (below)
          * cannot take the sched_thread_wakeup fast path -- state is not yet
          * TH_WAIT_OBJ during dispatch -- so it banks into t->wakeups. Consume a
@@ -4932,11 +5143,16 @@ static int sched_pause_run(void) {
  * resuming the highest-priority ready thread until none remain runnable. */
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     sched_pause_script_load();
-    uint32_t uid = sched_create_thread(entry, 32, 0);
+    uint32_t uid = sched_create_thread_ex(entry, s_module_start_priority,
+                                          s_module_start_stack_size, s_module_start_attr,
+                                          s_module_start_name);
     TCB *t0 = tcb_by_uid(uid);
+    t0->module_start = 1;
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
-     * -- rather than the synthetic thread stack. */
+     * -- rather than the synthetic thread stack. With no seeded $gp it starts with the
+     * module's own, as the module manager sets it before creating the thread. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
+    if (!t0->saved.r[28] && s_module_start_gp) t0->saved.r[28] = t0->gp_init = s_module_start_gp;
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
     sched_start_thread(uid, arglen, argp);
 
@@ -5058,7 +5274,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * host whose page file or address space is constrained, so sr_coro_create may
              * return NULL. Switching to a NULL coroutine would crash, so a failure is reported
              * and the run aborts: a thread that never started cannot be recovered. */
-            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_CORO_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",
@@ -5070,7 +5286,6 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * direct-call host-stack window could still describe (#855, recomp.h). */
             sr_host_stack_window_clear();
         }
-        extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
         sr_rt_phase = t->rt_phase;
         sr_import_active = t->import_active;

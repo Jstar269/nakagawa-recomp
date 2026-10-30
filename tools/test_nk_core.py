@@ -2167,6 +2167,31 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual([item.name for item in self.temp_dir.iterdir()], [path.name])
         self.assertEqual(GameLibrary.load(path).count(), 1)
 
+    def test_save_never_replaces_a_library_a_newer_player_wrote(self) -> None:
+        # Rewriting a newer file as schema 1 would drop whatever the newer schema
+        # added; the native writer refuses it the same way (nk_user_data_schema.h).
+        path = self._write("library.json", '{"schema_version": 2, "games": [], "later": 1}')
+        before = path.read_bytes()
+        lib = GameLibrary(storage_file=path)
+        lib.add_or_update_game(LibraryGameRecord(
+            disc_id="TEST80002", title_name="Synthetic", iso_path="synthetic.iso",
+        ))
+        with self.assertRaisesRegex(ValueError, "schema_version 2 was written by a newer"):
+            lib.save()
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual([item.name for item in self.temp_dir.iterdir()], [path.name])
+
+    def test_v001_player_library_reads_through_the_cli_route(self) -> None:
+        # fixtures/user_data/v0.0.1/library.json is what the v0.0.1 player wrote.
+        fixture = REPO_ROOT / "fixtures" / "user_data" / "v0.0.1" / "library.json"
+        shutil.copyfile(fixture, self.temp_dir / "library.json")
+        payload = nk_cli._read_library_json(self.temp_dir / "library.json")
+        self.assertEqual(payload["schema_version"], 1)
+        entry = nk_cli._load_library_entry(self.temp_dir, "TEST80001")
+        self.assertEqual(entry["selected_executable"], "EBOOT.BIN")
+        self.assertEqual(entry["boot_executable"], "BOOT.BIN")
+        self.assertEqual(entry["title_id"], "synthetic_one")
+
     def test_library_target_with_tmp_suffix_is_preserved(self) -> None:
         path = self.temp_dir / "library.tmp"
         lib = GameLibrary(storage_file=path)

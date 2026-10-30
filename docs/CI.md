@@ -799,7 +799,12 @@ the head, which replaces an older success).
 The intended producers are `CI required` and `Hygiene and security` from `ci.yml`, `OSV
 Vulnerability Scan` from `osv-scanner.yml`, `dependency-review` from `dependency-review.yml`
 (all `pull_request`), and the provenance attestation from `provenance-attestation.yml`
-(`pull_request_target`). A run still in progress gives `pending`. The protected `tools/`
+(`pull_request_target`). A run still in progress gives `pending`. While any producer has
+no run at the head yet, or its newest run is unfinished, the verifier reads only the head's
+workflow runs and posts `pending`. The full read, about a dozen API calls, waits for the
+last producer to finish. Running it on every completion exhausted the repository's
+`GITHUB_TOKEN` rate limit, and Trusted CodeQL's upload then failed. Label events are read
+only when the `ci-change-approved` label is on the pull request. The protected `tools/`
 list is derived on each run from the default branch's workflows (a path named outside a
 comment line), so it follows the workflows as they change.
 
@@ -960,7 +965,10 @@ developer runs locally, without private inputs:
   against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
   as an artifact, so the repository stores no generated executable (#1100) and the
   Windows runner still executes the whole route; where PSPDEV is installed, the
-  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`.
+  The same job builds Nakagawa Font Copy (`src/psp_companion/Makefile`), the PSP app
+  behind the player's font import, through its user-mode import gate; nothing from
+  that build is uploaded. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

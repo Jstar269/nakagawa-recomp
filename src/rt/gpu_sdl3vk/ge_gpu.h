@@ -39,12 +39,18 @@ int  gegpu_init(void);
  * Safe to call when idle/uninitialized. */
 void gegpu_flush(const char *reason);
 
-/* Present the framebuffer at fbaddr straight from its GPU image. Returns 1 when shown,
- * 0 when the user closed the window, -1 when no GPU-valid target owns the address (not
- * GPU-resident, e.g. CPU-written movie frames) — the caller should convert guest VRAM instead.
+/* Present the framebuffer at fbaddr straight from its GPU image. The result is one of:
+ * GEGPU_PRESENT_SHOWN: the frame is on screen.
+ * GEGPU_PRESENT_WINDOW_CLOSED: the user closed the window.
+ * GEGPU_PRESENT_NOT_RESIDENT: no GPU-valid target owns the address (e.g. CPU-written movie
+ *   frames); the caller should convert guest VRAM instead.
  * GEGPU_PRESENT_TARGET_FAILED: a GPU-valid target exists, but preparing or presenting it failed,
- * so its newest pixels may exist only in the GPU image. The caller must make guest VRAM current
- * with gegpu_sync_guest_fb() before converting it, or decline the frame. */
+ *   so its newest pixels may exist only in the GPU image. The caller must make guest VRAM current
+ *   with gegpu_sync_guest_fb() before converting it, or decline the frame.
+ * SHOWN and WINDOW_CLOSED keep the values sdl3vk_present_image_ex() returns for them. */
+#define GEGPU_PRESENT_SHOWN 1
+#define GEGPU_PRESENT_WINDOW_CLOSED 0
+#define GEGPU_PRESENT_NOT_RESIDENT (-1)
 #define GEGPU_PRESENT_TARGET_FAILED (-2)
 int  gegpu_present(unsigned int fbaddr, int fmt, unsigned int stride);
 int  gegpu_capture_materialize(void);
@@ -178,6 +184,13 @@ typedef struct GeGpuCpuProfileStats {
     unsigned long long append_merges;
 } GeGpuCpuProfileStats;
 
+/* Why a primitive left the Vulkan batch model for ge.c's software rasterizer. */
+enum {
+    GEGPU_FALLBACK_STENCIL, GEGPU_FALLBACK_COLOR_TEST, GEGPU_FALLBACK_LOGIC_OP,
+    GEGPU_FALLBACK_WRITE_MASK, GEGPU_FALLBACK_RAM_FB, GEGPU_FALLBACK_WIDE_STRIDE,
+    GEGPU_FALLBACK_MIPS, GEGPU_FALLBACK_LINE, GEGPU_FALLBACK_POINT, GEGPU_FALLBACK_REASONS
+};
+
 typedef struct GeGpuReplayStats {
     unsigned long long queue_submits;
     unsigned long long render_submits;
@@ -186,6 +199,18 @@ typedef struct GeGpuReplayStats {
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
     unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
+    /* Primitives drawn by ge.c's software rasterizer inside the GPU path, and the
+     * fallbacks that took a GPU-valid colour target back to guest VRAM (a synchronous
+     * colour and depth readback each), by reason: GEGPU_FALLBACK_*. */
+    unsigned long long fallback_prims;
+    unsigned long long fallback_readbacks[9];
+    /* Stencil primitives that started a new batch because their box met the batch's
+     * earlier primitives and the state reads what it writes (a snapshot copy between). */
+    unsigned long long stencil_splits;
+    /* CPU writes into resident targets: each one noted, and the groups applied to an image
+     * when the GE next used the target (one or more patch uploads per group). */
+    unsigned long long cpu_write_notes;
+    unsigned long long cpu_write_syncs;
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;

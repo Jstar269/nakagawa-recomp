@@ -185,7 +185,7 @@ class RecorderBundleTests(unittest.TestCase):
         return json.loads(raw), raw, run_result.stderr
 
     def test_named_refusals_from_the_c_recorder_are_events_until_the_real_terminal(self):
-        """Schema 6 written by the production C recorder: a refusal is counted, then the end wins."""
+        """Schema 7 written by the production C recorder: a refusal is counted, then the end wins."""
         refusal_then_fatal = (
             '#include "flight_recorder.h"\n'
             "\n"
@@ -220,7 +220,7 @@ class RecorderBundleTests(unittest.TestCase):
                 Path(tmp), "refusal_exit", identity, source=refusal_then_exit,
                 classes="unsupported", limit=8,
             )
-        self.assertEqual(fatal_bundle["schema_version"], 6)
+        self.assertEqual(fatal_bundle["schema_version"], 7)
         # The recorder links without the scheduler here: no thread source, an empty block.
         self.assertEqual(fatal_bundle["threads"], [])
         self.assertEqual(fatal_bundle["terminal"]["reason"], "fatal")
@@ -249,7 +249,7 @@ class RecorderBundleTests(unittest.TestCase):
                 ],
             )
         build = bundle["build"]
-        self.assertEqual(bundle["schema_version"], 6)
+        self.assertEqual(bundle["schema_version"], 7)
         self.assertEqual(bundle["threads"], [])
         self.assertEqual(build["source_date_epoch"], int(FAKE_EPOCH))
         self.assertEqual(build["build_id"], FAKE_COMMIT)
@@ -579,6 +579,300 @@ int main(void) {
             self.assertIn("DIVERGENCE: sequence 4", result.stdout)
             self.assertIn('"arg1":4369', result.stdout)
             self.assertIn('"arg1":8738', result.stdout)
+
+
+# ---- Schema 7 trigger modes and the watch class (#320, folded from #1433) ----
+#
+# One source-owned harness drives the production recorder through the same entry points the
+# runtime calls (HLE import/arguments/return, sr_flight_record, sr_watch_store, sr_flight_fatal,
+# sr_flight_exit). argv[1] picks the scenario; the environment arms SR_FLIGHT, SR_FLIGHT_TRIGGER
+# and SR_WATCH exactly as a player run would.
+
+TRIGGER_HARNESS = r'''#include "flight_recorder.h"
+
+#include <string.h>
+
+#define PC_B 0x08804010u
+#define PC_A (PC_B - 8u) /* A's return address is PC_B: the pc mode must not match an ra */
+#ifdef SR_TEST_INJECT_DIVERGENCE
+#define FIRST_ARGUMENT 0x99u
+#else
+#define FIRST_ARGUMENT 0x01u
+#endif
+
+static void hle(uint32_t nid, uint32_t pc, uint32_t argument, uint32_t result) {
+    uint64_t sequence = sr_flight_hle_import(nid, 0x10u, argument, pc, pc + 8u);
+    sr_flight_hle_arguments(sequence, argument, 2u, 3u, 4u);
+    sr_flight_hle_return(sequence, result);
+}
+
+static void pick(uint32_t uid) {
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK, uid, uid, 0u, 0u);
+}
+
+static void block(uint32_t uid) {
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, uid, uid, 0u, 0u);
+}
+
+static void draw(uint32_t list, uint32_t vertices) {
+    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW, list, list + 4u * vertices, 3u,
+                     vertices);
+}
+
+int main(int argc, char **argv) {
+    const char *scenario = argc > 1 ? argv[1] : "";
+    sr_flight_init();
+    if (strcmp(scenario, "pc") == 0) {
+        pick(0x10u);
+        hle(0x12345678u, PC_A, FIRST_ARGUMENT, 0u);
+        pick(0x11u);
+        hle(0x23456789u, PC_B, 7u, 0x80000000u);
+        hle(0x23456789u, PC_B, 8u, 0u);
+        pick(0x12u);
+    } else if (strcmp(scenario, "ge-draw") == 0) {
+        sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE, 0x08900000u, 0u, 1u, 0u);
+        draw(0x08900000u, 3u);
+        draw(0x08900000u, 4u);
+        draw(0x08900000u, 5u);
+        sr_flight_record(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF,
+                         0x04000000u, 3u, 512u, 1u);
+    } else if (strcmp(scenario, "watch") == 0) {
+        sr_watch_store(0x08800100u, 0x08a00000u, 0x11223344u, 4u); /* first write */
+        sr_watch_store(0x08800104u, 0x08a00000u, 0x11223344u, 4u); /* same bytes: nothing */
+        sr_watch_store(0x08800108u, 0x08a00010u, 0x55u, 1u);       /* outside the range */
+        sr_watch_store(0x0880010cu, 0x08a00002u, 0x99u, 1u);       /* 0x22 -> 0x99 */
+        sr_watch_store(0x08800110u, 0x08a00006u, 0xaabbccddu, 4u); /* straddles the end */
+    } else if (strcmp(scenario, "checkpoint") == 0) {
+        for (uint32_t uid = 1u; uid <= 4u; ++uid) {
+            pick(uid);
+            block(uid);
+        }
+    } else if (strcmp(scenario, "checkpoint-fatal") == 0) {
+        pick(1u);
+        pick(2u);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08800200u, 0x0cu, 0u);
+        pick(3u);
+    } else {
+        return 2;
+    }
+    sr_flight_exit(0u);
+    return 0;
+}
+'''
+
+TRIGGER_PC_A = 0x08804008
+TRIGGER_PC_B = 0x08804010
+
+
+@requires_compiler
+class RecorderTriggerModeTests(unittest.TestCase):
+    """Each SR_FLIGHT_TRIGGER mode fires exactly at its event in a C-recorder bundle."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._scratch = scratch_dir.TemporaryDirectory()
+        cls.tmp = Path(cls._scratch.name)
+        cls.executables = {}
+        for name, defines in (("baseline", []), ("injected", ["-DSR_TEST_INJECT_DIVERGENCE"])):
+            source = cls.tmp / "flight_trigger_fixture.c"
+            source.write_text(TRIGGER_HARNESS, encoding="utf-8")
+            executable = cls.tmp / f"trigger_{name}{'.exe' if os.name == 'nt' else ''}"
+            result = subprocess.run(
+                [COMPILER, "-std=c99", "-O0", "-Wall", "-Wextra", "-Werror", "-I", str(SRC_RT),
+                 "-DSR_FLIGHT_RECORDER_LINKED", f'-DSR_BUILD_ID="{FAKE_COMMIT}"', *defines,
+                 str(source), "src/rt/flight_recorder.c", "-o", str(executable)],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                cls._scratch.cleanup()
+                raise AssertionError(result.stdout + result.stderr)
+            cls.executables[name] = executable
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._scratch.cleanup()
+
+    def _run(self, scenario, flight, trigger=None, watch=None, *, name="baseline",
+             tag=None):
+        bundle_path = self.tmp / f"{tag or scenario}-{name}.json"
+        if bundle_path.exists():
+            bundle_path.unlink()
+        env = dict(os.environ)
+        for key in ("SR_FLIGHT_TRIGGER", "SR_WATCH"):
+            env.pop(key, None)
+        env["SR_FLIGHT"] = flight
+        env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
+        if trigger is not None:
+            env["SR_FLIGHT_TRIGGER"] = trigger
+        if watch is not None:
+            env["SR_WATCH"] = watch
+        result = subprocess.run([str(self.executables[name]), scenario], cwd=self.tmp, env=env,
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        bundle = (json.loads(bundle_path.read_text(encoding="utf-8"))
+                  if bundle_path.exists() else None)
+        return bundle, bundle_path, result.stderr
+
+    def _assert_trigger(self, bundle, *, kind, arg0, sequence, recorded):
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["schema_version"], 7)
+        self.assertEqual(bundle["terminal"],
+                         {"reason": "trigger", "sequence": sequence, "kind": kind, "arg0": arg0})
+        self.assertEqual(bundle["recorder"]["triggers"]["fired"], 1)
+        self.assertEqual(bundle["recorder"]["recorded"], recorded)
+
+    def test_untriggered_bundle_records_mode_none(self):
+        bundle, _, _ = self._run("pc", "hle,sched;16")
+        flight_diff.validate_bundle(bundle)
+        triggers = bundle["recorder"]["triggers"]
+        self.assertEqual((triggers["mode"], triggers["pc"], triggers["ge_draw"],
+                          triggers["checkpoint"]), ("none", None, None, None))
+        self.assertIsNone(bundle["recorder"]["watch_range"])
+        self.assertEqual(bundle["terminal"]["reason"], "exit")
+        self.assertEqual(bundle["recorder"]["recorded"], 6)
+
+    def test_pc_mode_fires_at_the_first_event_at_that_pc_not_its_return_address(self):
+        bundle, _, _ = self._run("pc", "hle,sched;16", f"pc:0x{TRIGGER_PC_B:08x}")
+        self._assert_trigger(bundle, kind=1, arg0=TRIGGER_PC_B, sequence=4, recorded=4)
+        self.assertEqual(bundle["recorder"]["triggers"]["pc"], TRIGGER_PC_B)
+        matched = bundle["events"][-1]
+        self.assertEqual((matched["arg2"], matched["arg3"]), (TRIGGER_PC_B, TRIGGER_PC_B + 8))
+        # The freeze caught the import mid-call; the final rewrite carries its arguments and
+        # its return value.
+        self.assertEqual(matched["arguments"], [7, 2, 3, 4])
+        self.assertEqual(matched["return_value"], 0x80000000)
+
+    def test_ge_draw_mode_fires_at_the_nth_draw(self):
+        bundle, _, _ = self._run("ge-draw", "ge,present;16", "ge-draw:2")
+        self._assert_trigger(bundle, kind=25, arg0=2, sequence=3, recorded=3)
+        self.assertEqual(bundle["events"][-1]["arg3"], 4)
+
+    def test_watch_class_records_value_changes_only(self):
+        bundle, _, stderr = self._run("watch", "watch;16", watch="0x08a00000:8")
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["recorder"]["watch_range"], {"address": 0x08A00000, "length": 8})
+        stores = [(event["arg0"], event["arg1"], event["arg2"], event["arg3"])
+                  for event in bundle["events"]]
+        self.assertEqual(stores, [
+            (0x08800100, 0x08A00000, 4, 0x11223344),
+            (0x0880010C, 0x08A00002, 1 | flight_diff.WATCH_KNOWN_BIT, 0x99),
+            (0x08800110, 0x08A00006, 4, 0xAABBCCDD),
+        ])
+        self.assertEqual(stderr.count("SR_WATCH: pc="), 4, "the stderr report is unchanged")
+
+    def test_watch_mode_fires_at_the_first_change_and_checkpoint_at_a_later_one(self):
+        first, _, _ = self._run("watch", "watch;16", "watch", "0x08a00000:8", tag="watch-first")
+        self._assert_trigger(first, kind=31, arg0=0x08A00000, sequence=1, recorded=1)
+        second, _, _ = self._run("watch", "watch;16", "checkpoint:31:2:0", "0x08a00000:8",
+                                 tag="watch-second")
+        self._assert_trigger(second, kind=31, arg0=2, sequence=2, recorded=2)
+        self.assertTrue(second["events"][-1]["arg2"] & flight_diff.WATCH_KNOWN_BIT)
+
+    def test_checkpoint_keeps_its_after_window_within_the_ring_limit(self):
+        bundle, _, _ = self._run("checkpoint", "sched;4", "checkpoint:3:2:2")
+        self._assert_trigger(bundle, kind=3, arg0=2, sequence=3, recorded=5)
+        self.assertEqual(bundle["recorder"]["dropped"], 1)
+        self.assertEqual([event["sequence"] for event in bundle["events"]], [2, 3, 4, 5])
+        self.assertEqual(bundle["recorder"]["triggers"]["checkpoint"],
+                         {"kind": 3, "occurrence": 2, "after": 2})
+
+    def test_a_run_ending_inside_the_window_keeps_the_trigger_terminal(self):
+        bundle, _, _ = self._run("checkpoint", "sched;8", "checkpoint:3:4:3", tag="short-window")
+        self._assert_trigger(bundle, kind=3, arg0=4, sequence=7, recorded=8)
+
+    def test_a_fatal_inside_the_window_wins_the_terminal(self):
+        bundle, _, _ = self._run("checkpoint-fatal", "sched,fatal;8", "checkpoint:3:1:3")
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["terminal"]["reason"], "fatal")
+        self.assertEqual(bundle["terminal"]["kind"], 12)
+        self.assertEqual(bundle["recorder"]["recorded"], 3)
+
+    def test_refused_specs_disable_the_recorder_and_say_why(self):
+        cases = (
+            ("pc", "hle;8", "pc:", None),
+            ("pc", "hle;8", "pc:0x1g", None),
+            ("pc", "hle;8", "pc:0x100000000", None),
+            ("ge-draw", "ge;8", "ge-draw:0", None),
+            ("ge-draw", "present;8", "ge-draw:2", None),
+            ("watch", "hle;8", "watch", None),
+            ("checkpoint", "sched,fatal;8", "checkpoint:13:1:0", None),
+            ("checkpoint", "sched;4", "checkpoint:3:1:4", None),
+            ("checkpoint", "sched;8", "checkpoint:99:1:0", None),
+            ("checkpoint", "hle;8", "checkpoint:3:1:0", None),
+            ("checkpoint", "sched;8", "checkpoint:3:0:0", None),
+            ("pc", "hle;8", "bogus", None),
+        )
+        for index, (scenario, flight, trigger, watch) in enumerate(cases):
+            with self.subTest(trigger=trigger, flight=flight):
+                bundle, _, stderr = self._run(scenario, flight, trigger, watch, tag=f"refused{index}")
+                self.assertIsNone(bundle, "a refused trigger spec must not record")
+                self.assertIn("SR_FLIGHT_TRIGGER:", stderr)
+                self.assertIn("recorder disabled", stderr)
+
+    def test_watch_class_needs_a_small_armed_watch_range(self):
+        for index, watch in enumerate((None, "0x08a00000:65")):
+            with self.subTest(watch=watch):
+                bundle, _, stderr = self._run("watch", "watch;8", None, watch, tag=f"range{index}")
+                self.assertIsNone(bundle)
+                self.assertIn("the watch class needs SR_WATCH=ADDR:LEN with LEN at most 64", stderr)
+
+    def test_flight_diff_names_the_first_divergence_under_one_trigger_policy(self):
+        trigger = f"pc:0x{TRIGGER_PC_B:08x}"
+        _, baseline, _ = self._run("pc", "hle,sched;16", trigger, tag="diff-pc")
+        _, injected, _ = self._run("pc", "hle,sched;16", trigger, name="injected", tag="diff-pc")
+        _, other_policy, _ = self._run("pc", "hle,sched;16", f"pc:0x{TRIGGER_PC_A:08x}",
+                                       tag="diff-other")
+        tool = str(ROOT / "tools" / "flight_diff.py")
+        result = subprocess.run([sys.executable, tool, str(baseline), str(injected)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, flight_diff.EXIT_DIVERGENCE, result.stdout + result.stderr)
+        self.assertIn(f"trigger mode: pc=0x{TRIGGER_PC_B:08x}", result.stdout)
+        self.assertIn("DIVERGENCE: sequence 2", result.stdout)
+        result = subprocess.run([sys.executable, tool, str(baseline), str(other_policy)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, flight_diff.EXIT_INCOMPARABLE,
+                         result.stdout + result.stderr)
+        self.assertIn("trigger policies differ", result.stdout)
+
+
+class RecorderTriggerHotPathTests(unittest.TestCase):
+    """Checking a trigger mode stays arithmetic (#320 acceptance 5, #1433 item 3).
+
+    tools/test_flight_diff.py RecorderTimingTests already refuses any sleep, yield or
+    scheduler call in the recorder. This adds the trigger and watch paths: recording an event,
+    checking a mode and noting a watched store do no I/O, no environment read and no heap
+    work. The only I/O is the one bundle write at a freeze, a terminal or exit.
+    """
+
+    HOT_PATHS = ("static uint64_t record_locked(", "static uint64_t record_checked(",
+                 "static void check_trigger(", "static int event_pc(",
+                 "static void watch_flight_note(", "void sr_flight_record(",
+                 "uint64_t sr_flight_hle_import(", "int sr_flight_class_enabled(")
+    IO = re.compile(r"\b(?:fopen|fprintf|fputs|fputc|fwrite|fflush|getenv|malloc|free)\s*\(")
+
+    def _source(self) -> str:
+        return re.sub(r"/\*.*?\*/|//[^\n]*", "", RECORDER.read_text(encoding="utf-8"), flags=re.S)
+
+    @staticmethod
+    def _body(source: str, signature: str) -> str:
+        start = source.index(signature)
+        # Skip forward declarations: the definition is the occurrence whose "{" precedes any ";".
+        while source.index(";", start) < source.index("{", start):
+            start = source.index(signature, start + 1)
+        brace = source.index("{", start)
+        depth = 0
+        for index in range(brace, len(source)):
+            depth += {"{": 1, "}": -1}.get(source[index], 0)
+            if depth == 0:
+                return source[brace:index + 1]
+        raise AssertionError(f"unterminated body for {signature}")
+
+    def test_event_and_trigger_paths_do_no_io_or_allocation(self):
+        source = self._source()
+        for signature in self.HOT_PATHS:
+            with self.subTest(path=signature):
+                self.assertEqual(self.IO.findall(self._body(source, signature)), [],
+                                 "recording or checking a trigger must not touch I/O or the heap")
 
 
 class MakeIdentityResolutionTests(unittest.TestCase):

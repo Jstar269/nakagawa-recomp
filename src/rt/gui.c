@@ -415,6 +415,7 @@ void gui_init(const char *title) {
                 extern int sr_audio_is_active(void);
                 sdl3vk_set_audio_active_cb(sr_audio_is_active);
 #endif
+                sdl3vk_set_logic_slowed_cb(sr_enhancement_logic_slowed);
                 s_sdl3 = 1;
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();
@@ -713,17 +714,17 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 #ifdef SR_SDL3VK
     if (s_sdl3) {
         /* 1. GPU VRAM image fast path: any frame the GPU rasterizer produced is presented
-         *    directly from its Vulkan image. Returns 1 on success (skip GDI), -1 when the
-         *    address isn't GPU-resident (CPU movie frames etc.) — fall through to BGRA. */
+         *    directly from its Vulkan image. GEGPU_PRESENT_SHOWN skips the CPU path;
+         *    GEGPU_PRESENT_NOT_RESIDENT (CPU movie frames etc.) falls through to BGRA. */
         accepted = 0;
         /* While the on-screen keyboard is open the frame must pass through the host copy the
-         * keyboard is drawn on, so the GPU fast path steps aside (-1: CPU path below). The
+         * keyboard is drawn on, so the GPU fast path steps aside (the CPU path below). The
          * decision is taken once: osk_open also gates the guest-VRAM sync before that copy. */
         int osk_open = sr_osk_overlay_active();
-        int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);
+        int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
-        if (res == 0) { gui_window_closed_exit(); }
-        if (res == 1) {
+        if (res == GEGPU_PRESENT_WINDOW_CLOSED) { gui_window_closed_exit(); }
+        if (res == GEGPU_PRESENT_SHOWN) {
             /* The GPU fast path never reaches convert_fb, which is the only emitter of
              * the first_frame boot milestone. Without this, boot_gate.py can never pass
              * on the default renderer even while the GPU presents every frame. There is

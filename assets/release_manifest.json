@@ -80,13 +80,13 @@
     },
     {
       "id": "clay-layout",
-      "name": "Clay v0.14 layout library",
+      "name": "Clay layout library",
       "license": "Zlib",
       "origin": "https://github.com/nicbarker/clay",
-      "revision": "v0.14 / b25a31c1a152915cd7dd6796e6592273e5a10aac",
+      "revision": "main / e6cc36941ab2af5d81107617039d6f527a1c660b",
       "notice_path": "third_party/clay/LICENSE.md",
       "evidence_path": "third_party/clay/PROVENANCE.md",
-      "disposition": "vendored_source_only; not linked into player runtime yet"
+      "disposition": "vendored_header; linked into the player and the in-game overlay via src/ui/nk_ui_clay.c"
     },
     {
       "id": "portable-snippets-safe-math",
@@ -748,40 +748,6 @@
         "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
       },
       "comment": "Project-authored link preview: the N1 mark, the site's tennis court and text in Geist (OFL-1.1). No game imagery."
-    },
-    {
-      "id": "readme-showcase-ge-scene-v240",
-      "name": "README screenshot: GE scene demo at vblank 240",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/images/showcase-ge-scene-v240.png",
-      "license": "GPL-3.0-or-later",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
-      },
-      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
-    },
-    {
-      "id": "readme-showcase-breakout-v180",
-      "name": "README screenshot: breakout demo at vblank 180",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/images/showcase-breakout-v180.png",
-      "license": "GPL-3.0-or-later",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
-      },
-      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
     },
     {
       "id": "readme-showcase-ge-scene-animation",

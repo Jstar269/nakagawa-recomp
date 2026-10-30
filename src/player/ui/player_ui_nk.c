@@ -150,6 +150,14 @@ struct PlayerUiNk {
     int stop_index;
     char stop_disc[NK_MAX_DISC_ID_LEN];
     bool stop_focus_pending;
+    /* The older-build prompt or launch reminder (PLAYER_UI_ROUTE_REBUILD) is
+       open; Back closing it answers with the second choice. */
+    bool rebuild_pushed;
+    bool rebuild_focus_pending;
+    char rebuild_text[256];
+    char rebuild_notice[96];
+    /* A rebuilding card's status word with its progress ("Rebuilding 40%"). */
+    char rebuild_word[PLAYER_UI_TITLE_CAP][32];
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
@@ -570,6 +578,8 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             }
             model.font_message = app->wizard.font_message;
             model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
+            model.font_summary = app->wizard.font_summary;
+            model.fonts_all_own = app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT;
             break;
         case WIZARD_STEP_READY_LAUNCH:
             model.runtime_ready = game->is_prepared;
@@ -612,6 +622,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
+    model.badge = nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial" : NULL;
     model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
@@ -654,6 +665,8 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
                    model.input_guide.files[i].name, model.input_guide.files[i].replace ? 1 : 0,
                    model.input_guide.files[i].source);
         }
+        printf("[PLAYER_UI_TEST] next_ui_disc_badge disc=%s badge=%s\n", game->disc_id,
+               model.badge != NULL ? model.badge : "Your disc");
         for (size_t i = 0u; i < model.check_count; ++i) {
             printf("[PLAYER_UI_TEST] next_ui_disc_row status=%s tone=%s label=%s message=%s\n",
                    model.checks[i].status,
@@ -713,6 +726,8 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             }
             model.font_message = app->wizard.font_message;
             model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
+            model.font_summary = app->wizard.font_summary;
+            model.fonts_all_own = app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT;
             break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
@@ -750,6 +765,11 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     if (model.page == PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE && app->settings_notice[0] != '\0') {
         model.notice = app->settings_notice;
     }
+    /* Settings a newer Nakagawa saved are kept and not replaced; every page says
+       so, since no change made on any of them is saved. */
+    if (app->settings_newer_schema && app->settings_notice[0] != '\0') {
+        model.notice = app->settings_notice;
+    }
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -778,9 +798,14 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             model.update_notes = newest->notes;
             model.update_page_url = newest->page_url;
             model.update_has_zip = newest->has_zip;
-#if defined(_WIN32) || defined(_WIN64)
-            model.update_can_download = newest->has_zip && update->check.newer;
-#endif
+            if (nk_update_install_supported()) {
+                /* Download is offered only when the ZIP can be checked: a key in this
+                   build and a signature in the release (update_check.h). */
+                model.update_unverifiable = !update->can_verify;
+                model.update_unsigned = !newest->has_signature;
+                model.update_can_download = newest->has_zip && update->check.newer &&
+                                            update->can_verify && newest->has_signature;
+            }
             model.update_zip_name = newest->zip_name;
             model.update_zip_bytes = newest->zip_size;
         }
@@ -1139,6 +1164,9 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.retry_label = player_error_retry_label(error);
         model.copy_available = true;
         model.copied = error->details_copied;
+        model.report_available = player_error_offers_report(error) &&
+            player_app_find_game_by_disc_id(app, error->subject_disc_id) >= 0;
+        model.known_issue = player_error_known_issue(error);
         /* Plain errors lead with the sentence and show the technical boundary
            as details. */
         model.message = launch_readiness ? error->message
@@ -1240,7 +1268,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
-            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
+            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_PSP_FONTS; break;
             case VIEW_UPDATES:
                 /* Each step's result is a screen of its own, focused on what comes
                    next. CANCEL is the download's only control; a finished check
@@ -1248,11 +1276,11 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                    focuses CHECK FOR UPDATES. */
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
-                        focus = app->update.check.newest.has_zip
+                        focus = nk_update_install_supported() &&
+                                app->update.check.newest.has_zip &&
+                                app->update.check.newest.has_signature &&
+                                app->update.can_verify
                             ? PLAYER_UI_ID_UPDATE_DOWNLOAD : PLAYER_UI_ID_UPDATE_PAGE;
-#if !defined(_WIN32) && !defined(_WIN64)
-                        focus = PLAYER_UI_ID_UPDATE_PAGE;
-#endif
                         break;
                     case PLAYER_UPDATE_DOWNLOADING: focus = PLAYER_UI_ID_UPDATE_CANCEL; break;
                     case PLAYER_UPDATE_DOWNLOADED: focus = PLAYER_UI_ID_UPDATE_INSTALL; break;
@@ -1573,7 +1601,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     } else if (running) {
         out->package_state = PLAYER_UI_PACKAGE_RUNNING;
     } else if (app->build_session.is_building &&
-               strcmp(app->build_session.disc_id, game->disc_id) == 0) {
+               strcmp(app->build_session.disc_id, game->disc_id) == 0 &&
+               strcmp(app->build_session.enhancement_package_id,
+                      game->enhancement_package_id) == 0) {
+        /* A build of the other variant is not this package's build. */
         out->package_state = PLAYER_UI_PACKAGE_BUILDING;
     } else if (package_ready) {
         out->package_state = PLAYER_UI_PACKAGE_READY;
@@ -1620,13 +1651,38 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
+    /* An older Nakagawa built this package (owner, 2026-10-29): it still
+       plays, and the cards say what a rebuild would do, that it is queued or
+       running, or that its disc is missing. */
+    PlayerRebuildCard rebuild;
+    bool older = !starting && !running && player_app_rebuild_card(app, game, &rebuild);
+    out->rebuild_offered = false;
+    if (older) {
+        if (rebuild.rebuilding && rebuild.fraction >= 0.0f) {
+            snprintf(player->rebuild_word[index], sizeof(player->rebuild_word[index]),
+                     "%s %d%%", rebuild.word, (int)(rebuild.fraction * 100.0f + 0.5f));
+            out->library_status = player->rebuild_word[index];
+        } else {
+            out->library_status = rebuild.word;
+        }
+        out->library_status_detail = rebuild.detail;
+        out->status_rgba = rebuild.rebuilding ? PLAYER_UI_INFO : PLAYER_UI_WARNING;
+        out->status_marker = rebuild.rebuilding ? "◆" : "▲";
+        if (rebuild.rebuilding) out->package_state = PLAYER_UI_PACKAGE_BUILDING;
+        out->rebuild_offered = rebuild.can_rebuild && package_ready && !app->launch_pending &&
+                               !app->is_game_running && !app->build_session.is_building;
+    }
     out->art_kind = player_ui_art_kind(game);
     /* The showcase packages beside the player are the demos under TEST THIS
        PC. The --demo fixtures are the project's test programs, not a disc the
        user added. */
     out->is_demo = game->is_showcase_package;
+    /* A disc whose own ID is not a retail ID (a beta or a prototype) has a
+       library key Nakagawa derived from its contents (nk_iso.h). */
     out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
-               : game->is_sample ? "Test program" : "Your disc";
+               : game->is_sample ? "Test program"
+               : nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial"
+               : "Your disc";
     /* Disc art is asked for by the screen that shows it
        (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
@@ -1637,10 +1693,28 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                  out->library_status);
         printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
                out->library_status);
+        printf("[PLAYER_UI_TEST] next_ui_library_badge index=%d disc=%s badge=%s\n", index,
+               game->disc_id, out->badge);
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->can_remove = player_app_removal_blocker(app, index) == NULL;
+    {
+        const PlayerTitleEnhancement *enhancement = &app->title_enhancements[index];
+        bool saved = player_app_title_60hz_saved(app, game->disc_id);
+        out->enhancement_shown = enhancement->available || saved;
+        out->enhancement_on = player_app_title_60hz_on(app, index);
+        out->enhancement_session = app->experimental_60hz_session &&
+                                   enhancement->available && !saved;
+        out->enhancement_enabled = !app->launch_pending && !app->is_game_running &&
+            !out->enhancement_session &&
+            !(app->build_session.is_building &&
+              strcmp(app->build_session.disc_id, game->disc_id) == 0);
+        out->enhancement_problem = player_app_title_60hz_blocked(app, index)
+            ? (enhancement->problem[0] ? enhancement->problem
+                                       : "Its enhancement package is missing.")
+            : "";
+    }
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
@@ -1650,6 +1724,13 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
+    } else if (older && rebuild.rebuilding) {
+        /* Its package is about to be replaced; the package card says so. */
+        out->primary_action_label = "REBUILDING...";
+    } else if (player_app_title_60hz_blocked(app, index)) {
+        /* 60 FPS game logic is on but its package is gone: neither variant
+           builds or plays until the user turns it off or brings it back. */
+        out->primary_action_label = "ENHANCEMENT UNAVAILABLE";
     } else if (package_ready) {
         out->primary_action_label = "PLAY";
         out->primary_action_enabled = true;
@@ -1801,6 +1882,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     size_t repeat_count;
     const NkUiDrawList *draw_list;
     PlayerUiAction action = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    PlayerUiAction rebuild_answer = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     PlayerUiRoute route;
     if (out_action != NULL) {
         out_action->kind = PLAYER_UI_ACTION_NONE;
@@ -1873,6 +1955,35 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     }
     route = nk_ui_router_current(player->router);
     player_ui_flow_focus(player, app);
+    if (!player_ui_nk_flow_view(app->active_view)) {
+        /* Games an older Nakagawa built: player_state says when the prompt or
+           a launch's reminder is up, and the route follows it, over the
+           library or the title page. Back pops the route; that answers with
+           the second choice (Later, Play anyway). */
+        bool rebuild_modal = player_app_rebuild_prompt_visible(app) ||
+                             player_app_rebuild_reminder_visible(app);
+        if (player->rebuild_pushed && route != PLAYER_UI_ROUTE_REBUILD) {
+            player->rebuild_pushed = false;
+            if (rebuild_modal) {
+                rebuild_answer.kind = PLAYER_UI_ACTION_REBUILD;
+                rebuild_answer.primary = (PlayerUiPrimaryAction)(
+                    player_app_rebuild_reminder_visible(app) ? PLAYER_UI_REBUILD_PLAY_ANYWAY
+                                                             : PLAYER_UI_REBUILD_LATER);
+            }
+        } else if (rebuild_modal && (route == PLAYER_UI_ROUTE_LIBRARY ||
+                                     route == PLAYER_UI_ROUTE_TITLE)) {
+            nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+            if (nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REBUILD)) {
+                player->rebuild_pushed = true;
+                player->rebuild_focus_pending = true;
+                route = PLAYER_UI_ROUTE_REBUILD;
+            }
+        } else if (!rebuild_modal && route == PLAYER_UI_ROUTE_REBUILD) {
+            (void)nk_ui_router_pop(player->router);
+            player->rebuild_pushed = false;
+            route = nk_ui_router_current(player->router);
+        }
+    }
     if (player_ui_nk_flow_view(app->active_view)) {
         action = player_ui_render_flow(player, app, scale, now_s);
         if ((player_ui_settings_view(app->active_view) ||
@@ -1997,6 +2108,13 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                      "Version %.40s is out", app->update.check.newest.version);
             model.update_notice = player->update_notice;
         }
+        if (app->library_notice[0] != '\0') model.library_notice = app->library_notice;
+        if (player_app_rebuild_banner_visible(app)) {
+            (void)player_app_rebuild_banner_text(app, player->rebuild_notice,
+                                                 sizeof(player->rebuild_notice),
+                                                 &model.rebuild_notice_offers_all);
+            model.rebuild_notice = player->rebuild_notice;
+        }
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
             app->selected_game_index = (int)action.title_index;
@@ -2085,6 +2203,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                 (void)nk_ui_router_pop(player->router);
                 action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_TOGGLE_60FPS) {
+                if (player->titles[index].enhancement_enabled) {
+                    player_app_set_title_60hz(app, index,
+                                              !player->titles[index].enhancement_on);
+                }
+                action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {
                     nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
@@ -2103,7 +2227,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_STOP);
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
-                       action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
+                       action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER ||
+                       action.kind == PLAYER_UI_ACTION_REPORT_PROBLEM) {
                 if (out_action != NULL) *out_action = action;
             }
         }
@@ -2181,6 +2306,32 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
+    } else if (route == PLAYER_UI_ROUTE_REBUILD) {
+        PlayerUiRebuildModel model;
+        memset(&model, 0, sizeof(model));
+        if (player->rebuild_focus_pending) {
+            nk_ui_focus(player->ui, PLAYER_UI_ID_REBUILD_PRIMARY);
+            player->rebuild_focus_pending = false;
+        }
+        if (player_app_rebuild_reminder_visible(app)) {
+            int index = player_app_find_game_by_disc_id(app, app->outdated.reminder_disc_id);
+            model.title = index >= 0 && app->games[index].title_name[0]
+                ? app->games[index].title_name : "This game";
+            model.text = PLAYER_REBUILD_REMINDER_TEXT;
+        } else {
+            (void)player_app_rebuild_prompt_text(app, player->rebuild_text,
+                                                 sizeof(player->rebuild_text));
+            model.text = player->rebuild_text;
+        }
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        action = player_ui_screen_rebuild(player->ui, &model);
+        if (action.kind == PLAYER_UI_ACTION_REBUILD) {
+            if (out_action != NULL) *out_action = action;
+            (void)nk_ui_router_pop(player->router);
+            player->rebuild_pushed = false;
+            action.kind = PLAYER_UI_ACTION_NONE;
+        }
     } else if (route == PLAYER_UI_ROUTE_ABOUT) {
         PlayerUiAboutModel model;
         memset(&model, 0, sizeof(model));
@@ -2222,6 +2373,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     (void)SDL_RenderClear(renderer);
     if (!nk_ui_sdlr_render(player->backend, draw_list)) return false;
     SDL_RenderPresent(renderer);
+    if (action.kind == PLAYER_UI_ACTION_NONE) action = rebuild_answer;
     if (out_action != NULL && action.kind != PLAYER_UI_ACTION_NONE) {
         *out_action = action;
     }
