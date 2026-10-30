@@ -300,6 +300,10 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Prefer a small source-level root-cause fix with a failing-before production-path
   regression. Never add loop caps, sleeps, forced returns, fake success, latch hacks,
   arbitrary state writes, invented assets, or VFS aliases that hide missing behavior.
+- **LLE first.** When the guest code for a function exists, for example a module the game ships
+  on its disc, and running it needs no firmware, run that code (LLE) instead of writing a new HLE
+  handler for it, as #1645 did for the game's own libfont. HLE stays for the kernel and hardware
+  boundary: firmware modules the project does not carry, syscalls, and device access.
 - Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: the interpreter
   runs only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
   Correctness evidence asserts PSP-visible results, state, and wakes.
