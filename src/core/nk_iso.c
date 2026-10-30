@@ -1817,8 +1817,11 @@ NkResult nk_iso_classify_executables(const char *iso_path,
         out_report->selected = NK_ISO_EXEC_SELECTION_EBOOT;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),
                  "EBOOT.BIN");
-    } else if (out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+    } else if ((out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED ||
+                out_report->eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO) &&
                out_report->boot.kind == NK_ISO_EXEC_MIPS_ELF32) {
+        /* A zero-filled EBOOT.BIN is the placeholder prototype and development discs carry
+         * beside their plain BOOT.BIN (tools/nk_core/iso_inspect.py has the same rule). */
         out_report->selected = NK_ISO_EXEC_SELECTION_BOOT;
         out_report->boot_fallback = true;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),

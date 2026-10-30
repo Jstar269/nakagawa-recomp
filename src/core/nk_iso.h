@@ -200,7 +200,8 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
 
 /* Classify PSP_GAME/SYSDIR/EBOOT.BIN and BOOT.BIN using bounded reads from
  * the ISO. A validated plaintext MIPS ELF32 is selected for analysis; BOOT.BIN
- * is selected only when EBOOT.BIN is encrypted and BOOT.BIN is plaintext ELF. */
+ * is selected only when EBOOT.BIN is encrypted or zero-filled and BOOT.BIN is
+ * plaintext ELF. */
 NkResult nk_iso_classify_executables(const char *iso_path,
                                      NkIsoExecutableReport *out_report);
 

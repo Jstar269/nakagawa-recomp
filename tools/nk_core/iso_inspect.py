@@ -2104,6 +2104,12 @@ def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, obj
     return result
 
 
+# EBOOT.BIN kinds that leave a plain BOOT.BIN as the boot executable: an encrypted container, or
+# the zero-filled placeholder that prototype and development discs carry (PPSSPP's ISO loader
+# boots BOOT.BIN whenever EBOOT.BIN has neither a ~PSP nor an ELF header).
+_BOOT_FALLBACK_EBOOT_KINDS = frozenset({"PSP_ENCRYPTED_CONTAINER", "EMPTY_OR_ZERO_FILLED"})
+
+
 def select_boot_executable_source(iso_path: Path | str) -> str | None:
     """Select an on-disc boot filename without resolving keys or decrypting files."""
     path = Path(iso_path)
@@ -2141,7 +2147,7 @@ def select_boot_executable_source(iso_path: Path | str) -> str | None:
         return "EBOOT.OLD"
     eboot_kind = executables["EBOOT.BIN"]["classification"]
     boot_kind = executables["BOOT.BIN"]["classification"]
-    if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
+    if eboot_kind in _BOOT_FALLBACK_EBOOT_KINDS and boot_kind == "PLAIN_MIPS_ELF32":
         return "BOOT.BIN"
     return "EBOOT.BIN" if eboot_entry is not None else None
 
@@ -2207,7 +2213,7 @@ def inspect_compatibility_preflight(
     boot_kind = executables["BOOT.BIN"]["classification"]
     selected = "EBOOT.BIN" if eboot_kind == "PLAIN_MIPS_ELF32" else None
     fallback = False
-    if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
+    if eboot_kind in _BOOT_FALLBACK_EBOOT_KINDS and boot_kind == "PLAIN_MIPS_ELF32":
         selected = "BOOT.BIN"
         fallback = True
     root = Path(runtime_root)
@@ -2303,7 +2309,8 @@ def inspect_compatibility_preflight(
     elif selected == "BOOT.BIN":
         executable_check = {
             "code": "EXECUTABLE", "status": "OK",
-            "message": "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.",
+            "message": "BOOT.BIN selected for analysis because EBOOT.BIN is "
+                       + ("encrypted." if eboot_kind == "PSP_ENCRYPTED_CONTAINER" else "zero-filled."),
             "issues": [],
         }
     elif selected == "EBOOT.BIN":
