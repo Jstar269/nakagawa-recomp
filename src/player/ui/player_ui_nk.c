@@ -106,6 +106,7 @@ struct PlayerUiNk {
     char input_summary[128];
     char title_input_summary[128];
     char settings_controller[160];
+    char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
     /* The factory reset check's folders, looked up when the check opens. */
@@ -375,7 +376,7 @@ static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
            view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
-           view == VIEW_CONFIRM_FACTORY_RESET;
+           view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -664,7 +665,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
         fflush(stdout);
     }
 #endif
-    model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+    model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
     return player_ui_screen_disc(player->ui, &model);
@@ -683,6 +684,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     memset(&model, 0, sizeof(model));
     switch (app->active_view) {
         case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
+        case VIEW_ACCESSIBILITY_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY; break;
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
@@ -724,8 +726,26 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.fullscreen = app->settings.fullscreen;
     model.volume = app->settings.master_volume;
     model.ui_sounds = app->settings.ui_sounds;
-    model.reduce_motion = app->settings.reduce_motion;
     model.launcher_fullscreen = app->settings.launcher_fullscreen;
+    if (app->settings.interface_size_pct > 0) {
+        snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
+                 app->settings.interface_size_pct);
+        model.interface_size = player->settings_interface_size;
+    } else {
+        model.interface_size = "Automatic";
+    }
+    model.high_contrast_choice = player_system_choice_label(app->settings.high_contrast_choice);
+    model.reduce_motion_choice = player_system_choice_label(app->settings.reduce_motion_choice);
+    model.high_contrast = player_app_high_contrast_focus(app);
+    model.reduce_motion = player_app_reduce_motion(app);
+#if defined(_WIN32) || defined(_WIN64)
+    model.system_name = "Windows";
+#else
+    model.system_name = "your system";
+#endif
+    model.system_scale_pct = (int)(player->viewport.display_scale * 100.0f + 0.5f);
+    model.system_high_contrast = app->system_high_contrast;
+    model.system_reduced_motion = app->system_reduced_motion;
     snprintf(player->settings_controller, sizeof(player->settings_controller), "%s",
              app->settings.controller_connected
                  ? (app->settings.controller_name[0] != '\0' ? app->settings.controller_name
@@ -1081,7 +1101,7 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         for (int i = first; i < count && model.line_count < 4u; ++i) {
             model.lines[model.line_count++] = package_builder_get_output_line(build, i);
         }
-        model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+        model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         return player_ui_screen_build(player->ui, &model);
@@ -1212,6 +1232,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_SETTINGS:
                 /* Back from one of its pages, focus the button that opened it. */
                 focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
+                    : player->last_view == VIEW_ACCESSIBILITY_SETTINGS
+                        ? PLAYER_UI_ID_SETTINGS_ACCESSIBILITY
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
                     : player->last_view == VIEW_BUILD_CACHE ||
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
@@ -1263,6 +1285,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 }
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
+            case VIEW_ACCESSIBILITY_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS:
             /* The safe answer, Keep everything, has the focus. */
@@ -1822,10 +1845,15 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player->viewport.pixel_h = pixel_h;
     player->viewport.display_scale = display_scale;
     {
-        /* Prompts follow the last input device ("Match input"). */
+        /* Prompts follow the last input device ("Match input"), and an Automatic
+           accessibility setting follows the system's, read every frame so a
+           change there applies at once. */
         PlayerUiDisplay display;
+        player_app_read_system_preferences(app);
         memset(&display, 0, sizeof(display));
-        display.reduce_motion = app->settings.reduce_motion;
+        display.reduce_motion = player_app_reduce_motion(app);
+        display.high_contrast_focus = player_app_high_contrast_focus(app);
+        display.interface_size_pct = app->settings.interface_size_pct;
         player_ui_apply_display(player->ui, &player->viewport, &display,
                                 nk_ui_input_prompt_style(&player->input.input));
     }
@@ -2044,7 +2072,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
             model.stalled_game_dark_picture = app->stalled_game_dark_picture;
-            model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+            model.now_s = player_app_reduce_motion(app) ? 0.0 : now_s;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {

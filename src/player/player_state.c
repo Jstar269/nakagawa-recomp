@@ -1061,6 +1061,8 @@ int player_app_focus_count(const PlayerApp *app) {
             return 18;
         case VIEW_BUILD_CACHE:
             return 4; /* share switch, clear cache, remove tools, back */
+        case VIEW_ACCESSIBILITY_SETTINGS:
+            return 4; /* interface size, high contrast, reduce motion, back */
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -1143,7 +1145,9 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->vsync = true;
     settings->fps_cap = -1;
     settings->master_volume = 80;
-    settings->reduce_motion = false;
+    settings->reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
+    settings->high_contrast_choice = PLAYER_SYSTEM_CHOICE_AUTO;
+    settings->interface_size_pct = 0;
     settings->ui_sounds = false;
     settings->launcher_window_maximized = false;
     settings->launcher_window_position_valid = false;
@@ -1177,6 +1181,33 @@ static bool fps_cap_valid(int cap) {
 
 /* Persisted by name, so the file reads plainly and a renumbering cannot change a choice. */
 static const char *const kPresentScalingNames[] = { "sharp", "integer", "bilinear" };
+
+static bool interface_size_valid(int64_t pct) {
+    return pct == 0 || pct == 100 || pct == 125 || pct == 150 || pct == 200;
+}
+
+static const char *player_system_choice_key(PlayerSystemChoice choice) {
+    switch (choice) {
+        case PLAYER_SYSTEM_CHOICE_ON: return "on";
+        case PLAYER_SYSTEM_CHOICE_OFF: return "off";
+        default: return "auto";
+    }
+}
+
+/* A saved "auto", "on" or "off"; false, leaving *out alone, for anything else. */
+static bool player_system_choice_parse(const char *key, PlayerSystemChoice *out) {
+    if (!key) return false;
+    if (strcmp(key, "auto") == 0) {
+        *out = PLAYER_SYSTEM_CHOICE_AUTO;
+    } else if (strcmp(key, "on") == 0) {
+        *out = PLAYER_SYSTEM_CHOICE_ON;
+    } else if (strcmp(key, "off") == 0) {
+        *out = PLAYER_SYSTEM_CHOICE_OFF;
+    } else {
+        return false;
+    }
+    return true;
+}
 
 static bool present_scaling_valid(int scaling) {
     return scaling == NK_PRESENT_SCALING_SHARP || scaling == NK_PRESENT_SCALING_INTEGER ||
@@ -1373,10 +1404,27 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         }
     }
 
-    NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
-    bool rm_val = false;
-    if (rm_node && nk_json_get_bool(rm_node, &rm_val)) {
-        app->settings.reduce_motion = rm_val;
+    /* Reduce motion was a plain switch, saved as "reduce_motion", until it could
+       follow the system. A file without "reduce_motion_choice" comes from such a
+       player: its true was the user's choice, and its false was the default, so
+       it follows the system now. The switch is still written for those players. */
+    if (!player_system_choice_parse(
+            nk_json_get_string(nk_json_obj_get(root, "reduce_motion_choice")),
+            &app->settings.reduce_motion_choice)) {
+        bool rm_val = false;
+        if (nk_json_get_bool(nk_json_obj_get(root, "reduce_motion"), &rm_val) && rm_val) {
+            app->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+        }
+    }
+    (void)player_system_choice_parse(
+        nk_json_get_string(nk_json_obj_get(root, "high_contrast_focus")),
+        &app->settings.high_contrast_choice);
+    {
+        int64_t size_val = 0;
+        if (nk_json_get_int64(nk_json_obj_get(root, "interface_size"), &size_val) &&
+            interface_size_valid(size_val)) {
+            app->settings.interface_size_pct = (int)size_val;
+        }
     }
 
     NkJsonNode *share_node = nk_json_obj_get(root, "share_system_libraries");
@@ -1550,7 +1598,15 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"experimental_60hz\": %s,\n",
             app->settings.experimental_60hz ? "true" : "false");
-    fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
+    fprintf(f, "  \"reduce_motion\": %s,\n",
+            app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON ? "true" : "false");
+    fprintf(f, "  \"reduce_motion_choice\": \"%s\",\n",
+            player_system_choice_key(app->settings.reduce_motion_choice));
+    fprintf(f, "  \"high_contrast_focus\": \"%s\",\n",
+            player_system_choice_key(app->settings.high_contrast_choice));
+    fprintf(f, "  \"interface_size\": %d,\n",
+            interface_size_valid(app->settings.interface_size_pct)
+                ? app->settings.interface_size_pct : 0);
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
             app->settings.share_system_libraries ? "true" : "false");
@@ -1977,10 +2033,70 @@ void player_app_toggle_vsync(PlayerApp *app) {
     maybe_persist_settings(app);
 }
 
-void player_app_toggle_reduce_motion(PlayerApp *app) {
+static PlayerSystemChoice player_system_choice_next(PlayerSystemChoice choice) {
+    switch (choice) {
+        case PLAYER_SYSTEM_CHOICE_AUTO: return PLAYER_SYSTEM_CHOICE_ON;
+        case PLAYER_SYSTEM_CHOICE_ON: return PLAYER_SYSTEM_CHOICE_OFF;
+        default: return PLAYER_SYSTEM_CHOICE_AUTO;
+    }
+}
+
+void player_app_cycle_reduce_motion(PlayerApp *app) {
     if (!app) return;
-    app->settings.reduce_motion = !app->settings.reduce_motion;
+    app->settings.reduce_motion_choice =
+        player_system_choice_next(app->settings.reduce_motion_choice);
     maybe_persist_settings(app);
+}
+
+void player_app_cycle_high_contrast_focus(PlayerApp *app) {
+    if (!app) return;
+    app->settings.high_contrast_choice =
+        player_system_choice_next(app->settings.high_contrast_choice);
+    maybe_persist_settings(app);
+}
+
+void player_app_cycle_interface_size(PlayerApp *app) {
+    static const int sizes[] = {0, 100, 125, 150, 200};
+    const size_t count = sizeof(sizes) / sizeof(sizes[0]);
+    size_t next = 0u;
+    if (!app) return;
+    for (size_t i = 0u; i < count; ++i) {
+        if (sizes[i] == app->settings.interface_size_pct) next = (i + 1u) % count;
+    }
+    app->settings.interface_size_pct = sizes[next];
+    maybe_persist_settings(app);
+}
+
+const char *player_system_choice_label(PlayerSystemChoice choice) {
+    switch (choice) {
+        case PLAYER_SYSTEM_CHOICE_ON: return "On";
+        case PLAYER_SYSTEM_CHOICE_OFF: return "Off";
+        default: return "Automatic";
+    }
+}
+
+void player_app_read_system_preferences(PlayerApp *app) {
+    if (!app) return;
+    app->system_reduced_motion = nk_platform_prefers_reduced_motion();
+    app->system_high_contrast = nk_platform_high_contrast();
+}
+
+static bool player_system_choice_resolve(PlayerSystemChoice choice, bool system) {
+    switch (choice) {
+        case PLAYER_SYSTEM_CHOICE_ON: return true;
+        case PLAYER_SYSTEM_CHOICE_OFF: return false;
+        default: return system;
+    }
+}
+
+bool player_app_reduce_motion(const PlayerApp *app) {
+    return app && player_system_choice_resolve(app->settings.reduce_motion_choice,
+                                               app->system_reduced_motion);
+}
+
+bool player_app_high_contrast_focus(const PlayerApp *app) {
+    return app && player_system_choice_resolve(app->settings.high_contrast_choice,
+                                               app->system_high_contrast);
 }
 
 void player_app_toggle_ui_sounds(PlayerApp *app) {

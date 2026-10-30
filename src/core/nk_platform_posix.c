@@ -741,4 +741,12 @@ bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     return true;
 }
 
+bool nk_platform_prefers_reduced_motion(void) {
+    return false;
+}
+
+bool nk_platform_high_contrast(void) {
+    return false;
+}
+
 #endif /* !_WIN32 */

@@ -4446,11 +4446,40 @@ int main(int argc, char **argv) {
     assert(settings->settings.fullscreen == true);
     player_app_toggle_fullscreen(settings);
     assert(settings->settings.fullscreen == false);
-    assert(settings->settings.reduce_motion == false);
-    player_app_toggle_reduce_motion(settings);
-    assert(settings->settings.reduce_motion == true);
-    player_app_toggle_reduce_motion(settings);
-    assert(settings->settings.reduce_motion == false);
+    /* Settings > Accessibility: each choice steps Automatic, On, Off, and
+       Automatic follows the system's preference as last read. */
+    assert(settings->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+    assert(settings->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+    settings->system_reduced_motion = true;
+    settings->system_high_contrast = false;
+    assert(player_app_reduce_motion(settings) == true);
+    assert(player_app_high_contrast_focus(settings) == false);
+    player_app_cycle_reduce_motion(settings);
+    assert(settings->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON);
+    player_app_cycle_reduce_motion(settings);
+    assert(settings->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF);
+    assert(player_app_reduce_motion(settings) == false); /* Off wins over the system */
+    player_app_cycle_reduce_motion(settings);
+    assert(settings->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+    player_app_cycle_high_contrast_focus(settings);
+    assert(player_app_high_contrast_focus(settings) == true); /* On wins over the system */
+    player_app_cycle_high_contrast_focus(settings);
+    player_app_cycle_high_contrast_focus(settings);
+    assert(settings->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+    settings->system_high_contrast = true;
+    assert(player_app_high_contrast_focus(settings) == true);
+    assert(strcmp(player_system_choice_label(PLAYER_SYSTEM_CHOICE_AUTO), "Automatic") == 0);
+    assert(strcmp(player_system_choice_label(PLAYER_SYSTEM_CHOICE_ON), "On") == 0);
+    assert(strcmp(player_system_choice_label(PLAYER_SYSTEM_CHOICE_OFF), "Off") == 0);
+    {
+        static const int sizes[] = {100, 125, 150, 200, 0, 100};
+        assert(settings->settings.interface_size_pct == 0);
+        for (size_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            player_app_cycle_interface_size(settings);
+            assert(settings->settings.interface_size_pct == sizes[i]);
+        }
+        settings->settings.interface_size_pct = 0;
+    }
 
     assert(settings->settings.experimental_60hz == false);
     player_app_toggle_experimental_60hz(settings);
@@ -4471,7 +4500,7 @@ int main(int argc, char **argv) {
     free(settings);
 
     /* 9b. The launch-relevant settings map onto the session's runtime config;
-     * reduce_motion is launcher-UI state and must not leak into the child. */
+     * the accessibility settings are launcher-UI state and must not leak into the child. */
     printf("[PLAYER_STATE_TEST] Subtest 9b: settings apply to the launch session\n");
     fflush(stdout);
     {
@@ -4484,7 +4513,7 @@ int main(int argc, char **argv) {
         applied.vsync = false;
         applied.fullscreen = true;
         applied.master_volume = 55;
-        applied.reduce_motion = true;
+        applied.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
         applied.developer_mode = true;
 
         NkRuntimeConfig cfg;
@@ -6396,7 +6425,9 @@ int main(int argc, char **argv) {
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
         assert(s_app->settings.launcher_fullscreen == false);
-        assert(s_app->settings.reduce_motion == false);
+        assert(s_app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+        assert(s_app->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+        assert(s_app->settings.interface_size_pct == 0);
         assert(s_app->settings.master_volume == 80);
         assert(s_app->settings.launcher_window_width == 1280);
         assert(s_app->settings.launcher_window_height == 720);
@@ -6409,7 +6440,9 @@ int main(int argc, char **argv) {
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
         s_app->settings.launcher_fullscreen = true;
-        s_app->settings.reduce_motion = true;
+        s_app->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_OFF;
+        s_app->settings.high_contrast_choice = PLAYER_SYSTEM_CHOICE_ON;
+        s_app->settings.interface_size_pct = 150;
         /* #1306: shared system libraries are on by default and persist when turned off. */
         assert(s_app->settings.share_system_libraries == true);
         player_app_toggle_share_system_libraries(s_app);
@@ -6432,7 +6465,9 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
         assert(s_app2->settings.launcher_fullscreen == true);
-        assert(s_app2->settings.reduce_motion == true);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF);
+        assert(s_app2->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_ON);
+        assert(s_app2->settings.interface_size_pct == 150);
         assert(s_app2->settings.share_system_libraries == false);
         assert(s_app2->settings.master_volume == 55);
         assert(s_app2->settings.launcher_window_maximized == true);
@@ -6800,6 +6835,52 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.fps_cap == 0);
 
+        /* Reduce motion was a plain switch before it could follow the system.
+         * Such a file's true was the user's choice and stays On; its false was
+         * the default and now follows the system. An older player still reads
+         * "reduce_motion": it is true only for On. Unknown values keep the
+         * defaults. */
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"reduce_motion\": true}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"reduce_motion\": false}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"reduce_motion\": true, "
+                        "\"reduce_motion_choice\": \"off\"}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"reduce_motion_choice\": \"sometimes\", "
+                        "\"high_contrast_focus\": true, \"interface_size\": 175}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+        assert(s_app2->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
+        assert(s_app2->settings.interface_size_pct == 0);
+        s_app2->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved != NULL);
+            assert(strstr(saved, "\"reduce_motion\": true,") != NULL);
+            assert(strstr(saved, "\"reduce_motion_choice\": \"on\",") != NULL);
+            assert(strstr(saved, "\"high_contrast_focus\": \"auto\",") != NULL);
+            assert(strstr(saved, "\"interface_size\": 0,") != NULL);
+            free(saved);
+        }
+        s_app2->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            char *saved = read_text_file(test_settings_path);
+            assert(saved != NULL);
+            assert(strstr(saved, "\"reduce_motion\": false,") != NULL);
+            assert(strstr(saved, "\"reduce_motion_choice\": \"auto\",") != NULL);
+            free(saved);
+        }
+
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
@@ -6807,7 +6888,7 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
-        assert(s_app2->settings.reduce_motion == false);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "corrupt") != NULL);
 
@@ -6818,7 +6899,7 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
-        assert(s_app2->settings.reduce_motion == false);
+        assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
 

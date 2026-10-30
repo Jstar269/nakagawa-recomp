@@ -1142,3 +1142,17 @@ bool nk_platform_local_time_zone(int *standard_minutes, bool *daylight_now) {
     *daylight_now = id == TIME_ZONE_ID_DAYLIGHT;
     return true;
 }
+
+bool nk_platform_prefers_reduced_motion(void) {
+    BOOL animate = TRUE;
+    if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0)) return false;
+    return !animate;
+}
+
+bool nk_platform_high_contrast(void) {
+    HIGHCONTRASTW contrast;
+    memset(&contrast, 0, sizeof(contrast));
+    contrast.cbSize = sizeof(contrast);
+    if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0)) return false;
+    return (contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+}

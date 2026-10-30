@@ -1672,7 +1672,9 @@ class NativePlayerUiTests(unittest.TestCase):
         "build_cache": str(0x451A), "share_libraries": str(0x451B),
         "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
         "controller": str(0x450B), "scaling": str(0x4505),
-        "launcher_fullscreen": str(0x450A),
+        "launcher_fullscreen": str(0x450A), "accessibility": str(0x452B),
+        "interface_size": str(0x452C), "high_contrast": str(0x452D),
+        "reduce_motion": str(0x4509),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
     # row, which it enters at Third-party notices.
@@ -1733,6 +1735,30 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn("config/settings.json", run["dedicated_files"])
         self.assertEqual(run["default_profile_files"], [],
                          "nothing is written under the default profile")
+
+    def test_next_ui_accessibility_settings_are_saved_and_back_returns(self) -> None:
+        """#1739: Settings > Accessibility steps each setting with the keyboard, saves it,
+        and Esc returns to Settings with its row focused. The test mode starts with
+        Reduce motion On, so one step turns it Off."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN",
+             "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(run)],
+                         ["accessibility_settings", "settings"])
+        self.assertEqual(self.focus_trail(run),
+                         [focus["interface_size"], focus["high_contrast"],
+                          focus["reduce_motion"], focus["accessibility"]],
+                         "the page opens on its first setting and Back focuses its row")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("interface_size"), 100, "Automatic steps to 100%")
+        self.assertEqual(settings.get("high_contrast_focus"), "on", "Automatic steps to On")
+        self.assertEqual(settings.get("reduce_motion_choice"), "off", "On steps to Off")
+        self.assertIs(settings.get("reduce_motion"), False,
+                      "older players read Off as reduce_motion false")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are

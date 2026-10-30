@@ -108,7 +108,9 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 
 - The ring is drawn by the core outside the focused element, so nothing moves when focus moves: 3 px
   `accent_dark`, 3 px gap, radius = the element's radius + 6.
-- High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
+- High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines. The
+  launcher draws it when Settings > Accessibility > High contrast is On, or Automatic while Windows uses a contrast
+  theme.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
 - Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
@@ -133,7 +135,9 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 | Safe area | nothing closer than 16 px to a window edge |
 
 Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
+device density, and the logical width decides the columns. The text size scales the whole layout, as the UI scale
+does, so the launcher offers one control for both: Settings > Accessibility > Interface size sets the UI scale and
+the text size stays 100%. The launcher's screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
 the window. A larger window keeps its density and gains room. Clay clips at most ten containers per layout: shorten
@@ -150,8 +154,8 @@ is painted over.
 
 Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (toast, tab rule), slow 0.50 (art
 crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
-The waves step at 30 Hz. Reduce motion (the setting or the system's) makes every duration a cut and holds the
-waves on one frame. Nothing ever needs motion to be understood.
+The waves step at 30 Hz. Reduce motion (the setting, or with it on Automatic, Windows' Animation effects turned
+off) makes every duration a cut and holds the waves on one frame. Nothing ever needs motion to be understood.
 
 ### Background waves
 
@@ -320,11 +324,16 @@ it under the action row while BUILD PACKAGE waits for the files, with CHECK AGAI
 
 Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
 button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
-volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, CHECK FOR UPDATES, then
+volume with - and +, launcher fullscreen, accessibility, menu sounds, controller settings, CHECK FOR UPDATES, then
 the controller and the saves folder as captions; CHECK FOR UPDATES opens the Updates card and asks GitHub, see
 [`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
+ACCESSIBILITY (#1739) is a dialog card of three settings, each a button that steps through its values beside a
+sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Automatic follows the display scale, or
+100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), HIGH
+CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
+read every frame, so a change there applies at once).
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
@@ -465,9 +474,10 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 
 - Text contrast is at least 4.5:1 for everything except `dim`, which is reserved for disabled controls and
   footnotes; over the brightest wave point muted and error text stay at 4.6:1.
-- Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background.
-- Targets are at least 44 px high; text size (90 to 150%) scales the whole layout through the density.
-- Reduce motion holds the waves and makes transitions cuts.
+- Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background,
+  from Settings > Accessibility or a Windows contrast theme.
+- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density.
+- Reduce motion holds the waves and makes transitions cuts; Automatic follows Windows' Animation effects.
 - Launcher sounds are off by default and never replace a visual cue.
 
 ## Building and checking a screen

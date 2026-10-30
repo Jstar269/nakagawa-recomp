@@ -64,7 +64,8 @@ typedef enum {
     VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
     VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
     VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
-    VIEW_CONFIRM_FACTORY_RESET /* Settings > Factory reset: what moves aside; the last value */
+    VIEW_CONFIRM_FACTORY_RESET, /* Settings > Factory reset: what moves aside */
+    VIEW_ACCESSIBILITY_SETTINGS /* Settings > Accessibility: size, contrast, motion; the last value */
 } PlayerView;
 
 typedef enum {
@@ -177,6 +178,14 @@ typedef enum {
     NK_NETWORK_MODE_OFFLINE = 0
 } NkNetworkMode;
 
+/* An accessibility setting that follows the operating system's own preference
+ * until the user picks On or Off. Saved as "auto", "on" or "off". */
+typedef enum {
+    PLAYER_SYSTEM_CHOICE_AUTO = 0,
+    PLAYER_SYSTEM_CHOICE_ON,
+    PLAYER_SYSTEM_CHOICE_OFF
+} PlayerSystemChoice;
+
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
@@ -185,7 +194,13 @@ typedef struct {
     bool vsync;
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
-    bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    /* Launcher accessibility (Settings > Accessibility). Reduce motion holds the
+       waves still and turns pulses and sweeps into cuts; high-contrast focus
+       draws the white-and-black ring. Read them through player_app_reduce_motion
+       and player_app_high_contrast_focus, which resolve AUTO. */
+    PlayerSystemChoice reduce_motion_choice;
+    PlayerSystemChoice high_contrast_choice;
+    int interface_size_pct; /* 0 = automatic (the display's scale), or 100, 125, 150, 200 */
     bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
     bool launcher_window_maximized;
     bool launcher_window_position_valid;
@@ -637,6 +652,10 @@ typedef struct PlayerApp {
        an enhancement-package build's 60 Hz logic. Never saved with the settings. */
     bool experimental_60hz_session;
     char settings_notice[128];
+    /* The operating system's display preferences, as player_app_read_system_preferences
+       last read them: what an AUTO accessibility choice follows. */
+    bool system_reduced_motion;
+    bool system_high_contrast;
 
     /* Window & layout metrics */
     int window_width;
@@ -982,7 +1001,20 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
 bool player_ui_canvas_fit(int pixel_width, int pixel_height,
                           PlayerUiCanvas *out);
 void player_app_toggle_vsync(PlayerApp *app);
-void player_app_toggle_reduce_motion(PlayerApp *app);
+/* Settings > Accessibility. Each choice cycles Automatic, On, Off; the size cycles
+ * Automatic, 100, 125, 150 and 200%. Each change is saved. */
+void player_app_cycle_reduce_motion(PlayerApp *app);
+void player_app_cycle_high_contrast_focus(PlayerApp *app);
+void player_app_cycle_interface_size(PlayerApp *app);
+/* "Automatic", "On" or "Off". */
+const char *player_system_choice_label(PlayerSystemChoice choice);
+/* Reads the operating system's display preferences into the app (nk_platform); the
+ * launcher calls it every frame, so a change in Windows applies at once. */
+void player_app_read_system_preferences(PlayerApp *app);
+/* The effective settings: the user's On or Off, or for Automatic the operating
+ * system's preference as last read. */
+bool player_app_reduce_motion(const PlayerApp *app);
+bool player_app_high_contrast_focus(const PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
 void player_app_toggle_experimental_60hz(PlayerApp *app);
 void player_app_set_experimental_60hz(PlayerApp *app, bool on);
@@ -1097,7 +1129,7 @@ void player_app_request_launch(PlayerApp *app, int game_index);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
- * reduce_motion and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
+ * The accessibility settings and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,

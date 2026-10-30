@@ -3029,10 +3029,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 by += 42.0f;
             }
             char rm_label[40];
-            snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
+            snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s",
+                     player_system_choice_label(app->settings.reduce_motion_choice));
             focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
-                player_app_toggle_reduce_motion(app);
+            if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, rm_label, player_app_reduce_motion(app), in, focused)) {
+                player_app_cycle_reduce_motion(app);
             }
             focus++;
             y = by + 52.0f;
@@ -3231,10 +3232,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char rm_label[40];
-        snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
+        snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s",
+                 player_system_choice_label(app->settings.reduce_motion_choice));
         focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x, tog_y + 68.0f, 210.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
-            player_app_toggle_reduce_motion(app);
+        if (draw_button_focused(ren, col1_x, tog_y + 68.0f, 210.0f, 36.0f, rm_label, player_app_reduce_motion(app), in, focused)) {
+            player_app_cycle_reduce_motion(app);
         }
         focus++;
     }
@@ -5153,7 +5155,8 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
     if (app->focus_index < 0) app->focus_index = 0;
     if (app->focus_index >= focus_count) app->focus_index = focus_count - 1;
 
-    g_reduce_motion = app->settings.reduce_motion;
+    player_app_read_system_preferences(app);
+    g_reduce_motion = player_app_reduce_motion(app);
     ui_font_set_density(app->dpi_scale > 0.0f ? app->dpi_scale : 1.0f);
 
     /* Background Clear */
@@ -5225,6 +5228,7 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             render_developer_log(renderer, app, input);
             break;
         case VIEW_PSP_FONTS:
+        case VIEW_ACCESSIBILITY_SETTINGS:
             /* Drawn only by the nk_ui launcher. */
             break;
         default:

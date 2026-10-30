@@ -167,10 +167,11 @@ void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDis
     if (ui == NULL || viewport == NULL || display == NULL) {
         return;
     }
-    viewport->ui_scale_pct = 0;
+    viewport->ui_scale_pct = display->interface_size_pct;
     viewport->text_size_pct = 100;
     memset(&prefs, 0, sizeof(prefs));
     prefs.reduce_motion = display->reduce_motion;
+    prefs.high_contrast_focus = display->high_contrast_focus;
     prefs.prompt_style = prompt_style;
     nk_ui_set_prefs(ui, &prefs);
 }

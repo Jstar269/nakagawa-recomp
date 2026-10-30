@@ -703,7 +703,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
-                       app->active_view == VIEW_ONLINE_SETTINGS) {
+                       app->active_view == VIEW_ONLINE_SETTINGS ||
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -867,7 +868,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
-                       app->active_view == VIEW_ONLINE_SETTINGS) {
+                       app->active_view == VIEW_ONLINE_SETTINGS ||
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -1484,7 +1486,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_VOLUME_DOWN: player_app_adjust_volume(app, -5); break;
         case PLAYER_UI_SETTINGS_VOLUME_UP: player_app_adjust_volume(app, 5); break;
         case PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS: player_app_toggle_ui_sounds(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION: player_app_toggle_reduce_motion(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY:
+            player_app_set_view(app, VIEW_ACCESSIBILITY_SETTINGS);
+            break;
+        case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
             player_app_toggle_launcher_fullscreen(app);
             break;
@@ -1920,7 +1927,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
         { "build_cache", VIEW_BUILD_CACHE },
         { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES },
-        { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET }
+        { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET },
+        { "accessibility_settings", VIEW_ACCESSIBILITY_SETTINGS }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -2342,6 +2350,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_UPDATES: return "updates";
     case VIEW_CONFIRM_FACTORY_RESET: return "confirm_factory_reset";
+    case VIEW_ACCESSIBILITY_SETTINGS: return "accessibility_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
@@ -4942,6 +4951,8 @@ int main(int argc, char *argv[]) {
             app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
         } else if (strcmp(test_view, "online-settings") == 0) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+        } else if (strcmp(test_view, "accessibility-settings") == 0) {
+            player_app_set_view(&app, VIEW_ACCESSIBILITY_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "updates") == 0) {
@@ -5115,7 +5126,7 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode) app.settings.reduce_motion = true;
+    if (ui_test_mode) app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
 #endif
 
     app.window_width = override_w;
@@ -5345,8 +5356,8 @@ int main(int argc, char *argv[]) {
         player_ui_nk_test_report_compatibility();
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_CONFIRM_FACTORY_RESET. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_CONFIRM_FACTORY_RESET; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACCESSIBILITY_SETTINGS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACCESSIBILITY_SETTINGS; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);

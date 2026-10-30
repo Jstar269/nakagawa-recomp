@@ -170,7 +170,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
-               FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+               FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED, FLOW_SETTINGS_ACCESSIBILITY,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -299,6 +299,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
+        : which == FLOW_SETTINGS_ACCESSIBILITY ? PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY
         : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
@@ -312,6 +313,14 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.online_mode = true;
     settings.developer_mode = true;
     settings.share_system_libraries = true;
+    /* Accessibility: a size picked, high contrast following Windows (off), and
+       Reduce motion turned on. */
+    settings.interface_size = "125%";
+    settings.high_contrast_choice = "Automatic";
+    settings.reduce_motion_choice = "On";
+    settings.reduce_motion = true;
+    settings.system_name = "Windows";
+    settings.system_scale_pct = 150;
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
     }
@@ -2004,6 +2013,66 @@ static void test_display_settings_reach_the_design_system(void) {
     CHECK(wakes_early && wakes_late, "motion on: the next wave step is scheduled");
 }
 
+/* Whether a launcher frame with one focused button draws the high-contrast
+   ring's black keyline, under these display settings. */
+static bool display_draws_black_keyline(const PlayerUiDisplay *display) {
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(1280, 720, 1.0f);
+    const NkUiDrawList *draw = NULL;
+    bool black = false;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return false;
+    player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
+    nk_ui_set_viewport(ui, &viewport);
+    nk_ui_focus(ui, 7u);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)nk_ui_button(ui, 7u, "Play", NK_UI_BUTTON_PRIMARY);
+        draw = nk_ui_end(ui);
+    }
+    for (uint32_t i = 0u; draw != NULL && i < draw->nv; ++i) {
+        if (draw->v[i].rgba_pm == 0x000000FFu) black = true;
+    }
+    nk_ui_destroy(ui);
+    return black;
+}
+
+/* Settings > Accessibility's high-contrast focus and interface size reach the
+   design system as well: the ring gains its black keyline, and the viewport
+   takes the size as its UI scale (Automatic follows the display). */
+static void test_accessibility_settings_reach_the_design_system(void) {
+    PlayerUiDisplay display;
+    NkUiViewport viewport = launcher_viewport(1920, 1080, 1.0f);
+    NkUiConfig config;
+    NkUi *ui;
+    memset(&display, 0, sizeof(display));
+    CHECK(!display_draws_black_keyline(&display), "the standard ring has no black keyline");
+    display.high_contrast_focus = true;
+    CHECK(display_draws_black_keyline(&display),
+          "high-contrast focus draws the ring between black keylines");
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a launcher context for the interface size");
+    if (ui == NULL) return;
+    display.interface_size_pct = 150;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.ui_scale_pct == 150 && viewport.text_size_pct == 100 &&
+              nk_ui_scale_for_viewport(&viewport).density == 1.5f,
+          "a 150% interface size draws a 1920 x 1080 window's layout at 1.5");
+    display.interface_size_pct = 0;
+    viewport.display_scale = 1.25f;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.ui_scale_pct == 0 && nk_ui_scale_for_viewport(&viewport).density == 1.25f,
+          "an Automatic interface size follows the display's scale");
+    nk_ui_destroy(ui);
+}
+
 static void test_settings_pages(void) {
     static char dump[CASE_DUMP_CAP];
     static const struct { FlowCase which; NkUiId id; PlayerUiSettingsOp op; const char *what; }
@@ -2024,8 +2093,16 @@ static void test_settings_pages(void) {
          "plus raises the volume"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_UI_SOUNDS, PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS,
          "the menu sounds button toggles them"},
-        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
-         PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION, "the reduce motion button toggles it"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACCESSIBILITY,
+         PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY, "Accessibility opens its page"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE,
+         PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, "the interface size button steps the size"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST,
+         PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST, "the high contrast button steps its choice"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
+         PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION, "the reduce motion button steps its choice"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Back leaves Accessibility"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
          PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN, "the launcher fullscreen button toggles it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_CONTROLLER, PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
@@ -2081,7 +2158,8 @@ static void test_settings_pages(void) {
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                                      FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
-                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED};
+                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+                                     FLOW_SETTINGS_ACCESSIBILITY};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2096,6 +2174,15 @@ static void test_settings_pages(void) {
               strstr(dump, "\"2X (960X544)\"") != NULL && strstr(dump, "\"80%\"") != NULL &&
               strstr(dump, "saved as you make them") != NULL,
           "Settings shows each value on the button that changes it");
+    CHECK(flow_case_fits(FLOW_SETTINGS_ACCESSIBILITY, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"INTERFACE SIZE: 125%\"") != NULL &&
+              strstr(dump, "\"HIGH CONTRAST: AUTOMATIC\"") != NULL &&
+              strstr(dump, "\"REDUCE MOTION: ON\"") != NULL &&
+              strstr(dump, "Windows: 150%.\"") != NULL &&
+              strstr(dump, "Windows: off.\"") != NULL &&
+              strstr(dump, "Animations in Windows: on.\"") != NULL &&
+              strstr(dump, "\xE2\x80\xA6\"") == NULL,
+          "Accessibility shows each choice and, uncut, what Automatic follows now");
     CHECK(dump_flow_case(FLOW_SETTINGS_NOTICES, dump, sizeof(dump)) &&
               strstr(dump, "synthetic-compiler 14.2") != NULL &&
               strstr(dump, "GPL-3.0-or-later; see LICENSE") != NULL,
@@ -3047,6 +3134,8 @@ static int capture_screens(const char *directory) {
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
             {FLOW_SETTINGS_UPDATES, "settings-updates", PLAYER_UI_ID_UPDATE_DOWNLOAD},
             {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
+            {FLOW_SETTINGS_ACCESSIBILITY, "settings-accessibility",
+             PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},
@@ -3816,6 +3905,7 @@ int main(int argc, char **argv) {
     test_input_guides();
     test_settings_pages();
     test_display_settings_reach_the_design_system();
+    test_accessibility_settings_reach_the_design_system();
     test_controller_and_developer_log_pages();
     test_controller_keyboard_page();
     test_controller_binding_glyphs();

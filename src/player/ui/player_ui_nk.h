@@ -346,7 +346,8 @@ typedef struct {
    options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
    tools (VIEW_PREREQ_ABOUT), the build tool removal check
    (VIEW_CONFIRM_REMOVE_TOOLS), build tools and cache (VIEW_BUILD_CACHE, #1306),
-   the page that opens the removal check, and Updates (VIEW_UPDATES). */
+   the page that opens the removal check, Updates (VIEW_UPDATES), and
+   Accessibility (VIEW_ACCESSIBILITY_SETTINGS). */
 typedef enum {
     PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
@@ -355,7 +356,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
     PLAYER_UI_SETTINGS_PAGE_FONTS,
     PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
-    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET /* VIEW_CONFIRM_FACTORY_RESET */
+    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET, /* VIEW_CONFIRM_FACTORY_RESET */
+    PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY  /* VIEW_ACCESSIBILITY_SETTINGS */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -370,7 +372,7 @@ typedef enum {
     PLAYER_UI_SETTINGS_VOLUME_DOWN,
     PLAYER_UI_SETTINGS_VOLUME_UP,
     PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS,
-    PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION,
+    PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION,   /* Automatic, On, Off */
     PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN,
     PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
     PLAYER_UI_SETTINGS_OPEN_ONLINE,
@@ -401,7 +403,10 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
     PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
     PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
-    PLAYER_UI_SETTINGS_FACTORY_RESET       /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_FACTORY_RESET,      /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY,
+    PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
+    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST   /* Automatic, On, Off */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -430,8 +435,18 @@ typedef struct {
     bool fullscreen;
     int volume;                     /* 0-100 */
     bool ui_sounds;
-    bool reduce_motion;
     bool launcher_fullscreen;
+    /* Accessibility (VIEW_ACCESSIBILITY_SETTINGS): each setting's word, whether it
+       is in effect, and what Automatic follows now */
+    const char *interface_size;         /* "Automatic" or "125%" */
+    const char *high_contrast_choice;   /* "Automatic", "On" or "Off" */
+    const char *reduce_motion_choice;
+    bool high_contrast;                 /* in effect */
+    bool reduce_motion;                 /* in effect */
+    const char *system_name;            /* "Windows", or "your system" elsewhere */
+    int system_scale_pct;               /* the display's scale */
+    bool system_high_contrast;
+    bool system_reduced_motion;
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -729,6 +744,9 @@ enum {
     PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
+    PLAYER_UI_ID_SETTINGS_ACCESSIBILITY = 0x452Bu,    /* Settings: opens Accessibility */
+    PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Cu,
+    PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Du,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -843,12 +861,16 @@ PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active);
 /* The launcher's display settings, as every frame hands them to the design
    system. */
 typedef struct {
-    bool reduce_motion;   /* hold the waves on one frame, and every pulse and sweep */
+    bool reduce_motion;        /* hold the waves on one frame, and every pulse and sweep */
+    bool high_contrast_focus;  /* the white ring between black keylines */
+    int interface_size_pct;    /* NkUiViewport.ui_scale_pct: 0 follows the display */
 } PlayerUiDisplay;
 
 /* Gives the design system the launcher's display settings and the prompt
-   style: its preferences, and the text size and UI scale in the viewport, which
-   the caller then sets with nk_ui_set_viewport. Every launcher frame goes
+   style: its preferences, and the UI scale in the viewport, which the caller
+   then sets with nk_ui_set_viewport. The text size stays 100%: the design
+   system scales the whole layout for it, as it does for the UI scale, so the
+   interface size is the one control for both. Every launcher frame goes
    through here, so no setting is left out on the way (Reduce motion was, and
    the waves kept moving). */
 void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
