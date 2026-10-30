@@ -130,6 +130,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
+#define PSP_ORACLE_CASE_GE_SYNC_IDS 78
 /* #1106: a late-loaded PRX that owns a semaphore-blocked waiter, an event flag and a callback. Its
    module_stop returns 0 without deleting, waking or otherwise touching them. PSPLink's modstop and
    modunld then measure what survives. Never returns from main, so the probe teardown never runs. */
@@ -322,6 +323,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/wait_outcomes_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 #define PROBE_HOST0_LOG "host0:/ge_break_continue_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+#define PROBE_HOST0_LOG "host0:/ge_sync_ids_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
 #define PROBE_HOST0_LOG "host0:/refer_status_size_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
@@ -2858,6 +2861,7 @@ static void run_display_mask_duty(int emulated) {
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING || \
@@ -2980,7 +2984,8 @@ static inline void ge_gu_teardown_outs(const GeGuTeardown *t,
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
 
 /* Does the PSP GE make forward progress while CPU interrupt delivery is masked?
  *
@@ -10191,6 +10196,164 @@ static void run_ge_break_continue(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+/* #1374: what sceGeListSync and sceGeDrawSync return for a queue id that names no list, for
+ * the id of a list that has completed, and in the blocking form (sync type 0) for those ids, an
+ * idle GE and a list a sceGeBreak(1) reset removed. PSP-GE-CONTROL-001 measured only the poll
+ * form (sync type 1) on paused, cancelled and stalled lists.
+ *
+ * Every list is the transfer list of ge-break-continue, enqueued with callback id -1 (no
+ * callback), so no handler in this PRX is registered with the GE driver. Poll cells come
+ * first. A blocking call runs in a thread of its own, and the case waits for that thread with
+ * a bound: a call that does not return is a measured TIMEOUT, its thread is terminated, and
+ * the case goes on. The blocking cells come last for that reason. */
+#define GSI_UNKNOWN_QID 0x0badf00d
+#define GSI_BLOCK_TIMEOUT_US 200000u
+#define GSI_BLOCK_PRIORITY 0x18
+#define GSI_BLOCK_STACK 0x1000
+
+static void emit_ge_sync(int emulated, const char *case_id, const char *status,
+                         uint32_t result, const uint32_t *out, size_t count) {
+    emit_record_extended(emulated, "PSP-GE-SYNC-001", case_id, status, result, out, count);
+}
+
+static volatile int s_gsi_draw;       /* 1: sceGeDrawSync(0); 0: sceGeListSync(qid, 0) */
+static volatile int s_gsi_qid;
+static volatile int s_gsi_result;
+static volatile int s_gsi_returned;
+
+static int gsi_block_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_gsi_result = s_gsi_draw ? sceGeDrawSync(0) : sceGeListSync(s_gsi_qid, 0);
+    s_gsi_returned = 1;
+    return 0;
+}
+
+/* One blocking sync, bounded. Outputs: qid, returned, result, the wait result, the delete
+ * result and the elapsed system time. */
+#define GSI_BLOCK_OUTS 6
+static void gsi_blocking(int emulated, const char *case_id, int draw, int qid) {
+    probe_step(emulated, "ge-sync-ids", case_id);
+    s_gsi_draw = draw;
+    s_gsi_qid = qid;
+    s_gsi_result = 0;
+    s_gsi_returned = 0;
+    const uint32_t start = sceKernelGetSystemTimeLow();
+    const SceUID th = sceKernelCreateThread("gsi_block", gsi_block_thread, GSI_BLOCK_PRIORITY,
+                                            GSI_BLOCK_STACK, PSP_THREAD_ATTR_USER, NULL);
+    int wait_rc = (int)th;
+    int delete_rc = (int)th;
+    if (th >= 0) {
+        const int start_rc = sceKernelStartThread(th, 0, NULL);
+        SceUInt timeout = GSI_BLOCK_TIMEOUT_US;
+        wait_rc = start_rc < 0 ? start_rc : sceKernelWaitThreadEnd(th, &timeout);
+        delete_rc = wait_rc >= 0 ? sceKernelDeleteThread(th) : sceKernelTerminateDeleteThread(th);
+    }
+    const uint32_t elapsed = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+    uint32_t out[GSI_BLOCK_OUTS] = {
+        (uint32_t)qid, (uint32_t)s_gsi_returned, (uint32_t)s_gsi_result,
+        (uint32_t)wait_rc, (uint32_t)delete_rc, elapsed,
+    };
+    emit_ge_sync(emulated, case_id, th < 0 ? "SKIP" : s_gsi_returned ? "PASS" : "TIMEOUT",
+                 (uint32_t)s_gsi_result, out, GSI_BLOCK_OUTS);
+}
+
+/* Enqueue the transfer list with no stall address and wait, bounded, for the GE to go idle.
+ * Outputs: qid, last list state, last draw state, elapsed. */
+static int gsi_run_list(int emulated, const char *step, uint32_t list, uint32_t *out) {
+    probe_step(emulated, "ge-sync-ids", step);
+    const int qid = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
+    const GeIdleWait w = ge_wait_idle(qid, qid >= 0 ? GE_IDLE_DEADLINE_US : 0u);
+    out[0] = (uint32_t)qid;
+    out[1] = (uint32_t)w.list_state;
+    out[2] = (uint32_t)w.draw_state;
+    out[3] = w.elapsed_us;
+    return qid >= 0 && w.idle ? qid : -1;
+}
+
+static void run_ge_sync_ids(int emulated) {
+    uint32_t out[8];
+
+    /* An id no enqueue returned, and a negative one. */
+    probe_step(emulated, "ge-sync-ids", "unknown-poll");
+    out[0] = (uint32_t)GSI_UNKNOWN_QID;
+    out[1] = (uint32_t)sceGeListSync(GSI_UNKNOWN_QID, 1);
+    out[2] = (uint32_t)sceGeListSync(-1, 1);
+    out[3] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-unknown-poll", "PASS", out[1], out, 4);
+    out[1] = (uint32_t)sceGeListDeQueue(GSI_UNKNOWN_QID);
+    emit_ge_sync(emulated, "ge-list-dequeue-unknown", "PASS", out[1], out, 2);
+
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t src = (uint32_t)(uintptr_t)s_ge_src;
+    const uint32_t dst = vram + 0x00100000u;
+    for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) {
+        s_ge_src[i] = 0x5a5a5a5au;
+    }
+    /* Build the list, then write the data cache back (see run_ge_break_continue). */
+    (void)ge_build_list(src, dst);
+    sceKernelDcacheWritebackAll();
+    const uint32_t list = (uint32_t)(uintptr_t)s_ge_list;
+
+    /* A list that ran to its FINISH and END: its own id afterwards. */
+    const int qid_a = gsi_run_list(emulated, "completed-a", list, out);
+    out[4] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 1) : qid_a);
+    out[5] = (uint32_t)(qid_a >= 0 ? sceGeListDeQueue(qid_a) : qid_a);
+    out[6] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-completed-poll", qid_a >= 0 ? "PASS" : "SKIP",
+                 out[4], out, 7);
+
+    /* A second list after it: whether the first id comes back, and what each id reads. */
+    const int qid_b = gsi_run_list(emulated, "completed-b", list, out);
+    out[4] = (uint32_t)qid_a;
+    out[5] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 1) : qid_a);
+    out[6] = (uint32_t)(qid_b >= 0 ? sceGeListSync(qid_b, 1) : qid_b);
+    emit_ge_sync(emulated, "ge-list-sync-after-reenqueue", qid_a >= 0 && qid_b >= 0 ? "PASS" : "SKIP",
+                 out[6], out, 7);
+
+    /* A list stalled at its start and removed by a reset: the poll form is the measured
+       0x80000100 (PSP-GE-CONTROL-001); the blocking form is measured below. */
+    probe_step(emulated, "ge-sync-ids", "cancelled");
+    const int qid_c = sceGeListEnQueue((const void *)(uintptr_t)list,
+                                       (void *)(uintptr_t)list, -1, NULL);
+    PspGeBreakParam param;
+    memset(&param, 0, sizeof(param));
+    const int reset_rc = qid_c >= 0 ? sceGeBreak(1, &param) : qid_c;
+    out[0] = (uint32_t)qid_c;
+    out[1] = (uint32_t)reset_rc;
+    out[2] = (uint32_t)(qid_c >= 0 ? sceGeListSync(qid_c, 1) : qid_c);
+    out[3] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-cancelled-poll", qid_c >= 0 ? "PASS" : "SKIP",
+                 out[2], out, 4);
+
+    /* Blocking forms, each bounded, on an idle GE. */
+    gsi_blocking(emulated, "ge-draw-sync-idle-wait", 1, 0);
+    gsi_blocking(emulated, "ge-list-sync-completed-wait", 0, qid_b);
+    gsi_blocking(emulated, "ge-list-sync-cancelled-wait", 0, qid_c);
+    gsi_blocking(emulated, "ge-list-sync-unknown-wait", 0, GSI_UNKNOWN_QID);
+
+    /* Leave the GE idle whatever happened above. */
+    probe_step(emulated, "ge-sync-ids", "quiesce");
+    GeIdleWait w = ge_wait_idle(-1, 0u);
+    uint32_t reset_issued = 0u;
+    int quiesce_rc = 0;
+    if (!w.idle) {
+        reset_issued = 1u;
+        quiesce_rc = ge_reset_queues(&w);
+    }
+    out[0] = reset_issued;
+    out[1] = (uint32_t)quiesce_rc;
+    out[2] = (uint32_t)w.draw_state;
+    out[3] = w.elapsed_us;
+    emit_ge_sync(emulated, "ge-sync-quiesce", w.idle ? "PASS" : "TIMEOUT",
+                 (uint32_t)quiesce_rc, out, 4);
+
+    uint32_t done = 10;
+    emit_record_extended(emulated, "PSP-GE-SYNC-001", "ge-sync-ids-done", "PASS", 0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 static void run_kernel_misc(int emulated) {
     const SceInt64 clock = (SceInt64)1234567890;
@@ -11852,6 +12015,8 @@ int main(int argc, char *argv[]) {
     run_wait_outcomes(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
     run_ge_break_continue(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+    run_ge_sync_ids(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
     run_refer_status_size(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY

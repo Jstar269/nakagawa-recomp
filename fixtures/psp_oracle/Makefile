@@ -153,6 +153,10 @@ else ifeq ($(CASE),wait-outcomes)
 CASE_ID = 63
 else ifeq ($(CASE),ge-break-continue)
 CASE_ID = 64
+# 78: #1374 GE sync results for unknown, completed and cancelled queue ids, poll and
+# bounded blocking forms (probe.c, PSP-GE-SYNC-001).
+else ifeq ($(CASE),ge-sync-ids)
+CASE_ID = 78
 else ifeq ($(CASE),refer-status-size)
 CASE_ID = 65
 else ifeq ($(CASE),registry-readonly)
