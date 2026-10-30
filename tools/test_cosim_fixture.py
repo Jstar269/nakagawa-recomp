@@ -50,19 +50,26 @@ def decode(word: int) -> tuple:
 # adds or drops a form is a visible, reviewed change rather than a silent one.
 EXPECTED_FORMS = frozenset(
     {
+        ("op", 0x08),   # addi
         ("op", 0x09),   # addiu
+        ("op", 0x0A),   # slti
+        ("op", 0x0B),   # sltiu
+        ("op", 0x0C),   # andi
+        ("op", 0x0E),   # xori
         ("op", 0x0D),   # ori
         ("op", 0x0F),   # lui
         ("op", 0x02),   # j
         ("op", 0x03),   # jal
         ("op", 0x04),   # beq
         ("op", 0x05),   # bne
-        ("op", 0x01),   # bltzl / bgezl
+        ("op", 0x01),   # bltz / bgez / bltzal / bgezal / bltzl / bgezl
+        ("op", 0x06),   # blez
+        ("op", 0x07),   # bgtz
         ("op", 0x14),   # beql
         ("op", 0x15),   # bnel / bnezl
         ("op", 0x16),   # blezl
         ("op", 0x17),   # bgtzl
-        ("op", 0x1F),   # Allegrex ext/ins/seb/seh
+        ("op", 0x1F),   # Allegrex ext/ins/seb/seh/wsbh/wsbw/bitrev
         ("op", 0x20),   # lb
         ("op", 0x21),   # lh
         ("op", 0x22),   # lwl
@@ -82,21 +89,39 @@ EXPECTED_FORMS = frozenset(
         ("special", 0x00),  # sll (and the nop encoding)
         ("special", 0x02),  # srl
         ("special", 0x03),  # sra
+        ("special", 0x04),  # sllv
+        ("special", 0x06),  # srlv / rotrv
+        ("special", 0x07),  # srav
         ("special", 0x08),  # jr
         ("special", 0x09),  # jalr
         ("special", 0x0A),  # movz
         ("special", 0x0B),  # movn
         ("special", 0x10),  # mfhi
+        ("special", 0x11),  # mthi
         ("special", 0x12),  # mflo
+        ("special", 0x13),  # mtlo
+        ("special", 0x16),  # clz
+        ("special", 0x17),  # clo
         ("special", 0x18),  # mult
         ("special", 0x19),  # multu
+        ("special", 0x1A),  # div
+        ("special", 0x1B),  # divu
+        ("special", 0x1C),  # madd
+        ("special", 0x1D),  # maddu
+        ("special", 0x20),  # add
         ("special", 0x21),  # addu
+        ("special", 0x22),  # sub
         ("special", 0x23),  # subu
         ("special", 0x24),  # and
         ("special", 0x25),  # or
         ("special", 0x26),  # xor
+        ("special", 0x27),  # nor
         ("special", 0x2A),  # slt
         ("special", 0x2B),  # sltu
+        ("special", 0x2C),  # max
+        ("special", 0x2D),  # min
+        ("special", 0x2E),  # msub
+        ("special", 0x2F),  # msubu
         ("cop1", 0x00, 0x00),  # mfc1
         ("cop1", 0x04, 0x00),  # mtc1
         ("cop1_branch",),  # bc1f/t and likely forms share a branch group
