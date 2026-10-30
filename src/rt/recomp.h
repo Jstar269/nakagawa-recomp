@@ -1312,6 +1312,15 @@ void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume bound
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
+/* A computed jr/jalr whose target register holds 0 is a null code pointer (#1375): report
+ * it and stop the run. Generated code tests the latched target before the transfer's link
+ * write and delay slot, so a static transfer to offset 0 of a zero-based image (a direct
+ * call, a branch, the module entry) is never mistaken for one. */
+__attribute__((noreturn, cold)) void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc);
+#define SR_CODE_POINTER(s, target, transfer_pc) do { \
+    if (__builtin_expect((target) == 0u, 0)) sr_null_code_pointer((s), (transfer_pc)); \
+} while (0)
+
 /* AOT `jr $ra` returns are structural host returns, so a linked call needs a
  * small host-side boundary to compare the guest target latched at `jr` with the
  * caller's explicit resume PC. This state is separate from CpuState: it is not

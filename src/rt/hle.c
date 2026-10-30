@@ -12031,7 +12031,7 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
-uint32_t sr_savedata_execute(uint32_t param);
+uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
 uint32_t sr_savedata_prepare_utility(unsigned kind);
 
 enum { SR_UTILITY_STORAGE_GAMEDATA = 1, SR_UTILITY_STORAGE_GAMESHARING = 2 };
@@ -12077,7 +12077,7 @@ static uint32_t utility_slot_claim_locked(int type) {
 }
 
 static int s_dlg_status = 0, s_dlg_tick = 0;
-static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
+static uint32_t s_dlg_param = 0, s_dlg_param_size = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
 int sr_savedata_pause_busy(void) {
     dialog_lock();
@@ -12086,14 +12086,20 @@ int sr_savedata_pause_busy(void) {
     return busy;
 }
 static uint32_t h_SavedataInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
+    /* The block's first word is its size: the 0x5c8, 0x5dc and 0x600-byte versions are
+     * accepted and any other size is refused (pspautotests e2d098fc). */
+    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+    const uint32_t size = MEM_R32(A0);
+    if ((size != 0x5c8u && size != 0x5dcu && size != 0x600u) ||
+        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
     if (claim) {
         dialog_unlock();
         return claim;
     }
-    s_dlg_param = A0; s_dlg_status = 1; s_dlg_tick = 0;
+    s_dlg_param = A0; s_dlg_param_size = size; s_dlg_status = 1; s_dlg_tick = 0;
     s_dlg_work_started = s_dlg_work_done = 0;
     s_dlg_generation++;
     s_dlg_result = 0;
@@ -12134,19 +12140,20 @@ static uint32_t h_DlgGetStatus(CpuState *s) {
 }
 static uint32_t h_SavedataUpdate(CpuState *s) {
     (void)s;
-    uint32_t param = 0, generation = 0;
+    uint32_t param = 0, size = 0, generation = 0;
     dialog_lock();
     if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (s_dlg_status == 1) {      /* still starting up: Update does not move INIT (#1386) */
+    if (s_dlg_status == 0 || s_dlg_status == 1) { /* NONE and INIT reject Update (#1386) */
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
     if (s_dlg_status == 2 && !s_dlg_work_started) {
         s_dlg_work_started = 1;
         param = s_dlg_param;
+        size = s_dlg_param_size;
         generation = s_dlg_generation;
     } else if (s_dlg_status == 2 && s_dlg_work_done && ++s_dlg_tick >= 2) {
         s_dlg_status = 3;
@@ -12156,7 +12163,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     }
     dialog_unlock();
     if (param) {
-        uint32_t result = sr_savedata_execute(param);
+        uint32_t result = sr_savedata_execute_sized(param, size);
         dialog_lock();
         if (generation == s_dlg_generation) {
             s_dlg_result = result;
@@ -12183,10 +12190,16 @@ static uint32_t h_DlgShutdown(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    /* PSPAutotests tests/utility/dialog/status.expected: repeated shutdown and
+     * shutdown after NONE return INVALID_STATUS. */
+    if (s_dlg_status == 0 || s_dlg_status == 4) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
     if (s_dlg_status == 3 && caller_priority > UTILITY_SAVEDATA_SHUTDOWN_PRIORITY)
         s_dlg_status = 0;                /* the shutdown ran before the caller got the CPU back */
-    else if (s_dlg_status)
-        s_dlg_status = 4;                /* NONE stays NONE: a stray call cannot re-arm the slot */
+    else
+        s_dlg_status = 4;
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
@@ -13652,6 +13665,8 @@ static uint32_t h_DeleteVTimer(CpuState *s) {
  * the GE callbacks. Not measured, so the run stops by name: a NULL time pointer (the test
  * notes it crashes) and a SetVTimerHandler from inside the timer's own handler. */
 #define VTIMER_ZERO_ID 0x800201bfu
+/* The shortest reschedule a handler return gets (PSP-HLE-INTR-001, PSP-3000 6.6.1). */
+#define VTIMER_MIN_DELAY_US 100u
 
 static uint32_t s_vtimer_in_handler;   /* uid whose handler is running, else 0 */
 
@@ -13781,8 +13796,10 @@ static void vtimer_service_one(void) {
     s_vtimer_in_handler = 0u;
     t = vtimer_lookup(uid);
     if (!t || t->handler != handler || t->schedule != scheduled) return;
+    /* A return below 100 us reschedules 100 us on (PSP-HLE-INTR-001, vtimer-ret-1us: returns
+     * of 1 gave scheduled times 10000, 10100, 10200, 10300, 10400). */
     if (delay == 0u) t->handler = 0u;
-    else t->schedule = scheduled + delay;
+    else t->schedule = scheduled + (delay < VTIMER_MIN_DELAY_US ? VTIMER_MIN_DELAY_US : delay);
 }
 
 static uint32_t h_GetVTimerTime(CpuState *s) {
@@ -14944,6 +14961,18 @@ static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operatio
 
 static int hle_fd_is_raw_umd(uint32_t fd) {
     return hle_fd_is_raw_device(fd) && s_fds[fd].raw_umd && s_fds[fd].size != 0u;
+}
+
+/* The asynchronous request queue serves the UMD block device while a disc image is open: one
+ * captured sceIoReadAsync of a raw UMD descriptor returned 0, its immediate sceIoPollAsync 1
+ * (still pending) and its sceIoWaitAsync 0 with the sector count as the result
+ * (PSP-UMDRAW-001). A queued read or seek completes through the same sector-unit device calls
+ * as the synchronous ones, so its result and refusals are theirs. Every other raw descriptor,
+ * and the UMD with no image, keeps its named boundary. */
+static uint32_t hle_io_raw_async_fd_boundary(uint32_t fd, IoRawDeviceBoundary operation,
+                                             const char *api) {
+    if (hle_fd_is_raw_umd(fd)) return 0u;
+    return hle_io_raw_fd_boundary(fd, operation, api);
 }
 
 static uint32_t hle_io_raw_umd_seek(Fd *f, int64_t offset, uint32_t whence,
@@ -17244,7 +17273,10 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
-    if (hle_fd_is_raw_umd(fd)) return hle_io_raw_umd_read(fd, dst, count);
+    if (hle_fd_is_raw_umd(fd)) {
+        if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+        return hle_io_raw_umd_read(fd, dst, count);
+    }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
     if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -17354,6 +17386,7 @@ static uint32_t h_IoLseek32(CpuState *s) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
     if (hle_fd_is_raw_umd(fd)) {
+        if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
         uint32_t position = 0;
         uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], off, whence, &position);
         return rc != 0u ? rc : position;
@@ -17380,6 +17413,10 @@ static uint32_t h_IoLseek(CpuState *s) {
         return 0x80010009; /* baseline behavior preserved for standard streams */
     }
     if (hle_fd_is_raw_umd(fd)) {
+        if (s_fds[fd].async.state == IO_ASYNC_PENDING) {
+            s->r[3] = 0xffffffffu;
+            return SCE_ERROR_KERNEL_ASYNC_BUSY;
+        }
         uint32_t position = 0;
         uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], (int64_t)(((uint64_t)A3 << 32) | A2),
                                           stack_arg(s, 0), &position);
@@ -18208,7 +18245,10 @@ static uint32_t h_IoDevctl(CpuState *s) {
 static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
                                 uint32_t a2, uint32_t a3,
                                 uint32_t stack0, uint32_t stack1) {
-    if (hle_fd_is_raw_device(fd)) {
+    const int raw_umd_queued = hle_fd_is_raw_umd(fd) &&
+        (op == IO_ASYNC_READ || op == IO_ASYNC_LSEEK32 || op == IO_ASYNC_LSEEK64 ||
+         op == IO_ASYNC_CLOSE);
+    if (hle_fd_is_raw_device(fd) && !raw_umd_queued) {
         switch (op) {
         case IO_ASYNC_READ:
             return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ_ASYNC,
@@ -18234,7 +18274,7 @@ static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
         }
     }
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used ||
-        (s_fds[fd].kind != FD_KIND_FILE &&
+        (s_fds[fd].kind != FD_KIND_FILE && !raw_umd_queued &&
          !(s_fds[fd].kind == FD_KIND_STD &&
            (op == IO_ASYNC_WRITE || op == IO_ASYNC_CLOSE))))
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -18294,10 +18334,19 @@ static uint32_t h_IoReadAsync(CpuState *s) {
     if (!s_fds[fd].used)
         return s_fds[fd].async.state == IO_ASYNC_PENDING ?
                SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    uint32_t raw_error = hle_io_raw_fd_boundary(
+    uint32_t raw_error = hle_io_raw_async_fd_boundary(
         fd, IO_RAW_BOUNDARY_READ_ASYNC, "sceIoReadAsync");
     if (raw_error != 0u) return raw_error;
     if (s_fds[fd].kind == FD_KIND_STD) return 0x80010009u;
+    if (hle_fd_is_raw_umd(fd)) {
+        /* The I/O manager queues the request and its worker runs the device read, so the
+         * device's refusals (a zero count, a destination that cannot hold every requested
+         * sector, a read past the last sector) come back as the request's result, not from
+         * the submission (uOFW src/kd/iofilemgr/iofilemgr.c do_read: async requests are
+         * handed to the descriptor's async thread before df_read runs). The count is
+         * sectors; the completion checks the whole destination span before any copy. */
+        return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
+    }
     if (A2 != 0u && !sr_guest_span_writable(A1, A2)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
 }
@@ -18321,7 +18370,7 @@ static uint32_t h_IoLseekAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
-    uint32_t raw_error = hle_io_raw_fd_boundary(
+    uint32_t raw_error = hle_io_raw_async_fd_boundary(
         fd, IO_RAW_BOUNDARY_LSEEK64_ASYNC, "sceIoLseekAsync");
     if (raw_error != 0u) return raw_error;
     return io_async_submit(fd, IO_ASYNC_LSEEK64, A2, A3, 0u, stack_arg(s, 0), 0u);
@@ -18378,6 +18427,12 @@ static uint32_t io_async_complete_fd(uint32_t fd) {
             cpu.r[5] = request.a1;
             cpu.r[6] = request.a2;
             result = io_async_result_u32(h_IoLseek32(&cpu));
+        } else if (request.op == IO_ASYNC_LSEEK64 && hle_fd_is_raw_umd(fd)) {
+            int64_t offset = (int64_t)(((uint64_t)request.a2 << 32) | request.a1);
+            uint32_t position = 0;
+            uint32_t refused = hle_io_raw_umd_seek(&s_fds[fd], offset, request.stack0,
+                                                   &position);
+            result = refused != 0u ? (int64_t)(int32_t)refused : (int64_t)position;
         } else if (request.op == IO_ASYNC_LSEEK64) {
             if (!hle_fd_is_file(fd)) result = (int64_t)(int32_t)SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
             else if (request.stack0 >= 3u)
@@ -18438,7 +18493,7 @@ static void io_async_dispatch_tick(void) {
 
 static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait,
                                IoRawDeviceBoundary raw_boundary, const char *api) {
-    uint32_t raw_error = hle_io_raw_fd_boundary(fd, raw_boundary, api);
+    uint32_t raw_error = hle_io_raw_async_fd_boundary(fd, raw_boundary, api);
     if (raw_error != 0u) return raw_error;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -18497,7 +18552,7 @@ static uint32_t h_IoChangeAsyncPriority(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    uint32_t raw_error = hle_io_raw_fd_boundary(
+    uint32_t raw_error = hle_io_raw_async_fd_boundary(
         fd, IO_RAW_BOUNDARY_ASYNC_PRIORITY, "sceIoChangeAsyncPriority");
     if (raw_error != 0u) return raw_error;
     s_fds[fd].async.priority = (int32_t)A1;
@@ -18508,7 +18563,7 @@ static uint32_t h_IoSetAsyncCallback(CpuState *s) {
     uint32_t fd = A0, callback = A1;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    uint32_t raw_error = hle_io_raw_fd_boundary(
+    uint32_t raw_error = hle_io_raw_async_fd_boundary(
         fd, IO_RAW_BOUNDARY_ASYNC_CALLBACK, "sceIoSetAsyncCallback");
     if (raw_error != 0u) return raw_error;
     if (callback != 0u && !sr_callback_is_valid(callback)) return 0x800201a1u;

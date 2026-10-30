@@ -1264,6 +1264,8 @@ def _make_input_images(
                     "PACKAGE_NO_EXECUTABLE_REGIONS",
                     f"{source['name']} has no analyzer-owned executable region",
                 )
+            for finding in elf.envelope_findings:
+                diagnostics.append({"module": source["name"], "message": finding})
             source["elf"] = elf
             source["ranges"] = ranges
             source["analyzed_functions"] = len(starts)

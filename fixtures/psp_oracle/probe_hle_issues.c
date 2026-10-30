@@ -7,7 +7,10 @@
 //   CASE=hle-intr-cells (PSP-HLE-INTR-001): #325 VTimer/alarm handler return values and
 //     VBLANK sub-interrupt delivery while interrupts are suspended or a handler holds;
 //   CASE=vfpu-forms (PSP-VFPU-FORMS-001): #326 raw result words of vh2f, vuc2i, vsocp,
-//     vwbn, vrndf1 and vrndf2, register-only.
+//     vwbn, vrndf1 and vrndf2, register-only;
+//   CASE=intr-cause (PSP-INTR-CAUSE-001): #325 COP0 Cause, Status and Count and the
+//     Allegrex interrupt-enable word, read in kernel mode through the kernel bridge,
+//     across a sceKernelCpuSuspendIntr window that spans one VBLANK.
 // These cases live apart from probe_hle_measure.c because they do what that file's
 // families never may: hle-intr-cells registers a VBLANK sub-interrupt handler, sets
 // VTimer and alarm handlers and suspends interrupts, and hle-issues-batch calls a kernel
@@ -48,6 +51,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_ISSUES_BATCH 106
 #define HLE_CASE_INTR_CELLS 107
 #define HLE_CASE_VFPU_FORMS 108
+#define HLE_CASE_INTR_CAUSE 120
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -61,6 +65,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "vfpu-forms"
 #define HLE_TEST_ID "PSP-VFPU-FORMS-001"
 #define HLE_LOG "host0:/vfpu_forms_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_INTR_CAUSE
+#define HLE_CAMPAIGN_ID "intr-cause"
+#define HLE_TEST_ID "PSP-INTR-CAUSE-001"
+#define HLE_LOG "host0:/intr_cause_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1156,6 +1164,143 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_INTR_CELLS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_INTR_CAUSE
+
+/* #325 COP0 interrupt state (PSP-INTR-CAUSE-001), one launch. The questions are the LLE
+   INTC model's (src/rt/cpu_lle.h): which Cause.IP bit the interrupt controller drives,
+   whether a VBLANK left pending while interrupts are suspended shows there, and what
+   sceKernelCpuSuspendIntr changes (Status or the Allegrex interrupt-enable word).
+   Each snapshot is one kuKernelCall of ca_cop0_read, which runs in kernel mode and only
+   reads COP0 Cause ($13), Status ($12) and Count ($9) and the interrupt-enable word
+   (mfic $0), plus the system time and sceDisplayGetVcount right after it.
+   - cause-enabled-<i>: four snapshots with interrupts enabled, just after a VBLANK start;
+   - per pass p (two passes): wait for a VBLANK start, suspend interrupts, take a snapshot
+     every 1 ms for 24 ms (the next VBLANK falls inside), resume, take one more snapshot
+     200 us later, wait 30 ms. Rows cause-masked-p<p>-t<NN>, cause-resumed-p<p> and the
+     window summary cause-window-p<p>.
+   Nothing is installed: no handler, timer or alarm. Interrupts are suspended for about
+   24 ms per pass, below the 50 ms window hle-intr-cells measured. Every row is PASS: it
+   records what was read. */
+
+#include <kubridge.h>
+#include <pspdisplay.h>
+
+#define CA_SNAPS 25u
+#define CA_STEP_US 1000u
+#define CA_PASSES 2u
+
+/* Kernel mode, through kuKernelCall with arg1 = four output words: Cause, Status, Count
+   and the interrupt-enable word. Reads only; writes nothing but `out`. */
+static int ca_cop0_read(uint32_t *out)
+{
+    uint32_t cause, status, count, ie;
+    __asm__ volatile("mfc0 %0, $13\n\t"
+                     "mfc0 %1, $12\n\t"
+                     "mfc0 %2, $9\n\t"
+                     "mfic %3, $0"
+                     : "=r"(cause), "=r"(status), "=r"(count), "=r"(ie));
+    out[0] = cause;
+    out[1] = status;
+    out[2] = count;
+    out[3] = ie;
+    return 0;
+}
+
+struct ca_snapshot {
+    uint32_t cop0[4];
+    uint32_t sys;
+    uint32_t vcount;
+    uint32_t rc;
+};
+
+/* One snapshot; cop0 keeps HLE_SENTINEL when the bridge did not run the reader. */
+static void ca_snap(struct ca_snapshot *s)
+{
+    KernelCallArg arg;
+    memset(&arg, 0, sizeof(arg));
+    for (unsigned i = 0; i < 4u; i++) {
+        s->cop0[i] = HLE_SENTINEL;
+    }
+    arg.arg1 = (uint32_t)s->cop0;
+    s->rc = (uint32_t)kuKernelCall((void *)ca_cop0_read, &arg);
+    s->sys = sceKernelGetSystemTimeLow();
+    s->vcount = (uint32_t)sceDisplayGetVcount();
+}
+
+/* Row <name>: result = Cause; out0 = Status; out1 = Count; out2 = the interrupt-enable
+   word; out3 = system time minus ref; out4 = sceDisplayGetVcount; out5 = kuKernelCall's
+   return. */
+static void ca_row(const char *name, const struct ca_snapshot *s, uint32_t ref)
+{
+    const uint32_t w[6] = {s->cop0[1], s->cop0[2], s->cop0[3], s->sys - ref, s->vcount, s->rc};
+    hle_record(name, "PASS", s->cop0[0], w, 6);
+}
+
+static void ca_spin_until(uint32_t base, uint32_t us)
+{
+    while ((uint32_t)(sceKernelGetSystemTimeLow() - base) < us) {
+    }
+}
+
+/* One suspended window. Row cause-window-p<p>: result = suspension length (system
+   time); out0 = the suspend return word; out1 = vcount before the suspend; out2 = vcount
+   at the resume; out3 = vcount 30 ms after the resume. */
+static void ca_masked(unsigned pass)
+{
+    static struct ca_snapshot snaps[CA_SNAPS];
+    struct ca_snapshot resumed;
+    char name[48];
+    snprintf(name, sizeof(name), "cause-window-p%u", pass);
+    hle_step(name);
+    sceDisplayWaitVblankStart();
+    const uint32_t v0 = (uint32_t)sceDisplayGetVcount();
+    const unsigned int flags = sceKernelCpuSuspendIntr();
+    const uint32_t ts = sceKernelGetSystemTimeLow();
+    for (unsigned k = 0; k < CA_SNAPS; k++) {
+        ca_spin_until(ts, k * CA_STEP_US);
+        ca_snap(&snaps[k]);
+    }
+    const uint32_t vr = (uint32_t)sceDisplayGetVcount();
+    const uint32_t tr = sceKernelGetSystemTimeLow();
+    sceKernelCpuResumeIntr(flags);
+    ca_spin_until(tr, 200u);
+    ca_snap(&resumed);
+    sceKernelDelayThread(30000);
+    const uint32_t v30 = (uint32_t)sceDisplayGetVcount();
+    for (unsigned k = 0; k < CA_SNAPS; k++) {
+        snprintf(name, sizeof(name), "cause-masked-p%u-t%02u", pass, k);
+        ca_row(name, &snaps[k], ts);
+    }
+    snprintf(name, sizeof(name), "cause-resumed-p%u", pass);
+    ca_row(name, &resumed, tr);
+    const uint32_t w[4] = {(uint32_t)flags, v0, vr, v30};
+    snprintf(name, sizeof(name), "cause-window-p%u", pass);
+    hle_record(name, "PASS", tr - ts, w, 4);
+}
+
+static int hle_run(void)
+{
+    struct ca_snapshot enabled[4];
+    char name[48];
+    hle_step("cause-enabled");
+    sceDisplayWaitVblankStart();
+    const uint32_t ref = sceKernelGetSystemTimeLow();
+    for (unsigned i = 0; i < 4u; i++) {
+        ca_snap(&enabled[i]);
+    }
+    for (unsigned i = 0; i < 4u; i++) {
+        snprintf(name, sizeof(name), "cause-enabled-%u", i);
+        ca_row(name, &enabled[i], ref);
+    }
+    for (unsigned pass = 0; pass < CA_PASSES; pass++) {
+        ca_masked(pass);
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_INTR_CAUSE */
 
 /* ------------------------------------------------------------------------- */
 

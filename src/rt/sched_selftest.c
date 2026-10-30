@@ -4226,49 +4226,49 @@ static void test_alarm_runs_at_its_deadline_in_interrupt_context(void) {
            "a due alarm is delivered from the yield path");
 }
 
-static void test_alarm_rearm_is_relative_to_delivery(void) {
+/* PSP-HLE-INTR-001, alarm-ret-20ms (PSP-3000 6.6.1, 2026-10-29): an alarm set 10000 us ahead
+ * whose handler returned 20000 five times and then 0 ran at 10046, 30049, 50053, 70046, 90047
+ * and 110048 us. A non-zero return counts from the call's scheduled time, so a late service
+ * point never pushes the grid back; a call that falls behind owes the scheduled points it
+ * missed, as the alarm-ret-1us series showed (calls back to back while behind). */
+static void test_alarm_rearm_counts_from_the_scheduled_time(void) {
+    static const uint64_t measured_calls[6] = {10046u, 30049u, 50053u, 70046u, 90047u, 110048u};
     alarm_fixture();
     s_cur = mk(0x241u, TH_RUNNING, 20);
     s_vtime_us = 0u;
-    uint32_t uid = sched_alarm_set(1000u, ALARM_HANDLER, 7u);
-
-    g_alarm_ret = 500u;
-    s_vtime_us = 1000u;
-    scheduler_service_pending();
-    expect(g_alarm_calls == 1u, "first delivery");
-    expect(sched_alarm_next_deadline() == 1500u,
-           "a non-zero return re-arms the same alarm that many microseconds later");
-    s_vtime_us = 1499u;
-    scheduler_service_pending();
-    expect(g_alarm_calls == 1u, "the re-armed alarm waits for its new deadline");
-
-    g_alarm_ret = 700u;
-    s_vtime_us = 1600u;            /* service was late by 100 us */
-    scheduler_service_pending();
-    expect(g_alarm_calls == 2u && g_alarm_seen_time == 1600u, "second delivery");
-    expect(sched_alarm_next_deadline() == 2300u,
-           "the period counts from delivery, so a late service point owes no burst");
-
-    g_alarm_ret = 0u;
-    s_vtime_us = 2300u;
-    scheduler_service_pending();
-    expect(g_alarm_calls == 3u, "third delivery");
+    uint32_t uid = sched_alarm_set(10000u, ALARM_HANDLER, 7u);
+    for (unsigned i = 0; i < 6u; i++) {
+        const uint64_t scheduled = 10000u + 20000u * (uint64_t)i;
+        s_vtime_us = scheduled - 1u;
+        scheduler_service_pending();
+        expect(g_alarm_calls == i, "each call waits for its scheduled time");
+        g_alarm_ret = i < 5u ? 20000u : 0u;
+        s_vtime_us = measured_calls[i];
+        scheduler_service_pending();
+        expect(g_alarm_calls == i + 1u && g_alarm_seen_time == measured_calls[i],
+               "each call runs at its measured service point");
+        if (i < 5u)
+            expect(sched_alarm_next_deadline() == scheduled + 20000u,
+                   "the next deadline is the call's scheduled time plus the return, not its "
+                   "delivery time plus the return");
+    }
     expect(sched_alarm_next_deadline() == SCHED_WAIT_FOREVER, "a zero return ends the alarm");
-    s_vtime_us = 99999u;
+    s_vtime_us = 400000u;
     scheduler_service_pending();
-    expect(g_alarm_calls == 3u, "an ended alarm never fires again");
+    expect(g_alarm_calls == 6u, "an ended alarm never fires again");
     expect(sched_alarm_cancel(uid) == SCHED_ERROR_UNKNOWN_ALMID,
            "an alarm that ended through its return value is released");
 
-    /* Many missed periods still deliver one episode per pass, not a catch-up burst. */
+    /* A service point late by ten periods delivers the ten scheduled points it fell behind,
+     * one per pass, and the grid continues from the last of them. */
     alarm_fixture();
     s_cur = mk(0x242u, TH_RUNNING, 20);
     sched_alarm_set(100u, ALARM_HANDLER, 1u);
     g_alarm_ret = 100u;
-    s_vtime_us = 100000u;
+    s_vtime_us = 1050u;
     scheduler_service_pending();
-    expect(g_alarm_calls == 1u, "1000 missed periods deliver one episode, not a burst");
-    expect(sched_alarm_next_deadline() == 100100u, "and the next period starts at the delivery");
+    expect(g_alarm_calls == 10u, "scheduled points 100..1000 each get one call");
+    expect(sched_alarm_next_deadline() == 1100u, "and the next scheduled point is 1100");
 }
 
 static void test_alarm_cancel_and_ordering(void) {
@@ -5281,7 +5281,7 @@ int main(int argc, char **argv) {
 
     /* Kernel alarms. */
     test_alarm_runs_at_its_deadline_in_interrupt_context();
-    test_alarm_rearm_is_relative_to_delivery();
+    test_alarm_rearm_counts_from_the_scheduled_time();
     test_alarm_cancel_and_ordering();
     test_alarm_waits_for_enabled_interrupts_and_follows_vblank();
     test_alarm_is_a_wake_source_for_the_idle_scheduler();

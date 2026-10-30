@@ -3114,6 +3114,25 @@ class TestSanitizedBringup(unittest.TestCase):
         ))
         nk_cli.validate_bringup_report(report)
 
+    def test_analyze_stage_route_boundaries_are_named(self):
+        # The package route's analyze-stage boundaries carry their own analyzer class;
+        # none of them reaches the report as ANALYZER_FAILURE_UNCLASSIFIED.
+        cases = {
+            "PACKAGE_INVALID_ELF": "ANALYZER_ELF_INVALID",
+            "PACKAGE_INVALID_IMPORT_TABLE": "ANALYZER_IMPORT_TABLE_INVALID",
+            "PACKAGE_NO_EXECUTABLE_REGIONS": "ANALYZER_NO_EXECUTABLE_REGIONS",
+            "PACKAGE_INPUT_MISSING": "ANALYZER_INPUT_MISSING",
+            "PACKAGE_MODULE_DIR_REQUIRED": "ANALYZER_INPUT_MISSING",
+        }
+        for code, failure_class in cases.items():
+            with self.subTest(code=code):
+                boundary = title_codegen_plan.PackageRouteError(code, "synthetic analyze boundary")
+                status, report = self._run_case("analyze", analyzer_error=boundary)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(report["failure_class"], failure_class)
+                self.assertIn(failure_class, nk_cli._bringup_human_summary(report))
+                nk_cli.validate_bringup_report(report)
+
     def test_runtime_unimplemented_nid_is_reported_as_unsupported_import(self):
         status, report = self._run_case(
             "launch",
