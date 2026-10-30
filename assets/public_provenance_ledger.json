@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f67c8ff7d639051e050403e5e8bde22815c248ba17442e6f83e35def692e1832"
+      "sha256": "0fbe7316aaabbf02953b0017908fa67472f6dd0053cf03834e512a9a1bef11a9"
     },
     {
       "path": "NOTICE.md",
@@ -1405,7 +1405,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7ef3a67c876ab4428e3e7015115087b20c4969a799ac321027c999634db33e2d"
+      "sha256": "d34ac01ff335d9baff87329c0c0c0cd465ce7836f6605216f51e020beb4a8ec9"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1564,7 +1564,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ac0d0f56515ce0da5690abc55510becf62750bce8a0c4a5e6a0d64527340b94c"
+      "sha256": "6ac569adeab4e6528c8422818f47e18c3bf063159d3e42b1918291f794585be6"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -2149,7 +2149,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1fa8715cc502479d8505398a55e006c9c6ef07896e4ad3d23021278cf5ede9c1"
+      "sha256": "056dc3716ea3a635f559d9f7f8926d06db14119a2f33bb9d933e9eb1d758bd34"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -2185,7 +2185,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f53cfcae54f4969873ed9580174ff8399c14877bcae55a1972e4d15e386a1084"
+      "sha256": "384b7fa9ca0a20dc85a47cbf6ec2bae25c1083ba4d34666acb424f335defbb5a"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -2197,7 +2197,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "563e7aa3156d1adbbc2c877725a4c81a8ac91a389bbe041087341d9b9aabee30"
+      "sha256": "ace76e40cddd628d310d5f50e5cfcfef89d41d49fa63b2cee47a5a8129406a0d"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -12649,7 +12649,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "bf0fcf774d19fdd34056af58ebd78c72fbb6e5b17daeb882feb3fe8b634773ab"
+      "sha256": "f65f5dd4b680949be6d4f66c8f037977a5fdbd8b338e45b0c869e61b45148ed9"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12674,7 +12674,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e486b6f22e749cc1b83d06509a08e33c178f176418b4d28744dedcded60005c3"
+      "sha256": "3ba8deceb2b3311aad5966674c504a3c252727e163a67f88281c93cd2b5c837b"
     },
     {
       "path": "tools/compat_overrides.py",
@@ -13253,7 +13253,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b6278be57b104efb11c13a95f8d17d4899ebabd6ea501330988317a2579d2fde"
+      "sha256": "d44f7db659e21c3a1e6822df2085338cc87bbecb8f81b7285b145534683fe2c9"
     },
     {
       "path": "tools/make_app_icon.py",
@@ -14482,7 +14482,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "50ade8a21c926ea33631a30ee72b4680b802e2671df355a7d1fbd44abce36ce1"
+      "sha256": "a6ad68ff023253f780e13edacbd2571bff3f833763f55406ed55c8e5f6380e75"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -14699,7 +14699,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1acf3125e0c03b04dc2888d233eff895369a456e67d6ef50618a69becf70eed7"
+      "sha256": "8fac81334a16861979cfb82ad3c737745d9814b59c5c238a18c2846475686fff"
     },
     {
       "path": "tools/test_cosim_mutation_gate_outcome.py",
@@ -14711,7 +14711,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b57d3d39e6784c0e2d3baf81c9cb57fa8e5b8d603005c07ca863e9d4303f70aa"
+      "sha256": "8051943ef8dcaffe1883a835ed1a9f87c7d0c2a9f7f893c47134b6869cb741ec"
     },
     {
       "path": "tools/test_cpu_lle.py",
@@ -15480,7 +15480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c94953c30d974238344ca09c17a5bc3103d9542ab6415a4f6a9343567828fda"
+      "sha256": "0e77eabfa42ed14d76462020ac8ad5e28bea130d1ae77b4b16df953a1206e34b"
     },
     {
       "path": "tools/test_manager_safety.ps1",

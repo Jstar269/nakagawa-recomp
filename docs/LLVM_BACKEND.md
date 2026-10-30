@@ -118,7 +118,9 @@ the C body. What the C path leaves to a C compiler is explicit here:
 - **Calls, tail calls and dispatch** follow the C emitter's transfer rules exactly: a known
   entry is a checked native CALL; an unknown or computed target is `dispatch_call` with an
   explicit resume PC; `j` to a known entry, `jr rs`, `jalr $zero` and a continuation exit
-  are recorded TAIL transfers.
+  are recorded TAIL transfers. In a body split at other entries (`--region-split-threshold`),
+  a conditional branch into another entry is a TAIL transfer to that entry's body, and a
+  not-taken one continues into the next entry, as in C.
 - **Undefined behavior** in LLVM terms never reaches the IR: variable shifts are masked to
   31 as the C does, rotates are shifts, `div`/`divu` select a safe divisor and then the
   PSP's defined results for division by zero and `INT_MIN / -1`, and `clz`/`clo` use
@@ -163,7 +165,9 @@ profile's emission sites (`hst_emission_sites`, which a test re-derives from
 - `cosim-selftest-llvm` runs the cosimulation corpus with every lowerable cell as an LLVM
   body in the AOT lane, compared with the production interpreter on the instruction trace,
   the ordered guest writes, the memory window and the state vector, and fails if fewer than
-  20 functions were lowered.
+  20 functions were lowered. With
+  `COSIM_CODEGEN_ARGS="--stack-census --region-split-threshold=0"` every body is split
+  at other entries, so the `xing_*` cells run their entry crossings as LLVM bodies.
 - `cosim-mutants-llvm` damages the lowering one defect at a time (inverted branch, lost
   delay slot, branch-likely slot that always runs, missing HI write, missing load write,
   computed target read after the slot, `sc` without a link, wrong call resume PC); each
