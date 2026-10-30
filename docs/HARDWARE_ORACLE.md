@@ -779,6 +779,28 @@ One console is one data point; see §11. Nothing here closes issue #70
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
 
+- **PSP-3000 single-case run of the `module-start` probe on commit `fd2a75fd` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `fd2a75fd` is the commit that adds the probe (case 124,
+  `fixtures/psp_oracle/probe_module_start.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 8 records and the done record, all PASS. The row cites only the records named in it. The raw
+  envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `fd2a75fd`) |
+  | --- | --- | --- | --- |
+  | `PSP-MODULE-START-001` | `ms-self`, `ms-mem-pre`, `ms-helper-create`, `ms-mem-created`, `ms-refer-after`, `ms-mem-after`, `ms-idlist`, `ms-helper-self`, `module-start-done` | A module that declares `module_start_thread_parameter`, a non-zero `module_start` return, and the main module a game boots with | MEASURED (`module-start`) |
+
+  What the records establish, for this probe module only. The module defines its own `module_start` and
+  declares no `module_start_thread_parameter`.
+  - *The thread.* `module_start` runs in a thread of its own named `SceModmgrStart`, priority 0x20, with a
+    0x40000-byte stack at 0x09FC0000 (the top of the user partition).
+  - *Deletion.* Once `module_start` returns 0, that thread is gone: 50 ms later `sceKernelReferThreadStatus` of
+    its UID answers 0x80020198 (UNKNOWN_THID) and `sceKernelGetThreadmanIdList` no longer lists it.
+  - *Memory.* `sceKernelTotalFreeMemSize` grows by exactly 0x40000 after the return, so the stack goes back to
+    the user partition. `sceKernelMaxFreeMemSize` does not change: the 0x4000-byte stack of the thread
+    `module_start` created sits directly below the freed range, so the freed range is a block of its own.
+
 - **PSP-3000 single-case run of the `vfpu-forms` probe on commit `781ccd34` (2026-10-28)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `781ccd34` is the commit that adds the probe (case 108 in
   `fixtures/psp_oracle/probe_hle_issues.c`). The case was one runner invocation after the `transport-write`
@@ -2794,6 +2816,7 @@ not expected PSP values.
 | `intr-cause` | `PSP-INTR-CAUSE-001` | `MEASURED` (2026-10-29, `2c199df8`, boot 67; single launch, not in the campaign queue) | #325: COP0 Cause, Status and Count and the Allegrex interrupt-enable word, read in kernel mode by one `kuKernelCall` each, with the system time and `sceDisplayGetVcount`: four reads with interrupts enabled after a VBLANK start, then per pass (two passes) a read every 1 ms through a 24 ms `sceKernelCpuSuspendIntr` window, one read 200 us after the resume and the window summary. Read-only; nothing is installed. 58 result records. |
 | `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
+| `module-start` | `PSP-MODULE-START-001` | `MEASURED` (2026-10-29, `fd2a75fd`; single launch, not in the campaign queue) | Module lifecycle: a module with its own `module_start` records that thread's status, the free memory before and after it returns, whether its UID still answers, and the thread list |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
