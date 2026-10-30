@@ -23,14 +23,14 @@ Classes are listed strongest first. A path takes the first class whose source na
 
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
-| `hardware-measured` | 64 | 14 |
-| `ppsspp-derived` | 109 | 90 |
+| `hardware-measured` | 64 | 16 |
+| `ppsspp-derived` | 108 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 297 | 200 |
-| `unverified` | 189 | 51 |
-| total | 659 | 355 |
+| `synthetic` | 295 | 200 |
+| `unverified` | 190 | 57 |
+| total | 657 | 363 |
 
-The VFPU census also lists 320 forms the runtime refuses at the
+The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
 them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
 
@@ -45,7 +45,7 @@ them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
   counted, because it would give every path the same class.
 - Hardware runs described only in `tools/hle_registry_meta.py` notes count only when
   `tools/psp_oracle/manifest.json` links them; the rows marked `note` below carry such a note.
-- Measured VFPU oracle rows that no census form cites yet: `PSP-VFPU-CMP-001`, `PSP-VFPU-TRANSCENDENTAL-001`. Their forms keep the class
+- Measured VFPU oracle rows that no census form cites yet: `PSP-VFPU-CMP-001`, `PSP-VFPU-FORMS2-001`, `PSP-VFPU-FUNNEL-001`, `PSP-VFPU-SORT-001`, `PSP-VFPU-TRANSCENDENTAL-001`. Their forms keep the class
   their census row gives until the census links them.
 
 At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is
@@ -160,7 +160,6 @@ belongs to without the census's own grouping.
 | `0x27e22ec2` | `sceKernelResumeDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x27eb27b8` | `sceIoLseek` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x27f6e642` | `sceFontGetNumFontList` | font | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_font_list_contract`; note |
-| `0x281928a9` | `sceNetTerm` | network | `synthetic` | HLE selftest dispatch |
 | `0x289d82fe` | `sceDisplaySetFrameBuf` | display | `synthetic` | HLE selftest dispatch |
 | `0x28a8e98a` | `sceRegGetKeyValue` | system | `synthetic` | HLE selftest dispatch |
 | `0x28b6489c` | `sceKernelDeleteSema` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
@@ -419,7 +418,6 @@ belongs to without the census's own grouping.
 | `0x884c9f90` | `sceKernelTrySendMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
-| `0x89360950` | `sceNetEtherNtostr` | network | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_named_refusals` |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
@@ -569,7 +567,7 @@ belongs to without the census's own grouping.
 | `0xc492f751` | `sceUtilityGameSharingInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc5768d02` | `sceRegGetKeyInfoByName` | system | `synthetic` | HLE selftest dispatch |
 | `0xc58bcd9e` | `sceNetAdhocMatchingGetMembers` | network | `unverified` | no recorded evidence |
-| `0xc6183d47` | `sceUmdActivate` | umd | `ppsspp-derived` | registry notes name PPSSPP |
+| `0xc6183d47` | `sceUmdActivate` | umd | `unverified` | no recorded evidence |
 | `0xc629af26` | `sceUtilityLoadAvModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc68d9437` | `sceKernelStartVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
 | `0xc69bebce` | `sceOpenPSIDGetOpenPSID` | system | `unverified` | no recorded evidence |
@@ -928,10 +926,15 @@ belongs to without the census's own grouping.
 | `vfpu-34-d01f0000-e6fbe0819423` | `0x34` | `0xd01f0084` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-13306d9c22d2` | `0x34` | `0xd01f8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-4a572d3f61f1` | `0x34` | `0xd01f8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
+| `vfpu-34-d0200000-569020674441` | `0x34` | `0xd0200000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_vrndi_rule_cells` |
+| `vfpu-34-d0218000-ac69ea1bf731` | `0x34` | `0xd021800f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0220000-41aec2c1ea09` | `0x34` | `0xd0220000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0228000-bf2dcb1482da` | `0x34` | `0xd022808f` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0328000-bf2dcb1482da` | `0x34` | `0xd0328090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d0330000-812afb3b7a6b` | `0x34` | `0xd0330000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0380000-a8e1644c3022` | `0x34` | `0xd0380000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0390000-01881cbef1ef` | `0x34` | `0xd0390000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d03b0000-5bf1c1e7f497` | `0x34` | `0xd03b0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d03b0000-695999f072c8` | `0x34` | `0xd03b0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d03b8000-65b917bad035` | `0x34` | `0xd03b8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -958,6 +961,9 @@ belongs to without the census's own grouping.
 | `vfpu-34-d0448000-9ca02b934046` | `0x34` | `0xd0448084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d0450000-6b85266691e1` | `0x34` | `0xd0450000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0450100-d11658a3e0f7` | `0x34` | `0xd0450180` | 2 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0468000-ac69ea1bf731` | `0x34` | `0xd046807f` | 3 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0478000-bf2dcb1482da` | `0x34` | `0xd04780ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0488000-bf2dcb1482da` | `0x34` | `0xd0488090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d04a0000-01881cbef1ef` | `0x34` | `0xd04a0000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d04a8000-bf2dcb1482da` | `0x34` | `0xd04a80ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d0598000-bf2dcb1482da` | `0x34` | `0xd0598090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |

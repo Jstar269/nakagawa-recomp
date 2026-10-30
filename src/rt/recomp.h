@@ -172,6 +172,36 @@ static inline uint32_t sr_vfpu_h2f(uint32_t h) {
     return sign | ((e + 112u) << 23) | (m << 13);
 }
 
+/* PSP-VFPU-FORMS2-001 (PSP-3000, 2026-10-29, issue #326), identity prefixes unless a
+ * helper says otherwise. */
+
+/* vrnds.s: the seed word becomes all four 32-bit components of the random unit and its
+ * 32-bit carry, whatever the state was (96 cells from two different states). The RCX
+ * image is the one sr_vfpu_rnd_step reads and writes. */
+static inline void sr_vfpu_rnd_seed(uint32_t rcx[8], uint32_t seed) {
+    for (int k = 0; k < 8; k++)
+        rcx[k] = (rcx[k] & 0xfff00000u) | (((seed >> (4 * k)) & 0xfu) << 16) |
+                 ((k < 4 ? seed : seed >> 16) & 0xffffu);
+}
+
+/* vf2h: one float32 word to an IEEE half by truncation (round toward zero). A result
+ * below the half normal range, a float denormal included, is a zero of its sign; an
+ * exponent past the half range is an infinity of its sign; a NaN keeps its sign and the
+ * LOW 10 mantissa bits, so 0x7fc00000 becomes 0x7c00 (vh2f's mapping run backwards). */
+static inline uint32_t sr_vfpu_f2h(uint32_t b) {
+    const uint32_t sign = (b >> 16) & 0x8000u, e = (b >> 23) & 0xffu, m = b & 0x7fffffu;
+    if (e == 0xffu) return sign | 0x7c00u | (m & 0x3ffu);
+    const int he = (int)e - 112;
+    if (he >= 31) return sign | 0x7c00u;
+    if (he <= 0) return sign;
+    return sign | ((uint32_t)he << 10) | (m >> 13);
+}
+
+/* vc2i: one byte b to the top byte of a word, the rest zero. */
+static inline uint32_t sr_vfpu_c2i(uint32_t b) {
+    return (b & 0xffu) << 24;
+}
+
 /* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
 static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
     return ((b & 0xffu) * 0x01010101u) >> 1;
@@ -1361,6 +1391,9 @@ typedef struct SrAotReturnBoundary {
     uint32_t resume_pc;
     uint32_t has_resume_pc;
     uint64_t observed_target;  /* bit 32 marks a captured target, including target 0 */
+    uint32_t call_sp;          /* guest $sp at the call, after its delay slot: the callee's entry $sp */
+    uint32_t dispatch_owned;   /* begun by dispatch_call_aot, whose caller ignores the end result */
+    uint32_t unwinding;        /* abandoned by a guest return to an enclosing linked call */
 } SrAotReturnBoundary;
 
 /* The active AOT return stack follows the running guest fiber. Each TCB owns
@@ -1386,6 +1419,8 @@ extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
 int sr_aot_return_boundary_end(CpuState *s);
+/* How many guest returns past their caller the runtime has unwound (#1034). */
+uint64_t sr_aot_return_unwind_count(void);
 void sr_aot_return_boundaries_reset(void);
 void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other);
 void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack);
@@ -1507,6 +1542,18 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size);
 #define sr_end(s, mem_addr, size) ((void)0)
 #endif
 
+/* Local guest-register promotion (tools/codegen.py --promote-registers, #284): a
+ * promoted instruction writes a C local, and the body writes dirty locals back to
+ * s->r[] at every label, control transfer and other boundary. A build that compiles
+ * the trace hooks in also mirrors each promoted write at once, so the
+ * per-instruction trace and the cosimulation see the architectural register file
+ * after every instruction. Elsewhere the mirror compiles out. */
+#if PERF_AOT_INSTRUCTIONS || defined(SR_INSTRUCTION_TRACE)
+#define SR_PROMO_SYNC(s, i, v) ((s)->r[(i)] = (v))
+#else
+#define SR_PROMO_SYNC(s, i, v) ((void)0)
+#endif
+
 /* HLE boundary marker used by the bring-up driver: a call to an unresolved import stop the
  * traced run so the comparison ends exactly where the reference trace reaches its first syscall. */
 void sr_hle_call(CpuState *s, uint32_t nid);
@@ -1535,6 +1582,17 @@ double   ge_timing_run_clk(void);
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
+/* Diagnostic counters the watchdog and statistics reports print (hle.c). The GE ones
+ * are kept by ge.c, the MPEG ones by mpeg.c. */
+extern uint32_t g_frame_prims;
+extern unsigned long g_ge_list_sig, g_ge_prim_count;
+extern unsigned long g_list_writes, g_list_nonblack, g_list_clearpx;
+extern unsigned long g_ge_list_through_cmds, g_ge_list_transform_cmds;
+extern unsigned long g_ge_list_through_vertices, g_ge_list_transform_vertices;
+extern unsigned long g_ge_list_through_sprites, g_ge_list_transform_sprites;
+extern unsigned long g_ge_pixels;
+extern unsigned long g_tex_samples, g_tex_nonzero;
+extern unsigned long g_mpeg_put, g_mpeg_getavc, g_mpeg_avcdec, g_mpeg_nodata;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
  * (sceGeGetCmd returns SCE_KERNEL_ERROR_INVALID_VALUE); an out-of-range index yields 0,
@@ -1698,6 +1756,7 @@ void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+void     gui_pump(void);                         /* service the window's pending events */
 int      gui_headless_acceptance_requested(void);
 int      gui_headless_acceptance_ready(void);
 int      gui_headless_acceptance_complete(void);
@@ -1935,6 +1994,22 @@ typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
 typedef void (*SrSchedVtimerServiceOne)(void);
 void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
                                 SrSchedVtimerServiceOne service_one);
+/* hle.c's user-partition overlap test: sched.c refuses a thread stack range it reports. */
+typedef int (*SrSchedStackRangeRefusal)(uint32_t base, uint32_t end);
+void     sched_set_stack_range_refusal(SrSchedStackRangeRefusal refusal);
+CpuState *sr_cpu_for_callbacks(void);               /* the CpuState guest callbacks run on */
+void     sched_dump_threads(void);                  /* the watchdog's thread table, to stderr */
+void     sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
+                                uint32_t *wait, uint32_t *spin);
+/* Callback and VBLANK service hle.c provides to the scheduler. */
+int      sr_thread_has_pending_callbacks(uint32_t thread_uid);
+int      sr_thread_dispatch_callbacks(void);
+int      sr_vblank_dispatch_registered(void);
+void     sr_vblank_tick(void);
+/* The guest VBLANK count (hle.c) and the host audio backend's statistics dump. */
+uint32_t sr_audio_vbl(void);
+void     sr_audio_dump_stats(void);
+void     sr_audio_dump_finish(void);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */

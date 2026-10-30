@@ -493,6 +493,13 @@ _DEPTH_PROBE_HARNESS = r"""
 #include <stdio.h>
 extern void sr_register_all(void);
 
+/* How many guest instructions the interpreter floor ran, printed at exit on its own line
+ * (a named stop exits without a DEPTH_PROBE line): a call into a body codegen translated
+ * runs none. */
+static void probe_report_interp(void) {
+    printf("INTERP_PROBE interp=%llu\n", (unsigned long long)sr_exec_interp_instructions);
+}
+
 /* Every generated body begins with SR_YIELD; with a timeslice of one it calls
  * sr_yield at each guest function entry, which samples the fiber's remaining
  * host stack. The probe is the production stack-bounds query. */
@@ -561,6 +568,7 @@ int main(int argc, char **argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
     unsigned long n = argc > 1 ? strtoul(argv[1], NULL, 0) : 0ul;
+    atexit(probe_report_interp);
     sr_mem_init();
     /* The loader's job: the interpreter tier executes guest memory, so the image
      * must be there, exactly as the translated bodies were generated from it. */
@@ -603,8 +611,8 @@ int main(int argc, char **argv) {
     sr_sched_on = 1;
     atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
     if (pair) {
-        SrCoro *a = sr_coro_create(pair_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
-        SrCoro *b = sr_coro_create(pair_body, &g_pair_ran[1], SR_GUEST_FIBER_STACK_SIZE);
+        SrCoro *a = sr_coro_create(pair_body, NULL, SR_GUEST_CORO_STACK_SIZE);
+        SrCoro *b = sr_coro_create(pair_body, &g_pair_ran[1], SR_GUEST_CORO_STACK_SIZE);
         if (!a || !b) return 24;
         const int reverse = strcmp(argv[2], "pair-reverse") == 0;
         g_pair_n[reverse ? 1 : 0] = 1000ul;   /* the first fiber to run: shallow */
@@ -617,20 +625,22 @@ int main(int argc, char **argv) {
                n, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[29]);
         return 0;
     }
-    SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
+    SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_CORO_STACK_SIZE);
     if (!fiber) return 21;
     /* "neighbour": a second guest-size stack created after the probe's, as the scheduler
      * creates one per guest thread. POSIX mmap is top-down, so it usually lands directly
      * below the probe's stack, where an overrun of the probe's stack would write. */
-    if (neighbour && !sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE)) return 23;
+    if (neighbour && !sr_coro_create(probe_body, NULL, SR_GUEST_CORO_STACK_SIZE)) return 23;
     sr_coro_switch(fiber);
     sr_sched_on = 0;
     sr_dispatch_host_stack_remaining = NULL;
     if (!g_probe_ran) return 22;
-    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x\n",
+    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x "
+           "unwinds=%lu\n",
            n, g_probe_top > g_probe_min ? g_probe_top - g_probe_min : (size_t)0,
            g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[3],
-           (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29]);
+           (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29],
+           (unsigned long)sr_aot_return_unwind_count());
     return 0;
 }
 """
@@ -753,7 +763,7 @@ def _run_depth_probe(exe: Path, iterations: int) -> tuple[int, str, dict[str, in
     )
     fields: dict[str, int] = {}
     for line in run.stdout.splitlines():
-        if line.startswith("DEPTH_PROBE "):
+        if line.startswith(("DEPTH_PROBE ", "INTERP_PROBE ")):
             for item in line.split()[1:]:
                 key, _, value = item.partition("=")
                 fields[key] = int(value, 0)
@@ -1544,8 +1554,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
 
     def test_linked_branch_in_the_body_calls_the_target(self):
         # Taken (`bal`): slot +100, the called leaf +1, the link +10. Not taken
-        # (`bltzal $zero`): the slot and the link only. The leaf here is the REGIMM one,
-        # which the interpreter refuses, so only an AOT entry can run it.
+        # (`bltzal $zero`): the slot and the link only. The leaf here is the REGIMM one;
+        # it runs as its AOT entry, so the interpreter floor runs nothing.
         for selector, expected in ((_BAL, 111), (_BLTZAL, 110)):
             with self.subTest(selector=hex(selector)):
                 generated, (rc, output, fields) = self._run_one(
@@ -1556,6 +1566,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(fields.get("v0"), expected, output)
                 self.assertEqual(fields.get("a0"), 0x1020, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                self.assertEqual(fields.get("interp"), 0, output)
 
     def test_linked_callee_that_is_also_the_callers_tail(self):
         # The callee is now an entry, so the caller's fall-through into it is the
@@ -1599,6 +1610,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 100, f"the inline data word ran\n{output}")
         self.assertEqual(fields.get("a0"), 0x1020, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # The jump needs no runtime unwind of a guest return past its caller (#1034).
+        self.assertEqual(fields.get("unwinds"), 0, output)
 
     def test_read_the_pc_is_unchanged(self):
         generated, (rc, output, fields) = self._run_one(_read_the_pc())
@@ -1608,6 +1621,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 110, output)
         self.assertEqual(fields.get("a0"), 0x101C, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self.assertEqual(fields.get("unwinds"), 0, output)
 
     def test_linked_branch_mutants_fail_for_their_semantic(self):
         # L1: codegen keeps the target a label (the bug): the leaf's return ends the
@@ -1621,18 +1635,22 @@ class GeneratedCallDepthTests(unittest.TestCase):
             lambda r: r[0][0] == 0 and r[0][2].get("v0") == 101,
         )
         # L2: the analyzer absorbs the callee again, so codegen has no body to call and
-        # the call reaches the interpreter floor, which refuses the leaf's REGIMM branch.
+        # the call falls to the interpreter floor. (Before the floor decoded REGIMM
+        # branches, it refused the leaf there.)
         self._assert_mutant_fails(
             "L2-analyzer-absorbs-the-callee", _linked_branch_in_body(_BAL, _LEAF_REGIMM), (0,),
             {"analyze.py": (
                 "if (op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
                 "if (False and op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
             )},
-            lambda r: r[0][0] != 0
-            and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1],
+            lambda r: (r[0][0] == 0 and r[0][2].get("interp", 0) > 0)
+            or (r[0][0] != 0
+                and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1]),
         )
-        # L3: a frame-releasing continuation is called: its return restores the SP it
-        # released and the caller then runs the inline data word at the link.
+        # L3: a frame-releasing continuation is called. Its return goes past the caller
+        # to the caller's own caller, so the call is not exact: the runtime has to unwind
+        # that return (#1034) where the jump needs none. (Before that unwind existed, the
+        # caller ran the inline data word at the link, or the return check stopped it.)
         self._assert_mutant_fails(
             "L3-continuation-is-called", _linked_branch_into_own_tail(), (0,),
             {"entry_frame_balance.py": (
@@ -1640,17 +1658,21 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 "return True",
             )},
             lambda r: (
-                (r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000)
+                (r[0][0] == 0 and r[0][2].get("unwinds", 0) > 0)
+                or (r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000)
                 or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
             ),
         )
-        # L4: `bal .+8` is called: the PC read runs once as a call and again at the link,
-        # the second time with the restored return address (v0 = 120, a0 = 0x1008).
+        # L4: `bal .+8` is called: the "callee" is the caller's own continuation, so its
+        # return goes past the caller and the runtime has to unwind it (#1034). (Before
+        # that unwind existed, the PC read ran once as a call and again at the link, the
+        # second time with the restored return address: v0 = 120, a0 = 0x1008.)
         self._assert_mutant_fails(
             "L4-read-the-pc-is-called", _read_the_pc(), (0,),
             {"analyze.py": ("if target == (source + 8) & 0xFFFFFFFF:", "if False:")},
             lambda r: (
-                (r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008)
+                (r[0][0] == 0 and r[0][2].get("unwinds", 0) > 0)
+                or (r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008)
                 or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
             ),
         )

@@ -272,8 +272,8 @@ following key components:
 | Codegen options (profile, base/entry, spans, chunking, selected options, correctness modes) | required | required |
 | Generated-code ABI epoch | required | required |
 | Runtime ABI epoch | compatibility decision | required |
-| Compiler identity and target triple | not required | required |
-| Runtime source/header digest and output-affecting compile/link flags | not required | required |
+| Compiler identity (driver, version, `cc1`/`as`/`ld` content hashes) and target triple | not required | required |
+| Runtime source/header digest (section 7) and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
 `GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
@@ -365,6 +365,86 @@ compiles nothing.
 Neither folder is shipped, uploaded or shared: both stay in the player's data
 folder like the package entries.
 
+### Packages built by an older Nakagawa (v0.0.2)
+
+The package format, the cache schema and both ABI epochs are 2 in v0.0.1 and
+v0.0.2, so none of them tells a v0.0.1 package from one v0.0.2 builds. What
+does differ is the part of the cache key that comes from Nakagawa itself. Every
+package since v0.0.1 records it, and the native validator already requires it:
+
+| Value | Where the package records it | What it covers |
+| --- | --- | --- |
+| `runtime_source_digest` | `cache.key.native.components` | `src/rt`, `src/core`, `src/ui` and the third-party headers they include (`third_party/clay`, `stb`, `portable-snippets`), the `Makefile` and `mk/*.mk`, `assets/vfpu` (`package_cache.source_tree_digest`) |
+| `analyzer_sha256` | `cache.key.aot.components` | `tools/analyze.py` |
+| `codegen_sha256` | `cache.key.aot.components` | `tools/codegen.py` |
+| `planner_sha256` | `cache.codegen_options` | `tools/title_codegen_plan.py` |
+
+Measured on the tree: `source_tree_digest` gives `d1de9386...0beb` at the
+v0.0.1 tag and a different value on main, and the three tool hashes changed
+too. The player computes the same four values from the source tree a rebuild
+would use (the folder above `tools/nk_cli.py`: a checkout, or a release's
+`source/`), in C (`nk_title_manifest_source_build_identity`, byte for byte
+the Python digest; `tests/native/test_player_state.c` and
+`tests/native/test_player_ui.py` pin the two together). It reads a package's
+values from `package.json` alone (`nk_title_manifest_aot_package_build_identity`).
+A package whose values differ is *outdated*: rebuilding it compiles this
+version's runtime, and regenerates its C when the translator changed. These
+are exactly the components the build tools compare before they reuse a
+package, so "outdated" means "a rebuild would change it".
+
+An outdated package is not incompatible. Nothing in the format changed, the
+validator accepts it, and it launches. A package that records no identity
+(no planner digest, as hand-made fixtures have) is not judged at all.
+
+**How a future release bumps it: it does not have to.** Any change to those
+files moves the identity, so every release that changes the runtime or the
+translator marks the packages the previous one built, and a release that
+changes neither leaves them alone. A development checkout behaves the same
+way: its packages read as outdated after a runtime edit, because they lack it.
+Changes that must not trigger a rebuild stay out of those files.
+
+What the player does (owner decision, 2026-10-29: suggest, never force):
+
+* At start it scans the library on a worker. With outdated games and a
+  `settings.json` whose `rebuild_prompt_version` is not this player's version,
+  it shows one prompt naming the count, with Rebuild all and Later. Either
+  answer records the version, so the prompt shows once per update.
+  `rebuild_prompt_version` is an optional key: a file without it has never
+  shown the prompt.
+* After Later, a library line ("N games were built by an older Nakagawa.")
+  offers Rebuild all and Hide. Hide lasts for the session; the line comes back
+  at the next start while outdated games remain.
+* Each outdated card says "Built by an older Nakagawa. Rebuild for the latest
+  fixes.", and the title page offers Rebuild beside PLAY. PLAY asks once a
+  session (Rebuild now or Play anyway); Play anyway launches as before.
+* Rebuild all queues the outdated games and builds them one at a time, behind
+  whatever the user is doing, through the same package builder as BUILD
+  PACKAGE. The library line counts ("Rebuilding 2 of 5") and each card shows
+  its state and compile progress. A game can be played until its own rebuild
+  starts; while it runs, that game cannot launch and its card says why. A
+  game whose disc image is missing is skipped and its card asks for the disc
+  again; a failed or cancelled build is noted on its card and the queue moves
+  on.
+* The queue survives a restart in `rebuild-queue.json` beside `settings.json`:
+  `{"format": "nakagawa-rebuild-queue", "schema_version": 1, "titles":
+  [{"disc_id": "...", "state": "pending" | "done" | "missing_disc" |
+  "failed"}]}`. A build that was running is saved as `pending` and starts
+  again. A file with a newer `schema_version`, another format or an unknown
+  member is left in place and not resumed. The file goes when nothing is
+  pending.
+
+A rebuild never removes the old package first. The build runs in the
+content-addressed cache entry, is validated, copied next to the package,
+validated again, and only then swapped in, with the old package moved back if
+the swap fails (`_promote_cache_entry` in `tools/nk_cli.py`). A failed or
+cancelled build therefore leaves the old package in place and launchable. The
+one gap is a build stopped between the swap's two renames, which leaves the old
+package in `cache/packages/<DISC_ID>/previous-<n>`: the next build of that
+title moves it back before anything else (`_restore_interrupted_swap`).
+Saves live outside the package and are not touched, and the cache keeps its
+reuse: when only the runtime changed, the generated C is kept and only the
+native objects are rebuilt.
+
 ### Generated-code stage reuse (bring-up)
 
 `nk_cli.py bringup` generates each title's code once. Its codegen stage runs
@@ -403,3 +483,158 @@ already held the key's generated C). The report's
 `counts.unsupported_opcodes` is read from the stub report inside the built
 package, so it describes the code that shipped; only a build that fails
 before packaging falls back to the stage's stub report.
+
+## 7. Per-user data formats and versions
+
+A user who updates Nakagawa keeps every library entry, setting, mapping and
+save, and rebuilds a package only when something the package was built from has
+changed. Every file the player keeps for the user carries its own version, and
+one rule (`src/core/nk_user_data_schema.h`) governs each writer:
+
+* An **older** file is read and carried forward one version at a time
+  (v1 to v2 to the current version). It is not rewritten on load; the first save
+  first copies the original, byte for byte, to `<file>.v<version>.bak`, and does
+  not write when that copy fails.
+* A **newer** file, written by a later player, is refused by name and never
+  replaced: the session runs on defaults, the screen says why, and every save
+  over it is refused with `NK_ERROR_NEWER_SCHEMA`. Returning to the newer player
+  finds the file as it left it.
+* A file with no readable version (empty, damaged, not JSON) is reported, and the
+  reader falls back as before (`library.json` to its `.bak`, the others to defaults).
+
+The folders are the per-user ones of [`SETUP.md`](SETUP.md) (on Windows
+`%LOCALAPPDATA%\Nakagawa\data` and `...\config`, plus the saves folder).
+
+| File | Version field and history | An older file | A newer file |
+| --- | --- | --- | --- |
+| `<data>/library.json` (`src/core/nk_library.c`; read too by `tools/nk_core/library.py` and `nk_cli`) | `schema_version` 1, the only version so far (v0.0.1 and later). `source_image_path`, added after v0.0.1, is an optional member v0.0.1 skips | (none exist) | Refused; the Library screen names it. The older `.bak` beside it is not loaded in its place, and no save replaces either file |
+| `<config>/settings.json` (`src/player/player_state.c`) | `schema_version` 1 (before v0.0.1), 2 (v0.0.1 and later) | 1 to 2: an `fps_cap` of 30 or 60 becomes PSP timing; `settings.json.v1.bak` on the first save | Refused; this session runs on defaults and every Settings page says changes are not saved |
+| `<config>/input_profile.json` (`src/core/nk_input_profile.c`) | `schema_version` 1, 2 (per-title map, #520), 3 (keyboard keys, #1299; v0.0.1 and later) | 1 to 2: no per-title map; 2 to 3: default keys. `.v1.bak` or `.v2.bak` on the first save | Refused; the Controls page names it and SAVE does not replace it |
+| `<saves>/<DISC_ID>/` | The PSP's own Memory Stick layout (`PSP/SAVEDATA/...`), defined by the PSP rather than by Nakagawa; the root rule (`nk_launch.c`) is unchanged since v0.0.1 | n/a | n/a |
+| `<data>/packages/<DISC_ID>/package.json`, `build-report.json`, `completion-manifest.json` | `nakagawa-aot-package` schema 2, cache key and completion schema 2, and the ABI epochs of section 6 (all unchanged since v0.0.1) | Built output, not user data: a package from another epoch is INCOMPATIBLE and its card offers REBUILD PACKAGE | INCOMPATIBLE with the card line "built by a newer Nakagawa (package format N; this player reads 2)". The player never changes it; only a rebuild the user asks for replaces it |
+| `<data>/title-input-identities/<DISC_ID>/title-input-identity.json` | `schema_version` 2 | Rebuilt by the next package build | Read as absent; the package card asks for a rebuild |
+| `<data>/fonts/v2/manifest.json` | `schema_version` 2, also named by the folder | n/a (v0.0.1 wrote `v2`) | A later layout gets a folder of its own and leaves `v2` as it is |
+| `<data>/experimental/<DISC_ID>/profile.json` | `schema_version` 1 | n/a | Not accepted: the package check fails closed |
+| `<data>/registry/system.json` (the PSP system settings a game changes; `src/rt/hle.c`, `SR_SYSTEM_REGISTRY` overrides the path) | `schema_version` 1, the only version so far (v0.0.1 and later) | (none exist) | Ignored: the game sees the modeled defaults, and the next registry flush moves the file to `system.json.corrupt` (kept, not deleted) before writing a fresh one |
+
+Logs, the update download (kept only when its SHA-256 matches) and the
+content-addressed package cache (section 6) hold no state a user could lose.
+
+`fixtures/user_data/` holds each of these files as an earlier player's own writer
+wrote it, and `tests/native/test_player_state.c`,
+`tests/native/test_input_profile.c` and `tools/test_nk_core.py` load, migrate and
+round-trip them, and prove that a newer file is kept.
+
+**What a package is keyed on after an update.** The native key's
+`compiler_identity` names the driver by its content hash, its version
+(`-dumpfullversion`) and the content hash of each program the driver runs to build
+the package (`cc1`, `as`, `ld`, as `-print-prog-name` resolves them), with no
+paths: a binutils update replaces the assembler and linker without touching the
+driver, and now recompiles the native package (generated C is reused), while an
+unchanged toolchain at another path keeps the key. `runtime_source_digest` covers
+what a package is compiled from: `src/rt`, `src/core`, the overlay's UI library
+`src/ui`, the third-party headers those include (`third_party/clay`, `stb`,
+`portable-snippets`), the `Makefile` and its `mk/*.mk` fragments. The player's own
+sources (`src/player`) are not in a package and no longer rebuild one;
+`tools/test_package_cache.py` checks that every third-party directory the runtime
+includes is listed.
+
+## 8. Portable layout, runtime identity and user state
+
+This section records what the Windows portable ZIP holds today and where the player keeps
+everything it writes ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)). The
+installer, upgrade and uninstall rules that #324 also asks for are not built yet; the portable
+ZIP is the one supported distribution form.
+
+### The install image (read-only)
+
+The release ZIP (`docs/PREVIEW_RELEASE.md`) and `tools/stage_install.py --dest` share one
+layout. Nothing in it is written at run time, so it can sit in a read-only folder:
+
+| Path | Contents |
+| --- | --- |
+| `bin/nakagawa_player.exe` | The player. Release builds also carry `bin/production_smoke.exe` and the showcase demos in `bin/demos/`. |
+| `bin/*.dll` | `SDL3.dll`, `SDL3_ttf.dll` and their resolved closure (Section 5, #421). |
+| `bin/runtime-manifest.json` | The runtime identity record (below). |
+| `bin/assets/fonts/ui/`, `bin/font/nk*.pgf` | The project's own UI fonts and generated PGF fonts. No firmware font. |
+| `bin/THIRD_PARTY_NOTICES/`, `SOURCE.txt`, `RELINK.md` | Licence texts for every bundled binary, the exact source commit, LGPL relinking. |
+| `source/` | The public-safe source export BUILD PACKAGE runs from (`tools/nk_cli.py`, the Makefile, `assets/prereq_manifest.json`). |
+| `prereqs/` | The pinned build prerequisites (#1285), checked by the player against `installed.json` and `bundle-inventory.txt` before BUILD PACKAGE uses them. |
+| `docs/`, `README.md`, `LICENSE`, `NOTICE.md`, `START HERE.txt` | User documentation. |
+| `SBOM.*`, `toolchain.json`, `SHA256SUMS.txt` | SPDX 2.3, SPDX 3 and CycloneDX SBOMs, the attested toolchain record, and the SHA-256 of every other file. |
+
+The image never holds a game, decrypted module, generated title code, save, key or firmware
+font: the release script's forbidden-file and private-path scans refuse them.
+
+### Runtime identity manifest
+
+`bin/runtime-manifest.json` (format `nakagawa-runtime-manifest`, schema 1) lists every
+`.exe` and `.dll` directly in `bin/` with its size, SHA-256 and the non-system DLLs it imports,
+plus `host_libraries`, the imports the host provides and no route ships (today only the Vulkan
+loader `vulkan-1.dll`, from `host_resolved_components` in `assets/third_party_components.json`).
+`tools/stage_runtime_dlls.py --runtime-manifest` writes it after staging; writing fails with
+`RUNTIME_CLOSURE_INCOMPLETE` when a binary imports a DLL that is neither beside it, a Windows
+system DLL nor a host library, which is the loader failure a clean machine would otherwise show.
+The attestation workflow writes and attests it with the binaries, and
+`--verify-runtime-manifest` checks a staged or extracted `bin/`: every listed file present with
+its size and SHA-256 (`RUNTIME_FILE_MISSING`, `RUNTIME_FILE_CHANGED`), no unlisted `.exe` or
+`.dll` (`RUNTIME_FILE_UNLISTED`), imports unchanged (`RUNTIME_IMPORTS_CHANGED`) and a licence
+record in `THIRD_PARTY_NOTICES/index.json` for every DLL (`RUNTIME_LICENCE_RECORD_MISSING`).
+`tools/stage_install.py` writes the same file into an installed `bin/`, so portable and
+installed layouts share one identity contract. The player does not read it yet; a start-time
+check is open under #324.
+
+### Reproducible portable ZIP
+
+`tools/stage_install.py --portable-zip <zip> --zip-stage <folder>` writes the ZIP from the
+staged folder. It rewrites `SHA256SUMS.txt` in ordinal path order, verifies
+`bin/runtime-manifest.json`, and stores one entry per file and per empty folder, sorted by
+UTF-8 path, every entry dated `SOURCE_DATE_EPOCH` (the commit time of `--revision` unless the
+variable or `--source-date-epoch` sets it; times before 1980 become 1980-01-01), mode 0644 for
+files and 0755 for folders, Deflate level 9, no extra fields and no comment. A link, junction,
+special file, absolute or `..` name is refused. The same staged bytes then give the same ZIP
+bytes with the same CPython zlib build, which the tool reports as `zlib`.
+
+Measured on 2026-10-29 at `77a1a5e3`, before this change: two packages built from one commit
+differed in every ZIP entry's timestamp (`ZipFile.CreateFromDirectory` stores each file's write
+time, and the prerequisite tree is unpacked fresh each time), and the player executable differed
+in its PE `TimeDateStamp` and checksum because its link line lacked `--no-insert-timestamp`.
+Both are fixed; `tools/test_stage_install.py` builds one stage twice in different orders and
+with different file times and compares the bytes.
+
+### Per-user state (writable)
+
+Everything the player writes lives outside the install image, under the per-user root, so an
+upgrade or a second extracted version finds the same library, saves and settings. On Windows
+the root is `%LOCALAPPDATA%\Nakagawa` (then `FOLDERID_LocalAppData`, then `%APPDATA%`; never
+`USERPROFILE` alone, `nk_platform_resolve_windows_data_base`). `--user-data-root=<folder>`
+moves all of it into one folder (`nk_platform_set_app_data_dir_override`).
+
+| Folder (Windows) | Holds | Owner |
+| --- | --- | --- |
+| `Nakagawa\config` | `settings.json` | player |
+| `Nakagawa\data` (`<user data>`) | the library and title manifests | player, `nk_cli` |
+| `<user data>\titles\<DISC_ID>\` | staged title inputs; `decrypted\` holds the player's decryption output or the user's own plain files | user's private inputs |
+| `<user data>\title-input-identities\<DISC_ID>\` | the exact local input identity a package must match (Section 5) | `nk_cli` |
+| `<user data>\cache\packages\<DISC_ID>\` | built AOT packages, content-addressed, promoted by rename (Section 6) | `nk_cli` |
+| `<user data>\cache\objects\`, `cache\shared-libraries\` | shared compiled objects and disc libraries (#1306) | `nk_cli` |
+| `<user data>\fonts\v2\` | fonts imported from the user's own PSP, with `manifest.json` | user |
+| `<user data>\prerequisites\` | the consented per-user prerequisite download (absent when `prereqs/` is bundled) | player |
+| `<user data>\downloads\` | a verified update ZIP and, outside a release folder, its unpacked copy | player |
+| `<user data>\logs\` | build logs (`build_<DISC_ID>_progress.jsonl`) | player, `nk_cli` |
+| `Nakagawa\saves\<DISC_ID>\` | the title's Memory Stick root (`SR_MEMSTICK`) when the install is not writable | runtime |
+| `Nakagawa\logs\` | `game-<DISC_ID>-last.txt`, the last game session's output | player |
+| `Nakagawa\cache\` | the platform cache folder (`NK_PATH_CACHE`) | player |
+| `Nakagawa\fonts\` | optional UI font overrides | user |
+
+Linux uses `$XDG_DATA_HOME/nakagawa-recomp` (else `~/.local/share/nakagawa-recomp`) and the XDG
+config and cache homes; macOS uses `~/Library/Application Support/NakagawaRecomp`. Each launch
+still starts one child process per title (Section 2, Option C), with the #297 run-package and
+save-root semantics unchanged.
+
+Updates today: Check for updates (`src/player/update_check.c`) downloads a release ZIP into
+`<user data>\downloads\`, keeps it only when its SHA-256 matches the published `.sha256`, and
+INSTALL unpacks it into `<folder>.partial` beside the running version, checks every file
+`SHA256SUMS.txt` lists, and renames it into place. It never replaces the running version and
+never touches the per-user folders. Removing an extracted folder removes the install image
+only; the per-user folders above stay until the user deletes them.

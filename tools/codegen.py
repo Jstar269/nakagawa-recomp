@@ -94,6 +94,19 @@ STALE_DETECT = False
 # they expand to ((void)0) and neither half changes behaviour on its own.
 NAN_TRAP = False
 
+# Local guest-register promotion (#284). When True, runs of simple instructions
+# keep the guest GPRs they touch in C locals (`_gpr<n>`) and write them back to
+# s->r[] before every label, control transfer, non-promoted instruction and the
+# end of the body, so no runtime helper, dispatcher or other body ever sees a
+# stale register file. Set by --promote-registers; default False leaves the
+# generated C byte-identical. RegisterPromotion below owns the rules.
+PROMOTE_REGISTERS = False
+# The collector of one promoted line while it is translated (R and wr read it).
+_PROMO_LINE = None
+# Totals over one codegen run, printed as CODEGEN_PROMOTION when promotion is on.
+PROMOTION_STATS = {"functions": 0, "promoted": 0, "spans": 0, "loads": 0, "writebacks": 0,
+                   "rejected": 0}
+
 # Active AOT enhancement package sites (addr -> resolved site dict with its "rewrite").
 # Empty (the default) keeps authentic emission byte-identical.
 ENHANCEMENT_SITES: dict[int, dict] = {}
@@ -978,7 +991,15 @@ def stack_census_wrapper(symbol, body, addr):
         "}"
     )
 
-R = lambda i: "0u" if i == 0 else f"s->r[{i}]"           # read GPR (r0 is constant 0)
+
+def R(i):
+    """Read GPR i (r0 is constant 0); the promoted local while a promoted line is built."""
+    if i == 0:
+        return "0u"
+    if _PROMO_LINE is not None:
+        _PROMO_LINE.reads.add(i)
+        return f"_gpr{i}"
+    return f"s->r[{i}]"
 F = lambda i: f"s->f[{i}]"
 FI = lambda i: f"s->fi[{i}]"
 
@@ -1002,7 +1023,14 @@ def s16(w):
 
 def wr(i, expr):
     # Assignment to GPR i; writes to r0 are dropped (ARCHITECTURE section 4).
-    return "(void)0;" if i == 0 else f"s->r[{i}] = {expr};"
+    if i == 0:
+        return "(void)0;"
+    if _PROMO_LINE is not None:
+        # A trace build mirrors the write at once, so the per-instruction trace
+        # still sees the architectural register file (SR_PROMO_SYNC in recomp.h).
+        _PROMO_LINE.writes.add(i)
+        return f"_gpr{i} = {expr}; SR_PROMO_SYNC(s, {i}u, _gpr{i});"
+    return f"s->r[{i}] = {expr};"
 
 
 def _nanf(pc, op, fd, out, ins):
@@ -1493,14 +1521,19 @@ def _flit(v):
         s += ".0"
     return s + "f"
 
-# Public VFPU mnemonic identities (PSPDev VFPU docs / PPSSPP's selector table).
-# These rows name still-unimplemented forms only; every one must keep the #326
-# fail-closed interpreter fallback until semantic evidence is admitted.
-_VFPU4_NAMED_UNIMPLEMENTED = {
-    (0x01, 0x00): "vrnds",
-    (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
-    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
+# VFPU7 forms (op 0x34, jump field 1) whose semantics follow the 2026-10-29 PSP-3000
+# measurement PSP-VFPU-FORMS2-001 (issue #326) and live only in sr_vfpu_interp:
+# selector -> (name, vector sizes it accepts). vrndi.s, vrndf1.s and vrndf2.s stay
+# inline (_vrndi_single_stmt, _vfpu_forms_effect). The AOT routes exactly these sizes
+# to the interpreter, which also refuses the prefixes the probe did not measure; any
+# other size raises Unsupported, matching the interpreter's SR_VFPU_OTHER for it.
+_VFPU7_INTERP_ROUTED = {
+    0x00: ("vrnds", (1,)),
+    0x01: ("vrndi", (2, 3, 4)),
+    0x02: ("vrndf1", (2, 3, 4)),
+    0x03: ("vrndf2", (2, 3, 4)),
+    0x12: ("vf2h", (2, 4)),
+    0x19: ("vc2i", (1,)),
 }
 
 
@@ -1572,6 +1605,12 @@ def _vfpu_forms_effect(addr, w, jump, sel, n):
 _VFPU9_INTERP_ROUTED = {
     0x02: ("vbfy1", (2, 4)),
     0x03: ("vbfy2", (4,)),
+    0x00: ("vsrt1", (4,)),
+    0x01: ("vsrt2", (4,)),
+    0x08: ("vsrt3", (4,)),
+    0x09: ("vsrt4", (4,)),
+    0x06: ("vfad", (2, 3, 4)),
+    0x07: ("vavg", (2, 3, 4)),
     0x0A: ("vsgn", (1, 2, 3, 4)),
     0x19: ("vt4444", (4,)),
 }
@@ -1612,11 +1651,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
         if forms is not None:
             return forms, None, 0
-        public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
-        if public_name is not None:
-            raise Unsupported(
-                f"VFPU4 identity {public_name} rs={jump} rt=0x{rt_selector:02x} at 0x{addr:08x}"
-            )
+        routed = _VFPU7_INTERP_ROUTED.get(rt_selector) if jump == 0x01 else None
+        if routed is not None and vec_size(w) in routed[1]:
+            return _vfpu_interp_stmt(addr, w), None, 0
         vd, vs = w & 0x7F, (w >> 8) & 0x7F
         n = vec_size(w)
         di = vreg_indices(vd, n)
@@ -2541,6 +2578,106 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
                                 delay_branch_pc=delay_branch_pc)
     return _enhanced_line(rw, line, word_line)
 
+class _PromotedLine:
+    """GPRs one instruction reads and writes while it is translated with promotion."""
+
+    def __init__(self):
+        self.reads = set()
+        self.writes = set()
+
+
+# What a promoted line may contain besides its own locals. Anything else (another
+# CpuState field, a runtime helper, a return or a jump) can observe or leave with
+# the register file, so the instruction is emitted the legacy way after a write-back.
+_PROMO_CALLS = frozenset({"sr_begin", "sr_end", "SR_PROMO_SYNC", "MEM_R8", "MEM_R16", "MEM_R32",
+                          "MEM_W8_PC", "MEM_W16_PC", "MEM_W32_PC", "__builtin_clz", "sr_bitrev",
+                          "if"})
+_PROMO_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_PROMO_STATE_RE = re.compile(r"s->(\w+)")
+_PROMO_FORBIDDEN_RE = re.compile(r"\b(return|goto|break|continue|_Exit|fprintf|exit)\b")
+# Writes that may not happen (movz/movn): the local must hold the old value first.
+_CONDITIONAL_WRITE_FUNCTS = (0x0A, 0x0B)
+# HST-only lines the emission loop writes itself at these addresses (see emit_function).
+_HST_INLINE_SITES = frozenset({0x0010433c, 0x0006e9bc, 0x0006ea1c, 0x00108630, 0x00000a1c})
+
+
+def promoted_line_is_safe(text):
+    """True when a translated line touches no guest state but promoted GPRs, HI and LO."""
+    if _PROMO_FORBIDDEN_RE.search(text):
+        return False
+    if any(field not in ("hi", "lo") for field in _PROMO_STATE_RE.findall(text)):
+        return False
+    return all(name in _PROMO_CALLS for name in _PROMO_CALL_RE.findall(text))
+
+
+class RegisterPromotion:
+    """Per-body state of local guest-register promotion (--promote-registers, #284).
+
+    A span is a run of promotable instructions with no label inside it. In a span a
+    GPR lives in `_gpr<n>`: it is loaded from s->r[] just before its first read, and
+    a written one is marked dirty. `flush()` writes every dirty local back and
+    forgets the cached ones; the emitter calls it before each label, each control
+    transfer, each instruction emitted the legacy way and the end of the body, so
+    the register file is architectural everywhere outside a span.
+    """
+
+    def __init__(self):
+        self.cached = set()
+        self.dirty = set()
+        self.used = set()
+        self.in_span = False
+
+    def flush(self, indent="    "):
+        lines = [f"{indent}s->r[{i}] = _gpr{i};" for i in sorted(self.dirty)]
+        PROMOTION_STATS["writebacks"] += len(self.dirty)
+        self.cached.clear()
+        self.dirty.clear()
+        self.in_span = False
+        return lines
+
+    def try_line(self, addr, w, hst_profile=False, lle_cpu=False):
+        """The promoted lines for one instruction, or None to emit it the legacy way."""
+        global _PROMO_LINE
+        collector = _PromotedLine()
+        _PROMO_LINE = collector
+        try:
+            text = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+        except Unsupported:
+            text = None
+        finally:
+            _PROMO_LINE = None
+        if text is None or not promoted_line_is_safe(text):
+            PROMOTION_STATS["rejected"] += 1
+            return None
+        need = set(collector.reads)
+        if (w >> 26) == 0 and (w & 0x3F) in _CONDITIONAL_WRITE_FUNCTS:
+            need |= collector.writes
+        loads = sorted(need - self.cached)
+        lines = [f"    _gpr{i} = s->r[{i}];" for i in loads]
+        lines.append(text)
+        self.cached |= need | collector.writes
+        self.dirty |= collector.writes
+        self.used |= need | collector.writes
+        if not self.in_span:
+            PROMOTION_STATS["spans"] += 1
+            self.in_span = True
+        PROMOTION_STATS["promoted"] += 1
+        PROMOTION_STATS["loads"] += len(loads)
+        return lines
+
+    def declaration(self):
+        if not self.used:
+            return None
+        return "    uint32_t " + ", ".join(f"_gpr{i}" for i in sorted(self.used)) + ";"
+
+
+def promotion_summary():
+    s = PROMOTION_STATS
+    return (f"CODEGEN_PROMOTION functions={s['functions']} promoted={s['promoted']} "
+            f"spans={s['spans']} loads={s['loads']} writebacks={s['writebacks']} "
+            f"rejected={s['rejected']}")
+
+
 def _cop0_fields(w):
     """Split a COP0 word into (rs, rt, rd, sel)."""
     return (w >> 21) & 0x1F, (w >> 16) & 0x1F, (w >> 11) & 0x1F, w & 0x7
@@ -2635,13 +2772,10 @@ SV_MAX_PER_FLUSH = 3     # checks attached to one flush point
 SV_MAX_PER_FUNC = 16     # checks per function (bounds chunk growth)
 SV_STATS = {"funcs": 0, "checks": 0}
 
-# Diagnostic probe emission. When False (default/production), the temporary
-# TOKENSCAN_DIAG and F3G_ENTRY fprintf probes are completely omitted from the
-# generated C. Set True only for debug runs.
-EMIT_DIAG_PROBES = False
-
-# Functions carrying hand-injected code (fastpaths, probes, condition
-# overrides) execute semantics the simulator does not model; exclude them.
+# Functions carrying hand-injected code (fastpaths, condition overrides)
+# execute semantics the simulator does not model; exclude them. 0x0010433c
+# carried the retired TOKENSCAN_DIAG probe; its entry stays so that
+# --static-verify output does not change with this cleanup.
 # The exclusion is a consequence of that injected code, so it is title-owned:
 # under a profile that emits none of it there is nothing unmodelled to exclude,
 # and suppressing the checks on a numeric-address collision alone would be an
@@ -2654,8 +2788,6 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "cond"   : force the branch condition to `value` (always/never taken) and
 #              optionally inject `stmt`.
 #   "inject" : unconditionally inject `stmt` into the branch block.
-#   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
-#              change; diagnostic only).
 _GUEST_PATCH_KEYS: set[int] = set()
 # 0x0004cdc8 (forced host0 asset route) retired under #363 (2026-10-27): with the UMD block
 # device readable in sectors, the title's own archive reader serves every asset.
@@ -2904,15 +3036,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels.add(start)
         out.append(f"    goto L_{start:08x};")
     consumed = set()
+    promo = RegisterPromotion() if PROMOTE_REGISTERS else None
     for addr in sorted(insns):
         if addr in consumed:
             continue
         if addr in labels:
+            if promo is not None:
+                out.extend(promo.flush())
             out.append(f"  L_{addr:08x}: ;")
         w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
         if w is None:
             continue
         op, fn = w >> 26, w & 0x3F
+        if promo is not None:
+            promoted = None
+            if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
+                    and addr not in continuations and _enhancement_rewrite(addr) is None
+                    and not (hst_profile and addr in _HST_INLINE_SITES)):
+                promoted = promo.try_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+            if promoted is not None:
+                out.extend(promoted)
+                continue
+            out.extend(promo.flush())
 
         # LOOP_CAPS retired (F4, 2026-07-11): the table is empty and the emission block
         # is gone. Every remaining capped loop was statically proven terminating and
@@ -2975,39 +3120,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
         # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
         # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
-        # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
-        # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
-        # it dispatches f_0006517c (a vtable "get char / element" call) once per iteration
-        # until a 0x23 ('#') byte, so the trip bound depends on runtime container contents
-        # that cannot be resolved by static reading. Dump the container pointer (r21+0x1c)
-        # plus the two index/count field-pairs (r21+0x2c/0x30 and r21+0x38/0x3c) and the
-        # running per-scan byte counter (sp+0xc8) at the loop top. A single run then
-        # distinguishes "many short parses" (struct changes between prints, counts sane =
-        # bounded-slow, same class as the memset/arrshift fixes) from "one stuck/huge scan"
-        # (struct unchanging while the counter climbs without ever hitting the count bound =
-        # runaway / correctness bug upstream). Prints the first 24 hits, then every ~1M-th,
-        # so it can neither miss the opening nor flood a long run. REMOVE once characterised.
-        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0010433c:
-            out.append(
-                "    { static unsigned long long _ts_it = 0; static int _ts_pr = 0;\n"
-                "      unsigned long long _ts_n = ++_ts_it;\n"
-                "      if (_ts_pr < 24 || (_ts_n & 0xfffffull) == 0) { if (_ts_pr < 1000000) _ts_pr++;\n"
-                "        fprintf(stderr, \"TOKENSCAN_DIAG it=%llu struct=0x%08x buf=0x%08x idxA=0x%08x cntA=0x%08x idxB=0x%08x cntB=0x%08x bcnt=0x%08x\\n\",\n"
-                "          _ts_n, s->r[21], MEM_R32(s->r[21] + 0x1cu), MEM_R32(s->r[21] + 0x2cu), MEM_R32(s->r[21] + 0x30u), MEM_R32(s->r[21] + 0x38u), MEM_R32(s->r[21] + 0x3cu), MEM_R32(s->r[29] + 0xc8u));\n"
-                "        fflush(stderr); } }"
-            )
-
-
-
-        # F3G ENTRY PROBE (temporary): dump f_0006e9bc's incoming object (r4) and count (r5)
-        # to resolve the static-vs-runtime disconnect — statically r5 should be 96 and r4 a
-        # valid heap object, but at runtime the memset reads garbage. Prints once. Remove after.
-        if hst_profile and EMIT_DIAG_PROBES and addr == 0x0006e9bc:
-            out.append(
-                "    { static int _e9_n = 0; if (_e9_n++ < 4) fprintf(stderr, "
-                "\"F3G_ENTRY f_0006e9bc: r4(obj)=0x%08x r5(count)=0x%08x ra=0x%08x sp=0x%08x\\n\", "
-                "s->r[4], s->r[5], s->r[31], s->r[29]); }"
-            )
 
         # MEMSET_FASTPATH: f_0006e9bc's post-alloc zero-fill loop (body 0x6ea28-0x6ea44,
         # count/base reloaded at 0x6ea1c/0x6ea28). Confirmed by static trace of the lifted
@@ -3378,6 +3490,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             else:
                 out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
         out.append("  _sr_fallthrough_return: ;")
+    if promo is not None:
+        out.extend(promo.flush())
+        declaration = promo.declaration()
+        if declaration is not None:
+            out.insert(1, declaration)
+        PROMOTION_STATS["functions"] += 1
     out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
@@ -4027,6 +4145,12 @@ def main(argv):
             # Default (absent) preserves byte-identical output.
             global STALE_DETECT
             STALE_DETECT = True
+        elif o == "--promote-registers":
+            # #284: keep guest GPRs in C locals inside runs of simple
+            # instructions, written back at every boundary. Default (absent)
+            # leaves the generated C byte-identical.
+            global PROMOTE_REGISTERS
+            PROMOTE_REGISTERS = True
         elif o == "--nan-trap":
             # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
             # names the instruction whose result went non-finite from all-finite
@@ -5043,6 +5167,8 @@ def main(argv):
     if SV_ENABLED:
         print(f"static-verify: {SV_STATS['checks']} register assertions "
               f"across {SV_STATS['funcs']} functions")
+    if PROMOTE_REGISTERS:
+        print(promotion_summary())
     return 0
 
 if __name__ == "__main__":

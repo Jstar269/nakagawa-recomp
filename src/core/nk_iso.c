@@ -20,6 +20,7 @@
 #endif
 
 #include "nk_iso.h"
+#include "../rt/prx_loader.h"
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
 #include "nk_platform.h"
 #endif
@@ -1601,7 +1602,7 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
     uint16_t type = read_le16(header + 16);
     uint16_t machine = read_le16(header + 18);
     uint32_t version = read_le32(header + 20);
-    uint32_t entry = read_le32(header + 24);
+    uint32_t entry = 0;  /* the start entry, resolved below (sr_prx_start_entry) */
     uint32_t phoff = read_le32(header + 28);
     uint32_t shoff = read_le32(header + 32);
     uint16_t ehsize = read_le16(header + 40);
@@ -1659,7 +1660,6 @@ static const char *nk_elf32_mips_program_table_violation(
     }
 
     bool have_load = false;
-    bool entry_executable = false;
     bool code_segment = false;
     uint32_t span_count = 0;
     for (uint16_t i = 0; i < phnum; i++) {
@@ -1685,9 +1685,6 @@ static const char *nk_elf32_mips_program_table_violation(
         span_count++;
         have_load = true;
         bool executable = (p_flags & 1u) != 0;
-        if (executable && entry >= p_vaddr && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
         if (executable && p_filesz > 0) code_segment = true;
     }
     if (!have_load) return "no-load-segment";
@@ -1700,6 +1697,19 @@ static const char *nk_elf32_mips_program_table_violation(
     }
 
     if (module && type == 0xFFA0u) return code_segment ? NULL : "no-code-segment";
+    /* The PSP starts an executable at its module_start export, not at e_entry
+       (sr_prx_start_entry in src/rt/prx_loader.h); that is the address that must be executable. */
+    const char *start_violation = sr_prx_start_entry(read, context, image_size, &entry);
+    if (start_violation) return start_violation;
+    bool entry_executable = false;
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *ph = program_headers + (size_t)i * 32u;
+        uint32_t p_vaddr = read_le32(ph + 8);
+        if (read_le32(ph + 0) == 1u && (read_le32(ph + 24) & 1u) != 0 && entry >= p_vaddr &&
+            (uint64_t)entry < (uint64_t)p_vaddr + read_le32(ph + 20)) {
+            entry_executable = true;
+        }
+    }
     return entry_executable ? NULL : "entry-not-executable";
 }
 
@@ -1817,8 +1827,11 @@ NkResult nk_iso_classify_executables(const char *iso_path,
         out_report->selected = NK_ISO_EXEC_SELECTION_EBOOT;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),
                  "EBOOT.BIN");
-    } else if (out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+    } else if ((out_report->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED ||
+                out_report->eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO) &&
                out_report->boot.kind == NK_ISO_EXEC_MIPS_ELF32) {
+        /* A zero-filled EBOOT.BIN is the placeholder prototype and development discs carry
+         * beside their plain BOOT.BIN (tools/nk_core/iso_inspect.py has the same rule). */
         out_report->selected = NK_ISO_EXEC_SELECTION_BOOT;
         out_report->boot_fallback = true;
         snprintf(out_report->selected_path, sizeof(out_report->selected_path),

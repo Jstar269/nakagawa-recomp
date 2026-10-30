@@ -2108,6 +2108,14 @@ const char *package_builder_make_tool_name(void) {
 #endif
 }
 
+bool package_builder_toolchain_download_available(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return true;
+#else
+    return false;
+#endif
+}
+
 #if defined(_WIN32) || defined(_WIN64)
 #define PACKAGE_BUNDLE_EXE ".exe"
 #else

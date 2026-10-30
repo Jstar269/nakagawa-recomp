@@ -44,16 +44,22 @@ from nk_core.iso_inspect import (
 )
 import nk_cli
 
-# The package key asks the C compiler for its target (gcc -dumpmachine) before the planner
-# runs. The fakes below stand in for the planner only, so that host query is passed to
-# the real subprocess.run, captured here before any test patches it.
+# The package key asks the C compiler for its target (gcc -dumpmachine), its version
+# (-dumpfullversion) and the programs it runs (-print-prog-name=cc1/as/ld) before the
+# planner runs. The fakes below stand in for the planner only, so those host queries are
+# passed to the real subprocess.run, captured here before any test patches it.
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def _is_compiler_target_query(command) -> bool:
     # Match the flag anywhere in the argv, not only as the last element, so the helper
     # keeps working if the query ever gains trailing arguments.
-    return bool(command) and "-dumpmachine" in command
+    return bool(command) and any(
+        isinstance(arg, str) and (
+            arg in ("-dumpmachine", "-dumpfullversion") or arg.startswith("-print-prog-name=")
+        )
+        for arg in command
+    )
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
@@ -468,6 +474,42 @@ def build_plain_mips_elf(
     return bytes(elf)
 
 
+MODULE_START_NID = 0xD632ACDB
+MODULE_BOOTSTART_NID = 0xD3744BE0
+
+
+def build_module_start_elf(
+    *, entry: int = 0, exports: tuple[tuple[int, int], ...] | None = None,
+    p_flags: int = 5, info_offset: int | None = None, ent_end_extra: int = 0,
+) -> bytes:
+    """A fixed ET_EXEC whose first PT_LOAD's p_paddr names its SceModuleInfo.
+
+    The segment at 0x08804000 holds four code words, the module info record, one
+    syslib export record and its table. ``exports`` lists syslib (NID, segment offset)
+    function pairs; by default module_start at the second code word.
+    """
+    vaddr, seg_off = 0x08804000, 0x60
+    exports = ((MODULE_START_NID, 0x4),) if exports is None else exports
+    segment = bytearray(0x90)
+    struct.pack_into("<4I", segment, 0, 0x27BDFFF0, 0x27BDFFF0, 0x03E00008, 0x27BD0010)
+    info, record, table = 0x10, 0x48, 0x58
+    struct.pack_into("<HBB28sIIIII", segment, info, 0, 1, 1, b"start-entry-fixture",
+                     0, vaddr + record, vaddr + record + 16 + ent_end_extra, 0, 0)
+    struct.pack_into("<IHHBBHI", segment, record, 0, 0, 0x8000, 4, 0, len(exports), vaddr + table)
+    for index, (nid, address) in enumerate(exports):
+        struct.pack_into("<I", segment, table + 4 * index, nid)
+        struct.pack_into("<I", segment, table + 4 * (len(exports) + index), vaddr + address)
+    elf = bytearray(seg_off) + segment
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 2, 8, 1)
+    struct.pack_into("<III", elf, 24, entry, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
+    paddr = seg_off + info if info_offset is None else info_offset
+    struct.pack_into("<8I", elf, 52, 1, seg_off, vaddr, paddr, len(segment), len(segment),
+                     p_flags, 16)
+    return bytes(elf)
+
+
 def build_psp_container() -> bytes:
     container = bytearray(0x80)
     container[:4] = b"~PSP"
@@ -487,6 +529,22 @@ def build_overlapping_mips_elf(
     struct.pack_into("<8I", elf, 52, 1, 116, vaddr1, vaddr1, 4, memsz1, 5, 4)
     struct.pack_into("<8I", elf, 84, 1, 120, vaddr2, vaddr2, 4, memsz2, 5, 4)
     elf[116:124] = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    return bytes(elf)
+
+
+def build_mips_elf_with_load_segments(loads: list[tuple[int, int]]) -> bytes:
+    """An executable with one PT_LOAD per (vaddr, memsz), in the order given, all backed by
+    the same four file bytes; the entry is the first load's vaddr."""
+    phnum = len(loads)
+    data = 52 + 32 * phnum
+    elf = bytearray(data + 4)
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 2, 8, 1)
+    struct.pack_into("<III", elf, 24, loads[0][0], 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, phnum, 0, 0)
+    for index, (vaddr, memsz) in enumerate(loads):
+        struct.pack_into("<8I", elf, 52 + 32 * index, 1, data, vaddr, vaddr, 4, memsz, 5, 4)
+    elf[data:] = b"\x34\x12\x00\x00"
     return bytes(elf)
 
 
@@ -586,6 +644,7 @@ class IsoParityTests(unittest.TestCase):
 #include <string.h>
 #include <assert.h>
 #include "nk_iso.h"
+#include "../rt/prx_loader.h"
 #include "nk_library.h"
 #include "nk_title_manifest.h"
 #if {1 if has_launch else 0}
@@ -634,6 +693,22 @@ int main(int argc, char **argv) {{
             harness_file_read, image, (uint64_t)image_size, strcmp(argv[3], "1") == 0);
         fclose(image);
         printf("ELF_LAYOUT:%s\\n", rule ? rule : "USABLE");
+        return 0;
+    }}
+
+    if (strcmp(mode, "start_entry") == 0) {{
+        /* start_entry <file>: where the PSP starts this executable (sr_prx_start_entry in src/rt/prx_loader.h). */
+        if (argc < 3) return 1;
+        FILE *image = fopen(argv[2], "rb");
+        if (!image) return 2;
+        if (fseek(image, 0, SEEK_END) != 0) {{ fclose(image); return 2; }}
+        long image_size = ftell(image);
+        if (image_size < 0) {{ fclose(image); return 2; }}
+        uint32_t entry = 0;
+        const char *rule = sr_prx_start_entry(harness_file_read, image, (uint64_t)image_size,
+                                              &entry);
+        fclose(image);
+        printf("START_ENTRY:%s:%08x\\n", rule ? rule : "OK", entry);
         return 0;
     }}
 
@@ -1273,6 +1348,13 @@ int main(int argc, char **argv) {{
              "program-table-fields"),
             ("program-table-bounds", patched(executable, [("<I", 28, 0xFFFF0)]), False,
              "program-table-bounds"),
+            # More load segments than the old 128-entry table, in descending address order:
+            # both rules sort them before the overlap scan.
+            ("many-load-segments-out-of-order", build_mips_elf_with_load_segments(
+                [(0x08900000 - 0x100 * index, 0x100) for index in range(300)]), False, None),
+            ("many-load-segments-overlap", build_mips_elf_with_load_segments(
+                [(0x08900000 - 0x100 * index, 0x100) for index in range(300)]
+                + [(0x088F0080, 0x100)]), False, "segment-overlap"),
             ("section-table-bounds", patched(executable, [
                 ("<H", 46, 40), ("<H", 48, 1), ("<I", 32, 0x1000)]), False,
              "section-table-bounds"),
@@ -1292,6 +1374,18 @@ int main(int argc, char **argv) {{
                 vaddr1=0, memsz1=0x2000, vaddr2=0x1000, memsz2=0x2000), True, "segment-overlap"),
             ("entry-not-executable", build_plain_mips_elf(2, p_flags=4), False,
              "entry-not-executable"),
+            # The PSP starts an executable at its module_start export (uofw StartModule).
+            ("module-start-entry", build_module_start_elf(entry=0), False, None),
+            ("module-bootstart-entry", build_module_start_elf(
+                entry=0, exports=((MODULE_BOOTSTART_NID, 0x4),)), False, None),
+            ("module-start-not-executable", build_module_start_elf(entry=0, p_flags=6), False,
+             "entry-not-executable"),
+            ("null-entry-without-start-export", build_module_start_elf(
+                entry=0, exports=((0xCEE8593C, 0x8),)), False, "entry-not-executable"),
+            ("module-info-range", build_module_start_elf(entry=0, info_offset=0x1000), False,
+             "module-info-range"),
+            ("module-exports-range", build_module_start_elf(
+                entry=0, exports=(), ent_end_extra=0x1000), False, "module-exports-range"),
             ("prx-without-code-segment", build_plain_mips_elf(
                 0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_flags=4), True, "no-code-segment"),
             ("prx-code-without-file-bytes", build_plain_mips_elf(
@@ -1325,6 +1419,42 @@ int main(int argc, char **argv) {{
                 self.assertEqual(python_rule, expected, "python layout rule")
                 self.assertEqual(self._run_native_elf_layout(path, module), expected,
                                  "native layout rule")
+
+    def test_start_entry_is_shared_by_python_and_c(self) -> None:
+        # module_start wins over e_entry, then module_bootstart, then e_entry; an image with
+        # no module info (p_paddr == p_vaddr) starts at e_entry.
+        cases = [
+            ("module-start-over-e-entry", build_module_start_elf(entry=0x08804008),
+             0x08804004, None),
+            ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
+                (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
+            ("bootstart-without-start", build_module_start_elf(
+                entry=0x08804008, exports=((MODULE_BOOTSTART_NID, 0xC),)), 0x0880400C, None),
+            ("e-entry-without-exports", build_module_start_elf(
+                entry=0x08804008, exports=((0xCEE8593C, 0x8),)), 0x08804008, None),
+            ("no-module-info", build_plain_mips_elf(2), 0x08800000, None),
+            ("module-info-range", build_module_start_elf(entry=0, info_offset=0x1000),
+             0, "module-info-range"),
+        ]
+        for name, image, expected_entry, expected_rule in cases:
+            with self.subTest(case=name):
+                path = self.temp_dir / f"start-{name}.elf"
+                path.write_bytes(image)
+                with path.open("rb") as stream:
+                    def read(offset: int, count: int) -> bytes:
+                        stream.seek(offset)
+                        return stream.read(count)
+                    entry, rule = iso_inspect._elf32_psp_start_entry(read, len(image))
+                self.assertEqual((entry, rule), (expected_entry, expected_rule), "python")
+                result = subprocess.run(
+                    [str(self.exe_path), "start_entry", str(path)],
+                    capture_output=True, text=True, encoding="utf-8", errors="strict",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = next(line for line in result.stdout.splitlines()
+                              if line.startswith("START_ENTRY:"))
+                self.assertEqual(
+                    native, f"START_ENTRY:{expected_rule or 'OK'}:{expected_entry:08x}", "native")
 
     def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
         iso_file = self.temp_dir / "usrdir-plain-prx.iso"
@@ -2251,6 +2381,46 @@ int main(int argc, char **argv) {{
         )
         self.assertEqual(executable_check["status"], "OK")
         self.assertIn("BOOT.BIN selected for analysis", executable_check["message"])
+
+    def test_zero_filled_eboot_selects_plain_boot_in_both_inspectors(self) -> None:
+        """Prototype and development discs carry a zero-filled EBOOT.BIN beside a plain BOOT.BIN;
+        BOOT.BIN is the executable, as for an encrypted EBOOT.BIN."""
+        iso_file = self.temp_dir / "zero-eboot-boot-fallback.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root-zero-eboot"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(iso_file, bytes(2048), build_plain_mips_elf())
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=runtime_root
+        )
+        self.assertEqual(report["executables"]["EBOOT.BIN"]["classification"],
+                         "EMPTY_OR_ZERO_FILLED")
+        self.assertEqual(report["selected_executable"], "BOOT.BIN")
+        self.assertTrue(report["boot_fallback"])
+        self.assertEqual(iso_inspect.select_boot_executable_source(iso_file), "BOOT.BIN")
+        executable_check = next(
+            check for check in report["checks"] if check["code"] == "EXECUTABLE"
+        )
+        self.assertEqual(executable_check["status"], "OK")
+        self.assertIn("EBOOT.BIN is zero-filled", executable_check["message"])
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["EBOOT_KIND"], "4")
+        self.assertEqual(native["BOOT_KIND"], "1")
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "2")
+        self.assertEqual(native["BOOT_FALLBACK"], "1")
+
+    def test_zero_filled_eboot_without_boot_stays_unsupported(self) -> None:
+        iso_file = self.temp_dir / "zero-eboot-alone.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root-zero-alone"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(iso_file, bytes(2048))
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=runtime_root
+        )
+        self.assertIsNone(report["selected_executable"])
+        self.assertFalse(report["boot_fallback"])
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "0")
+        self.assertEqual(native["BOOT_FALLBACK"], "0")
 
     def test_cli_preflight_guides_encrypted_eboot_to_title_scoped_user_input(self) -> None:
         iso_file = self.temp_dir / "cli-encrypted-user-input.iso"

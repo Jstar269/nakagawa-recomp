@@ -26,6 +26,7 @@
 #include "debug.h"
 #include "title_config.h"
 #include "flight_recorder.h"
+#include "prx_loader.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -209,6 +210,19 @@ static uint8_t *read_file(const char *path, size_t *out_len) {
     return d;
 }
 
+typedef struct DriverElfImage {
+    const uint8_t *bytes;
+    size_t len;
+} DriverElfImage;
+
+/* SrPrxImageRead over the ELF file held in memory. */
+static bool driver_elf_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {
+    const DriverElfImage *image = (const DriverElfImage *)context;
+    if (offset > image->len || bytes > image->len - offset) return false;
+    memcpy(dst, image->bytes + offset, bytes);
+    return true;
+}
+
 static uint32_t load_elf(const uint8_t *elf, size_t len) {
     if (!elf || len < 52 || memcmp(elf, "\x7f""ELF", 4) != 0) {
         fprintf(stderr, "not an ELF or truncated header\n");
@@ -260,6 +274,17 @@ static uint32_t load_elf(const uint8_t *elf, size_t len) {
         }
     }
 
+    /* The PSP starts the executable at its module_start export, not at e_entry
+     * (sr_prx_start_entry in prx_loader.h). Resolved before guest RAM changes, so
+     * an image whose start entry cannot be read loads nothing. */
+    DriverElfImage image = { elf, len };
+    uint32_t start = e_entry;
+    const char *violation = sr_prx_start_entry(driver_elf_read, &image, len, &start);
+    if (violation) {
+        fprintf(stderr, "ELF start entry cannot be read: %s\n", violation);
+        exit(2);
+    }
+
     /* Pass 2: Load validated segments */
     sr_mem_init();
     for (uint16_t i = 0; i < phnum; i++) {
@@ -272,7 +297,7 @@ static uint32_t load_elf(const uint8_t *elf, size_t len) {
         if (p_type == 1 && p_filesz) /* PT_LOAD */
             sr_load_segment(p_vaddr, elf + p_off, p_filesz);
     }
-    return e_entry;
+    return start;
 }
 
 static int parse_indexed_register(const char *name, char prefix, uint32_t *index) {

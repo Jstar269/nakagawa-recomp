@@ -59,6 +59,13 @@
  *    refreshed per state build (pending batches submit first), so the one remaining
  *    approximation is overlapping primitives INSIDE a single batch reading the
  *    pre-batch destination — the standard shader-blend hazard, same as PPSSPP.
+ *  - Stencil (the PSP keeps it in destination alpha): the fragment shader runs ge.c's
+ *    stencil test and ops against the destination snapshot, with pipeline blending off.
+ *    Where the depth test runs, its fail op and the stencil-fail op must be KEEP, so the
+ *    pipeline depth test and a discard give ge.c's order exactly (stencil_gpu_supported);
+ *    other states take the software rasterizer. A stencil state whose result depends on
+ *    the stencil it overwrites (stencil_reads_own_writes) never shares a batch between
+ *    primitives whose boxes meet, so each reads a snapshot holding the ones before it.
  *  - Approximated (no software fallback): partial-byte write masks (>= 0x80 disables
  *    the channel), lines/points (1px quads, not DDA).
  *  - Render scale (default 1): SR_RESOLUTION_SCALE carries the player's Settings >
@@ -144,7 +151,8 @@ typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
 typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4];
                  int32_t dith[4]; int32_t bl[4]; float fixa[4]; float fixb[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
-       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096 };
+       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
+       F_STENCIL = 8192 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
 
 typedef struct {
@@ -214,6 +222,11 @@ typedef struct {
     int guest_dirty;                        /* Vulkan depth is newer than guest VRAM */
 } DepthEnt;
 
+/* CPU writes into a resident target are held as up to this many byte spans and applied
+ * together when the GE next uses the target; a write that would need one more span first
+ * applies the held ones. */
+#define TARGET_CPU_SPANS 32
+
 /* persistent GE render target */
 typedef struct {
     int used;
@@ -227,6 +240,10 @@ typedef struct {
     uint64_t lru;
     uint64_t render_gen;                   /* bumped per submit that rendered into this */
     uint64_t clean_gen;                    /* render_gen when guest VRAM last matched */
+    /* CPU writes to this target's VRAM not yet in the image: merged, disjoint, sorted
+     * [lo, hi) VRAM-offset byte spans (target_note_cpu_write, target_sync_cpu_writes). */
+    uint32_t cpu_lo[TARGET_CPU_SPANS], cpu_hi[TARGET_CPU_SPANS];
+    int cpu_n;
 } Target;
 
 /* Presentation readbacks use their own command buffer, fence, and persistently mapped
@@ -1233,12 +1250,12 @@ static int snap_rect_overlap(const SnapRect *a, const SnapRect *b) {
  * on each side, clipped to the batch scissor and the framebuffer. Vertices are guest pixels
  * (psp.vert maps x/256 - 1, y/136 - 1), and a device fragment at render scale s lies in guest
  * pixel floor(device / s), which the widened box contains. */
-static SnapRect batch_rect(const Batch *b) {
+static SnapRect verts_rect(const Batch *b, uint32_t first, uint32_t count) {
     SnapRect r = k_snap_rect_empty;
-    if (!b->count) return r;
-    const GpuVert *v = &s_vcpu[b->first];
+    if (!count) return r;
+    const GpuVert *v = &s_vcpu[first];
     float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y;
-    for (uint32_t i = 1; i < b->count; i++) {
+    for (uint32_t i = 1; i < count; i++) {
         if (v[i].x < x0) x0 = v[i].x;
         if (v[i].x > x1) x1 = v[i].x;
         if (v[i].y < y0) y0 = v[i].y;
@@ -1259,8 +1276,12 @@ static SnapRect batch_rect(const Batch *b) {
     return r;
 }
 
+static SnapRect batch_rect(const Batch *b) {
+    return verts_rect(b, b->first, b->count);
+}
+
 static int batch_reads_dst(const Batch *b) {
-    return (((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) != 0;
+    return (((uint32_t)b->pc.cfg[0] >> 8) & (F_SHBLEND | F_STENCIL)) != 0;
 }
 
 /* Copy target `t` into the snapshot image in the open command buffer: the one copy recipe of
@@ -1533,7 +1554,11 @@ static void stats_tick(void) { stats_emit(0); }
 /* ---- targets ----------------------------------------------------------------------------- */
 
 /* Write the target's GPU contents back to guest VRAM (eviction, CLUT-from-VRAM). */
+static int target_sync_cpu_writes(Target *t);
+
 static int target_readback(Target *t) {
+    if (!t->gpu_valid) return 1;
+    if (!target_sync_cpu_writes(t)) return 0;
     if (!t->gpu_valid) return 1;
     /* The pending batch holds the pixels we are about to materialize. Treat a failed
      * submit as a hard readback failure instead of blessing the previous generation. */
@@ -1696,6 +1721,7 @@ static int target_upload(Target *t) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!upload_finish(&upload, SR_PERF_GE_TARGET_UPLOAD)) return 0;
     t->gpu_valid = 1;
+    t->cpu_n = 0;                          /* the whole image now holds guest VRAM */
     t->render_gen++;                       /* image content changed (snapshot reuse check) */
     t->clean_gen = t->render_gen;          /* VRAM is the source: in sync by definition */
     s_cnt_upload++;
@@ -1874,6 +1900,56 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
     return 1;
 }
 
+/* Apply the CPU writes held for `t` to its image, in guest order relative to the GE: no GE
+ * operation has used the target since they were held, so the image still holds what it held
+ * when each write happened, and guest VRAM holds the bytes the writes left. Batches already
+ * queued for the current target were drawn before the writes, so they go first. */
+static int target_sync_cpu_writes(Target *t) {
+    if (!t || !t->cpu_n) return 1;
+    if (t == s_cur && s_nbatch && !submit_pending()) {
+        fprintf(stderr, "gegpu: failed to submit target before CPU VRAM patch\n");
+        t->gpu_valid = 0;
+        t->cpu_n = 0;
+        return 0;
+    }
+    const int n = t->cpu_n;
+    t->cpu_n = 0;
+    s_replay_stats.cpu_write_syncs++;
+    for (int i = 0; i < n; i++) {
+        if (!t->gpu_valid) break;
+        if (!target_patch_vram_dirty(t, t->cpu_lo[i], t->cpu_hi[i] - t->cpu_lo[i])) {
+            fprintf(stderr, "gegpu: failed to preserve target across CPU VRAM patch\n");
+            t->gpu_valid = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Hold one CPU write [lo, hi) for `t` (VRAM offsets), merging it with every span it overlaps
+ * or touches. A write needing a span beyond TARGET_CPU_SPANS applies the held ones first. */
+static void target_note_cpu_write(Target *t, uint32_t lo, uint32_t hi) {
+    s_replay_stats.cpu_write_notes++;
+    int i = 0;
+    while (i < t->cpu_n && t->cpu_hi[i] < lo) i++;
+    int j = i;
+    while (j < t->cpu_n && t->cpu_lo[j] <= hi) {
+        if (t->cpu_lo[j] < lo) lo = t->cpu_lo[j];
+        if (t->cpu_hi[j] > hi) hi = t->cpu_hi[j];
+        j++;
+    }
+    if (j == i && t->cpu_n == TARGET_CPU_SPANS) {
+        if (!target_sync_cpu_writes(t) || !t->gpu_valid) return;
+        i = j = 0;
+    }
+    const int keep = t->cpu_n - j;
+    memmove(&t->cpu_lo[i + 1], &t->cpu_lo[j], (size_t)keep * sizeof(t->cpu_lo[0]));
+    memmove(&t->cpu_hi[i + 1], &t->cpu_hi[j], (size_t)keep * sizeof(t->cpu_hi[0]));
+    t->cpu_lo[i] = lo;
+    t->cpu_hi[i] = hi;
+    t->cpu_n = i + 1 + keep;
+}
+
 static void target_destroy(Target *t) {
     if (!t->used) return;
     (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
@@ -1955,6 +2031,7 @@ static Target *target_color_acquire(uint32_t fba, uint32_t stride, uint32_t fmt,
     if (seed_from_vram && !t->gpu_valid) {
         if (!target_upload(t)) return NULL;
     }
+    if (!target_sync_cpu_writes(t)) return NULL;
     t->lru = s_lru++;
     return t;
 }
@@ -2159,6 +2236,7 @@ static int begin_target(void) {
     uint32_t stride = s_ge->fbw ? s_ge->fbw : 512;
     if (s_cur && s_cur->used && s_cur->fba == fba &&
         s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid) {
+        if (!target_sync_cpu_writes(s_cur)) return 0;
         if (!ge_zbuf_prepare_current()) return 0;
         s_zbuf = ge_zbuf_ptr();
         if (!s_zbuf || (s_cur->dep && s_cur->dep->cpu_dirty &&
@@ -2536,9 +2614,9 @@ static uint32_t log2_pow2(uint32_t v) {
  * every level down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level
  * whose size is not max(1, level-0 size >> level) on both axes, or more levels than a
  * halving chain of level 0 has, cannot be sampled from one image, and neither can an
- * automatic-mode bias past the device's maxSamplerLodBias. gpu_state_supported() sends such
- * draws to the software rasterizer, which samples every level as given. A state without mip
- * levels, or one drawn untextured, always fits. */
+ * automatic-mode bias past the device's maxSamplerLodBias. gpu_state_unsupported_reason()
+ * sends such draws to the software rasterizer, which samples every level as given. A
+ * state without mip levels, or one drawn untextured, always fits. */
 static int tex_mip_chain_supported(void) {
     const GeState *g = s_ge;
     if (!g->tex_enable || g->clear || !g->tex_addr || !ge_tex_mip_active(g)) return 1;
@@ -2591,7 +2669,7 @@ static VkDescriptorSet tex_get(void) {
     tex_mip_key(&mip);
     if (mip.max_level) {
         if (!tex_mip_chain_supported()) {
-            /* gpu_state_supported() routes these states to the software rasterizer. */
+            /* gpu_state_unsupported_reason() routes these states to the software rasterizer. */
             fprintf(stderr, "gegpu: unsupported mip chain reached the texture cache (#1373)\n");
             return s_white_set;
         }
@@ -2799,11 +2877,14 @@ static void build_state(int persp, int sprite, Batch *b) {
         uint32_t mr = g->mask_rgb & 0xFF, mg = (g->mask_rgb >> 8) & 0xFF, mb = (g->mask_rgb >> 16) & 0xFF;
         uint32_t ma = (uint32_t)g->mask_alpha & 0xFF;
         (void)ma;
-        /* Outside clear mode PSP alpha is the stencil plane.  With stencil states routed
-         * to ge.c's exact compositor, ordinary draws must preserve destination alpha. */
+        /* Outside clear mode PSP alpha is the stencil plane: a draw without the stencil
+         * test preserves destination alpha, and one with it stores the shader's stencil
+         * value, which already carries the alpha write mask. */
         k->cmask = (mr >= 0x80 ? 0 : VK_COLOR_COMPONENT_R_BIT) | (mg >= 0x80 ? 0 : VK_COLOR_COMPONENT_G_BIT)
                  | (mb >= 0x80 ? 0 : VK_COLOR_COMPONENT_B_BIT);
+        if (g->stencil_enable) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
     }
+    const int stencil = !clear && g->stencil_enable;
 
     /* blending: fixed-function VK when it maps exactly, shader blend otherwise */
     int shblend = 0;
@@ -2815,7 +2896,9 @@ static void build_state(int persp, int sprite, Batch *b) {
          * any framebuffer; a 16-bit framebuffer and dither+blend route to the shader too
          * (the PSP quantizes/dithers the blend RESULT on store) */
         int dual_fix = blend_dual_fix(sfp, dfp, g->blend_fixa, g->blend_fixb);
-        shblend = (g->fbfmt & 3) != 3 || (g->dither_enable != 0) ||
+        /* A stencil-fail pixel keeps its colour, and the stored alpha is the stencil, not a
+         * blend result: with the stencil test on, the shader blends too. */
+        shblend = stencil || (g->fbfmt & 3) != 3 || (g->dither_enable != 0) ||
                   blend_needs_shader(sfp, dfp, eq, g->blend_fixa, g->blend_fixb);
         if (shblend) {
             if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_STATE, 1);
@@ -2917,6 +3000,11 @@ static void build_state(int persp, int sprite, Batch *b) {
     flags |= (int)(g->fbfmt & 3) << F_FMT_SHIFT;
     if (shblend) flags |= F_SHBLEND;
     b->pc.bl[1] = (int32_t)s_scale;   /* guest-pixel dither keying at higher scales */
+    if (stencil) {
+        flags |= F_STENCIL;
+        b->pc.bl[2] = (int32_t)(g->stencil_test & 0xFFFFFFu);
+        b->pc.bl[3] = (int32_t)((g->stencil_op & 0x070707u) | ((uint32_t)(g->mask_alpha & 0xFF) << 24));
+    }
 
     b->pc.cfg[1] = (!clear && g->atest_enable) ? (int32_t)g->atest : 1 /* func ALWAYS */;
     b->pc.cfg[2] = (int32_t)g->minz;
@@ -2960,7 +3048,8 @@ static void build_state(int persp, int sprite, Batch *b) {
              * SR_GPU_NORTT=1 forces the readback path for all draws (debug bisect). A target
              * image has no mip levels, so a draw with mip levels on (#1373) reads the target
              * back and samples its chain from the texture cache. */
-            if (!nortt && !ge_tex_mip_active(g) && g->tex_fmt == src->fmt && !g->tex_swizzle &&
+            (void)target_sync_cpu_writes(src);   /* a failure leaves it invalid: decoded from VRAM */
+            if (src->gpu_valid && !nortt && !ge_tex_mip_active(g) && g->tex_fmt == src->fmt && !g->tex_swizzle &&
                 (g->tex_bufw == src->stride || g->tex_bufw == 0) && (toff % bpp_s) == 0) {
                 uint32_t pix = toff / bpp_s;
                 if (src == s_cur) {
@@ -2997,7 +3086,7 @@ static void build_state(int persp, int sprite, Batch *b) {
      * the batch reads what a copy taken here would have held. Draws batched under this one
      * state blend against that snapshot (intra-batch overlap reads the pre-batch destination,
      * the documented shader-blend hazard). */
-    if (shblend) {
+    if (shblend || stencil) {
         s_replay_stats.snapshot_requests++;
         if (s_cpu_profile) s_cpu_profile_stats.snapshot_requests++;
         if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_REQUEST, 1);
@@ -3021,6 +3110,7 @@ typedef struct {
     uint32_t tex_mip_addr[7], tex_mip_bufw[7]; uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
     uint32_t clut_fmt, clut_gen;
     int atest_enable; uint32_t atest;
+    int stencil_enable; uint32_t stencil_test, stencil_op;
     int fog_enable; uint32_t fog_color;
     uint32_t fbfmt;
     int dither_enable; int8_t dith[4][4];
@@ -3054,6 +3144,8 @@ static void snap_fill(StateSnap *o, int persp, int sprite) {
     memcpy(o->tex_mip_hlog2, g->tex_mip_hlog2, sizeof(o->tex_mip_hlog2));
     o->clut_fmt = g->clut_fmt; o->clut_gen = g->clut_gen;
     o->atest_enable = g->atest_enable; o->atest = g->atest;
+    o->stencil_enable = g->stencil_enable;
+    o->stencil_test = g->stencil_test; o->stencil_op = g->stencil_op;
     o->fog_enable = g->fog_enable; o->fog_color = g->fog_color;
     o->fbfmt = g->fbfmt;
     o->dither_enable = g->dither_enable;
@@ -3103,12 +3195,40 @@ static void state_get(int persp, int sprite, Batch *out) {
     }
 }
 
+/* Does a stencil batch write a value that depends on the destination, so that a primitive
+ * drawn over an earlier one in the same batch would read what was there before both? It
+ * does when it blends (the shader blends every stencil state), or when the stencil it
+ * stores depends on the old one through the test or the op. Only the ops that can run
+ * count: the stencil-fail op unless the test always passes, the depth-fail op only under
+ * the depth test, and the depth-pass op unless the test never passes. Non-stencil shader
+ * blending keeps its documented intra-batch hazard (header). */
+static int stencil_reads_own_writes(const Batch *b) {
+    const uint32_t flags = (uint32_t)b->pc.cfg[0] >> 8;
+    if (!(flags & F_STENCIL)) return 0;
+    if (flags & F_SHBLEND) return 1;
+    const uint32_t func = (uint32_t)b->pc.bl[2] & 7u, ops = (uint32_t)b->pc.bl[3];
+    const uint32_t op[3] = { ops & 7u, (ops >> 8) & 7u, (ops >> 16) & 7u };
+    const int runs[3] = { func != 1u, b->key.ztest != 0, func != 0u };
+    const int test_reads = func != 0u && func != 1u;
+    for (int i = 0; i < 3; i++) {
+        if (!runs[i] || op[i] == 0u) continue;
+        if (test_reads || op[i] >= 3u) return 1;   /* invert, incr, decr read the old value */
+    }
+    return 0;
+}
+
+/* Box of the primitives in the last batch, kept while that batch's stencil reads its own
+ * writes (append). */
+static SnapRect s_tail_prims;
+
 static void append(Batch *b, uint32_t first, uint32_t count) {
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
     sr_vram_mark_renderer_pending();
     if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
+    const int self_dep = stencil_reads_own_writes(b);
+    SnapRect prim = self_dep ? verts_rect(b, first, count) : k_snap_rect_empty;
     if (s_nbatch) {
         Batch *last = &s_batch[s_nbatch - 1];
         if (s_cpu_profile) s_cpu_profile_stats.append_compare_calls++;
@@ -3117,13 +3237,18 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
             last->sx == b->sx && last->sy == b->sy && last->sw == b->sw && last->sh == b->sh &&
             !memcmp(last->bconst, b->bconst, sizeof(b->bconst)) &&
             !memcmp(&last->pc, &b->pc, sizeof(b->pc)) && last->dset == b->dset) {
-            last->count += count;
-            if (s_cpu_profile) s_cpu_profile_stats.append_merges++;
-            return;
+            if (!self_dep || !snap_rect_overlap(&s_tail_prims, &prim)) {
+                last->count += count;
+                if (self_dep) snap_rect_union(&s_tail_prims, &prim);
+                if (s_cpu_profile) s_cpu_profile_stats.append_merges++;
+                return;
+            }
+            s_replay_stats.stencil_splits++;
         }
     }
     b->first = first; b->count = count;
     s_batch[s_nbatch++] = *b;
+    s_tail_prims = prim;
 }
 
 static void ensure_room(uint32_t verts) {
@@ -3152,25 +3277,42 @@ static int native_rgb_mask_exact(void) {
  * build_state). Only states the batch model cannot express at all remain on ge.c, the
  * behavioral arbiter: per-bit write masks, stencil, color test, and logic ops (all of
  * which read-modify-write destination bits per pixel). */
-static int gpu_state_supported(void) {
-    if (s_ge->stencil_enable||s_ge->color_test_enable||s_ge->logic_op_enable)
-        return 0;
-    if (!s_ge->clear&&!native_rgb_mask_exact()) return 0;
-    /* Framebuffer placements the persistent-target model cannot represent: color
-     * buffers in main RAM, and strides wider than the target images. */
-    if (!is_vram(s_ge->fbp)) return 0;
-    if ((s_ge->fbw ? s_ge->fbw : 512u) > FB_W) return 0;
-    /* Mip levels one Vulkan mip chain cannot hold (#1373). */
-    if (!tex_mip_chain_supported()) return 0;
-    return 1;
+/* The shader runs the stencil test before the pipeline depth test, so a stencil-fail
+ * pixel the depth test would also reject, or a depth-fail pixel, can only be dropped: the
+ * ops for them must be KEEP while the depth test is on. A test that always passes never
+ * runs the stencil-fail op. Clear mode ignores the stencil test (ge.c put_px_rgba). */
+static int stencil_gpu_supported(void) {
+    if (!s_ge->stencil_enable || s_ge->clear || !s_ge->ztest_enable) return 1;
+    const uint32_t func = s_ge->stencil_test & 7u, sfail = s_ge->stencil_op & 7u;
+    const uint32_t zfail = (s_ge->stencil_op >> 8) & 7u;
+    return (sfail == 0u || func == 1u) && zfail == 0u;
 }
 
-static int software_fallback_begin(int force) {
-    if (!force&&gpu_state_supported()) return 0;
+static int gpu_state_unsupported_reason(void) {
+    if (!stencil_gpu_supported()) return GEGPU_FALLBACK_STENCIL;
+    if (s_ge->color_test_enable) return GEGPU_FALLBACK_COLOR_TEST;
+    if (s_ge->logic_op_enable) return GEGPU_FALLBACK_LOGIC_OP;
+    if (!s_ge->clear&&!native_rgb_mask_exact()) return GEGPU_FALLBACK_WRITE_MASK;
+    /* Framebuffer placements the persistent-target model cannot represent: color
+     * buffers in main RAM, and strides wider than the target images. */
+    if (!is_vram(s_ge->fbp)) return GEGPU_FALLBACK_RAM_FB;
+    if ((s_ge->fbw ? s_ge->fbw : 512u) > FB_W) return GEGPU_FALLBACK_WIDE_STRIDE;
+    /* Mip levels one Vulkan mip chain cannot hold (#1373). */
+    if (!tex_mip_chain_supported()) return GEGPU_FALLBACK_MIPS;
+    return -1;
+}
+
+/* `forced` is the reason a primitive kind always falls back (lines, points), or -1 for one
+ * that falls back only under an unsupported state. */
+static int software_fallback_begin(int forced) {
+    const int reason = forced >= 0 ? forced : gpu_state_unsupported_reason();
+    if (reason < 0) return 0;
+    s_replay_stats.fallback_prims++;
     if (s_nbatch&&!submit_pending()) return 1;
 
     Target *t=is_vram(s_ge->fbp)?target_find_by_fba(vram_off(s_ge->fbp)):NULL;
     if (t&&t->gpu_valid) {
+        s_replay_stats.fallback_readbacks[reason]++;
         (void)target_readback(t);
         readback_discard_target(t);
         t->gpu_valid=0;
@@ -3215,7 +3357,7 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[3] = { A, B, C };
       if (!hook_finite(vv, 3)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
     static int nocull = -1;
     if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
     Batch b;
@@ -3244,7 +3386,7 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[2] = { p0, p1 };
       if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(0)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3295,7 +3437,7 @@ static int hook_line(const GeVtx *A, const GeVtx *B, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[2] = { A, B };
       if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(GEGPU_FALLBACK_LINE)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);              /* sprite semantics: no culling */
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3331,7 +3473,7 @@ static int hook_point(const GeVtx *A, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[1] = { A };
       if (!hook_finite(vv, 1)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(1)) return cpu_profile_hook_leave(0);
+    if (software_fallback_begin(GEGPU_FALLBACK_POINT)) return cpu_profile_hook_leave(0);
     Batch b;
     state_get(persp, 1, &b);
     if (!begin_target()) return cpu_profile_hook_leave(1);
@@ -3413,13 +3555,13 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
         uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
         uint32_t flen = t->stride * FB_H * bpp_t;
         if (a0 < t->fba + flen && t->fba < a0 + bytes) {
-            if (t == s_cur && s_nbatch && !submit_pending()) {
-                fprintf(stderr, "gegpu: failed to submit target before CPU VRAM patch\n");
-                t->gpu_valid = 0;
-            } else if (!target_patch_vram_dirty(t, a0, bytes)) {
-                fprintf(stderr, "gegpu: failed to preserve target across CPU VRAM patch\n");
-                t->gpu_valid = 0;
-            }
+            /* Held until the GE next uses the target (target_sync_cpu_writes). A readback
+             * already in flight holds the image from before this write: it must not copy
+             * over the bytes the CPU has just written. */
+            readback_discard_target(t);
+            uint32_t lo = a0 > t->fba ? a0 : t->fba;
+            uint32_t hi = a0 + bytes < t->fba + flen ? a0 + bytes : t->fba + flen;
+            target_note_cpu_write(t, lo, hi);
             s_cnt_dirty++;
         }
     }
@@ -3602,6 +3744,10 @@ static void gpu_replay_snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {
     out[SR_PERF_GPU_UPLOAD_RING_WRAPS] = s.upload_ring_wraps;
     out[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = s.upload_ring_fallbacks;
     out[SR_PERF_GPU_SNAPSHOT_COPY_PX] = s.snapshot_copy_px;
+    out[SR_PERF_GPU_FALLBACK_PRIMS] = s.fallback_prims;
+    out[SR_PERF_GPU_STENCIL_SPLITS] = s.stencil_splits;
+    for (int i = 0; i < GEGPU_FALLBACK_REASONS; i++)
+        out[SR_PERF_GPU_FALLBACK_STENCIL + i] = s.fallback_readbacks[i];
 }
 
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out) {
@@ -3663,11 +3809,11 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (dbg) fprintf(stderr, "GEGPU_PRESENT[%llu]: fbaddr=0x%08x fmt=%d stride=%u s_ready=%d\n",
             (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, fbaddr, fmt, stride, s_ready);
     }
-    if (!s_ready) return -1;
+    if (!s_ready) return GEGPU_PRESENT_NOT_RESIDENT;
     readback_poll();
     /* Display buffers in main RAM (movie frames, CPU-composed screens) are never
      * GPU-resident; folding them into the VRAM window could alias a real target. */
-    if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }
+    if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
     uint32_t fba = vram_off(fbaddr);
     Target *t = target_color_acquire(fba, stride ? stride : 512u, (uint32_t)fmt, 1);
     if (!t || !t->gpu_valid || (int)t->fmt != (fmt & 3)) {
@@ -3675,17 +3821,17 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             fprintf(stderr, "GEGPU_PRESENT[%llu]: EARLY-EXIT t=%p gpu_valid=%d fmt=%d/%d\n",
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
-        s_cnt_present_cpu++; return -1; }
+        s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
     /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
-     * then exist only in its image. Report it apart from the earlier -1 declines, where no
+     * then exist only in its image. Report it apart from the NOT_RESIDENT declines, where no
      * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
     if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
     stats_tick();
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
-     * the target's newest pixels may exist only in its image. 0 (user close) and 1 (shown)
-     * pass through unchanged. */
+     * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)
+     * are GEGPU_PRESENT_WINDOW_CLOSED and GEGPU_PRESENT_SHOWN and pass through unchanged. */
     if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;
     return pr;
 }
@@ -4067,8 +4213,8 @@ static int coherence_run_case(const CoherenceCase *tc) {
     if (tc->dirty_alias) dirty_addr += 0x40000000u;
     sr_gpu_vram_dirty(dirty_addr, tc->dirty_bytes);
 
-    if (tc->pending_batch && s_nbatch) {
-        fprintf(stderr, "gpu coherence selftest [%s]: dirty hook left batch pending\n", tc->name);
+    if (!t->cpu_n) {
+        fprintf(stderr, "gpu coherence selftest [%s]: dirty hook did not hold the write\n", tc->name);
         free(expected); free(payload); return 0;
     }
     if (stale) {
@@ -4160,6 +4306,69 @@ static int coherence_run_clean_case(const char *name, uint32_t fmt, uint32_t str
     return 1;
 }
 
+/* Many small CPU writes into a resident target between two GE uses are held and applied
+ * together (target_note_cpu_write, target_sync_cpu_writes), not one image patch each. The GPU
+ * holds G1 while guest VRAM holds G0, so a byte the image takes from the wrong side shows.
+ * 1024 adjacent 4-byte stores fill two rows and merge into one span; 48 unaligned 2-byte
+ * stores in other rows split pixels and outnumber the spans, so one group is applied early.
+ * The readback must hold the written bytes, G1 everywhere else (the GPU side of every split
+ * pixel included), with far fewer patches than writes. */
+static int coherence_run_cpu_write_coalesce(void) {
+    const char *name = "cpu-write-coalesce";
+    const uint32_t fba = 0x00150000u, base = 0x04000000u | fba;
+    const uint32_t fmt = 3u, stride = 512u, bpp = 4u, pixels = stride * FB_H;
+    const uint32_t target_bytes = pixels * bpp;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    uint8_t *expected = (uint8_t *)malloc(target_bytes);
+    if (!expected) return 0;
+    coherence_fill_raw(guest, pixels, bpp, coherence_g1(fmt));
+    Target *t = target_color_acquire(fba, stride, fmt, 1);
+    if (!t || !t->gpu_valid) { free(expected); return 0; }
+    memcpy(expected, guest, target_bytes);              /* the image: G1 */
+    coherence_fill_raw(guest, pixels, bpp, coherence_g0(fmt));
+    t->clean_gen = 0;                                   /* the image is newer than VRAM */
+
+    const unsigned long long notes0 = s_replay_stats.cpu_write_notes;
+    const unsigned long long syncs0 = s_replay_stats.cpu_write_syncs;
+    const unsigned uploads0 = s_cnt_upload;
+    for (uint32_t i = 0; i < 1024u; i++) {             /* rows 40 and 41, every pixel */
+        const uint32_t off = (40u * stride) * bpp + i * 4u;
+        for (uint32_t k = 0; k < 4u; k++) guest[off + k] = expected[off + k] = (uint8_t)(0x31u + i + k);
+        sr_gpu_vram_dirty(base + off, 4u);
+    }
+    for (uint32_t i = 0; i < 48u; i++) {               /* one 2-byte store per row, mid-pixel */
+        const uint32_t off = ((100u + i) * stride + 7u * i) * bpp + 1u;
+        guest[off] = expected[off] = (uint8_t)(0xa0u + i);
+        guest[off + 1u] = expected[off + 1u] = (uint8_t)(0x50u + i);
+        sr_gpu_vram_dirty(base + off, 2u);
+    }
+    const unsigned long long notes = s_replay_stats.cpu_write_notes - notes0;
+    if (!target_readback(t)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: readback failed\n", name);
+        free(expected); return 0;
+    }
+    const unsigned long long syncs = s_replay_stats.cpu_write_syncs - syncs0;
+    const unsigned uploads = s_cnt_upload - uploads0;
+    size_t mismatch = 0;
+    while (mismatch < target_bytes && guest[mismatch] == expected[mismatch]) mismatch++;
+    if (mismatch != target_bytes) {
+        fprintf(stderr, "gpu coherence selftest [%s]: byte %zu expected=%02x actual=%02x\n",
+                name, mismatch, expected[mismatch], guest[mismatch]);
+        free(expected); return 0;
+    }
+    if (notes != 1072u || syncs != 2u || uploads > 1u + 48u) {
+        fprintf(stderr, "gpu coherence selftest [%s]: notes=%llu syncs=%llu uploads=%u\n",
+                name, notes, syncs, uploads);
+        free(expected); return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s writes=%llu groups=%llu patches=%u\n",
+           name, notes, syncs, uploads);
+    coherence_reset_targets();
+    free(expected);
+    return 1;
+}
+
 static int coherence_run_full_cover_case(void) {
     const char *name = "full-cover-stale";
     const uint32_t fba = 0x00130000u;
@@ -4186,7 +4395,7 @@ static int coherence_run_full_cover_case(void) {
     }
     sr_gpu_vram_dirty(base, target_bytes);
 
-    if (t->clean_gen != t->render_gen) {
+    if (!target_sync_cpu_writes(t) || t->clean_gen != t->render_gen) {
         fprintf(stderr, "gpu coherence selftest [%s]: full cover write failed to advance clean_gen\n", name);
         free(expected); return 0;
     }
@@ -6648,6 +6857,287 @@ static int coherence_run_native_bulk_copy(void) {
     return 1;
 }
 
+/* Stencil parity: the GPU stencil path against ge.c, bit for bit, in every framebuffer
+ * format. Each cell of the matrix is one state (test function, reference, mask, the three
+ * ops, the alpha write mask, blending) drawing two overlapping sprites onto a hashed
+ * background, so the second sprite reads what the first wrote: a state that reads its own
+ * writes must split there (stencil_splits). The depth list fills a striped depth buffer in
+ * clear mode, with the stencil test on, which clear mode ignores, then draws the states the
+ * GPU path takes under the depth test (depth-fail and tested stencil-fail ops KEEP). No
+ * primitive may take the software fallback. */
+#define STP_CELLS_X 24u
+#define STP_PITCH 10u
+#define STP_ORIGIN 16u
+
+typedef struct StpList { uint32_t *dl; int p; } StpList;
+
+static void stp_emit(StpList *l, uint32_t cmd, uint32_t val) {
+    l->dl[l->p++] = (cmd << 24) | (val & 0x00FFFFFFu);
+}
+
+static void stp_begin(StpList *l, uint32_t base, uint32_t fmt, int ztest) {
+    l->dl = (uint32_t *)SR_HOST(0x08040000u);
+    l->p = 0;
+    stp_emit(l, 0x10, 0x080000u);                         /* BASE: vertices in main RAM */
+    stp_emit(l, 0x9C, base & 0x00FFFFFFu);
+    stp_emit(l, 0x9D, 512u | ((base & 0xFF000000u) >> 8));
+    stp_emit(l, 0x9E, 0);                                  /* depth at VRAM offset 0 */
+    stp_emit(l, 0x9F, 512u | 0x040000u);
+    stp_emit(l, 0xD2, fmt);
+    stp_emit(l, 0xD3, 0);
+    stp_emit(l, 0x1D, 0); stp_emit(l, 0x1E, 0); stp_emit(l, 0x1F, 0);
+    stp_emit(l, 0x20, 0); stp_emit(l, 0x22, 0);
+    stp_emit(l, 0x23, ztest ? 1u : 0u);
+    stp_emit(l, 0x24, 1);                                  /* stencil test on throughout */
+    stp_emit(l, 0xE7, 1);
+    stp_emit(l, 0xE8, 0); stp_emit(l, 0xE9, 0);
+    stp_emit(l, 0x15, 0);
+    stp_emit(l, 0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    stp_emit(l, 0xD4, 0);
+    stp_emit(l, 0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    stp_emit(l, 0xDF, 2u | (3u << 4));                     /* src alpha, 1 - src alpha */
+    stp_emit(l, 0x12, (7u << 2) | (3u << 7) | (1u << 23));
+}
+
+/* One sprite from (x0,y0) to (x1,y1) at depth z, its vertices at *vaddr. */
+static void stp_sprite(StpList *l, uint32_t *vaddr, uint32_t rgba, float x0, float y0,
+                       float x1, float y1, float z) {
+    ParityGuestVtx *v = (ParityGuestVtx *)SR_HOST(*vaddr);
+    v[0] = (ParityGuestVtx){ rgba, x0, y0, z };
+    v[1] = (ParityGuestVtx){ rgba, x1, y1, z };
+    stp_emit(l, 0x01, *vaddr & 0x00FFFFFFu);
+    stp_emit(l, 0x04, (6u << 16) | 2u);
+    *vaddr += 2u * (uint32_t)sizeof(ParityGuestVtx);
+}
+
+/* The two overlapping sprites of a cell, in one primitive command so they can share a batch. */
+static void stp_cell_sprites(StpList *l, uint32_t *vaddr, uint32_t cell, float z) {
+    float x = (float)(STP_ORIGIN + STP_PITCH * (cell % STP_CELLS_X));
+    float y = (float)(STP_ORIGIN + STP_PITCH * (cell / STP_CELLS_X));
+    uint32_t ca = wrap_hash(0x5713u + cell * 2u), cb = wrap_hash(0x5714u + cell * 2u);
+    ParityGuestVtx *v = (ParityGuestVtx *)SR_HOST(*vaddr);
+    v[0] = (ParityGuestVtx){ ca, x + 1.0f, y + 1.0f, z };
+    v[1] = (ParityGuestVtx){ ca, x + 7.0f, y + 7.0f, z };
+    v[2] = (ParityGuestVtx){ cb, x + 3.0f, y + 3.0f, z };
+    v[3] = (ParityGuestVtx){ cb, x + 9.0f, y + 9.0f, z };
+    stp_emit(l, 0x01, *vaddr & 0x00FFFFFFu);
+    stp_emit(l, 0x04, (6u << 16) | 4u);
+    *vaddr += 4u * (uint32_t)sizeof(ParityGuestVtx);
+}
+
+static void stp_cell_state(StpList *l, uint32_t cell, uint32_t func, uint32_t ops) {
+    static const uint32_t smask[5] = { 0xFFu, 0xF0u, 0x0Fu, 0x80u, 0x81u };
+    static const uint32_t amask[5] = { 0x00u, 0x00u, 0xF0u, 0x0Fu, 0x80u };
+    uint32_t h = wrap_hash(0xA11u + cell);
+    stp_emit(l, 0xDC, func | ((h & 0xFFu) << 8) | (smask[cell % 5u] << 16));
+    stp_emit(l, 0xDD, ops);
+    stp_emit(l, 0xE9, amask[(cell / 5u) % 5u]);
+    stp_emit(l, 0x21, (cell & 1u) ? 1u : 0u);
+}
+
+static void stp_end(StpList *l) {
+    stp_emit(l, 0x10, 0);                                  /* later lists expect BASE 0 */
+    stp_emit(l, 0x0F, 0);
+    stp_emit(l, 0x0C, 0);
+}
+
+/* Matrix list: every test function with every stencil-fail and depth-pass op, depth off. */
+static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt) {
+    StpList l; stp_begin(&l, base, fmt, 0);
+    uint32_t vaddr = 0x08060000u, cell = 0;
+    for (uint32_t func = 0; func < 8u; func++)
+        for (uint32_t sfail = 0; sfail < 6u; sfail++)
+            for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+                stp_cell_state(&l, cell, func, sfail | (((cell / 7u) % 6u) << 8) | (zpass << 16));
+                stp_cell_sprites(&l, &vaddr, cell, 0.0f);
+            }
+    stp_end(&l);
+    return 0x08040000u;
+}
+
+/* Depth list: a striped depth buffer, then depth-tested cells. */
+static uint32_t stp_depth_list(uint32_t base, uint32_t fmt) {
+    static const uint32_t zfunc[4] = { 4u, 5u, 6u, 7u };   /* less, lequal, greater, gequal */
+    StpList l; stp_begin(&l, base, fmt, 1);
+    uint32_t vaddr = 0x08060000u;
+    stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);              /* depth and colour, stencil kept */
+    for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
+        stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
+                   (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
+                   (x & 2u) ? 49152.0f : 16384.0f);
+    stp_emit(&l, 0xD3, 0);
+    uint32_t cell = 0;
+    for (uint32_t func = 0; func < 8u; func++)
+        for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+            stp_cell_state(&l, cell, func, zpass << 16);
+            stp_emit(&l, 0xDE, zfunc[cell % 4u]);
+            stp_emit(&l, 0xE7, (cell / 4u) & 1u);          /* depth writes on and off */
+            stp_cell_sprites(&l, &vaddr, cell, 32768.0f);
+        }
+    for (uint32_t sfail = 1; sfail < 6u; sfail++, cell++) {
+        stp_cell_state(&l, cell, 1u, sfail | (2u << 16));   /* always: the fail op never runs */
+        stp_emit(&l, 0xDE, zfunc[cell % 4u]);
+        stp_emit(&l, 0xE7, 0);
+        stp_cell_sprites(&l, &vaddr, cell, 32768.0f);
+    }
+    stp_end(&l);
+    return 0x08040000u;
+}
+
+static void stp_fill_background(uint32_t base, uint32_t fmt) {
+    if (fmt == 3u) {
+        uint32_t *px = (uint32_t *)SR_HOST(base);
+        for (uint32_t i = 0; i < FB_W * FB_H; i++) px[i] = wrap_hash(0x3C1u + i * 40503u);
+    } else {
+        uint16_t *px = (uint16_t *)SR_HOST(base);
+        for (uint32_t i = 0; i < FB_W * FB_H; i++)
+            px[i] = (uint16_t)wrap_hash(0x3C1u + i * 40503u);
+    }
+    sr_gpu_vram_dirty(base, FB_W * FB_H * (fmt == 3u ? 4u : 2u));
+}
+
+static int coherence_run_stencil_parity(void) {
+    const uint32_t base = 0x04000000u | 0x00140000u;
+    const uint32_t max_bytes = FB_W * FB_H * 4u;
+    uint8_t *gpu_out = (uint8_t *)malloc(max_bytes);
+    if (!gpu_out) return 0;
+    GeState saved = *s_ge;                 /* the lists leave the stencil test and masks on */
+    int ok = 1;
+    unsigned runs = 0, differing = 0;
+    const unsigned long long splits0 = s_replay_stats.stencil_splits;
+    for (uint32_t fmt = 0; fmt < 4u && ok; fmt++) {
+        for (int depth = 0; depth < 2 && ok; depth++) {
+            const uint32_t bytes = FB_W * FB_H * (fmt == 3u ? 4u : 2u);
+            const uint32_t list = depth ? stp_depth_list(base, fmt) : stp_matrix_list(base, fmt);
+            coherence_reset_targets();
+            stp_fill_background(base, fmt);
+            const unsigned long long fallback0 = s_replay_stats.fallback_prims;
+            ge_set_gpu_hooks(&k_hooks);
+            ge_run_list(list, 0);
+            GeGpuFbDescriptor desc = { .addr = base, .format = fmt, .stride = 512u,
+                                       .width = 480, .height = FB_H };
+            if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) { ok = 0; break; }
+            memcpy(gpu_out, SR_HOST(base), bytes);
+            const unsigned long long fallbacks = s_replay_stats.fallback_prims - fallback0;
+
+            coherence_reset_targets();
+            stp_fill_background(base, fmt);
+            ge_set_gpu_hooks(NULL);
+            ge_run_list(list, 0);
+            ge_set_gpu_hooks(&k_hooks);
+            const uint8_t *sw_out = (const uint8_t *)SR_HOST(base);
+            runs++;
+            /* The list must draw: count what ge.c changed against a fresh background. */
+            const uint32_t bpp = fmt == 3u ? 4u : 2u;
+            unsigned drawn = 0;
+            for (uint32_t i = 0; i < FB_W * FB_H; i++) {
+                uint32_t bg = wrap_hash(0x3C1u + i * 40503u), w = 0;
+                memcpy(&w, sw_out + i * bpp, bpp);
+                if (fmt != 3u) bg &= 0xFFFFu;
+                if (w != bg) drawn++;
+            }
+            if (drawn < 4096u) {
+                fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s list changed "
+                                "only %u pixels\n", fmt, depth ? "depth" : "matrix", drawn);
+                ok = 0;
+            }
+            if (fallbacks) {
+                fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s list took "
+                                "the software fallback for %llu primitives\n",
+                        fmt, depth ? "depth" : "matrix", fallbacks);
+                ok = 0;
+            }
+            for (uint32_t i = 0; i < FB_W * FB_H; i++) {
+                if (i % FB_W >= 480u || !memcmp(gpu_out + i * bpp, sw_out + i * bpp, bpp)) continue;
+                if (!differing++) {
+                    uint32_t g = 0, w = 0;
+                    memcpy(&g, gpu_out + i * bpp, bpp); memcpy(&w, sw_out + i * bpp, bpp);
+                    uint32_t x = i % FB_W, y = i / FB_W;
+                    uint32_t cell = (y - STP_ORIGIN) / STP_PITCH * STP_CELLS_X + (x - STP_ORIGIN) / STP_PITCH;
+                    fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s cell=%u "
+                                    "x=%u y=%u gpu=%08x ge_c=%08x\n",
+                            fmt, depth ? "depth" : "matrix", cell, x, y, g, w);
+                }
+                ok = 0;
+            }
+            coherence_reset_targets();
+        }
+    }
+    free(gpu_out);
+    *s_ge = saved;
+    const unsigned long long splits = s_replay_stats.stencil_splits - splits0;
+    if (ok && !splits) {
+        fprintf(stderr, "gpu coherence selftest [stencil-parity]: no state split its batch\n");
+        ok = 0;
+    }
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [stencil-parity]: %u pixels differ from ge.c\n",
+                differing);
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s lists=%u splits=%llu max_delta_vs_ge_c=0\n",
+           "stencil-parity", runs, splits);
+    return 1;
+}
+
+/* The fallback classifier names the first unsupported state, in the order the support
+ * check always tested them, and a supported state names none. */
+static int coherence_run_fallback_reasons(void) {
+    GeState saved = *s_ge;
+    int ok = 1;
+    struct { const char *what; int want; } cells[] = {
+        {"stencil", GEGPU_FALLBACK_STENCIL}, {"color test", GEGPU_FALLBACK_COLOR_TEST},
+        {"logic op", GEGPU_FALLBACK_LOGIC_OP}, {"ram fb", GEGPU_FALLBACK_RAM_FB},
+        {"wide stride", GEGPU_FALLBACK_WIDE_STRIDE},
+    };
+    s_ge->stencil_enable = s_ge->color_test_enable = s_ge->logic_op_enable = 0;
+    s_ge->clear = 0; s_ge->mask_rgb = 0;   /* an exact write mask */
+    s_ge->ztest_enable = 1;                /* a depth-tested stencil-fail INCR: unsupported */
+    s_ge->stencil_test = 2u; s_ge->stencil_op = 4u;
+    s_ge->fbp = 0x04000000u; s_ge->fbw = 512u;
+    s_ge->tex_enable = 0;
+    if (gpu_state_unsupported_reason() != -1) ok = 0;
+    for (unsigned i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        s_ge->stencil_enable = i == 0;
+        s_ge->color_test_enable = i == 1;
+        s_ge->logic_op_enable = i == 2;
+        s_ge->fbp = i == 3 ? 0x08000000u : 0x04000000u;   /* main RAM, not VRAM */
+        s_ge->fbw = i == 4 ? 1024u : 512u;
+        const int got = gpu_state_unsupported_reason();
+        if (got != cells[i].want) {
+            fprintf(stderr, "gpu coherence selftest [fallback-reasons]: %s gave %d, want %d\n",
+                    cells[i].what, got, cells[i].want);
+            ok = 0;
+        }
+    }
+    s_ge->fbp = 0x04000000u; s_ge->fbw = 512u;
+    s_ge->stencil_enable = 1; s_ge->color_test_enable = 1;   /* stencil is tested first */
+    if (gpu_state_unsupported_reason() != GEGPU_FALLBACK_STENCIL) ok = 0;
+    /* The stencil states the GPU path takes: clear mode (ge.c ignores the test there), no
+     * depth test, or KEEP for the ops the depth test can leave to run. */
+    struct { const char *what; int clear, ztest; uint32_t test, op; int want; } st[] = {
+        {"stencil clear", 1, 1, 2u, 0x000004u, -1},
+        {"stencil no depth", 0, 0, 2u, 0x040404u, -1},
+        {"stencil always", 0, 1, 1u, 0x020004u, -1},
+        {"stencil keep", 0, 1, 2u, 0x050000u, -1},
+        {"stencil zfail op", 0, 1, 1u, 0x000100u, GEGPU_FALLBACK_STENCIL},
+    };
+    s_ge->color_test_enable = 0;
+    for (unsigned i = 0; i < sizeof(st) / sizeof(st[0]); i++) {
+        s_ge->clear = st[i].clear; s_ge->ztest_enable = st[i].ztest;
+        s_ge->stencil_test = st[i].test; s_ge->stencil_op = st[i].op;
+        const int got = gpu_state_unsupported_reason();
+        if (got != st[i].want) {
+            fprintf(stderr, "gpu coherence selftest [fallback-reasons]: %s gave %d, want %d\n",
+                    st[i].what, got, st[i].want);
+            ok = 0;
+        }
+    }
+    *s_ge = saved;
+    if (ok) printf("gpu coherence selftest: PASS %-22s 11 cells\n", "fallback-reasons");
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -6670,6 +7160,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clean_case("clean-aligned", 3, 512, (50u * 512u + 20u) * 4u, 16)) ok = 0;
     if (!coherence_run_clean_case("clean-unaligned", 3, 512, (51u * 512u + 21u) * 4u + 1u, 5)) ok = 0;
     if (!coherence_run_full_cover_case()) ok = 0;
+    if (!coherence_run_cpu_write_coalesce()) ok = 0;
     if (!coherence_run_overlap_case()) ok = 0;
     if (!coherence_run_tflt_descriptor_capacity()) ok = 0;
     if (!coherence_run_sprite_semantics()) ok = 0;
@@ -6691,11 +7182,14 @@ int gegpu_coherence_selftest(void) {
      * colour surface at 0x100000 here. */
     if (!coherence_run_scalar_vram_read(0x040A2000u)) ok = 0;
     if (!coherence_run_native_bulk_copy()) ok = 0;
+    if (!coherence_run_fallback_reasons()) ok = 0;
     /* Last: its chain-fallback case draws through the software fallback, which hands the
      * current depth surface to ge.c, and the fixtures above start from the depth state the
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
     if (!coherence_run_psp_sample_points()) ok = 0;
+    /* After the mip fixtures: it rewrites the depth buffer they start from. */
+    if (!coherence_run_stencil_parity()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -6819,8 +7313,8 @@ int gegpu_snapshot_sync_selftest(void) {
     /* Declines that involve no GPU-valid target keep -1, so gui_present does not sync guest
      * VRAM for them. Only a GPU-valid target that fails to prepare or present reports
      * GEGPU_PRESENT_TARGET_FAILED (issue #827). */
-    if (gegpu_present(0x08010000u, (int)fmt, stride) != -1 ||
-        gegpu_present(base, (int)fmt, FB_W + 64u) != -1) {
+    if (gegpu_present(0x08010000u, (int)fmt, stride) != GEGPU_PRESENT_NOT_RESIDENT ||
+        gegpu_present(base, (int)fmt, FB_W + 64u) != GEGPU_PRESENT_NOT_RESIDENT) {
         fprintf(stderr, "gpu snapshot sync selftest: a present decline without a GPU target was not -1\n");
         coherence_reset_targets();
         return 0;
@@ -6874,7 +7368,8 @@ int gegpu_snapshot_sync_selftest(void) {
     sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
     int rebuilt_present = gegpu_present(base, (int)fmt, stride);
     sdl3vk_present_fault_clear();
-    if (rebuilt_present != 1 || gegpu_present(base, (int)fmt, stride) != 1) {
+    if (rebuilt_present != GEGPU_PRESENT_SHOWN ||
+        gegpu_present(base, (int)fmt, stride) != GEGPU_PRESENT_SHOWN) {
         fprintf(stderr, "gpu snapshot sync selftest: a shown present did not stay 1 (rebuild=%d)\n",
                 rebuilt_present);
         coherence_reset_targets();

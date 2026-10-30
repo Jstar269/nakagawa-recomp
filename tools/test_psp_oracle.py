@@ -2444,13 +2444,14 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 108)
+        self.assertEqual(len(routes), 111)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 123, 124}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125},
+                         set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3107,6 +3108,12 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-CPU-TIMING-001",
                 # The 2026-10-28 acceptance-eligible vfpu-forms run of 781ccd34 (#326).
                 "PSP-VFPU-FORMS-001",
+                # The 2026-10-29 acceptance-eligible vfpu-funnel run of 8d0f75ad (#326).
+                "PSP-VFPU-FUNNEL-001",
+                # The 2026-10-29 acceptance-eligible vfpu-sort run of 9171f055 (#326).
+                "PSP-VFPU-SORT-001",
+                # The 2026-10-29 acceptance-eligible vfpu-forms2 run of 97827132 (#326).
+                "PSP-VFPU-FORMS2-001",
                 # The 2026-10-29 acceptance-eligible module-start run of fd2a75fd.
                 "PSP-MODULE-START-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
@@ -6396,7 +6403,8 @@ class HleIssuesProbeTests(unittest.TestCase):
         self.assertEqual(spec.test_id, "PSP-HLE-ISSUES-001")
 
     def test_only_the_vfpu_cases_run_their_main_thread_with_the_vfpu_attribute(self) -> None:
-        head = "#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108\n"
+        head = ("#if PSP_ORACLE_CASE == 106 || PSP_ORACLE_CASE == 108 || PSP_ORACLE_CASE == 121 "
+                "|| PSP_ORACLE_CASE == 122 || PSP_ORACLE_CASE == 125\n")
         self.assertIn(head, self.probe)
         attr = self.probe[self.probe.index(head):]
         attr = attr[:attr.index("#endif") + len("#endif")]
@@ -7624,6 +7632,401 @@ class IntrCellsRuntimeContractTests(unittest.TestCase):
         # Registered in the full run and in the --vtimer subset.
         self.assertEqual(self.hle_selftest.count(
             "test_vtimer_handler_return_below_100us_reschedules_100us_on();\n"), 2)
+
+
+class VfpuFunnelProbeTests(unittest.TestCase):
+    """CASE=vfpu-funnel (122, PSP-VFPU-FUNNEL-001) in probe_hle_issues.c: the #326 vfad and
+    vavg words. Register-only: no system call beyond the shared writer and lifecycle,
+    bounded loops, one step per group, and a fixed-shape stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                              .read_text(encoding="utf-8"))
+        cls.rows = []
+        stack = [manifest]
+        for _ in range(100000):
+            if not stack:
+                break
+            node = stack.pop()
+            if isinstance(node, dict):
+                if node.get("id") == "PSP-VFPU-FUNNEL-001":
+                    cls.rows.append(node)
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        start = cls.probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FUNNEL\n")
+        end = cls.probe.index("#endif /* HLE_CASE_VFPU_FUNNEL */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),vfpu-funnel)\nCASE_ID = 122\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),vfpu-funnel)\nTARGET = $(BUILD_DIR)/vfpu_funnel\n"
+                      "OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define HLE_CASE_VFPU_FUNNEL 122\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "vfpu-funnel"\n#define HLE_TEST_ID "PSP-VFPU-FUNNEL-001"\n'
+                      '#define HLE_LOG "host0:/vfpu_funnel_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vfpu-funnel").name,
+                         "vfpu_funnel_log.txt")
+        self.assertEqual(_campaign_completeness_contract("vfpu-funnel"), "strict-golden-sequence")
+        self.assertNotIn("vfpu-funnel", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("vfpu-funnel", parse_golden.HLE_OBSERVATION_CASES)
+
+    def test_section_is_register_only_and_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), set())
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "kuKernel", "sctrl"):
+            self.assertNotIn(banned, self.section)
+        headers = re.findall(r"\bfor \(([^)]*)\)", self.section)
+        self.assertGreaterEqual(len(headers), 6)
+        for header in headers:
+            with self.subTest(loop=header):
+                self.assertRegex(header, r"^unsigned (\w+) = 0; \1 < (?:\d+u|TN_IMAGE_WORDS); \1\+\+$")
+
+    def test_the_group_writes_its_step_before_its_cells(self) -> None:
+        body = _c_function_bodies(self.section)["fn_group"]
+        self.assertLess(body.index("hle_step(name);"), body.index("fn_cell("))
+
+    def test_encodings_follow_the_vfpu_field_layout(self) -> None:
+        # VFPU op 0x34, jump field (bits 21-25) 2, op field (bits 16-20) 6 = vfad and
+        # 7 = vavg, vd S200 (0x08), vs C000 (0), size from bit 7 (.p), bit 15 (.t), both (.q).
+        for op, form in ((6, "fad"), (7, "avg")):
+            for size, bits in (("p", 0x0080), ("t", 0x8000), ("q", 0x8080)):
+                word = (0x34 << 26) | (2 << 21) | (op << 16) | bits | 0x08
+                with self.subTest(form=form, size=size):
+                    self.assertIn(f'TN_CELL_SET(fn_{form}_{size}, "0x{word:08x}")', self.section)
+                    self.assertIn(f"0x{word:08x}u", self.section)
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["vfpu-funnel"]
+        self.assertEqual(spec.test_id, "PSP-VFPU-FUNNEL-001")
+        self.assertEqual(spec.terminal_case, "vfpu-funnel-done")
+        sets = parse_golden.VFPU_FUNNEL_OPERAND_SETS
+        self.assertEqual(len(parse_golden.VFPU_FUNNEL_CASES),
+                         parse_golden.VFPU_FUNNEL_PASSES * len(parse_golden.VFPU_FUNNEL_FORMS)
+                         * len(parse_golden.VFPU_FUNNEL_SIZES) * sets
+                         * len(parse_golden.VFPU_FUNNEL_PREFIXES))
+        self.assertEqual(len(parse_golden.VFPU_FUNNEL_CASES), 936)
+        self.assertEqual(counts["fad-p0-p-0-none"], 13)
+        self.assertEqual(counts["avg-p1-q-25-p2"], 13)
+        self.assertEqual(len(parse_golden.VFPU_FUNNEL_CASES),
+                         len(set(parse_golden.VFPU_FUNNEL_CASES)))
+        self.assertIn('hle_record(name, "PASS", word, w, 13);', self.section)
+        for fragment in (f"s_fn_ops[{sets}][4]", f"i < {sets}u", "s_fn_forms[2]", "s_fn_sizes[3]",
+                         "s_fn_pfx_names[3]", f"pass < {parse_golden.VFPU_FUNNEL_PASSES}u"):
+            self.assertIn(fragment, self.section)
+        self.assertEqual(self.section.count("TN_CELL_SET("), 6)
+        for form in parse_golden.VFPU_FUNNEL_FORMS:
+            self.assertIn(f'"{form}"', self.section)
+        for size in parse_golden.VFPU_FUNNEL_SIZES:
+            self.assertIn(f'"{size}"', self.section)
+
+    def test_the_operand_sets_cover_the_summation_rules(self) -> None:
+        # Sets 0-1 separate sequential, pairwise and exact-then-round sums; sets 6-10 are the
+        # x / 3 against x * (1 / 3) cases; the specials follow.
+        ops = re.search(r"s_fn_ops\[26\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
+        self.assertIsNotNone(ops)
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", ops.group(1))
+        self.assertEqual(len(sets), parse_golden.VFPU_FUNNEL_OPERAND_SETS)
+        words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
+        self.assertEqual(words[0], [0x4b800000, 0x3f800000, 0x3f800000, 0x3f800000])
+        self.assertEqual(words[1], [0x3f800000, 0x3f800000, 0x3f800000, 0x4b800000])
+        self.assertEqual(words[10], [0x3f800000, 0x3f800000, 0x3f800000, 0])
+        self.assertEqual(len({tuple(item) for item in words}), len(words))
+
+    def test_manifest_row_is_a_single_launch_measured_case(self) -> None:
+        self.assertEqual(len(self.rows), 1)
+        row = self.rows[0]
+        self.assertEqual(row["prx"], "vfpu_funnel.prx")
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+        self.assertEqual(row["diagnostic_case_ids"], ["vfpu-funnel"])
+        self.assertEqual(row["issues"], [326])
+        # The 2026-10-29 acceptance-eligible PSP-3000 run of 8d0f75ad cites every cell.
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+
+
+class VfpuSortProbeTests(unittest.TestCase):
+    """CASE=vfpu-sort (125, PSP-VFPU-SORT-001) in probe_hle_issues.c: the #326 vsrt1.q to
+    vsrt4.q words. Register-only: no system call beyond the shared writer and lifecycle,
+    bounded loops, one step per group, and a fixed-shape stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                              .read_text(encoding="utf-8"))
+        cls.rows = []
+        stack = [manifest]
+        for _ in range(100000):
+            if not stack:
+                break
+            node = stack.pop()
+            if isinstance(node, dict):
+                if node.get("id") == "PSP-VFPU-SORT-001":
+                    cls.rows.append(node)
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        start = cls.probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_VFPU_SORT\n")
+        end = cls.probe.index("#endif /* HLE_CASE_VFPU_SORT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),vfpu-sort)\nCASE_ID = 125\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),vfpu-sort)\nTARGET = $(BUILD_DIR)/vfpu_sort\n"
+                      "OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define HLE_CASE_VFPU_SORT 125\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "vfpu-sort"\n#define HLE_TEST_ID "PSP-VFPU-SORT-001"\n'
+                      '#define HLE_LOG "host0:/vfpu_sort_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vfpu-sort").name,
+                         "vfpu_sort_log.txt")
+        self.assertEqual(_campaign_completeness_contract("vfpu-sort"), "strict-golden-sequence")
+        self.assertNotIn("vfpu-sort", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("vfpu-sort", parse_golden.HLE_OBSERVATION_CASES)
+
+    def test_section_is_register_only_and_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), set())
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "kuKernel", "sctrl"):
+            self.assertNotIn(banned, self.section)
+        headers = re.findall(r"\bfor \(([^)]*)\)", self.section)
+        self.assertGreaterEqual(len(headers), 6)
+        for header in headers:
+            with self.subTest(loop=header):
+                self.assertRegex(header, r"^unsigned (\w+) = 0; \1 < (?:\d+u|TN_IMAGE_WORDS); \1\+\+$")
+
+    def test_the_group_writes_its_step_before_its_cells(self) -> None:
+        body = _c_function_bodies(self.section)["st_group"]
+        self.assertLess(body.index("hle_step(name);"), body.index("st_cell("))
+
+    def test_encodings_follow_the_vfpu_field_layout(self) -> None:
+        # VFPU op 0x34, jump field (bits 21-25) 2, op field (bits 16-20) 0, 1, 8 and 9 for
+        # vsrt1 to vsrt4, vd C200 (0x08), vs C000 (0), size .q (bits 7 and 15).
+        for n, op in ((1, 0), (2, 1), (3, 8), (4, 9)):
+            word = (0x34 << 26) | (2 << 21) | (op << 16) | 0x8080 | 0x08
+            with self.subTest(form=f"vsrt{n}"):
+                self.assertIn(f'TN_CELL_SET(st_srt{n}, "0x{word:08x}")', self.section)
+                self.assertIn(f"0x{word:08x}u", self.section)
+        self.assertEqual(self.section.count("TN_CELL_SET("), 4)
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["vfpu-sort"]
+        self.assertEqual(spec.test_id, "PSP-VFPU-SORT-001")
+        self.assertEqual(spec.terminal_case, "vfpu-sort-done")
+        sets = parse_golden.VFPU_SORT_OPERAND_SETS
+        self.assertEqual(len(parse_golden.VFPU_SORT_CASES),
+                         parse_golden.VFPU_SORT_PASSES * len(parse_golden.VFPU_SORT_FORMS)
+                         * sets * len(parse_golden.VFPU_SORT_PREFIXES))
+        self.assertEqual(len(parse_golden.VFPU_SORT_CASES), 576)
+        self.assertEqual(counts["srt1-p0-0-none"], 13)
+        self.assertEqual(counts["srt4-p1-23-p2"], 13)
+        self.assertEqual(len(parse_golden.VFPU_SORT_CASES), len(set(parse_golden.VFPU_SORT_CASES)))
+        self.assertIn('hle_record(name, "PASS", word, w, 13);', self.section)
+        for fragment in (f"s_st_ops[{sets}][4]", f"i < {sets}u",
+                         f"s_st_forms[{len(parse_golden.VFPU_SORT_FORMS)}]",
+                         f"form < {len(parse_golden.VFPU_SORT_FORMS)}u", "s_st_pfx_names[3]",
+                         f"pass < {parse_golden.VFPU_SORT_PASSES}u"):
+            self.assertIn(fragment, self.section)
+        for form in parse_golden.VFPU_SORT_FORMS:
+            self.assertIn(f'"{form}"', self.section)
+
+    def test_the_operand_sets_put_the_pairs_in_several_positions(self) -> None:
+        ops = re.search(r"s_st_ops\[24\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
+        self.assertIsNotNone(ops)
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", ops.group(1))
+        self.assertEqual(len(sets), parse_golden.VFPU_SORT_OPERAND_SETS)
+        words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
+        self.assertEqual(words[0], [0x3f800000, 0x40000000, 0x40400000, 0x40800000])
+        self.assertEqual(words[7], [0x7fc00000, 0x3f800000, 0x3f800000, 0x7fc00000])
+        self.assertEqual(words[8], [0x3f800000, 0x7fc00000, 0x7fc00000, 0x3f800000])
+        self.assertEqual(len({tuple(item) for item in words}), len(words))
+
+    def test_manifest_row_is_a_single_launch_measured_sort_case(self) -> None:
+        self.assertEqual(len(self.rows), 1)
+        row = self.rows[0]
+        self.assertEqual(row["prx"], "vfpu_sort.prx")
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+        self.assertEqual(row["diagnostic_case_ids"], ["vfpu-sort"])
+        self.assertEqual(row["issues"], [326])
+        # The 2026-10-29 acceptance-eligible PSP-3000 run of 9171f055 cites every cell.
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+
+
+class VfpuForms2ProbeTests(unittest.TestCase):
+    """CASE=vfpu-forms2 (121, PSP-VFPU-FORMS2-001) in probe_hle_issues.c: the second #326 batch
+    of VFPU forms (vrnds.s, wide vrndi/vrndf1/vrndf2, vf2h, vc2i). Register-only: no system call
+    beyond the shared writer and lifecycle, bounded loops, one step per group, and a fixed-shape
+    stream that matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                              .read_text(encoding="utf-8"))
+        cls.rows = []
+        stack = [manifest]
+        for _ in range(100000):
+            if not stack:
+                break
+            node = stack.pop()
+            if isinstance(node, dict):
+                if node.get("id") == "PSP-VFPU-FORMS2-001":
+                    cls.rows.append(node)
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        start = cls.probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_VFPU_FORMS2\n")
+        end = cls.probe.index("#endif /* HLE_CASE_VFPU_FORMS2 */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),vfpu-forms2)\nCASE_ID = 121\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),vfpu-forms2)\nTARGET = $(BUILD_DIR)/vfpu_forms2\n"
+                      "OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define HLE_CASE_VFPU_FORMS2 121\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "vfpu-forms2"\n#define HLE_TEST_ID "PSP-VFPU-FORMS2-001"\n'
+                      '#define HLE_LOG "host0:/vfpu_forms2_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vfpu-forms2").name,
+                         "vfpu_forms2_log.txt")
+        self.assertEqual(_campaign_completeness_contract("vfpu-forms2"), "strict-golden-sequence")
+        self.assertNotIn("vfpu-forms2", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("vfpu-forms2", parse_golden.HLE_OBSERVATION_CASES)
+
+    def test_section_is_register_only_and_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), set())
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "kuKernel", "sctrl"):
+            self.assertNotIn(banned, self.section)
+        headers = re.findall(r"\bfor \(([^)]*)\)", self.section)
+        self.assertGreaterEqual(len(headers), 15)
+        for header in headers:
+            with self.subTest(loop=header):
+                self.assertRegex(header, r"^unsigned (\w+) = 0; \1 < (?:\d+u|TN_IMAGE_WORDS); \1\+\+$")
+
+    def test_the_groups_write_their_step_before_their_cells(self) -> None:
+        bodies = _c_function_bodies(self.section)
+        for fn, first in (("f2_f2h", "f2_cell("), ("f2_c2i", "f2_cell("),
+                          ("f2_rnds", "f2_rnds_step("), ("f2_wide", "s_f2_draw_fns[op][size](")):
+            with self.subTest(group=fn):
+                self.assertLess(bodies[fn].index("hle_step(name);"), bodies[fn].index(first))
+
+    def test_encodings_follow_the_vfpu_field_layout(self) -> None:
+        # VFPU op 0x34, jump field (bits 21-25) 1, op field (bits 16-20) 0 vrnds, 1 vrndi,
+        # 2 vrndf1, 3 vrndf2, 18 vf2h and 25 vc2i; size bit 7 is .p, bit 15 .t, both .q.
+        def word(op: int, size: int, low: int = 0) -> int:
+            return (0x34 << 26) | (1 << 21) | (op << 16) | size | low
+
+        self.assertIn('".word 0xd0200000\\n\\t"', self.section)
+        self.assertEqual(word(0, 0), 0xD0200000)
+        self.assertIn('".word 0xd0210000\\n\\t"', self.section)
+        self.assertEqual(word(1, 0), 0xD0210000)
+        for stem, op in (("rndi", 1), ("rndf1", 2), ("rndf2", 3)):
+            for suffix, size in (("p", 0x80), ("t", 0x8000), ("q", 0x8080)):
+                with self.subTest(form=f"{stem}.{suffix}"):
+                    text = f"0x{word(op, size):08x}"
+                    self.assertIn(f'F2_DRAW_FN(f2_{stem}_{suffix}, "{text}")', self.section)
+                    self.assertIn(f"{text}u", self.section)
+        self.assertEqual(self.section.count("F2_DRAW_FN("), 9 + 1)  # nine uses and the macro
+        self.assertEqual(word(18, 0x88), 0xD0320088)
+        self.assertEqual(word(18, 0x8088), 0xD0328088)
+        self.assertEqual(word(25, 0x08), 0xD0390008)
+        self.assertIn('TN_CELL_SET(f2_f2h_p, "0xd0320088")', self.section)
+        self.assertIn('TN_CELL_SET(f2_f2h_q, "0xd0328088")', self.section)
+        self.assertIn('TN_CELL_SET(f2_c2i, "0xd0390008")', self.section)
+        self.assertIn("0xd0320088u, 0xd0328088u", self.section)
+        self.assertIn("0xd0390008u", self.section)
+        self.assertEqual(self.section.count("TN_CELL_SET("), 3)
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["vfpu-forms2"]
+        self.assertEqual(spec.test_id, "PSP-VFPU-FORMS2-001")
+        self.assertEqual(spec.terminal_case, "vfpu-forms2-done")
+        per_pass = (parse_golden.VFPU_FORMS2_SEEDS * len(parse_golden.VFPU_FORMS2_SEED_STATES)
+                    + len(parse_golden.VFPU_FORMS2_DRAW_STEMS)
+                    * len(parse_golden.VFPU_FORMS2_DRAW_SIZES)
+                    * parse_golden.VFPU_FORMS2_DRAW_STATES
+                    + len(parse_golden.VFPU_FORMS2_F2H_SIZES)
+                    * parse_golden.VFPU_FORMS2_F2H_QUADS * len(parse_golden.VFPU_FORMS2_PREFIXES)
+                    + parse_golden.VFPU_FORMS2_C2I_OPERANDS
+                    * len(parse_golden.VFPU_FORMS2_PREFIXES))
+        self.assertEqual(per_pass, 318)
+        self.assertEqual(len(parse_golden.VFPU_FORMS2_CASES),
+                         parse_golden.VFPU_FORMS2_PASSES * per_pass)
+        self.assertEqual(len(parse_golden.VFPU_FORMS2_CASES), 636)
+        self.assertEqual(len(parse_golden.VFPU_FORMS2_CASES),
+                         len(set(parse_golden.VFPU_FORMS2_CASES)))
+        self.assertEqual(counts["rnds-p0-0-a"], 25)
+        self.assertEqual(counts["rnds-p1-23-b"], 25)
+        self.assertEqual(counts["wrndi-p0-p-0"], 20)
+        self.assertEqual(counts["wrndf2-p1-q-7"], 20)
+        self.assertEqual(counts["f2h-p0-p-0-none"], 13)
+        self.assertEqual(counts["f2h-p1-q-27-p2"], 13)
+        self.assertEqual(counts["c2i-p1-9-p2"], 13)
+        self.assertEqual(parse_golden.VFPU_FORMS2_CASES[0], "rnds-p0-0-a")
+        self.assertEqual(parse_golden.VFPU_FORMS2_CASES[48], "wrndi-p0-p-0")
+        self.assertEqual(parse_golden.VFPU_FORMS2_CASES[48 + 72], "f2h-p0-p-0-none")
+        self.assertEqual(parse_golden.VFPU_FORMS2_CASES[48 + 72 + 168], "c2i-p0-0-none")
+        self.assertEqual(parse_golden.VFPU_FORMS2_CASES[per_pass], "rnds-p1-0-a")
+        for fragment in ("s_f2_quads[28][4]", "s_f2_seeds[24]", "s_f2_bytes[10]",
+                         "uint32_t out[25]", "uint32_t out[20]", "i < 24u", "st < 2u",
+                         "k < 8u", "i < 28u", "i < 10u", "op < 3u", "size < 3u",
+                         "pass < 2u"):
+            self.assertIn(fragment, self.section)
+        self.assertIn('hle_record(name, "PASS", word, w, 13);', self.section)
+        self.assertIn('hle_record(name, "PASS", s_f2_seeds[i], out, 25);', self.section)
+        self.assertIn("s_f2_draw_words[op][size], out, 20);", self.section)
+        for stem in parse_golden.VFPU_FORMS2_DRAW_STEMS:
+            self.assertIn(f'"{stem}"', self.section)
+
+    def test_the_operands_cover_the_requested_values(self) -> None:
+        quads = re.search(r"s_f2_quads\[28\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
+        self.assertIsNotNone(quads)
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", quads.group(1))
+        self.assertEqual(len(sets), 28)
+        words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
+        self.assertEqual(len({tuple(item) for item in words}), len(words))
+        flat = {w for item in words for w in item}
+        for needed in (0x00000000, 0x80000000, 0x00000001, 0x38800000, 0x387fffff, 0x38800001,
+                       0x33800000, 0x38000000, 0x33c00000, 0x33000000, 0x3f801000, 0x3f803000,
+                       0x3f800fff, 0x3f801001, 0x3f802fff, 0x3f803001, 0x477fe000, 0x477fef00,
+                       0x477ff000, 0x477fff00, 0x49742400, 0x7f800000, 0xff800000, 0x7fc00000,
+                       0xffc00000, 0x7f800001, 0xff800001, 0x3f800000, 0xc0000000, 0x3eaa7efa,
+                       0x40490fd0):
+            with self.subTest(word=f"0x{needed:08x}"):
+                self.assertIn(needed, flat)
+        seeds = re.search(r"s_f2_seeds\[24\] = \{(.*?)\n\};", self.section, re.DOTALL)
+        seed_words = {int(w[:-1], 16) for w in re.findall(r"0x[0-9a-f]{8}u", seeds.group(1))}
+        self.assertEqual(len(seed_words), 24)
+        for needed in (0, 1, 0x80000000, 0xFFFFFFFF, 0x3F800000, 0x7FC00000, 0x12345678,
+                       0xDEADBEEF):
+            self.assertIn(needed, seed_words)
+
+    def test_manifest_row_is_a_single_launch_measured_forms2_case(self) -> None:
+        self.assertEqual(len(self.rows), 1)
+        row = self.rows[0]
+        self.assertEqual(row["prx"], "vfpu_forms2.prx")
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+        self.assertEqual(row["diagnostic_case_ids"], ["vfpu-forms2"])
+        self.assertEqual(row["issues"], [326])
+        # The 2026-10-29 acceptance-eligible PSP-3000 run of 97827132 cites every cell.
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["case_ids"][-1], "vfpu-forms2-done")
 
 
 class GeSampleProbeTests(unittest.TestCase):
@@ -8875,6 +9278,150 @@ class IoCasesHostTests(unittest.TestCase):
             self.assertEqual(parse_font_files_output(run.stream).copies[0].sha256,
                              hashlib.sha256(_gen_bytes(size, 11)).hexdigest(), size)
 
+    # --- The font-copy app (src/psp_companion/fontcopy.c), mode fontcopy ---------------------
+
+    _KNOWN = ["jpn0.pgf", "kr0.pgf"] + [f"ltn{index}.pgf" for index in range(16)]
+
+    def _app(self, lines: list[str], argv0: str | None = None) -> SimpleNamespace:
+        if argv0 is not None:
+            lines = [f"option argv0 {_hex(argv0)}"] + lines
+        run = self._run("fontcopy", lines)
+        target = next(line for line in run.lines if line.startswith("TARGET "))
+        fields = dict(item.split("=", 1) for item in target.split()[1:])
+        run.parent, run.folder = fields["parent"], fields["folder"]
+        run.records = parse_output(run.stream).results
+        return run
+
+    def _assert_app_calls_safe(self, run: SimpleNamespace) -> None:
+        """flash0 is only listed, opened read-only and measured; only the app's own folder and
+        its NAKAGAWA parent are created; every write lands in that folder under a safe name."""
+        prefix = run.folder + "/"
+        for name, fields in run.calls:
+            path = fields.get("path", "")
+            if name == "sceIoDopen":
+                self.assertIn(path, ("flash0:/font", "flash0:/font/"))
+            elif name == "sceIoMkdir":
+                self.assertIn(path, (run.parent, run.folder))
+            elif name == "sceIoOpen":
+                flags = int(fields["flags"], 16)
+                if path.startswith("flash0:"):
+                    self.assertEqual(flags, 0x1, path)
+                    self.assertTrue(path.startswith("flash0:/font/"), path)
+                else:
+                    self.assertTrue(path.startswith(prefix), path)
+                    self.assertIn(flags, (0x1, 0x602), path)
+                    self.assertRegex(path[len(prefix):], r"^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,59}\.[pP][gG][fF]$")
+            elif name == "sceIoWrite":
+                self.assertTrue(fields["target"].startswith(prefix), fields)
+                self.assertTrue(fields["target"].lower().endswith(".pgf"), fields)
+            else:
+                self.assertIn(name, ("sceIoDread", "sceIoDclose", "sceIoRead", "sceIoClose",
+                                     "sceIoLseek"))
+        mkdirs = [fields["path"] for name, fields in run.calls if name == "sceIoMkdir"]
+        self.assertIn(mkdirs, ([], [run.parent, run.folder]))
+
+    def test_font_copy_app_copies_only_pgf_files_into_its_own_folder(self) -> None:
+        fonts = {"jpn0.pgf": (90_000, 3), "ltn0.pgf": (70_000, 4), "LTN1.PGF": (100, 5),
+                 "kr0.Pgf": (65_536, 6)}
+        lines = [_entry(name, size, seed) for name, (size, seed) in fonts.items()]
+        lines += [
+            _entry("imagefont.bin", 300, 1), _entry("gb3s1518.bwfon", 300, 2),
+            _entry("pgf", 10, 1), _entry(".pgf", 10, 1), _entry("x.pgf.bak", 10, 1),
+            _entry("sub.pgf", mode=_DIRECTORY), _entry("../up.pgf", 10, 1),
+            _entry("big.pgf", 10, 1, listed=16 * 1024 * 1024 + 1),
+            "option mkdir-parent-rc 0x80010011",
+        ]
+        run = self._app(lines, argv0="ms0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP")
+        self.assertEqual((run.parent, run.folder), ("ms0:/NAKAGAWA", "ms0:/NAKAGAWA/fonts"))
+        self._assert_app_calls_safe(run)
+        entries = [dict(record.values) for record in run.records
+                   if record.case_id.startswith("font-entry-")]
+        self.assertEqual([int(entry["out4"], 16) for entry in entries],
+                         [0, 0, 0, 0, 4, 4, 4, 2, 4, 1, 2, 3])
+        self.assertEqual(set(run.host0), set(fonts))
+        for name, (size, _seed) in fonts.items():
+            self.assertEqual(run.host0[name], (size, True), name)
+        copies = [dict(record.values) for record in run.records
+                  if record.case_id.startswith("font-copy-")]
+        self.assertTrue(all(record.status == "PASS" for record in run.records
+                            if record.case_id.startswith("font-copy-")))
+        for copy in copies:
+            size, seed = fonts[copy["detail"]]
+            digest = hashlib.sha256(_gen_bytes(size, seed)).hexdigest()
+            self.assertEqual((copy["sha256"], copy["readback_sha256"], copy["reread_sha256"]),
+                             (digest, digest, digest))
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (4, 4))
+        self.assertNotIn("sceIoLseek", [name for name, _ in run.calls])
+        self.assertEqual([record.case_id for record in run.records][:4],
+                         ["font-dir-open", "font-mkdir-parent", "font-mkdir", "font-entry-0000"])
+
+    def test_font_copy_app_writes_to_the_storage_it_started_from(self) -> None:
+        cases = {
+            "ef0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ef0:",
+            "EF0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ef0:",
+            "ms0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ms0:",
+            "host0:/fontcopy.prx": "ms0:",
+            "ef0": "ms0:",
+            "efx:/PSP/GAME/X/EBOOT.PBP": "ms0:",
+            None: "ms0:",
+        }
+        for argv0, device in cases.items():
+            with self.subTest(argv0=argv0):
+                run = self._app([_entry("ltn0.pgf", 100, 1)], argv0=argv0)
+                self.assertEqual((run.parent, run.folder),
+                                 (device + "/NAKAGAWA", device + "/NAKAGAWA/fonts"))
+                self._assert_app_calls_safe(run)
+                self.assertEqual(run.host0, {"ltn0.pgf": (100, True)})
+
+    def test_font_copy_app_opens_the_known_names_when_the_listing_is_refused(self) -> None:
+        present = {"jpn0.pgf": (5_000, 1), "ltn3.pgf": (70_000, 2), "kr0.pgf": (300, 3)}
+        lines = ["fontdir 0x80010002 0x80010002"]
+        lines += [_entry(name, size, seed) for name, (size, seed) in present.items()]
+        lines.append(_entry("imagefont.bin", 50, 4))
+        run = self._app(lines)
+        self._assert_app_calls_safe(run)
+        self.assertNotIn("sceIoDread", [name for name, _ in run.calls])
+        opened = [fields["path"] for name, fields in run.calls
+                  if name == "sceIoOpen" and fields["path"].startswith("flash0:")]
+        self.assertEqual(opened[:len(self._KNOWN)], [f"flash0:/font/{name}" for name in self._KNOWN])
+        self.assertNotIn("flash0:/font/imagefont.bin", opened)
+        known = [dict(record.values) for record in run.records
+                 if record.case_id.startswith("font-known-")]
+        self.assertEqual([entry["detail"] for entry in known], self._KNOWN)
+        for entry in known:
+            if entry["detail"] in present:
+                self.assertEqual(int(entry["out2"], 16), 0)
+                self.assertEqual(int(entry["out0"], 16), present[entry["detail"]][0])
+            else:
+                self.assertEqual((int(entry["out2"], 16), entry["result"]), (5, "0x80010002"))
+        self.assertEqual(len([name for name, _ in run.calls if name == "sceIoLseek"]), 3)
+        self.assertEqual(set(run.host0), set(present))
+        self.assertTrue(all(ok for _size, ok in run.host0.values()))
+        cases = [record.case_id for record in run.records]
+        self.assertLess(cases.index("font-known-0017"), cases.index("font-mkdir-parent"))
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (3, 3))
+
+    def test_font_copy_app_creates_nothing_when_no_font_can_be_read(self) -> None:
+        run = self._app(["fontdir 0x80010002 0x80010002", _entry("other.bin", 10, 1)])
+        self._assert_app_calls_safe(run)
+        self.assertEqual([name for name, _ in run.calls if name in ("sceIoMkdir", "sceIoWrite")], [])
+        self.assertEqual(run.host0, {})
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (0, 0))
+
+    def test_font_copy_app_reports_a_folder_it_cannot_write(self) -> None:
+        run = self._app([_entry("ltn0.pgf", 100, 1), _entry("ltn1.pgf", 100, 2),
+                         "option host-open-fails ltn0.pgf 0x80010013",
+                         "option write-fails ltn1.pgf 0x8001001c"])
+        self._assert_app_calls_safe(run)
+        failed = {dict(record.values)["detail"]: dict(record.values)["result"]
+                  for record in run.records
+                  if record.case_id.startswith("font-copy-") and record.status == "FAIL"}
+        self.assertEqual(failed, {"ltn0.pgf": "0x80010013", "ltn1.pgf": "0x8001001c"})
+        self.assertEqual(int(dict(run.records[-1].values)["out2"], 16), 0)
+
 
 class IoCasesSourceTests(unittest.TestCase):
     """Source-level rules for the font-files and umd-io cases."""
@@ -8895,18 +9442,88 @@ class IoCasesSourceTests(unittest.TestCase):
         code = self._code(self.fonts)
         self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
                          {"sceIoDopen", "sceIoDread", "sceIoDclose", "sceIoOpen", "sceIoRead",
-                          "sceIoWrite", "sceIoClose", "sceIoMkdir"})
+                          "sceIoWrite", "sceIoClose", "sceIoMkdir", "sceIoLseek"})
         opens = re.findall(r"sceIoOpen\(([^;]*?)\);", code, re.DOTALL)
         self.assertEqual([" ".join(item.split()) for item in opens], [
             "path, PSP_O_RDONLY, 0",
             "s_fontfiles_path, PSP_O_RDONLY, 0",
             "s_fontfiles_host, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0644",
+            "s_fontfiles_path, PSP_O_RDONLY, 0",
         ])
         self.assertIn('#define FONTFILES_HOST_DIR "host0:/fonts"', self.fonts)
+        self.assertIn("return f->dest_dir != NULL ? f->dest_dir : FONTFILES_HOST_DIR;", self.fonts)
         self.assertIn('snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", '
-                      'FONTFILES_HOST_DIR, name);', self.fonts)
-        self.assertEqual(re.findall(r"sceIoMkdir\(([^)]*)\)", code), ["FONTFILES_HOST_DIR, 0777"])
+                      'fontfiles_dest(f), name);', self.fonts)
+        self.assertEqual(re.findall(r"sceIoMkdir\((.*?)\);", code),
+                         ["f->dest_parent, 0777", "fontfiles_dest(f), 0777"])
+        self.assertEqual(re.findall(r"sceIoLseek\(([^)]*)\)", code), ["fd, 0, SEEK_END"])
         self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(|sceIoRemove|sceIoRename")
+
+    def test_font_copy_app_does_its_file_io_only_through_font_files(self) -> None:
+        app_dir = self.root / "src" / "psp_companion"
+        app = self._code((app_dir / "fontcopy.c").read_text(encoding="utf-8"))
+        config = self._code((app_dir / "fontcopy_config.h").read_text(encoding="utf-8"))
+        self.assertEqual(re.findall(r"\bsceIo\w+\s*\(", app + config), [])
+        self.assertIn("fontfiles_run(&s_files);", app)
+        self.assertIn("fontcopy_configure(&s_files, &s_target, s_argv0);", app)
+        self.assertIn('#define FONTCOPY_FOLDER "/NAKAGAWA/fonts"', config)
+        self.assertIn("files->pgf_only = 1u;", config)
+        makefile = (app_dir / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("IMPORT_GATE_ARGS = --forbid-library sceReg", makefile)
+        pinned = next(line for line in makefile.splitlines() if "IoFileMgrForUser=" in line)
+        self.assertEqual(
+            set(pinned.split("IoFileMgrForUser=", 1)[1].split(",")),
+            {"0x109F50BC", "0x6A638D83", "0x42EC03AC", "0x810C4BC3", "0x27EB27B8", "0xB29DDF9C",
+             "0xE3EB004C", "0xEB092469", "0x06A70004", "0x55F4717D", "0xACE946E8"})
+        libs = next(line for line in makefile.splitlines() if line.startswith("LIBS = "))
+        # psp-gcc's specs link libpspuser last; naming it or libpspkernel again splits the stub
+        # runs, which the fail-closed FIXUP below turns into a failed build.
+        self.assertNotIn("-lpspuser", libs.split())
+        self.assertNotIn("-lpspkernel", libs.split())
+        self.assertIn("stubs out of order", makefile)
+
+    def test_font_copy_build_fails_closed_on_a_fixup_warning(self) -> None:
+        # Runs the app Makefile's own FIXUP command under GNU Make with a stand-in
+        # psp-fixup-imports. That tool reports out-of-order stubs (issue #400) and still exits
+        # 0, so the build must stop there, show the message, and not reach the import gate; a
+        # failing exit stops it too, and only a clean fixup runs the gate.
+        if sys.platform == "win32":
+            self.skipTest("the app Makefile's FIXUP command needs a POSIX shell")
+        make = shutil.which("make")
+        if make is None or shutil.which("bash") is None:
+            self.skipTest("GNU Make and bash are unavailable")
+        makefile = (self.root / "src" / "psp_companion" / "Makefile").read_text(encoding="utf-8")
+        fixup = next(line for line in makefile.splitlines() if line.startswith("FIXUP = "))
+        with scratch_dir.TemporaryDirectory(prefix="fontcopy-fixup-") as scratch:
+            root = Path(scratch)
+            tools = root / "bin"
+            tools.mkdir()
+            gate = root / "gate.py"
+            gate.write_text("import pathlib, sys\n"
+                            "pathlib.Path(sys.argv[-1] + '.gated').write_text('ok')\n",
+                            encoding="utf-8")
+            (root / "Makefile").write_text(
+                f"PYTHON = {sys.executable}\nIMPORT_GATE = {gate.as_posix()}\n"
+                f"IMPORT_GATE_ARGS = --forbid-library sceReg\n{fixup}\n"
+                "all:\n\t$(FIXUP) module.elf\n", encoding="utf-8")
+            stub = tools / "psp-fixup-imports"
+            env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ.get('PATH', '')}")
+            for body, fails, shown in (
+                    ("echo 'Error, stubs out of order' >&2; exit 0", True,
+                     "stubs out of order"),
+                    ("echo 'cannot read module' >&2; exit 3", True, "cannot read module"),
+                    ("exit 0", False, None)):
+                with self.subTest(body=body):
+                    stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+                    stub.chmod(0o755)
+                    marker = root / "module.elf.gated"
+                    marker.unlink(missing_ok=True)
+                    run = subprocess.run([make, "--no-print-directory", "-C", str(root)],
+                                         env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(run.returncode != 0, fails, run.stdout + run.stderr)
+                    self.assertEqual(marker.exists(), not fails, "the import gate ran or not")
+                    if shown is not None:
+                        self.assertIn(shown, run.stdout + run.stderr)
 
     def test_device_case_reads_state_only_and_its_lists_match_the_parser(self) -> None:
         code = self._code(self.umd[:self.umd.index("#define UMDRAW_TEST_ID")])

@@ -23,6 +23,10 @@
       "reason": "GitHub Actions runs a workflow by filename, so the file is live even though no tracked file spells its path."
     },
     {
+      "path": "CMakeLists.txt",
+      "reason": "The CMake entry point. cmake reads it from the repository root, and its basename is shared with android/app/CMakeLists.txt, so no tracked file can name this one."
+    },
+    {
       "path": "Makefile",
       "reason": "The build entry point. It is invoked as `make` from outside the tree, and its basename is shared with every fixture Makefile, so no tracked file can name this one."
     },

@@ -1211,8 +1211,8 @@ RELEASE_SOURCE_HOSTS = frozenset({
 })
 
 # Check for updates (owner decision 2026-10-28): the player asks GitHub's Releases API
-# for this repository only, then, on a second click, fetches that release's Windows
-# ZIP and its .sha256 file. These are its only hosts; docs/SETUP.md lists them under
+# for this repository only, then, on a second click, fetches that release's .sha256
+# file, its .sha256.minisig signature and its Windows ZIP. These are its only hosts; docs/SETUP.md lists them under
 # "Network use". src/player/update_check.h holds the same list.
 UPDATE_CHECK_REPOSITORY = "Jstar269/nakagawa-recomp"
 UPDATE_CHECK_HOSTS = frozenset({
