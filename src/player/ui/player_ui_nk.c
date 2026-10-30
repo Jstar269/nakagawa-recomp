@@ -753,11 +753,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.reduce_motion_choice = player_system_choice_label(app->settings.reduce_motion_choice);
     model.high_contrast = player_app_high_contrast_focus(app);
     model.reduce_motion = player_app_reduce_motion(app);
-#if defined(_WIN32) || defined(_WIN64)
-    model.system_name = "Windows";
-#else
-    model.system_name = "your system";
-#endif
+    model.system_name = nk_platform_host_kind() == NK_HOST_WINDOWS ? "Windows" : "your system";
     model.system_scale_pct = (int)(player->viewport.display_scale * 100.0f + 0.5f);
     model.system_high_contrast = app->system_high_contrast;
     model.system_reduced_motion = app->system_reduced_motion;
