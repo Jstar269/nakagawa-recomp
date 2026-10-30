@@ -152,7 +152,7 @@ static void ring_body(void *arg) {
     volatile unsigned char marker = 0;
     char text[32];
     b->stack_ok = sr_coro_stack_remaining(&remaining) && remaining > 0 &&
-                  remaining <= SR_GUEST_FIBER_STACK_SIZE && sr_coro_stack_top(&top) &&
+                  remaining <= SR_GUEST_CORO_STACK_SIZE && sr_coro_stack_top(&top) &&
                   top > (uintptr_t)&marker;
     snprintf(text, sizeof text, "%.3f", 1.5 + (double)b->rounds);
     b->format_ok = strcmp(text, "1.500") == 0;
@@ -168,7 +168,7 @@ static void ring_body(void *arg) {
         ThreadCallProbe probe = {0u, 0u};
         sr_coro_call_on_thread_stack(thread_call_probe, &probe);
         int on_thread = probe.frame >= s_thread_stack_low && probe.frame < s_thread_stack_top;
-        int on_coro = probe.frame < top && probe.frame > top - SR_GUEST_FIBER_STACK_SIZE;
+        int on_coro = probe.frame < top && probe.frame > top - SR_GUEST_CORO_STACK_SIZE;
         b->thread_call_ok = probe.value == 0x5eedu && sr_coro_current() == b->self &&
             (sr_coro_thread_stack_calls_switch() ? on_thread : on_coro);
     }
@@ -213,8 +213,8 @@ static int ring_selftest(SrCoro *main_coro) {
             return 1;
         }
     }
-    a.self = sr_coro_create(ring_body, &a, SR_GUEST_FIBER_STACK_SIZE);
-    b.self = sr_coro_create(ring_body, &b, SR_GUEST_FIBER_STACK_SIZE);
+    a.self = sr_coro_create(ring_body, &a, SR_GUEST_CORO_STACK_SIZE);
+    b.self = sr_coro_create(ring_body, &b, SR_GUEST_CORO_STACK_SIZE);
     if (!a.self || !b.self) {
         fprintf(stderr, "coro selftest: sr_coro_create failed\n");
         return 1;

@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #define SR_PRX_MAX_SEGMENTS 4
 #define SR_PRX_MODNAME_LEN 28
@@ -88,7 +89,6 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n);
  */
 #define SR_PRX_NID_MODULE_START 0xD632ACDBu
 #define SR_PRX_NID_MODULE_BOOTSTART 0xD3744BE0u
-#define SR_PRX_START_ENTRY_MAX_PROGRAM_HEADERS 128u
 #define SR_PRX_START_ENTRY_MAX_LIBRARIES 256u
 #define SR_PRX_START_ENTRY_MAX_EXPORTS 4096u
 
@@ -117,27 +117,11 @@ static inline bool sr_prx_start_entry_map(const uint8_t *program_headers, uint32
     return false;
 }
 
-/* The start entry in the image's own (link) address space. Returns NULL with *entry set,
- * or the name of the first rule the image breaks: an image whose module info or export
- * table does not lie in the file is refused rather than started at a guessed address. */
-static inline const char *sr_prx_start_entry(SrPrxImageRead read, void *context,
-                                             uint64_t image_size, uint32_t *entry) {
-    uint8_t header[52];
-    if (image_size < sizeof header || !read(context, 0, header, sizeof header)) {
-        return "header-truncated";
-    }
-    uint32_t e_entry = sr_prx_start_entry_le32(header + 24);
-    uint32_t phoff = sr_prx_start_entry_le32(header + 28);
-    uint32_t phentsize = (uint32_t)header[42] | ((uint32_t)header[43] << 8);
-    uint32_t phnum = (uint32_t)header[44] | ((uint32_t)header[45] << 8);
-    *entry = e_entry;
-    if (phentsize != 32u || phnum == 0 || phnum > SR_PRX_START_ENTRY_MAX_PROGRAM_HEADERS ||
-        (uint64_t)phoff + 32u * phnum > image_size) {
-        return "program-table-bounds";
-    }
-    uint8_t program_headers[SR_PRX_START_ENTRY_MAX_PROGRAM_HEADERS * 32u];
-    if (!read(context, phoff, program_headers, 32u * phnum)) return "image-read-failed";
-
+/* sr_prx_start_entry once the program header table is read: `phnum` entries of 32 bytes. */
+static inline const char *sr_prx_start_entry_from_table(SrPrxImageRead read, void *context,
+                                                        uint64_t image_size,
+                                                        const uint8_t *program_headers,
+                                                        uint32_t phnum, uint32_t *entry) {
     const uint8_t *first_load = NULL;
     for (uint32_t i = 0; i < phnum && first_load == NULL; i++) {
         if (sr_prx_start_entry_le32(program_headers + (size_t)i * 32u) == 1u) {
@@ -209,6 +193,35 @@ static inline const char *sr_prx_start_entry(SrPrxImageRead read, void *context,
         *entry = bootstart;
     }
     return NULL;
+}
+
+/* The start entry in the image's own (link) address space. Returns NULL with *entry set,
+ * or the name of the first rule the image breaks: an image whose module info or export
+ * table does not lie in the file is refused rather than started at a guessed address.
+ * e_phnum is 16 bits and the table only has to lie inside the image, as in the inspector's
+ * layout rule: a separate executable on a disc can carry well over a hundred entries. */
+static inline const char *sr_prx_start_entry(SrPrxImageRead read, void *context,
+                                             uint64_t image_size, uint32_t *entry) {
+    uint8_t header[52];
+    if (image_size < sizeof header || !read(context, 0, header, sizeof header)) {
+        return "header-truncated";
+    }
+    uint32_t e_entry = sr_prx_start_entry_le32(header + 24);
+    uint32_t phoff = sr_prx_start_entry_le32(header + 28);
+    uint32_t phentsize = (uint32_t)header[42] | ((uint32_t)header[43] << 8);
+    uint32_t phnum = (uint32_t)header[44] | ((uint32_t)header[45] << 8);
+    *entry = e_entry;
+    if (phentsize != 32u || phnum == 0 || (uint64_t)phoff + 32u * phnum > image_size) {
+        return "program-table-bounds";
+    }
+    uint8_t *program_headers = (uint8_t *)malloc((size_t)phnum * 32u);
+    if (program_headers == NULL) return "image-read-failed";
+    const char *rule = read(context, phoff, program_headers, 32u * phnum)
+                           ? sr_prx_start_entry_from_table(read, context, image_size,
+                                                           program_headers, phnum, entry)
+                           : "image-read-failed";
+    free(program_headers);
+    return rule;
 }
 
 #endif
