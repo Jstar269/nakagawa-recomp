@@ -49,10 +49,10 @@
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
  *    so the RGBA8 target image round-trips guest VRAM bit-exactly — no color or
  *    depth drift across consecutive frames.
- *  - Blending: simple states map to Vulkan fixed function (doubled SRC-alpha is exact
- *    via shader premultiply; min/max are exact because both the PSP and Vulkan ignore
- *    the factors). Everything fixed function cannot express — doubled DST-alpha
- *    factors, absdiff, two distinct FIX constants, and any blend onto a 16-bit target
+ *  - Blending: simple states map to Vulkan fixed function (min/max are exact because
+ *    both the PSP and Vulkan ignore the factors). Everything fixed function cannot
+ *    express — every doubled alpha factor, absdiff, equations 6 and 7, two distinct FIX
+ *    constants, and any blend onto a 16-bit target
  *    (the hardware quantizes/dithers the blend RESULT on store) — runs as SHADER
  *    blending: the fragment shader reads a snapshot of the destination and evaluates
  *    ge.c's integer blend_chan()/factor_component() formulas verbatim. The snapshot is
@@ -2205,7 +2205,8 @@ static uint32_t tex_span_size(uint32_t bufw, int tw, int th) {
         bytes = tile_idx * 4u + (((u % texels_per_tile) * bpp_num) >> 3) +
                 (bpp_num < 8u ? 1u : bpp_num >> 3);
     } else {
-        bytes = ((uint64_t)stride * h * bpp_num) >> 3;
+        /* Linear rows are whole 16-byte lines, as ge.c samples them (ge_tex_row_bytes). */
+        bytes = (uint64_t)ge_tex_row_bytes(stride, bpp_num) * h;
     }
     if (bytes > 4u << 20) bytes = 4u << 20;
     return (uint32_t)bytes;
@@ -2731,7 +2732,9 @@ static int map_factor(uint32_t f, int src_side, uint32_t fixed, int *need_const,
         case 3: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         case 4: return VK_BLEND_FACTOR_DST_ALPHA;
         case 5: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-        case 6:   /* 2*src alpha: exact on the src side (shader premultiplies rgb) */
+        /* 6-9: blend_needs_shader routes every doubled alpha factor to the shader blend;
+         * these mappings remain only as the fallback approximation. */
+        case 6:   /* 2*src alpha: the shader premultiplies rgb on the src side */
             if (src_side) { *premul = F_SA2X; return VK_BLEND_FACTOR_ONE; }
             return VK_BLEND_FACTOR_SRC_ALPHA;                  /* dst side: halved approx */
         case 7:
@@ -2757,18 +2760,14 @@ static int blend_dual_fix(uint32_t sfp, uint32_t dfp, uint32_t fixa, uint32_t fi
  * the PSP quantizes/dithers the blend RESULT on store, so the shader must see the final
  * colour). Shared with the blend parity matrix so both classify a state the same way.
  *  - absdiff (eq 5): |src - dst| needs both subtraction orders
- *  - doubled DST-alpha factors (8/9), and doubled SRC-alpha on the DST side (6/7): no VK
- *    factor; the premultiply trick only works on the src side
+ *  - equations 6 and 7, which pass the source colour through (PSP-GE-RASTER-001)
+ *  - every doubled alpha factor (6-9): on the PSP 2a runs to 510 and 255 - 2a goes
+ *    negative (PSP-GE-RASTER-001), which no VK factor or clamped premultiply reproduces
  *  - two DISTINCT FIX constants
- *  - doubled/inverse-doubled SRC-alpha on the SRC side (6/7) premultiplies the source
- *    colour in the shader, so a DST factor that reads the source colour (SRC_COLOR,
- *    ONE_MINUS_SRC_COLOR: dfp 0/1) would see the premultiplied value in fixed function;
- *    ge.c multiplies the destination by the raw source colour
  * min/max (eq 3/4) are exact in fixed function: both PSP and VK ignore the factors. */
 static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t fixa, uint32_t fixb) {
-    int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
-    return eq == 5 || sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) ||
-           blend_dual_fix(sfp, dfp, fixa, fixb) || premul_src_colour;
+    return eq >= 5 || (sfp >= 6 && sfp <= 9) || (dfp >= 6 && dfp <= 9) ||
+           blend_dual_fix(sfp, dfp, fixa, fixb);
 }
 
 /* Build pipeline key + push constants for the current GE state. Always succeeds. */
@@ -4953,10 +4952,15 @@ static uint32_t coherence_mip_alt_texel(unsigned u, unsigned v) {
 
 /* Levels 0-3 of an 8x8 8888 texture. Level 1 keeps its 4 texels per row in an 8-wide buffer
  * with magenta beyond them, which only a decode that ignores the level's own buffer width
- * reaches; the second level 1 is a plain 4x4. */
+ * reaches; the second level 1 is a plain 4x4. Levels 2 and 3 use buffer width 4: a linear
+ * texture's rows are whole 16-byte lines (ge_tex_row_bytes). */
+static unsigned coherence_mip_bufw(unsigned level) {
+    return level <= 1u ? 8u : 4u;
+}
+
 static void coherence_mip_fill(void) {
     for (unsigned level = 0; level < 4u; level++) {
-        unsigned size = 8u >> level, bufw = level == 1u ? 8u : size;
+        unsigned size = 8u >> level, bufw = coherence_mip_bufw(level);
         uint32_t addr = COH_MIP_TEX + level * 0x1000u;
         uint32_t *tex = (uint32_t *)SR_HOST(addr);
         for (unsigned v = 0; v < size; v++)
@@ -5009,7 +5013,8 @@ static uint32_t coherence_mip_list(const CohMipCase *c, int draw) {
     DL_EMIT(0xD4, 0);
     DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
     for (uint32_t level = 0; level < 4u; level++) {
-        uint32_t addr = COH_MIP_TEX + level * 0x1000u, bufw = 8u >> level, log2 = 3u - level;
+        uint32_t addr = COH_MIP_TEX + level * 0x1000u, bufw = coherence_mip_bufw(level);
+        uint32_t log2 = 3u - level;
         if (level == 1u) {
             addr = c->alt_level1 ? COH_MIP_ALT1 : addr;
             bufw = c->alt_level1 ? 4u : 8u;
@@ -5980,25 +5985,33 @@ static int parity_factor(int f, int src_side, int chan, const int s[3], int sa,
         case 3: return 255 - sa;
         case 4: return da;
         case 5: return 255 - da;
-        case 6: return parity_clamp8(sa * 2);
-        case 7: return parity_clamp8(255 - sa * 2);
-        case 8: return parity_clamp8(da * 2);
-        case 9: return parity_clamp8(255 - da * 2);
+        case 6: return sa * 2;          /* doubled alphas are not clamped (PSP-GE-RASTER-001) */
+        case 7: return 255 - sa * 2;
+        case 8: return da * 2;
+        case 9: return 255 - da * 2;
         default: return src_side ? fixed_a : fixed_b;
     }
 }
 
 /* The same blend equation with the R6 colour product ((2x+1)(2s+1))>>10 for every
- * multiply, from ge_raster_ref.c. Min, max and absdiff ignore the factors (as ge.c does). */
+ * multiply (ge_raster_ref.c sr_ge_color_mul for factors 0..255), extended to the doubled
+ * alphas' 0..510 with the factor's sign applied afterwards (PSP-GE-RASTER-001). Min, max and
+ * absdiff ignore the factors and equations 6 and 7 pass the source through (as ge.c does). */
+static int parity_r6_mul(int v, int f) {
+    int m = ((2 * v + 1) * (2 * (f < 0 ? -f : f) + 1)) >> 10;
+    return f < 0 ? -m : m;
+}
+
 static int parity_r6_chan(int s, int d, int sf, int df, int eq) {
-    int sv = (int)sr_ge_color_mul((uint32_t)s, (uint32_t)sf);
-    int dv = (int)sr_ge_color_mul((uint32_t)d, (uint32_t)df);
+    int sv = parity_r6_mul(s, sf);
+    int dv = parity_r6_mul(d, df);
     switch (eq & 7) {
         case 1: return parity_clamp8(sv - dv);
         case 2: return parity_clamp8(dv - sv);
         case 3: return s < d ? s : d;
         case 4: return s > d ? s : d;
         case 5: return s > d ? s - d : d - s;
+        case 6: case 7: return s;
         default: return parity_clamp8(sv + dv);
     }
 }
@@ -6088,7 +6101,7 @@ static int coherence_run_blend_parity(void) {
     int ok = 1;
 
     parity_vertices(vaddr, sprites);
-    for (uint32_t eq = 0; eq < 6 && ok; eq++) {
+    for (uint32_t eq = 0; eq < 8 && ok; eq++) {
         for (uint32_t sfp = 0; sfp <= 10 && ok; sfp++) {
             for (uint32_t dfp = 0; dfp <= 10 && ok; dfp++) {
                 const uint32_t fixa = PARITY_FIXA, fixb = PARITY_FIXB;

@@ -197,7 +197,12 @@ HANDLER_METADATA = {
     },
     "h_AllocMemoryBlock": {
         "status": "partial",
-        "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias",
+            "PSPAutotests tests/sysmem/memblock.expected (2ed7c9c5, recorded on a PSP): names, types, sizes, option sizes and type-1 placement deltas",
+            "uOFW src/kd/sysmem/memblock.c (MIT): validation order and the AllocPartitionMemory call",
+        ],
+        "limitation": "types 0 (Low, the partition's bump and free-list path) and 1 (High, from the top of the arena thread stacks share, 0x100 granularity) allocate, and the type, size, option-size and NULL-name codes are pspautotests-recorded; the code for an unmapped name or option pointer is uOFW's 0x800200D3, not measured; memory-block UIDs are separate from partition-block UIDs here, while the PSP shares them (memblock.expected Partition usage)",
     },
     "h_GetMemoryBlockAddr": {
         "status": "partial",
@@ -261,6 +266,56 @@ HANDLER_METADATA = {
         ],
         "limitation": "accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured",
     },
+    "h_PowerSetBusClockFrequency": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest",
+            "PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): at PLL 222, 1..111 return 0 and -1, 0, 112 return 0x800001fe, and no request moves any clock",
+        ],
+        "limitation": "validates 1..111 against the measured range at PLL 222 and changes no clock, as measured; at any other retained PLL the range is not measured and the run stops by name",
+    },
+    "h_CheckThreadStack": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_check_thread_stack_contract",
+            "PSPAutotests tests/threads/threads/stackfree.expected (2ed7c9c5, recorded on a PSP): 0xEB0 and 0xAB0 on 0x1000-byte stacks, 0x10 above GetThreadStackFreeSize, main thread above 0x30000",
+        ],
+        "limitation": "returns the caller's $sp minus its stack's low end, the quantity the recorded cells follow; a $sp outside the calling thread's stack and a call with no current thread are not measured and stop the run by name",
+    },
+    "h_FontGetNumFontList": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_list_contract",
+            "PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library",
+            "hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)",
+        ],
+        "limitation": "returns the measured 18 for a live library whether or not every index has a served font; a library handle that is not live and a NULL error pointer are not measured and stop the run by name",
+    },
+    "h_FontSetAltCharacterCode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_alt_char_contract",
+            "PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the console's libfont on a PSP): initial 0x005F, codes stored as 16 bits, 0x80460002 for a NULL library, and the GetCharInfo fallback heights",
+        ],
+        "limitation": "the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name",
+    },
+    "h_MsgDialogAbort": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence",
+            "src/rt/hle_thread_selftest.c:test_msg_dialog_abort_without_update",
+            "PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown",
+        ],
+        "limitation": "return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays",
+    },
+    "h_FontGetFontList": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_font_list_contract",
+            "PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): one 0xA8-byte style per font, num 1 writes exactly one, num -1 and 0 write nothing, 0x80460002 for a NULL library and 0x80460003 for NULL styles",
+        ],
+        "limitation": "writes min(num, 18) styles in index order from the served registry values, of which the capture shows only the first; an index whose font is not served, a library that is not live and an unwritable array stop the run by name",
+    },
     "h_PowerGetBatteryLifeTime": {
         "status": "partial",
         "evidence": [
@@ -268,6 +323,14 @@ HANDLER_METADATA = {
             "hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC; 376 minutes on battery)",
         ],
         "limitation": "reports the two measured samples for the modeled power source (external power by default); no discharge model",
+    },
+    "h_PowerCheckWlanCoexistenceClock": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024",
+            "PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 scePower.cpp (model-dependent capability)",
+        ],
+        "limitation": "returns the derived PSP-1000 capability value 0 for every model; later model selection is not implemented",
     },
     "h_PowerGetBatteryChargingStatus": {
         "status": "partial",
@@ -779,6 +842,31 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "deleted-UID code 0x800201BE with the output untouched measured (PSP-HLE-VTIMER-003); time = system time - base and the microsecond unit are consistent with PSP-HLE-VTIMER-002 (deltas within about 8%), not a precise rate measurement; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; no game relies on the output (#325)",
     },
+    "h_GetVTimerTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "PSPAutotests tests/threads/vtimers/gettime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Running (wide)",
+        ],
+        "limitation": "returns the elapsed time GetVTimerTime writes, as $v0/$v1, and -1 for uid 0, an invalid and a deleted uid (pspautotests-recorded); the microsecond unit carries GetVTimerTime's limits (PSP-HLE-VTIMER-002, not a precise rate measurement)",
+    },
+    "h_SetVTimerTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "src/rt/hle_thread_selftest.c:test_vtimer_set_time_while_scheduled",
+            "PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Values (wide), While scheduled",
+        ],
+        "limitation": "makes the value the timer's time and returns the previous time (all 64 bits), -1 for uid 0, an invalid and a deleted uid, and a handler already due runs on the next scheduler pass, not inside the Set (pspautotests-recorded); a running timer counts on from the set value, consistent with the While scheduled cell but its exact microseconds are not measured",
+    },
+    "h_SetVTimerTime": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters",
+            "PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects, Values",
+        ],
+        "limitation": "swaps the time through the SceKernelSysClock pointer and returns 0, 0x800201BE for uid 0, an invalid and a deleted uid with the clock untouched (pspautotests-recorded); a NULL or unwritable pointer (a crash on the PSP per the test's note) stops the run by name; running-timer timing as for SetVTimerTimeWide",
+    },
     "h_GetVTimerBase": {
         "status": "partial",
         "limitation": "returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; deleted-UID code is unmeasured and reused by analogy; no game relies on the NULL output (#325)",
@@ -974,6 +1062,30 @@ HANDLER_METADATA = {
             "hardware measurement 2026-10-24, PSP-3000 6.61 (valid dates convert; year 1 and pre-1970 dates return 0x800001fe; month 13, day 32, Feb 30 and hour 24 return 0 and normalise; NULL output returns 0; NULL date faults inside the module)",
         ],
         "limitation": "out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop",
+    },
+    "h_RtcGetTime_t": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "PSPAutotests tests/rtc/convert.expected (2ed7c9c5, recorded on a PSP): checkRtcGetTime_t, 2012-09-20 07:12:15.000500 -> 1348125135",
+        ],
+        "limitation": "converts in-range dates from 1970 whose seconds fit 32 bits, as one 32-bit word (the measured cell); a field out of range, a date before 1970, a value past 32 bits and a NULL or unmapped pointer are not measured for this function and stop the run by name",
+    },
+    "h_RtcTickAddYears": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears",
+        ],
+        "limitation": "moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name",
+    },
+    "h_RtcGetTickResolution": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest",
+            "uOFW src/kd/rtc/rtc.c (MIT): sceRtcGetTickResolution returns 1000000, marked as matching the firmware assembly",
+            "PSPAutotests tests/rtc (2ed7c9c5): every RTC tick conversion uses one-microsecond ticks",
+        ],
     },
     "h_RtcGetWin32FileTime": {
         "status": "partial",
@@ -1413,6 +1525,206 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code",
     },
+    # ---- #341 Route-A batch 11: measured getters, GE sync, UMD state, thread waits ----
+    # Each entry cites PSP cells whose values docs/HARDWARE_ORACLE.md (or the oracle
+    # manifest's measurement note) publishes, plus the production-NID selftest that pins
+    # the runtime to them. Nothing here is complete: each names what the cells do not cover.
+    "h_GetSystemParamInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: int-id-2..int-id-9, int-unknown-0, int-unknown-10, int-unknown-64)",
+            "src/rt/hle_thread_selftest.c:test_sysreg_virtual_registry",
+        ],
+        "limitation": "ids 2 to 10 return 0 and write a value and ids 0 and 64 return 0x80110103 with the output untouched, as measured; the seeded values are the oracle console's configured settings (WLAN_POWERSAVE is an unmeasured project default), not factory defaults; an invalid output pointer is not measured",
+    },
+    "h_GetSystemParamString": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: string-id-1-len-0x80, string-id-1-len-0x04)",
+            "src/rt/hle_thread_selftest.c:test_sysparam_nickname_string",
+        ],
+        "limitation": "the nickname (id 1) copy with its NUL and the short-buffer 0x80110102 refusal that writes nothing are measured; other string ids, a null buffer and len <= 0 return 0x80110103 without a measurement, and the nickname is the registry value (empty by default), not the console's",
+    },
+    "h_CtrlReadLatch": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-CTRL-LATCH-001: latch-read-initial, latch-read-after-poll, latch-read-clears-peek-keeps)",
+            "src/rt/hle_thread_selftest.c:test_ctrl_read_latch",
+        ],
+        "limitation": "with no input the measured make, break and press words are 0 and release is 0xFFFFFFFF, which the runtime matches; whether a read clears the latch is not established by the cells (the release word stays saturated), so the clearing contract and the returned cycle count are the project's model, and the null-pointer code is source-selftested only",
+    },
+    "h_HprmIsRemoteExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-remote-first, hprm-remote-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the value with a remote attached is not measured",
+    },
+    "h_HprmIsHeadphoneExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured",
+    },
+    "h_HprmIsMicrophoneExist": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-microphone-first, hprm-microphone-second)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "reports the modeled state, 1 by default as measured twice on the PSP-3000 oracle console; other models (without a built-in microphone) are not measured",
+    },
+    "h_PowerGetPllClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: pll-clock-int)",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 222 MHz is measured; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_PowerGetCpuClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: cpu-clock-int, cpu-clock-alias, cpu-clock-int-repeat)",
+            "docs/HARDWARE_ORACLE.md (PSP-SYSTEM-001: model-profile)",
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 222 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_PowerGetBusClockFrequencyInt": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: bus-clock-int, bus-clock-alias)",
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch",
+        ],
+        "limitation": "the power-on 111 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)",
+    },
+    "h_GeListSync": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-list-sync-paused, ge-list-sync-cancelled, ge-list-dequeue-stalled)",
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+            "src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list",
+        ],
+        "limitation": "the syncType 1 peeks (paused 4, stalled 3) and the reset-removed 0x80000100 are measured; syncType 0 blocking is the PSPSDK contract and is source-selftested, an unknown queue id returns 0 without a measurement, and command-boundary timing is not measured",
+    },
+    "h_GeDrawSync": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-draw-sync-paused, ge-draw-sync-cancelled, ge-list-dequeue-stalled)",
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+            "src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list",
+        ],
+        "limitation": "the mode 1 peeks (paused 2, stalled 3, 0 after a reset) are measured; mode 0 blocking is the PSPSDK contract and is source-selftested, and modes other than 0 and 1 take the wait path without a measurement",
+    },
+    "h_DcacheRangeMaintenance": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-CACHE-001: cache-alias-init, cache-writeback-contrast, cache-inval-contrast)",
+            "src/rt/hle_thread_selftest.c:test_dcache_maintenance_notifies_renderer",
+        ],
+        "limitation": "guest RAM is one coherent array, so the post-maintenance words the cells check are met, but the pre-maintenance contrast words (an uncached read before writeback, a stale cached read before invalidate) are not reproduced; a title that reads stale data through the cached alias is outside this model",
+    },
+    "h_DelayThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-thread-zero)",
+            "src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics",
+        ],
+        "limitation": "a zero delay returning 0 without yielding to an equal-priority ready thread or dispatching a pending callback is measured; nonzero delays block for the modeled microsecond duration, whose rounding and wake latency are not measured (#325)",
+    },
+    "h_DelayThreadCB": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-threadcb-zero)",
+            "src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics",
+            "src/rt/hle_thread_selftest.c:test_delay_threadcb_zero_bounds_a_self_renotifying_callback",
+        ],
+        "limitation": "a zero delay returning 0 without yielding and dispatching the pending callback exactly once is measured; nonzero delays and the callback pump while blocked are not measured (#325)",
+    },
+    "h_ExitGame": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-SMOKE-001: module_start, sceKernelExitGame)",
+            "src/rt/hle_thread_selftest.c:test_exit_game_ignores_argument_registers",
+        ],
+        "limitation": "the call ends the guest process and ignores the argument registers (the PSPSDK signature takes none); the smoke cell shows only that a module reaching it exits, and exit callbacks and the return to the system menu are not modeled",
+    },
+    "h_WaitThreadEnd": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-R77, ED-R00, ED-RNEG, ED-RERR, ED-X77, ED-X00, ED-XNEG, ED-XERR, ED-D77, ED-D00, ED-DNEG, ED-DERR)",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_invalid_targets",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_already_ended",
+            "src/rt/hle_thread_selftest.c:test_wait_thread_end_blocking_and_resume",
+        ],
+        "limitation": "the cells join a worker that exits at once (return, ExitThread or ExitDeleteThread with four status values) with a NULL timeout; a join that blocks on a running thread, timeouts, multiple joiners and the remaining-time write are source-selftested only",
+    },
+    "h_UmdCheckMedium": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)",
+            "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
+        ],
+        "limitation": "always reports a medium present (1), as measured with a disc inserted; the runtime serves one ISO, so the no-disc result and disc removal are not modeled",
+    },
+    "h_UmdDriveStat": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)",
+            "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
+        ],
+        "limitation": "reports the modeled drive state: 0x32 with the disc inserted, as measured before and after the PSP-UMDIO-001 opens, and 0x12 after sceUmdDeactivate (a 2026-10-24 measurement recorded in the handler source); no-disc and transitional states are not modeled",
+    },
+    # ---- #341 Route-A batch 12: PSPAutotests 2ed7c9c5 expectations (recorded on a PSP) ----
+    "h_CreateEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/events/create/create.expected at 2ed7c9c5 (NULL name 0x80020001, attr 0x100/0x122/0x300/0x900/0x1200 refused with 0x80020191, long names cut to 31 bytes)",
+            "src/rt/hle_thread_selftest.c:test_evf_create_and_refer",
+        ],
+        "limitation": "the name, attribute and pattern cells match; the shared semaphore/event-flag/LwMutex table holds 128 objects, while the same PSP-recorded output shows 1024 event flags created, and the exhaustion code 0x80020000 is not measured; the option struct is ignored",
+    },
+    "h_DeleteEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/events/delete/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019A; a blocked waiter leaves with 0x800201B5)",
+            "src/rt/hle_thread_selftest.c:test_evf_typed_uids_and_delete",
+        ],
+        "limitation": "unknown-id and waiter-release cells match; the outBits written to a waiter at deletion follow the measured Cancel rule, and a nonzero pattern at deletion is not measured",
+    },
+    "h_DeleteMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/msgpipe/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019E; blocked receivers and senders leave with 0x800201B5)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_delete_unknown_ids",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_callback_and_delete",
+        ],
+        "limitation": "unknown-id and blocked-receiver release cells are selftested; the remaining-timeout word a timed waiter receives at deletion and blocked senders are not asserted, and interrupt-context precedence is not established",
+    },
+    "h_GetBlockHeadAddr": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Get deleted, NULL and invalid all 00000000)",
+            "src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes",
+            "src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse",
+        ],
+        "limitation": "returns a live block's base and 0 for a freed, zero or unknown UID, as recorded; block placement itself follows the runtime allocator, whose High and aligned types do not yet match partition.expected (sceKernelAllocPartitionMemory stays unreviewed)",
+    },
+    "h_FreePartitionMemory": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Free deleted, NULL and invalid all 0x800200CB)",
+            "src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes",
+            "src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse",
+        ],
+        "limitation": "a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
@@ -1568,8 +1880,6 @@ WAIVERS = ()
 # Never add an entry to make that gate pass: review the handler instead.
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
-    0x03444EB4: {"name": "sceGeListSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeListSync
-    0x05572A5F: {"name": "sceKernelExitGame", "issue": PROFILE_ZERO_ISSUE},  # h_ExitGame
     0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
     0x092968F4: {"name": "sceKernelCpuSuspendIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuSuspendIntr
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
@@ -1577,26 +1887,17 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
     0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
-    0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
     0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
     0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
-    0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
     0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
     0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
-    0xA5DA2406: {"name": "sceUtilityGetSystemParamInt", "issue": PROFILE_ZERO_ISSUE},  # h_GetSystemParamInt
     0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
-    0xB287BD61: {"name": "sceGeDrawSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeDrawSync
-    0xB6D61D02: {"name": "sceKernelFreePartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_FreePartitionMemory
     0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
-    0xCEADEB47: {"name": "sceKernelDelayThread", "issue": PROFILE_ZERO_ISSUE},  # h_DelayThread
     0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
     0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
     0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
-    0xEF9E4C70: {"name": "sceKernelDeleteEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteEventFlag
-    0xF0B7DA1C: {"name": "sceKernelDeleteMsgPipe", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteMsgPipe
     0xF475845D: {"name": "sceKernelStartThread", "issue": PROFILE_ZERO_ISSUE},  # h_StartThread
     0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
 }
@@ -1732,6 +2033,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetModuleId": "kernel_module",
     "sceKernelLoadExec": "kernel_module",
     "sceKernelLoadModule": "kernel_module",
+    "sceKernelQueryModuleInfo": "kernel_module",
     "sceKernelRegisterExitCallback": "kernel_module",
     "sceKernelSelfStopUnloadModule": "kernel_module",
     "sceKernelStartModule": "kernel_module",
@@ -1803,6 +2105,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetThreadExitStatus": "kernel_thread",
     "sceKernelGetThreadId": "kernel_thread",
     "sceKernelGetThreadStackFreeSize": "kernel_thread",
+    "sceKernelCheckThreadStack": "kernel_thread",
     "sceKernelGetThreadmanIdList": "kernel_thread",
     "sceKernelNotifyCallback": "kernel_thread",
     "sceKernelReferCallbackStatus": "kernel_thread",

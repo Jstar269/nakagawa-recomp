@@ -41,7 +41,7 @@
     "classification": "dedicated",
     "handler": "h_GeListSync",
     "name": "sceGeListSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x034a921f": {
     "classification": "dedicated",
@@ -66,7 +66,7 @@
     "classification": "dedicated",
     "handler": "h_ExitGame",
     "name": "sceKernelExitGame",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0558b075": {
     "classification": "dedicated",
@@ -160,7 +160,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlReadLatch",
     "name": "sceCtrlReadLatch",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0bf0a3ae": {
     "classification": "controlled_unsupported",
@@ -194,6 +194,12 @@
     "handler": "h_RegCloseCategory",
     "name": "sceRegCloseCategory",
     "status": "partial"
+  },
+  "0x0d5bc6d2": {
+    "classification": "dedicated",
+    "handler": "h_UtilityLoadUsbModule",
+    "name": "sceUtilityLoadUsbModule",
+    "status": "unreviewed"
   },
   "0x0d69bf40": {
     "classification": "dedicated",
@@ -505,7 +511,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsRemoteExist",
     "name": "sceHprmIsRemoteExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x20b317a0": {
     "classification": "controlled_unsupported",
@@ -536,7 +542,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsMicrophoneExist",
     "name": "sceHprmIsMicrophoneExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x21ff80e4": {
     "classification": "dedicated",
@@ -592,7 +598,13 @@
     "classification": "dedicated",
     "handler": "h_WaitThreadEnd",
     "name": "sceKernelWaitThreadEnd",
-    "status": "unreviewed"
+    "status": "partial"
+  },
+  "0x27c4594c": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetTime_t",
+    "name": "sceRtcGetTime_t",
+    "status": "partial"
   },
   "0x27cc57f0": {
     "classification": "dedicated",
@@ -610,6 +622,12 @@
     "classification": "dedicated",
     "handler": "h_IoLseek",
     "name": "sceIoLseek",
+    "status": "partial"
+  },
+  "0x27f6e642": {
+    "classification": "dedicated",
+    "handler": "h_FontGetNumFontList",
+    "name": "sceFontGetNumFontList",
     "status": "partial"
   },
   "0x289d82fe": {
@@ -861,7 +879,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemParamString",
     "name": "sceUtilityGetSystemParamString",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x34b9fa9e": {
     "classification": "dedicated",
@@ -873,7 +891,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetPllClockFrequencyInt",
     "name": "scePowerGetPllClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3548aec8": {
     "classification": "dedicated",
@@ -1081,7 +1099,7 @@
     "classification": "dedicated",
     "handler": "h_DcacheRangeMaintenance",
     "name": "sceKernelDcacheWritebackRange",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3f53e640": {
     "classification": "dedicated",
@@ -1138,6 +1156,12 @@
     "name": "__sceSasInit",
     "status": "unreviewed"
   },
+  "0x42842c77": {
+    "classification": "dedicated",
+    "handler": "h_RtcTickAddYears",
+    "name": "sceRtcTickAddYears",
+    "status": "partial"
+  },
   "0x42ec03ac": {
     "classification": "dedicated",
     "handler": "h_IoWrite",
@@ -1192,7 +1216,7 @@
     "classification": "dedicated",
     "handler": "h_UmdCheckMedium",
     "name": "sceUmdCheckMedium",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x46f186c3": {
     "classification": "dedicated",
@@ -1216,13 +1240,19 @@
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyInt",
     "name": "scePowerGetBusClockFrequency",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x47a0b729": {
     "classification": "dedicated",
     "handler": "h_CpuIsIntrSuspended",
     "name": "sceKernelIsCpuIntrSuspended",
     "status": "unreviewed"
+  },
+  "0x4928bd96": {
+    "classification": "dedicated",
+    "handler": "h_MsgDialogAbort",
+    "name": "sceUtilityMsgDialogAbort",
+    "status": "partial"
   },
   "0x4a719fb2": {
     "classification": "dedicated",
@@ -1352,11 +1382,10 @@
     "status": "unreviewed"
   },
   "0x542ad630": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetVTimerTime",
     "name": "sceKernelSetVTimerTime",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x54f5fb11": {
     "classification": "dedicated",
@@ -1368,7 +1397,7 @@
     "classification": "dedicated",
     "handler": "h_CreateEventFlag",
     "name": "sceKernelCreateEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x55f4717d": {
     "classification": "dedicated",
@@ -1405,6 +1434,12 @@
     "handler": "h_RegCreateKey",
     "name": "sceRegCreateKey",
     "status": "partial"
+  },
+  "0x57fcb733": {
+    "classification": "dedicated",
+    "handler": "h_FontOpenUserFile",
+    "name": "sceFontOpenUserFile",
+    "status": "unreviewed"
   },
   "0x58b1f937": {
     "classification": "dedicated",
@@ -1674,7 +1709,7 @@
     "classification": "dedicated",
     "handler": "h_DelayThreadCB",
     "name": "sceKernelDelayThreadCB",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6a2774f3": {
     "classification": "dedicated",
@@ -1717,7 +1752,7 @@
     "classification": "dedicated",
     "handler": "h_UmdDriveStat",
     "name": "sceUmdGetDriveStat",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6d212bac": {
     "classification": "dedicated",
@@ -1824,6 +1859,12 @@
     "handler": "h_ReceiveMsgPipe",
     "name": "sceKernelReceiveMsgPipe",
     "status": "partial"
+  },
+  "0x748cbed9": {
+    "classification": "dedicated",
+    "handler": "h_QueryModuleInfo",
+    "name": "sceKernelQueryModuleInfo",
+    "status": "unreviewed"
   },
   "0x7497ea85": {
     "classification": "controlled_unsupported",
@@ -1954,6 +1995,12 @@
     "name": "sceAtracAddStreamData",
     "status": "unreviewed"
   },
+  "0x7de6711b": {
+    "classification": "dedicated",
+    "handler": "h_RtcFormatRFC2822Local",
+    "name": "sceRtcFormatRFC2822LocalTime",
+    "status": "unreviewed"
+  },
   "0x7e65b999": {
     "classification": "dedicated",
     "handler": "h_CancelAlarm",
@@ -1964,7 +2011,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsHeadphoneExist",
     "name": "sceHprmIsHeadphoneExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x7ed29e40": {
     "classification": "dedicated",
@@ -2473,7 +2520,7 @@
     "classification": "dedicated",
     "handler": "h_GetBlockHeadAddr",
     "name": "sceKernelGetBlockHeadAddr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x9dcfb7ea": {
     "classification": "dedicated",
@@ -2620,7 +2667,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemParamInt",
     "name": "sceUtilityGetSystemParamInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa62c6f57": {
     "classification": "controlled_unsupported",
@@ -2664,6 +2711,12 @@
     "handler": "h_FontOpen",
     "name": "sceFontOpen",
     "status": "unreviewed"
+  },
+  "0xa85880d0": {
+    "classification": "fake_success",
+    "handler": "h_PowerCheckWlanCoexistenceClock",
+    "name": "scePowerCheckWlanCoexistenceClock",
+    "status": "stub"
   },
   "0xa8e8c846": {
     "classification": "dedicated",
@@ -2773,7 +2826,7 @@
     "classification": "dedicated",
     "handler": "h_GeDrawSync",
     "name": "sceGeDrawSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb293727f": {
     "classification": "dedicated",
@@ -2853,7 +2906,7 @@
     "classification": "dedicated",
     "handler": "h_FreePartitionMemory",
     "name": "sceKernelFreePartitionMemory",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb736e9ff": {
     "classification": "dedicated",
@@ -2897,6 +2950,12 @@
     "name": "sceIoChstat",
     "status": "partial"
   },
+  "0xb8d7b3fb": {
+    "classification": "dedicated",
+    "handler": "h_PowerSetBusClockFrequency",
+    "name": "scePowerSetBusClockFrequency",
+    "status": "partial"
+  },
   "0xb9685118": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -2934,6 +2993,12 @@
     "name": "sceKernelReferSemaStatus",
     "status": "partial"
   },
+  "0xbc75d85b": {
+    "classification": "dedicated",
+    "handler": "h_FontGetFontList",
+    "name": "sceFontGetFontList",
+    "status": "partial"
+  },
   "0xbd11b7c2": {
     "classification": "dedicated",
     "handler": "h_SasGetGrain",
@@ -2962,7 +3027,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyInt",
     "name": "scePowerGetBusClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xbea46419": {
     "classification": "dedicated",
@@ -2986,7 +3051,7 @@
     "classification": "dedicated",
     "handler": "h_DcacheRangeMaintenance",
     "name": "sceKernelDcacheInvalidateRange",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc02cf6b5": {
     "classification": "dedicated",
@@ -2998,6 +3063,12 @@
     "classification": "dedicated",
     "handler": "h_CreateFpl",
     "name": "sceKernelCreateFpl",
+    "status": "partial"
+  },
+  "0xc0b3ffd2": {
+    "classification": "dedicated",
+    "handler": "h_GetVTimerTimeWide",
+    "name": "sceKernelGetVTimerTimeWide",
     "status": "partial"
   },
   "0xc11ba8c4": {
@@ -3029,6 +3100,12 @@
     "handler": "h_CacheInvalidateRangeOther",
     "name": "sceKernelIcacheInvalidateRange",
     "status": "unreviewed"
+  },
+  "0xc41c2853": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetTickResolution",
+    "name": "sceRtcGetTickResolution",
+    "status": "complete"
   },
   "0xc492f751": {
     "classification": "dedicated",
@@ -3145,7 +3222,7 @@
     "classification": "dedicated",
     "handler": "h_DelayThread",
     "name": "sceKernelDelayThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xceb870b1": {
     "classification": "dedicated",
@@ -3182,6 +3259,12 @@
     "classification": "dedicated",
     "handler": "h_StopVTimer",
     "name": "sceKernelStopVTimer",
+    "status": "partial"
+  },
+  "0xd13bde95": {
+    "classification": "dedicated",
+    "handler": "h_CheckThreadStack",
+    "name": "sceKernelCheckThreadStack",
     "status": "partial"
   },
   "0xd1c8945e": {
@@ -3670,6 +3753,12 @@
     "name": "sceKernelDeleteCallback",
     "status": "unreviewed"
   },
+  "0xee232411": {
+    "classification": "dedicated",
+    "handler": "h_FontSetAltCharacterCode",
+    "name": "sceFontSetAltCharacterCode",
+    "status": "partial"
+  },
   "0xeeda2e54": {
     "classification": "dedicated",
     "handler": "h_DisplayGetFrameBuf",
@@ -3680,7 +3769,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteEventFlag",
     "name": "sceKernelDeleteEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xefc6f80f": {
     "classification": "dedicated",
@@ -3698,7 +3787,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteMsgPipe",
     "name": "sceKernelDeleteMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf0eb1125": {
     "classification": "dedicated",
@@ -3766,6 +3855,12 @@
     "handler": "h_FreeFpl",
     "name": "sceKernelFreeFpl",
     "status": "partial"
+  },
+  "0xf64910f0": {
+    "classification": "dedicated",
+    "handler": "h_UtilityUnloadUsbModule",
+    "name": "sceUtilityUnloadUsbModule",
+    "status": "unreviewed"
   },
   "0xf6837a1a": {
     "classification": "dedicated",
@@ -3873,6 +3968,12 @@
     "name": "sceAtracGetLoopStatus",
     "status": "unreviewed"
   },
+  "0xfb6425c3": {
+    "classification": "dedicated",
+    "handler": "h_SetVTimerTimeWide",
+    "name": "sceKernelSetVTimerTimeWide",
+    "status": "partial"
+  },
   "0xfb8e22ec": {
     "classification": "dedicated",
     "handler": "h_EnableSubIntr",
@@ -3902,7 +4003,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetCpuClockFrequencyInt",
     "name": "scePowerGetCpuClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xfe246728": {
     "classification": "dedicated",
@@ -3920,7 +4021,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetCpuClockFrequencyInt",
     "name": "scePowerGetCpuClockFrequency",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xff5940b6": {
     "classification": "dedicated",

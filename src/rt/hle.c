@@ -651,7 +651,9 @@ static void user_partition_init(void) {
 /* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
  * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
  * writes malloc chunk metadata at the start of its UserSbrk block. */
-typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
+/* `high` marks a High block (sceKernelAllocMemoryBlock placement 1): it lives in the top-down
+ * arena the thread stacks share (sched_partition_alloc_high) and goes back there when freed. */
+typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
@@ -673,11 +675,14 @@ static uint32_t user_partition_ceiling(void) {
  * [0x082f0000, SR_NESTED_FRAME_END). A partition based below them (an image linked at a
  * low address) ends there, so no allocation is ever placed over a runtime stack. */
 #define USER_PARTITION_RUNTIME_STACKS_BASE 0x082f0000u   /* sched.c SR_VBLANK_STACK_BASE */
+static uint32_t partition_high_floor_above(uint32_t addr);
 static uint32_t user_partition_top(void) {
     uint32_t ceiling = user_partition_ceiling();
     if (s_heap_base < SR_NESTED_FRAME_END && ceiling > USER_PARTITION_RUNTIME_STACKS_BASE)
         ceiling = USER_PARTITION_RUNTIME_STACKS_BASE;
     uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
+    uint32_t high = partition_high_floor_above(s_heap_base);
+    if (high < floor) floor = high;
     return floor < ceiling ? floor : ceiling;
 }
 
@@ -879,8 +884,60 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].slot_size = slot_size;
         s_blocks[slot].prev      = prev;
         s_blocks[slot].next      = next;
+        s_blocks[slot].high      = 0;
     }
 
+    return uid;
+}
+
+/* Lowest live High block at or above addr, UINT32_MAX when none. */
+static uint32_t partition_high_floor_above(uint32_t addr) {
+    uint32_t floor = UINT32_MAX;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid != 0u && s_blocks[i].high && s_blocks[i].addr >= addr &&
+            s_blocks[i].addr < floor)
+            floor = s_blocks[i].addr;
+    return floor;
+}
+
+/* A High block (PSP_SMEM_High): the highest free address range that holds it, taken from the top
+ * of the arena the thread stacks share, as a PSP takes both from the top of the user partition.
+ * Sizes round up to the partition's 0x100-byte granularity: pspautotests sysmem/memblock.expected
+ * (2ed7c9c5) records two consecutive placement-1 blocks 0x100 apart for sizes 1 to 0x100, 0x200
+ * for 0x101, 0x1100 for 0x1001 and 0x10100 for 0x10001, the second below the first. Returns the
+ * block UID, or 0xFFFFFFFFu when no range holds it. */
+/* High blocks come from the stack arena, which lies above kernel RAM; a partition based below the
+ * runtime's stacks (an image linked low) ends under that arena, so it has no modelled High region
+ * and its callers stop by name. */
+static int partition_high_modelled(void) {
+    user_partition_init();
+    return s_heap_base >= SR_NESTED_FRAME_END;
+}
+
+static uint32_t alloc_block_high(uint32_t size) {
+    user_partition_init();
+    if (!partition_high_modelled()) return 0xFFFFFFFFu;
+    if (size == 0u || size > UINT32_MAX - 0xffu) return 0xFFFFFFFFu;
+    uint32_t slot_size = (size + 0xffu) & ~0xffu;
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid == 0u) { slot = i; break; }
+    if (slot < 0) {
+        if (s_nblocks >= HLE_MAX_PARTITION_BLOCKS) return 0xFFFFFFFFu;
+        slot = s_nblocks;
+    }
+    uint32_t addr = 0u;
+    if (!sched_partition_alloc_high(slot_size, user_partition_ceiling(), &addr)) return 0xFFFFFFFFu;
+    if (slot == s_nblocks) s_nblocks++;
+    sr_last_alloc_addr = addr;
+    uint32_t uid = sr_alloc_uid();
+    s_blocks[slot].uid       = uid;
+    s_blocks[slot].addr      = addr;
+    s_blocks[slot].size      = size;
+    s_blocks[slot].slot_size = slot_size;
+    s_blocks[slot].prev      = 0xFFFFFFFFu;
+    s_blocks[slot].next      = 0u;
+    s_blocks[slot].high      = 1;
     return uid;
 }
 
@@ -1038,6 +1095,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].slot_size = eff;
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
+    s_blocks[slot].high      = 0;
 
     return uid;
 }
@@ -2983,6 +3041,8 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
+#define HLE_KERNEL_ERROR_ERROR 0x80020001u          /* SCE_KERNEL_ERROR_ERROR */
+#define HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT 0x800200d2u /* SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT */
 
 static void hle_record_unsupported_import_stop(uint32_t, const char *);
 
@@ -3020,6 +3080,11 @@ static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ..
     }
     longjmp(g_hle_jmp, 1);
 #endif
+}
+
+/* The same named stop for handlers that live outside this file (hle_power.c). */
+uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail) {
+    return hle_unmodelled_stop(import_name, "%s", detail);
 }
 
 /* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
@@ -3096,22 +3161,27 @@ static uint32_t free_block(uint32_t uid) {
              * and adjacent blocks are coalesced. */
             uint32_t addr = s_blocks[i].addr;
             uint32_t slot_sz = s_blocks[i].slot_size;
+            int high = s_blocks[i].high;
             s_blocks[i].uid = 0;                  /* slot now free */
             s_blocks[i].addr = 0;
             s_blocks[i].size = 0;
             s_blocks[i].slot_size = 0;
             s_blocks[i].prev = 0;
             s_blocks[i].next = 0;
-            partition_free_block(addr, slot_sz);
+            s_blocks[i].high = 0;
+            if (high) sched_partition_release_high(addr, slot_sz);
+            else partition_free_block(addr, slot_sz);
             if (getenv("SR_ALLOC_TRACE")) {
                 fprintf(stderr, "FreePartitionMemory: uid=0x%x addr=0x%08x marked free\n", uid, addr);
             }
             return 0;
         }
     }
-    /* Block not found — could be an invalid UID. PSP returns error. */
+    /* No live block has this UID. PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5,
+     * recorded on a PSP: freeing an already-freed UID, UID 0 or 0xDEADBEEF returns
+     * SCE_KERNEL_ERROR_UNKNOWN_UID (0x800200CB) (#341). */
     if (getenv("SR_ALLOC_TRACE")) fprintf(stderr, "FreePartitionMemory: uid=0x%x not found\n", uid);
-    return 0x80020000;
+    return HLE_KERNEL_ERROR_UNKNOWN_UID;
 }
 static uint32_t h_FreePartitionMemory(CpuState *s) {
     return free_block(A0);
@@ -3124,9 +3194,17 @@ static HleMemoryBlock *memory_block_find(uint32_t uid) {
     return NULL;
 }
 
-/* This handler models the documented main-user-partition Low placement with
- * the existing tracked partition allocator. Other valid placement policies
- * remain a named boundary until the allocator models their address ordering. */
+/* sceKernelAllocMemoryBlock(name, type, size, SceKernelMemoryBlockAllocOption *opt): a block of
+ * the main user partition. Measured on a PSP by pspautotests tests/sysmem/memblock.expected
+ * (2ed7c9c5): type 0 and 1 allocate; -1, 2..5 and every larger type return 0x800200D8; size 0 and
+ * 0xFFFFFFFF return 0x800200D9; an option block whose size word is anything but 4 (-1, 0..3, 5,
+ * 0x11 and larger) returns 0x800200D2, and 4 allocates; a NULL name returns 0x80020001, while an
+ * empty name and one longer than the 31-byte name field allocate. uOFW src/kd/sysmem/memblock.c
+ * (MIT) gives the same order: the name and option pointers, then the option size, then the type,
+ * then sceKernelAllocPartitionMemory(2, name, type, size, 0), whose type 0 is Low and 1 is High.
+ * Type 0 is the partition's Low path; type 1 (High) comes from the top of the arena the thread
+ * stacks share (alloc_block_high). Which code an unmapped name or option pointer returns is not
+ * measured; the pointer check returns uOFW's 0x800200D3. */
 static uint32_t h_AllocMemoryBlock(CpuState *s) {
     (void)s;
     uint32_t kind = A1;
@@ -3136,23 +3214,26 @@ static uint32_t h_AllocMemoryBlock(CpuState *s) {
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A3 && !sr_guest_span_readable(A3, 4u))
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A3) {
-        uint32_t options_size = MEM_R32(A3);
-        if (options_size < 4u) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
-        if (options_size > 4u) {
-            if (!sr_guest_span_readable(A3, options_size))
-                return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
-                                       "option extensions (%u bytes) are not supported yet",
-                                       options_size);
-        }
-    }
-    if (kind > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (A3 && MEM_R32(A3) != 4u) return HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT;
+    if (kind >= 2u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (!A0) return HLE_KERNEL_ERROR_ERROR;
     if (size == 0u || size > UINT32_MAX - 0xffu)
-        return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
-    if (kind != 0u) {
-        return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
-                                   "placement kind %u is not supported yet", kind);
+        return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    if (kind == 1u) {
+        if (!partition_high_modelled())
+            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                       "type 1 in a partition based below the runtime stacks is not modelled");
+        int high_slot = -1;
+        for (int i = 0; i < HLE_MAX_MEMORY_BLOCKS; i++) {
+            if (s_memory_blocks[i].uid == 0u) { high_slot = i; break; }
+        }
+        if (high_slot < 0) return HLE_KERNEL_ERROR_NO_MEMORY;
+        uint32_t high_backing = alloc_block_high(size);
+        if (high_backing == 0xffffffffu) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+        uint32_t high_uid = sr_alloc_uid();
+        s_memory_blocks[high_slot].uid = high_uid;
+        s_memory_blocks[high_slot].backing_uid = high_backing;
+        return high_uid;
     }
 
     int slot = -1;
@@ -4379,6 +4460,28 @@ static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
     (void)s;
     return sched_thread_stack_free_size(A0);
 }
+/* sceKernelCheckThreadStack(void): the calling thread's stack space left below its stack
+ * pointer, that is $sp minus the low end of its stack. Measured on a PSP by pspautotests
+ * tests/threads/threads/stackfree.expected (rev 2ed7c9c5), threads with a 0x1000-byte stack:
+ * a thread that only calls it reads 0xEB0, and one that first puts a 1 KiB array in its frame
+ * reads 0xAB0, 0x400 less, with or without the stack fill, so the value follows the stack
+ * pointer and not the fill bytes. With the fill, and no 0xFF bytes written in the frame, it is
+ * 0x10 above sceKernelGetThreadStackFreeSize (0xEB0 against 0xEA0, 0xAB0 against 0xAA0): the
+ * 0x10 bytes at the low end that call does not count (sched_thread_stack_free_size). The main
+ * thread's value is above 0x30000.
+ * The caller's $sp is the guest's own: the import stub has no frame. A stack pointer outside
+ * the thread's stack (an overflow, or code running on another stack) is not measured, nor is
+ * a call with no current thread, so both stop the run by name. */
+static uint32_t h_CheckThreadStack(CpuState *s) {
+    uint32_t base = 0u, size = 0u, sp = s->r[29];
+    if (!sched_current_thread_stack_range(&base, &size))
+        return hle_unmodelled_stop("sceKernelCheckThreadStack", "with no current thread is not measured");
+    if (sp < base || sp - base > size)
+        return hle_unmodelled_stop("sceKernelCheckThreadStack",
+                                   "with $sp 0x%08x outside the thread's stack 0x%08x+0x%x is not measured",
+                                   sp, base, size);
+    return sp - base;
+}
 /* sceKernelSleepThread[CB] blocks only when no wakeup is banked; a pending wakeup is
  * consumed and the call returns without waiting. The context check therefore asks the
  * wakeup count first, so a rejected call decrements nothing, sets no sleep marker, and
@@ -4709,7 +4812,57 @@ typedef struct {
     int host_served;
     uint32_t gp;
     const SrModuleCode *code;
+    /* The kernel's record of a guest-placed module, filled from its ELF and the loader's
+     * relocated image when it was placed (sceKernelQueryModuleInfo). has_info is 0 for a
+     * module placed any other way, which then has no such record. */
+    int has_info;
+    SrMainModuleRecord info;
 } LoadedModule;
+
+/* Text/data/bss sizes of a PRX image as the kernel's loader sums them (uOFW
+ * src/kd/loadcore/loadelf.c): with a section table, CheckElfSectionPRX -- PROGBITS sections
+ * flagged exactly ALLOC|EXECINSTR or ALLOC are text, WRITE|ALLOC data, NOBITS WRITE|ALLOC
+ * bss; without one, CheckElfSection -- PT_LOAD file bytes are text when executable and data
+ * otherwise, memory past the file bytes bss. Returns 0 when the headers are malformed. */
+static int prx_text_data_bss(const unsigned char *elf, size_t len, uint32_t *text,
+                             uint32_t *data, uint32_t *bss) {
+    uint64_t t = 0, d = 0, b = 0;
+    if (!elf || len < 52u || memcmp(elf, "\177ELF\1\1", 6) != 0) return 0;
+    uint32_t phoff, shoff; uint16_t phentsize, phnum, shentsize, shnum, shstrndx;
+    memcpy(&phoff, elf + 28, 4); memcpy(&shoff, elf + 32, 4);
+    memcpy(&phentsize, elf + 42, 2); memcpy(&phnum, elf + 44, 2);
+    memcpy(&shentsize, elf + 46, 2); memcpy(&shnum, elf + 48, 2); memcpy(&shstrndx, elf + 50, 2);
+    if (shoff > 0u) {
+        if (shnum == 0u || shstrndx >= shnum || shentsize < 40u ||
+            (uint64_t)shoff + (uint64_t)shentsize * shnum > len)
+            return 0;
+        for (uint32_t i = 0; i < shnum; i++) {
+            const unsigned char *sh = elf + shoff + (size_t)i * shentsize;
+            uint32_t type, flags, size;
+            memcpy(&type, sh + 4, 4); memcpy(&flags, sh + 8, 4); memcpy(&size, sh + 20, 4);
+            if (type == 1u) {                                   /* SHT_PROGBITS */
+                if (flags == 6u || flags == 2u) t += size;      /* ALLOC|EXECINSTR, ALLOC */
+                else if (flags == 3u) d += size;                /* WRITE|ALLOC */
+            } else if (type == 8u && flags == 3u) {             /* SHT_NOBITS, WRITE|ALLOC */
+                b += size;
+            }
+        }
+    } else {
+        if (phentsize < 32u || (uint64_t)phoff + (uint64_t)phentsize * phnum > len) return 0;
+        for (uint32_t i = 0; i < phnum; i++) {
+            const unsigned char *ph = elf + phoff + (size_t)i * phentsize;
+            uint32_t type, filesz, memsz, flags;
+            memcpy(&type, ph, 4); memcpy(&filesz, ph + 16, 4); memcpy(&memsz, ph + 20, 4);
+            memcpy(&flags, ph + 24, 4);
+            if (type != 1u) continue;
+            if (flags & 1u) t += filesz; else d += filesz;
+            if (filesz < memsz) b += memsz - filesz;
+        }
+    }
+    if (t > UINT32_MAX || d > UINT32_MAX || b > UINT32_MAX) return 0;
+    *text = (uint32_t)t; *data = (uint32_t)d; *bss = (uint32_t)b;
+    return 1;
+}
 
 /* Live module records and resident images. Guest-placed modules are bound in the
  * dispatch registry, which holds SR_MODULE_CODE_MAX_BOUND images at once; the loader's
@@ -5223,6 +5376,7 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
 #define GUEST_MODULE_OPTION_BYTES 20u
 #define GUEST_MODULE_PARTITION_USER 2u
 #define GUEST_MODULE_POSITION_LOW 0u
+#define GUEST_MODULE_POSITION_HIGH 1u
 /* The user partition hands out 256-byte slots (alloc_block). */
 #define GUEST_MODULE_PARTITION_GRANULE 0x100u
 
@@ -5349,9 +5503,9 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
                  "partition is modelled", opt.mpidtext, opt.mpiddata);
         return guest_module_boundary("guest-module-partition-unsupported", file, detail);
     }
-    if (opt.position != GUEST_MODULE_POSITION_LOW) {
-        snprintf(detail, sizeof(detail), "requested placement position %u; only Low placement "
-                 "is modelled", opt.position);
+    if (opt.position != GUEST_MODULE_POSITION_LOW && opt.position != GUEST_MODULE_POSITION_HIGH) {
+        snprintf(detail, sizeof(detail), "requested placement position %u; only Low and High "
+                 "placement are modelled", opt.position);
         return guest_module_boundary("guest-module-placement-unsupported", file, detail);
     }
 
@@ -5423,15 +5577,27 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
                                      "every resident-image slot is live");
     }
 
-    /* Memory, as the kernel's loader takes it: the lowest free user-partition range that
-     * holds the whole image (PSP_SMEM_Low). A relocatable image is aligned inside its
-     * block, which carries the slack an alignment above the partition granule needs; a
-     * fixed-address image owns exactly its link range. The status the guest sees when the
+    /* Memory, as the kernel's loader takes it: for a relocatable module, the lowest free
+     * user-partition range that holds the whole image (PSP_SMEM_Low), or with load option
+     * position 1 the highest (PSP_SMEM_High, alloc_block_high); uOFW src/kd/modulemgr/modulemgr.c
+     * (MIT) allocates a PRX body with the option's position as the block type. A relocatable
+     * image is aligned inside its block, which carries the slack an alignment above the
+     * partition granule needs; where inside that block the PSP's aligned High variant puts the
+     * image is not measured. A fixed-address image owns exactly its link range whatever the
+     * position, as uOFW's ELF path allocates by address. The status the guest sees when the
      * partition cannot hold the image is SCE_KERNEL_ERROR_NO_MEMORY (unmeasured). */
     uint32_t alloc_uid;
     uint32_t image = 0;
     if (code->relocatable) {
-        alloc_uid = alloc_block(span + (align - GUEST_MODULE_PARTITION_GRANULE));
+        uint32_t padded = span + (align - GUEST_MODULE_PARTITION_GRANULE);
+        if (opt.position == GUEST_MODULE_POSITION_HIGH && !partition_high_modelled()) {
+            free(bytes);
+            return guest_module_boundary("guest-module-placement-unsupported", file,
+                                         "High placement in a partition based below the runtime "
+                                         "stacks is not modelled");
+        }
+        alloc_uid = opt.position == GUEST_MODULE_POSITION_HIGH ? alloc_block_high(padded)
+                                                               : alloc_block(padded);
         if (alloc_uid != 0xFFFFFFFFu) {
             uint32_t block = block_addr(alloc_uid);
             image = (block + align - 1u) & ~(align - 1u);
@@ -5461,6 +5627,8 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     s_prx_staging = 1;
     int rc = sr_prx_load_from_memory(bytes, size, base, &img, err, sizeof(err));
     s_prx_staging = 0;
+    uint32_t text_size = 0, data_size = 0, bss_size = 0;
+    const int sized = rc == 0 && prx_text_data_bss(bytes, size, &text_size, &data_size, &bss_size);
     free(bytes);
     const char *refusal = NULL;
     if (rc != 0) {
@@ -5525,6 +5693,25 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     mod->module_stop = module_stop;
     mod->image_base = image;
     mod->image_end = image + span;
+    memset(&mod->info, 0, sizeof(mod->info));
+    mod->has_info = sized && img.nseg <= 4u;
+    if (mod->has_info) {
+        mod->info.nsegment = img.nseg;
+        for (uint32_t i = 0; i < img.nseg; i++) {
+            mod->info.segment_addr[i] = img.segs[i].guest_addr;
+            mod->info.segment_size[i] = img.segs[i].mem_size;
+        }
+        mod->info.entry_addr = img.entry;
+        mod->info.gp_value = img.gp;
+        mod->info.text_addr = image;
+        mod->info.text_size = text_size;
+        mod->info.data_size = data_size;
+        mod->info.bss_size = bss_size;
+        mod->info.attribute = img.attr;
+        mod->info.version[0] = img.version[0];
+        mod->info.version[1] = img.version[1];
+        memcpy(mod->info.name, img.modname, sizeof(mod->info.name));
+    }
     sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
     sr_prx_image_free(&img);
     return 0;
@@ -5614,6 +5801,7 @@ enum {
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
+static unsigned s_utility_usb_loaded;
 
 static const char *module_state_name(LoadedModuleState state) {
     switch (state) {
@@ -5759,6 +5947,26 @@ static uint32_t h_UtilityUnloadNetModule(CpuState *s) {
     if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
     return utility_module_unload("sceUtilityUnloadNetModule", 0x100u + module - 1u, 0);
 }
+
+/* sceUtilityLoadUsbModule(n) numbers its modules 1 to 5 (PSPSDK psputility_usbmodules.h:
+ * PSPCM, ACC, MIC, CAM, GPS), an order that does not follow the 0x108 and 0x2xx IDs of the
+ * utility-module table above, and which table ID each loads is unmeasured, so their state is
+ * kept here rather than guessed into the table. The USB functions themselves are not provided.
+ * The error mapping is inferred from the generic utility-module API, not measured. */
+static uint32_t utility_usb_module(uint32_t id, int load) {
+    if (id < 1u || id > 5u) return SCE_ERROR_MODULE_BAD_ID;
+    unsigned bit = 1u << (id - 1u);
+    if (load) {
+        if (s_utility_usb_loaded & bit) return SCE_ERROR_MODULE_ALREADY_LOADED;
+        s_utility_usb_loaded |= bit;
+    } else {
+        if (!(s_utility_usb_loaded & bit)) return SCE_ERROR_MODULE_NOT_LOADED;
+        s_utility_usb_loaded &= ~bit;
+    }
+    return 0;
+}
+static uint32_t h_UtilityLoadUsbModule(CpuState *s) { return utility_usb_module(A0, 1); }
+static uint32_t h_UtilityUnloadUsbModule(CpuState *s) { return utility_usb_module(A0, 0); }
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
 
@@ -7335,6 +7543,102 @@ static uint32_t h_GetModuleId(CpuState *s) {
     return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
 }
 
+/* The main module's kernel record, registered by the generated sr_register_all() when the
+ * ELF has a SceModuleInfo (tools/codegen.py main_module_record). NULL when it has none, and
+ * again after LoadExec replaces the program. */
+static const SrMainModuleRecord *s_main_module_record;
+
+#define SCE_MODULE_PRIVILEGE_LEVELS        0x1e00u   /* MS|USB_WLAN|APP|VSH|KERNEL */
+#define SCE_KERNEL_MODULE_INIT_PRIORITY    32
+#define SCE_KERNEL_TH_USER_DEFAULT_STACK   0x40000u
+#define SCE_KERNEL_TH_USER_MODE            0x80000000u
+
+/* The module manager creates the module-start thread from the record (uOFW
+ * src/kd/modulemgr/modulemgr.c, _StartModule): the declared module_start_thread_parameter
+ * priority, stack size and attribute, or the module-init priority 32 and the 256 KiB user
+ * stack when the module declares none; the attribute's top nibble is cleared and the
+ * user-mode bit set, and the thread is named "SceModmgrStart" and runs with the module's gp.
+ * A game's main module is a user module: the loader refuses to boot one whose privilege
+ * level is not user (uOFW src/kd/loadcore/loadelf.c, sceKernelProbeExecutableObject). */
+void sr_main_module_register(const SrMainModuleRecord *record) {
+    s_main_module_record = record;
+    if (!record) return;
+    int priority = SCE_KERNEL_MODULE_INIT_PRIORITY;
+    uint32_t stack_size = 0u, attr = 0u;
+    if (record->has_start_thread_param) {
+        priority = (int)record->start_thread_priority;
+        stack_size = record->start_thread_stack_size;
+        attr = record->start_thread_attr;
+    }
+    if (stack_size == 0u) stack_size = SCE_KERNEL_TH_USER_DEFAULT_STACK;
+    attr = (attr & ~0xf0000000u) | SCE_KERNEL_TH_USER_MODE;
+    sched_set_module_start_thread(priority, stack_size, attr, "SceModmgrStart",
+                                  record->gp_value);
+}
+
+/* sceKernelQueryModuleInfo(uid, info), from uOFW src/kd/modulemgr/queryModule.c (MIT):
+ * interrupt context, then a 96-byte user buffer, then (compiled SDK 2.80 or later) a size of
+ * 64 (SceKernelModuleInfoV1) or 96 (SceKernelModuleInfo), then the module. The first 64 bytes
+ * are always written; attribute (privilege bits cleared), version and name only for size 96.
+ * The main module answers from its generated record, and a module the runtime placed itself
+ * from the record taken when it was placed. Any other loaded module's record holds no segment
+ * table, text/data/bss sizes, attribute, version or name, so it is refused by name rather than
+ * answered with partial values; so is a main module built without a record. */
+#define SCE_KERNEL_ERROR_CANNOT_GET_MODULE_INFO 0x8002014au
+static uint32_t h_QueryModuleInfo(CpuState *s) {
+    const uint32_t uid = A0, info = A1;
+    if (sched_is_intr_context()) return 0x80020064u;      /* CANNOT_BE_CALLED_FROM_INTERRUPT */
+    if (info == 0u || !sr_guest_span_writable(info, 96u)) return 0x800200d3u; /* ILLEGAL_ADDR */
+    const uint32_t size = MEM_R32(info);
+    if ((sr_sdkver_get(&g_sdk_version) & 0xffff0000u) >= 0x02080000u && size != 64u && size != 96u)
+        return 0x800201bcu;                               /* ILLEGAL_SIZE */
+    const int is_main = uid != 0u && uid == s_main_module_uid &&
+                        sr_loaded_base() < sr_loaded_end();
+    const SrMainModuleRecord *r = s_main_module_record;
+    if (!is_main) {
+        const LoadedModule *mod = find_loaded_module(uid);
+        if (!mod) return SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+        if (mod->has_info) {
+            r = &mod->info;
+            goto answer;
+        }
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is a module the runtime did not place, whose record holds no segment table, sizes, "
+                        "attribute, version or name; refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!r) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_INFO_RECORD_UNAVAILABLE: sceKernelQueryModuleInfo "
+                        "uid=0x%x is the main module, but this build carries no record of it (the "
+                        "ELF has no SceModuleInfo); refusing (0x80020002)\n", uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+answer:
+    MEM_W8(info + 4u, (uint8_t)r->nsegment);
+    for (uint32_t i = 0; i < 4u; i++) {
+        MEM_W32(info + 8u + 4u * i, r->segment_addr[i]);
+        MEM_W32(info + 24u + 4u * i, r->segment_size[i]);
+    }
+    MEM_W32(info + 40u, r->entry_addr);
+    MEM_W32(info + 44u, r->gp_value);
+    MEM_W32(info + 48u, r->text_addr);
+    MEM_W32(info + 52u, r->text_size);
+    MEM_W32(info + 56u, r->data_size);
+    MEM_W32(info + 60u, r->bss_size);
+    if (size == 96u) {
+        MEM_W16(info + 64u, (uint16_t)(r->attribute & ~SCE_MODULE_PRIVILEGE_LEVELS));
+        MEM_W8(info + 66u, r->version[0]);
+        MEM_W8(info + 67u, r->version[1]);
+        int ended = 0;                                    /* strncpy: copy, then NUL pad */
+        for (uint32_t i = 0; i < 27u; i++) {
+            if (!ended && r->name[i] == 0u) ended = 1;
+            MEM_W8(info + 68u + i, ended ? 0u : r->name[i]);
+        }
+        MEM_W8(info + 95u, 0u);
+    }
+    return 0;
+}
+
 static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
     LoadedModule *mod = find_loaded_module(modid);
@@ -7891,7 +8195,10 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *
  *   HARDWARE_MEASURED:
  *   - a zero request returns 0x80000104 (illegal size);
- *   - a NULL pointer returns 0x80000103 before guest/GPU side effects;
+ *   - a NULL pointer returns 0x80000103 before guest/GPU side effects, and
+ *     both checks come before BUSY and the wait: a pending transfer does not
+ *     change either result, and a blocking call returns them at once
+ *     (PSP-DMAC-002 b2, 8/8 per cell);
  *   - fully valid RAM/VRAM spans copy their complete requested sizes through
  *     0x100000 bytes in the sequential size matrix;
  *   - a one-byte tail past an allocator-proven valid prefix returns success
@@ -7899,8 +8206,26 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
  *   - both APIs block their caller for the whole transfer; a Try made while
  *     another thread's transfer is pending returns BUSY (0x80000021) and a
- *     blocking call made then waits for it and returns 0 (PSP-3000 / 6.6.1,
- *     64/64 for each of the three dma-concurrency combinations, #303).
+ *     blocking call made then waits for it and returns 0 (PSP-DMAC-001);
+ *   - PSP-DMAC-002 (three acceptance-eligible runs, boots 61-63, 2026-10-29):
+ *     - when source and destination share their address modulo 16, the bytes
+ *       before the first 16-byte destination boundary (head) and the bytes after
+ *       the last whole 16-byte block (tail) move apart from the body; a body of
+ *       at most 0x100 bytes does not use the channel at all: Try returns 0 and a
+ *       blocking call does not wait, even while another transfer is pending
+ *       (aligned 0x10..0x10f all pass, 0x110 and larger refused);
+ *     - every other transfer uses the channel; a Try refused with BUSY still
+ *       leaves its head and tail bytes copied (and nothing else), and one whose
+ *       source and destination differ modulo 16 changes nothing (c4 cells);
+ *     - a channel transfer keeps its caller blocked for its duration, measured
+ *       per source/destination memory (main RAM or VRAM) and size from 0x200 to
+ *       0x100000 bytes (k_dmac_us_x100 below, the mean per call of 16
+ *       back-to-back calls over the runs on boots 61-63), and longer when source
+ *       and destination differ modulo 16: per byte +0.003895 us at 4-byte,
+ *       +0.015319 us at 2-byte and +0.038116 us at 1-byte relative alignment,
+ *       none at 8-byte (main RAM to main RAM, 0x10000 bytes);
+ *     - callers queued behind a pending transfer are served in arrival order,
+ *       whatever their priorities (b3, 16/16 in both orders).
  *
  * RUNTIME_IMPLEMENTED:
  *   - fully valid spans are copied at their requested size (there is no
@@ -7908,23 +8233,29 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - the measured one-byte arena-end tail is copied only through its valid
  *     prefix, while larger or ambiguous overruns remain fail-closed;
  *   - both registered NIDs share one copy path;
- *   - the active transfer: a guest thread that starts one stays blocked in
- *     the call while the scheduler's transfer window is open; another
- *     thread's Try returns BUSY without copying, and its blocking call waits
- *     through the scheduler, then performs its own transfer and returns 0.
+ *   - the head/body/tail split and the 0x100-byte channel bypass above;
+ *   - a channel transfer opens the scheduler's channel window for the
+ *     measured duration (dmac_duration_us) and its caller stays blocked until
+ *     the window ends; another thread's Try then returns BUSY after copying
+ *     the head and tail, and its blocking call queues (arrival order), then
+ *     performs its own transfer.
  *
  * UNMEASURED (explicit runtime choices, not PSP facts):
- *   - the transfer's guest-time duration: the probes recorded caller wall time
- *     only (~376-382 us for an earlier large call, 4.43-4.55 ms for 1 MiB
- *     VRAM-to-VRAM) and no rate law is inferred from either, so the window
- *     carries no time; it closes at the scheduling decision after one other
- *     thread has been dispatched, or at once when none is runnable
- *     (sched_transfer_begin in sched.c);
+ *   - sizes from 0x110 to 0x1ff take the 0x200-0x400 segment of the timing
+ *     table extended downwards, and sizes above 0x100000 the 0x80000-0x100000
+ *     segment extended upwards;
+ *   - the relative-alignment surcharges were measured main RAM to main RAM
+ *     and are applied to every memory pair; a destination that is not 16-byte
+ *     aligned while the source shares its phase measured 3-6 % slower, which
+ *     is not modelled;
+ *   - the bypass path, a transfer slowed by a concurrent caller (a polling
+ *     Try stretched a 1 MiB VRAM copy from about 4.5 to 5.3 ms) and the
+ *     syscall overhead carry no guest time;
+ *   - a body of at most 0x100 bytes whose source and destination differ
+ *     modulo 16 uses the channel (only 0x108 bytes was measured, refused);
  *   - callers that cannot block (interrupt context, suspended interrupts or
  *     dispatch, no guest thread) keep the synchronous copy and open no window;
- *   - a BUSY Try copies nothing; more than two callers queue by priority;
- *   - BUSY and the wait are decided after the size/NULL checks and before
- *     span validation, which runs when the copy happens.
+ *   - span validation runs before BUSY and the wait.
  *
  * The size-before-address ordering below is a runtime ordering; the combined
  * size-zero-plus-invalid-pointer case was not part of the probe.
@@ -7937,9 +8268,54 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
 #define SCE_DMAC_ERROR_BUSY 0x80000021u
-/* The active transfer's owner and every blocking caller queued behind it park
- * on this object until the scheduler closes the transfer window. */
+/* The channel's owner and every blocking caller queued behind it park on this
+ * object until the scheduler ends the window or hands them the channel. */
 #define DMAC_TRANSFER_WAIT_OBJ 0x444d4143u /* "DMAC" */
+/* The largest same-phase body the measured bypass covers (PSP-DMAC-002). */
+#define DMAC_BYPASS_BODY_MAX 0x100u
+
+/* PSP-DMAC-002 timing table: hundredths of a microsecond per call for a channel
+ * transfer with source and destination aligned alike, by pair (main RAM to main RAM,
+ * main RAM to VRAM, VRAM to main RAM, VRAM to VRAM) and size. */
+#define DMAC_TIMING_POINTS 12
+static const uint32_t k_dmac_sizes[DMAC_TIMING_POINTS] = {
+    0x200u, 0x400u, 0x800u, 0x1000u, 0x2000u, 0x4000u,
+    0x8000u, 0x10000u, 0x20000u, 0x40000u, 0x80000u, 0x100000u};
+static const uint32_t k_dmac_us_x100[4][DMAC_TIMING_POINTS] = {
+    {5491u, 5781u, 7053u, 8971u, 11878u, 18556u, 31691u, 58304u, 112766u, 222508u, 437641u, 870594u},
+    {5372u, 5746u, 6506u, 7596u, 9772u, 13027u, 19875u, 34806u, 65497u, 126729u, 247419u, 493398u},
+    {5444u, 5510u, 5953u, 6785u, 8756u, 10702u, 17841u, 26683u, 48875u, 93408u, 180838u, 361456u},
+    {5259u, 5271u, 5638u, 6698u, 7934u, 10819u, 15897u, 26842u, 56997u, 118627u, 226912u, 447733u},
+};
+/* Per-byte surcharge, in millionths of a microsecond, by relative alignment class:
+ * index 0 = 8- or 16-byte, 1 = 4-byte, 2 = 2-byte, 3 = 1-byte. */
+static const uint32_t k_dmac_misalign_ppm[4] = {0u, 3895u, 15319u, 38116u};
+
+static int dmac_is_vram(uint32_t addr) {
+    return sr_vram_cpu_aperture(addr);
+}
+
+/* Interpolated duration, in hundredths of a microsecond, of one table row at size n. */
+static uint64_t dmac_row_x100(const uint32_t *row, uint32_t n) {
+    int hi = 1;
+    while (hi < DMAC_TIMING_POINTS - 1 && k_dmac_sizes[hi] < n) hi++;
+    const int lo = hi - 1;
+    const int64_t x0 = k_dmac_sizes[lo], x1 = k_dmac_sizes[hi];
+    const int64_t y0 = row[lo], y1 = row[hi];
+    int64_t y = y0 + ((int64_t)n - x0) * (y1 - y0) / (x1 - x0);
+    return y > 0 ? (uint64_t)y : 0u;
+}
+
+/* Guest microseconds a channel transfer of n bytes keeps its caller blocked. */
+static uint32_t dmac_duration_us(uint32_t dst, uint32_t src, uint32_t n) {
+    const int pair = (dmac_is_vram(src) ? 2 : 0) + (dmac_is_vram(dst) ? 1 : 0);
+    uint64_t x100 = dmac_row_x100(k_dmac_us_x100[pair], n);
+    const uint32_t rel = (src - dst) & 15u;
+    const int cls = (rel & 7u) == 0u ? 0 : (rel & 3u) == 0u ? 1 : (rel & 1u) == 0u ? 2 : 3;
+    x100 += (uint64_t)n * k_dmac_misalign_ppm[cls] / 10000u;
+    const uint64_t us = (x100 + 50u) / 100u;
+    return us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+}
 
 static uint32_t dmac_transfer(CpuState *s, int try_only);
 
@@ -7958,21 +8334,22 @@ static int dmac_caller_can_wait(void) {
     return sched_guest_thread_running() && sched_wait_permitted();
 }
 
+static void dmac_copy(uint32_t dst, uint32_t src, uint32_t n) {
+    if (n == 0u) return;
+    sr_guest_vram_write_prepare_bytes(dst, n);
+    memmove(SR_HOST(dst), SR_HOST(src), n);
+    sr_guest_vram_write_commit_bytes(dst, n);
+    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
+}
+
 static uint32_t dmac_transfer(CpuState *s, int try_only) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
-    /* Validate size and null pointers before touching guest memory. */
+    /* Validate size and null pointers before touching guest memory; both come
+     * before BUSY and the wait (measured). */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
-
-    /* Another thread's transfer is pending: Try reports BUSY without copying,
-     * and the blocking form waits for it through the scheduler. */
-    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {
-        if (try_only) return SCE_DMAC_ERROR_BUSY;
-        while (dmac_caller_can_wait() && sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL))
-            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
-    }
 
     /* The physical PSP completed the one-byte invalid-tail case through the
      * valid prefix.  Compute both prefixes with overflow-safe arena arithmetic
@@ -7996,19 +8373,53 @@ static uint32_t dmac_transfer(CpuState *s, int try_only) {
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
 
-    /* memmove, not memcpy: hardware showed both overlap directions landing
+    /* Same phase modulo 16: a head up to the first 16-byte destination boundary, a
+     * body of whole 16-byte blocks and a tail move apart; otherwise the whole span is
+     * the body. */
+    const int same_phase = ((src ^ dst) & 15u) == 0u;
+    uint32_t head = 0u, tail = 0u;
+    if (same_phase) {
+        head = (0u - dst) & 15u;
+        if (head > effective) head = effective;
+        tail = (effective - head) & 15u;
+    }
+    const uint32_t body = effective - head - tail;
+
+    /* A short same-phase body bypasses the channel: no BUSY, no wait, no window.
+     * memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
-    sr_guest_vram_write_prepare_bytes(dst, effective);
-    memmove(SR_HOST(dst), SR_HOST(src), effective);
-    sr_guest_vram_write_commit_bytes(dst, effective);
-    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
+    if (same_phase && body <= DMAC_BYPASS_BODY_MAX) {
+        dmac_copy(dst, src, effective);
+        return 0;
+    }
+
+    /* Another thread holds the channel: Try copies the head and tail and reports BUSY;
+     * the blocking form queues behind it through the scheduler (arrival order). */
+    const int can_wait = dmac_caller_can_wait();
+    uint32_t holder = 0u;
+    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &holder) &&
+        !sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ)) {
+        if (try_only) {
+            dmac_copy(dst, src, head);
+            dmac_copy(dst + effective - tail, src + effective - tail, tail);
+            return SCE_DMAC_ERROR_BUSY;
+        }
+        if (can_wait && sched_transfer_enqueue(DMAC_TRANSFER_WAIT_OBJ)) {
+            while (!sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ))
+                sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+        }
+    }
+
+    dmac_copy(dst, src, effective);
 
     /* This call's own transfer: the caller stays blocked in the call until the
-     * scheduler closes its window. */
-    if (dmac_caller_can_wait() && sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)) {
+     * scheduler ends its window, after the measured duration. */
+    if (can_wait &&
+        sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ, dmac_duration_us(dst, src, body))) {
         const uint32_t self = sched_current_uid();
         uint32_t owner = 0u;
-        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self)
+        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self &&
+               !sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ))
             sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
     }
     return 0;
@@ -9442,6 +9853,9 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
 #define SR_FONT_ERROR_INVALID_ARG  0x80460003u
 #define SR_FONT_ERROR_TOO_MANY     0x80460009u
 #define SR_FONT_ERROR_INVALID_DATA 0x8046000au
+/* A new library's fallback character: 0x005F ('_'), pspautotests tests/font/altcharcode.expected
+ * "Initial value: 005f" (rev 2ed7c9c5, recorded on a PSP). */
+#define SR_FONT_DEFAULT_ALT_CHAR   0x005fu
 
 /* sceFont uses the same measured index map and served-header values as /DATA/FONT. */
 
@@ -9454,6 +9868,7 @@ typedef struct {
     int pending;
     uint32_t params[11];  /* complete FontNewLibParams (0x2c), retained for callbacks */
     uint32_t allocSize;
+    uint16_t altCharCode; /* the fallback character for a missing glyph (sceFontSetAltCharacterCode) */
 } SrFontLib;
 typedef struct {
     int used;
@@ -9575,6 +9990,10 @@ static const PGF *font_pgf_for_index(uint32_t index) {
     return s_pgf_slot[slot];
 }
 
+/* One 0xA8-byte PGFFontStyle at `st` from a registry index's values: the shape FontInfo embeds
+ * at +0x5c and sceFontGetFontList writes one of per font. */
+static void font_write_style(uint32_t st, const SrFontRegistryInfo *info);
+
 static void font_overlay_style(uint32_t fi, const SrFontRegistryInfo *info, int userMemory) {
     if (!fi) return;
     /* PGFFontStyle begins at +0x5c. For user-memory PGFs, intrinsic metrics remain useful but
@@ -9583,6 +10002,11 @@ static void font_overlay_style(uint32_t fi, const SrFontRegistryInfo *info, int 
         for (uint32_t i = 0; i < 0x90; i++) MEM_W8(fi + 0x70u + i, 0);
         return;
     }
+    font_write_style(fi + 0x5cu, info);
+}
+
+static void font_write_style(uint32_t st, const SrFontRegistryInfo *info) {
+    const uint32_t fi = st - 0x5cu; /* the offsets below are FontInfo's */
     float f[4] = {
         (float)info->h_size / 64.0f, (float)info->v_size / 64.0f,
         (float)info->h_resolution / 64.0f, (float)info->v_resolution / 64.0f,
@@ -9670,6 +10094,7 @@ static uint32_t h_FontNewLib(CpuState *s) {
         s_fontlibs[slot].allocFn = allocFn; s_fontlibs[slot].freeFn = freeFn;
         s_fontlibs[slot].userData = userData; s_fontlibs[slot].numFonts = numFonts;
         s_fontlibs[slot].openCount = 0;
+        s_fontlibs[slot].altCharCode = SR_FONT_DEFAULT_ALT_CHAR;
         memcpy(s_fontlibs[slot].params, paramsCopy, sizeof(paramsCopy));
         hle_unlock();
     }
@@ -9762,6 +10187,22 @@ static uint32_t h_FontOpen(CpuState *s) {
     if (getenv("SR_FONTLOG"))
         fprintf(stderr, "h_FontOpen: lib=0x%08x index=%u mode=%u -> font=0x%08x\n", A0, A1, A2, fh);
     return fh;
+}
+/* Reads via the same VFS as sceIoOpen, defined with the descriptor implementation below. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size);
+static uint32_t h_FontOpenUserFile(CpuState *s) {
+    if (!A3 || !sr_guest_span_writable(A3, 4u)) return SR_FONT_ERROR_INVALID_ARG;
+    if (!A1) { MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG); return 0; }
+    SrFontLib lib;
+    if (!fontlib_snapshot(A0, &lib)) { MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    /* Mode 0 uses guest file callbacks, which are not implemented here. */
+    if (A2 != 1u) { MEM_W32(A3, 0x80010086u); return 0; }
+    uint8_t *bytes = NULL;
+    uint32_t size = 0, error = font_read_user_file(A1, &bytes, &size);
+    if (error) { MEM_W32(A3, error); return 0; }
+    PGF *owned = pgf_open_memory(bytes, size);
+    free(bytes);
+    return font_open_common(s, A0, 0, A2, owned, owned, NULL, A3);
 }
 static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
@@ -9862,12 +10303,42 @@ uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr) {
     return 0u;
 }
 #endif
+/* The fallback character of the library that owns font record `f` (the default with none). */
+static int font_alt_char_for(const SrFont *f) {
+    SrFontLib L;
+    if (f && fontlib_snapshot(f->lib, &L)) return (int)L.altCharCode;
+    return (int)SR_FONT_DEFAULT_ALT_CHAR;
+}
+/* sceFontSetAltCharacterCode(lib, charCode): set the character a missing glyph falls back to.
+ * Measured on a PSP by pspautotests tests/font/altcharcode.expected (rev 2ed7c9c5): a live library
+ * returns 0 and stores the code as 16 bits (0 -> 0000, -1 -> ffff, 0xFFFF -> ffff, 0x10000 ->
+ * 0000), a NULL library returns 0x80460002; sceFontGetCharInfo for the missing character 0xFFFF
+ * then reports a bitmap height of 0 with fallback 0x0000 or 0xFFFF and 2 (the '_' glyph's) with
+ * 0x005F. The capture's DoneLib cell writes freed memory and answers 0, which is not modelled:
+ * a library handle that is not live stops the run by name. The fallback is kept host-side; the
+ * field the PSP's own library struct holds it in is not part of this runtime's library layout. */
+static uint32_t h_FontSetAltCharacterCode(CpuState *s) {
+    if (!A0) return SR_FONT_ERROR_INVALID_LIB;
+    int found = 0;
+    hle_lock();
+    for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++)
+        if (s_fontlibs[i].used == 1 && s_fontlibs[i].handle == A0) {
+            s_fontlibs[i].altCharCode = (uint16_t)A1;
+            found = 1;
+            break;
+        }
+    hle_unlock();
+    if (!found)
+        return hle_unmodelled_stop("sceFontSetAltCharacterCode",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    return 0;
+}
 uint32_t h_FontGetCharInfo(CpuState *s) {
     /* CharInfo is 0x3c bytes; the whole output span must be guest memory before any write. */
     uint32_t ci = A2; if (!ci || !sr_guest_span_writable(ci, 0x3cu)) return SR_FONT_ERROR_INVALID_ARG;
     uint32_t cc = A1 & 0xffff;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
-    if (p) { pgf_get_char_info(p, (int)cc, 0x5f, ci); font_release(f); return 0; }
+    if (p) { pgf_get_char_info(p, (int)cc, font_alt_char_for(f), ci); font_release(f); return 0; }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
 }
@@ -9878,7 +10349,7 @@ uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     if (!gi) return SR_FONT_ERROR_INVALID_ARG;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
     if (p) {
-        (void)pgf_draw_glyph(p, (int)cc, 0x5f, gi);
+        (void)pgf_draw_glyph(p, (int)cc, font_alt_char_for(f), gi);
         font_release(f); return 0;
     }
     font_release(f);
@@ -9899,6 +10370,57 @@ uint32_t h_FontGetGlyphImageById(CpuState *s) {
 static uint32_t h_FontFindOptimumFont(CpuState *s) {
     if (A2) MEM_W32(A2, 0);            /* *errorCode */
     return 0;                          /* font index 0 */
+}
+/* ---- sceFontGetNumFontList / sceFontGetFontList: the system font list ----------------------
+ * Measured on a PSP by pspautotests tests/font/fontlist.expected (rev 2ed7c9c5, the console's
+ * own libfont.prx, a library made with numFonts 4):
+ *   - GetNumFontList(lib, &err) returns 18 and sets err 0; a NULL library returns 0 and sets
+ *     err 0x80460002.
+ *   - GetFontList(lib, styles, num) returns 0 and writes one 0xA8-byte style per font: with num 1
+ *     exactly one (the word after it is left alone), the first being the Japanese font (index 0:
+ *     10.125 x 10.125 at 128 x 128, family 1, style 103, language 1, country 1). num -1 and 0
+ *     return 0 and write nothing. A NULL library returns 0x80460002; NULL styles with a live
+ *     library return 0x80460003.
+ * 18 is SR_FONT_REGISTRY_COUNT, the measured index map /DATA/FONT and sceFontOpen already use,
+ * and each style comes from the same per-index registry values (font_write_style). A count
+ * above 1 writes min(num, 18) styles in index order; only the first of them is shown by the
+ * capture. Not measured, so the run stops by name: a library handle that is not live (the
+ * capture's DoneLib cell reads freed memory and answers like an empty library), a NULL error
+ * pointer (the capture notes it crashes), an unwritable style array, and an index whose font is
+ * not served (the console has all 18; a missing user font would leave a hole the PSP never
+ * shows). */
+static uint32_t h_FontGetNumFontList(CpuState *s) {
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop("sceFontGetNumFontList",
+                                   "with an unwritable error pointer 0x%08x is not measured", A1);
+    if (!A0) { MEM_W32(A1, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    if (!fontlib_snapshot(A0, NULL))
+        return hle_unmodelled_stop("sceFontGetNumFontList",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    MEM_W32(A1, 0u);
+    return SR_FONT_REGISTRY_COUNT;
+}
+static uint32_t h_FontGetFontList(CpuState *s) {
+    const uint32_t style_size = 0xa8u;
+    if (!A0) return SR_FONT_ERROR_INVALID_LIB;
+    if (!fontlib_snapshot(A0, NULL))
+        return hle_unmodelled_stop("sceFontGetFontList",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    if (!A1) return SR_FONT_ERROR_INVALID_ARG;
+    int32_t num = (int32_t)A2;
+    if (num <= 0) return 0;
+    uint32_t count = (uint32_t)num < SR_FONT_REGISTRY_COUNT ? (uint32_t)num : SR_FONT_REGISTRY_COUNT;
+    if (!sr_guest_span_writable(A1, count * style_size))
+        return hle_unmodelled_stop("sceFontGetFontList",
+                                   "with an unwritable style array 0x%08x is not measured", A1);
+    SrFontRegistryInfo info[SR_FONT_REGISTRY_COUNT];
+    for (uint32_t i = 0; i < count; i++) {
+        if (font_registry_info_for_index(i, &info[i]) != SR_FONT_REGISTRY_PRESENT)
+            return hle_unmodelled_stop("sceFontGetFontList",
+                                       "with font index %u not served is not measured", i);
+    }
+    for (uint32_t i = 0; i < count; i++) font_write_style(A1 + i * style_size, &info[i]);
+    return 0;
 }
 /* ---- sceMpeg (PSMF video): faithful port in src/rt/mpeg.c (from PPSSPP) ----
  * These thin wrappers marshal MIPS args to the ported mpeg_* functions. The port implements the
@@ -12313,7 +12835,10 @@ typedef struct UtilityDialog {
     unsigned kind;
     unsigned work_started : 1;
     unsigned work_done : 1;
+    unsigned aborted : 1;     /* sceUtilityMsgDialogAbort was accepted while visible */
 } UtilityDialog;
+/* The common-block result an aborted dialog finishes with (see utility_dialog_abort). */
+#define UTILITY_DIALOG_RESULT_ABORT 2u
 enum {  /* a dialog's kind is the slot type it claims */
     UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
     UTILITY_GAMEDATA = UTILITY_SLOT_GAMEDATA, UTILITY_GAMESHARING = UTILITY_SLOT_GAMESHARING
@@ -12341,7 +12866,7 @@ static void utility_dialogs_reset_locked(void) {
         d->generation++;
         d->status = 0;
         d->ticks = 0u;
-        d->work_started = d->work_done = 0u;
+        d->work_started = d->work_done = d->aborted = 0u;
     }
     s_utility_slot = UTILITY_SLOT_NONE;
 }
@@ -12359,7 +12884,7 @@ static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     d->generation++;
     d->status = 1;
     d->ticks = 0;
-    d->work_started = d->work_done = 0;
+    d->work_started = d->work_done = d->aborted = 0;
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -12376,7 +12901,11 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
-    if (d->status == 2 && !d->work_started) {
+    if (d->status == 2 && d->aborted) {
+        /* An aborted dialog finishes on the next Update (sceUtilityMsgDialogAbort). */
+        d->status = 3;
+        if (d->param) MEM_W32(d->param + 0x1c, UTILITY_DIALOG_RESULT_ABORT);
+    } else if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
         param = d->param;
         generation = d->generation;
@@ -12438,12 +12967,39 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     dialog_unlock();
     return 0;
 }
+/* sceUtilityMsgDialogAbort(void). Measured on a PSP by pspautotests
+ * tests/utility/msgdialog/abort.expected (rev 2ed7c9c5): before any InitStart it returns
+ * 0x80110005; during INIT 0x80110001; while the dialog is visible 0, and again 0 a second time,
+ * with GetStatus still 2; the next Update returns 0 and GetStatus then reads 3 (FINISHED); a third
+ * Abort, one during or after ShutdownStart, and one after the dialog is back to NONE all return
+ * 0x80110001. Here the slot keeps its last type after a shutdown, so "never started" is the slot
+ * held by no message dialog (WRONG_TYPE) and every other state but RUNNING is INVALID_STATUS.
+ * The result an aborted dialog writes to the common block is not in the capture: it is
+ * SCE_UTILITY_DIALOG_RESULT_ABORT (2) as PPSSPP Core/Dialog writes it (a behaviour reference, not
+ * a PSP measurement). An answer this model already wrote at the dialog's first Update (the default
+ * button, utility_dialog_update) stays; what buttonPressed holds after an abort is not measured. */
+static uint32_t utility_dialog_abort(UtilityDialog *d) {
+    dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (d->status != 2) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
+    d->aborted = 1;
+    dialog_unlock();
+    return 0;
+}
+static uint32_t h_MsgDialogAbort(CpuState *s);
 #define UTILITY_DIALOG_HANDLERS(prefix, slot) \
     static uint32_t prefix##Init(CpuState *s) { return utility_dialog_init(&(slot), A0); } \
     static uint32_t prefix##Update(CpuState *s) { (void)s; return utility_dialog_update(&(slot)); } \
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
 UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
+static uint32_t h_MsgDialogAbort(CpuState *s) { (void)s; return utility_dialog_abort(&s_msg_dialog); }
 /* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
 static uint32_t h_NetDialogInit(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
@@ -12771,6 +13327,7 @@ static void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
     sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
     sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
+    sr_hle_register(0x4928bd96, "sceUtilityMsgDialogAbort", h_MsgDialogAbort);
     sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
     sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
     sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
@@ -12793,6 +13350,13 @@ static uint32_t h_WlanGetEtherAddr(CpuState *s) {
     for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, mac[i]);
     return 0;
 }
+/* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
+ * model capability.  Use its PSP-1000 value until model selection exists. */
+static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
 static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
 
 static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
@@ -13146,6 +13710,8 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
     sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
     sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
+    /* Shared with the executable harness so it dispatches the production mapping (#341). */
+    sr_hle_register(0x46ebb729u, "sceUmdCheckMedium", h_UmdCheckMedium);
 }
 
 /* VBLANK (PSP_VBLANK_INT = 30) sub-interrupt handlers the game registers; the scheduler
@@ -13642,7 +14208,8 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
  *
- * Refused by name, out of scope: SetVTimerTime. The handler family is below its own header. */
+ * The Wide getter and the two time setters are below their own header, after GetVTimerTime; the
+ * handler family is below its own header. */
 /* The PSP-3000 accepted 64 creates in a row without a refusal (PSP-HLE-VTIMER-003), so the table
  * holds 64 timers. What the console does past 64 is unmeasured. */
 #define VTIMER_MAX 64
@@ -13904,6 +14471,70 @@ static uint32_t h_GetVTimerTime(CpuState *s) {
     uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
     MEM_W32(A1, (uint32_t)value);
     MEM_W32(A1 + 4u, (uint32_t)(value >> 32));
+    return 0;
+}
+
+/* ---- VTimer time, Wide getter and the two setters ------------------------------------------
+ * Measured on a PSP by pspautotests tests/threads/vtimers/gettime.expected and settime.expected
+ * (rev 2ed7c9c5, recorded on a PSP):
+ *   - GetVTimerTimeWide(uid) returns the same elapsed time GetVTimerTime writes, as a 64-bit
+ *     value in $v0/$v1 (0 for a new timer, about 5000 after a 5 ms run, unchanged once stopped);
+ *     uid 0, 0xDEADBEEF and a deleted uid return -1 (0xFFFFFFFF_FFFFFFFF), not an error code.
+ *   - SetVTimerTimeWide(uid, time) makes `time` the timer's time and returns the time it held
+ *     before, 64-bit in $v0/$v1: on a new timer 0, then 1 after setting 1, 0x1234567890123 after
+ *     setting that, and -1 after setting -1 (the full 64 bits round-trip). Unknown, zero and
+ *     deleted uids return -1 and change nothing. ReferVTimerStatus then reports current 0 after
+ *     setting 0 and non-zero after any other value, while active and base stay as they were.
+ *   - SetVTimerTime(uid, SceKernelSysClock *time) swaps: it returns 0, makes *time the timer's
+ *     time, and writes the time it held before back into *time. uid 0, 0xDEADBEEF and a deleted
+ *     uid return 0x800201BE and leave *time as it was.
+ *   - Set while running with a handler due at the new time (settime.expected "While scheduled":
+ *     handler scheduled at 20000, timer set to 20000 1 ms after Start) does not call the handler
+ *     inside the Set; it runs after the next 1 ms delay, and its return of 100000 moves the
+ *     schedule to 120000. Here the handler deadline is derived from the timer's time on every
+ *     scheduler pass (vtimer_handler_deadline), so a Set takes effect at the next pass.
+ * A running timer keeps running from the new time: its open interval restarts now. That the PSP
+ * counts on from the set value while running is what "While scheduled" shows (the handler due
+ * at 20000 runs once the timer had been set to 20000 and run on); the exact microseconds are not
+ * measured. A NULL or unwritable SetVTimerTime pointer is not measured (the test notes the NULL
+ * case crashes), so the run stops by name. */
+static uint64_t vtimer_swap_time(VTimer *t, uint64_t value) {
+    uint64_t now = vtimer_now_us();
+    uint64_t previous = vtimer_elapsed_at(t, now);
+    t->accum_us = value;
+    if (t->running) t->started_us = now;
+    return previous;
+}
+
+static uint32_t h_GetVTimerTimeWide(CpuState *s) {
+    /* a0=uid. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) { s->r[3] = 0xffffffffu; return 0xffffffffu; }
+    uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
+    s->r[3] = (uint32_t)(value >> 32);
+    return (uint32_t)value;
+}
+
+static uint32_t h_SetVTimerTimeWide(CpuState *s) {
+    /* a0=uid, a2/a3=aligned 64-bit time (a1 is skipped, as in SetVTimerHandlerWide). */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) { s->r[3] = 0xffffffffu; return 0xffffffffu; }
+    uint64_t previous = vtimer_swap_time(t, ((uint64_t)A3 << 32) | A2);
+    s->r[3] = (uint32_t)(previous >> 32);
+    return (uint32_t)previous;
+}
+
+static uint32_t h_SetVTimerTime(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock * (low word, then high word), read and written. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (!A1 || !sr_guest_span_writable(A1, 8u))
+        return hle_unmodelled_stop("sceKernelSetVTimerTime",
+                                   "with an unwritable time pointer 0x%08x is not measured", A1);
+    uint64_t value = (uint64_t)MEM_R32(A1) | ((uint64_t)MEM_R32(A1 + 4u) << 32);
+    uint64_t previous = vtimer_swap_time(t, value);
+    MEM_W32(A1, (uint32_t)previous);
+    MEM_W32(A1 + 4u, (uint32_t)(previous >> 32));
     return 0;
 }
 
@@ -14359,6 +14990,62 @@ static uint32_t h_RtcGetTime64_t(CpuState *s) {
     }
     return rtc_write_u64(A1, (tick - RTC_UNIX_EPOCH_TICK) / 1000000u) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* sceRtcGetTime_t(const pspTime *date, u32 *time): the date as seconds since 1970-01-01 00:00:00,
+ * the microseconds dropped, written as one 32-bit word. Measured on a PSP by pspautotests
+ * tests/rtc/convert.expected (rev 2ed7c9c5, checkRtcGetTime_t): 2012-09-20 07:12:15.000500
+ * returns 0 and writes 1348125135, the same seconds sceRtcGetTime64_t gives for that date.
+ * Only in-range dates on or after the epoch whose seconds fit the 32-bit word are measured.
+ * What the PSP does with a field out of range, a date before 1970, a value past 32 bits, or a
+ * NULL or unmapped pointer is not measured for this function (sceRtcGetTime64_t's measured
+ * answers are not assumed to carry over), so each of those stops the run by name. */
+static uint32_t h_RtcGetTime_t(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 16u))
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with an unreadable date 0x%08x is not measured", A0);
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with an unwritable output 0x%08x is not measured", A1);
+    RtcDateTime value;
+    if (rtc_read_datetime(A0, &value) != 0)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date field out of range is not measured");
+    uint64_t tick = rtc_datetime_to_tick(&value);
+    if (tick < RTC_UNIX_EPOCH_TICK)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date before 1970 is not measured");
+    uint64_t seconds = (tick - RTC_UNIX_EPOCH_TICK) / 1000000u;
+    if (seconds > UINT32_MAX)
+        return hle_unmodelled_stop("sceRtcGetTime_t", "with a date past the 32-bit range is not measured");
+    MEM_W32(A1, (uint32_t)seconds);
+    return 0;
+}
+/* sceRtcTickAddYears(u64 *dest, const u64 *src, int years): the source tick moved by whole
+ * calendar years, its month, day and time of day kept. Measured on a PSP by pspautotests
+ * tests/rtc/arithmetic.expected (rev 2ed7c9c5, checkRtcTickAddYears), which fills dest with
+ * 0x1337 before each call:
+ *   - 2012-02-29 + 1 year is 2013-02-28 (the leap day clamps), + 4 years is 2016-02-29;
+ *   - 1970-01-01 00:00:00.000445 - 1969 is 0001-01-01 (the microseconds kept), - 1968 is
+ *     0002-01-01, + 2000 is 3970-01-01, - 20 is 1950-01-01; 1850 to 2300 + 1 move one year;
+ *   - a result year below 1 (1970 - 1970 and beyond, 10 - 10) or above 9999 (9998 + 2) still
+ *     returns 0 but leaves dest holding 0x1337, unwritten.
+ * A source tick past year 9999, and a NULL or unmapped pointer, are not measured, so each stops
+ * the run by name. */
+static uint32_t h_RtcTickAddYears(CpuState *s) {
+    uint64_t tick;
+    if (!rtc_read_u64(A1, &tick))
+        return hle_unmodelled_stop("sceRtcTickAddYears", "with an unreadable source 0x%08x is not measured", A1);
+    if (!A0 || !sr_guest_span_writable(A0, 8u))
+        return hle_unmodelled_stop("sceRtcTickAddYears", "with an unwritable destination 0x%08x is not measured", A0);
+    RtcDateTime value;
+    rtc_tick_to_datetime(tick, &value);
+    if (value.year > 9999u)
+        return hle_unmodelled_stop("sceRtcTickAddYears", "from a tick past year 9999 is not measured");
+    int64_t year = (int64_t)value.year + (int32_t)A2;
+    if (year < 1 || year > 9999) return 0;
+    value.year = (uint32_t)year;
+    if (value.month == 2u && value.day == 29u && !rtc_is_leap(value.year)) value.day = 28u;
+    return rtc_write_u64(A0, rtc_datetime_to_tick(&value)) ? 0u : RTC_ILLEGAL_ADDR;
+}
+/* sceRtcGetTickResolution(void): ticks per second. The RTC tick is one microsecond, the unit every
+ * tick conversion above uses (pspautotests rtc tests); uOFW src/kd/rtc/rtc.c (MIT) reconstructs
+ * this function, marked as matching the firmware's assembly, as returning 1000000. */
+static uint32_t h_RtcGetTickResolution(CpuState *s) { (void)s; return 1000000u; }
 static uint32_t h_LibcTime(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 4u)) return RTC_ILLEGAL_ADDR;
@@ -14416,6 +15103,28 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* Format and invalid-address result derived from PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384.
+ * Local offset comes from the PSP profile, as for the other local RTC calls. */
+static uint32_t h_RtcFormatRFC2822Local(CpuState *s) {
+    static const char *const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    uint64_t tick, local;
+    if (!A0 || !sr_guest_span_writable(A0, 32u) || (A1 & 3u) || !rtc_read_u64(A1, &tick)) return 0xffffffffu;
+    int64_t offset = psp_profile_local_offset_minutes(NULL, NULL);
+    rtc_add_offset_wrap(tick, offset, &local);
+    RtcDateTime date;
+    rtc_tick_to_datetime(local, &date);
+    uint64_t magnitude = offset < 0 ? (uint64_t)(-offset) : (uint64_t)offset;
+    char result[128];
+    snprintf(result, sizeof(result), "%s, %02u %s %04u %02u:%02u:%02u %c%02llu%02llu",
+             days[(local / 86400000000ull + 1u) % 7u], date.day, months[date.month - 1u], date.year,
+             date.hour, date.minute, date.second, offset < 0 ? '-' : '+',
+             (unsigned long long)(magnitude / 60u), (unsigned long long)(magnitude % 60u));
+    result[31] = 0;
+    for (size_t i = 0; i < 32u; i++) { MEM_W8(A0 + (uint32_t)i, result[i]); if (!result[i]) break; }
+    return 0;
+}
+
 static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
@@ -14716,6 +15425,7 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 
 void sr_hle_test_module_reset(void) {
     s_main_module_uid = 0u;
+    s_main_module_record = NULL;
     s_deferred_self_stop_uid = 0u;
     s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
@@ -17442,6 +18152,31 @@ static uint32_t h_IoOpen(CpuState *s) {
     if (rc != 0u) return rc;
     return h_io_open_path(path, A1, -1);
 }
+/* Read an entire user font through the descriptor's actual backing, including ISO and archives. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size) {
+    char path[512];
+    if (io_guest_path(guest_path, path, sizeof(path)) != 0u) return SR_FONT_ERROR_INVALID_ARG;
+    uint32_t fd = h_io_open_path(path, 1u, -1);
+    if ((int32_t)fd < 0) return 0x80460005u; /* handler open failed */
+    Fd *f = &s_fds[fd];
+    uint32_t error = 0u, n = f->size;
+    uint8_t *data = NULL;
+    if (f->kind != FD_KIND_FILE || n < 16u || n > 16u * 1024u * 1024u) error = SR_FONT_ERROR_INVALID_DATA;
+    else if (!(data = (uint8_t *)malloc(n))) error = SR_FONT_ERROR_OOM;
+    else if (f->archive_vfs) {
+        SrArchiveFile file = { f->archive_mount, f->archive_entry, f->size, -1 };
+        size_t got = 0;
+        if (sr_archive_vfs_read(f->archive_vfs, &file, 0, data, n, &got) != NK_OK || got != n)
+            error = 0x80460005u;
+    } else if (f->host) {
+        if (fseek(f->host, 0, SEEK_SET) != 0 || fread(data, 1, n, f->host) != n) error = 0x80460005u;
+    } else if (iso_read(f->lba, 0, data, n) != (int)n) error = 0x80460005u;
+    hle_fd_release(f, 0);
+    if (error) { free(data); return error; }
+    *bytes = data; *size = n;
+    return 0;
+}
+
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
@@ -27876,6 +28611,7 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x3f7ad767, "sceRtcGetCurrentTick", h_RtcGetCurrentTick);
     sr_hle_register(0x34885e0d, "sceRtcConvertUtcToLocalTime", h_RtcConvertUtcToLocal);
     sr_hle_register(0x779242a2, "sceRtcConvertLocalTimeToUTC", h_RtcConvertLocalToUtc);
+    sr_hle_register(0x7de6711b, "sceRtcFormatRFC2822LocalTime", h_RtcFormatRFC2822Local);
     sr_hle_register(0x91e4f6a7, "sceKernelLibcClock", h_LibcClock);
     sr_hle_register(0x27cc57f0, "sceKernelLibcTime", h_LibcTime);
     sr_hle_register(0x71ec4271, "sceKernelLibcGettimeofday", h_LibcGettimeofday);
@@ -28062,6 +28798,8 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0x1579a159, "sceUtilityLoadNetModule", h_UtilityLoadNetModule);
     sr_hle_register(0x64d50c56, "sceUtilityUnloadNetModule", h_UtilityUnloadNetModule);
+    sr_hle_register(0x0d5bc6d2, "sceUtilityLoadUsbModule", h_UtilityLoadUsbModule);
+    sr_hle_register(0xf64910f0, "sceUtilityUnloadUsbModule", h_UtilityUnloadUsbModule);
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
@@ -28105,6 +28843,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
+    sr_hle_register(0x748cbed9, "sceKernelQueryModuleInfo", h_QueryModuleInfo);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
@@ -28217,6 +28956,7 @@ static void hle_register_font_handlers(void) {
     sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+    sr_hle_register(0x57fcb733, "sceFontOpenUserFile", h_FontOpenUserFile);
 }
 
 static void hle_register_psmf_player_handlers(void) {
@@ -28237,6 +28977,10 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xdf089680, "scePsmfPlayerGetPsmfInfo", h_PsmfGetPsmfInfo);
     sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+}
+
+static void hle_register_power_coexistence_handlers(void) {
+    sr_hle_register(0xa85880d0u, "scePowerCheckWlanCoexistenceClock", h_PowerCheckWlanCoexistenceClock);
 }
 
 /* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The system-param getter reads
@@ -28301,6 +29045,19 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
 }
 
+/* Imports that stopped titles first in the 2026-10-29 all-games launch sweep, each implemented
+ * from PSP-recorded behaviour (the evidence is at each handler). One helper for both
+ * sr_hle_init() branches, so the executable harness dispatches the production mapping. */
+static void hle_register_launch_sweep_blocker_handlers(void) {
+    sr_hle_register(0x27c4594c, "sceRtcGetTime_t", h_RtcGetTime_t);
+    sr_hle_register(0x42842c77, "sceRtcTickAddYears", h_RtcTickAddYears);
+    sr_hle_register(0xc41c2853, "sceRtcGetTickResolution", h_RtcGetTickResolution);
+    sr_hle_register(0xd13bde95, "sceKernelCheckThreadStack", h_CheckThreadStack);
+    sr_hle_register(0x27f6e642, "sceFontGetNumFontList", h_FontGetNumFontList);
+    sr_hle_register(0xbc75d85b, "sceFontGetFontList", h_FontGetFontList);
+    sr_hle_register(0xee232411, "sceFontSetAltCharacterCode", h_FontSetAltCharacterCode);
+}
+
 /* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
  * profiler registers, or NULL when no profiler data is available. This runtime models no
  * profiler, so the honest answer is always NULL, which is what firmware with profiling off
@@ -28361,8 +29118,11 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0x328f9e52u, "sceKernelDeleteVTimer", h_DeleteVTimer);
     sr_hle_register(0xb3a59970u, "sceKernelGetVTimerBase", h_GetVTimerBase);
     sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
-    /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
-    sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    /* VTimer time: the Wide getter and both setters (pspautotests-recorded; see their header). */
+    sr_hle_register(0xc0b3ffd2u, "sceKernelGetVTimerTimeWide", h_GetVTimerTimeWide);
+    sr_hle_register(0x542ad630u, "sceKernelSetVTimerTime", h_SetVTimerTime);
+    sr_hle_register(0xfb6425c3u, "sceKernelSetVTimerTimeWide", h_SetVTimerTimeWide);
+    /* VTimer handler family (issue #325). */
     sr_hle_register(0xd8b299aeu, "sceKernelSetVTimerHandler", h_SetVTimerHandler);
     sr_hle_register(0x53b00e9au, "sceKernelSetVTimerHandlerWide", h_SetVTimerHandlerWide);
     sr_hle_register(0xd2d615efu, "sceKernelCancelVTimerHandler", h_CancelVTimerHandler);
@@ -28617,6 +29377,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_launch_sweep_blocker_handlers();
     hle_register_sysreg_handlers();
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
@@ -28625,6 +29386,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_power_register_callback();
     sr_hle_power_register_battery();
     hle_register_devkit_version_handler();
@@ -28648,6 +29410,7 @@ void sr_hle_init(void) {
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_launch_sweep_blocker_handlers();
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
     hle_register_partition_savedata_handlers();
@@ -28686,7 +29449,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_power_register_callback();
-    sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
     sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
@@ -28743,6 +29505,7 @@ void sr_hle_init(void) {
      * sr_hle_power_register_clock(), which carries the canonical #86
      * getter NIDs noted above. */
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -29005,6 +29768,10 @@ static void loadexec_reset_user_partition(void) {
 }
 
 void sr_hle_loadexec_reset_guest_state(void) {
+    /* The replacement program is a module record of its own; the old main module's record
+     * and module-start thread parameters no longer apply. */
+    s_main_module_record = NULL;
+    sched_set_module_start_thread(SCE_KERNEL_MODULE_INIT_PRIORITY, 0u, 0u, NULL, 0u);
     if (s_loadexec_request.args) free(s_loadexec_request.args);
     memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
     s_loadexec_pending = 0;
@@ -29042,6 +29809,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_request_pending = 0;
     s_exit_request_deadline_us = 0u;
     memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
+    s_utility_usb_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;

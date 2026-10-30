@@ -84,10 +84,12 @@ from nk_core.iso_inspect import (  # noqa: E402
     _read_iso_extent,
     _classify_decrypted_elf_file,
     _has_cfw_or_kernel_only_imports,
+    _prx_container_header_supported,
     decrypted_module_dir,
     encrypted_executable_message,
     inspect_compatibility_preflight,
     plan_guest_module_layout,
+    disc_module_host_names,
     walk_disc_module_entries,
     write_experimental_profile,
 )
@@ -532,12 +534,36 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
+#: ELF type of a fixed-address overlay image: one loadable segment at its link address,
+#: no entry point and no module information. The game copies it into place itself.
+ELF_TYPE_FIXED_OVERLAY = 0xFFA8
+
+
 def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
     """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
     rule = _elf32_mips_iso_violation(
         stream, file_size, entry.lba, entry.size, module=True
     )
+    if rule == "header-fields":
+        header = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 52)
+        if struct.unpack_from("<H", header, 16)[0] == ELF_TYPE_FIXED_OVERLAY:
+            return (
+                "its ELF type 0xFFA8 is a fixed-address overlay image (one segment at its "
+                "link address, no entry point, no module information) that the game copies "
+                "into place itself; the import does not translate that overlay form yet"
+            )
     return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
+
+
+def _pbp_container_sections(header: bytes, size: int) -> bool:
+    """Whether a file starts with a well-formed PBP header: magic, then eight section
+    offsets from the 40-byte header to the file end, in order."""
+    if len(header) < 40 or header[:4] != b"\0PBP":
+        return False
+    offsets = struct.unpack_from("<8I", header, 8)
+    return offsets[0] == 40 and all(
+        low <= high for low, high in zip(offsets, offsets[1:] + (size,), strict=False)
+    )
 
 
 def _unready_module_lines(candidates: list[dict]) -> list[str]:
@@ -554,22 +580,30 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     file_size = iso_path.stat().st_size
     candidates: list[dict] = []
     selected_name = Path(selected).name.casefold()
-    for directory, entry in walk_disc_module_entries(iso_path):
+    walked = list(walk_disc_module_entries(iso_path))
+    # A module is identified by its disc path; its host name keys its copies in the
+    # per-title folders and stays unique however many disc folders share a file name.
+    host_names = disc_module_host_names(walked)
+    for directory, entry in walked:
+        host_name = host_names[directory + (entry.name,)]
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
             # Any other file is a candidate only when it is a code overlay, found by
             # its magic whatever its name (analyze.code_overlay_layout).
-            overlay = _iso_code_overlay_candidate(iso_path, file_size, directory, entry)
+            overlay = _iso_code_overlay_candidate(
+                iso_path, file_size, directory, entry, host_name
+            )
             if overlay is not None:
                 candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
         reason: str | None = None
-        if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
-                entry.name.endswith(".") or \
-                entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+        if not _disc_module_name_ok(host_name):
             kind = "unsupported"
             reason = "its file name is not a supported module name"
+        elif not _disc_member_is_ascii(directory):
+            kind = "unsupported"
+            reason = "its disc folder name is not ASCII, so its disc path has no manifest spelling"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
             reason = "it is multi-extent, empty, or larger than the module size limit"
@@ -608,11 +642,18 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     else:
                         kind = "unsupported"
                         reason = "its encrypted-container header is not one the boundary supports"
+                elif _pbp_container_sections(header, entry.size):
+                    # A PBP holds an executable image for LoadExec or the game-sharing
+                    # utility, which reads the file itself; the kernel's module loader
+                    # does not take a PBP, so it is never a module this title loads.
+                    kind = "pbp-container"
+                    reason = ("a PBP executable container (an EBOOT image for LoadExec or "
+                              "game sharing), not a module the kernel's module loader takes")
                 else:
                     kind = "unsupported"
                     reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
-            "name": entry.name,
+            "name": host_name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
@@ -628,12 +669,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
-        member_path = "/".join(candidate["directory"] + (candidate["name"],))
+        member_path = _candidate_member_path(candidate)
         if folded in names:
+            # Only a path-qualified name equal to another file's own name (or a
+            # 32-bit hash collision) gets here: the copies would share one file.
             raise PackageBuildError(
-                "DUPLICATE_DISC_MODULE_BASENAME: module filename "
-                f"{candidate['name']!r} occurs at {names[folded]} and "
-                f"{member_path}; automatic intake is in the works."
+                "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                f"{candidate['name']!r} stands for both {names[folded]} and "
+                f"{member_path}; their copies would share one file in the per-title folder."
             )
         names[folded] = member_path
     staged_size = sum(
@@ -649,8 +692,19 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
 _PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
 
 
+def _candidate_member_path(candidate: dict) -> str:
+    """A discovered candidate's disc path (its identity), '/'-joined."""
+    return "/".join(candidate["directory"] + (candidate["entry"].name,))
+
+
+def _disc_member_is_ascii(components: tuple[str, ...]) -> bool:
+    """Whether every component of a disc path is ASCII (the manifest spells it as text)."""
+    return all(component.isascii() for component in components)
+
+
 def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
-                                entry: IsoDirectoryEntry) -> dict | None:
+                                entry: IsoDirectoryEntry,
+                                host_name: str | None = None) -> dict | None:
     """The candidate for a code overlay among a title's other disc files, else None.
 
     A game reads a code overlay into memory itself and announces it with an
@@ -663,24 +717,25 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
         if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
             return None
         data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    name = host_name or entry.name
     kind, reason = "code-overlay", None
-    if not _disc_module_name_ok(entry.name):
+    if not _disc_module_name_ok(name):
         kind, reason = "unsupported", "its file name is not a supported module name"
+    elif not _disc_member_is_ascii(directory):
+        kind, reason = ("unsupported", "its disc folder name is not ASCII, so its disc path "
+                        "has no manifest spelling")
     else:
         try:
             code_overlay_layout(data)
         except ValueError as exc:
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
-    return {"name": entry.name, "directory": directory, "entry": entry,
+    return {"name": name, "directory": directory, "entry": entry,
             "kind": kind, "reason": reason}
 
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
-    if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
-        return False
-    sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
-    return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
-        sum(sizes) <= MAX_EXECUTABLE_BYTES
+    """The ``~PSP`` shape the decryption step takes (iso_inspect, shared rule)."""
+    return _prx_container_header_supported(header)
 
 
 def _psp_container_kernel_mode(header: bytes) -> bool:
@@ -769,7 +824,9 @@ def _declare_experimental_disc_modules(
     per-title decrypted folder wins (the player's disc check decrypts the disc's
     own there, #295); otherwise an already plain disc copy is used. A kernel-mode
     module in a container the boundary cannot open is left out by name (deferred),
-    because the runtime never runs kernel-mode code. Anything else stops by name. The plain copies are staged in a private folder under
+    because the runtime never runs kernel-mode code, and so is a PBP container named
+    like a module, which the kernel's module loader never takes. Anything else stops
+    by name. The plain copies are staged in a private folder under
     ``experimental/<DISC_ID>`` and planned by plan_guest_module_layout, which
     declares each module that runs as translated guest code as runtime-placed and
     leaves out the ones the runtime serves completely.
@@ -792,6 +849,10 @@ def _declare_experimental_disc_modules(
             module_sources.append((candidate, "folder", folder_copy))
         elif candidate["kind"] in _PLAIN_CANDIDATE_KINDS:
             module_sources.append((candidate, "iso", None))
+        elif candidate["kind"] == "pbp-container":
+            # Left out by name like the kernel container below: the title never loads
+            # it through sceKernelLoadModule, so nothing is translated for it.
+            kernel_left_out.append({"name": candidate["name"], "reason": candidate["reason"]})
         elif candidate["kind"] == "kernel-container":
             # The runtime never runs PSP kernel-mode code (plan_guest_module_layout
             # leaves a decrypted kernel-mode module out too), so a container that
@@ -850,7 +911,7 @@ def _declare_experimental_disc_modules(
             (
                 candidate["name"],
                 module_dir / candidate["name"],
-                "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
+                "disc0:/" + _candidate_member_path(candidate),
             )
             for candidate, _source, _folder_copy in module_sources
         ]
