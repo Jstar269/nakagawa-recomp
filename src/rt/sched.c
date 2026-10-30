@@ -677,6 +677,50 @@ static void stack_range_release(uint32_t base, uint32_t size) {
     stack_ranges_update_top();
 }
 
+/* A High block of the user partition (sceKernelAllocMemoryBlock placement 1). A PSP takes High
+ * blocks and thread stacks from the top of the same user partition, so a High block is carved from
+ * this descending arena: the highest address at which a free range holds it below `ceiling` (the
+ * partition's top), which is the PSP_SMEM_High rule. The partition's refusal applies as for a
+ * stack, so a block never reaches memory the partition has handed out. Returns 1 with the block's
+ * low address in *base_out, 0 when no range fits. */
+int sched_partition_alloc_high(uint32_t size, uint32_t ceiling, uint32_t *base_out) {
+    if (!s_stack_allocator_ready) stack_ranges_reset();
+    if (!base_out || size == 0u) return 0;
+    for (int i = s_stack_free_count - 1; i >= 0; i--) {
+        StackRange *range = &s_stack_free[i];
+        uint32_t end = range->base + range->size;
+        if (end > ceiling) end = ceiling;
+        if (end <= range->base || end - range->base < size) continue;
+        uint32_t base = end - size;
+        if (s_stack_range_refusal && s_stack_range_refusal(base, base + size)) return 0;
+        uint32_t range_end = range->base + range->size;
+        if (base + size < range_end) {
+            /* The block sits below the range's top: keep the part above it as its own range. */
+            if (s_stack_free_count >= SR_STACK_RANGE_MAX) return 0;
+            for (int j = s_stack_free_count; j > i + 1; j--) s_stack_free[j] = s_stack_free[j - 1];
+            s_stack_free[i + 1] = (StackRange){base + size, range_end - (base + size)};
+            s_stack_free_count++;
+            range = &s_stack_free[i];
+        }
+        range->size = base - range->base;
+        if (range->size == 0u) {
+            for (int j = i + 1; j < s_stack_free_count; j++)
+                s_stack_free[j - 1] = s_stack_free[j];
+            s_stack_free_count--;
+        }
+        *base_out = base;
+        stack_ranges_update_top();
+        return 1;
+    }
+    return 0;
+}
+
+/* Return a High block to the arena it came from. */
+void sched_partition_release_high(uint32_t base, uint32_t size) { stack_range_release(base, size); }
+
+/* Live High blocks are not thread stacks, so sched_guest_stack_floor_above does not see them; the
+ * partition adds its own (hle.c user_partition_top). */
+
 /* sched_init: one-shot initializer for the cooperative scheduler.
  *
  * SEMANTICS: This function is called ONCE at process startup, before any guest

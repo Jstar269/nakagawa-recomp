@@ -123,6 +123,8 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_is_intr_context` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_launcher_uid` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_module_range_busy` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_partition_alloc_high` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_partition_release_high` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_active` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_pause_pending` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_request` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
