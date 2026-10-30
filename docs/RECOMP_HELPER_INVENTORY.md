@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **374** (declared in `recomp.h`: 315)
-- reach class: emitter-reached 69, production-runtime-only 275, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 348
+- helpers: **377** (declared in `recomp.h`: 316)
+- reach class: emitter-reached 69, production-runtime-only 277, selftest-only 15, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 351
 
 ## Helpers
 
@@ -206,6 +206,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_aot_return_boundary_scope_end` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_stack_destroy` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_stack_swap` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_boundary_unwind_to` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_is_nonlocal` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_unwind_count` | `rt/recomp.c` | yes | none | `rt/recomp.c`: upstream_derived |
 | `sr_asin_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_asin_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_asin_quantum` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
