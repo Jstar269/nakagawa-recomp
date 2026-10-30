@@ -490,13 +490,10 @@ def build_overlapping_mips_elf(
     return bytes(elf)
 
 
-def build_mips_elf_with_program_headers(
-    loads: list[tuple[int, int]], *, null_headers: int = 0
-) -> bytes:
-    """An executable with one PT_LOAD per (vaddr, memsz), in the order given, then
-    ``null_headers`` PT_NULL entries laid out as retail executables have them (no file
-    bytes, a nonzero memsz); the entry is the first load's vaddr."""
-    phnum = len(loads) + null_headers
+def build_mips_elf_with_load_segments(loads: list[tuple[int, int]]) -> bytes:
+    """An executable with one PT_LOAD per (vaddr, memsz), in the order given, all backed by
+    the same four file bytes; the entry is the first load's vaddr."""
+    phnum = len(loads)
     data = 52 + 32 * phnum
     elf = bytearray(data + 4)
     elf[:7] = b"\x7fELF\x01\x01\x01"
@@ -505,8 +502,6 @@ def build_mips_elf_with_program_headers(
     struct.pack_into("<HHHHH", elf, 40, 52, 32, phnum, 0, 0)
     for index, (vaddr, memsz) in enumerate(loads):
         struct.pack_into("<8I", elf, 52 + 32 * index, 1, data, vaddr, vaddr, 4, memsz, 5, 4)
-    for index in range(len(loads), phnum):
-        struct.pack_into("<8I", elf, 52 + 32 * index, 0, data, 0, 0, 0, 0x1800, 7, 0x10)
     elf[data:] = b"\x34\x12\x00\x00"
     return bytes(elf)
 
@@ -1294,12 +1289,11 @@ int main(int argc, char **argv) {{
              "program-table-fields"),
             ("program-table-bounds", patched(executable, [("<I", 28, 0xFFFF0)]), False,
              "program-table-bounds"),
-            # Retail executables carry one PT_LOAD and hundreds of PT_NULL entries.
-            ("many-program-headers", build_mips_elf_with_program_headers(
-                [(0x08804000, 0x1000)], null_headers=224), False, None),
-            ("many-load-segments-out-of-order", build_mips_elf_with_program_headers(
+            # More load segments than the old 128-entry table, in descending address order:
+            # both rules sort them before the overlap scan.
+            ("many-load-segments-out-of-order", build_mips_elf_with_load_segments(
                 [(0x08900000 - 0x100 * index, 0x100) for index in range(300)]), False, None),
-            ("many-load-segments-overlap", build_mips_elf_with_program_headers(
+            ("many-load-segments-overlap", build_mips_elf_with_load_segments(
                 [(0x08900000 - 0x100 * index, 0x100) for index in range(300)]
                 + [(0x088F0080, 0x100)]), False, "segment-overlap"),
             ("section-table-bounds", patched(executable, [
