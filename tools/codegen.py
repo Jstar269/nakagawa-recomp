@@ -101,6 +101,13 @@ ENHANCEMENT_PKG_META: dict | None = None
 # The sites whose rewrite has been emitted. A package is refused unless every
 # verified site is in it when the translation is written.
 ENHANCEMENT_APPLIED: set[int] = set()
+# The verified address of the package's update_boundary (where one logic update
+# begins), or None. Gated sites count logic updates there.
+ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
+# Verified executable data sites: (C guest address, stock bytes, rescaled bytes, id).
+ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
+# Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
+ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -115,6 +122,16 @@ def _enhancement_rewrite(addr: int) -> dict | None:
         return None
     ENHANCEMENT_APPLIED.add(addr)
     return site["rewrite"]
+
+
+def _enhancement_boundary(addr: int) -> bool:
+    """Whether ``addr`` is the package's update boundary; the caller emits its count."""
+    if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
+        return False
+    if addr != ENHANCEMENT_UPDATE_BOUNDARY:
+        return False
+    ENHANCEMENT_APPLIED.add(addr)
+    return True
 
 
 def _scaled_store_line(rw: dict, stock_line: str) -> str:
@@ -746,6 +763,51 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
+def _c_bytes(data: bytes) -> str:
+    """A C initializer for a byte array (at least one element)."""
+    return ", ".join(f"0x{b:02x}" for b in data) or "0"
+
+
+def _enhancement_data_lines() -> list[str]:
+    """The start-up half of an enhancement build, run once while the toggle is on:
+    the logic-update counter handed to the runtime's speed check, executable data
+    sites verified against the loaded bytes before they are rewritten, and disc
+    data files handed to the runtime with the digest of the stock file they
+    replace. Any mismatch stops the run."""
+    out = []
+    for i, (_addr, stock, data, _sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
+        out.append(f"static const uint8_t nk_enh_data_stock_{i}[] = {{{_c_bytes(stock)}}};")
+        out.append(f"static const uint8_t nk_enh_data_new_{i}[] = {{{_c_bytes(data)}}};")
+    for i, (_path, sha, data, _fid) in enumerate(ENHANCEMENT_DATA_FILES):
+        out.append(f"static const uint8_t nk_enh_file_sha_{i}[32] = {{{_c_bytes(bytes.fromhex(sha))}}};")
+        out.append(f"static const uint8_t nk_enh_file_data_{i}[] = {{{_c_bytes(data)}}};")
+    out.append("static void nk_enhancement_apply_data(void) {")
+    # The runtime reports logic that cannot keep 60 updates/s (section 9.5).
+    out.append("    sr_enhancement_register_updates(&nk_enhancement_updates);")
+    for i, (addr, stock, _data, sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
+        n = len(stock)
+        out += [
+            f"    if (!sr_guest_span_writable({addr}, {n}u) ||",
+            f"        memcmp(sr_host_address({addr}), nk_enh_data_stock_{i}, {n}u) != 0) {{",
+            f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data site {sid} at 0x%08x does not hold '
+            f'its stock bytes; the run stops here\\n", (unsigned)({addr}));',
+            "        exit(1);",
+            "    }",
+            f"    memcpy(sr_host_address({addr}), nk_enh_data_new_{i}, {n}u);",
+        ]
+    for i, (path, _sha, data, fid) in enumerate(ENHANCEMENT_DATA_FILES):
+        out += [
+            f'    if (!sr_enhancement_file_register("{path}", nk_enh_file_sha_{i}, '
+            f"nk_enh_file_data_{i}, {len(data)}u)) {{",
+            f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data file {fid} was refused; '
+            'the run stops here\\n");',
+            "        exit(1);",
+            "    }",
+        ]
+    out += ["}", ""]
+    return out
+
+
 def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
                        enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
@@ -773,10 +835,12 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         if enhancement:
             # Enhancement-package builds only: rewritten sites run their stock form
             # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
-            # even display vblanks (alternate updates of a once-per-vblank loop).
+            # even logic updates, counted at the package's update_boundary, so they
+            # keep alternating when an update takes more than one vblank.
             f.write("\nint nk_enhancement_on(void);\n")
+            f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
-                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
+                    "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -2455,6 +2519,9 @@ def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch
 def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                        delay_branch_pc=delay_branch_pc)
+    if w is not None and _enhancement_boundary(addr):
+        # One logic update begins here: count it before the stock statement runs.
+        line = f"    if (nk_enhancement_on()) {{ nk_enhancement_updates++; }}\n{line}"
     rw = _enhancement_rewrite(addr) if w is not None else None
     if rw is None:
         return line
@@ -3712,6 +3779,7 @@ def main(argv):
     stack_census = False
     omit_aot = _OmitAot()
     enhancement_pkg_path = None
+    enhancement_data_root = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
@@ -3720,6 +3788,11 @@ def main(argv):
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--enhancement-data-root="):
+            enhancement_data_root = o.split("=", 1)[1]
+            if not enhancement_data_root:
+                sys.stderr.write("--enhancement-data-root requires a path\n")
+                return 2
         elif o.startswith("--enhancement-package="):
             enhancement_pkg_path = o.split("=", 1)[1]
             if not enhancement_pkg_path:
@@ -3942,10 +4015,13 @@ def main(argv):
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
 
-    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META, ENHANCEMENT_UPDATE_BOUNDARY
     ENHANCEMENT_SITES = {}
     ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_UPDATE_BOUNDARY = None
     ENHANCEMENT_APPLIED.clear()
+    ENHANCEMENT_DATA_PATCHES.clear()
+    ENHANCEMENT_DATA_FILES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -3989,12 +4065,62 @@ def main(argv):
                         f"site {site['id']}: only a jal call site can be rewritten among "
                         "control transfers (fail-closed refusal)"
                     )
+            boundary = enhancement_package.verify_and_resolve_update_boundary(
+                pkg_validated,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            if boundary is not None:
+                if is_control(boundary["stock_word"]):
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: a control transfer cannot begin a logic update "
+                        "(fail-closed refusal)"
+                    )
+                if boundary["site_addr"] in ENHANCEMENT_SITES:
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: the boundary is also a rewritten site (fail-closed refusal)"
+                    )
+                ENHANCEMENT_UPDATE_BOUNDARY = boundary["site_addr"]
+
+            def _read_loaded_data(vaddr: int, count: int):
+                # Initialised bytes of one allocated, non-executable PROGBITS section
+                # as the loader places them (relocated, for a relocatable image):
+                # never code or zero-fill. Segments cannot tell, since a title may
+                # load code and data in one RWX segment.
+                rebase = elf.reloc.lo if elf.reloc is not None else 0
+                for sec in elf.sections:
+                    if sec["typ"] != 1 or not sec["flags"] & 2 or sec["flags"] & 4:
+                        continue
+                    lo = sec["addr"] + rebase
+                    if lo <= vaddr and vaddr + count <= lo + sec["size"]:
+                        return elf.read_at_vaddr(vaddr, count)
+                return None
+
+            for patch in enhancement_package.verify_and_resolve_data_sites(
+                pkg_validated, symbol_to_addr=sym_map, read_data_fn=_read_loaded_data,
+            ):
+                ENHANCEMENT_DATA_PATCHES.append(
+                    (G(patch["addr"]), patch["stock"], patch["data"], patch["id"]))
+            data_files = pkg_validated.get("data_files", ())
+            if data_files and enhancement_data_root is None:
+                raise enhancement_package.EnhancementPackageError(
+                    "data_files need --enhancement-data-root, the title's extracted files "
+                    "(fail-closed refusal)"
+                )
+            for entry in data_files:
+                stock = enhancement_package.find_data_file(entry, enhancement_data_root)
+                ENHANCEMENT_DATA_FILES.append((
+                    entry["path"], entry["sha256"],
+                    enhancement_package.transform_data_file(entry, stock), entry["id"]))
             ENHANCEMENT_PKG_META = {
                 "id": pkg_validated["id"],
                 "version": pkg_validated["version"],
                 "epoch": enhancement_package.AOT_ENHANCEMENT_PACKAGE_EPOCH,
                 "digest": enhancement_package.compute_package_digest(pkg_validated),
                 "sites_count": len(ENHANCEMENT_SITES),
+                "data_sites_count": len(ENHANCEMENT_DATA_PATCHES),
+                "data_files_count": len(ENHANCEMENT_DATA_FILES),
             }
         except enhancement_package.EnhancementPackageError as exc:
             sys.stderr.write(
@@ -4457,6 +4583,9 @@ def main(argv):
             site["id"] for addr, site in ENHANCEMENT_SITES.items()
             if addr not in ENHANCEMENT_APPLIED
         )
+        if (ENHANCEMENT_UPDATE_BOUNDARY is not None
+                and ENHANCEMENT_UPDATE_BOUNDARY not in ENHANCEMENT_APPLIED):
+            missing.append("update_boundary")
         if missing:
             # A verified site that no emitted statement rewrites (an unreached address, a
             # stubbed function, a fused fast path) would leave the epoch stamp claiming
@@ -4567,8 +4696,10 @@ def main(argv):
             "    }",
             "    return on;",
             "}",
+            "uint32_t nk_enhancement_updates;",
             "",
         ]
+        main_out += _enhancement_data_lines()
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]
@@ -4641,6 +4772,8 @@ def main(argv):
         f'    fprintf(stderr, "sr_register_all: registered {len(exec_spans)} '
         'executable span(s)\\n");'
     )
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
     main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
     for i in range(num_files):
         main_out.append(f"    sr_register_chunk_{i}();")
