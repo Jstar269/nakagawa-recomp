@@ -231,6 +231,28 @@ These tools run on the development host before the native compiler.
   `codegen_llvm.py` lowers each function it supports to LLVM IR in `<game>_recomp_<n>.ll`
   beside its C chunk, from the same ownership and transfer rules, and keeps the C body,
   with the reason recorded, for the rest. [`LLVM_BACKEND.md`](LLVM_BACKEND.md) is the design.
+- **Local register promotion (opt-in, #284):** `codegen.py --promote-registers` keeps the guest
+  GPRs that a run of simple instructions touches in C locals (`_gpr<n>`). A GPR is loaded from
+  `s->r[]` before its first read in the run, and every written local is stored back before each
+  label, control transfer, instruction emitted the legacy way and the end of the body, so
+  dispatch, the interpreter floor, HLE, the scheduler and the stale-code redirect always see the
+  architectural register file. An instruction is promoted only when its translated line touches no
+  other guest state than its GPRs, HI and LO, calls only the guest memory accessors, and neither
+  returns nor jumps (`promoted_line_is_safe`); LLE-guarded accesses, FPU, VFPU, COP0, LL/SC and
+  unaligned accesses stay legacy. A trace build mirrors every promoted write at once
+  (`SR_PROMO_SYNC` in `src/rt/recomp.h`), so `mingw32-make cosim-selftest-promoted` compares the
+  whole cosimulation corpus channel for channel. The win comes from the guest stores: they call
+  runtime code, so without promotion the host compiler reloads `s->r[]` after each one. Generated
+  code built at `-O0` gains nothing, so the option only pays off at `-O1` or above. Codegen prints
+  `CODEGEN_PROMOTION` with the promoted, span, load and write-back counts. Making it the default
+  needs all of these: the promoted cosimulation and the production-smoke and profile-zero routes
+  pass; HST and PAC-MAN CE reach the same route results as the legacy build; HST's guest CPU time
+  per frame (`SR_PERF` `cpu_ms`) improves by at least 5% at its qualified `-O1`; and compile time
+  and peak compiler memory grow by at most 10%. Measured on 2026-10-29 (#284): every route still
+  passes, but on HST at `-O1` the guest time outside the GE fell by only about 1.3% (two runs per
+  build). The software GE takes 80% of guest time on that route, so frames sped up by about 0.25%.
+  Chunk objects grew by 0.03%, and PAC-MAN CE at `-O0` was about 11% slower. The option therefore
+  stays off by default; dropping write-backs of dead locals (liveness) is the next step to measure.
 
 ### Verification tools
 

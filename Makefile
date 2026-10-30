@@ -1085,6 +1085,7 @@ PUBLIC_TARGETS := \
 	profile-zero-e2e \
 	cosim-selftest \
 	cosim-selftest-split \
+	cosim-selftest-promoted \
 	cosim-selftest-run \
 	cosim-selftest-clean \
 	cosim-mutants \
@@ -1224,6 +1225,7 @@ HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
 HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
 HELP_DESCRIPTION_cosim-selftest-split := run the cosimulation with every body split at other entries
+HELP_DESCRIPTION_cosim-selftest-promoted := run the cosimulation with codegen register promotion (#284)
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
 HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
@@ -2265,6 +2267,12 @@ cosim-selftest-llvm:
 # defect in tools/codegen_llvm.py that the cosimulation must report.
 cosim-mutants-llvm:
 	"$(PYTHON)" fixtures/cosim/mutate.py --backend=llvm --build-dir $(BUILD_ROOT)/cosim-llvm-mutants
+# The cosimulation corpus with local guest-register promotion (#284): the same cells,
+# translated with codegen.py --promote-registers into their own build folder. The
+# trace build mirrors every promoted write (SR_PROMO_SYNC), so every channel compares.
+cosim-selftest-promoted:
+	$(MAKE) cosim-selftest COSIM_DIR=$(BUILD_ROOT)/cosim-promoted \
+		COSIM_CODEGEN_ARGS="--stack-census --promote-registers"
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
