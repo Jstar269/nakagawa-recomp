@@ -346,11 +346,18 @@ class StopBoundaryTests(unittest.TestCase):
         names = set(re.findall(r'return "([a-z0-9-]+)";', body))
         recomp = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
         names |= set(re.findall(r'return "(interpreter-rejection)";', recomp))
+        # Boundaries the dispatcher names directly when it records a stop, with their issue.
+        recorded = dict(re.findall(
+            r'dispatch_record_semantic_stop_issue\(\s*"([a-z0-9-]+)",\s*(\d+)u\)', recomp))
+        self.assertGreater(len(recorded), 1)
+        names |= set(recorded)
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         names |= set(re.findall(r'#define HLE_LIBFONT_STARTUP_BOUNDARY\s+"([a-z0-9-]+)"', hle))
         prefixes = set(re.findall(r'"(unsupported-import-)"', hle))
         boundaries = REGISTRY["stop_boundaries"]
         self.assertEqual(names, set(boundaries["names"]))
+        for name, issue in recorded.items():
+            self.assertEqual(boundaries["names"][name]["issue"], int(issue), name)
         self.assertEqual(prefixes, set(boundaries["prefixes"]))
 
 

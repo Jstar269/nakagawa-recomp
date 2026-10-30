@@ -3140,7 +3140,7 @@ class TestSanitizedBringup(unittest.TestCase):
 
     def test_analyze_stage_route_boundaries_are_named(self):
         # The package route's analyze-stage boundaries carry their own analyzer class;
-        # none of them reaches the report as ANALYZER_FAILURE_UNCLASSIFIED.
+        # none of them reaches the report as ANALYZER_INTERNAL_ERROR.
         cases = {
             "PACKAGE_INVALID_ELF": "ANALYZER_ELF_INVALID",
             "PACKAGE_INVALID_IMPORT_TABLE": "ANALYZER_IMPORT_TABLE_INVALID",
