@@ -1586,8 +1586,8 @@ display-smoke-clean:
 title-qualification:
 	"$(PYTHON)" tools/title_qualification.py validate
 
-title-qualification-smoke: display-smoke player
-	"$(PYTHON)" tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json
+title-qualification-smoke:
+	"$(PYTHON)" tools/title_qualification.py build-smoke --make "$(MAKE)" --compiler "$(CC)"
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production

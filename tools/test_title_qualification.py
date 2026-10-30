@@ -67,6 +67,31 @@ def _public_manifest() -> dict:
     return title_manifest.validate_manifest(title_manifest.load_manifest(DISPLAY_SMOKE))
 
 
+class BuildEvidenceTests(unittest.TestCase):
+    def test_missing_and_tampered_evidence_are_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact = tq.staged_executable(root, TITLE_ID)
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"fresh build")
+            report = tq.staging_failure_report()
+            with self.assertRaises(tq.QualificationError):
+                tq.verify_build_evidence(report, root)
+            report["build_evidence"] = tq.build_evidence(root, TITLE_ID, "gcc:" + "b" * 64, "a" * 40)
+            report["stages"]["compile"] = {"status": "PASS", "duration_ms": 1}
+            tq.verify_build_evidence(report, root)
+            artifact.write_bytes(b"stale build")
+            with self.assertRaises(tq.QualificationError):
+                tq.verify_build_evidence(report, root)
+            artifact.unlink()
+            with self.assertRaises(tq.QualificationError):
+                tq.verify_build_evidence(report, root)
+            artifact.write_bytes(b"fresh build")
+            report["build_evidence"]["artifact_sha256"] = "0" * 64
+            with self.assertRaises(tq.QualificationError):
+                tq.verify_build_evidence(report, root)
+
+
 class InputProfileVocabularyTests(unittest.TestCase):
     """The public profile and its validator use exactly the runtime's vocabulary."""
 
