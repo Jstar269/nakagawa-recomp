@@ -20,10 +20,42 @@ enum {
     SR_FLIGHT_CLASS_MEDIA = 1u << 6,
     SR_FLIGHT_CLASS_GE = 1u << 7,
     SR_FLIGHT_CLASS_PRESENT = 1u << 8,
-    SR_FLIGHT_CLASS_ALL = (1u << 9) - 1u,
+    /* Value-changing guest stores inside the SR_WATCH range (schema 7). */
+    SR_FLIGHT_CLASS_WATCH = 1u << 9,
+    SR_FLIGHT_CLASS_ALL = (1u << 10) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
     SR_FLIGHT_MAX_THREADS = 128u,
-    SR_FLIGHT_SCHEMA_VERSION = 6u
+    /* The watch class keeps a byte shadow of the watched range to tell a change from a
+     * rewrite of the same value, so it accepts an SR_WATCH range of at most this length. */
+    SR_FLIGHT_WATCH_SHADOW_MAX = 64u,
+    SR_FLIGHT_SCHEMA_VERSION = 7u
+};
+
+/* ---- Trigger modes (schema 7) ----
+ * SR_FLIGHT_TRIGGER selects at most one mode; with it unset the mode is none and the recorder
+ * behaves exactly as before. A mode matches a RECORDED event, so it only sees events of the
+ * enabled classes, and it never matches an event a terminal path (fatal, fault, hang, an NID
+ * with no handler) records: those keep their own trigger. Checking a mode is arithmetic on
+ * the event being recorded; it never sleeps, yields, takes a lock or reads guest memory.
+ *
+ *   pc:ADDR                    the first event whose guest pc operand is ADDR (an HLE import
+ *                              call site, a named refusal, a GE list dequeue call site, a NaN
+ *                              origin or a watch change)
+ *   ge-draw:N                  the Nth GE draw event (class ge, kind 25)
+ *   watch                      the first watch-change event (needs the watch class)
+ *   checkpoint:KIND:N:AFTER    the Nth event of KIND, followed by AFTER more events; AFTER is
+ *                              below the ring limit, so the ring keeps limit-1-AFTER events
+ *                              before the checkpoint
+ *
+ * When a mode matches, the terminal becomes "trigger" (kind: the matched event's kind, arg0:
+ * the mode's argument, sequence: the matched event). The record freezes at the match, or after
+ * the AFTER window of a checkpoint, and the bundle is written then; the run keeps going. */
+enum {
+    SR_FLIGHT_TRIGGER_NONE = 0u,
+    SR_FLIGHT_TRIGGER_PC = 1u,
+    SR_FLIGHT_TRIGGER_GE_DRAW = 2u,
+    SR_FLIGHT_TRIGGER_WATCH = 3u,
+    SR_FLIGHT_TRIGGER_CHECKPOINT = 4u
 };
 
 /* ---- Terminal thread snapshot (schema 6) ----
@@ -115,8 +147,16 @@ enum {
      * 8-15) and the destination register (bits 16-23); arg2 is the lane, the index of the
      * first non-finite word in the reported output; arg3 is the VBLANK count. The reporter
      * applies the same SR_NAN_TRAP_LIMIT budget as its printed line. */
-    SR_FLIGHT_KIND_NAN_ORIGIN = 30u
+    SR_FLIGHT_KIND_NAN_ORIGIN = 30u,
+    /* A guest store inside the SR_WATCH range that changed at least one byte (watch class,
+     * schema 7). arg0 is the storing pc, arg1 the store address, arg2 packs the store width
+     * (bits 0-7) and SR_FLIGHT_WATCH_KNOWN (bit 8: every watched byte it covers had a known
+     * earlier value, so this is a change rather than the first write the recorder saw), and
+     * arg3 is the stored value. A store that rewrites the same bytes records nothing. */
+    SR_FLIGHT_KIND_WATCH_CHANGE = 31u
 };
+
+enum { SR_FLIGHT_WATCH_KNOWN = 1u << 8 };
 
 /* Operands of SR_FLIGHT_KIND_NAN_ORIGIN (see above). */
 enum {
@@ -143,7 +183,8 @@ enum {
     SR_FLIGHT_TERMINAL_FATAL = 2u,
     SR_FLIGHT_TERMINAL_UNSUPPORTED_NID = 3u,
     SR_FLIGHT_TERMINAL_BUDGET = 4u,
-    SR_FLIGHT_TERMINAL_HANG = 5u
+    SR_FLIGHT_TERMINAL_HANG = 5u,
+    SR_FLIGHT_TERMINAL_TRIGGER = 6u
 };
 
 typedef struct {
@@ -179,6 +220,11 @@ typedef struct {
     uint64_t refusal_first_sequence;
     uint32_t refusal_distinct;
     uint64_t refusal_unlisted;
+    /* Trigger mode (schema 7): SR_FLIGHT_TRIGGER_*, the sequence of the event it matched
+     * (0 until it matches), and the events still owed to an open checkpoint window. */
+    uint32_t trigger_mode;
+    uint64_t trigger_match_sequence;
+    uint32_t trigger_after_remaining;
 } SrFlightSnapshot;
 
 /* ---- SR_TRACE_PC: an address window over the instruction trace ----
@@ -266,6 +312,9 @@ void sr_flight_set_thread_source(SrFlightThreadSource source);
 #if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit);
 void sr_flight_test_disable(void);
+/* Arms one SR_FLIGHT_TRIGGER spec through the production parser after a test reset; returns 1
+ * when it is accepted. A refused spec disables the recorder, as it does at startup. */
+int sr_flight_test_trigger(const char *spec);
 #endif
 
 #define SR_FLIGHT_RECORD_CLASS(event_class, kind, arg0, arg1, arg2, arg3)                         \
@@ -405,6 +454,10 @@ static inline void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit
     (void)limit;
 }
 static inline void sr_flight_test_disable(void) {}
+static inline int sr_flight_test_trigger(const char *spec) {
+    (void)spec;
+    return 0;
+}
 #endif
 #define SR_FLIGHT_RECORD_CLASS(event_class, kind, arg0, arg1, arg2, arg3) ((void)0)
 
