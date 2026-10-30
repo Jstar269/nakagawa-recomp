@@ -80,8 +80,8 @@ Assisted-by: Codex (GPT-6 Luna)
   see which changes had AI help without inferring it.
 - `Assisted-by:` is a disclosure, not authorship. Do not add `Co-Authored-By:` for an AI
   tool: an AI is not a contributor of record and cannot certify anything.
-- `Assisted-by:` never replaces DCO. A human contributor who needs a sign-off still adds
-  their own `Signed-off-by:` after reviewing the final diff; no tool adds it for them.
+- `Assisted-by:` never replaces DCO. A sign-off is optional; a human contributor who wants one
+  adds their own `Signed-off-by:` after reviewing the final diff, and no tool adds it for them.
 - A commit written entirely by a person carries no `Assisted-by:` line.
 
 Repository-specific contribution and disclosure rules remain authoritative:
