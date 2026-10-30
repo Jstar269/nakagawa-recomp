@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4b95f1df093cc390b15dde763d0e18d8cfe1f2c3dde9b18f2ebaf8acedd65d12"
+      "sha256": "0093eedd23eefa351e1c220a2466dd0154a91cdeb0021ff3febece8413247bb9"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -16749,7 +16749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aa97c9a2e68f17df347326591529604515d1773af35b40c11906c070bdb15c99"
+      "sha256": "56bbfec01568060ae7257de9bae4d9b884cfde3b847a95a92d9a60392fe5c0e2"
     },
     {
       "path": "tools/test_public_export.py",
