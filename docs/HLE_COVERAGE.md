@@ -24,10 +24,10 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 14 |
-| `ppsspp-derived` | 104 | 90 |
+| `ppsspp-derived` | 106 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 280 | 200 |
-| `unverified` | 192 | 51 |
+| `unverified` | 190 | 51 |
 | total | 640 | 355 |
 
 The VFPU census also lists 320 forms the runtime refuses at the
@@ -163,7 +163,7 @@ belongs to without the census's own grouping.
 | `0x293b45b8` | `sceKernelGetThreadId` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x29681260` | `sceAudiocodecReleaseEDRAM` | audio_codec | `unverified` | no recorded evidence |
 | `0x2a2a1e07` | `sceNetAdhocMatchingInit` | network | `unverified` | no recorded evidence |
-| `0x2a2b3de0` | `sceUtilityLoadModule` | utility | `synthetic` | HLE selftest dispatch |
+| `0x2a2b3de0` | `sceUtilityLoadModule` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x2a368661` | `sceMp3ResetPlayPosition` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x2a3d44ff` | `sceKernelGetCallbackCount` | kernel_thread | `unverified` | no recorded evidence |
 | `0x2ad8e239` | `sceUtilityMsgDialogInitStart` | utility | `synthetic` | HLE selftest dispatch |
@@ -321,7 +321,7 @@ belongs to without the census's own grouping.
 | `0x644e5607` | `sceAtracResetPlayPosition` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x647cef33` | `sceAudioOutput2GetRestSample` | audio | `synthetic` | HLE selftest dispatch; note |
 | `0x64d4540e` | `sceKernelReferThreadProfiler` | kernel_thread | `unverified` | generic success handler; performs none of the API contract |
-| `0x64d50c56` | `sceUtilityUnloadNetModule` | utility | `unverified` | no recorded evidence |
+| `0x64d50c56` | `sceUtilityUnloadNetModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0x6652b8ca` | `sceKernelSetAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
 | `0x67179b1b` | `sceMpegAvcInitYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x67af3428` | `sceUtilityMsgDialogShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
@@ -587,7 +587,7 @@ belongs to without the census's own grouping.
 | `0xd59ead2f` | `sceKernelWakeupThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
 | `0xd5a229c9` | `__sceSasRevEVOL` | audio | `unverified` | no recorded evidence |
 | `0xd5c28cc0` | `sceAtracReleaseResources` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
-| `0xd5ebbbcd` | `__sceSasSetSteepWave` | audio | `unverified` | no recorded evidence |
+| `0xd5ebbbcd` | `__sceSasSetSteepWave` | audio | `synthetic` | HLE selftest dispatch |
 | `0xd61e6961` | `sceKernelReleaseSubIntrHandler` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0xd675ebb8` | `sceKernelSelfStopUnloadModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xd6a5f2f7` | `sceAtracGetMaxSample` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
@@ -632,7 +632,7 @@ belongs to without the census's own grouping.
 | `0xe3eb004c` | `sceIoDread` | io | `unverified` | no recorded evidence |
 | `0xe3ee2c81` | `sceMp3LowLevelDecode` | audio_codec | `synthetic` | HLE selftest dispatch |
 | `0xe47e40e4` | `sceGeEdramGetAddr` | ge | `hardware-measured` | PSP oracle PSP-HLE-GE-EDRAM-001, PSP-VRAM-MIRROR-001 |
-| `0xe49bfe92` | `sceUtilityUnloadModule` | utility | `synthetic` | HLE selftest dispatch |
+| `0xe49bfe92` | `sceUtilityUnloadModule` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xe7282cb6` | `sceKernelAllocateFplCB` | kernel_memory | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0xe792cd94` | `scePsmfPlayerReleasePsmf` | mpeg | `unverified` | no recorded evidence |
 | `0xe7c27d1b` | `sceRtcGetCurrentClockLocalTime` | rtc | `synthetic` | HLE selftest dispatch |
