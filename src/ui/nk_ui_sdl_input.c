@@ -266,6 +266,8 @@ size_t nk_ui_sdl_input_translate(NkUiSdlInput *state, const union SDL_Event *eve
                                    event->button.down, out, cap);
     case SDL_EVENT_MOUSE_WHEEL:
         return nk_ui_sdl_wheel(state, &event->wheel, out, cap);
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        return nk_ui_input_pointer_leave(&state->input, out, cap);
     case SDL_EVENT_TEXT_INPUT: {
         const char *cursor = event->text.text;
         const char *end;

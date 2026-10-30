@@ -1667,6 +1667,11 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
 
 ### Developer mode: profile HUD, VRAM viewer and Profile page
 
+In the launcher, developer mode opens the developer log (`F12`), whose LAYOUT INSPECTOR button turns on Clay's
+layout inspector for every launcher screen: a panel down the right of the window lists the layout's elements, with
+each one's id, sizing and position, and outlines the one under the pointer. It is the place to look when a screen
+lays out wrong; Clay's layout errors are in the developer log itself (`ui` lines).
+
 Developer mode in the player's settings reaches the game as `SR_DEVELOPER_MODE=1`; the launcher
 always exports it, as `0` when the setting is off, so an inherited value never turns it on. A run started by hand
 is a developer run when `SR_DEVELOPER_MODE` is set and not `0`. Without it none of the following exists, and the

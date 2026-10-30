@@ -536,12 +536,13 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.supported = which == FLOW_WIZ_VERIFY;
             wizard.experimental = which == FLOW_WIZ_EXPERIMENTAL;
             wizard.extraction_complete = which == FLOW_WIZ_VERIFY;
-            wizard.checks[0] = (PlayerUiCheckRow){"OK", "DISC_IDENTITY",
+            /* As player_ui_nk fills them: plain names and status words. */
+            wizard.checks[0] = (PlayerUiCheckRow){"Ready", "Disc",
                                                   "The disc ID matches a catalog entry.",
                                                   0x2DD4BFFFu};
-            wizard.checks[1] = (PlayerUiCheckRow){"OK", "ASSETS_STAGED",
+            wizard.checks[1] = (PlayerUiCheckRow){"Ready", "Game program",
                                                   "96 files staged locally.", 0x2DD4BFFFu};
-            wizard.checks[2] = (PlayerUiCheckRow){"Missing", "RUNTIME_PACKAGE",
+            wizard.checks[2] = (PlayerUiCheckRow){"Not built yet", "Game build",
                                                   "Build the package from the library.",
                                                   0xDBB024FFu};
             wizard.check_count = 3u;
@@ -1055,6 +1056,41 @@ static const char *library_frame_dump(NkUi *ui, const PlayerUiLibraryModel *mode
     if (nk_ui_end(ui) == NULL) return "";
     (void)nk_ui_dump(ui, dump, sizeof(dump));
     return dump;
+}
+
+/* A wide window centres the library in a column of at most 1600 px: at
+   1920 x 1080 the six columns run from x 160 to 1760; at 1280 nothing moves. */
+static void test_library_centres_in_a_wide_window(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = {1920, 1080, 1.0f, 0, 100, 1280.0f, 720.0f};
+    const char *dump;
+    int x0 = 0;
+    int x1 = 0;
+    int last_x0 = 0;
+    int last_x1 = 0;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the wide library");
+    if (ui == NULL) return;
+    nk_ui_set_viewport(ui, &viewport);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1920.0f, 1080.0f, &model.columns);
+    model.logical_width = 1920.0f;
+    model.logical_height = 1080.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(model.columns == 6u, "a 1920 px window still shows six columns");
+    CHECK(dump_row_x_extent(dump, PLAYER_UI_ID_LIBRARY_ITEM(0u), &x0, &x1) &&
+              dump_row_x_extent(dump, PLAYER_UI_ID_LIBRARY_ITEM(5u), &last_x0, &last_x1) &&
+              x0 == 160 && last_x1 == 1760,
+          "the grid is centred in a 1600 px column");
+    nk_ui_destroy(ui);
 }
 
 static void push_nav(NkUi *ui, NkUiNavDir dir) {
@@ -1773,20 +1809,23 @@ static NkUiViewport launcher_viewport(int width, int height, float display_scale
 /* Lays a flow case out in a launcher window of width x height pixels with
    glyphs as wide as the mono face, and says whether every box and text run is
    inside the window and no text is painted over. */
-static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
+/* Lays a flow case out in a launcher window of width x height pixels, twice
+   (the focus graph uses the frame before's rects). The caller destroys *out_ui. */
+static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int height,
+                                            NkUi **out_ui) {
     NkUiConfig config;
     NkUiTextBackend text = screen_test_text_backend();
     NkUiViewport viewport = launcher_viewport(width, height, 1.0f);
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
-    bool inside = true;
     NkUi *ui;
     text.measure = screen_test_wide_measure;
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
     ui = nk_ui_create(&config);
-    if (ui == NULL) return false;
+    *out_ui = ui;
+    if (ui == NULL) return NULL;
     nk_ui_set_viewport(ui, &viewport);
     g_flow_width = scale.logical_w;
     g_flow_height = scale.logical_h;
@@ -1795,32 +1834,101 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
         (void)draw_flow_case(ui, which);
         draw = nk_ui_end(ui);
     }
-    if (draw == NULL) inside = false;
-    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
-        const NkUiDrawCmd *cmd = &draw->cmd[i];
+    g_flow_width = 1280.0f;
+    g_flow_height = 800.0f;
+    return draw;
+}
+
+/* Whether a command shows anything: not a scissor, and its clip (its bounds
+   inside every scissor around it) is not empty. */
+static bool command_shows(const NkUiDrawCmd *cmd) {
+    return cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
+           cmd->clip[2] > cmd->clip[0] && cmd->clip[3] > cmd->clip[1];
+}
+
+static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
+    bool inside = draw != NULL;
+    for (uint32_t i = 0u; inside && i < draw->ncmd; ++i) {
+        const int *shown = draw->cmd[i].clip;
+        if (!command_shows(&draw->cmd[i])) continue;
         /* Every box and run is on screen: a page that runs off the bottom
-           pushes the prompt bar (or its own buttons) out of the window. */
-        if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
-            (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
-             cmd->bounds[3] > height)) {
+           pushes the prompt bar (or its own buttons) out of the window. What a
+           scroll container clips away is not on screen. */
+        if (shown[0] < 0 || shown[1] < 0 || shown[2] > width || shown[3] > height) {
             inside = false;
         }
-        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
+        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
         for (uint32_t j = i + 1u; j < draw->ncmd; ++j) {
             const NkUiDrawCmd *other = &draw->cmd[j];
+            const int *over = other->clip;
             if ((other->kind == NK_UI_DRAW_TEXT || other->kind == NK_UI_DRAW_RECTANGLE) &&
-                cmd->bounds[0] < other->bounds[2] && other->bounds[0] < cmd->bounds[2] &&
-                cmd->bounds[1] < other->bounds[3] && other->bounds[1] < cmd->bounds[3]) {
+                command_shows(other) && shown[0] < over[2] && over[0] < shown[2] &&
+                shown[1] < over[3] && over[1] < shown[3]) {
                 inside = false;
             }
         }
     }
-    if (dump != NULL) (void)nk_ui_dump(ui, dump, cap);
-    g_flow_width = 1280.0f;
-    g_flow_height = 800.0f;
+    if (dump != NULL && ui != NULL) (void)nk_ui_dump(ui, dump, cap);
     nk_ui_destroy(ui);
     return inside;
+}
+
+/* Whether a text run containing `needle` shows in this draw list: drawn, and
+   not clipped away by a scroll container. */
+static bool draw_shows(const NkUiDrawList *draw, const char *needle) {
+    size_t needle_length = strlen(needle);
+    bool shows = false;
+    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd && !shows; ++i) {
+        const NkUiTextRun *run = (const NkUiTextRun *)draw->cmd[i].custom;
+        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT || run == NULL || !command_shows(&draw->cmd[i])) {
+            continue;
+        }
+        for (size_t at = 0u; at + needle_length <= run->length && !shows; ++at) {
+            shows = memcmp(run->text + at, needle, needle_length) == 0;
+        }
+    }
+    return shows;
+}
+
+/* Whether a text run containing `needle` shows in the window: drawn, and not
+   clipped away by a scroll container. */
+static bool flow_case_shows(FlowCase which, int width, int height, const char *needle) {
+    NkUi *ui = NULL;
+    bool shows = draw_shows(flow_case_layout(which, width, height, &ui), needle);
+    nk_ui_destroy(ui);
+    return shows;
+}
+
+/* The developer log's box at 1280 x 800 is 479 px, about 30 of its 16 px
+   lines; a page is the box less one line. At the newest, 226 to 255 show;
+   Page Up shows 197 to 226, and Page Down returns to the newest. */
+static bool devlog_pages(void) {
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw = flow_case_layout(FLOW_DEVLOG, 1280, 800, &ui);
+    NkUiEvent page;
+    bool ok = draw_shows(draw, "[255] [runtime]") && draw_shows(draw, "[230] [runtime]") &&
+              !draw_shows(draw, "[220] [runtime]");
+    memset(&page, 0, sizeof(page));
+    page.type = NK_UI_EV_PAGE;
+    page.down = true;
+    page.dir = NK_UI_DIR_LEFT;
+    nk_ui_push_event(ui, &page);
+    nk_ui_begin(ui, 0.0);
+    (void)draw_flow_case(ui, FLOW_DEVLOG);
+    draw = nk_ui_end(ui);
+    ok = ok && draw_shows(draw, "[200] [runtime]") && draw_shows(draw, "[225] [runtime]") &&
+         !draw_shows(draw, "[240] [runtime]") && !draw_shows(draw, "[190] [runtime]");
+    page.dir = NK_UI_DIR_RIGHT;
+    nk_ui_push_event(ui, &page);
+    nk_ui_begin(ui, 0.0);
+    (void)draw_flow_case(ui, FLOW_DEVLOG);
+    draw = nk_ui_end(ui);
+    ok = ok && draw_shows(draw, "[255] [runtime]");
+    nk_ui_destroy(ui);
+    return ok;
 }
 
 /* #1302: the card a disc gets when it is added. Every check row has a name and
@@ -1866,7 +1974,7 @@ static void test_disc_cards(void) {
         for (size_t row = 0u; row < sizeof(k_disc_rows_ready) / sizeof(k_disc_rows_ready[0]);
              ++row) {
             char quoted[192];
-            snprintf(quoted, sizeof(quoted), "\"%s\"", rows[row].code);
+            snprintf(quoted, sizeof(quoted), "\"%s\"", rows[row].name);
             CHECK(strstr(dump, quoted) != NULL, "every check row is named");
             /* A long sentence wraps, so its start is what the dump has whole. */
             snprintf(quoted, sizeof(quoted), "\"%.24s", rows[row].message);
@@ -2282,6 +2390,10 @@ static void test_controller_and_developer_log_pages(void) {
                                                    FLOW_DEVLOG_EMPTY),
                               PLAYER_UI_DEVELOPER_LOG_CLOSE),
           "Close leaves the developer log");
+    CHECK(developer_log_op_is(activate_flow_button(PLAYER_UI_ID_DEVELOPER_LOG_INSPECT, FLOW_DEVLOG),
+                              PLAYER_UI_DEVELOPER_LOG_INSPECT) &&
+              flow_case_shows(FLOW_DEVLOG, 1280, 800, "LAYOUT INSPECTOR: OFF"),
+          "the layout inspector button says it is off and turns it on");
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
               strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"A (CROSS)\"") != NULL &&
@@ -2294,9 +2406,12 @@ static void test_controller_and_developer_log_pages(void) {
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
     CHECK(dump_flow_case(FLOW_DEVLOG, dump, sizeof(dump)) &&
-              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "[000] [runtime]") == NULL &&
               strstr(dump, "\"Copied 256 lines.\"") != NULL,
-          "the log shows its newest lines and the last notice");
+          "the log shows the last notice");
+    CHECK(flow_case_shows(FLOW_DEVLOG, 1280, 800, "[255] [runtime]") &&
+              !flow_case_shows(FLOW_DEVLOG, 1280, 800, "[000] [runtime]"),
+          "the log opens on its newest lines, the oldest scrolled out of view");
+    CHECK(devlog_pages(), "Page Up and Page Down scroll the log a box at a time");
     CHECK(dump_flow_case(FLOW_DEVLOG_EMPTY, dump, sizeof(dump)) &&
               strstr(dump, "\"Nothing logged yet.\"") != NULL,
           "an empty log says so");
@@ -2311,7 +2426,8 @@ static void test_controller_and_developer_log_pages(void) {
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "every control, the live input and the mapping choice are on screen at 960 x 540");
     CHECK(flow_case_fits(FLOW_DEVLOG, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "\"CLOSE\"") != NULL,
+              flow_case_shows(FLOW_DEVLOG, 960, 540, "[255] [runtime]") &&
+              flow_case_shows(FLOW_DEVLOG, 960, 540, "CLOSE"),
           "the newest log line and Close are on screen at 960 x 540");
 }
 
@@ -2963,6 +3079,19 @@ static int capture_screens(const char *directory) {
     if (!capture_one(&rig, "library", &library, NULL)) goto done;
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ADD);
     if (!capture_one(&rig, "library-add-focused", &library, NULL)) goto done;
+    {
+        /* Focus on the first card, the pointer over the third: hover beside the ring. */
+        NkUiEvent pointer;
+        memset(&pointer, 0, sizeof(pointer));
+        pointer.type = NK_UI_EV_POINTER;
+        pointer.x = 32.0f + 2.0f * (236.0f + 20.0f) + 118.0f;
+        pointer.y = 260.0f;
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+        nk_ui_push_event(ui, &pointer);
+        if (!capture_one(&rig, "library-pointer-hover", &library, NULL)) goto done;
+        pointer.type = NK_UI_EV_POINTER_LEAVE;
+        nk_ui_push_event(ui, &pointer);
+    }
     capture_prefs(ui, NK_UI_PROMPT_NEUTRAL, true);
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     if (!capture_one(&rig, "library-controller-high-contrast", &library, NULL)) goto done;
@@ -3116,6 +3245,14 @@ static int capture_screens(const char *directory) {
                 goto done;
             }
         }
+        /* The developer log with Clay's layout inspector on. */
+        nk_ui_set_layout_debug(ui, true);
+        if (!capture_one(&rig, "developer-log-inspector", NULL, &title)) {
+            nk_ui_set_layout_debug(ui, false);
+            g_flow_case = FLOW_NONE;
+            goto done;
+        }
+        nk_ui_set_layout_debug(ui, false);
         g_flow_case = FLOW_NONE;
     }
     {
@@ -3679,6 +3816,18 @@ static void test_remove_from_library(void) {
     nk_ui_destroy(ui);
 }
 
+/* Whether the dump has a step chip naming `step` ("5  READY" or a check mark
+   then "READY"), as opposed to a text that is the word alone, such as a check's
+   "READY" status. */
+static bool dump_has_step_chip(const char *dump, const char *step) {
+    char needle[32];
+    (void)snprintf(needle, sizeof(needle), "%s\"", step);
+    for (const char *at = strstr(dump, needle); at != NULL; at = strstr(at + 1, needle)) {
+        if (at > dump && at[-1] != '"') return true;
+    }
+    return false;
+}
+
 /* The walkthrough: the wizard's chips promised Fonts and Ready steps that a
    first run never shows (copying the files ends on the library card). Every
    step a first run shows names only the steps on that route. */
@@ -3688,7 +3837,7 @@ static void test_wizard_steps_match_the_route(void) {
                                      FLOW_WIZ_VERIFY, FLOW_WIZ_COPYING};
     for (size_t i = 0u; i < sizeof(route) / sizeof(route[0]); ++i) {
         CHECK(dump_flow_case(route[i], dump, sizeof(dump)), "lay out a wizard step");
-        CHECK(strstr(dump, "FONTS\"") == NULL && strstr(dump, "READY\"") == NULL,
+        CHECK(!dump_has_step_chip(dump, "FONTS") && !dump_has_step_chip(dump, "READY"),
               "no Fonts or Ready chip promises a step the first run never shows");
         CHECK(strstr(dump, "WELCOME\"") != NULL && strstr(dump, "OPTIONS\"") != NULL &&
                   strstr(dump, "GAME\"") != NULL && strstr(dump, "VERIFY\"") != NULL,
@@ -4180,6 +4329,7 @@ int main(int argc, char **argv) {
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();
     test_library_demos();
+    test_library_centres_in_a_wide_window();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),
