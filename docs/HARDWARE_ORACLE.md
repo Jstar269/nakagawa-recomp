@@ -28,6 +28,10 @@ the PSP GE command word layout; address operands are explicit relocations to its
 vertex words. A result records `framebuffer_sha256` and one `pixel_<x>_<y>` value for each selected
 coordinate, packed according to the case framebuffer format.
 
+The measured raster corpus is the `ge-raster` probe (`PSP-GE-RASTER-001`, in the measured index
+below): 189 cells whose window digests `src/rt/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
+those runs yet.
+
 Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
 case. A case is `MEASURED` only when its source tier is `PSP_HARDWARE`, the oracle envelope is
 acceptance-eligible, and the raw result protocol identifies `source=psp`. The public corpus never
@@ -36,8 +40,9 @@ results directory (`--results-directory`, default `oracle/hardware-results/`) by
 SHA-256, and the gate verifies that file. Without that directory a hardware claim reports
 `NOT_RUN`, never `MEASURED`. Software, Vulkan, or
 PPSSPP data cannot be promoted by setting a hardware label. The current case reports `NOT_RUN`.
-**GE raster pixel conformance is IN THE WORKS (#343);** a real run still depends on the resident
-runner and recovery substrate tracked by #352.
+**GE raster pixel conformance is IN THE WORKS (#343):** the
+`ge-raster` cells are measured; the schema corpus case, the Vulkan comparison and the families no cell covers
+yet are not.
 
 ## Measured to date (index — exact cells only, do not generalize)
 
@@ -731,7 +736,9 @@ One console is one data point; see §11. Nothing here closes issue #70
   `NOT_RUN`. Both host0 logs pass the runner's own completeness contract for their case
   (`strict-golden-sequence`). The same cells ran earlier that night from private pre-PR revisions
   of the same code, with the same results except where noted. Raw logs stay in the private campaign
-  directory. A `run_psplink.py` campaign launch of each PRX would promote the cited cells.
+  directory. A `run_psplink.py` campaign launch of each PRX would promote the cited cells; the
+  2026-10-29 launch of `hle-intr-cells` from `77a1a5e3` did so for `PSP-HLE-INTR-001` (see the #325 entry
+  above).
 
   | Evidence id | Cells cited | Not cited | Outcome (2026-10-24, `da97b2c0`, not acceptance-eligible) |
   | --- | --- | --- | --- |
@@ -771,6 +778,28 @@ One console is one data point; see §11. Nothing here closes issue #70
     25 ms. The frame that fell inside it was delivered once, 132 to 143 us after the handler
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
+
+- **PSP-3000 single-case run of the `module-start` probe on commit `fd2a75fd` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `fd2a75fd` is the commit that adds the probe (case 124,
+  `fixtures/psp_oracle/probe_module_start.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 8 records and the done record, all PASS. The row cites only the records named in it. The raw
+  envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `fd2a75fd`) |
+  | --- | --- | --- | --- |
+  | `PSP-MODULE-START-001` | `ms-self`, `ms-mem-pre`, `ms-helper-create`, `ms-mem-created`, `ms-refer-after`, `ms-mem-after`, `ms-idlist`, `ms-helper-self`, `module-start-done` | A module that declares `module_start_thread_parameter`, a non-zero `module_start` return, and the main module a game boots with | MEASURED (`module-start`) |
+
+  What the records establish, for this probe module only. The module defines its own `module_start` and
+  declares no `module_start_thread_parameter`.
+  - *The thread.* `module_start` runs in a thread of its own named `SceModmgrStart`, priority 0x20, with a
+    0x40000-byte stack at 0x09FC0000 (the top of the user partition).
+  - *Deletion.* Once `module_start` returns 0, that thread is gone: 50 ms later `sceKernelReferThreadStatus` of
+    its UID answers 0x80020198 (UNKNOWN_THID) and `sceKernelGetThreadmanIdList` no longer lists it.
+  - *Memory.* `sceKernelTotalFreeMemSize` grows by exactly 0x40000 after the return, so the stack goes back to
+    the user partition. `sceKernelMaxFreeMemSize` does not change: the 0x4000-byte stack of the thread
+    `module_start` created sits directly below the freed range, so the freed range is a block of its own.
 
 - **PSP-3000 single-case run of the `vfpu-forms` probe on commit `781ccd34` (2026-10-28)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `781ccd34` is the commit that adds the probe (case 108 in
@@ -866,6 +895,88 @@ One console is one data point; see §11. Nothing here closes issue #70
     happens in u in both triangles and in v only in the first triangle (TL TR BL); the second triangle's rows are
     exact. This rule reproduces every pixel of all 48 draws.
 
+- **PSP-3000 single-case runs of the `dma-timing` probe (2026-10-29)**: firmware 6.6.1, PSPLink 3.2.1,
+  operator-declared model PSP-3000, case 118 in `fixtures/psp_oracle/probe_dmac_timing.c`. Three launches, each
+  on its own boot after a PSPLink soft reset and each after the `transport-write` preflight (PSP-TRANSPORT-001 is
+  not re-cited): `0e40e7d3` (boot 61, 151 records), `281a21a4` (boot 62, 186 records) and `1310e632` (boot 63,
+  202 records). Every envelope is acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source
+  commit binding `MATCH` on a clean committed tree, a strict golden sequence and the done record, all PASS. An
+  earlier launch of `e65ae3b1` (boot 60) recorded the same cells but was not acceptance-eligible (worktree HEAD
+  past the declared commit) and is not cited. The raw envelopes and host0 logs stay in the private campaign
+  directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29) |
+  | --- | --- | --- | --- |
+  | `PSP-DMAC-002` | `t-*`, `t2-*`, `a-*`, `b1-try-dest`, `b2-*`, `b3-*`, `b5-*`, `c1-*`, `c2-*`, `c3-*`, `c4-*` | `b4-*` (its 16-byte poll is below the bypass size, so it never saw the channel busy); single-call timings (they include the probe's cache maintenance) | MEASURED (`dma-timing`) |
+
+  What the cells establish, for these exact spans only (issue #303). Spans are three probe-owned partition-2
+  blocks in main RAM and the two 1 MiB halves of VRAM; every byte of every destination, and 64 bytes after it,
+  was checked through the uncached mirror.
+  - *Duration.* A transfer's mean time per call over 16 back-to-back calls, in microseconds, with source and
+    destination aligned alike: main RAM to main RAM 54.9 (0x200 bytes), 89.7 (0x1000), 583.0 (0x10000) and
+    8705.9 (0x100000); main RAM to VRAM 53.7, 76.0, 348.1, 4934.0; VRAM to main RAM 54.4, 67.9, 266.8, 3614.6;
+    VRAM to VRAM 52.6, 67.0, 268.4, 4477.3 (twelve sizes from 0x200 to 0x100000 per pair; spread between runs
+    under 2 % except single outliers). Try and the blocking call take the same time when the channel is free.
+  - *Relative alignment.* Main RAM to main RAM, 0x10000 bytes: a source and destination that differ modulo 16 by
+    8 cost nothing extra, by 4 or 12 add 0.003895 us per byte, by 2 add 0.015319 us and by an odd amount add
+    0.038116 us; the same phase at a destination that is not 16-byte aligned measured 3 to 6 % slower.
+  - *Bypass.* With another transfer pending, a Try of 0x10 to 0x10f bytes whose source and destination share
+    their phase modulo 16 returned 0 with a full copy and a blocking call returned without waiting (0x10..0x100
+    in steps, 0x101, 0x104, 0x108, 0x109, 0x10c, 0x10f); 0x110 bytes and larger were refused. A 0x108-byte Try
+    across a phase difference was refused.
+  - *A refused Try.* With source and destination in the same phase, a refused Try still copied the bytes up to
+    the first 16-byte destination boundary and those after the last whole 16-byte block, and nothing else (for
+    example 12 tail bytes of a 0x1fc-byte request, 12 head and 4 tail bytes of a 0x200-byte request at offset 4);
+    across a phase difference it changed nothing.
+  - *Argument checks.* While another transfer was pending, a NULL destination returned `0x80000103` and a zero
+    size `0x80000104` for both APIs, at once (2 to 5 us), the blocking call without waiting.
+  - *Queue.* Two blocking callers queued behind a pending 1 MiB transfer were served in arrival order in 16 of
+    16 trials, both when the first to arrive was the weaker (priorities 0x1c then 0x18) and the stronger.
+  - *Busy window.* A weaker thread polling a 0x10000-byte Try saw the channel busy until the first call returned
+    (within -142 to +31 us of its return; 0x10000 to 0x100000 bytes).
+
+- **PSP-3000 single-case runs of the `ge-raster` probe (2026-10-29)**: firmware 6.6.1, PSPLink 3.2.1,
+  operator-declared model PSP-3000, case 123 in `fixtures/psp_oracle/probe_ge_sample.c` (built as case 118 at the measured commits; renumbered because other probes took 118 and 120), each launch after the
+  `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). The cited run is boot 71 on commit `990748ec`:
+  acceptance-eligible with 0 blockers, evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean
+  committed tree, a strict golden sequence of 945 records and the done record (out0 945), all PASS; every one of
+  the 189 lists reached GE idle. The boot 70 run of `99578ce7` (175 cells, acceptance-eligible) and the boot 69
+  run of `8fa4a893` (166 cells; not eligible, the tree had an uncommitted selftest edit) gave the same window
+  for every cell whose list they share, so the results repeat across boots. The raw envelopes and host0 logs
+  stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29, `990748ec`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-RASTER-001` | `b-*`, `b565-*`, `b5551-*`, `b4444-*`, `at-*`, `ct-*`, `st-*`, `st4444-*`, `st5551-*`, `st565-*`, `z-*`, `tf-*`, `tfa-*`, `tx-*`, `wr-*`, `e-*`, `fmt-*`, `dth-*`, `msk-*`, `lo-*`, `clr-*`, `xf-*`, `fog-*`, `ge-raster-done` (every cell of the `gr_cells` table) | The wait timings, and any state or format no cell sets | MEASURED (`ge-raster`) |
+
+  Each cell is one display list of project-written command words over generated patterns (no game data). It
+  draws into the 16x4 window x 16..31, y 8..11 of a 64x32 colour buffer whose window holds a generated
+  destination pattern; the base state turns every per-fragment unit off and draws a 16x4 generated texture 1:1
+  with REPLACE/RGBA, so a sprite's source colour is the texel. The table and list builder are one block that
+  `src/rt/hle_thread_selftest.c` carries byte for byte; `test_ge_raster_cells_match_psp` runs every cell through
+  the software GE and compares its window digest with the PSP's. What the cells establish, for these exact
+  states only (issue #343):
+  - *Blending.* Each colour-times-factor product is floor((2v + 1)(2|f| + 1) / 1024) with the factor's sign
+    applied afterwards, computed separately for source and destination before the equation, then clamped to
+    0..255. The doubled alphas are not clamped: 2a runs to 510 and 255 - 2a goes negative. Equations 3, 4 and 5
+    (min, max, absolute difference) ignore the factors; equations 6 and 7 write the source colour. A 565 pixel's
+    alpha reads as 0, for blending and for the stencil test. With the stencil test off, the framebuffer alpha
+    byte keeps its old value.
+  - *Fog.* The factor F is the per-vertex fog value (z + FOG1) * FOG2, clamped to 0..1, times 256 and truncated,
+    at most 255; each channel is ((c + 1) F + (fog colour + 1)(255 - F)) / 256, truncated.
+  - *Texture row pitch.* A linear texture's row is a whole number of 16-byte lines: the buffer width in bytes
+    rounded down to a multiple of 16, and at least one line. A CLUT4 texture with buffer width 16 or 48 reads its
+    rows 16 bytes apart; buffer width 64 reads them 32 bytes apart.
+  - *Lines.* The major axis is stepped one pixel at a time from the first endpoint's pixel, for the integer part
+    of the longer extent, so the last endpoint's pixel is left out; the minor coordinate is the line's value at
+    the centre of each major-axis pixel, truncated, in either direction.
+  - *Clear mode* still dithers and still honours the pixel masks.
+  - The software GE already matched every other cell: alpha, colour, stencil and depth tests and every stencil
+    operation (8888, 4444, 5551), the texture functions with and without RGBA and colour doubling, 5650, 5551,
+    4444 and CLUT8 textures with CLUT shift, mask and offset, wrap and clamp under nearest and bilinear
+    filtering, through-mode triangle coverage, points, 16-bit framebuffer conversion, dithering, pixel masks,
+    the sixteen logic operations, and transform-mode triangles and sprites.
+
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
   `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`
@@ -890,6 +1001,59 @@ One console is one data point; see §11. Nothing here closes issue #70
   through `verify_gates.run_hardware_trace_gate`), and `tools/test_insn_trace.py` pins the two digests. A
   codegen mutation that emits the fixture's `xor` as `or` is reported at step 13, pc `0x08900034`, the first
   `xor`, with its differing `r16` write.
+
+- **PSP-3000 single-case runs for #325 on commits `77a1a5e3` and `2c199df8` (2026-10-29)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000, standalone PSPLink. Two launches, each on its own boot after
+  a PSPLink soft reset and the `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited): boot 66 ran
+  `hle-intr-cells` (case 107) built from `77a1a5e3`, and boot 67 ran `intr-cause` (case 120, added by
+  `2c199df8`), both from `fixtures/psp_oracle/probe_hle_issues.c`. Both case envelopes are
+  acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a
+  clean committed tree, strict golden sequences of 43 and 58 records plus the done record, all PASS. The
+  `hle-intr-cells` run promotes the 2026-10-24 observations above to MEASURED. The raw logs stay in the
+  private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-29) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-INTR-001` | `vtimer-ret-20ms-call*`, `vtimer-ret-20ms`, `vtimer-ret-20ms-after-zero`, `vtimer-ret-1us-call*`, `vtimer-ret-1us`, `vtimer-ret-1us-after-zero`, `vtimer-ret-mixed-call*`, `vtimer-ret-mixed`, `vtimer-ret-mixed-after-zero`, `alarm-ret-20ms-call*`, `alarm-ret-20ms`, `alarm-ret-20ms-after-zero`, `alarm-ret-1us-call*`, `alarm-ret-1us`, `alarm-ret-1us-after-zero`, `vbl-register`, `vbl-free`, `vbl-masked-20ms`, `vbl-masked-50ms`, `vbl-masked-20ms-again`, `vbl-hold-25ms`, `vbl-release` | `hle-intr-cells-done`; absolute system-time words | MEASURED (`hle-intr-cells`, `77a1a5e3`, boot 66) |
+  | `PSP-INTR-CAUSE-001` | `cause-enabled-*`, `cause-masked-p0-*`, `cause-resumed-p0`, `cause-window-p0`, `cause-masked-p1-*`, `cause-resumed-p1`, `cause-window-p1` | `intr-cause-done`; absolute Count and system-time words | MEASURED (`intr-cause`, `2c199df8`, boot 67) |
+
+  - *Handler returns (`PSP-HLE-INTR-001`).* The values repeat the 2026-10-24 observation. VTimer, return
+    20000: scheduled times 10000, 30000, ... 110000 us, actual times 13 to 19 us later. Return 1: scheduled
+    10000, 10100, 10200, 10300, 10400, actual 10015, 10240, 10454, 10668, 10882. Mixed returns 5000, 30000,
+    1000: scheduled 10000, 15000, 45000, 46000. Alarm, return 20000: calls at 10046, 30049, 50053, 70046,
+    90047 and 110048 us after the set call, on the scheduled grid. Alarm, return 1: calls at 10048, 10264,
+    10480, 10694 and 10908 us. Every series stopped at a return of 0, with no further call in 150 ms.
+  - *VBLANK (`PSP-HLE-INTR-001`).* The sub-interrupt took slot 0. Free-running entries were 16 673 to 16 692 us
+    apart. In the 20, 50 and 20 ms `sceKernelCpuSuspendIntr` windows no entry ran, exactly one entry ran 30,
+    99 and 30 us after the resume, and the next entry came on the original grid. In the hold cell the entry at
+    16 167 us returned at 41 168 us, one entry followed at 41 322 us, and the next came at 49 538 us.
+  - *COP0 state (`PSP-INTR-CAUSE-001`).* Each snapshot is one `kuKernelCall` of a function that reads Cause,
+    Status and Count and the Allegrex interrupt-enable word (`mfic $0`) in kernel mode. With interrupts
+    enabled, Cause read 0x90000020 (BD set, CE 1, ExcCode 8: the read runs in the syscall handler of an
+    import stub whose `syscall` sits in a delay slot) and once 0x10000000 (ExcCode 0: an interrupt was taken
+    during that call). Status read 0x00088601 (IE set, EXL clear, IM1, IM2 and IM7 set) and the
+    interrupt-enable word 1. Inside both suspended windows Status read 0x00088600 and the interrupt-enable
+    word 0. Cause read 0x90000020 at 0.2 ms and 0x90000420 (IP2 set) from 1.2 ms to the end of the 24 ms
+    window. 200 us after the resume, Cause read 0x90000020 again, with Status 0x00088601 and the word 1. No
+    other IP bit was set in any of the 58 reads. The probe reads no interrupt-controller register, so which
+    source raised IP2 in the first millisecond is not identified. The VBLANK that fell in the window does
+    not show separately, because IP2 was already set. `sceDisplayGetVcount` stayed at its pre-suspend value
+    through each window, read one more 200 us after the resume, and three more 30 ms later. Count advanced
+    220.9 counts per system-clock microsecond across each window (5 300 284 and 5 301 136 counts in
+    23 995 and 24 004 us).
+
+  Runtime comparison. Alarms (`src/rt/sched.c`) rescheduled from the delivery time, so each late call
+  pushed the grid back. They now reschedule from the call's scheduled time, and a call that falls behind
+  owes the scheduled points it missed (`test_alarm_rearm_counts_from_the_scheduled_time` in
+  `src/rt/sched_selftest.c`). Alarm call times cannot show whether a return below 100 us is raised to
+  100 us, because consecutive calls land about 215 us apart, so the runtime uses the return as returned.
+  VTimer handlers (`src/rt/hle.c`) already rescheduled from the scheduled time; a return below 100 us now
+  reschedules 100 us on (`test_vtimer_handler_return_below_100us_reschedules_100us_on` in
+  `src/rt/hle_thread_selftest.c`). The VBLANK cells match the scheduler's model (one coalesced episode per
+  masked window, VCOUNT frozen while masked). For the LLE CPU, `SR_INTC_PSP_CPU_IP_BIT` in
+  `src/rt/cpu_lle.h` records IP2 as the controller's line, and
+  `test_hw_psp_intr_cause_ip2_while_suspended` in `src/rt/cpu_lle_selftest.c` reproduces the measured
+  Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`) stays unimplemented.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
@@ -2616,7 +2780,8 @@ case (103) and the VFPU transcendental corpus were measured on 2026-10-15 from
 `22b027f6` was captured only.
 The HLE issue cells `hle-issues-batch` (106) and `hle-intr-cells` (107),
 built from `probe_hle_issues.c`, were observed from `da97b2c0` on 2026-10-24
-without a runner envelope, so they are not acceptance-eligible and stay `NOT_RUN`.
+without a runner envelope, so they were not acceptance-eligible; `hle-intr-cells`
+was measured on 2026-10-29 from `77a1a5e3`, together with the new `intr-cause` (120).
 These ten probes run as single launches outside the campaign queue
 (`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
 not-run states. Their parsers check record order, scalar fields and completion,
@@ -2647,10 +2812,14 @@ not expected PSP values.
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
-| `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
-| `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
+| `hle-intr-cells` | `PSP-HLE-INTR-001` | `MEASURED` (2026-10-29, `77a1a5e3`, boot 66; observed earlier from `da97b2c0` without a runner envelope; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
+| `intr-cause` | `PSP-INTR-CAUSE-001` | `MEASURED` (2026-10-29, `2c199df8`, boot 67; single launch, not in the campaign queue) | #325: COP0 Cause, Status and Count and the Allegrex interrupt-enable word, read in kernel mode by one `kuKernelCall` each, with the system time and `sceDisplayGetVcount`: four reads with interrupts enabled after a VBLANK start, then per pass (two passes) a read every 1 ms through a 24 ms `sceKernelCpuSuspendIntr` window, one read 200 us after the resume and the window summary. Read-only; nothing is installed. 58 result records. |
+| `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the probe's main thread, which its module_start created, held [0x09f80000, 0x09fc0000) and the new thread got [0x09ffc000, 0x0a000000): the module-start thread's default 0x40000-byte stack above the main thread had been released when module_start returned, and the new stack was carved from the top of that highest free block, not from below the main thread; the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
+| `module-start` | `PSP-MODULE-START-001` | `MEASURED` (2026-10-29, `fd2a75fd`; single launch, not in the campaign queue) | Module lifecycle: a module with its own `module_start` records that thread's status, the free memory before and after it returns, whether its UID still answers, and the thread list |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
+| `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
+| `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
@@ -2889,8 +3058,17 @@ captured cells show what the console counts:
 Do not relaunch this case as written: its size cells must first be expressed
 in sectors, at most 16 for the 32 KiB buffer. The runtime's UMD block device
 (sceIoRead, sceIoLseek and sceIoLseek32 on umd0:, umd1: and umd:) follows these
-captured cells. It keeps a named boundary for a read that crosses the last
-sector and for the asynchronous calls, which no runtime path serves yet, and it
+captured cells. Its asynchronous reads and seeks (sceIoReadAsync, sceIoLseekAsync,
+sceIoLseek32Async, sceIoCloseAsync and the poll, wait and status calls) go through
+the runtime's asynchronous request queue and complete through the same sector
+calls, matching the captured async cells: submission returns 0, an immediate poll
+returns 1 and the wait stores the sector count. A synchronous read or seek while a
+request is pending is refused as busy, as for files. The completion delay is the
+queue's synthetic two-import policy, not a measured interval. The device's
+refusals (a zero count, a destination that cannot hold the sectors) are the
+request's result rather than the submission's, as the I/O manager hands the
+request to its worker before the device read runs; no cell captures them. It keeps a named boundary for a read that crosses the last sector,
+for sceIoOpenAsync, sceIoWriteAsync and sceIoIoctlAsync on the device, and it
 refuses every position past the last sector: the edge between the last sector
 and 0x7fffffff is inferred from SEEK_END, not captured.
 
@@ -3053,8 +3231,9 @@ expectations are now implemented against (dedicated handlers in `src/rt/hle.c`;
 see the intr-conformance snapshot), and display-mask/vcount coalescing is
 HARDWARE_MEASURED per the index above. The loops remain for the unmeasured
 remainder — VBLANK sub-interrupts beyond the masked-window cells, async I/O,
-FPL/thread-stack lifetime, and interrupt pending state stay NOT_MEASURED until
-a probe measures them.
+FPL/thread-stack lifetime, and the interrupt-controller registers stay NOT_MEASURED until
+a probe measures them. The Cause.IP line and its pending state while interrupts are
+suspended are measured (`PSP-INTR-CAUSE-001`).
 
 ## 5. Device choice: PSP vs PS Vita
 

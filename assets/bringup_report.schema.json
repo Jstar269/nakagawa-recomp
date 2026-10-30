@@ -20,6 +20,18 @@
     "exit_classification"
   ],
   "properties": {
+    "build_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_revision", "command", "title_id", "artifact_sha256", "compiler_identity", "compile_result"],
+      "properties": {
+        "source_revision": { "type": "string" },
+        "command": { "type": "string" },
+        "title_id": { "type": "string" },
+        "artifact_sha256": { "type": "string" },
+        "compiler_identity": { "type": "string" },
+        "compile_result": { "const": "PASS" }
+      }
+    },
     "schema_version": { "const": 1 },
     "reached_stage": {
       "enum": ["none", "inspect", "prepare_import", "analyze", "codegen", "compile", "build_package", "launch"]
@@ -69,6 +81,9 @@
         "ANALYZER_IMPORT_REGIONS_MISMATCH",
         "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
         "ANALYZER_IMPORT_TABLE_INVALID",
+        "ANALYZER_ELF_INVALID",
+        "ANALYZER_NO_EXECUTABLE_REGIONS",
+        "ANALYZER_INPUT_MISSING",
         "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED",
         "CODEGEN_FAILED",
         "COMPILE_FAILED",
@@ -77,6 +92,7 @@
         "UNSUPPORTED_IMPORT",
         "UNSUPPORTED_INSTRUCTION",
         "UNRESOLVED_DISPATCH_TARGET",
+        "RUNTIME_SEMANTIC_BOUNDARY",
         "EXITED_ZERO_BEFORE_HLE",
         "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP",
         "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP",
@@ -109,7 +125,12 @@
       "items": { "$ref": "#/$defs/runtime_import" }
     },
     "runtime_output_kind": {
-      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "VIDEO_UNAVAILABLE", "OTHER"]
+      "enum": ["NOT_RUN", "EMPTY", "UNIMPLEMENTED_IMPORT", "UNSUPPORTED_INSTRUCTION", "DISPATCH_MISS", "ENTRY_NOT_COMPILED", "DRIVER_INPUT_READ_FAILURE", "DRIVER_ELF_REJECTION", "DRIVER_TRACE_INPUT_FAILURE", "DRIVER_ARGUMENT_FAILURE", "NATIVE_CRASH_REPORT", "SEMANTIC_BOUNDARY", "VIDEO_UNAVAILABLE", "OTHER"]
+    },
+    "runtime_boundary": {
+      "description": "The runtime's last named stop in a run that exited nonzero: its boundary code, line tag, or the import it refused as called.",
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,95}$"
     },
     "presentation": {
       "type": "object",

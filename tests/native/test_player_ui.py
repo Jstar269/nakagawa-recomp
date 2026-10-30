@@ -1640,15 +1640,24 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "library", "Add to library adds and returns")
         self.assertEqual(int(frames[-1]["games"]), games_before + 1)
 
+        # #308: an encrypted program the user can supply a decrypted copy of
+        # gets the file it needs and Check again, which reads the same disc
+        # again: no picker, nothing added, the same program input.
         blocked = self.next_ui_run("experimental-blocked", ("WAIT_MS=100", "KEY_RETURN"))
         card, rows = self.disc_card(blocked)
-        self.assertEqual((card.get("kind"), card.get("add")), ("3", "0"), blocked["stdout"])
+        self.assertEqual((card.get("kind"), card.get("add"), card.get("files")), ("3", "0", "1"),
+                         blocked["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] next_ui_disc_file name=EBOOT.elf replace=0 "
+                      "source=PSP_GAME/SYSDIR/EBOOT.BIN", blocked["stdout"])
         self.assert_plain_rows(rows, blocked["stdout"])
         self.assertNotIn("Game program", [row["label"] for row in rows],
                          "the check that keeps the disc out is the card's reason, not a row")
         frames = blocked["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["picker"], "1", "Choose another disc opens the picker")
+        self.assertEqual(frames[-1]["picker"], "0", "Check again opens no picker")
+        self.assertEqual(frames[-1]["view"], "experimental", "the card stays for its files")
+        self.assertEqual(frames[-1]["input_class"], "encrypted-retail")
+        self.assertEqual(frames[-1]["input_files"], "1")
         self.assertEqual(frames[-1]["games"], frames[0]["games"], "nothing is added")
 
         unsupported = self.next_ui_run("unsupported", ("WAIT_MS=100", "KEY_RETURN"))
@@ -2012,8 +2021,14 @@ class NativePlayerUiTests(unittest.TestCase):
                 )
                 if fixture == "encrypted":
                     self.assertIn("decrypted", title_frames[-1]["next_preflight"].lower())
+                    # #308: the title page knows the program input and the
+                    # one file the build waits for.
+                    self.assertEqual(title_frames[-1]["next_input_class"], "encrypted-retail")
+                    self.assertEqual(title_frames[-1]["next_input_files"], "1")
                 else:
                     self.assertIn("title_settings", title_frames[-1]["next_preflight"].lower())
+                    self.assertEqual(title_frames[-1]["next_input_class"], "plain-elf")
+                    self.assertEqual(title_frames[-1]["next_input_files"], "0")
 
     def test_build_package_waits_for_preflight_in_legacy_renderer(self) -> None:
         """#1286: the legacy Library disables the same refused package inputs."""
@@ -3439,6 +3454,37 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(views[-1], plain_views[-1], run["stdout"])
                 self.assertEqual(frames[-1]["error"], "NONE")
                 self.assertIn(f"[PLAYER] Disc image {name} expanded into TEST00042", run["stdout"])
+
+    def test_beta_disc_is_added_and_labelled_beta_unofficial(self) -> None:
+        """A disc whose own ID is a placeholder, not a retail ID, is added under the key the
+        Python tools derive from its contents, and its card says Beta / unofficial."""
+        from nk_core.iso_inspect import inspect_iso
+
+        with tempfile.TemporaryDirectory(prefix=".beta-disc-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic-beta.iso"
+            create_test_iso_with_executables(
+                iso_path, build_plain_mips_elf(), disc_id="PROTO1234567",
+                title="Synthetic Beta Disc",
+            )
+            iso = iso_path.read_bytes()
+            key = inspect_iso(iso_path).disc_id
+        self.assertRegex(key, r"^X[A-Z]{3}[0-9]{5}$")
+        events = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100",
+                  "KEY_RETURN", "WAIT_MS=300")
+        run = self.next_ui_run("library", events, drop_bytes=("source-owned-beta.iso", iso))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        views = [frame["view"] for frame in frames]
+        self.assertIn("experimental", views, run["stdout"])
+        self.assertNotIn("error", views, run["stdout"])
+        self.assertEqual(views[-1], "library", run["stdout"])
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        self.assertIn(f"next_ui_disc_badge disc={key} badge=Beta / unofficial", stdout,
+                      "the game-found card names the disc Beta / unofficial too")
+        badges = re.findall(r"next_ui_library_badge index=\d+ disc=(\S+) badge=(.+)", stdout)
+        self.assertIn((key, "Beta / unofficial"), badges, stdout)
+        self.assertNotIn((key, "Your disc"), badges)
 
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",

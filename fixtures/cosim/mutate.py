@@ -53,6 +53,7 @@ FP_CONVERT = ROOT / "src" / "rt" / "fp_convert.h"
 FPU_REFERENCE = ROOT / "fixtures" / "cosim" / "fpu_reference.c"
 FPU_REFERENCE_HEADER = ROOT / "fixtures" / "cosim" / "fpu_reference.h"
 GENERATOR = ROOT / "tools" / "codegen.py"
+LLVM_BACKEND = ROOT / "tools" / "codegen_llvm.py"
 SCHEDULER = ROOT / "src" / "rt" / "sched.c"
 HLE_THREAD_SELFTEST = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 
@@ -336,9 +337,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "codegen-likely-slot-always-runs",
         "GENERATOR: a not-taken branch-likely still runs its delay slot",
         [(
+            # In-body labels, entry crossings of split bodies, and foreign targets.
             "            if is_likely(w):\n",
             "            if False and is_likely(w):\n",
-            2,
+            3,
         )],
         target="generator",
     ),
@@ -365,6 +367,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # runtime-placed module translates base-relative.
             (
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")\n"
                 "            out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
@@ -373,7 +376,8 @@ MUTANTS: tuple[Mutant, ...] = (
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))\n"
-                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")",
+                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")",
                 1,
             ),
         ],
@@ -471,7 +475,165 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
         target="fpu-reference",
     ),
+    # Broken entry crossings (codegen --region-split-threshold). These run in a lane
+    # whose every body is split at other entries, so each conditional edge into
+    # another entry is the TAIL transfer under test; the xing_* cells must diverge.
+    Mutant(
+        "split-crossing-drops-slot",
+        "SPLIT GENERATOR: a branch into another entry loses its delay slot",
+        [(
+            '                out.extend("   " + line for line in _delay)\n'
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        "split-crossing-runs-annulled-slot",
+        "SPLIT GENERATOR: a not-taken branch-likely into another entry runs its slot",
+        [(
+            '                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")\n',
+            '                out.extend("   " + line for line in _delay)\n'
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        # Forward crossings only: xing_dst's backward crossing would then loop for
+        # good, which locates nothing. xing_taken's never-taken `bne` still diverges.
+        "split-crossing-ignores-condition",
+        "SPLIT GENERATOR: a forward branch into another entry transfers when not taken",
+        [(
+            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '                out.append(f"      if ({\'_c\' if target <= addr else \'1\'}) {{ {tail} }} }}")\n',
+            1,
+        )],
+        target="split-generator",
+    ),
+    Mutant(
+        "split-fall-through-lost",
+        "SPLIT GENERATOR: a not-taken branch does not continue into the next entry",
+        [(
+            "        if addr in continuations:\n"
+            "            out.append(f\"    goto _sr_cont_{continuations[addr]:08x};\")\n"
+            "        elif addr in dup_slot_skips:\n"
+            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
+            "        if addr in dup_slot_skips:\n"
+            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
+            1,
+        )],
+        target="split-generator",
+    ),
 )
+
+# The LLVM IR backend's own campaign (#330, `make cosim-mutants-llvm`). Each mutant is
+# one semantic defect in tools/codegen_llvm.py; the gate builds the cosimulation with
+# CODEGEN_BACKEND=llvm, so the damaged lowering runs as the AOT lane and the C backend
+# is not involved in any lowered cell. Every lane first passes the unmutated LLVM gate.
+LLVM_MUTANTS: tuple[Mutant, ...] = (
+    Mutant(
+        # bne, not beq: `beq $zero, $zero` is the unconditional-branch idiom, and an
+        # inverted one loops until the harness aborts, which locates nothing.
+        "llvm-wrong-branch",
+        "LLVM BACKEND: bne/bnel lowered with the inverted condition",
+        [('"ne": "ne",', '"ne": "eq",', 1)],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-lost-delay-slot",
+        "LLVM BACKEND: a conditional branch drops its delay slot",
+        [(
+            "            if not t.likely:\n"
+            "                self.instruction(t.slot)\n",
+            "            if not t.likely:\n"
+            "                pass\n",
+            1,
+        )],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-likely-slot-always-runs",
+        "LLVM BACKEND: a not-taken branch-likely still runs its delay slot",
+        [
+            ("            if not t.likely:\n", "            if True:\n", 1),
+            ("            if t.likely:\n"
+             "                self.instruction(t.slot)\n",
+             "            if False:\n"
+             "                self.instruction(t.slot)\n", 1),
+        ],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-missing-hi-write",
+        "LLVM BACKEND: a multiply leaves HI unwritten",
+        [(
+            '        self.store_field("hi", b.trunc(b.lshr(value64, L.const(L.i64, 32)), L.i32))\n',
+            "",
+            1,
+        )],
+        target="llvm-backend",
+    ),
+    Mutant(
+        # The zero-extending narrow loads only: a lost `lw $ra` would end the run at the
+        # stack census before the comparison could name the instruction.
+        "llvm-missing-load-write",
+        "LLVM BACKEND: lbu/lhu never write their destination register",
+        [(
+            "                value = b.sext(b.trunc(value, L.i8 if op.width == 1 else L.i16), L.i32)\n"
+            "            self.W(d, value)\n",
+            "                value = b.sext(b.trunc(value, L.i8 if op.width == 1 else L.i16), L.i32)\n"
+            "            if op.aux or op.width == 4:\n"
+            "                self.W(d, value)\n",
+            1,
+        )],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-computed-transfer-timing",
+        "LLVM BACKEND: jalr reads its target after the delay slot (PR #126 regression)",
+        [(
+            "            latched = self.R(t.target_reg)                     # PR #126: latched at the transfer\n"
+            "            self.begin(t.addr, t.word)\n"
+            "            if t.link_reg is not None:\n"
+            "                self.W(t.link_reg, link_value)\n"
+            "            self.end()\n"
+            "            self.instruction(t.slot)\n",
+            "            self.begin(t.addr, t.word)\n"
+            "            if t.link_reg is not None:\n"
+            "                self.W(t.link_reg, link_value)\n"
+            "            self.end()\n"
+            "            self.instruction(t.slot)\n"
+            "            latched = self.R(t.target_reg)\n",
+            1,
+        )],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-sc-ignores-link",
+        "LLVM BACKEND: store-conditional succeeds without a link",
+        [(
+            'linked = b.icmp("ne", self.load_field("llbit"), self.c32(0))',
+            'linked = b.icmp("eq", self.c32(0), self.c32(0))',
+            1,
+        )],
+        target="llvm-backend",
+    ),
+    Mutant(
+        "llvm-wrong-call-resume",
+        "LLVM BACKEND: a dispatched jalr CALL names the wrong resume PC",
+        [(
+            '                self.call("dispatch_call", self.s, latched, link_value)\n',
+            '                self.call("dispatch_call", self.s, latched, self.c32((t.addr + 12) & 0xFFFFFFFF))\n',
+            1,
+        )],
+        target="llvm-backend",
+    ),
+)
+
+#: The codegen arguments of the split-generator lane: every body split at other entries.
+SPLIT_CODEGEN_ARGS = "--stack-census --region-split-threshold=0"
 
 
 def resolve_make() -> str:
@@ -523,6 +685,14 @@ def make_command(source: Path, target: str,
         command = ["cosim-selftest", f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"]
     elif target == "generator":
         command = ["cosim-selftest", f"CODEGEN_TOOL={source.as_posix()}"]
+    elif target == "llvm-backend":
+        # The mutated codegen_llvm.py sits beside an unmodified copy of codegen.py,
+        # whose own directory comes first on sys.path, so that copy imports it.
+        command = ["cosim-selftest", "CODEGEN_BACKEND=llvm",
+                   f"CODEGEN_TOOL={(source.parent / 'codegen.py').as_posix()}"]
+    elif target == "split-generator":
+        command = ["cosim-selftest", f"CODEGEN_TOOL={source.as_posix()}",
+                   f"COSIM_CODEGEN_ARGS={SPLIT_CODEGEN_ARGS}"]
     elif target == "scheduler":
         command = ["aot-return-boundary-thread-selftest"]
         if harness_source is not None:
@@ -598,7 +768,7 @@ def run_gate(source: Path, target: str = "interpreter",
         # own existing cells remain active; the dedicated AOT-return mutant below
         # runs the new regression without this isolation.
         env["SR_COSIM_SKIP_AOT_RETURN_CASES"] = "1"
-    if target == "generator":
+    if target in ("generator", "split-generator", "llvm-backend"):
         # A mutated copy of codegen.py still has to import its siblings
         # (analyze, host_stubs, build_profile), and running it from the ignored
         # build tree puts the wrong directory first on sys.path.
@@ -684,10 +854,10 @@ def run_gate(source: Path, target: str = "interpreter",
 def gate_options(mutant: Mutant) -> dict[str, bool | str | None]:
     """The verdict rules one mutant's gate runs under."""
     skip_ra_return_cases = mutant.name in {
-        "wrong-call-resume", "wrong-jump-target", "alter-link-value"
+        "wrong-call-resume", "wrong-jump-target", "alter-link-value", "llvm-wrong-call-resume"
     }
     accepted_boundary = "AOT_RETURN_TARGET_MISMATCH" if mutant.name in {
-        "wrong-call-resume", "alter-link-value"
+        "wrong-call-resume", "alter-link-value", "llvm-wrong-call-resume"
     } else None
     if mutant.target == "scheduler":
         accepted_boundary = "AOT_RETURN_TARGET_MISMATCH"
@@ -695,26 +865,37 @@ def gate_options(mutant: Mutant) -> dict[str, bool | str | None]:
             "accepted_boundary": accepted_boundary}
 
 
-BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER}
+BASELINES = {"interpreter": INTERPRETER, "scheduler": SCHEDULER,
+             "split-generator": GENERATOR, "llvm-backend": LLVM_BACKEND}
+#: How each lane's unmutated gate is named in the campaign report, in report order.
+#: A campaign's cosimulation lanes are judged by the interpreter or, for
+#: `--backend llvm`, by the unmutated LLVM backend; both report as the baseline.
+BASELINE_LABELS = {"interpreter": "baseline", "llvm-backend": "baseline",
+                   "split-generator": "split baseline",
+                   "scheduler": "AOT boundary baseline"}
 
 
 def plan_lanes(mutants: tuple[Mutant, ...] | list[Mutant],
-               jobs: int) -> list[tuple[str, list[int]]]:
+               jobs: int, cosim_baseline: str = "interpreter") -> list[tuple[str, list[int]]]:
     """Deal the campaign into lanes, each judged in a build root of its own.
 
     A gate is a serial build, so lanes run side by side. Cosimulation mutants are
     dealt round-robin over at most `jobs` lanes, so a lane's order, and the build
     history its tree sees, is fixed for a given `jobs`. Scheduler mutants build
     the HLE-thread harness, a different gate with its own baseline, so they form
-    one lane of their own. Returns (baseline target, indices into `mutants`) for
-    each lane: the cosimulation lanes, then the scheduler lane.
+    one lane of their own, and so do split-generator mutants, whose baseline is the
+    unmutated generator with every body split. Returns (baseline target, indices
+    into `mutants`) for each lane: the cosimulation lanes, then the split-generator
+    and scheduler lanes.
     """
-    cosim = [index for index, mutant in enumerate(mutants) if mutant.target != "scheduler"]
-    scheduler = [index for index, mutant in enumerate(mutants) if mutant.target == "scheduler"]
-    lanes = [("interpreter", cosim[lane::jobs]) for lane in range(jobs)]
+    own_lane = ("split-generator", "scheduler")
+    cosim = [index for index, mutant in enumerate(mutants) if mutant.target not in own_lane]
+    lanes = [(cosim_baseline, cosim[lane::jobs]) for lane in range(jobs)]
     lanes = [lane for lane in lanes if lane[1]]
-    if scheduler:
-        lanes.append(("scheduler", scheduler))
+    for target in own_lane:
+        indices = [index for index, mutant in enumerate(mutants) if mutant.target == target]
+        if indices:
+            lanes.append((target, indices))
     return lanes
 
 
@@ -752,23 +933,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build" / "cosim")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
                         help="parallel mutant lanes (default: one per CPU)")
+    parser.add_argument("--backend", choices=("c", "llvm"), default="c",
+                        help="llvm: run the LLVM IR backend's campaign (#330) instead")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
+    mutants = LLVM_MUTANTS if args.backend == "llvm" else MUTANTS
+    cosim_baseline = "llvm-backend" if args.backend == "llvm" else "interpreter"
 
     sources = {
         "interpreter": INTERPRETER.read_text(encoding="utf-8"),
         "fp-convert": FP_CONVERT.read_text(encoding="utf-8"),
         "fpu-reference": FPU_REFERENCE.read_text(encoding="utf-8"),
         "generator": GENERATOR.read_text(encoding="utf-8"),
+        "split-generator": GENERATOR.read_text(encoding="utf-8"),
         "scheduler": SCHEDULER.read_text(encoding="utf-8"),
+        "llvm-backend": LLVM_BACKEND.read_text(encoding="utf-8"),
     }
     filenames = {
         "interpreter": "guest_interp.c",
         "fp-convert": "fp_convert.h",
         "fpu-reference": "fpu_reference.c",
         "generator": "codegen.py",
+        "split-generator": "codegen.py",
         "scheduler": "sched.c",
+        "llvm-backend": "codegen_llvm.py",
     }
     mutant_root = args.build_dir / "mutants"
     lane_root = args.build_dir / "lanes"
@@ -780,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
     # Every mutated source is written before any gate runs, so a mutant whose
     # pattern stopped matching fails the campaign before it spends a build.
     work: list[tuple[Mutant, Path, Path | None]] = []
-    for mutant in MUTANTS:
+    for mutant in mutants:
         directory = mutant_root / mutant.name
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / filenames[mutant.target]
@@ -791,6 +980,8 @@ def main(argv: list[str] | None = None) -> int:
         if mutant.target == "scheduler":
             harness_source = directory / "hle_thread_selftest.c"
             shutil.copyfile(HLE_THREAD_SELFTEST, harness_source)
+        if mutant.target == "llvm-backend":
+            shutil.copyfile(GENERATOR, directory / "codegen.py")
         if mutant.target == "fpu-reference":
             (directory / "fpu_reference.h").write_text(
                 FPU_REFERENCE_HEADER.read_text(encoding="utf-8"),
@@ -801,16 +992,17 @@ def main(argv: list[str] | None = None) -> int:
 
     # The campaign builds nothing outside lanes/: the developer's own trees are
     # neither mutated nor rebuilt, so nothing needs restoring afterwards.
-    lanes = plan_lanes(MUTANTS, args.jobs)
+    lanes = plan_lanes(mutants, args.jobs, cosim_baseline)
     roots = [lane_root / f"{number}-{target}" for number, (target, _) in enumerate(lanes)]
     place: dict[int, tuple[int, int]] = {
         index: (number, position)
         for number, (_, indices) in enumerate(lanes)
         for position, index in enumerate(indices)
     }
-    cosim_lanes = sum(1 for target, _ in lanes if target == "interpreter")
-    print(f"COSIM_MUTATION lanes={len(lanes)} ({cosim_lanes} cosim, "
-          f"{len(lanes) - cosim_lanes} scheduler)")
+    counts = {name: sum(1 for target, _ in lanes if target == name) for name in BASELINE_LABELS}
+    print(f"COSIM_MUTATION lanes={len(lanes)} "
+          f"({counts['interpreter'] + counts['llvm-backend']} cosim, "
+          f"{counts['split-generator']} split, {counts['scheduler']} scheduler)")
     print("COSIM_MUTATION baseline: the unmutated sources must pass in every lane")
 
     killed = 0
@@ -830,19 +1022,17 @@ def main(argv: list[str] | None = None) -> int:
             verdict, detail = baseline.result()
             if verdict != "ok":
                 failed = True
-                label = "baseline" if target == "interpreter" else "AOT boundary baseline"
-                print(f"COSIM_MUTATION FAIL: {label} verdict={verdict} "
+                print(f"COSIM_MUTATION FAIL: {BASELINE_LABELS[target]} verdict={verdict} "
                       f"in {root.as_posix()}\n{detail}", file=sys.stderr)
         if failed:
             stop.set()
             return 1
-        if cosim_lanes:
-            print("COSIM_MUTATION baseline=OK")
-        if cosim_lanes < len(lanes):
-            print("COSIM_MUTATION AOT boundary baseline=OK")
+        for name, label in BASELINE_LABELS.items():
+            if counts[name]:
+                print(f"COSIM_MUTATION {label}=OK")
 
         # Report in campaign order whatever order the lanes finish in.
-        for index, mutant in enumerate(MUTANTS):
+        for index, mutant in enumerate(mutants):
             number, position = place[index]
             verdict, detail = futures[number].result()[position]
             if verdict == "fail":
@@ -867,11 +1057,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(detail)
 
     by_target: dict[str, int] = {}
-    for mutant in MUTANTS:
+    for mutant in mutants:
         by_target[mutant.target] = by_target.get(mutant.target, 0) + 1
     spread = ", ".join(f"{count} {name}" for name, count in sorted(by_target.items()))
     print(
-        f"\nCOSIM_MUTATION summary: {killed}/{len(MUTANTS)} killed, "
+        f"\nCOSIM_MUTATION summary: {killed}/{len(mutants)} killed, "
         f"{len(survived)} survived, {len(invalid)} invalid ({spread})"
     )
     if survived:

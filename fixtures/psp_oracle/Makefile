@@ -207,6 +207,10 @@ CASE_ID = 108
 # through-mode triangle pair and sprite show, nearest and bilinear.
 else ifeq ($(CASE),ge-sample)
 CASE_ID = 109
+# 123: the GE raster semantics corpus (probe_ge_sample.c, #343): blend, tests, texture
+# functions and formats, wrap, coverage, framebuffer formats, dither, masks, logic, clear, fog.
+else ifeq ($(CASE),ge-raster)
+CASE_ID = 123
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -239,9 +243,20 @@ else ifeq ($(CASE),thread-k0-block)
 CASE_ID = 116
 else ifeq ($(CASE),sas-init)
 CASE_ID = 117
+# 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
+else ifeq ($(CASE),dma-timing)
+CASE_ID = 118
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
+# 120: the #325 COP0 interrupt state (probe_hle_issues.c): Cause, Status, Count and the
+# interrupt-enable word read in kernel mode across a suspended VBLANK.
+else ifeq ($(CASE),intr-cause)
+CASE_ID = 120
+# 124: the module_start thread cell (probe_module_start.c): does the kernel delete the thread
+# that ran module_start, and free its stack, once module_start returns.
+else ifeq ($(CASE),module-start)
+CASE_ID = 124
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -429,10 +444,22 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),vfpu-forms)
 TARGET = $(BUILD_DIR)/vfpu_forms
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),intr-cause)
+TARGET = $(BUILD_DIR)/intr_cause
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
 # same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),ge-sample)
 TARGET = $(BUILD_DIR)/ge_sample
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The DMAC transfer-time cells: their own source with the same writer, ThreadManForUser
+# block and module lifecycle as the HLE issue cells.
+else ifeq ($(CASE),dma-timing)
+TARGET = $(BUILD_DIR)/dma_timing
+OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE raster corpus: the same source as the sample-point cells, case 123.
+else ifeq ($(CASE),ge-raster)
+TARGET = $(BUILD_DIR)/ge_raster
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
@@ -440,6 +467,15 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),insn-trace)
 TARGET = $(BUILD_DIR)/insn_trace
 OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
+# The module_start thread cell: no main thread. Its own module_start replaces crt0's: the
+# source gives it the assembler name __wrap_module_start, --wrap=module_start points the export
+# table's reference there, and -e makes it the ELF entry point (the linker script's
+# ENTRY(module_start) would name crt0's). Same writer and ThreadManForUser block as the HLE
+# issue cells; the helper thread stands in for the main thread at teardown.
+else ifeq ($(CASE),module-start)
+TARGET = $(BUILD_DIR)/module_start
+OBJS = $(BUILD_DIR)/probe_module_start.o $(BUILD_DIR)/threadman_user_imports.o
+LDFLAGS += -Wl,--wrap=module_start -Wl,-e,__wrap_module_start
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -505,6 +541,16 @@ ifeq ($(CASE),hle-intr-cells)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# intr-cause: exactly kuKernelCall from the kernel bridge, the two sceDisplay reads, and from
+# Kernel_Library the suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue
+# imports; nothing from the interrupt manager or SystemCtrlForUser.
+ifeq ($(CASE),intr-cause)
+LIBS += -lpspkubridge
+USER_MODE_IMPORT_GATE_ARGS += --exact-library KUBridge=0x9060F69D
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceDisplay=0x984C27E7,0x9C6EAAD7
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library SystemCtrlForUser
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the
@@ -577,8 +623,16 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the DMAC transfer-time cells (probe_dmac_timing.c).
+ifneq ($(filter $(BUILD_DIR)/probe_dmac_timing.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 # And the instruction trace (probe_insn_trace.c).
 ifneq ($(filter $(BUILD_DIR)/probe_insn_trace.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+# And the module_start thread cell (probe_module_start.c), which defines its own module_stop.
+ifneq ($(filter $(BUILD_DIR)/probe_module_start.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 
@@ -651,7 +705,13 @@ $(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h
 $(BUILD_DIR)/probe_ge_sample.o: probe_ge_sample.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/probe_dmac_timing.o: probe_dmac_timing.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_module_start.o: probe_module_start.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

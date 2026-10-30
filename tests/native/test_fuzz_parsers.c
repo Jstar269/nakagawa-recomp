@@ -1496,7 +1496,7 @@ static void test_fuzz_package(unsigned iters) {
 
     NkRuntimePackageInfo info;
     NkRuntimePackageStatus initial_status = nk_title_manifest_validate_aot_package(
-        absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
+        absolute_root, disc_id, NULL, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
         &info, reason, sizeof(reason));
     if (initial_status != NK_RUNTIME_PACKAGE_OK) {
         fprintf(stderr, "[FUZZ] package v2 seed rejected (%d): %s\n",
@@ -1524,7 +1524,7 @@ static void test_fuzz_package(unsigned iters) {
 
         memset(&info, 0xA5, sizeof(info));
         NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
-            absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
+            absolute_root, disc_id, NULL, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
             &info, reason, sizeof(reason));
         if (status == NK_RUNTIME_PACKAGE_OK) {
             assert(info.package_root[0] != '\0');

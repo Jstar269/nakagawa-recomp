@@ -154,14 +154,15 @@ int sr_cpu_poll(struct CpuState *s, uint32_t resume_pc);
 /* Interrupt controller (INTC) pending/enable state and Cause.IP mirroring
  * (spec 6.1; LLE Phase 1 PR 5; issue #325).
  *
- * SYNTHETIC. Every PSP-specific property of the controller is an open
- * hardware-oracle question (spec 6.3 rows "INTC map", "INTC polarity",
- * "INTC sources", "Priority", "Masking", "Nesting"), and
- * docs/HARDWARE_ORACLE.md lists interrupt pending state as NOT_MEASURED. So
+ * SYNTHETIC apart from the line. The "INTC map" row of spec 6.3 is measured
+ * (PSP-INTR-CAUSE-001, below SR_INTC_PSP_CPU_IP_BIT): the controller drives
+ * Cause.IP2, and a pending source stays visible there while the CPU has
+ * interrupts suspended. The other rows ("INTC polarity", "INTC sources",
+ * "Priority", "Masking", "Nesting") are open hardware-oracle questions. So
  * there is no default configuration: until sr_intc_init() installs one, every
- * INTC call fails closed and Cause is left exactly as it was. Source count and
- * the CPU line are configuration, never retail claims. The semantics are the
- * spec 6.1 fixture contract:
+ * INTC call fails closed and Cause is left exactly as it was. Source count is
+ * configuration, never a retail claim. The semantics are the spec 6.1 fixture
+ * contract:
  *   - a raised source stays pending until it is acknowledged (sr_intc_clear),
  *     whatever the enable mask says (masked-pending retention);
  *   - the controller drives one CPU interrupt line, asserted while any source
@@ -180,10 +181,17 @@ typedef struct SrIntcConfig {
 
 #define SR_INTC_MAX_SOURCES 32u
 /* MIPS32 Privileged Resource Architecture, Cause register: IP1..IP0 are the
- * software interrupt pair (guest-writable), IP7..IP2 the hardware lines. Which
- * hardware line the PSP INTC drives is unmeasured (spec 6.3, "INTC map"). */
+ * software interrupt pair (guest-writable), IP7..IP2 the hardware lines. */
 #define SR_INTC_CPU_IP_MIN 2u
 #define SR_INTC_CPU_IP_MAX 7u
+/* The line the PSP's interrupt controller drives: IP2 (Cause bit 10). Measured
+ * (PSP-INTR-CAUSE-001, PSP-3000 firmware 6.6.1, 2026-10-29) by kernel-mode
+ * reads inside a sceKernelCpuSuspendIntr window: Cause went from 0x90000020 to
+ * 0x90000420 within 1 ms and stayed so for the rest of the 24 ms window, with
+ * Status 0x00088600 (IE clear, IM1/IM2/IM7 set) and the Allegrex
+ * interrupt-enable word 0; 200 us after the resume (Status 0x00088601) it read
+ * 0x90000020 again. No other IP bit was set in any of the 58 reads. */
+#define SR_INTC_PSP_CPU_IP_BIT 2u
 
 /* Install a configuration: nothing pending, every source disabled. Returns 0,
  * or -1 for a NULL/invalid configuration (the previous state is kept). */

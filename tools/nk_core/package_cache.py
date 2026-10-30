@@ -1026,6 +1026,58 @@ def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
 
 
 AOT_ENHANCEMENT_PACKAGE_EPOCH = "aot-enhancement-package-v1"
+AOT_LLVM_BACKEND_EPOCH = "aot-llvm-backend-v1"
+
+#: The sources that decide what the LLVM IR backend (#330) emits and what its IR calls.
+LLVM_BACKEND_SOURCES = ("tools/codegen_llvm.py", "tools/llvm_ir.py",
+                        "src/rt/llvm_abi.c", "src/rt/llvm_abi.h")
+
+
+def llvm_backend_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Whether a Make build in this environment uses the opt-in LLVM IR backend (#330).
+
+    The Makefile reads `CODEGEN_BACKEND` from the environment or from a command line that
+    `MAKEFLAGS` carries, and codegen also accepts `--backend=llvm` in `CODEGEN_USER_ARGS`.
+    """
+    env = os.environ if environment is None else environment
+    if env.get("CODEGEN_BACKEND", "").strip() == "llvm":
+        return True
+    if "CODEGEN_BACKEND=llvm" in env.get("MAKEFLAGS", "").split():
+        return True
+    return "--backend=llvm" in env.get("CODEGEN_USER_ARGS", "").split()
+
+
+def _llvm_tool_identity(tool: str, env: Mapping[str, str], version_flag: str) -> str:
+    executable = shutil.which(tool, path=env.get("PATH"))
+    if executable is None:
+        raise PackageCacheError(f"the LLVM backend needs {tool}, which is not on PATH")
+    completed = subprocess.run([executable, version_flag], env=dict(env), capture_output=True,
+                               text=True, timeout=60, check=False)
+    if completed.returncode != 0:
+        raise PackageCacheError(f"{tool} {version_flag} failed: {completed.stderr.strip()[:200]}")
+    report = (completed.stdout + completed.stderr).strip()
+    return f"{Path(executable).name}:{sha256_file(Path(executable))}\n{report}"
+
+
+def llvm_backend_options(environment: Mapping[str, str] | None = None,
+                         repository_root: Path | None = None) -> dict[str, Any]:
+    """AOT cache-key options for the LLVM IR backend, or an empty dict for the C backend.
+
+    The C backend returns `{}`, so its keys are unchanged. An LLVM build's key names the
+    backend's own sources and the exact Clang and llvm-link that compile its IR, so an
+    LLVM package is never reused for a C build, for another lowering, or across
+    toolchains; a missing tool fails closed.
+    """
+    env = os.environ if environment is None else environment
+    if not llvm_backend_enabled(env):
+        return {}
+    root = repository_root or Path(__file__).resolve().parents[2]
+    return {"llvm_backend": {
+        "epoch": AOT_LLVM_BACKEND_EPOCH,
+        "sources": {path: sha256_file(root / path) for path in LLVM_BACKEND_SOURCES},
+        "clang": _llvm_tool_identity(env.get("LLVM_CLANG", "clang"), env, "-v"),
+        "llvm_link": _llvm_tool_identity(env.get("LLVM_LINK", "llvm-link"), env, "--version"),
+    }}
 
 
 def ambient_enhancement_package(environment: Mapping[str, str] | None = None) -> str | None:

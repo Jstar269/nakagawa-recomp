@@ -274,6 +274,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
         0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
         0xB4432BC8, 0x8EFB3FA2, 0x843FBF43,                                      # charging status, battery life time, CPU clock setter (PSP-3000 6.61, 2026-10-24)
+        0xB8D7B3FB,                                                              # scePowerSetBusClockFrequency (pspautotests power/freq.expected)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -953,6 +954,102 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
                 self._assert_cited_oracle_cells_exist(evidence)
 
+    ROUTE_A_BATCH_11 = {
+        0xA5DA2406: "h_GetSystemParamInt",
+        0x34B78343: "h_GetSystemParamString",
+        0x0B588501: "h_CtrlReadLatch",
+        0x208DB1BD: "h_HprmIsRemoteExist",
+        0x7E69EDA4: "h_HprmIsHeadphoneExist",
+        0x219C58F1: "h_HprmIsMicrophoneExist",
+        0x34F9C463: "h_PowerGetPllClockFrequencyInt",
+        0xFDB5BFE9: "h_PowerGetCpuClockFrequencyInt",
+        0xFEE03A2F: "h_PowerGetCpuClockFrequencyInt",
+        0x478FE6F5: "h_PowerGetBusClockFrequencyInt",
+        0xBD681969: "h_PowerGetBusClockFrequencyInt",
+        0x03444EB4: "h_GeListSync",
+        0xB287BD61: "h_GeDrawSync",
+        0x3EE30821: "h_DcacheRangeMaintenance",
+        0xBFA98062: "h_DcacheRangeMaintenance",
+        0xCEADEB47: "h_DelayThread",
+        0x68DA9E36: "h_DelayThreadCB",
+        0x05572A5F: "h_ExitGame",
+        0x278C0DF5: "h_WaitThreadEnd",
+        0x46EBB729: "h_UmdCheckMedium",
+        0x6B4A146C: "h_UmdDriveStat",
+    }
+    ROUTE_A_BATCH_12 = {
+        0x55C20A00: ("h_CreateEventFlag", "tests/threads/events/create/create.expected"),
+        0xEF9E4C70: ("h_DeleteEventFlag", "tests/threads/events/delete/delete.expected"),
+        0xF0B7DA1C: ("h_DeleteMsgPipe", "tests/threads/msgpipe/delete.expected"),
+        0x9D9A5BA1: ("h_GetBlockHeadAddr", "tests/sysmem/partition.expected"),
+        0xB6D61D02: ("h_FreePartitionMemory", "tests/sysmem/partition.expected"),
+    }
+
+    def test_route_a_batch_eleven_cites_published_hardware_cells(self) -> None:
+        """#341 batch 11: each handler cites published PSP cells and a production-NID selftest."""
+        for nid, handler in self.ROUTE_A_BATCH_11.items():
+            with self.subTest(nid=f"0x{nid:08x}", handler=handler):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any(e.startswith("docs/HARDWARE_ORACLE.md (PSP-") for e in evidence))
+                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
+                self._assert_cited_cells_are_manifest_cells(evidence)
+                self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_route_a_batch_twelve_cites_psp_recorded_autotests(self) -> None:
+        """#341 batch 12: PSPAutotests 2ed7c9c5 expectations plus a production-NID selftest."""
+        for nid, (handler, expected_file) in self.ROUTE_A_BATCH_12.items():
+            with self.subTest(nid=f"0x{nid:08x}", handler=handler):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["status"], "partial")
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any(f"PSPAutotests {expected_file} at 2ed7c9c5" in e for e in evidence))
+                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
+                self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_route_a_batches_eleven_and_twelve_leave_uncovered_contracts_unreviewed(self) -> None:
+        # The oracle cells use CreateThread/StartThread only as setup, the WritebackInvalidate
+        # range variant is not measured, and AllocPartitionMemory diverges from
+        # sysmem/partition.expected (NULL name, partition, type and size validation, High
+        # placement). None of them may ride along with the batches above.
+        for nid, handler in ((0x446D8DE6, "h_CreateThread"), (0xF475845D, "h_StartThread"),
+                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange"),
+                             (0x237DBD4F, "h_AllocPartitionMemory")):
+            with self.subTest(handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+                self.assertNotIn(handler, meta.HANDLER_METADATA)
+
+    def _assert_cited_cells_are_manifest_cells(self, evidence: list[str]) -> None:
+        """Every `(PSP-ID: cell, cell, prefixN..prefixM)` citation names cells of that oracle record."""
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        cells_by_id = {
+            row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
+            for row in document["tests"]
+        }
+        for citation in evidence:
+            if "(PSP-" not in citation:
+                continue
+            match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
+            self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
+            oracle_id, cells_text = match.groups()
+            self.assertIn(oracle_id, cells_by_id, citation)
+            cited: set[str] = set()
+            for part in cells_text.split(", "):
+                ranged = re.fullmatch(r"([a-z-]+?)(\d+)\.\.\1(\d+)", part)
+                if ranged:
+                    prefix, first, last = ranged.groups()
+                    cited.update(f"{prefix}{n}" for n in range(int(first), int(last) + 1))
+                else:
+                    cited.add(part)
+            self.assertLessEqual(cited, cells_by_id[oracle_id], citation)
+
     def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
         """Check batch 9's `(PSP-IO-001|PSP-UMDIO-001: io-... cells)` citations.
 
@@ -1187,8 +1284,11 @@ static uint32_t h_SynthReal(CpuState *s) {
                 # partial with that limitation recorded in tools/hle_registry_meta.py.
                 "0x64d4540e": "sceKernelReferThreadProfiler",
                 "0x8218b4dd": "sceKernelReferGlobalProfiler",
+                # A capability value, not a success status. The current model is PSP-1000;
+                # its literal zero remains visible to the mechanical detector.
+                "0xa85880d0": "scePowerCheckWlanCoexistenceClock",
             },
-            "only named exceptions may remain fake-success: two route compatibility results and two profiler NULL results",
+            "only named exceptions may remain fake-success: compatibility results, profiler NULL results and the PSP-1000 capability",
         )
 
         unsupported = {
@@ -1205,7 +1305,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
-                "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
                 "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
@@ -1218,11 +1317,9 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
                 "0x469989ad": ("scePower_469989ad", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
-                "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
-                "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x08d98894": ("sceNpDrmEdataSetupKey", "0x80020002"),
                 "0xf9275d98": ("sceKernelLoadModuleBufferUsbWlan", "0x80020002"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
@@ -1606,16 +1703,19 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-CPU-TIMING-001",
                 "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
+                "PSP-DMAC-002",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
-                "PSP-GE-CONTROL-001", "PSP-GE-SAMPLE-001", "PSP-GE-TIMING-001",
+                "PSP-GE-CONTROL-001", "PSP-GE-RASTER-001", "PSP-GE-SAMPLE-001",
+                "PSP-GE-TIMING-001",
                 "PSP-HLE-AUDIO-SRC-001",
                 "PSP-HLE-CTRL-LATCH-001",
-                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
+                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-INTR-001",
+                "PSP-HLE-KERNEL-STATUS-001",
                 "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
-                "PSP-HLE-VTIMER-003", "PSP-IO-001", "PSP-KERNEL-001",
+                "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-KERNEL-001",
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
-                "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
+                "PSP-MODULE-START-001", "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
                 "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRACE-001", "PSP-TRANSPORT-001",
                 "PSP-UMDIO-001", "PSP-VFPU-CMP-001", "PSP-VFPU-FORMS-001",
                 "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",

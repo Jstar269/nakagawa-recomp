@@ -84,10 +84,12 @@ from nk_core.iso_inspect import (  # noqa: E402
     _read_iso_extent,
     _classify_decrypted_elf_file,
     _has_cfw_or_kernel_only_imports,
+    _prx_container_header_supported,
     decrypted_module_dir,
     encrypted_executable_message,
     inspect_compatibility_preflight,
     plan_guest_module_layout,
+    disc_module_host_names,
     walk_disc_module_entries,
     write_experimental_profile,
 )
@@ -532,12 +534,36 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
+#: ELF type of a fixed-address overlay image: one loadable segment at its link address,
+#: no entry point and no module information. The game copies it into place itself.
+ELF_TYPE_FIXED_OVERLAY = 0xFFA8
+
+
 def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
     """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
     rule = _elf32_mips_iso_violation(
         stream, file_size, entry.lba, entry.size, module=True
     )
+    if rule == "header-fields":
+        header = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 52)
+        if struct.unpack_from("<H", header, 16)[0] == ELF_TYPE_FIXED_OVERLAY:
+            return (
+                "its ELF type 0xFFA8 is a fixed-address overlay image (one segment at its "
+                "link address, no entry point, no module information) that the game copies "
+                "into place itself; the import does not translate that overlay form yet"
+            )
     return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
+
+
+def _pbp_container_sections(header: bytes, size: int) -> bool:
+    """Whether a file starts with a well-formed PBP header: magic, then eight section
+    offsets from the 40-byte header to the file end, in order."""
+    if len(header) < 40 or header[:4] != b"\0PBP":
+        return False
+    offsets = struct.unpack_from("<8I", header, 8)
+    return offsets[0] == 40 and all(
+        low <= high for low, high in zip(offsets, offsets[1:] + (size,), strict=False)
+    )
 
 
 def _unready_module_lines(candidates: list[dict]) -> list[str]:
@@ -554,22 +580,30 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     file_size = iso_path.stat().st_size
     candidates: list[dict] = []
     selected_name = Path(selected).name.casefold()
-    for directory, entry in walk_disc_module_entries(iso_path):
+    walked = list(walk_disc_module_entries(iso_path))
+    # A module is identified by its disc path; its host name keys its copies in the
+    # per-title folders and stays unique however many disc folders share a file name.
+    host_names = disc_module_host_names(walked)
+    for directory, entry in walked:
+        host_name = host_names[directory + (entry.name,)]
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
             # Any other file is a candidate only when it is a code overlay, found by
             # its magic whatever its name (analyze.code_overlay_layout).
-            overlay = _iso_code_overlay_candidate(iso_path, file_size, directory, entry)
+            overlay = _iso_code_overlay_candidate(
+                iso_path, file_size, directory, entry, host_name
+            )
             if overlay is not None:
                 candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
         reason: str | None = None
-        if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
-                entry.name.endswith(".") or \
-                entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+        if not _disc_module_name_ok(host_name):
             kind = "unsupported"
             reason = "its file name is not a supported module name"
+        elif not _disc_member_is_ascii(directory):
+            kind = "unsupported"
+            reason = "its disc folder name is not ASCII, so its disc path has no manifest spelling"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
             reason = "it is multi-extent, empty, or larger than the module size limit"
@@ -608,11 +642,18 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     else:
                         kind = "unsupported"
                         reason = "its encrypted-container header is not one the boundary supports"
+                elif _pbp_container_sections(header, entry.size):
+                    # A PBP holds an executable image for LoadExec or the game-sharing
+                    # utility, which reads the file itself; the kernel's module loader
+                    # does not take a PBP, so it is never a module this title loads.
+                    kind = "pbp-container"
+                    reason = ("a PBP executable container (an EBOOT image for LoadExec or "
+                              "game sharing), not a module the kernel's module loader takes")
                 else:
                     kind = "unsupported"
                     reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
-            "name": entry.name,
+            "name": host_name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
@@ -628,12 +669,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
-        member_path = "/".join(candidate["directory"] + (candidate["name"],))
+        member_path = _candidate_member_path(candidate)
         if folded in names:
+            # Only a path-qualified name equal to another file's own name (or a
+            # 32-bit hash collision) gets here: the copies would share one file.
             raise PackageBuildError(
-                "DUPLICATE_DISC_MODULE_BASENAME: module filename "
-                f"{candidate['name']!r} occurs at {names[folded]} and "
-                f"{member_path}; automatic intake is in the works."
+                "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                f"{candidate['name']!r} stands for both {names[folded]} and "
+                f"{member_path}; their copies would share one file in the per-title folder."
             )
         names[folded] = member_path
     staged_size = sum(
@@ -649,8 +692,19 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
 _PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
 
 
+def _candidate_member_path(candidate: dict) -> str:
+    """A discovered candidate's disc path (its identity), '/'-joined."""
+    return "/".join(candidate["directory"] + (candidate["entry"].name,))
+
+
+def _disc_member_is_ascii(components: tuple[str, ...]) -> bool:
+    """Whether every component of a disc path is ASCII (the manifest spells it as text)."""
+    return all(component.isascii() for component in components)
+
+
 def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
-                                entry: IsoDirectoryEntry) -> dict | None:
+                                entry: IsoDirectoryEntry,
+                                host_name: str | None = None) -> dict | None:
     """The candidate for a code overlay among a title's other disc files, else None.
 
     A game reads a code overlay into memory itself and announces it with an
@@ -663,24 +717,25 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
         if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
             return None
         data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    name = host_name or entry.name
     kind, reason = "code-overlay", None
-    if not _disc_module_name_ok(entry.name):
+    if not _disc_module_name_ok(name):
         kind, reason = "unsupported", "its file name is not a supported module name"
+    elif not _disc_member_is_ascii(directory):
+        kind, reason = ("unsupported", "its disc folder name is not ASCII, so its disc path "
+                        "has no manifest spelling")
     else:
         try:
             code_overlay_layout(data)
         except ValueError as exc:
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
-    return {"name": entry.name, "directory": directory, "entry": entry,
+    return {"name": name, "directory": directory, "entry": entry,
             "kind": kind, "reason": reason}
 
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
-    if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
-        return False
-    sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
-    return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
-        sum(sizes) <= MAX_EXECUTABLE_BYTES
+    """The ``~PSP`` shape the decryption step takes (iso_inspect, shared rule)."""
+    return _prx_container_header_supported(header)
 
 
 def _psp_container_kernel_mode(header: bytes) -> bool:
@@ -769,7 +824,9 @@ def _declare_experimental_disc_modules(
     per-title decrypted folder wins (the player's disc check decrypts the disc's
     own there, #295); otherwise an already plain disc copy is used. A kernel-mode
     module in a container the boundary cannot open is left out by name (deferred),
-    because the runtime never runs kernel-mode code. Anything else stops by name. The plain copies are staged in a private folder under
+    because the runtime never runs kernel-mode code, and so is a PBP container named
+    like a module, which the kernel's module loader never takes. Anything else stops
+    by name. The plain copies are staged in a private folder under
     ``experimental/<DISC_ID>`` and planned by plan_guest_module_layout, which
     declares each module that runs as translated guest code as runtime-placed and
     leaves out the ones the runtime serves completely.
@@ -792,6 +849,10 @@ def _declare_experimental_disc_modules(
             module_sources.append((candidate, "folder", folder_copy))
         elif candidate["kind"] in _PLAIN_CANDIDATE_KINDS:
             module_sources.append((candidate, "iso", None))
+        elif candidate["kind"] == "pbp-container":
+            # Left out by name like the kernel container below: the title never loads
+            # it through sceKernelLoadModule, so nothing is translated for it.
+            kernel_left_out.append({"name": candidate["name"], "reason": candidate["reason"]})
         elif candidate["kind"] == "kernel-container":
             # The runtime never runs PSP kernel-mode code (plan_guest_module_layout
             # leaves a decrypted kernel-mode module out too), so a container that
@@ -850,7 +911,7 @@ def _declare_experimental_disc_modules(
             (
                 candidate["name"],
                 module_dir / candidate["name"],
-                "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
+                "disc0:/" + _candidate_member_path(candidate),
             )
             for candidate, _source, _folder_copy in module_sources
         ]
@@ -1561,6 +1622,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     if package_cache.nan_trap_enabled(environment):
         options["nan_trap"] = True
     options.update(package_cache.enhancement_package_options(environment))
+    # Mirrors the planner: the LLVM IR backend (#330) names its sources and toolchain.
+    options.update(package_cache.llvm_backend_options(environment, repository_root=ROOT))
     return options
 
 
@@ -2535,6 +2598,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 planner.extend(("--psp-header", str(cached_header)))
             if enhancement_package_path is not None:
                 planner.extend(("--enhancement-package", str(enhancement_package_path)))
+                # The title's extracted files, where the package's data_files are read.
+                prepared_root = entry.get("prepared_root") or ""
+                if prepared_root and Path(prepared_root).is_dir():
+                    planner.extend(("--enhancement-data-root", prepared_root))
             return planner
 
         def log_command(planner: list[str]) -> None:
@@ -2912,6 +2979,9 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
     payload = {
         "disc_id": meta.disc_id,
+        "sfo_disc_id": meta.sfo_disc_id,
+        "non_retail": meta.non_retail,
+        "identity_sha256": meta.identity_sha256,
         "title": meta.title,
         "version": meta.version,
         "region": meta.region,
@@ -2921,12 +2991,17 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "supported": meta.is_supported,
         "matched_profile": meta.matched_profile.id if meta.matched_profile else None,
         "profile_validation": profile_validation,
+        "format_warnings": list(meta.container_metadata.get("format_warnings", [])),
         "compatibility_preflight": preflight,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"Disc ID:    {meta.disc_id}")
+        if meta.non_retail:
+            print(f"Beta / unofficial: the disc's own ID {meta.sfo_disc_id!r} is not a "
+                  "retail disc ID, so Nakagawa names it by its contents "
+                  f"(SHA-256 {meta.identity_sha256})")
         print(f"Title:      {meta.title}")
         print(f"Region:     {meta.region}")
         print(f"Catalogued: {'YES' if meta.matched_profile else 'NO'}")
@@ -2935,6 +3010,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
         if profile_validation:
             print(f"Profile validation: {profile_validation}")
+        for warning in payload["format_warnings"]:
+            print(f"Disc format note: {warning}")
         if preflight.get("modified_dump_cfw_loader"):
             print(f"Game executable: {preflight['selected_executable_source']}")
             print(f"Analysis input: {preflight['selected_executable'] or 'none'}")
@@ -3105,6 +3182,7 @@ def new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
+        "runtime_boundary": None,
         "presentation": {
             "status": "NOT_RUN",
             "frame_submissions": 0,
@@ -3298,6 +3376,28 @@ _ANALYZER_BOUNDARY_MESSAGES = {
         "The PSP import table is invalid or outside mapped data. "
         "This import-table layout is not supported yet."
     ),
+    "ANALYZER_ELF_INVALID": (
+        "The executable or one of its modules is not an ELF image the analyzer can read. "
+        "This input is not supported yet."
+    ),
+    "ANALYZER_NO_EXECUTABLE_REGIONS": (
+        "The analyzer found no executable code in the executable or one of its modules. "
+        "This input is not supported yet."
+    ),
+    "ANALYZER_INPUT_MISSING": (
+        "An input the analyzer needs (the executable, a module or the module folder) "
+        "is missing."
+    ),
+}
+
+#: The package route's analyze-stage boundaries (title_codegen_plan._make_input_images),
+#: named as analyzer failure classes. Import-table boundaries already carry their class.
+_ANALYZER_ROUTE_CLASSES = {
+    "PACKAGE_INVALID_ELF": "ANALYZER_ELF_INVALID",
+    "PACKAGE_INVALID_IMPORT_TABLE": "ANALYZER_IMPORT_TABLE_INVALID",
+    "PACKAGE_NO_EXECUTABLE_REGIONS": "ANALYZER_NO_EXECUTABLE_REGIONS",
+    "PACKAGE_INPUT_MISSING": "ANALYZER_INPUT_MISSING",
+    "PACKAGE_MODULE_DIR_REQUIRED": "ANALYZER_INPUT_MISSING",
 }
 
 
@@ -3465,6 +3565,10 @@ def _bringup_human_summary(report: dict) -> str:
         if imported["nid_name"]:
             detail += f", {imported['nid_name']}"
         detail += ")"
+    elif report["failure_class"] == "UNSUPPORTED_IMPORT" and report.get("runtime_boundary"):
+        detail = f" ({report['runtime_boundary']} was called in a way that is not supported yet)"
+    elif report["failure_class"] == "RUNTIME_SEMANTIC_BOUNDARY":
+        detail = f" (the runtime stopped at {report['runtime_boundary']}, which is not supported yet)"
     elif report["failure_class"] == "ENTRY_NOT_COMPILED":
         detail = " (the selected executable entry has no generated function)"
     elif report["failure_class"] == "RUNTIME_INPUT_UNAVAILABLE":
@@ -3727,6 +3831,40 @@ def _runtime_import_rows(output: str, imports: list[dict]) -> list[dict]:
     ]
 
 
+# The runtime's named stops (src/rt). The dispatcher, GE and I/O boundaries print
+# "SEMANTIC_BOUNDARY: <code>; ..." (a few "<code>: ..."); an import the runtime cannot serve
+# as called prints "UNSUPPORTED_IMPORT: <import> <detail>; the run stops here (#308)"; other
+# refusals print "<TAG>: ..." ending "the run stops here (#N)" or "stops at <boundary>".
+_RUNTIME_SEMANTIC_BOUNDARY = re.compile(r"^SEMANTIC_BOUNDARY: ([A-Za-z][A-Za-z0-9_-]{0,95})[;:] ")
+_RUNTIME_IMPORT_STOP = re.compile(
+    r"^UNSUPPORTED_IMPORT: ([A-Za-z_][A-Za-z0-9_]{0,95}) .*; the run stops here \(#\d+\)$"
+)
+_RUNTIME_NAMED_STOP = re.compile(
+    r"^([A-Z][A-Z0-9_]{3,95}): .*(?:the run stops here \(#\d+\)|stops at [a-z0-9-]+)$"
+)
+
+
+def runtime_stop(output: str) -> tuple[str, str] | None:
+    """The last named stop in one runtime's output, as (kind, name), or None.
+
+    kind is IMPORT for an import the runtime refused as called (name: the import) and
+    BOUNDARY for every other named stop (name: the runtime's boundary code or line tag). The
+    last one wins: a fatal stop is the runtime's last word. A boundary the runtime only
+    reports and runs on (the GE names one depth-buffer limit once) is named here only when
+    nothing later is.
+    """
+    stop = None
+    for line in output.splitlines():
+        line = line.strip()
+        if match := _RUNTIME_IMPORT_STOP.fullmatch(line):
+            stop = ("IMPORT", match.group(1))
+        elif match := _RUNTIME_SEMANTIC_BOUNDARY.match(line):
+            stop = ("BOUNDARY", match.group(1))
+        elif match := _RUNTIME_NAMED_STOP.fullmatch(line):
+            stop = ("BOUNDARY", match.group(1))
+    return stop
+
+
 def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     """Classify one runtime's captured output into the bring-up runtime_output_kind vocabulary."""
     folded = output.casefold()
@@ -3765,6 +3903,8 @@ def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
         return "DRIVER_ARGUMENT_FAILURE"
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
+    if runtime_stop(output) is not None:
+        return "SEMANTIC_BOUNDARY"
     # SDL's generic dummy-driver diagnostic can accompany a more useful PSP
     # boundary. Keep it as a fallback so it cannot mask named runtime failures.
     if "no available video device" in folded or "video driver" in folded:
@@ -3791,9 +3931,16 @@ _PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
 _ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def set_bringup_presentation(report: dict, output: str) -> bool:
-    """Record presenter identity and accept only ordered, validated evidence."""
+def set_bringup_presentation(report: dict, output: str, *, stopped: bool = False) -> bool:
+    """Record presenter identity and accept only ordered, validated evidence.
+
+    stopped: the run was killed at its time limit, so its output can end part-way through a
+    frame: on an unfinished last line, or after a frame's present event but before its
+    submission line. That one cut-off frame is not counted; everything before it is.
+    """
     lines = [line.strip() for line in output.splitlines()]
+    if stopped and lines and not output.endswith(("\n", "\r")):
+        lines.pop()
     submission_indices: list[int] = []
     malformed_submission = False
     for index, line in enumerate(lines):
@@ -3813,6 +3960,9 @@ def set_bringup_presentation(report: dict, output: str) -> bool:
             frame_indices.append(index)
         else:
             malformed_frame = True
+    if (stopped and len(frame_indices) == len(submission_indices) + 1
+            and (not submission_indices or frame_indices[-1] > submission_indices[-1])):
+        frame_indices.pop()
 
     backends = {
         match.group(1)
@@ -4324,12 +4474,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 pass
     except Exception as exc:
         analyzer_boundary = getattr(exc, "code", None)
-        failure = (
-            analyzer_boundary
-            if isinstance(analyzer_boundary, str)
-            and analyzer_boundary in _ANALYZER_BOUNDARY_MESSAGES
-            else "ANALYZER_FAILURE_UNCLASSIFIED"
-        )
+        failure = _ANALYZER_ROUTE_CLASSES.get(analyzer_boundary, analyzer_boundary)
+        if not isinstance(failure, str) or failure not in _ANALYZER_BOUNDARY_MESSAGES:
+            failure = "ANALYZER_FAILURE_UNCLASSIFIED"
         diagnostic = (
             f"{analyzer_boundary}: {type(exc).__name__}: {exc}"
             if isinstance(analyzer_boundary, str)
@@ -4552,10 +4699,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         ]
         env["SR_PRESENT_TRACE"] = "1"
         timeout = max(1, min(int(args.launch_timeout), BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS))
+        # The game's own text reaches this output and need not be UTF-8; a strict decode
+        # would lose the whole output, and with it the report.
         process = subprocess.Popen(
             launch_command, cwd=package_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            encoding="utf-8", errors="replace",
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
@@ -4615,8 +4765,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
+                stop = runtime_stop(launch_output)
+                report["runtime_boundary"] = stop[1] if stop else None
                 if (report["runtime_imports"] or "unknown nid" in folded
-                      or "unimplemented import" in folded):
+                      or "unimplemented import" in folded
+                      or (report["runtime_output_kind"] == "SEMANTIC_BOUNDARY"
+                          and stop[0] == "IMPORT")):
                     failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
                       or "unsupported instruction" in folded or "aot-gap" in folded):
@@ -4635,6 +4789,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "NATIVE_RUNTIME_CRASH", [308]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
+                elif report["runtime_output_kind"] == "SEMANTIC_BOUNDARY":
+                    failure, issues = "RUNTIME_SEMANTIC_BOUNDARY", [308]
                 elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
                     failure, issues = "HEADLESS_UNAVAILABLE", [308]
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
@@ -4646,7 +4802,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             process.kill()
             launch_output, _ = process.communicate()
             _write_bringup_launch_log(work_dir, launch_output)
-            _set_bringup_presentation(report, launch_output)
+            _set_bringup_presentation(report, launch_output, stopped=True)
             report["exit_classification"] = "TIMED_OUT"
             fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
                           int((time.perf_counter() - started) * 1000))

@@ -81,6 +81,15 @@ bool player_game_is_showcase(const GameRecord *game) {
     return game && strncmp(game->title_id, "showcase-", 9) == 0;
 }
 
+/* `disc_id` as the settings file keys it (ULUS12345); false when it is not a PSP
+   disc ID. */
+static bool player_disc_id_key(const char *disc_id, char key[PLAYER_DISC_ID_KEY_LEN]) {
+    return nk_title_manifest_package_dir_name(disc_id, NULL, key, PLAYER_DISC_ID_KEY_LEN);
+}
+
+static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
+                                           bool on);
+
 static const char *player_package_root(const PlayerApp *app, const GameRecord *game) {
     if (app && game && player_game_is_showcase(game) && app->showcase_root[0]) {
         return app->showcase_root;
@@ -207,7 +216,8 @@ static bool player_runtime_worker_failure_matches(
     return failure && failure->valid && game &&
         strcmp(failure->disc_id, game->disc_id) == 0 &&
         strcmp(failure->title_id, game->title_id) == 0 &&
-        strcmp(failure->selected_executable, game->selected_executable) == 0;
+        strcmp(failure->selected_executable, game->selected_executable) == 0 &&
+        strcmp(failure->enhancement_package_id, game->enhancement_package_id) == 0;
 }
 
 /* The table keeps its valid records first, so a lookup stops at the first
@@ -302,6 +312,8 @@ void player_app_runtime_package_worker_start_failed_record(
         snprintf(failure->title_id, sizeof(failure->title_id), "%s", game->title_id);
         snprintf(failure->selected_executable, sizeof(failure->selected_executable),
                  "%s", game->selected_executable);
+        snprintf(failure->enhancement_package_id, sizeof(failure->enhancement_package_id),
+                 "%s", game->enhancement_package_id);
     }
     if (failure->failure_count < 5) failure->failure_count++;
     uint64_t delay_ms = 5000;
@@ -327,6 +339,25 @@ static void player_runtime_cache_set_game_key(
     snprintf(entry->title_id, sizeof(entry->title_id), "%s", game->title_id);
     snprintf(entry->selected_executable, sizeof(entry->selected_executable),
              "%s", game->selected_executable);
+    snprintf(entry->enhancement_package_id, sizeof(entry->enhancement_package_id),
+             "%s", game->enhancement_package_id);
+}
+
+bool player_runtime_package_cache_entry_is_for(
+    const PlayerRuntimePackageCacheEntry *entry, const GameRecord *game) {
+    return entry && game &&
+           strcmp(entry->disc_id, game->disc_id) == 0 &&
+           strcmp(entry->title_id, game->title_id) == 0 &&
+           strcmp(entry->selected_executable, game->selected_executable) == 0 &&
+           strcmp(entry->enhancement_package_id, game->enhancement_package_id) == 0;
+}
+
+bool player_game_same_package(const GameRecord *a, const GameRecord *b) {
+    return a && b &&
+           strcmp(a->disc_id, b->disc_id) == 0 &&
+           strcmp(a->title_id, b->title_id) == 0 &&
+           strcmp(a->selected_executable, b->selected_executable) == 0 &&
+           strcmp(a->enhancement_package_id, b->enhancement_package_id) == 0;
 }
 
 void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
@@ -335,10 +366,7 @@ void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
-    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
-                     strcmp(entry->title_id, game->title_id) == 0 &&
-                     strcmp(entry->selected_executable,
-                            game->selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(entry, game);
     if (!same_game) {
         memset(entry, 0, sizeof(*entry));
         player_runtime_cache_set_game_key(entry, game);
@@ -353,10 +381,7 @@ void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
-    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
-                     strcmp(entry->title_id, game->title_id) == 0 &&
-                     strcmp(entry->selected_executable,
-                            game->selected_executable) == 0;
+    bool same_game = player_runtime_package_cache_entry_is_for(entry, game);
     if (!same_game) {
         memset(entry, 0, sizeof(*entry));
         player_runtime_cache_set_game_key(entry, game);
@@ -392,9 +417,7 @@ void player_app_runtime_package_cache_store(
     /* A stored reason survives a store for the same title; a warm cache hit
      * stores no new reason, and the earlier one still describes the package. */
     char prior_reason[sizeof(entry->reason)] = "";
-    if (strcmp(entry->disc_id, game->disc_id) == 0 &&
-        strcmp(entry->title_id, game->title_id) == 0 &&
-        strcmp(entry->selected_executable, game->selected_executable) == 0) {
+    if (player_runtime_package_cache_entry_is_for(entry, game)) {
         snprintf(prior_reason, sizeof(prior_reason), "%s", entry->reason);
     }
     memset(entry, 0, sizeof(*entry));
@@ -527,9 +550,7 @@ static bool player_runtime_cache_entry_matches(const PlayerApp *app, int index,
     const PlayerRuntimePackageCacheEntry *entry = &app->runtime_package_cache[index];
     return strcmp(app->games[index].disc_id, game->disc_id) == 0 &&
            strcmp(app->games[index].title_id, game->title_id) == 0 &&
-           strcmp(entry->disc_id, game->disc_id) == 0 &&
-           strcmp(entry->title_id, game->title_id) == 0 &&
-           strcmp(entry->selected_executable, game->selected_executable) == 0;
+           player_runtime_package_cache_entry_is_for(entry, game);
 }
 
 static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
@@ -640,6 +661,9 @@ void player_app_sync_library(PlayerApp *app) {
             app->selected_game_index = app->game_count - 1;
         }
     }
+    /* Each title's package variant follows its enhancement setting before any
+       check or launch reads the entries. */
+    player_app_refresh_title_enhancements(app);
     /* Library synchronization intentionally invalidates the result cache, but
        a title-keyed worker-start failure remains actionable while that title
        is still present. Removal drops it; re-adding then starts clean. */
@@ -1161,7 +1185,8 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->check_updates_at_start = false;
     settings->picker_folder[0] = '\0';
     settings->developer_mode = false;
-    settings->experimental_60hz = false;
+    memset(settings->enhancement_60hz_discs, 0, sizeof(settings->enhancement_60hz_discs));
+    settings->enhancement_60hz_disc_count = 0;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1361,15 +1386,28 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[5] = {"online_mode", "online_news", "online_reports",
-                                            "developer_mode", "experimental_60hz"};
-        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_news,
-                           &app->settings.online_reports, &app->settings.developer_mode,
-                           &app->settings.experimental_60hz};
-        for (int k = 0; k < 5; ++k) {
+        static const char *const keys[4] = {"online_mode", "online_news", "online_reports",
+                                            "developer_mode"};
+        bool *fields[4] = {&app->settings.online_mode, &app->settings.online_news,
+                           &app->settings.online_reports, &app->settings.developer_mode};
+        for (int k = 0; k < 4; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
+        }
+    }
+
+    /* The 60 FPS enhancement is on only for the disc IDs this list names. An
+       entry that is not a PSP disc ID is dropped, and nothing else turns it on:
+       the global "experimental_60hz" switch of earlier builds is not read. */
+    {
+        NkJsonNode *discs = nk_json_obj_get(root, "enhancement_60hz_discs");
+        size_t count = discs && nk_json_is_array(discs) ? nk_json_array_count(discs) : 0;
+        for (size_t i = 0; i < count; i++) {
+            const char *disc = nk_json_get_string(nk_json_array_get(discs, i));
+            char key[PLAYER_DISC_ID_KEY_LEN];
+            if (!disc || !player_disc_id_key(disc, key)) continue;
+            player_settings_set_title_60hz(&app->settings, key, true);
         }
     }
 
@@ -1548,8 +1586,11 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
-    fprintf(f, "  \"experimental_60hz\": %s,\n",
-            app->settings.experimental_60hz ? "true" : "false");
+    fprintf(f, "  \"enhancement_60hz_discs\": [");
+    for (int i = 0; i < app->settings.enhancement_60hz_disc_count; i++) {
+        fprintf(f, "%s\"%s\"", i ? ", " : "", app->settings.enhancement_60hz_discs[i]);
+    }
+    fprintf(f, "],\n");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
@@ -1989,30 +2030,170 @@ void player_app_toggle_ui_sounds(PlayerApp *app) {
     maybe_persist_settings(app);
 }
 
-void player_app_set_experimental_60hz(PlayerApp *app, bool on) {
-    if (!app) return;
-    app->settings.experimental_60hz = on;
-    player_dev_log_add(app, "settings",
-                       "experimental 60 Hz logic rescale %s (authentic 30 Hz when off)",
-                       on ? "on" : "off");
-    maybe_persist_settings(app);
+bool player_read_title_enhancement(const char *user_root, const GameRecord *game,
+                                   PlayerTitleEnhancement *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!user_root || !user_root[0] || !game || game->is_sample ||
+        game->is_showcase_package || !game->title_id[0] ||
+        !player_disc_id_key(game->disc_id, key)) {
+        return false;
+    }
+    char leaf[PLAYER_DISC_ID_KEY_LEN + 16];
+    for (size_t i = 0; key[i]; i++) key[i] = (char)tolower((unsigned char)key[i]);
+    snprintf(leaf, sizeof(leaf), "%s-60hz.json", key);
+    char folder[MAX_PATH_LEN];
+    char path[MAX_PATH_LEN];
+    if (!player_join_path(folder, sizeof(folder), user_root, "enhancements") ||
+        !player_join_path(path, sizeof(path), folder, leaf) ||
+        !nk_platform_file_exists(path)) {
+        return false;
+    }
+    FILE *f = nk_fopen_utf8(path, "rb");
+    if (!f) {
+        snprintf(out->problem, sizeof(out->problem), "Its enhancement package can't be read.");
+        return false;
+    }
+    char *text = NULL;
+    long size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) size = ftell(f);
+    /* tools/enhancement_package.py has no size limit of its own; a package is a
+       list of instruction sites, far below this. */
+    if (size > 0 && size <= 8L * 1024L * 1024L && fseek(f, 0, SEEK_SET) == 0) {
+        text = (char *)malloc((size_t)size + 1u);
+    }
+    size_t got = text ? fread(text, 1, (size_t)size, f) : 0;
+    fclose(f);
+    if (!text || got != (size_t)size) {
+        free(text);
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package can't be read or is too large.");
+        return false;
+    }
+    text[got] = '\0';
+    char error[128] = "";
+    NkJsonNode *package = nk_json_parse(text, got, error, sizeof(error));
+    free(text);
+    const char *id = package && nk_json_is_object(package)
+        ? nk_json_get_string(nk_json_obj_get(package, "id")) : NULL;
+    const char *target = package && nk_json_is_object(package)
+        ? nk_json_get_string(nk_json_obj_get(package, "target_title_id")) : NULL;
+    if (!package || !nk_json_is_object(package)) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package is not valid JSON.");
+    } else if (!id || !nk_title_manifest_enhancement_id_valid(id)) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package has no valid id.");
+    } else if (!target || strcmp(target, game->title_id) != 0) {
+        snprintf(out->problem, sizeof(out->problem),
+                 "Its enhancement package is for another game.");
+    } else {
+        snprintf(out->package_id, sizeof(out->package_id), "%s", id);
+        out->available = true;
+    }
+    if (package) nk_json_free(package);
+    return out->available;
 }
 
-void player_app_toggle_experimental_60hz(PlayerApp *app) {
+/* The settings list's index of a disc, or -1. */
+static int player_settings_title_60hz_index(const PlayerSettings *settings,
+                                            const char *key) {
+    for (int i = 0; settings && key && i < settings->enhancement_60hz_disc_count; i++) {
+        if (strcmp(settings->enhancement_60hz_discs[i], key) == 0) return i;
+    }
+    return -1;
+}
+
+static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
+                                           bool on) {
+    int index = player_settings_title_60hz_index(settings, key);
+    if (on && index < 0 && settings->enhancement_60hz_disc_count < MAX_LIBRARY_GAMES) {
+        snprintf(settings->enhancement_60hz_discs[settings->enhancement_60hz_disc_count++],
+                 PLAYER_DISC_ID_KEY_LEN, "%s", key);
+    } else if (!on && index >= 0) {
+        int last = --settings->enhancement_60hz_disc_count;
+        if (index != last) {
+            memcpy(settings->enhancement_60hz_discs[index],
+                   settings->enhancement_60hz_discs[last], PLAYER_DISC_ID_KEY_LEN);
+        }
+        memset(settings->enhancement_60hz_discs[last], 0, PLAYER_DISC_ID_KEY_LEN);
+    }
+}
+
+bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id) {
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    return app && disc_id && player_disc_id_key(disc_id, key) &&
+           player_settings_title_60hz_index(&app->settings, key) >= 0;
+}
+
+bool player_app_title_60hz_on(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    return player_app_title_60hz_saved(app, app->games[game_index].disc_id) ||
+           (app->experimental_60hz_session &&
+            app->title_enhancements[game_index].available);
+}
+
+bool player_app_title_60hz_blocked(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    return player_app_title_60hz_saved(app, app->games[game_index].disc_id) &&
+           !app->title_enhancements[game_index].available;
+}
+
+/* The variant the title launches: its enhanced build when the enhancement is on
+   and its package is usable, else the authentic package. */
+static void player_app_select_package_variant(PlayerApp *app, int game_index) {
+    GameRecord *game = &app->games[game_index];
+    const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
+    if (enhancement->available && player_app_title_60hz_on(app, game_index)) {
+        snprintf(game->enhancement_package_id, sizeof(game->enhancement_package_id), "%s",
+                 enhancement->package_id);
+    } else {
+        game->enhancement_package_id[0] = '\0';
+    }
+}
+
+void player_app_refresh_title_enhancements(PlayerApp *app) {
     if (!app) return;
-    player_app_set_experimental_60hz(app, !app->settings.experimental_60hz);
+    char user_root[NK_MAX_PATH];
+    bool have_root = player_app_data_root(app, user_root, sizeof(user_root));
+    for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
+        (void)player_read_title_enhancement(have_root ? user_root : NULL, &app->games[i],
+                                            &app->title_enhancements[i]);
+        player_app_select_package_variant(app, i);
+    }
+}
+
+void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!player_disc_id_key(app->games[game_index].disc_id, key)) return;
+    player_settings_set_title_60hz(&app->settings, key, on);
+    player_dev_log_add(app, "settings",
+                       "60 FPS game logic for %s %s (the original game when off)", key,
+                       on ? "on" : "off");
+    maybe_persist_settings(app);
+    /* Read the package again: the toggle is where a user who just added or
+       fixed it looks. */
+    char user_root[NK_MAX_PATH];
+    bool have_root = player_app_data_root(app, user_root, sizeof(user_root));
+    (void)player_read_title_enhancement(have_root ? user_root : NULL,
+                                        &app->games[game_index],
+                                        &app->title_enhancements[game_index]);
+    player_app_select_package_variant(app, game_index);
+    /* The other variant has its own package and its own status. */
+    if (game_index == app->selected_game_index) app->request_package_status_retry = true;
 }
 
 void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
     if (!app) return;
     app->experimental_60hz_session = on;
     player_dev_log_add(app, "settings",
-                       "experimental 60 Hz logic rescale %s for this session only",
-                       on ? "on" : "off");
-}
-
-bool player_app_experimental_60hz_active(const PlayerApp *app) {
-    return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
+                       "60 FPS game logic %s for this session, for every game with an "
+                       "enhancement package", on ? "on" : "off");
+    for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
+        player_app_select_package_variant(app, i);
+    }
 }
 
 void player_app_toggle_update_check_at_start(PlayerApp *app) {
@@ -2369,6 +2550,15 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
     if (have_build) {
         ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
                                 "packages", disc, NULL) && ok;
+        /* The title's enhanced build, when its enhancement package names one. */
+        const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
+        char enhanced_folder[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 16];
+        if (enhancement->available &&
+            nk_title_manifest_package_dir_name(disc, enhancement->package_id, enhanced_folder,
+                                               sizeof(enhanced_folder))) {
+            ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
+                                    "packages", enhanced_folder, NULL) && ok;
+        }
         ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
                                 "cache", "packages", disc) && ok;
         ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
@@ -2730,6 +2920,7 @@ const char *player_runtime_stop_feature(const char *boundary) {
         "target-not-executable", "misaligned-control-target", "incomplete-executable-span",
         "unsupported-interpreter-form", "invalid-guest-memory-access",
         "misaligned-guest-memory-access", "invalid-control-flow", "interpreter-rejection",
+        "null-code-pointer",
     };
     static const char import_prefix[] = "unsupported-import-";
     if (!boundary) return "a system feature";
@@ -3005,6 +3196,17 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     const char *root = player_package_root(app, game);
     memset(work, 0, sizeof(*work));
     app->close_confirmation_pending = false;
+    if (player_app_title_60hz_blocked(app, game_index)) {
+        /* 60 FPS game logic is on and its package is gone: the original game
+           is not started in its place. */
+        player_app_set_error(
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            "60 FPS game logic is on for this game, but its enhancement package is missing "
+            "or not valid. Turn the enhancement off on the game's page to play the original "
+            "game, or put the package back.",
+            "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
     /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
     app->launch_session.config.gui_mode = !app->launch_headless;
@@ -3015,9 +3217,6 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         work->has_package_root = true;
     }
     work->settings = app->settings;
-    /* The launch copy carries the session override; app->settings, which is saved,
-       does not. */
-    work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
@@ -3070,8 +3269,11 @@ void player_launch_work_run(PlayerLaunchWork *work) {
                                              work->package_error,
                                              sizeof(work->package_error))
         : NK_RUNTIME_PACKAGE_MISSING;
+    /* An enhanced build has no developer-layout stand-in: it is valid or the
+       launch stops here. */
     bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
         (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+         !game->enhancement_package_id[0] &&
          nk_launch_runtime_available(root, game->title_id));
     if (!runtime_available) {
         work->failed_step = PLAYER_LAUNCH_STEP_PACKAGE;
@@ -3457,7 +3659,6 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->vsync = settings->vsync;
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
-    config->experimental_60hz = settings->experimental_60hz;
     config->developer_mode = settings->developer_mode;
 }
 
@@ -3763,6 +3964,15 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         return false;
     }
     if (game_index < 0 || game_index >= app->game_count) return false;
+    if (player_app_title_60hz_blocked(app, game_index)) {
+        player_app_set_error(
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            "60 FPS game logic is on for this game, but its enhancement package is missing "
+            "or not valid. Turn the enhancement off on the game's page to build the "
+            "original game, or put the package back.",
+            "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
     if (!player_app_build_package_preflight(app, game_index, true)) {
         const PlayerPreflightCheck *blocker =
             player_app_package_build_preflight_blocker(app, game_index);
@@ -3776,6 +3986,9 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     const GameRecord *game = &app->games[game_index];
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
+    snprintf(app->build_session.enhancement_package_id,
+             sizeof(app->build_session.enhancement_package_id), "%s",
+             game->enhancement_package_id);
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
@@ -4709,6 +4922,31 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     return "Check";
 }
 
+const char *player_input_class_name(PlayerInputClass input_class) {
+    switch (input_class) {
+        case PLAYER_INPUT_PLAIN_ELF: return "plain-elf";
+        case PLAYER_INPUT_HOMEBREW: return "homebrew";
+        case PLAYER_INPUT_DECRYPTED_RETAIL: return "decrypted-retail";
+        case PLAYER_INPUT_ENCRYPTED_RETAIL: return "encrypted-retail";
+        case PLAYER_INPUT_UNSUPPORTED: return "unsupported";
+        case PLAYER_INPUT_UNCHECKED:
+        default: return "unchecked";
+    }
+}
+
+/* One more file the user still has to supply (or replace) in the title's
+   folder. The first PLAYER_INPUT_FILES_MAX are named; every one is counted. */
+static void player_input_note_file(PlayerInputReport *input, const char *name,
+                                   const char *source, PlayerInputFileState state) {
+    if (!input) return;
+    input->files_needed++;
+    if (input->file_count >= PLAYER_INPUT_FILES_MAX) return;
+    PlayerInputFile *file = &input->files[input->file_count++];
+    snprintf(file->name, sizeof(file->name), "%s", name ? name : "");
+    snprintf(file->source, sizeof(file->source), "%s", source ? source : "");
+    file->state = state;
+}
+
 bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
     return check && check->status == PREFLIGHT_UNSUPPORTED &&
            (strcmp(check->code, "EXECUTABLE") == 0 ||
@@ -4767,8 +5005,8 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                   : "The title settings for this disc are missing or out of date. Add the disc again.";
     } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
         return ok ? "Found the game's other program files."
-                  : "Some of the game's program files are encrypted, and Nakagawa doesn't "
-                    "decrypt games.";
+                  : "Some of the game's program files are encrypted, and Nakagawa couldn't "
+                    "decrypt them.";
     } else if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
         switch (check->status) {
             case PREFLIGHT_OK: return "Built and ready to play.";
@@ -5528,11 +5766,13 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
 #define PLAYER_MAX_GUEST_MODULES 256
 
 typedef struct {
-    char name[256];
-    char rel_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+    char name[256];       /* host name: keys the copy in the per-title folder */
+    char disc_name[256];  /* the file's own name on the disc */
+    char rel_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];  /* identity: its disc path */
     uint32_t lba;
     uint32_t size;
     bool encrypted;
+    bool shared_name;     /* another file in the module tree carries disc_name */
 } PlayerModuleCandidate;
 
 typedef enum {
@@ -5602,16 +5842,20 @@ static bool player_module_name_is_executable(const char *name,
             player_name_equals_ignore_case(name, selected_name));
 }
 
+/* One to four segments, each and all together within 64 MiB, at least one not
+ * empty. A segment may be empty: small user libraries declare a data segment of
+ * size 0 when they have no data. Mirrors _prx_container_header_supported in
+ * tools/nk_core/iso_inspect.py. */
 static bool player_prx_header_supported(const unsigned char *header,
                                         uint32_t header_size) {
     if (header_size < 0x64 || header[0x27] < 1 || header[0x27] > 4) return false;
     uint32_t total = 0;
     for (uint32_t i = 0; i < header[0x27]; i++) {
         uint32_t value = player_read_le32(header + 0x54 + i * 4);
-        if (value == 0 || value > 64u * 1024u * 1024u) return false;
+        if (value > 64u * 1024u * 1024u) return false;
         total += value;
     }
-    return total <= 64u * 1024u * 1024u;
+    return total > 0 && total <= 64u * 1024u * 1024u;
 }
 
 /* The shared PSP ELF32/MIPS layout rule (nk_iso.c) for a module still inside the ISO. */
@@ -5665,17 +5909,6 @@ static bool player_scan_module_entry(const char *member_path,
         return true;
     }
 
-    for (size_t i = 0; i < context->count; i++) {
-        if (player_name_equals_ignore_case(context->modules[i].name,
-                                           entry->name)) {
-            context->status = PLAYER_MODULE_SCAN_DUPLICATE_NAME;
-            snprintf(context->boundary_message, context->boundary_message_size,
-                     "DUPLICATE_DISC_MODULE_BASENAME: %.128s occurs at %.900s "
-                     "and %.900s; automatic module intake is in the works.",
-                     entry->name, context->modules[i].rel_path, member_path);
-            return false;
-        }
-    }
     if (context->count >= context->max_modules) {
         context->status = PLAYER_MODULE_SCAN_CANDIDATE_LIMIT;
         snprintf(context->boundary_message, context->boundary_message_size,
@@ -5688,12 +5921,117 @@ static bool player_scan_module_entry(const char *member_path,
            sizeof(context->modules[context->count]));
     snprintf(context->modules[context->count].name,
              sizeof(context->modules[context->count].name), "%s", entry->name);
+    snprintf(context->modules[context->count].disc_name,
+             sizeof(context->modules[context->count].disc_name), "%s", entry->name);
     snprintf(context->modules[context->count].rel_path,
              sizeof(context->modules[context->count].rel_path), "%s", member_path);
     context->modules[context->count].lba = entry->lba;
     context->modules[context->count].size = entry->size;
     context->modules[context->count].encrypted = encrypted;
     context->count++;
+    return true;
+}
+
+/* Second pass over the module tree: a candidate whose file name another walked
+ * file also carries (ASCII case-insensitively, any folder, any contents) is
+ * marked shared. tools/nk_core/iso_inspect.py disc_module_host_names applies
+ * the same rule. */
+typedef struct {
+    PlayerModuleCandidate *modules;
+    size_t count;
+} PlayerModuleNameShareContext;
+
+static bool player_mark_shared_module_names(const char *member_path,
+                                            const NkIsoDirEntry *entry,
+                                            void *userdata) {
+    PlayerModuleNameShareContext *context = (PlayerModuleNameShareContext *)userdata;
+    for (size_t i = 0; i < context->count; i++) {
+        PlayerModuleCandidate *module = &context->modules[i];
+        if (module->shared_name || strcmp(module->rel_path, member_path) == 0) continue;
+        if (player_name_equals_ignore_case(module->disc_name, entry->name)) {
+            module->shared_name = true;
+        }
+    }
+    return true;
+}
+
+static uint32_t player_fnv1a32_upper(const char *text) {
+    uint32_t value = 0x811c9dc5u;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        unsigned char c = *p;
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        value = (value ^ c) * 0x01000193u;
+    }
+    return value;
+}
+
+/* The path-qualified host name of a module whose file name another disc file
+ * shares: "<stem>.<FNV-1a 32 of the upper-cased disc path, 8 hex>.<suffix>".
+ * Mirrors disc_module_qualified_name in tools/nk_core/iso_inspect.py. Returns false
+ * when it does not fit `out`. */
+bool player_module_qualified_name(const char *rel_path, const char *disc_name,
+                            char *out, size_t out_size) {
+    const char *dot = strrchr(disc_name, '.');
+    uint32_t digest = player_fnv1a32_upper(rel_path);
+    int written;
+    if (dot == NULL || dot == disc_name) {
+        written = snprintf(out, out_size, "%s.%08x", disc_name, (unsigned)digest);
+    } else {
+        written = snprintf(out, out_size, "%.*s.%08x%s", (int)(dot - disc_name),
+                           disc_name, (unsigned)digest, dot);
+    }
+    return written > 0 && (size_t)written < out_size;
+}
+
+/* Give every candidate its host name and keep the ones that can name a host
+ * file: a module keeps its own name unless another file in the walked tree
+ * carries it, so two disc folders holding one file name never meet in the
+ * per-title folder. Returns false (with the boundary message) when the tree
+ * cannot be walked again or two host names would still coincide. */
+static bool player_assign_module_host_names(NkIsoReader *reader,
+                                            PlayerModuleCandidate *modules,
+                                            size_t *count, bool *duplicate,
+                                            char *boundary_message,
+                                            size_t boundary_message_size) {
+    PlayerModuleNameShareContext share;
+    size_t kept = 0;
+    *duplicate = false;
+    share.modules = modules;
+    share.count = *count;
+    if (nk_iso_reader_walk_module_tree(reader, player_mark_shared_module_names,
+                                       &share) != NK_ISO_MODULE_WALK_OK) {
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_TREE_INVALID: ISO module directories could "
+                     "not be listed safely.");
+        }
+        return false;
+    }
+    for (size_t i = 0; i < *count; i++) {
+        PlayerModuleCandidate *module = &modules[i];
+        if (module->shared_name &&
+            (!player_module_qualified_name(module->rel_path, module->disc_name,
+                                     module->name, sizeof(module->name)) ||
+             !player_module_name_is_safe(module->name))) {
+            continue;  /* like an unusable disc name: not a candidate */
+        }
+        for (size_t j = 0; j < kept; j++) {
+            if (player_name_equals_ignore_case(modules[j].name, module->name)) {
+                *duplicate = true;
+                if (boundary_message && boundary_message_size) {
+                    snprintf(boundary_message, boundary_message_size,
+                             "DUPLICATE_DISC_MODULE_BASENAME: module host name "
+                             "%.200s stands for both %.900s and %.900s; their "
+                             "copies would share one file in the per-title folder.",
+                             module->name, modules[j].rel_path, module->rel_path);
+                }
+                return false;
+            }
+        }
+        if (kept != i) modules[kept] = *module;
+        kept++;
+    }
+    *count = kept;
     return true;
 }
 
@@ -5723,6 +6061,16 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     context.boundary_message_size = boundary_message_size;
     walk_status = nk_iso_reader_walk_module_tree(
         reader, player_scan_module_entry, &context);
+    if (context.status == PLAYER_MODULE_SCAN_OK &&
+        walk_status == NK_ISO_MODULE_WALK_OK) {
+        bool duplicate = false;
+        if (!player_assign_module_host_names(reader, modules, &context.count,
+                                             &duplicate, boundary_message,
+                                             boundary_message_size)) {
+            context.status = duplicate ? PLAYER_MODULE_SCAN_DUPLICATE_NAME
+                                       : PLAYER_MODULE_SCAN_INVALID_TREE;
+        }
+    }
     nk_iso_reader_close(reader);
     if (out_count) *out_count = context.count;
     if (context.status != PLAYER_MODULE_SCAN_OK) return context.status;
@@ -5775,9 +6123,13 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
 
-static void player_check_guest_modules(const GameRecord *game,
+/* Returns false when the disc's modules could not be listed, which makes the
+   disc's program input unsupported in this version. Each encrypted module and
+   each unusable user copy is recorded in preflight->input. */
+static bool player_check_guest_modules(const GameRecord *game,
                                        PlayerCompatibilityPreflight *preflight,
                                        const char *runtime_root) {
+    PlayerInputReport *input = &preflight->input;
     PlayerModuleCandidate *modules = NULL;
     char decrypted_dir[NK_MAX_PATH * 2];
     char decrypted_elf[NK_MAX_PATH * 2];
@@ -5790,13 +6142,14 @@ static void player_check_guest_modules(const GameRecord *game,
     bool first_encrypted = false;
     const char *first_status = "";
     PlayerModuleScanStatus scan_status;
+    bool listed = true;
     if (!game || !game->iso_path[0] || !game->disc_id[0]) {
-        return;
+        return true;
     }
     if (!player_decrypted_eboot_paths(runtime_root, game->disc_id,
                                       decrypted_dir, sizeof(decrypted_dir),
                                       decrypted_elf, sizeof(decrypted_elf))) {
-        return;
+        return true;
     }
     modules = (PlayerModuleCandidate *)calloc(PLAYER_MAX_GUEST_MODULES,
                                                sizeof(*modules));
@@ -5806,7 +6159,7 @@ static void player_check_guest_modules(const GameRecord *game,
                              "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
                              "could not allocate its bounded scan table.",
                              issues, 1);
-        return;
+        return false;
     }
     scan_status = player_scan_disc_modules(
         game->iso_path, game->selected_executable,
@@ -5820,11 +6173,11 @@ static void player_check_guest_modules(const GameRecord *game,
                                  "closed.",
                              issues, 1);
         free(modules);
-        return;
+        return false;
     }
     if (total == 0) {
         free(modules);
-        return;
+        return true;
     }
     first_name[0] = '\0';
     first_detail[0] = '\0';
@@ -5836,6 +6189,8 @@ static void player_check_guest_modules(const GameRecord *game,
                                module->name);
         FILE *existing;
         if (written < 0 || (size_t)written >= sizeof(module_path)) {
+            /* No file could be put there under this name. */
+            listed = false;
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5846,12 +6201,18 @@ static void player_check_guest_modules(const GameRecord *game,
         }
         /* A user-supplied plain module always wins and is never overwritten. */
         existing = nk_fopen_utf8(module_path, "rb");
+        if (module->encrypted) input->encrypted_total++;
         if (existing != NULL) {
             fclose(existing);
             if (player_is_usable_mips_elf32(module_path, true)) {
+                if (module->encrypted) input->encrypted_ready++;
                 ready++;
                 continue;
             }
+            /* A copy is there but can't be used: the user replaces it, whether
+               the disc's own module is encrypted or plain. */
+            player_input_note_file(input, module->name, module->rel_path,
+                                   PLAYER_INPUT_FILE_UNUSABLE);
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5872,10 +6233,14 @@ static void player_check_guest_modules(const GameRecord *game,
                 game->iso_path, module->lba, module->size, decrypted_dir,
                 module_path, true, decrypt_detail, sizeof(decrypt_detail));
             if (strcmp(status, "VALIDATED_DECRYPTED") == 0) {
+                input->encrypted_ready++;
                 ready++;
                 decrypted++;
                 continue;
             }
+            /* Decryption stopped: the user can still supply a plain copy. */
+            player_input_note_file(input, module->name, module->rel_path,
+                                   PLAYER_INPUT_FILE_NEEDED);
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5899,7 +6264,7 @@ static void player_check_guest_modules(const GameRecord *game,
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
                              NULL, 0);
         free(modules);
-        return;
+        return true;
     }
     more[0] = '\0';
     if (not_ready > 1) {
@@ -5936,6 +6301,7 @@ static void player_check_guest_modules(const GameRecord *game,
         }
     }
     free(modules);
+    return listed;
 }
 
 /* Append text to a bounded buffer, never past its end. */
@@ -6131,6 +6497,40 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     return removed >= 0;
 }
 
+/* The disc's program input class from the counts the EXECUTABLE and
+   GUEST_MODULES checks recorded (#308). A plain program of a title the
+   catalogue lists as homebrew or project-made reads as homebrew. The folder is
+   named whenever the disc has an encrypted program file or a file is still to
+   be supplied there. */
+static void player_classify_input(const GameRecord *game, const char *runtime_root,
+                                  PlayerInputReport *input, bool unsupported) {
+    char folder[NK_MAX_PATH * 2];
+    char elf[NK_MAX_PATH * 2];
+    if (!game || !input) return;
+    if ((input->encrypted_total > 0 || input->files_needed > 0) &&
+        player_decrypted_eboot_paths(runtime_root, game->disc_id, folder, sizeof(folder),
+                                     elf, sizeof(elf))) {
+        snprintf(input->folder, sizeof(input->folder), "%s", folder);
+    }
+    if (unsupported) {
+        input->input_class = PLAYER_INPUT_UNSUPPORTED;
+    } else if (input->encrypted_total == 0) {
+        NkTitleEntrySnapshot snapshot = {0};
+        bool homebrew = false;
+        if (!game->is_experimental && game->title_id[0] &&
+            nk_title_catalog_find_by_id(game->title_id, &snapshot)) {
+            homebrew = snapshot.entry.kind == NK_TITLE_KIND_HOMEBREW ||
+                       snapshot.entry.kind == NK_TITLE_KIND_SYNTHETIC;
+            nk_title_catalog_snapshot_release(&snapshot);
+        }
+        input->input_class = homebrew ? PLAYER_INPUT_HOMEBREW : PLAYER_INPUT_PLAIN_ELF;
+    } else if (input->encrypted_ready == input->encrypted_total) {
+        input->input_class = PLAYER_INPUT_DECRYPTED_RETAIL;
+    } else {
+        input->input_class = PLAYER_INPUT_ENCRYPTED_RETAIL;
+    }
+}
+
 static void player_build_compatibility_preflight_for_game(
     PlayerApp *app, const GameRecord *game,
     PlayerCompatibilityPreflight *preflight, bool disc_readable,
@@ -6145,6 +6545,10 @@ static void player_build_compatibility_preflight_for_game(
      * stay under the runtime root, which is the second argument of the nk_font calls below. */
     char font_root[NK_MAX_PATH];
     if (!player_app_font_root(font_root, sizeof(font_root))) font_root[0] = '\0';
+    /* What the disc's program input is (#308): counted below, as the EXECUTABLE
+       and GUEST_MODULES checks look at each program file. */
+    PlayerInputReport *input = &preflight->input;
+    bool input_unsupported = !disc_readable;
 
     if (game->is_experimental) {
         static const unsigned int issues[] = { 308 };
@@ -6201,6 +6605,15 @@ static void player_build_compatibility_preflight_for_game(
                                    game->disc_id, decrypt_status);
             }
         }
+        input->encrypted_total++;
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+            input->encrypted_ready++;
+        } else {
+            player_input_note_file(input, "EBOOT.elf", "PSP_GAME/SYSDIR/EBOOT.BIN",
+                                   decrypted_state == PLAYER_DECRYPTED_EBOOT_INVALID
+                                       ? PLAYER_INPUT_FILE_UNUSABLE
+                                       : PLAYER_INPUT_FILE_NEEDED);
+        }
         if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID &&
             strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
@@ -6253,6 +6666,7 @@ static void player_build_compatibility_preflight_for_game(
                 "your user folder can be written to.");
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
+        input_unsupported = true;
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
         player_preflight_set_plain(preflight,
@@ -6260,6 +6674,7 @@ static void player_build_compatibility_preflight_for_game(
                                    "image may be damaged.");
     } else {
         static const unsigned int issues[] = { 308 };
+        input_unsupported = true;
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
@@ -6291,9 +6706,10 @@ static void player_build_compatibility_preflight_for_game(
         }
     }
 
-    if (disc_readable) {
-        player_check_guest_modules(game, preflight, runtime_root);
+    if (disc_readable && !player_check_guest_modules(game, preflight, runtime_root)) {
+        input_unsupported = true;
     }
+    player_classify_input(game, runtime_root, input, input_unsupported);
 
     if (!game->title_id[0]) {
         static const unsigned int issues[] = { 308 };
@@ -6396,6 +6812,70 @@ void player_app_build_compatibility_preflight(
     player_build_compatibility_preflight_for_game(
         app, &app->inspecting_game, &app->wizard.preflight,
         disc_readable, param_sfo_parsed, executables);
+    player_dev_log_add(app, "disc", "%.16s program input: %s, %u of %u encrypted files have "
+                       "a decrypted copy, %u still to supply",
+                       app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "disc",
+                       player_input_class_name(app->wizard.preflight.input.input_class),
+                       (unsigned)app->wizard.preflight.input.encrypted_ready,
+                       (unsigned)app->wizard.preflight.input.encrypted_total,
+                       (unsigned)app->wizard.preflight.input.files_needed);
+}
+
+/* Each listed file's size in the input folder, -1 when it is absent. */
+static void player_input_file_sizes(const PlayerInputReport *input,
+                                    int64_t sizes[PLAYER_INPUT_FILES_MAX]) {
+    for (size_t i = 0; i < PLAYER_INPUT_FILES_MAX; i++) sizes[i] = -1;
+    if (!input || !input->folder[0]) return;
+    for (size_t i = 0; i < input->file_count && i < PLAYER_INPUT_FILES_MAX; i++) {
+        char path[NK_MAX_PATH * 2 + PLAYER_INPUT_FILE_NAME_MAX + 2];
+        int written = snprintf(path, sizeof(path), "%s%c%s", input->folder,
+                               nk_platform_path_separator(), input->files[i].name);
+        if (written > 0 && (size_t)written < sizeof(path)) {
+            sizes[i] = nk_platform_get_file_size(path);
+        }
+    }
+}
+
+bool player_app_recheck_inspected_disc(PlayerApp *app) {
+    IsoInspectResult inspected;
+    GameRecord *game;
+    if (!app) return false;
+    game = &app->inspecting_game;
+    if (!game->iso_path[0] || !game->disc_id[0]) {
+        player_dev_log_add(app, "disc", "check again: no disc image is being added");
+        return false;
+    }
+    memset(&inspected, 0, sizeof(inspected));
+    if (!iso_inspect_file(game->iso_path, &inspected) || !inspected.success ||
+        !inspected.param_sfo_parsed || strcmp(inspected.disc_id, game->disc_id) != 0) {
+        /* The image moved, stopped reading, or is now another game: the card
+           keeps the first disc's identity, so nothing from this file is used. */
+        player_app_build_compatibility_preflight(app, false, false, NULL);
+        for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+            PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+            if (strcmp(check->code, "DISC_SFO") != 0) continue;
+            snprintf(check->message, sizeof(check->message),
+                     "SOURCE_ISO_CHANGED: %.700s no longer reads as %.16s; check again refused.",
+                     game->iso_path, game->disc_id);
+            snprintf(check->plain, sizeof(check->plain),
+                     "The disc image isn't where it was, or it is now a different game. "
+                     "Choose the disc again.");
+        }
+        player_dev_log_add(app, "disc", "check again: %.16s refused, the disc image changed",
+                           game->disc_id);
+        return false;
+    }
+    game->iso_size_bytes = inspected.file_size;
+    game->executable_eboot_kind = (uint32_t)inspected.executables.eboot.kind;
+    game->executable_boot_kind = (uint32_t)inspected.executables.boot.kind;
+    game->executable_selection = (uint32_t)inspected.executables.selected;
+    game->executable_boot_fallback = inspected.executables.boot_fallback;
+    snprintf(game->selected_executable, sizeof(game->selected_executable), "%s",
+             inspected.executables.selected_path);
+    player_app_build_compatibility_preflight(app, inspected.success,
+                                             inspected.param_sfo_parsed,
+                                             &inspected.executables);
+    return player_preflight_blocking_check(&app->wizard.preflight) == NULL;
 }
 
 static void player_package_preflight_set_blocker(
@@ -6479,6 +6959,15 @@ static void player_package_preflight_action_folder(
     }
 }
 
+/* The files the last check asked for are as they were: none appeared, went
+   away or changed size. */
+static bool player_package_preflight_input_unchanged(
+    const PlayerPackageBuildPreflight *preflight) {
+    int64_t sizes[PLAYER_INPUT_FILES_MAX];
+    player_input_file_sizes(&preflight->input, sizes);
+    return memcmp(sizes, preflight->input_file_sizes, sizeof(sizes)) == 0;
+}
+
 static bool player_package_preflight_cache_matches(
     const PlayerPackageBuildPreflight *preflight, const GameRecord *game,
     const char *runtime_root, int64_t source_size, int64_t profile_size,
@@ -6492,7 +6981,8 @@ static bool player_package_preflight_cache_matches(
            strcmp(preflight->selected_executable, game->selected_executable) == 0 &&
            preflight->source_size_bytes == source_size &&
            preflight->profile_size_bytes == profile_size &&
-           preflight->decrypted_executable_size_bytes == decrypted_size;
+           preflight->decrypted_executable_size_bytes == decrypted_size &&
+           player_package_preflight_input_unchanged(preflight);
 }
 
 static void player_package_preflight_remember_identity(
@@ -6560,6 +7050,7 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     }
 
     memset(preflight, 0, sizeof(*preflight));
+    for (size_t i = 0; i < PLAYER_INPUT_FILES_MAX; i++) preflight->input_file_sizes[i] = -1;
     player_package_preflight_remember_identity(
         preflight, game, have_runtime_root ? runtime_root : "",
         source_size, profile_size, decrypted_size);
@@ -6663,6 +7154,8 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     player_build_compatibility_preflight_for_game(
         app, game, &checks, inspected.success, inspected.param_sfo_parsed,
         &inspected.executables);
+    preflight->input = checks.input;
+    player_input_file_sizes(&preflight->input, preflight->input_file_sizes);
     blocking = player_preflight_blocking_check(&checks);
     if (!blocking) {
         for (size_t i = 0; i < checks.count; ++i) {
@@ -6687,6 +7180,24 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     player_dev_log_add(app, "build preflight", "%s: input checks passed",
                        game->disc_id);
     return true;
+}
+
+const PlayerInputReport *player_app_package_build_input(const PlayerApp *app,
+                                                        int game_index) {
+    const PlayerPackageBuildPreflight *preflight;
+    const GameRecord *game;
+    if (!app || game_index < 0 || game_index >= app->game_count) return NULL;
+    preflight = &app->package_build_preflight;
+    game = &app->games[game_index];
+    if (!preflight->checked ||
+        preflight->is_experimental != game->is_experimental ||
+        strcmp(preflight->disc_id, game->disc_id) != 0 ||
+        strcmp(preflight->title_id, game->title_id) != 0 ||
+        strcmp(preflight->iso_path, game->iso_path) != 0 ||
+        strcmp(preflight->selected_executable, game->selected_executable) != 0) {
+        return NULL;
+    }
+    return &preflight->input;
 }
 
 const PlayerPreflightCheck *player_app_package_build_preflight_blocker(

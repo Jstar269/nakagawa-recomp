@@ -100,10 +100,18 @@ python tools/audit_public_issue_links.py --strict
 
 ## Module index
 
-Every tracked top-level module in `tools/` appears exactly once below, grouped by what it
-does, so a new tool cannot ship undiscoverable. `tools/test_lint_docs.py` compares this
-section against the tracked module set and fails closed when a module is added, renamed or
-removed without a matching row:
+Every tracked top-level module in `tools/` has an index entry, so a new tool cannot ship
+undiscoverable. The entry is either a row in the table below, grouped by what the tool does,
+or the first paragraph of the module's own docstring. **A new tool needs no row here**: its
+docstring is its entry, so independent pull requests do not conflict on this table (#1673).
+Print the full index, every module with its summary, with:
+
+```powershell
+python tools/lint_docs.py --tools-index
+```
+
+`tools/test_lint_docs.py` fails closed when a module has neither a row nor a docstring
+summary, and when a row names a module that no longer exists or is listed twice:
 
 ```powershell
 python -m unittest tools.test_lint_docs -v
@@ -119,7 +127,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners, `oracle_matrix.py` (the one-command build, stage, qualify and run matrix), `verify_vfpu_addr.py` and `insn_trace.py` (the real-PSP instruction-trace differential). |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -134,6 +142,9 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
+| `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
+| `llvm_ir.py` | Structured LLVM IR builder mirroring the LLVM C API data model (module, function, block, builder). |
+| `lowering_plan.py` | Backend-neutral lowering plan of one function: decoded operations and resolved transfers (#330). |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
@@ -335,6 +346,9 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_nan_trap.py` | Tests for the NaN/Inf origin diagnostic. |
 | `test_codegen_no_shadow_stubs.py` | Guard the removal of two code-shadowing custom stubs. |
 | `test_codegen_profile_isolation.py` | A profile-free run must inherit no title-specific behavior. |
+| `test_codegen_llvm.py` | The LLVM backend: lowering order, recorded fallbacks, default output unchanged, runtime ABI and layout. |
+| `test_llvm_ir.py` | The structured LLVM IR builder: type checks, linking, renames and LLVM's verifier. |
+| `test_lowering_plan.py` | The lowering plan: decoding, and the drift guard against `emit_function` over a real build. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
 | `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |
@@ -495,6 +509,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
+| `test_oracle_matrix.py` | One-command PSP oracle matrix: per-boot epochs, identity-bound acceptance, crash containment and the intervention state. |
 | `test_psp_issue_matrix.py` | Issue classification matrix: manifest-backed classes and fixture coverage. |
 | `test_psp_leaf_parsers.py` | Fail-closed tests for the PSP-IO, PSP-AUDIO and PSP-CACHE parsers. |
 | `test_insn_trace.py` | Real-PSP instruction-trace differential: fixture words, probe layout, log conversion, Nakagawa traces and a codegen mutation caught at its first step. |

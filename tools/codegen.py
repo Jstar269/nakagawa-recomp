@@ -30,12 +30,13 @@ if _TOOLS_DIRECTORY not in sys.path:
 # Import the local analyzer
 import build_profile
 from analyze import (
-    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
+    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
     static_coverage,
 )
 from host_stubs import HST_SIMPLE_STUBS
+import codegen_llvm
 import compat_overrides
 import enhancement_package
 import entry_frame_balance
@@ -60,6 +61,17 @@ LLE_CPU = False
 # identical effects; the stub keys off s->flow_kind (the PR 2 pattern),
 # never off the seam return, because legitimate HLE errors are nonzero.
 LLE_IMPORT_SEAM = False
+
+# Entry splitting (owner decision, 2026-10-29). A body normally owns every
+# instruction it reaches by a conditional branch, including another entry's code, so
+# each entry of a large branch-connected region translates its own copy of the region
+# (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
+# exceed this many instructions instead stops at every other entry: a conditional
+# branch into one, taken or not taken, becomes a TAIL transfer to that entry's own
+# body (#855), as `j` and straight-line fall-through already are. Bodies within the
+# budget are byte-identical to the unsplit output. 0 splits every body; None never
+# splits. Set by --region-split-threshold=N|off.
+REGION_SPLIT_THRESHOLD = 32768
 
 # TD-27 stale-code detection (tools/codegen.py side of the SR_STALE_DETECT
 # gate). When True, codegen emits one compact (address, entry word, word
@@ -89,6 +101,13 @@ ENHANCEMENT_PKG_META: dict | None = None
 # The sites whose rewrite has been emitted. A package is refused unless every
 # verified site is in it when the translation is written.
 ENHANCEMENT_APPLIED: set[int] = set()
+# The verified address of the package's update_boundary (where one logic update
+# begins), or None. Gated sites count logic updates there.
+ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
+# Verified executable data sites: (C guest address, stock bytes, rescaled bytes, id).
+ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
+# Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
+ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -103,6 +122,16 @@ def _enhancement_rewrite(addr: int) -> dict | None:
         return None
     ENHANCEMENT_APPLIED.add(addr)
     return site["rewrite"]
+
+
+def _enhancement_boundary(addr: int) -> bool:
+    """Whether ``addr`` is the package's update boundary; the caller emits its count."""
+    if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
+        return False
+    if addr != ENHANCEMENT_UPDATE_BOUNDARY:
+        return False
+    ENHANCEMENT_APPLIED.add(addr)
+    return True
 
 
 def _scaled_store_line(rw: dict, stock_line: str) -> str:
@@ -734,6 +763,51 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
+def _c_bytes(data: bytes) -> str:
+    """A C initializer for a byte array (at least one element)."""
+    return ", ".join(f"0x{b:02x}" for b in data) or "0"
+
+
+def _enhancement_data_lines() -> list[str]:
+    """The start-up half of an enhancement build, run once while the toggle is on:
+    the logic-update counter handed to the runtime's speed check, executable data
+    sites verified against the loaded bytes before they are rewritten, and disc
+    data files handed to the runtime with the digest of the stock file they
+    replace. Any mismatch stops the run."""
+    out = []
+    for i, (_addr, stock, data, _sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
+        out.append(f"static const uint8_t nk_enh_data_stock_{i}[] = {{{_c_bytes(stock)}}};")
+        out.append(f"static const uint8_t nk_enh_data_new_{i}[] = {{{_c_bytes(data)}}};")
+    for i, (_path, sha, data, _fid) in enumerate(ENHANCEMENT_DATA_FILES):
+        out.append(f"static const uint8_t nk_enh_file_sha_{i}[32] = {{{_c_bytes(bytes.fromhex(sha))}}};")
+        out.append(f"static const uint8_t nk_enh_file_data_{i}[] = {{{_c_bytes(data)}}};")
+    out.append("static void nk_enhancement_apply_data(void) {")
+    # The runtime reports logic that cannot keep 60 updates/s (section 9.5).
+    out.append("    sr_enhancement_register_updates(&nk_enhancement_updates);")
+    for i, (addr, stock, _data, sid) in enumerate(ENHANCEMENT_DATA_PATCHES):
+        n = len(stock)
+        out += [
+            f"    if (!sr_guest_span_writable({addr}, {n}u) ||",
+            f"        memcmp(sr_host_address({addr}), nk_enh_data_stock_{i}, {n}u) != 0) {{",
+            f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data site {sid} at 0x%08x does not hold '
+            f'its stock bytes; the run stops here\\n", (unsigned)({addr}));',
+            "        exit(1);",
+            "    }",
+            f"    memcpy(sr_host_address({addr}), nk_enh_data_new_{i}, {n}u);",
+        ]
+    for i, (path, _sha, data, fid) in enumerate(ENHANCEMENT_DATA_FILES):
+        out += [
+            f'    if (!sr_enhancement_file_register("{path}", nk_enh_file_sha_{i}, '
+            f"nk_enh_file_data_{i}, {len(data)}u)) {{",
+            f'        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: data file {fid} was refused; '
+            'the run stops here\\n");',
+            "        exit(1);",
+            "    }",
+        ]
+    out += ["}", ""]
+    return out
+
+
 def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
                        enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
@@ -761,10 +835,12 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         if enhancement:
             # Enhancement-package builds only: rewritten sites run their stock form
             # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
-            # even display vblanks (alternate updates of a once-per-vblank loop).
+            # even logic updates, counted at the package's update_boundary, so they
+            # keep alternating when an update takes more than one vblank.
             f.write("\nint nk_enhancement_on(void);\n")
+            f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
-                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
+                    "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -797,6 +873,15 @@ def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, co
     if resumable or stack_census:
         return f"sr_tail_record(s, {target_expr}, {fn}, 0u, 0u); return;{suffix}"
     return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
+
+
+def emit_code_pointer_check(target_expr, transfer_pc):
+    """A computed jr/jalr refuses a null code pointer before its link write and slot (#1375).
+
+    Static transfers to offset 0 of a zero-based image never pass through here, and
+    ``refuse_zero_based_offset0_pointers`` keeps a code pointer to that offset from existing.
+    """
+    return f"SR_CODE_POINTER(s, {target_expr}, {G(transfer_pc)});"
 
 
 #: The statement that ends every direct CALL of a native body (`emit_body_call`). Inside a
@@ -841,6 +926,20 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
         if addr in resume_owners:
             continue
         symbol = f"f_{addr:08x}"
+        body = f"_sr_stack_census_body_{addr:08x}"
+        llvm = [i for i, text in enumerate(func_texts)
+                if isinstance(text, codegen_llvm.LLVMBody) and text.address == addr]
+        if llvm:
+            # The LLVM backend defines the wrapped body itself (codegen_llvm.census_body_symbol).
+            # Its chunk weight grows as the C body's would: the renamed head and the wrapper.
+            index = llvm[0]
+            wrapper = stack_census_wrapper(symbol, body, addr)
+            lowered = func_texts[index].with_text(
+                f"void {body}(CpuState *s);  /* body in LLVM IR (#330) */" + wrapper)
+            lowered.chunk_bytes += (len(f"static void {body}(CpuState *s) {{")
+                                    - len(f"void {symbol}(CpuState *s) {{") + len(wrapper))
+            func_texts[index] = lowered
+            continue
         pattern = re.compile(
             rf"(?m)^void {re.escape(symbol)}\(CpuState \*s\) \{{"
         )
@@ -855,25 +954,29 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
                 f"0x{addr:08x}, found {len(matches)}"
             )
         index, match = matches[0]
-        body = f"_sr_stack_census_body_{addr:08x}"
         replacement = f"static void {body}(CpuState *s) {{"
         func_texts[index] = (
             func_texts[index][:match.start()]
             + replacement
             + func_texts[index][match.end():]
         )
-        func_texts[index] += (
-            f"\n\nvoid {symbol}(CpuState *s) {{\n"
-            f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
-            f"    sr_stack_census_enter(0x{addr:08x}u);\n"
-            f"    {body}(s);\n"
-            "    SR_TAIL_DRAIN(s);\n"
-            f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
-            "s->r[29], s->flow_kind);\n"
-            "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
-            "}"
-        )
+        func_texts[index] += stack_census_wrapper(symbol, body, addr)
     return func_texts
+
+
+def stack_census_wrapper(symbol, body, addr):
+    """The census wrapper that observes one callable body's SP across its tail chain."""
+    return (
+        f"\n\nvoid {symbol}(CpuState *s) {{\n"
+        f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
+        f"    sr_stack_census_enter(0x{addr:08x}u);\n"
+        f"    {body}(s);\n"
+        "    SR_TAIL_DRAIN(s);\n"
+        f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
+        "s->r[29], s->flow_kind);\n"
+        "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
+        "}"
+    )
 
 R = lambda i: "0u" if i == 0 else f"s->r[{i}]"           # read GPR (r0 is constant 0)
 F = lambda i: f"s->f[{i}]"
@@ -2217,6 +2320,14 @@ def stale_block_for_function(elf, addr, ranges, known, resume_owners=None,
         elf, addr, ranges, known,
         resume_owners=resume_owners or {},
         dispatch_boundaries=dispatch_boundaries or set())
+    words = head_run_words(elf, addr, insns)
+    if not words:
+        return None
+    return (entry, len(words), stale_fnv1a(words))
+
+
+def head_run_words(elf, addr, insns):
+    """The words of the contiguous translated run of ``insns`` from ``addr``."""
     words = []
     pc = addr
     while pc in insns:
@@ -2227,9 +2338,7 @@ def stale_block_for_function(elf, addr, ranges, known, resume_owners=None,
         if pc > 0xFFFFFFFF - 4:
             break
         pc = (pc + 4) & 0xFFFFFFFF
-    if not words:
-        return None
-    return (entry, len(words), stale_fnv1a(words))
+    return words
 
 def is_control(w):
     op = w >> 26
@@ -2238,8 +2347,33 @@ def is_control(w):
         return True
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
+class _WalkBudgetExceeded(Exception):
+    """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
+
+
 def function_flow(elf, start, ranges, known, resume_owners=None,
                   dispatch_boundaries=None):
+    """Ownership of the body for the entry ``start``: (insns, labels, continuations).
+
+    Every caller gets the same answer for the same entry. The body is split at other
+    entries when REGION_SPLIT_THRESHOLD says so (see its comment).
+    """
+    # One membership test per walked instruction: index the spans once (same answers as
+    # in_ranges over the list), as analyze.trace_function does; both walks below share it.
+    ranges = span_index(ranges)
+    threshold = REGION_SPLIT_THRESHOLD
+    if threshold is not None and threshold > 0:
+        try:
+            return _walk_body(elf, start, ranges, known, resume_owners,
+                              dispatch_boundaries, split=False, budget=threshold)
+        except _WalkBudgetExceeded:
+            pass
+    return _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
+                      split=threshold is not None, budget=None)
+
+
+def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
+               split, budget):
     insns, labels, seen = set(), set(), set()
     resume_owners = resume_owners or {}
     dispatch_boundaries = dispatch_boundaries or set()
@@ -2255,6 +2389,11 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
     # branch-connected regions creates continuation cycles and would recursively consume
     # the host stack for perfectly ordinary guest loops; straight-line/call boundaries in
     # this image form an acyclic graph (maximum observed depth 34).
+    #
+    # With ``split`` the body stops at other entries on conditional edges too: a taken
+    # target that is another entry stays outside the body (the emitter records a TAIL
+    # transfer to it), and a not-taken successor that is one is a continuation. TAIL
+    # transfers (#855) run a guest loop through such edges in constant host stack.
     continuations = {}
 
     def is_entry_boundary(next_pc):
@@ -2296,6 +2435,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
         while in_ranges(pc, ranges) and pc not in seen:
             seen.add(pc)
             insns.add(pc)
+            if budget is not None and len(insns) > budget:
+                raise _WalkBudgetExceeded
             w = read32(elf, pc)
             if w is None:
                 break
@@ -2348,8 +2489,10 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 # inside this translated body.  Cross-module/foreign entry
                 # targets must dispatch just like an indirect branch; adding
                 # them to ``labels`` without visiting them leaves an undefined
-                # C goto in the generated translation unit.
-                if in_ranges(t, ranges):
+                # C goto in the generated translation unit.  A split body also
+                # leaves another entry's code to that entry (a branch back to its
+                # own start stays a loop edge).
+                if in_ranges(t, ranges) and not (split and t != start and is_jump_boundary(t)):
                     labels.add(t)
                     stack.append(t)
                 insns.add(pc + 4)
@@ -2357,6 +2500,8 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 # Both successors belong to one native control-flow region.  In
                 # particular, do not turn a loop's not-taken edge into a host call.
                 pc += 8
+                if split and stop_at_continuation(pc - 8, pc):
+                    break
                 continue
             next_pc = pc + 4
             if stop_at_continuation(pc, next_pc):
@@ -2383,6 +2528,9 @@ def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch
 def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                        delay_branch_pc=delay_branch_pc)
+    if w is not None and _enhancement_boundary(addr):
+        # One logic update begins here: count it before the stock statement runs.
+        line = f"    if (nk_enhancement_on()) {{ nk_enhancement_updates++; }}\n{line}"
     rw = _enhancement_rewrite(addr) if w is not None else None
     if rw is None:
         return line
@@ -2700,14 +2848,23 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
                   profile=None, dispatch_boundaries=None, lle_cpu=False,
-                  stack_census=False):
+                  stack_census=False, flow=None):
+    """The C body of the entry ``start``.
+
+    ``flow`` is this entry's ``function_flow`` result over the same arguments when
+    the caller already walked it (the walk is most of the cost); it is read, never
+    changed.
+    """
     hst_profile = profile == "hst"
     if lle_cpu is False:
         lle_cpu = LLE_CPU
     resume_owners = resume_owners or {}
-    insns, labels, continuations = function_flow(
-        elf, start, ranges, known, resume_owners=resume_owners,
-        dispatch_boundaries=dispatch_boundaries)
+    ranges = span_index(ranges)
+    if flow is None:
+        flow = function_flow(
+            elf, start, ranges, known, resume_owners=resume_owners,
+            dispatch_boundaries=dispatch_boundaries)
+    insns, labels, continuations = flow
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
     sv_points = ({} if ADDRESS_SPACE.runtime_module
@@ -3053,6 +3210,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             # register redirect the call -- proven divergent against the
             # production interpreter by the `jrslot` cosim cell.
             out.append(f"    {{ uint32_t _t = {R(a)};")
+            out.append(f"      {emit_code_pointer_check('_t', addr)}")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                         indent="      "))
@@ -3106,6 +3264,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
+                out.append(f"      {emit_code_pointer_check('_t', addr)}")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
@@ -3180,13 +3339,26 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
+        elif in_ranges(target, ranges) and (target in known or target in resume_owners):
+            # A split body's edge into another entry (function_flow): the same TAIL
+            # transfer as `j` to that entry, after the delay slot (annulled on the
+            # not-taken path of a likely branch).
+            tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
+                                      resumable, stack_census)
+            if is_likely(w):
+                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
+            else:
+                out.extend("   " + line for line in _delay)
+                out.append(f"      if (_c) {{ {tail} }} }}")
         else:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
-        if addr in dup_slot_skips:
+        if addr in continuations:
+            out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+        elif addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
         # Do not let an unrelated natural end path fall into the first continuation
@@ -3372,6 +3544,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
 
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
                          relocations=relocations)
+    spans = span_index(ranges)
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
@@ -3387,9 +3560,11 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                             f'    sr_unimplemented({G(a)}, "import stub without NID mapping");\n}}')
             else:
                 try:
-                    text = "\n".join(emit_function(elf, a, ranges, known, profile=profile))
-                    record = stale_block_for_function(elf, a, ranges, known)
-                    nwords = record[1] if record is not None else 0
+                    # One walk serves the body and its translated-word count.
+                    flow = function_flow(elf, a, spans, known)
+                    text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
+                                                   flow=flow))
+                    nwords = len(head_run_words(elf, a, flow[0]))
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
                     text = (f"void {space.symbol(a)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
@@ -3408,6 +3583,156 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         translated={a for a, _ in module.functions} - module_stubbed,
         interpreted=module_stubbed)
     return module
+
+
+# The PSP kernel's module record for the main module (sceKernelQueryModuleInfo and the
+# module-start thread). uOFW (MIT) is the contract: src/kd/loadcore/loadelf.c
+# (sceKernelProbeExecutableObject, CheckElfSection, CheckElfSectionPRX, the PT_LOAD
+# segment table), src/kd/loadcore/module.c (the SceModule fields copied from
+# SceModuleInfo) and src/kd/modulemgr/modulemgr.c (_ProcessModuleExportEnt reads the
+# first SCE_LIB_IS_SYSLIB export table, and module_start_thread_parameter there).
+MODULE_RECORD_MAX_SEGMENTS = 4             # SCE_KERNEL_MAX_MODULE_SEGMENT
+MODULE_RECORD_NAME_BYTES = 27              # SCE_MODULE_NAME_LEN
+MODULE_START_THREAD_PARAMETER_NID = 0x0F7C276C
+SCE_LIB_IS_SYSLIB = 0x8000
+ELF_ET_SCE_PRX = 0xFFA0
+ELF_SHT_PROGBITS = 1
+ELF_SHT_NOBITS = 8
+ELF_SHF_WRITE, ELF_SHF_ALLOC, ELF_SHF_EXECINSTR = 0x1, 0x2, 0x4
+
+
+class MainModuleRecordError(ValueError):
+    """The main module has a SceModuleInfo, but the kernel record cannot be derived."""
+
+
+def main_module_record(elf):
+    """The PSP kernel's record of the main module, or None when it has no SceModuleInfo.
+
+    Every field is read from the ELF the way the loader reads it (see the constants
+    above): the PT_LOAD segments (address and memory size, at most four), the entry,
+    the SceModuleInfo attribute, version, name and gp, the text/data/bss sizes (section
+    headers for a PRX that has them, program headers otherwise), and the syslib's
+    module_start_thread_parameter when the module declares one. Addresses are in the
+    image's final (relocated) address space. Raises MainModuleRecordError for a record
+    the loader would refuse; nothing is guessed.
+    """
+    from elf_bounds import validate_elf32_envelope
+
+    info_section = elf.sec(".rodata.sceModuleInfo")
+    if info_section is None:
+        return None
+    raw = elf.read_at_vaddr(info_section["addr"], 52)
+    if raw is None or len(raw) != 52:
+        raise MainModuleRecordError("SceModuleInfo is not readable at its address")
+    attribute = struct.unpack_from("<H", raw, 0)[0]
+    version = (raw[2], raw[3])
+    name = raw[4:4 + MODULE_RECORD_NAME_BYTES].split(b"\0", 1)[0]
+    gp, ent_top, ent_end = struct.unpack_from("<3I", raw, 32)
+
+    loads = [s for s in elf.segments if s["type"] == 1]
+    if not loads:
+        raise MainModuleRecordError("no PT_LOAD segment")
+    if len(loads) > MODULE_RECORD_MAX_SEGMENTS:
+        raise MainModuleRecordError(
+            f"{len(loads)} PT_LOAD segments; the kernel holds {MODULE_RECORD_MAX_SEGMENTS}")
+
+    envelope = validate_elf32_envelope(elf.data, "<main module>")
+    e_type = struct.unpack_from("<H", elf.data, 16)[0]
+    text_size = data_size = bss_size = 0
+    if e_type == ELF_ET_SCE_PRX and envelope["shoff"] > 0:
+        if not envelope["shdrs"]:
+            raise MainModuleRecordError("PRX section table is empty")
+        for sh in envelope["shdrs"]:
+            if sh["typ"] == ELF_SHT_PROGBITS:
+                if sh["flags"] in (ELF_SHF_EXECINSTR | ELF_SHF_ALLOC, ELF_SHF_ALLOC):
+                    text_size += sh["size"]
+                elif sh["flags"] == ELF_SHF_WRITE | ELF_SHF_ALLOC:
+                    data_size += sh["size"]
+            elif sh["typ"] == ELF_SHT_NOBITS and sh["flags"] == ELF_SHF_WRITE | ELF_SHF_ALLOC:
+                bss_size += sh["size"]
+    else:
+        for seg in loads:
+            if seg["flags"] & 1:
+                text_size += seg["filesz"]
+            else:
+                data_size += seg["filesz"]
+            if seg["filesz"] < seg["memsz"]:
+                bss_size += seg["memsz"] - seg["filesz"]
+    if max(text_size, data_size, bss_size) > 0xFFFFFFFF:
+        raise MainModuleRecordError("text/data/bss size exceeds 32 bits")
+
+    base = getattr(elf, "base", 0) or 0
+
+    def rebase(value):
+        # The same convention imports.py applies to the stub table of a relocated image.
+        return value + base if value and base and value < base else value
+
+    start_param = None
+    ent, ent_end = rebase(ent_top), rebase(ent_end)
+    while ent < ent_end:
+        entry = elf.read_at_vaddr(ent, 16)
+        if entry is None or len(entry) != 16:
+            raise MainModuleRecordError(f"export entry at 0x{ent:08x} is not readable")
+        lib_attr, words, nvars, nfuncs, table = struct.unpack_from("<xxxxxxHBBHI", entry)
+        if words == 0:
+            raise MainModuleRecordError(f"export entry at 0x{ent:08x} has length 0")
+        if lib_attr & SCE_LIB_IS_SYSLIB:
+            table = rebase(table)
+            cells = elf.read_at_vaddr(table, 8 * (nfuncs + nvars))
+            if cells is None or len(cells) != 8 * (nfuncs + nvars):
+                raise MainModuleRecordError(f"syslib export table at 0x{table:08x} is not readable")
+            words_ = struct.unpack(f"<{2 * (nfuncs + nvars)}I", cells)
+            for i in range(nvars):
+                if words_[nfuncs + i] != MODULE_START_THREAD_PARAMETER_NID:
+                    continue
+                where = rebase(words_[2 * nfuncs + nvars + i])
+                body = elf.read_at_vaddr(where, 16)
+                if body is None or len(body) != 16:
+                    raise MainModuleRecordError(
+                        f"module_start_thread_parameter at 0x{where:08x} is not readable")
+                _count, priority, stack_size, thread_attr = struct.unpack("<4I", body)
+                start_param = (priority, stack_size, thread_attr)
+            break                               # the module manager reads the first syslib only
+        ent += 4 * words
+
+    return {
+        "segments": [(s["vaddr"], s["memsz"]) for s in loads],
+        "entry": elf.entry & 0xFFFFFFFF,
+        "gp": gp,
+        "text_addr": loads[0]["vaddr"],
+        "text_size": text_size,
+        "data_size": data_size,
+        "bss_size": bss_size,
+        "attribute": attribute,
+        "version": version,
+        "name": name,
+        "start_thread": start_param,
+    }
+
+
+def main_module_record_lines(record):
+    """The generated C definition of one main-module record (SrMainModuleRecord)."""
+    segments = record["segments"] + [(0, 0)] * (MODULE_RECORD_MAX_SEGMENTS - len(record["segments"]))
+    name = record["name"].ljust(MODULE_RECORD_NAME_BYTES, b"\0")
+    start = record["start_thread"]
+    return [
+        "/* The kernel's record of this main module: PT_LOAD segments, entry, gp, text/data/bss "
+        "sizes and the SceModuleInfo attribute, version and name; then the module_start thread "
+        "parameter it declares, if any. */",
+        "static const SrMainModuleRecord sr_main_module_record = {",
+        f"    {len(record['segments'])}u,",
+        "    {" + ", ".join(f"0x{a:08x}u" for a, _ in segments) + "},",
+        "    {" + ", ".join(f"0x{s:08x}u" for _, s in segments) + "},",
+        f"    0x{record['entry']:08x}u, 0x{record['gp']:08x}u, 0x{record['text_addr']:08x}u,",
+        f"    0x{record['text_size']:08x}u, 0x{record['data_size']:08x}u, "
+        f"0x{record['bss_size']:08x}u,",
+        f"    0x{record['attribute']:04x}u, {{0x{record['version'][0]:02x}u, "
+        f"0x{record['version'][1]:02x}u}},",
+        "    {" + ", ".join(f"0x{b:02x}u" for b in name) + "},",
+        (f"    1u, 0x{start[0]:08x}u, 0x{start[1]:08x}u, 0x{start[2]:08x}u"
+         if start is not None else "    0u, 0u, 0u, 0u"),
+        "};",
+    ]
 
 
 COVERAGE_TOTAL_FIELDS = (
@@ -3534,6 +3859,49 @@ def runtime_module_descriptor_lines(module):
     return lines
 
 
+def zero_based_offset0_pointers(data, base, label="<module>"):
+    """Relocation sites that take the address of module offset 0 when it lands at address 0.
+
+    #1375: generated code and the interpreter treat a computed jr/jalr target of 0 as a null
+    code pointer. That is exact only while no code pointer to guest address 0 can exist. A
+    fixed-address PSP image never has code at 0 (user memory starts far above it), and a
+    relocatable module placed at a nonzero base has its offset 0 at that base. What remains
+    is a relocatable module the build places at base 0: the loader would write 0 for every
+    pointer to its offset 0, indistinguishable from null. Every absolute address a
+    relocatable module forms passes through a relocation, so its relocation records decide:
+    a word32 or hi16 site whose value at this base is 0, or an lo16 site that forms 0 from
+    $zero with addiu/ori, takes that address. A jump26 site is a static j/jal and is
+    emitted as a direct transfer, never through a register, so it is not one.
+
+    Returns ``(site, kind)`` pairs; raises ``prx_reloc_model.RelocationModelError`` when the
+    records cannot be modelled, since the question then has no answer.
+    """
+    import prx_reloc_model
+    if is_code_overlay(data):
+        return []  # a code overlay loads only at its own (fixed, nonzero) address
+    model = prx_reloc_model.model_relocations(data, label)
+    if not model.relocatable or ((base or 0) + model.load_low) & 0xFFFFFFFF:
+        return []
+    offset0 = model.load_low
+    found = []
+    for site, record in sorted(model.sites.items()):
+        if record.constant != offset0:
+            continue
+        if record.kind in (prx_reloc_model.KIND_WORD32, prx_reloc_model.KIND_HI16):
+            found.append((site, record.kind))
+        elif record.kind == prx_reloc_model.KIND_LO16:
+            word = None
+            for segment in model.segments:
+                offset = site - segment.vaddr
+                if 0 <= offset and offset + 4 <= len(segment.data):
+                    word = struct.unpack_from("<I", segment.data, offset)[0]
+                    break
+            # addiu/ori rt, $zero, %lo(offset 0): an absolute address with no hi16 half.
+            if word is not None and (word >> 26) in (0x09, 0x0D) and ((word >> 21) & 31) == 0:
+                found.append((site, record.kind))
+    return found
+
+
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
@@ -3550,7 +3918,7 @@ def main(argv):
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
             "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census] [--symbol-map=FILE] [--name-imports]\n"
+            "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -3582,13 +3950,20 @@ def main(argv):
     stack_census = False
     omit_aot = _OmitAot()
     enhancement_pkg_path = None
+    enhancement_data_root = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
     name_imports = False
+    backend = "c"
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--enhancement-data-root="):
+            enhancement_data_root = o.split("=", 1)[1]
+            if not enhancement_data_root:
+                sys.stderr.write("--enhancement-data-root requires a path\n")
+                return 2
         elif o.startswith("--enhancement-package="):
             enhancement_pkg_path = o.split("=", 1)[1]
             if not enhancement_pkg_path:
@@ -3614,6 +3989,14 @@ def main(argv):
             cfg_gate = True
         elif o == "--stack-census":
             stack_census = True
+        elif o.startswith("--backend="):
+            # #330: --backend=llvm lowers each function the LLVM backend supports to
+            # LLVM IR (<g>_recomp_<n>.ll beside its C chunk) and keeps a C body, with
+            # the recorded reason, for every other one. The default is C, unchanged.
+            backend = o.split("=", 1)[1]
+            if backend not in ("c", "llvm"):
+                sys.stderr.write(f"--backend must be c or llvm, not {backend!r}\n")
+                return 2
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -3627,6 +4010,17 @@ def main(argv):
             # sr_import_call instead of sr_syscall. Default (absent)
             # preserves byte-identical HLE stubs.
             enable_lle_import_seam()
+        elif o.startswith("--region-split-threshold="):
+            value = o.split("=", 1)[1]
+            try:
+                threshold = None if value == "off" else int(value, 10)
+            except ValueError:
+                threshold = -1
+            if threshold is not None and threshold < 0:
+                sys.stderr.write(f"invalid --region-split-threshold value: {o}\n")
+                return 2
+            global REGION_SPLIT_THRESHOLD
+            REGION_SPLIT_THRESHOLD = threshold
         elif o == "--stale-detect":
             # TD-27 stale-code detection: emit the compact translation-time
             # record table and route `cache` through the check hook.
@@ -3715,7 +4109,33 @@ def main(argv):
         except ValueError:
             sys.stderr.write(f"invalid extra-elf base address: {spec}\n")
             return 2
+    import prx_reloc_model
+    for image_path, image_base in [(elf_path, base)] + extra_elfs:
+        try:
+            with open(image_path, "rb") as source:
+                image_data = source.read()
+            offset0_sites = zero_based_offset0_pointers(image_data, image_base, image_path)
+        except (OSError, prx_reloc_model.RelocationModelError) as exc:
+            sys.stderr.write(
+                f"codegen: {image_path}: cannot tell a pointer to module offset 0 from a "
+                f"null code pointer at base 0x{image_base or 0:08x} (#1375): {exc}\n")
+            return 2
+        if offset0_sites:
+            listed = ", ".join(f"{kind} at 0x{site:08x}" for site, kind in offset0_sites[:8])
+            more = f" and {len(offset0_sites) - 8} more" if len(offset0_sites) > 8 else ""
+            sys.stderr.write(
+                f"codegen: {image_path}: relocations take the address of module offset 0 "
+                f"({listed}{more}), which a module placed at base 0 cannot tell from a null "
+                "code pointer (#1375); place it at a nonzero base\n")
+            return 2
     elf = Elf(elf_path, base=base)
+    try:
+        module_record = main_module_record(elf)
+    except MainModuleRecordError as exc:
+        # The image still translates; the runtime answers a module-info query for it with
+        # a named refusal instead of a guessed record.
+        sys.stderr.write(f"codegen: MAIN_MODULE_RECORD_REFUSED: {exc}\n")
+        module_record = None
     # Only the primary image may carry an explicit extra executable span (its title's
     # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
@@ -3773,10 +4193,13 @@ def main(argv):
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
 
-    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META, ENHANCEMENT_UPDATE_BOUNDARY
     ENHANCEMENT_SITES = {}
     ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_UPDATE_BOUNDARY = None
     ENHANCEMENT_APPLIED.clear()
+    ENHANCEMENT_DATA_PATCHES.clear()
+    ENHANCEMENT_DATA_FILES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -3820,12 +4243,62 @@ def main(argv):
                         f"site {site['id']}: only a jal call site can be rewritten among "
                         "control transfers (fail-closed refusal)"
                     )
+            boundary = enhancement_package.verify_and_resolve_update_boundary(
+                pkg_validated,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            if boundary is not None:
+                if is_control(boundary["stock_word"]):
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: a control transfer cannot begin a logic update "
+                        "(fail-closed refusal)"
+                    )
+                if boundary["site_addr"] in ENHANCEMENT_SITES:
+                    raise enhancement_package.EnhancementPackageError(
+                        "update_boundary: the boundary is also a rewritten site (fail-closed refusal)"
+                    )
+                ENHANCEMENT_UPDATE_BOUNDARY = boundary["site_addr"]
+
+            def _read_loaded_data(vaddr: int, count: int):
+                # Initialised bytes of one allocated, non-executable PROGBITS section
+                # as the loader places them (relocated, for a relocatable image):
+                # never code or zero-fill. Segments cannot tell, since a title may
+                # load code and data in one RWX segment.
+                rebase = elf.reloc.lo if elf.reloc is not None else 0
+                for sec in elf.sections:
+                    if sec["typ"] != 1 or not sec["flags"] & 2 or sec["flags"] & 4:
+                        continue
+                    lo = sec["addr"] + rebase
+                    if lo <= vaddr and vaddr + count <= lo + sec["size"]:
+                        return elf.read_at_vaddr(vaddr, count)
+                return None
+
+            for patch in enhancement_package.verify_and_resolve_data_sites(
+                pkg_validated, symbol_to_addr=sym_map, read_data_fn=_read_loaded_data,
+            ):
+                ENHANCEMENT_DATA_PATCHES.append(
+                    (G(patch["addr"]), patch["stock"], patch["data"], patch["id"]))
+            data_files = pkg_validated.get("data_files", ())
+            if data_files and enhancement_data_root is None:
+                raise enhancement_package.EnhancementPackageError(
+                    "data_files need --enhancement-data-root, the title's extracted files "
+                    "(fail-closed refusal)"
+                )
+            for entry in data_files:
+                stock = enhancement_package.find_data_file(entry, enhancement_data_root)
+                ENHANCEMENT_DATA_FILES.append((
+                    entry["path"], entry["sha256"],
+                    enhancement_package.transform_data_file(entry, stock), entry["id"]))
             ENHANCEMENT_PKG_META = {
                 "id": pkg_validated["id"],
                 "version": pkg_validated["version"],
                 "epoch": enhancement_package.AOT_ENHANCEMENT_PACKAGE_EPOCH,
                 "digest": enhancement_package.compute_package_digest(pkg_validated),
                 "sites_count": len(ENHANCEMENT_SITES),
+                "data_sites_count": len(ENHANCEMENT_DATA_PATCHES),
+                "data_files_count": len(ENHANCEMENT_DATA_FILES),
             }
         except enhancement_package.EnhancementPackageError as exc:
             sys.stderr.write(
@@ -3856,6 +4329,22 @@ def main(argv):
     stubbed = []
     func_texts = []
     stale_funcs = []  # TD-27: primary-image addresses with real translations
+    llvm_lowered = []   # --backend=llvm: addresses whose body is LLVM IR
+    llvm_fallbacks = []  # --backend=llvm: (address, reason) kept in C
+
+    def llvm_body(text, image, a, image_ranges, image_known, **kwargs):
+        """--backend=llvm: the function's LLVM body, else its C text with the reason."""
+        if backend != "llvm":
+            return text
+        try:
+            body = codegen_llvm.lower(sys.modules[__name__], image, a, image_ranges, image_known,
+                                      c_text=text, stack_census=stack_census, profile=profile,
+                                      **kwargs)
+        except codegen_llvm.LLVMUnsupported as exc:
+            llvm_fallbacks.append((a, str(exc)))
+            return text
+        llvm_lowered.append(a)
+        return body
     import_nids = {}  # import stub address -> NID, for --name-imports
 
     # Semantic name overrides for known HST functions. Single source of truth is
@@ -4082,11 +4571,13 @@ def main(argv):
             continue
         applied_before = set(ENHANCEMENT_APPLIED) if ENHANCEMENT_SITES else None
         try:
-            func_texts.append("\n".join(emit_function(
+            func_texts.append(llvm_body("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census)))
+                stack_census=stack_census)), elf, a, ranges, known,
+                resume_owners=resume_owners, resumable=catalog[a].resumable,
+                dispatch_boundaries=dispatch_boundaries))
             emitted.append(a)
             if STALE_DETECT:
                 stale_funcs.append(a)
@@ -4187,9 +4678,9 @@ def main(argv):
                 emitted.append(a)
                 continue
             try:
-                func_texts.append("\n".join(emit_function(
+                func_texts.append(llvm_body("\n".join(emit_function(
                     extra_elf, a, extra_ranges, extra_known, profile=profile,
-                    stack_census=stack_census)))
+                    stack_census=stack_census)), extra_elf, a, extra_ranges, extra_known))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
@@ -4247,7 +4738,8 @@ def main(argv):
         cur = []
         cur_bytes = 0
         for ft in func_texts:
-            w = len(ft)
+            # An LLVM body weighs what its C body would, so chunks fall where C cuts them.
+            w = getattr(ft, "chunk_bytes", len(ft))
             if cur and (cur_bytes + w > chunk_target_bytes or len(cur) >= funcs_per_chunk):
                 boundaries.append(cur)
                 cur = []
@@ -4269,6 +4761,9 @@ def main(argv):
             site["id"] for addr, site in ENHANCEMENT_SITES.items()
             if addr not in ENHANCEMENT_APPLIED
         )
+        if (ENHANCEMENT_UPDATE_BOUNDARY is not None
+                and ENHANCEMENT_UPDATE_BOUNDARY not in ENHANCEMENT_APPLIED):
+            missing.append("update_boundary")
         if missing:
             # A verified site that no emitted statement rewrites (an unreached address, a
             # stubbed function, a fused fast path) would leave the epoch stamp claiming
@@ -4379,8 +4874,10 @@ def main(argv):
             "    }",
             "    return on;",
             "}",
+            "uint32_t nk_enhancement_updates;",
             "",
         ]
+        main_out += _enhancement_data_lines()
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]
@@ -4404,7 +4901,12 @@ def main(argv):
         for a, name, size in symbol_table:
             main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
         main_out.append("};")
+    if module_record is not None:
+        main_out.append("")
+        main_out.extend(main_module_record_lines(module_record))
     main_out.append("\nvoid sr_register_all(void) {")
+    if module_record is not None:
+        main_out.append("    sr_main_module_register(&sr_main_module_record);")
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
@@ -4453,11 +4955,18 @@ def main(argv):
         f'    fprintf(stderr, "sr_register_all: registered {len(exec_spans)} '
         'executable span(s)\\n");'
     )
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
     main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
     for i in range(num_files):
         main_out.append(f"    sr_register_chunk_{i}();")
     main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
 
+    if llvm_lowered:
+        # The IR addresses CpuState fields by byte offset; this build's compiler checks them.
+        main_out.append("")
+        main_out.append("/* --backend=llvm (#330): the CpuState offsets the generated IR uses. */")
+        main_out.extend(codegen_llvm.layout_asserts())
     with open(out_c, "w", encoding="ascii", newline="\n") as f:
         f.write(rename_generated_entries("\n".join(main_out), renames))
 
@@ -4479,6 +4988,22 @@ def main(argv):
         parts.append("}\n")
         with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
             f.write(rename_generated_entries("".join(parts), renames))
+        llvm_bodies = [ft for ft in chunk if isinstance(ft, codegen_llvm.LLVMBody)]
+        llvm_path = f"{base_name}_{i}.ll"
+        if llvm_bodies:
+            module = codegen_llvm.chunk_module(os.path.basename(llvm_path), llvm_bodies, renames)
+            with open(llvm_path, "w", encoding="ascii", newline="\n") as f:
+                f.write(module.render())
+        else:
+            for stale in (llvm_path, f"{base_name}_{i}_ll.o", f"{base_name}_{i}_ll.bc"):
+                if os.path.exists(stale):
+                    os.remove(stale)
+    llvm_manifest_path = f"{base_name}_llvm.json"
+    if backend == "llvm":
+        with open(llvm_manifest_path, "w", encoding="ascii", newline="\n") as f:
+            f.write(codegen_llvm.manifest(llvm_lowered, llvm_fallbacks))
+    elif os.path.exists(llvm_manifest_path):
+        os.remove(llvm_manifest_path)
 
     write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
 
@@ -4495,14 +5020,13 @@ def main(argv):
     # Delete stale chunk files from previous runs
     j = num_files
     while True:
-        stale_c = f"{base_name}_{j}.c"
-        stale_o = f"{base_name}_{j}.o"
-        if os.path.exists(stale_c) or os.path.exists(stale_o):
-            if os.path.exists(stale_c): os.remove(stale_c)
-            if os.path.exists(stale_o): os.remove(stale_o)
-            j += 1
-        else:
+        stale = [f"{base_name}_{j}{suffix}" for suffix in (".c", ".o", ".ll", "_ll.o", "_ll.bc")]
+        present = [path for path in stale if os.path.exists(path)]
+        if not present:
             break
+        for path in present:
+            os.remove(path)
+        j += 1
 
     resume_count = sum(1 for a in emitted if a in resume_owners)
     if chunk_target_bytes > 0:
@@ -4513,6 +5037,9 @@ def main(argv):
           f"{len(emitted) - resume_count} callable functions + {resume_count} resume entries, "
           f"{len(stubbed)} fallbacks. "
           f"Stub list: {base_name}_stubs.txt")
+    if backend == "llvm":
+        print(f"llvm backend: {len(llvm_lowered)} functions lowered to LLVM IR, "
+              f"{len(llvm_fallbacks)} kept in C (reasons: {llvm_manifest_path})")
     if SV_ENABLED:
         print(f"static-verify: {SV_STATS['checks']} register assertions "
               f"across {SV_STATS['funcs']} functions")

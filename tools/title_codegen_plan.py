@@ -1264,6 +1264,8 @@ def _make_input_images(
                     "PACKAGE_NO_EXECUTABLE_REGIONS",
                     f"{source['name']} has no analyzer-owned executable region",
                 )
+            for finding in elf.envelope_findings:
+                diagnostics.append({"module": source["name"], "message": finding})
             source["elf"] = elf
             source["ranges"] = ranges
             source["analyzed_functions"] = len(starts)
@@ -1536,6 +1538,8 @@ def _cache_codegen_options(
     if enhancement_package_path is not None:
         env_for_enh["ENHANCEMENT_PACKAGE"] = str(enhancement_package_path)
     options.update(package_cache.enhancement_package_options(env_for_enh))
+    # Named only for the LLVM IR backend (#330), so C-backend keys are unchanged.
+    options.update(package_cache.llvm_backend_options(os.environ, repository_root=ROOT))
     return options
 
 
@@ -1570,12 +1574,14 @@ def _read_static_coverage(path: Path) -> dict[str, Any] | None:
 
 
 def _is_aot_output(name: str, game_name: str) -> bool:
-    """Whether ``name`` is generation-phase output: a required output, a C chunk, or a
-    system library's own translation unit (``nk_lib_*.c``, named apart from the game
-    so that another game's build compiles the identical file)."""
+    """Whether ``name`` is generation-phase output: a required output, a C chunk, the LLVM
+    IR half of a chunk and the backend's record (``--backend=llvm``, #330), or a system
+    library's own translation unit (``nk_lib_*.c``, named apart from the game so that
+    another game's build compiles the identical file)."""
     return name in _aot_required_outputs(game_name) or (
-        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h"}
-    ) or name == f"{game_name}_recomp_coverage.json" or bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
+        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h", ".ll"}
+    ) or name in (f"{game_name}_recomp_coverage.json", f"{game_name}_recomp_llvm.json") or bool(
+        SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
@@ -1830,6 +1836,7 @@ def build_package(
     aot_stage: bool = False,
     reuse_aot_stage: Path | None = None,
     enhancement_package_path: Path | None = None,
+    enhancement_data_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON.
 
@@ -2165,6 +2172,8 @@ def build_package(
         })
         if enhancement_package_path is not None:
             build_environment["ENHANCEMENT_PACKAGE"] = enhancement_package_path.as_posix()
+            if enhancement_data_root is not None:
+                build_environment["ENHANCEMENT_DATA_ROOT"] = enhancement_data_root.as_posix()
         build_jobs, build_jobs_reason = _host_package_build_jobs(
             build_environment["CHUNK_TARGET_BYTES"]
         )
@@ -2407,6 +2416,12 @@ def main(argv: list[str] | None = None) -> int:
         help="optional declarative enhancement package (e.g. experimental 60 Hz logic rescale)",
     )
     parser.add_argument(
+        "--enhancement-data-root",
+        type=Path,
+        default=None,
+        help="the title's extracted files, where the enhancement package's data_files are read",
+    )
+    parser.add_argument(
         "--profile",
         dest="codegen_profile",
         choices=("none", "hst"),
@@ -2463,6 +2478,7 @@ def main(argv: list[str] | None = None) -> int:
                 aot_stage=args.aot_stage,
                 reuse_aot_stage=args.reuse_aot_stage,
                 enhancement_package_path=args.enhancement_package,
+                enhancement_data_root=args.enhancement_data_root,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:
