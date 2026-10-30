@@ -1836,8 +1836,10 @@ void ge_set_frame(uint32_t frame) {
 }
 
 static uint32_t texel_offset(uint32_t row_pitch_pixels, uint32_t u, uint32_t v, uint32_t texel_bits) {
-    if (!ge.tex_swizzle)
-        return v * ((row_pitch_pixels * texel_bits) >> 3) + ((u * texel_bits) >> 3);
+    if (!ge.tex_swizzle) {
+        /* A linear texture's rows are whole 16-byte lines (ge_tex_row_bytes). */
+        return v * ge_tex_row_bytes(row_pitch_pixels, texel_bits) + ((u * texel_bits) >> 3);
+    }
 
     /* PPSSPP Software/Sampler.cpp GetPixelDataOffset() */
     const uint32_t tile_bits = 32, tiles_x = 4, tiles_y = 8;
@@ -2177,8 +2179,10 @@ int ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height, uint3
  * per-texel sample_tex call (wrap + swizzle offset math) dominates otherwise. */
 void ge_decode_tex_rgba(uint32_t *out) {
     if (!ge.tex_swizzle && ge.tex_fmt <= 3) {
-        uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
         uint32_t bpp = ge.tex_fmt == 3 ? 4u : 2u;
+        /* Rows are whole 16-byte lines, as the sampler reads them (ge_tex_row_bytes). */
+        uint32_t stride = ge_tex_row_bytes(ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w,
+                                           bpp * 8u) / bpp;
         SrGuestRectSpan source;
         /* A texture given through the 0x042 or 0x046 VRAM mirror (#1049: a movie drawn as a
          * texture) is not host-contiguous, so no host pointer can cover it. Each row is read
@@ -2351,8 +2355,13 @@ static void read_fb_px(int x, int y, int *r, int *g, int *b, int *a) {
     uint32_t off = (uint32_t)(y*(int)stride + x);
     if ((ge.fbfmt & 3) == 3) unpack_color(ge_fb_load(ge_fb_addr() + off*4, 1), 3, r,g,b,a);
     else                     unpack_color(ge_fb_load(ge_fb_addr() + off*2, 0), ge.fbfmt&3, r,g,b,a);
+    /* A 565 pixel's alpha, and so its stencil value, reads as 0 (PSP-GE-RASTER-001
+     * st565-eq0, b565-da-ida). */
+    if ((ge.fbfmt & 3) == 0) *a = 0;
 }
 
+/* One blend factor, 0..255 except the doubled alphas: 2a runs to 510 and 255 - 2a goes
+ * negative, unclamped (PSP-GE-RASTER-001 b-2sa-2isa, b-2isa-2sa, b-2da-2ida). */
 static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int dr, int dg, int db, int da, int srcSide) {
     int sv = chan==0?sr:(chan==1?sg:sb), dv = chan==0?dr:(chan==1?dg:db);
     int fixedA = chan==0?(ge.blend_fixa&0xFF):(chan==1?((ge.blend_fixa>>8)&0xFF):((ge.blend_fixa>>16)&0xFF));
@@ -2361,20 +2370,29 @@ static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int
         case 0: return srcSide?dv:sv;    case 1: return 255-(srcSide?dv:sv);
         case 2: return sa;               case 3: return 255-sa;
         case 4: return da;               case 5: return 255-da;
-        case 6: return clamp8(sa*2);     case 7: return clamp8(255-sa*2);
-        case 8: return clamp8(da*2);     case 9: return clamp8(255-da*2);
+        case 6: return sa*2;             case 7: return 255-sa*2;
+        case 8: return da*2;             case 9: return 255-da*2;
         case 10: default: return srcSide?fixedA:fixedB;
     }
 }
 
+/* A colour times a blend factor as the PSP rounds it: floor((2v + 1)(2|f| + 1) / 1024), each
+ * product on its own before the equation, with the factor's sign applied afterwards (only
+ * 255 - 2a can be negative). Exact for every pixel of the PSP-GE-RASTER-001 blend cells. */
+static int blend_mul(int v, int f) {
+    if (f < 0) return -(((2*v + 1) * (1 - 2*f)) >> 10);
+    return ((2*v + 1) * (2*f + 1)) >> 10;
+}
+
 static int blend_chan(int s, int d, int sf, int df, int eq) {
-    int sv=s*sf/255, dv=d*df/255;
+    int sv=blend_mul(s,sf), dv=blend_mul(d,df);
     switch (eq&7) {
         case 1: return clamp8(sv-dv); case 2: return clamp8(dv-sv);
-        /* min/max/absdiff ignore the blend factors on the PSP (PPSSPP
-         * Rasterizer.cpp AlphaBlendingResult operates on the raw source/dst). */
+        /* min/max/absdiff ignore the blend factors on the PSP. */
         case 3: return s<d?s:d;       case 4: return s>d?s:d;
         case 5: return abs(s-d);
+        /* Equations 6 and 7 pass the source colour through (PSP-GE-RASTER-001 b-eq6, b-eq7). */
+        case 6: case 7: return s;
         case 0: default: return clamp8(sv+dv);
     }
 }
@@ -2479,6 +2497,8 @@ static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int st
     }
     uint32_t oldraw=read_fb_raw(x,y);
     int dr,dg,db,da; unpack_color(oldraw,ge.fbfmt&3,&dr,&dg,&db,&da);
+    /* A 565 pixel has no alpha bits; blending reads its alpha as 0 (read_fb_px). */
+    if ((ge.fbfmt & 3) == 0) da = 0;
     if (ge.clear) {
         int write_color = (ge.clear_mode & 0x100) != 0;
         int write_alpha = (ge.clear_mode & 0x200) != 0;
@@ -2720,10 +2740,13 @@ static int shade(float u, float fv, float rho2, int fog,
             if (fog == 0) s_stat.fog0++; else if (fog >= 256) s_stat.fogfull++;
         }
         if (fog < 256) {  /* mix toward fog colour; alpha unaffected */
+            /* The factor F is the fog value times 256, truncated, at most 255, and the mix is
+             * ((c + 1) F + (fog + 1)(255 - F)) / 256 truncated (PSP-GE-RASTER-001 fog-*). */
             int fr=(int)(ge.fog_color&0xFF), fg=(int)((ge.fog_color>>8)&0xFF), fb=(int)((ge.fog_color>>16)&0xFF);
-            r = fr + (((r - fr) * fog) >> 8);
-            g = fg + (((g - fg) * fog) >> 8);
-            b = fb + (((b - fb) * fog) >> 8);
+            int f = fog > 255 ? 255 : fog;
+            r = ((r + 1) * f + (fr + 1) * (255 - f)) >> 8;
+            g = ((g + 1) * f + (fg + 1) * (255 - f)) >> 8;
+            b = ((b + 1) * f + (fb + 1) * (255 - f)) >> 8;
         }
         /* Fog precedes the color test on the PSP fragment pipeline. */
         if (!color_test(r,g,b)) return 0;
@@ -3268,9 +3291,19 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
     int use_z    = persp ? ge.ztest_enable : thru_ztest();
     int use_fog  = persp && ge.fog_enable && !ge.clear;
     s_in3d = persp;
-    for (int i=0; i<=steps; i++) {
-        float t=(float)i/(float)steps;
-        int x=(int)(A->x+dx*t), y=(int)(A->y+dy*t);
+    /* The PSP steps the major axis one pixel at a time from the first endpoint's pixel and
+     * leaves the last endpoint's pixel out; the minor coordinate is the line's value at
+     * the centre of each major-axis pixel, truncated (PSP-GE-RASTER-001 e-line0..2). */
+    int xmajor = fabsf(dx) >= fabsf(dy);
+    float a_major = xmajor ? A->x : A->y, d_major = xmajor ? dx : dy;
+    float a_minor = xmajor ? A->y : A->x, d_minor = xmajor ? dy : dx;
+    int p0 = (int)floorf(a_major), dir = d_major < 0.0f ? -1 : 1;
+    for (int i=0; i<steps; i++) {
+        int p = p0 + i * dir;
+        float t = d_major != 0.0f ? ((float)p + 0.5f - a_major) / d_major : 0.0f;
+        int q = (int)floorf(a_minor + d_minor * t);
+        t = clampf01(t);
+        int x = xmajor ? p : q, y = xmajor ? q : p;
         float u=0, fv=0;
         float rho2 = 0.0f;
         if (textured) {
@@ -4013,7 +4046,13 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         }
         int wc = (ge.clear_mode & 0x100) != 0, wa = (ge.clear_mode & 0x200) != 0;
         if (!wc && !wa) return;
-        if (wc && wa) { fill_rect_clear_fast(xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a); return; }
+        /* Clear mode still dithers and still honours the pixel masks (PSP-GE-RASTER-001
+         * clr-ca-dth565, clr-ca-dth8888, clr-ca-msk); only an unmasked, undithered full
+         * clear writes one constant value. */
+        if (wc && wa && !ge.dither_enable && fb_write_mask_native() == 0u) {
+            fill_rect_clear_fast(xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a);
+            return;
+        }
         for (int y=ya; y<yb; y++) for (int x=xa; x<xb; x++)
             put_px_rgba(x, y, p1->r, p1->g, p1->b, p1->a);
         return;
