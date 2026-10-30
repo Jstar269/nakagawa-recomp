@@ -610,6 +610,8 @@ def _parse_changed_paths(output: str) -> list[str]:
 #: dispatch and the nightly schedule ask for the complete contract. A merge-queue group
 #: is a candidate for ``main``, so every required check runs on the group commit.
 FULL_MATRIX_EVENTS = frozenset({"workflow_dispatch", "merge_group", "schedule"})
+# Events whose run on main may write the persisted Windows compiler cache (#735).
+COMPILER_CACHE_WRITE_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
 def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, str] | None:
@@ -794,6 +796,12 @@ def classify(
     is_main_push = event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
     allow_substantive = event_name in FULL_MATRIX_EVENTS or (not is_main_push or workflow_ci)
     run_main_smoke = is_main_push or event_name in FULL_MATRIX_EVENTS
+    # #735: only a run of main's own code on main -- a push, the nightly schedule or
+    # a manual dispatch of main -- may save the persisted Windows compiler cache.
+    # Pull requests and merge groups only read it.
+    save_compiler_cache = (
+        event_name in COMPILER_CACHE_WRITE_EVENTS and os.environ.get("GITHUB_REF") == "refs/heads/main"
+    )
 
     return {
         "docs_only": str(docs_only).lower(),
@@ -816,6 +824,7 @@ def classify(
         "run_windows": str(run_windows).lower(),
         "run_markdown": str(markdown).lower(),
         "run_main_smoke": str(run_main_smoke).lower(),
+        "save_compiler_cache": str(save_compiler_cache).lower(),
         "allow_substantive": str(allow_substantive).lower(),
         "draft": str(draft).lower(),
     }
