@@ -192,6 +192,14 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
    - An encrypted `~PSP`/`~SCE` executable without a user-supplied `EBOOT.elf` stops as
      `ENCRYPTED_EXECUTABLE` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). Without a supported plain or decrypted
      executable, a missing recompiled child is reported instead of fabricated.
+   - Every check classifies the disc's program input (`PlayerInputClass` in `src/player/player_state.h`): plain ELF,
+     homebrew or project-made, user-supplied decrypted retail, encrypted retail still short of decrypted copies, or
+     unsupported (unreadable disc, empty or malformed program, a module tree that cannot be listed). For encrypted
+     retail it names each file to supply (`EBOOT.elf`, or the module's own name) with the disc file it is a copy of
+     and the per-title folder `titles/<DISC_ID>/decrypted`. The game-found card, the wizard's Verify step and the
+     title page show that list with OPEN FOLDER and CHECK AGAIN, which checks the same disc again without a new
+     import ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)); the title page's check also runs again
+     by itself when a listed file appears or changes. Nothing in this route decrypts or reads a key.
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a validating
    package is present or, for a non-experimental catalog title, when the
    launcher resolves that title's developer runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)).

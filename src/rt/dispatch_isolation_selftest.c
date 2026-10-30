@@ -982,9 +982,11 @@ static void test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor(vo
           "MEASURED: an interpreted nested callee with $ra=0 unexpectedly returned "
           "cleanly (%s) -- if this is now a real contract, this record is stale",
           sr_guest_interp_result_name(result));
-    CHECK(fault.pc == 0u,
-          "MEASURED: the floor rejected somewhere other than the $ra=0 resume PC "
-          "(fault_pc=0x%08x, result=%s)", fault.pc, sr_guest_interp_result_name(result));
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER &&
+              fault.pc == NESTED_RA0_EXEC_START + 4u,
+          "MEASURED: the floor did not stop at the jr that reads $ra=0 as a null code "
+          "pointer (#1375; fault_pc=0x%08x, result=%s)",
+          fault.pc, sr_guest_interp_result_name(result));
 
     /* The same shape through the production dispatch core.  dispatch_try() is
      * used rather than dispatch() because the public wrapper terminates the
@@ -1868,6 +1870,141 @@ static void test_stale_hook_redirects_to_interpreter(void) {
     sr_exec_span_reset();
 }
 
+/* ---- #1375: a null code pointer vs. the offset-0 function of a zero-based image ----
+ *
+ * The synthetic image is based at 0: its offset-0 function is registered at guest
+ * address 0 and owns that word, as a zero-based PRX's first function does. A computed
+ * transfer (jalr/jr) whose register holds 0 is a null code pointer and must stop at the
+ * transfer, before its link write and delay slot, without entering that function. A
+ * static `jal 0` reaches the same function as an ordinary CALL, and the dispatch core
+ * still resolves address 0 for static targets. */
+#define NULLPTR_EXEC_START 0x00660000u
+#define NULLPTR_EXEC_END   (NULLPTR_EXEC_START + 0x40u)
+#define NULLPTR_JR_ENTRY   (NULLPTR_EXEC_START + 0x10u)
+#define NULLPTR_JAL_ENTRY  (NULLPTR_EXEC_START + 0x20u)
+
+static int g_offset0_hits = 0;
+static void offset0_body(CpuState *s) { g_offset0_hits++; s->r[2] = 0x70u; }
+
+static CpuState nullptr_state(uint32_t pc) {
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = pc;
+    s.r[2] = 0xdeadbeefu;
+    s.r[3] = 0xdeadbeefu;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    return s;
+}
+
+static int boot_event_file_names(const char *path, const char *needle) {
+    char text[4096];
+    FILE *events = fopen(path, "rb");
+    if (!events) return 0;
+    size_t n = fread(text, 1, sizeof text - 1u, events);
+    fclose(events);
+    text[n] = '\0';
+    return strstr(text, needle) != NULL;
+}
+
+static void test_null_code_pointer_is_not_the_offset0_function(const char *self_path) {
+    sr_mem_init();
+    sr_exec_span_reset();
+    own_synthetic_aot_word(0u);
+    sr_register(0u, offset0_body);
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    CHECK(sr_exec_span_register(NULLPTR_EXEC_START, NULLPTR_EXEC_END),
+          "null-code-pointer executable span registration failed");
+
+    /* jalr t9 ; addiu v1, zero, 0x55 */
+    MEM_W32(NULLPTR_EXEC_START, 0x0320f809u);
+    MEM_W32(NULLPTR_EXEC_START + 4u, 0x24030055u);
+    /* jr t0 ; addiu v1, zero, 0x66 */
+    MEM_W32(NULLPTR_JR_ENTRY, 0x01000008u);
+    MEM_W32(NULLPTR_JR_ENTRY + 4u, 0x24030066u);
+    /* jal 0 ; nop ; addiu v0, v0, 1 ; jr t1 ; nop */
+    MEM_W32(NULLPTR_JAL_ENTRY, 0x0c000000u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 4u, 0x00000000u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 8u, 0x24420001u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 12u, 0x01200008u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 16u, 0x00000000u);
+
+    /* The static path the null rule must leave alone: address 0 resolves to the
+     * offset-0 function, and a static CALL of it runs that function. */
+    CHECK(sr_lookup(0u) == offset0_body, "address 0 does not resolve to the offset-0 function");
+    g_offset0_hits = 0;
+    CpuState s = nullptr_state(PROBE_PC);
+    CHECK(dispatch_call_try(&s, 0u, PROBE_RA) == SR_GUEST_INTERP_AOT_HANDOFF &&
+              g_offset0_hits == 1 && s.r[2] == 0x70u,
+          "a static CALL to address 0 did not run the offset-0 function (hits=%d v0=0x%08x)",
+          g_offset0_hits, s.r[2]);
+
+    /* Interpreted jalr through a null register: stops before its link and slot. */
+    SrGuestInterpFault fault;
+    g_offset0_hits = 0;
+    s = nullptr_state(NULLPTR_EXEC_START);
+    s.r[25] = 0u;
+    SrGuestInterpResult result = sr_guest_interp_run(&s, NULLPTR_EXEC_START, &fault);
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && fault.pc == NULLPTR_EXEC_START,
+          "null jalr was not refused as a null code pointer at the jalr "
+          "(result=%s fault_pc=0x%08x)", sr_guest_interp_result_name(result), fault.pc);
+    CHECK(g_offset0_hits == 0, "null jalr entered the offset-0 function");
+    CHECK(s.r[31] == PROBE_RA && s.r[3] == 0xdeadbeefu,
+          "null jalr applied its link write or delay slot (ra=0x%08x v1=0x%08x)",
+          s.r[31], s.r[3]);
+
+    /* A static jal 0 from interpreted code is not a code pointer, so the null rule
+     * must not claim it. (The dispatch core's older pc==0 thread guard still stands
+     * between an interpreted CALL and address 0; #1375 lists it as what is left.) */
+    s = nullptr_state(NULLPTR_JAL_ENTRY);
+    s.r[9] = PROBE_RA;
+    result = sr_guest_interp_run(&s, NULLPTR_JAL_ENTRY, &fault);
+    CHECK(result != SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "static jal 0 from interpreted code was refused as a null code pointer");
+
+    /* Interpreted jr through a null register, through the production dispatch core:
+     * the named boundary and its event line. */
+    char event_path[512];
+    snprintf(event_path, sizeof event_path, "%s.nullptr-events.txt", self_path);
+    remove(event_path);
+#ifdef _WIN32
+    _putenv_s("SR_BOOT_EVENT_FILE", event_path);
+#else
+    setenv("SR_BOOT_EVENT_FILE", event_path, 1);
+#endif
+    g_offset0_hits = 0;
+    s = nullptr_state(PROBE_PC);
+    s.r[8] = 0u;
+    CpuState before = s;
+    int dispatch_result = dispatch_try(&s, NULLPTR_JR_ENTRY);
+#ifdef _WIN32
+    _putenv_s("SR_BOOT_EVENT_FILE", "");
+#else
+    unsetenv("SR_BOOT_EVENT_FILE");
+#endif
+    CHECK(dispatch_result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+          "null jr did not stop the dispatch core as a null code pointer "
+          "(result=%d hits=%d)", dispatch_result, g_offset0_hits);
+    CHECK(s.r[3] == before.r[3] && s.r[2] == before.r[2],
+          "null jr ran its delay slot or fabricated a result");
+    CHECK(strcmp(dispatch_semantic_boundary_name((SrGuestInterpResult)dispatch_result),
+                 "null-code-pointer") == 0,
+          "null code pointer did not map to its product boundary name");
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "null code pointer stop did not record its boot event naming #1375");
+    remove(event_path);
+
+    /* Generated code's check: a nonzero pointer passes, and 0 ends the process. */
+    SR_CODE_POINTER(&s, PROBE_RA, NULLPTR_EXEC_START);
+    int child_status = run_dispatch_child(self_path, "--null-code-pointer-child");
+    CHECK(child_status == 1,
+          "generated-code null code pointer check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+
+    sr_exec_span_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     sr_watch_configure();
@@ -1883,6 +2020,14 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && strcmp(argv[1], "--host-stack-boundary-child") == 0)
         return run_host_stack_guard_child();
+    if (argc == 2 && strcmp(argv[1], "--null-code-pointer-child") == 0) {
+        sr_exec_span_reset();
+        own_synthetic_aot_word(0u);
+        sr_register(0u, offset0_body);
+        CpuState s = nullptr_state(NULLPTR_EXEC_START);
+        SR_CODE_POINTER(&s, s.r[25], NULLPTR_EXEC_START);
+        return 99; /* fail-open: a null code pointer must never fall through */
+    }
 
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     fprintf(stderr, "dispatch-isolation-selftest: configuration \"%s\" "
@@ -1913,6 +2058,7 @@ int main(int argc, char **argv) {
     test_configured_terminators_match_their_site_only();
     test_foreign_terminator_sites_are_generic();
     test_stale_hook_redirects_to_interpreter();
+    test_null_code_pointer_is_not_the_offset0_function(argv[0]);
 
     if (g_failures != 0) {
         fprintf(stderr, "dispatch-isolation-selftest: %d FAILURE(S) in configuration \"%s\"\n",

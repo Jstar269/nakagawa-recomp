@@ -3863,6 +3863,127 @@ static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
            "a UMD read that would run past the end of guest memory is refused");
 }
 
+/* One asynchronous call on fd: nid with a1..a3 and t0, returning v0. */
+static uint32_t umd_test_async_call(uint32_t nid, uint32_t fd, uint32_t a1, uint32_t a2,
+                                    uint32_t a3, uint32_t t0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = a1;
+    cpu.r[6] = a2;
+    cpu.r[7] = a3;
+    cpu.r[8] = t0;
+    return sr_syscall(&cpu, nid);
+}
+
+#define UMD_NID_READ_ASYNC 0xa0b5a7c2u
+#define UMD_NID_LSEEK_ASYNC 0x71b19e77u
+#define UMD_NID_LSEEK32_ASYNC 0x1b385d8fu
+#define UMD_NID_WAIT_ASYNC 0xe23eec33u
+#define UMD_NID_POLL_ASYNC 0x3251ea56u
+#define UMD_NID_CLOSE_ASYNC 0xff5940b6u
+
+/* The 64-bit result an asynchronous status call stored at result_addr. */
+static int64_t umd_test_async_result(uint32_t result_addr) {
+    return (int64_t)(((uint64_t)MEM_R32(result_addr + 4u) << 32) | MEM_R32(result_addr));
+}
+
+/* Asynchronous requests on the UMD block device (PSP-UMDRAW-001 async cells): sceIoReadAsync
+ * returns 0, an immediate sceIoPollAsync returns 1 because the request is still pending, and
+ * sceIoWaitAsync returns 0 and stores the sector count as the 64-bit result. The queued read
+ * copies the same sectors and advances the same position as a synchronous one; a queued seek
+ * returns the sector position as its result, and its refusals are the synchronous ones. While
+ * a request is pending a synchronous read or seek on the descriptor is refused as busy. Every
+ * import advances the request queue (sr_syscall), so each busy check is the first call after
+ * its submission. */
+static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_t result_addr) {
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD async setup seeks to sector 16");
+    for (uint32_t i = 0; i < 2u * 2048u; i++) MEM_W8(data_addr + i, 0u);
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 2u, 0u, 0u) == 0u,
+           "a raw UMD sceIoReadAsync of two sectors returns 0");
+    expect(umd_test_async_call(UMD_NID_POLL_ASYNC, fd, result_addr, 0u, 0u, 0u) == 1u,
+           "an immediate sceIoPollAsync of the raw UMD read returns 1 (pending)");
+    MEM_W32(result_addr, 0xdeadbeefu);
+    MEM_W32(result_addr + 4u, 0xdeadbeefu);
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 2,
+           "sceIoWaitAsync of the raw UMD read returns 0 with the sector count as its result");
+    expect(umd_test_sectors_match(data_addr, 16u, 2u),
+           "the queued UMD read copied sectors 16 and 17");
+    expect(umd_test_seek32(fd, 0, 1u) == 18u,
+           "the queued UMD read advanced the position by its sector count");
+
+    /* Busy while pending: the synchronous read, then the synchronous seek. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u &&
+               umd_test_read(fd, data_addr + 2048u, 1u) == 0x80020329u,
+           "a synchronous UMD read while a request is pending is refused as busy");
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 18u, 1u) && umd_test_seek32(fd, 0, 1u) == 19u,
+           "the request a refused synchronous read left pending still reads sector 18");
+    uint32_t high = 0;
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u &&
+               umd_test_seek64(fd, 0, 1u, &high) == 0x80020329u && high == 0xffffffffu,
+           "a synchronous UMD seek while a request is pending is refused as busy");
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 19u, 1u) && umd_test_seek32(fd, 0, 1u) == 20u,
+           "the request a refused synchronous seek left pending still reads sector 19");
+
+    /* A queued read is completed by the dispatch of later imports as well as by a wait. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 1u, 0u, 0u) == 0u,
+           "a raw UMD sceIoReadAsync completed by polling returns 0");
+    int polled = 0;
+    for (int i = 0; i < 8; i++) {
+        uint32_t rc = umd_test_async_call(UMD_NID_POLL_ASYNC, fd, result_addr, 0u, 0u, 0u);
+        if (rc == 0u) { polled = 1; break; }
+        expect(rc == 1u, "a pending raw UMD read polls as 1 until it completes");
+    }
+    expect(polled && umd_test_async_result(result_addr) == 1 &&
+               umd_test_sectors_match(data_addr, 20u, 1u) && umd_test_seek32(fd, 0, 1u) == 21u,
+           "a polled raw UMD read completes with its sector count and data");
+
+    /* A zero count is the device's refusal, delivered as the request's result. */
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 21u,
+           "a zero-sector raw UMD async read completes with 0x80010016 and keeps the position");
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, fd, 0x0bffff00u, 1u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 21u,
+           "a raw UMD async read into memory that cannot hold a whole sector completes "
+           "refused with 0x80010016 and keeps the position");
+
+    /* Queued seeks count sectors like the synchronous ones. */
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 32u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 32 && umd_test_seek32(fd, 0, 1u) == 32u,
+           "a raw UMD sceIoLseekAsync SEEK_SET 32 completes with sector 32");
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 0u, 0u, 2u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a raw UMD sceIoLseekAsync SEEK_END 0 completes with the last sector");
+    expect(umd_test_async_call(UMD_NID_LSEEK_ASYNC, fd, 0u, 0xffffffffu, 0xffffffffu, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x8001b003u &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a queued negative raw UMD seek completes refused with 0x8001b003, position kept");
+    expect(umd_test_async_call(UMD_NID_LSEEK32_ASYNC, fd, 16u, 0u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == 16 && umd_test_seek32(fd, 0, 1u) == 16u,
+           "a raw UMD sceIoLseek32Async SEEK_SET 16 completes with sector 16");
+
+    /* A read crossing the last sector stays at the named boundary as its result. */
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 2u, 0u, 0u) == 0u &&
+               umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010086u,
+           "a queued UMD read across the last sector completes at the raw-device boundary");
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
@@ -3877,12 +3998,8 @@ static void test_umd_io_console_model(void) {
     static const uint32_t nid_io_open_async = 0x89aa9906u;
     static const uint32_t nid_io_read_async = 0xa0b5a7c2u;
     static const uint32_t nid_io_write_async = 0x0facab19u;
-    static const uint32_t nid_io_lseek_async = 0x71b19e77u;
-    static const uint32_t nid_io_lseek32_async = 0x1b385d8fu;
     static const uint32_t nid_io_ioctl_async = 0xe95a012bu;
     static const uint32_t nid_io_wait_async = 0xe23eec33u;
-    static const uint32_t nid_io_poll_async = 0x3251ea56u;
-    static const uint32_t nid_io_get_async_stat = 0xcb05f8d6u;
     static const uint32_t nid_io_close_async = 0xff5940b6u;
     typedef struct {
         const char *path;
@@ -3989,6 +4106,11 @@ static void test_umd_io_console_model(void) {
            "with no disc image a UMD sceIoRead fails closed without changing guest memory");
     expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
            "with no disc image a UMD sceIoLseek32 fails closed");
+    expect(umd_test_async_call(UMD_NID_READ_ASYNC, raw_fd, DATA_ADDR, 1u, 0u, 0u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoReadAsync fails closed");
+    expect(umd_test_async_call(UMD_NID_POLL_ASYNC, raw_fd, 0u, 0u, 0u, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoPollAsync fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
@@ -4001,6 +4123,7 @@ static void test_umd_io_console_model(void) {
         raw_fd = sr_syscall(&cpu, nid_io_open);
         expect(raw_fd == 3u, "each UMD block device opens read-only");
         test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        test_umd_block_device_async(raw_fd, DATA_ADDR, PATH_ADDR + 0x100u);
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = raw_fd;
         expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
@@ -4033,8 +4156,12 @@ static void test_umd_io_console_model(void) {
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read_async) == 0x80010086u,
-           "raw UMD sceIoReadAsync fails closed");
+    expect(sr_syscall(&cpu, nid_io_read_async) == 0u,
+           "raw UMD sceIoReadAsync with a disc image queues the read");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_wait_async) == 0u,
+           "the queued raw UMD read completes on sceIoWaitAsync");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
@@ -4043,32 +4170,8 @@ static void test_umd_io_console_model(void) {
            "raw UMD sceIoWriteAsync fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek_async) == 0x80010086u,
-           "raw UMD sceIoLseekAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32_async) == 0x80010086u,
-           "raw UMD sceIoLseek32Async fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl_async) == 0x80010086u,
            "raw UMD sceIoIoctlAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_get_async_stat) == 0x80010086u,
-           "raw UMD sceIoGetAsyncStat fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_wait_async) == 0x80010086u,
-           "raw UMD sceIoWaitAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_poll_async) == 0x80010086u,
-           "raw UMD sceIoPollAsync fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_close_async) == 0x80010086u,
-           "raw UMD sceIoCloseAsync fails closed without closing the descriptor");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
@@ -4080,8 +4183,15 @@ static void test_umd_io_console_model(void) {
            "raw UMD sceIoDclose fails closed without closing the descriptor");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_close) == 0u,
-           "raw UMD sceIoClose succeeds after rejected operations");
+    expect(sr_syscall(&cpu, nid_io_close_async) == 0u,
+           "raw UMD sceIoCloseAsync queues the close");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = PATH_ADDR + 0x100u;
+    expect(sr_syscall(&cpu, nid_io_wait_async) == 0u &&
+               umd_test_async_result(PATH_ADDR + 0x100u) == 0 &&
+               sr_hle_test_fd_kind(raw_fd) != FD_KIND_RAW_DEVICE,
+           "the queued raw UMD close completes with 0 and releases the descriptor");
 
     fd_set_path(&cpu, PATH_ADDR, "umd0:");
     cpu.r[5] = 1u;
@@ -6526,6 +6636,7 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR, 0x600u);
     MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
     expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
@@ -6734,6 +6845,11 @@ static void test_utility_dialog_single_slot(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
            "the finished message dialog accepts ShutdownStart");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, 0x601u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110004u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "savedata rejects an unknown parameter version without claiming the slot");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a savedata InitStart before the shut-down message dialog reports NONE is refused");
@@ -6753,12 +6869,15 @@ static void test_utility_dialog_single_slot(void) {
            "the message dialog that gave up the slot answers WRONG_TYPE");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
            "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "savedata ShutdownStart at NONE returns INVALID_STATUS");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_UPDATE, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
-           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+           "savedata Update at NONE returns INVALID_STATUS without re-arming");
 
     /* Each remaining type takes the free slot in turn and gives it back at NONE. */
     for (size_t i = 0; i < count; i++) {
@@ -6877,6 +6996,47 @@ static void test_msg_dialog_answer_field(void) {
     expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + OPTIONS) == 0xa5a5a5a5u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + BUTTON_PRESSED) == 0x5a5a5a5au,
            "a V1 block has no buttonPressed: nothing past its 572 bytes is written");
+}
+
+static void test_savedata_older_parameter_versions(void) {
+    CpuState cpu;
+    static const uint32_t sizes[] = {0x5c8u, 0x5dcu};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        sr_hle_test_osk_slot_reset();
+        utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+        MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x5fcu, 1u); /* outside either version */
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+                   utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+                   MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+               "older savedata versions ignore absent GETSIZE tail fields");
+        sr_hle_test_osk_slot_reset();
+        extern uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
+        static const uint32_t modes[] = {8u, 11u, 12u, 22u};
+        for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+            utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+            MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]);
+            MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, modes[m]);
+            for (uint32_t off = sizes[i]; off < 0x600u; off += 4u)
+                MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + off, 1u);
+            expect(sr_savedata_execute_sized(UTILITY_SAVEDATA_PARAM_ADDR, sizes[i]) == 0u,
+                   "savedata modes ignore pointers outside the declared parameter version");
+        }
+        const uint32_t edge = 0x0c000000u - sizes[i];
+        utility_param_block(edge, sizes[i]);
+        MEM_W32(edge, sizes[i]);
+        MEM_W32(edge + 0x30u, UTILITY_SAVEDATA_MODE_GETSIZE);
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, edge) == 0u &&
+                   utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+                   MEM_R32(edge + 0x1cu) == 0u,
+               "older savedata block may end exactly at the guest arena boundary");
+        sr_hle_test_osk_slot_reset();
+        MEM_W32(edge + 4u, sizes[i]);
+        expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, edge + 4u) == 0x80110004u,
+               "older savedata block crossing the guest arena boundary is rejected");
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static void test_utility_dialog_status_sequence(void) {
@@ -36264,6 +36424,45 @@ static void test_vtimer_handler_catches_up_and_refuses_cancel_inside(void) {
     s_pace_on = saved_pace;
 }
 
+/* PSP-HLE-INTR-001, vtimer-ret-1us (PSP-3000 6.6.1, 2026-10-29): a handler scheduled at 10000 us
+ * that returned 1 four times and then 0 was called with scheduled times 10000, 10100, 10200,
+ * 10300 and 10400: a return below 100 us reschedules 100 us on. vtimer-ret-mixed (returns 5000,
+ * 30000, 1000, 0) gave 10000, 15000, 45000, 46000, so returns of 100 us and more are used as
+ * returned. */
+static void test_vtimer_handler_return_below_100us_reschedules_100us_on(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-min");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    for (unsigned i = 0; i < 4u; i++) s_vth_returns[i] = 1u;
+    s_vth_returns[4] = 0u;
+    expect(vth_set(vt, 10000u, VTH_ENTRY, 0u) == 0u, "SetVTimerHandler returns 0");
+    for (unsigned i = 0; i < 5u; i++) vth_run_until(2000000u + 10000u + 100u * i);
+    expect(s_vth_calls == 5u, "one call per 100 us scheduled step, five in all");
+    expect(s_vth_sched[0] == 10000u && s_vth_sched[1] == 10100u && s_vth_sched[2] == 10200u &&
+               s_vth_sched[3] == 10300u && s_vth_sched[4] == 10400u,
+           "a return of 1 reschedules 100 us after the scheduled time");
+    vth_run_until(2100000u);
+    unsigned own = 0;   /* a timer an earlier test left running may also fire here */
+    for (unsigned i = 0; i < s_vth_calls && i < 8u; i++) own += s_vth_uid[i] == vt;
+    expect(own == 5u, "the zero return ended the series");
+
+    vth_fixture();
+    vt = vt_create_named("vth-mixed");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    s_vth_returns[0] = 5000u;
+    s_vth_returns[1] = 30000u;
+    s_vth_returns[2] = 1000u;
+    s_vth_returns[3] = 0u;
+    expect(vth_set(vt, 10000u, VTH_ENTRY, 0u) == 0u, "SetVTimerHandler returns 0");
+    vth_run_until(2046000u);
+    expect(s_vth_calls == 4u && s_vth_uid[3] == vt && s_vth_sched[0] == 10000u &&
+               s_vth_sched[1] == 15000u && s_vth_sched[2] == 45000u && s_vth_sched[3] == 46000u,
+           "returns of 100 us and more count from the scheduled time as returned");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
 #ifdef SR_HLE_AOT_BOUNDARY_TEST
 /* This is the same wrapper emitted by emit_checked_body_call: set the linked
  * resume address, establish its explicit return boundary, call the native body,
@@ -37295,6 +37494,7 @@ static int hle_selftest_main(int argc, char **argv) {
         test_vtimer_handler_registration_and_errors();
         test_vtimer_handler_runs_at_its_schedule_and_reschedules();
         test_vtimer_handler_catches_up_and_refuses_cancel_inside();
+        test_vtimer_handler_return_below_100us_reschedules_100us_on();
         fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
@@ -37341,6 +37541,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();
+    test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
@@ -37471,6 +37672,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_handler_registration_and_errors();
     test_vtimer_handler_runs_at_its_schedule_and_reschedules();
     test_vtimer_handler_catches_up_and_refuses_cancel_inside();
+    test_vtimer_handler_return_below_100us_reschedules_100us_on();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_threadman_id_list();

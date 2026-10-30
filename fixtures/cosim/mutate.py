@@ -365,6 +365,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # runtime-placed module translates base-relative.
             (
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")\n"
                 "            out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
@@ -373,7 +374,8 @@ MUTANTS: tuple[Mutant, ...] = (
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))\n"
-                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")",
+                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")",
                 1,
             ),
         ],

@@ -788,11 +788,43 @@ def build_ledger(
     return document
 
 
+#: Schema of the committed ledger that carries claims only (#1673). Its entries hold
+#: ``path``, ``classification`` and ``evidence`` and no ``sha256``, so editing a public
+#: file no longer rewrites a ledger line that every other pull request also touches.
+#: Content binding does not depend on it: the hosted attestation regenerates the hashed
+#: ledger from the candidate's blobs and the trusted authority, and requires the committed
+#: claims to equal :func:`claims_ledger` of that output byte for byte.
+CLAIMS_LEDGER_SCHEMA_VERSION = 2
+
+
+def claims_ledger(document: dict) -> dict:
+    """Return the claims-only committed form of a hashed ledger document."""
+    claims = json.loads(json.dumps(document, ensure_ascii=False))
+    claims["schema_version"] = CLAIMS_LEDGER_SCHEMA_VERSION
+    for entry in claims.get("entries", []):
+        if isinstance(entry, dict):
+            entry.pop("sha256", None)
+    return claims
+
+
+def is_claims_ledger(document: dict) -> bool:
+    """True when ``document`` declares the claims-only committed schema."""
+    return isinstance(document, dict) and document.get("schema_version") == CLAIMS_LEDGER_SCHEMA_VERSION
+
+
 def validate_ledger(document: dict, *, require_hashes: bool = True, require_resolved: bool = False) -> list[str]:
     errors: list[str] = []
     entries = document.get("entries")
     if not isinstance(entries, list):
         return ["ledger entries must be a list"]
+    # A claims ledger carries no hash at all: a half-converted file, some entries hashed and
+    # some not, is refused rather than read as either form.
+    claims_form = is_claims_ledger(document)
+    if claims_form:
+        require_hashes = False
+        for entry in entries:
+            if isinstance(entry, dict) and "sha256" in entry:
+                errors.append(f"claims ledger carries a content hash for {entry.get('path')}")
     seen: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):

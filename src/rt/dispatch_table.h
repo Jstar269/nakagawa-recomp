@@ -28,10 +28,10 @@
  *   guarded by `addr != 0`. Address 0 was thus impossible to look up. See the tests.
  *
  * Distinguishing a real code address 0 from a NULL function pointer is NOT this table's
- * job. sr_lookup(0) answering "here is the function at offset 0" is correct. Whether a
- * *computed* dispatch target of 0 should run that function or be treated as a null-pointer
- * call is a policy decision made in dispatch() (it is a null call, and stays diagnosed):
- * this table only has to represent the mapping truthfully.
+ * job. sr_lookup(0) answering "here is the function at offset 0" is correct. The policy
+ * is #1375's: a computed transfer (jr/jalr) to 0 is a null code pointer and stops at the
+ * transfer, before dispatch (sr_null_code_pointer in recomp.c); only static transfers
+ * reach address 0. This table only has to represent the mapping truthfully.
  *
  * Concurrency contract (unchanged from the previous design, and preserved by the tests):
  *   - registration happens one thread at a time (module init, the late-import bridge);
@@ -140,12 +140,13 @@ static inline uintptr_t sr_dtab_lookup(SrDispatchTable *t, uint32_t addr) {
 
 /* This table is deliberately POLICY-FREE. It answers exactly one question -- "is address X
  * registered, and to what implementation?" -- and nothing about what a runtime pointer VALUE
- * means. In particular it does NOT decide whether a computed target of 0 is a NULL pointer,
- * a module-relative code offset 0, or a future image-relative target: that is unresolved
- * under #45 (an address-taken offset-0 function pointer carried through guest data also
- * arrives as integer 0 without module identity) and is owned by #20/#45, not by this API.
- * sr_dtab_lookup(0) therefore resolves the offset-0 function like any other key. The
- * generic dispatch layer separately applies its normal executable-ownership and
- * interpreter/fail-closed checks; this table never turns a target value into success. */
+ * means. Whether a computed target of 0 is a NULL pointer or a pointer to offset 0 of a
+ * zero-based image is decided by #1375, not by this API: it is always a null pointer,
+ * refused at the jr/jalr that computed it, because tools/codegen.py refuses a zero-based
+ * module whose relocations take the address of its offset 0, so no such code pointer can
+ * exist. sr_dtab_lookup(0) therefore resolves the offset-0 function like any other key,
+ * for the static transfers that reach it. The generic dispatch layer separately applies
+ * its normal executable-ownership and interpreter/fail-closed checks; this table never
+ * turns a target value into success. */
 
 #endif /* SR_DISPATCH_TABLE_H */

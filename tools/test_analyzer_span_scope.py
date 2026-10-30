@@ -2082,5 +2082,103 @@ class ElfLoadSpanTests(unittest.TestCase):
                                  any(lo <= addr < hi for lo, hi in ranges))
 
 
+def _sectioned_exec(sections, *, base=0x08804000, gap=b""):
+    """A fixed-address executable whose one R+X PT_LOAD maps every section in order.
+
+    ``sections`` is ``[(name, flags, payload)]``; ``gap`` is file-backed executable
+    bytes before the first section (outside every named section). Returns the blob
+    and each section's guest address.
+    """
+    image = bytearray(gap)
+    addresses = {}
+    for name, _flags, payload in sections:
+        addresses[name] = base + len(image)
+        image += payload
+    names = b"\x00" + b"".join(name.encode("ascii") + b"\x00" for name, _, _ in sections)
+    names += b".shstrtab\x00"
+    phoff, image_off = 52, 0x60
+    names_off = image_off + len(image)
+    shoff = (names_off + len(names) + 3) & ~3
+    shdrs = [bytes(40)]
+    cursor, name_cursor = len(gap), 1
+    for name, flags, payload in sections:
+        shdrs.append(struct.pack("<10I", name_cursor, 1, flags, base + cursor,
+                                 image_off + cursor, len(payload), 0, 0, 4, 0))
+        cursor += len(payload)
+        name_cursor += len(name) + 1
+    shdrs.append(struct.pack("<10I", name_cursor, 3, 0, 0, names_off, len(names), 0, 0, 1, 0))
+    blob = bytearray(shoff + 40 * len(shdrs))
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into("<HHIIIIIHHHHHH", blob, 16, 2, 8, 1, base, phoff, shoff, 0, 52, 32, 1,
+                     40, len(shdrs), len(shdrs) - 1)
+    struct.pack_into("<8I", blob, phoff, 1, image_off, base, base, len(image), len(image), 5, 16)
+    blob[image_off:image_off + len(image)] = image
+    blob[names_off:names_off + len(names)] = names
+    for index, shdr in enumerate(shdrs):
+        blob[shoff + 40 * index:shoff + 40 * (index + 1)] = shdr
+    return bytes(blob), addresses
+
+
+def _words(*words):
+    return b"".join(struct.pack("<I", word) for word in words)
+
+
+class DataSectionsInAnExecutableSegment(unittest.TestCase):
+    """A data section mapped by an executable PT_LOAD is data, not code.
+
+    A fixed-address executable commonly maps .text, .rodata and .data with a single
+    R+X segment. Pointers in .data to strings in .rodata were treated as code
+    pointers into "file-backed executable bytes", so every string became a function
+    entry and an interpreter-owned span; one such title produced 81,000 of them.
+    """
+
+    def build(self):
+        text = _words(
+            0x27BDFFF0, 0x03E00008, 0x27BD0010, 0x00000000,  # f: prologue, return
+        )
+        rodata = b"scenes/arcade\x00\x00\x00" + _words(0x27BDFFE0, 0x03E00008)
+        base = 0x08804000
+        gap = _words(0x27BDFFF8, 0x03E00008, 0x27BD0008, 0x00000000)  # module-start stub
+        text_at = base + len(gap)
+        rodata_at = text_at + len(text)
+        data = _words(text_at, rodata_at, rodata_at + 16)
+        blob, addresses = _sectioned_exec(
+            [(".text", 0x6, text), (".rodata", 0x2, rodata), (".data", 0x3, data)],
+            base=base, gap=gap)
+        return analyze.Elf(blob, base=base), addresses, base
+
+    def test_data_sections_are_not_file_backed_executable_bytes(self):
+        elf, addresses, base = self.build()
+        self.assertEqual(
+            analyze.file_backed_exec_ranges(elf),
+            [(base, addresses[".rodata"])],
+            "the executable bytes are the stub before .text and .text itself, not .rodata/.data",
+        )
+
+    def test_pointers_into_rodata_seed_no_function(self):
+        elf, addresses, base = self.build()
+        with redirect_stderr(io.StringIO()):
+            entries = set(analyze.analyze(elf)[0])
+        self.assertIn(addresses[".text"], entries, "the pointed-to .text function is an entry")
+        self.assertIn(base, entries, "the stub before .text keeps its executable authority")
+        for target in (addresses[".rodata"], addresses[".rodata"] + 16):
+            self.assertNotIn(target, entries,
+                             f"a .data pointer to .rodata 0x{target:08x} became a function")
+
+    def test_prx_style_executable_flags_do_not_make_rodata_code(self):
+        # PSP PRX images mark almost every section SHF_EXECINSTR; the name decides.
+        text = _words(0x27BDFFF0, 0x03E00008, 0x27BD0010, 0x00000000)
+        rodata = _words(0x27BDFFE0, 0x03E00008)
+        base = 0x08804000
+        data = _words(base + len(text))
+        blob, addresses = _sectioned_exec(
+            [(".text", 0x6, text), (".rodata", 0x6, rodata), (".data", 0x7, data)], base=base)
+        elf = analyze.Elf(blob, base=base)
+        self.assertEqual(analyze.file_backed_exec_ranges(elf), [(base, addresses[".rodata"])])
+        with redirect_stderr(io.StringIO()):
+            entries = set(analyze.analyze(elf)[0])
+        self.assertNotIn(addresses[".rodata"], entries)
+
+
 if __name__ == "__main__":
     unittest.main()

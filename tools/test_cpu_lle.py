@@ -1106,6 +1106,23 @@ class IntcLleTests(unittest.TestCase):
         self.assertRegex(text, r"#define SR_INTC_CPU_IP_MAX 7u")
         self.assertRegex(text, r"#define SR_INTC_MAX_SOURCES 32u")
 
+    def test_the_measured_psp_line_is_ip2(self):
+        # PSP-INTR-CAUSE-001 (2026-10-29): a pending source showed on Cause.IP2 (0x90000420)
+        # while interrupts were suspended. Only the line is measured; the controller still has
+        # no default configuration (test below), and the selftest reproduces the measured words.
+        text = CPU_LLE_H.read_text(encoding="utf-8")
+        self.assertRegex(text, r"#define SR_INTC_PSP_CPU_IP_BIT 2u")
+        define = text.index("#define SR_INTC_PSP_CPU_IP_BIT 2u")
+        comment = text[text.rindex("/*", 0, define):define]
+        for fact in ("PSP-INTR-CAUSE-001", "0x90000420", "0x00088600"):
+            self.assertIn(fact, comment)
+        selftest = (ROOT / "src" / "rt" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
+        body = _c_function_body(selftest, "static void test_hw_psp_intr_cause_ip2_while_suspended(void)")
+        self.assertIn("config.cpu_ip_bit = SR_INTC_PSP_CPU_IP_BIT;", body)
+        for word in ("0x90000020u", "0x90000420u", "0x00088600u", "0x00088601u"):
+            self.assertIn(word, body)
+        self.assertIn("    test_hw_psp_intr_cause_ip2_while_suspended();\n", selftest)
+
     def test_no_runtime_source_installs_a_controller(self):
         # Every PSP INTC property is unmeasured (spec 6.3), so nothing outside the
         # selftests may configure one: the default stays unconfigured and fail-closed.

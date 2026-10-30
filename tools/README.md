@@ -100,10 +100,18 @@ python tools/audit_public_issue_links.py --strict
 
 ## Module index
 
-Every tracked top-level module in `tools/` appears exactly once below, grouped by what it
-does, so a new tool cannot ship undiscoverable. `tools/test_lint_docs.py` compares this
-section against the tracked module set and fails closed when a module is added, renamed or
-removed without a matching row:
+Every tracked top-level module in `tools/` has an index entry, so a new tool cannot ship
+undiscoverable. The entry is either a row in the table below, grouped by what the tool does,
+or the first paragraph of the module's own docstring. **A new tool needs no row here**: its
+docstring is its entry, so independent pull requests do not conflict on this table (#1673).
+Print the full index, every module with its summary, with:
+
+```powershell
+python tools/lint_docs.py --tools-index
+```
+
+`tools/test_lint_docs.py` fails closed when a module has neither a row nor a docstring
+summary, and when a row names a module that no longer exists or is listed twice:
 
 ```powershell
 python -m unittest tools.test_lint_docs -v

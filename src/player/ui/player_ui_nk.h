@@ -125,7 +125,8 @@ typedef enum {
     PLAYER_UI_ACTION_ERROR_REPORT,     /* Report this game: the report link in the browser */
     PLAYER_UI_ACTION_ERROR_SEE_REPORTS, /* the reports already filed for this disc */
     PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, /* the issue that tracks a known cause */
-    PLAYER_UI_ACTION_REPORT_PROBLEM    /* the title page's Report a problem */
+    PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
+    PLAYER_UI_ACTION_CHECK_INPUT_AGAIN /* the title page checks its files again (#308) */
 } PlayerUiActionKind;
 
 /* What a control about games an older Nakagawa built asks for
@@ -154,6 +155,26 @@ typedef struct {
     PlayerUiPrimaryAction primary;
     size_t title_index;
 } PlayerUiAction;
+
+/* The files a disc still needs before Nakagawa can use it (#308): decrypted
+   copies, made from the user's own disc, of the encrypted program files the
+   built-in decryption (#295) could not decrypt, each named with the file on
+   the disc it is a copy of, and the folder they go in. file_count 0 draws no
+   guide. */
+#define PLAYER_UI_INPUT_FILES 8u
+
+typedef struct {
+    const char *name;     /* the file to put in the folder: EBOOT.elf, lib00.prx */
+    const char *source;   /* the encrypted file on the disc it is a copy of */
+    bool replace;         /* a copy is there, but it is not a working program file */
+} PlayerUiInputFile;
+
+typedef struct {
+    PlayerUiInputFile files[PLAYER_UI_INPUT_FILES];
+    size_t file_count;
+    const char *summary;  /* "1 of 3 files ready" and how many are not listed */
+    const char *folder;   /* where the files go; NULL or empty hides Open folder */
+} PlayerUiInputGuide;
 
 typedef struct {
     const char *title;
@@ -242,7 +263,9 @@ typedef enum {
     PLAYER_UI_WIZARD_TOGGLE_ONLINE,      /* the options step's two switches */
     PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
     PLAYER_UI_WIZARD_SKIP_OPTIONS,       /* both off, on to the game step */
-    PLAYER_UI_WIZARD_PSP_FONTS           /* find a connected PSP's copied fonts and import them */
+    PLAYER_UI_WIZARD_PSP_FONTS,          /* find a connected PSP's copied fonts and import them */
+    PLAYER_UI_WIZARD_CHECK_AGAIN,        /* check the same disc again, with no new import */
+    PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER   /* open the folder the disc's files go in */
 } PlayerUiWizardOp;
 
 typedef struct {
@@ -319,6 +342,9 @@ typedef struct {
     bool developer_mode;
     float logical_width;
     float logical_height;
+    /* Verify, blocked: the files the disc needs (#308). With files, the step
+       offers Check again and Open folder instead of only choosing another disc. */
+    PlayerUiInputGuide input_guide;
 } PlayerUiWizardModel;
 
 /* The card a disc gets when it is added from the library: checking it
@@ -338,7 +364,9 @@ typedef enum {
     PLAYER_UI_DISC_NONE = 0,
     PLAYER_UI_DISC_ADD,             /* add the disc to the library */
     PLAYER_UI_DISC_BACK,            /* back to the library, nothing added */
-    PLAYER_UI_DISC_CHOOSE_ANOTHER   /* open the file picker */
+    PLAYER_UI_DISC_CHOOSE_ANOTHER,  /* open the file picker */
+    PLAYER_UI_DISC_CHECK_AGAIN,     /* check the same disc again, with no new import */
+    PLAYER_UI_DISC_OPEN_FOLDER      /* open the folder the disc's files go in */
 } PlayerUiDiscOp;
 
 #define PLAYER_UI_DISC_CHECKS 10u
@@ -356,6 +384,9 @@ typedef struct {
     double now_s;                   /* drives the checking bar (0 holds it still) */
     float logical_width;
     float logical_height;
+    /* Blocked: the files the disc needs (#308). With files, the card offers
+       Check again and Open folder instead of only choosing another disc. */
+    PlayerUiInputGuide input_guide;
 } PlayerUiDiscModel;
 
 /* The Settings pages: the main page (VIEW_SETTINGS), online and developer
@@ -662,6 +693,9 @@ typedef struct {
     double now_s;           /* drives the starting bar (0 holds it still) */
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
+    /* The files the title's package build still waits for, with Check again
+       and Open folder (#308); file_count 0 when it waits for none. */
+    PlayerUiInputGuide input_guide;
 } PlayerUiTitleModel;
 
 typedef struct {
@@ -694,7 +728,8 @@ enum {
     PLAYER_UI_ID_WIZARD_REMOVE_FONTS = 0x4306u,
     PLAYER_UI_ID_WIZARD_ONLINE = 0x4307u,
     PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
-    PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x4309u,
+    PLAYER_UI_ID_WIZARD_OPEN_FOLDER = 0x4309u,
+    PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x430Au,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -702,7 +737,9 @@ enum {
     PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
     PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING = 0x2005u,
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
-    PLAYER_UI_ID_TITLE_REPORT = 0x2007u,
+    PLAYER_UI_ID_TITLE_CHECK_AGAIN = 0x2007u,
+    PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
+    PLAYER_UI_ID_TITLE_REPORT = 0x2009u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -714,6 +751,7 @@ enum {
     PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u,
     PLAYER_UI_ID_DISC_PRIMARY = 0x4601u,
     PLAYER_UI_ID_DISC_SECOND = 0x4602u,
+    PLAYER_UI_ID_DISC_OPEN_FOLDER = 0x4603u,
     PLAYER_UI_ID_SETTINGS_RESOLUTION = 0x4501u,
     PLAYER_UI_ID_SETTINGS_PACING = 0x4502u,
     PLAYER_UI_ID_SETTINGS_VSYNC = 0x4503u,
@@ -756,7 +794,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_REBUILD_HIDE = 0x4531u,      /* the older-build banner's Hide */
     PLAYER_UI_ID_REBUILD_PRIMARY = 0x4532u,           /* Rebuild all / Rebuild now */
     PLAYER_UI_ID_REBUILD_SECOND = 0x4533u,            /* Later / Play anyway */
-    PLAYER_UI_ID_TITLE_REBUILD = 0x2008u,             /* the title page's Rebuild */
+    PLAYER_UI_ID_TITLE_REBUILD = 0x200Au,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */

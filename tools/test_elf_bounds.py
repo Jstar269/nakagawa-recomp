@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import analyze  # noqa: E402
 import prxload  # noqa: E402
-from elf_bounds import checked_mul, checked_span, image_extent  # noqa: E402
+from elf_bounds import checked_mul, checked_span, image_extent, validate_elf32_envelope  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 
 
@@ -290,13 +290,14 @@ class TestCheckedPrimitives(unittest.TestCase):
 
 
 def elf32_with_shdrs(*, sec_type: int = 1, sec_off: int = 0, sec_size: int = 0,
-                     name_off: int = 1) -> tuple[bytearray, int]:
+                     name_off: int = 1, sec_flags: int = 0) -> tuple[bytearray, int]:
     """Minimal ELF with two sections: a test section (index 0) and the
     section-string table (index 1). Returns the blob and the shstr offset."""
     blob = elf32(file_size=16)
     shoff = len(blob)
     blob.extend(bytes(40 * 2))
-    struct.pack_into("<10I", blob, shoff, name_off, sec_type, 0, 0, sec_off, sec_size, 0, 0, 0, 0)
+    struct.pack_into("<10I", blob, shoff, name_off, sec_type, sec_flags, 0, sec_off, sec_size,
+                     0, 0, 0, 0)
     struct.pack_into("<10I", blob, shoff + 40, 0, 3, 0, 0, shoff + 80, 2, 0, 0, 0, 0)
     blob.extend(b"\x00\x00")
     struct.pack_into("<I", blob, 32, shoff)
@@ -347,18 +348,6 @@ class TestElfEnvelopeEdges(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "section-header entry is too small"):
                 prxload.Prx(str(root / "no-shentsize.elf"), 0)
 
-            blob, shstr_off = elf32_with_shdrs()
-            blob[shstr_off] = 1
-            blob[shstr_off + 1] = 2  # string table with no NUL byte
-            (root / "no-nul.elf").write_bytes(blob)
-            with self.assertRaisesRegex(ValueError, "unterminated section name"):
-                prxload.Prx(str(root / "no-nul.elf"), 0)
-
-            blob, shstr_off = elf32_with_shdrs()
-            struct.pack_into("<I", blob, shstr_off - 80, 2)  # shdr[0].sh_name == shstr size
-            (root / "name-ooo.elf").write_bytes(blob)
-            with self.assertRaisesRegex(ValueError, "section name offset is out of range"):
-                prxload.Prx(str(root / "name-ooo.elf"), 0)
 
             blob, shstr_off = elf32_with_shdrs()
             struct.pack_into("<I", blob, shstr_off - 36, 8)  # shdr[1].sh_type = SHT_NOBITS
@@ -367,12 +356,54 @@ class TestElfEnvelopeEdges(unittest.TestCase):
                 prxload.Prx(str(root / "strtab-nobits.elf"), 0)
 
     def test_section_bytes_must_be_file_backed(self) -> None:
-        blob, _ = elf32_with_shdrs(sec_off=0, sec_size=0x100000)
+        # An allocated section and a relocation section are loader input: their
+        # bytes past the end of the file stay a refusal.
+        for flags, sec_type in ((0x2, 1), (0, 0x700000A0), (0, 9)):
+            blob, _ = elf32_with_shdrs(sec_off=0, sec_size=0x100000,
+                                       sec_flags=flags, sec_type=sec_type)
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "huge-section.elf"
+                path.write_bytes(blob)
+                with self.assertRaisesRegex(ValueError, "section"):
+                    prxload.Prx(str(path), 0)
+
+    def test_unread_section_past_eof_is_read_empty(self) -> None:
+        # A packer that drops the last byte of a trailing .strtab (a non-loaded
+        # section no PSP loader reads) still produces a loadable executable.
+        blob, _ = elf32_with_shdrs(sec_type=3, sec_off=0, sec_size=1)
+        struct.pack_into("<I", blob, struct.unpack_from("<I", blob, 32)[0] + 16, len(blob))
+        envelope = validate_elf32_envelope(bytes(blob), "trailing-strtab")
+        section = envelope["shdrs"][0]
+        self.assertEqual((section["off"], section["size"]), (len(blob), 0))
+        self.assertEqual(len(envelope["findings"]), 1)
+        self.assertIn("not loaded", envelope["findings"][0])
         with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "huge-section.elf"
+            path = Path(td) / "trailing-strtab.elf"
             path.write_bytes(blob)
-            with self.assertRaisesRegex(ValueError, "section"):
+            prxload.Prx(str(path), 0)
+
+    def test_unusable_section_names_read_the_table_unnamed(self) -> None:
+        # A section-string table that cannot name the sections (a name offset past
+        # its end, or no NUL) leaves the table usable by type, address and size.
+        unterminated, shstr_off = elf32_with_shdrs()
+        unterminated[shstr_off] = 1
+        unterminated[shstr_off + 1] = 2
+        out_of_range, shstr_off = elf32_with_shdrs()
+        struct.pack_into("<I", out_of_range, shstr_off - 80, 2)  # sh_name == shstr size
+        for blob, reason in ((unterminated, "unterminated"), (out_of_range, "out of range")):
+            envelope = validate_elf32_envelope(bytes(blob), "names")
+            self.assertEqual(envelope["shstrndx"], 0)
+            self.assertTrue(all(section["name"] == 0 for section in envelope["shdrs"]))
+            self.assertEqual(len(envelope["findings"]), 1)
+            self.assertIn(reason, envelope["findings"][0])
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "names.elf"
+                path.write_bytes(blob)
                 prxload.Prx(str(path), 0)
+
+    def test_valid_envelope_has_no_findings(self) -> None:
+        blob, _ = elf32_with_shdrs()
+        self.assertEqual(validate_elf32_envelope(bytes(blob), "valid")["findings"], [])
 
     def test_shstrndx_out_of_range_is_rejected(self) -> None:
         blob, _ = elf32_with_shdrs()
