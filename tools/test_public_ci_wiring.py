@@ -537,7 +537,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
-# Steps every part repeats: the toolchain setup, the job-local compiler cache and the
+# Steps every part repeats: the toolchain setup, the compiler cache and the
 # runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
@@ -545,9 +545,20 @@ _WINDOWS_EVERY_PART = (
     "Set up MSYS2 UCRT64",
     "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
-    "Route this job's compiles through a job-local compiler cache",
+    "Compute the persisted compiler cache key",
+    "Restore the persisted compiler cache",
+    "Route this job's compiles through the compiler cache",
     "Compile Windows runtime objects through the default compiler path",
-    "Report the job-local compiler cache statistics",
+    "Report the compiler cache statistics",
+)
+# Steps every part runs only in a trusted run on main (#735): the compiler cache save.
+_WINDOWS_MAIN_SAVE = (
+    "Keep only this run's compiler cache entries for the main save",
+    "Save the compiler cache from a main run",
+)
+_WINDOWS_MAIN_SAVE_CONDITION = (
+    "if: >- ${{ needs.classify.outputs.save_compiler_cache == 'true' && "
+    "steps.compiler-cache.outputs.cache-hit != 'true' }}"
 )
 
 
@@ -639,6 +650,9 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             with self.subTest(step=name):
                 if name in _WINDOWS_EVERY_PART:
                     self.assertIsNone(self.part_of(name), f"{name} must run in every part")
+                elif name in _WINDOWS_MAIN_SAVE:
+                    step = " ".join(line.strip() for line in self.steps[name])
+                    self.assertIn(_WINDOWS_MAIN_SAVE_CONDITION, step, f"{name} runs only on main")
                 else:
                     self.assertIn(name, _WINDOWS_SERIAL_GATES, f"unclassified Windows step {name!r}")
         compile_step = " ".join(self.steps["Compile Windows runtime objects through the default compiler path"])
@@ -659,31 +673,41 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
 
 
 class WindowsCompilerCacheTests(unittest.TestCase):
-    """#735 item 2: repeated Windows compiles are served only by a job-local cache.
+    """#735 item 2: Windows compiles go through a compiler cache that only main writes.
 
-    ccache keys an entry on the compiler, the command line and the contents of every
-    header, so a hit is an identical compile. The cache must start empty in each job
-    and never cross a job or a run (#373), CC must stay `gcc`, and the masquerading
-    `gcc` must resolve into the UCRT64 toolchain, whose location the build's SDL3
-    toolchain check reads.
+    ccache keys an entry on the compiler's contents, the command line and the contents of
+    every header, so a hit is an identical compile. The cache is restored in every part
+    and saved only by a trusted run on main (owner decision of 2026-10-30): pull requests
+    and merge groups read it and never write it (#373). CC must stay `gcc`, and the
+    masquerading `gcc` must resolve into the UCRT64 toolchain, whose location the build's
+    SDL3 toolchain check reads.
     """
 
-    SETUP = "Route this job's compiles through a job-local compiler cache"
-    REPORT = "Report the job-local compiler cache statistics"
+    KEY = "Compute the persisted compiler cache key"
+    RESTORE = "Restore the persisted compiler cache"
+    SETUP = "Route this job's compiles through the compiler cache"
+    TRIM = "Keep only this run's compiler cache entries for the main save"
+    SAVE = "Save the compiler cache from a main run"
+    REPORT = "Report the compiler cache statistics"
+    PATH = "path: ${{ runner.temp }}\\ccache\\objects"
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.key = "\n".join(_ci_step(cls.block, cls.KEY) or [])
+        cls.restore = "\n".join(_ci_step(cls.block, cls.RESTORE) or [])
         cls.setup = "\n".join(_ci_step(cls.block, cls.SETUP) or [])
+        cls.trim = "\n".join(_ci_step(cls.block, cls.TRIM) or [])
+        cls.save = "\n".join(_ci_step(cls.block, cls.SAVE) or [])
         cls.report = "\n".join(_ci_step(cls.block, cls.REPORT) or [])
 
     def test_cache_comes_from_the_toolchain_and_wraps_every_compile_after_the_resolution_check(self) -> None:
         install = "\n".join(_ci_step(self.block, "Set up MSYS2 UCRT64") or [])
         self.assertIn("mingw-w64-ucrt-x86_64-ccache", install)
-        self.assertLess(_ci_step_index(self.block, "Verify default and override compiler resolution"),
-                        _ci_step_index(self.block, self.SETUP))
-        self.assertLess(_ci_step_index(self.block, self.SETUP),
-                        _ci_step_index(self.block, "Compile Windows runtime objects through the default compiler path"))
+        order = [_ci_step_index(self.block, name) for name in (
+            "Verify default and override compiler resolution", self.KEY, self.RESTORE, self.SETUP,
+            "Compile Windows runtime objects through the default compiler path")]
+        self.assertEqual(order, sorted(order))
 
     def test_gcc_is_a_native_symlink_to_the_toolchain_ccache(self) -> None:
         # A copy elsewhere would leave `gcc` outside /ucrt64/bin and fail the SDL3
@@ -694,13 +718,80 @@ class WindowsCompilerCacheTests(unittest.TestCase):
         self.assertIn("> /etc/profile.d/zz-job-compiler-cache.sh", self.setup)
         self.assertNotRegex(self.setup, r"(?m)^\s*cp\s")
 
-    def test_cache_lives_in_this_job_and_is_never_restored_or_shared(self) -> None:
+    def test_entries_are_keyed_on_the_compiler_contents_not_its_timestamp(self) -> None:
+        # Every run installs the toolchain afresh, so ccache's default mtime check would
+        # miss every restored entry; content keys the entry on the compiler itself.
+        self.assertIn('printf "export CCACHE_COMPILERCHECK=content\\n"', self.setup)
+
+    def test_the_restored_and_saved_directory_is_the_one_ccache_uses(self) -> None:
         self.assertIn('cache="$(cygpath -u "$RUNNER_TEMP")/ccache"', self.setup)
         self.assertIn("export CCACHE_DIR='%s'", self.setup)
         self.assertIn('"$(cygpath -m "$cache/objects")"', self.setup)
-        # The cache is named in no other step, so no cache, artifact or other job's
-        # step can restore, upload or reuse it.
-        allowed = {"Set up MSYS2 UCRT64", self.SETUP, self.REPORT}
+        self.assertIn(self.PATH, self.restore)
+        self.assertIn(self.PATH, self.save)
+
+    def test_key_names_part_toolchain_flags_and_exact_sources(self) -> None:
+        self.assertIn("pacman -Q mingw-w64-ucrt-x86_64-ccache mingw-w64-ucrt-x86_64-gcc", self.key)
+        self.assertIn("gcc -v 2>&1", self.key)
+        key = " ".join(line.strip() for line in self.restore.splitlines())
+        self.assertIn(
+            "key: >- windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{ "
+            "hashFiles('Makefile', 'mk/**') }}-${{ "
+            "hashFiles('src/**', 'third_party/**', 'tests/native/**', 'fixtures/**', 'tools/**', 'assets/**') }}",
+            key,
+        )
+        # A fallback restore keeps the part and the toolchain: ccache still matches each
+        # object on its exact compile, so an older entry is only ever a miss, never wrong.
+        self.assertIn(
+            "restore-keys: | windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{ "
+            "hashFiles('Makefile', 'mk/**') }}- "
+            "windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-",
+            key,
+        )
+
+    def test_only_a_main_run_saves_and_every_other_run_only_restores(self) -> None:
+        # actions/cache (without /restore) would save in its post step on every event.
+        self.assertIn("uses: actions/cache/restore@", self.restore)
+        self.assertIn("uses: actions/cache/save@", self.save)
+        self.assertIn("key: ${{ steps.compiler-cache.outputs.cache-primary-key }}", self.save)
+        for step in (self.trim, self.save):
+            self.assertIn(_WINDOWS_MAIN_SAVE_CONDITION, " ".join(line.strip() for line in step.splitlines()))
+        self.assertIn('ccache --evict-older-than "${age}s"', self.trim)
+        self.assertEqual(_workflow_text("ci.yml").count("uses: actions/cache/save@"), 1, "the compiler cache is the only save")
+        self.assertIn(
+            "save_compiler_cache: ${{ steps.paths.outputs.save_compiler_cache }}",
+            "\n".join(_ci_job_blocks()["classify"]),
+        )
+
+    def test_no_pull_request_context_can_reach_a_save(self) -> None:
+        # Cache poisoning guard: a pull request's code must never write the cache main
+        # restores. CI has no pull_request_target trigger (which runs with the base
+        # branch's ref), every step that writes the cache is gated on the classifier's
+        # save_compiler_cache alone (tools/test_ci_paths.py proves it is false for every
+        # pull-request event), and no step uses the full actions/cache action, whose
+        # post step would save on any event.
+        ci = _workflow_text("ci.yml")
+        self.assertNotIn("pull_request_target", ci)
+        self.assertNotRegex(ci, r"uses: actions/cache@[0-9a-f]{40}[^\n]*\n(?:\s+with:\n)?\s+path:[^\n]*ccache")
+        writes = [self.TRIM, self.SAVE]
+        for job, lines in _ci_job_blocks().items():
+            step = None
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- name: "):
+                    step = stripped[len("- name: "):]
+                if "actions/cache/save@" in stripped or "--evict-older-than" in stripped:
+                    with self.subTest(job=job, step=step):
+                        self.assertEqual(job, "windows_runtime")
+                        self.assertIn(step, writes)
+        for step in (self.trim, self.save):
+            condition = " ".join(line.strip() for line in step.splitlines() if line.strip().startswith(("if:", "${{")))
+            self.assertIn("needs.classify.outputs.save_compiler_cache == 'true'", condition)
+            self.assertNotIn("github.event_name", condition)
+            self.assertNotIn("||", condition, "nothing may widen the save condition")
+
+    def test_the_cache_never_leaves_its_job_or_its_own_steps(self) -> None:
+        allowed = {"Set up MSYS2 UCRT64", self.KEY, self.SETUP, self.TRIM, self.REPORT}
         for job, lines in _ci_job_blocks().items():
             step = None
             for line in lines:
@@ -711,7 +802,8 @@ class WindowsCompilerCacheTests(unittest.TestCase):
                     continue
                 with self.subTest(job=job, line=stripped):
                     self.assertEqual(job, "windows_runtime", "the compiler cache must not leave its job")
-                    self.assertIn(step, allowed, "the compiler cache is used only by its own steps")
+                    self.assertIn(step, allowed | {self.RESTORE, self.SAVE},
+                                  "the compiler cache is used only by its own steps")
 
     def test_cc_stays_gcc_in_every_windows_step(self) -> None:
         for line in self.block:
@@ -1332,7 +1424,7 @@ class CoverageWiringTests(unittest.TestCase):
         self.assertTrue(uses, "ci.yml declares no actions")
         for line in uses:
             with self.subTest(use=line):
-                self.assertRegex(line, r"^uses: [\w.-]+/[\w.-]+@[0-9a-f]{40} # v\d+(?:\.\d+)*$")
+                self.assertRegex(line, r"^uses: [\w.-]+/[\w.-]+(?:/[\w.-]+)?@[0-9a-f]{40} # v\d+(?:\.\d+)*$")
         self.assertEqual(
             sum("codecov/codecov-action@" in line for line in uses), 2,
             "exactly the two coverage uploads use the Codecov action",
