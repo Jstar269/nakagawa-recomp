@@ -1586,6 +1586,65 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-MODULE-START-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "ms-self",
+          "ms-mem-pre",
+          "ms-helper-create",
+          "ms-mem-created",
+          "ms-refer-after",
+          "ms-mem-after",
+          "ms-idlist",
+          "ms-helper-self",
+          "module-start-done"
+        ],
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 78) of commit fd2a75fd, the commit that added this probe, case module-start after the transport-write preflight: 8 records and the done record (out0 8), all PASS, acceptance-eligible with 0 blockers. Cited: the raw thread-status words, the free-memory words, the thread id list and the ReferThreadStatus result of every record. PASS means the call result was recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_module_start.c",
+        "prx": "module_start.prx",
+        "apis": [
+          "module_start",
+          "sceKernelGetThreadId",
+          "sceKernelReferThreadStatus",
+          "sceKernelTotalFreeMemSize",
+          "sceKernelMaxFreeMemSize",
+          "sceKernelCreateThread",
+          "sceKernelStartThread",
+          "sceKernelDelayThread",
+          "sceKernelGetThreadmanIdList",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread"
+        ],
+        "diagnostic_case_ids": [
+          "module-start"
+        ],
+        "case_ids": [
+          "ms-self",
+          "ms-mem-pre",
+          "ms-helper-create",
+          "ms-mem-created",
+          "ms-refer-after",
+          "ms-mem-after",
+          "ms-idlist",
+          "ms-helper-self",
+          "module-start-done"
+        ],
+        "invariant": "Whether the kernel deletes the thread that ran a module's module_start once it returns, and whether that frees the thread's stack in the user partition. module_start records its own sceKernelGetThreadId, the 26 raw words of its sceKernelReferThreadStatus (size, name, attr, status, entry, stack, stack size, gp, priorities, wait and run counters), sceKernelTotalFreeMemSize and sceKernelMaxFreeMemSize, creates and starts a lower-priority helper thread (stack 0x4000) and returns 0. After sceKernelDelayThread(50000) the helper records sceKernelReferThreadStatus of that thread id (return code and raw words), the two free sizes again, sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread) as count, stored count and whether each thread id is listed, and its own refer-status. Raw words only: no value is interpreted.",
+        "issues": [],
+        "risk": "low; two threads and stack-only memory, one 0x4000-byte helper stack, no device state; the helper is the one thread left at teardown and module_stop wakes, waits for and deletes it",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-INTR-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
