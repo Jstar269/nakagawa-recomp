@@ -835,15 +835,35 @@ def prune_cache(
     return removed, len(candidates) - removed
 
 
+# The source a title's runtime package is compiled from: the runtime, the shared core
+# it links, the pause overlay's UI library (RT_NK_UI_SRCS) and the third-party headers
+# those include (RT_NK_UI_FLAGS names clay; nk_ui_image.c includes stb_image.h and
+# nk_xb.c safe-math.h). The player (src/player) is not part of a package, so a change
+# there leaves every package as it is. tools/test_package_cache.py checks that every
+# third_party directory these sources include, or the runtime flags name, is listed.
+RUNTIME_SOURCE_DIRECTORIES: tuple[str, ...] = (
+    "src/rt",
+    "src/core",
+    "src/ui",
+    "third_party/clay",
+    "third_party/portable-snippets",
+    "third_party/stb",
+)
+# The build rules: the Makefile and the fragments it includes (mk/nk_ui.mk lists the
+# overlay's UI sources).
+RUNTIME_BUILD_RULE_GLOBS: tuple[str, ...] = ("Makefile", "mk/*.mk")
+
+
 def source_tree_digest(
     repository_root: Path | str,
-    directories: tuple[str, ...] = ("src/rt", "src/core", "src/player"),
+    directories: tuple[str, ...] = RUNTIME_SOURCE_DIRECTORIES,
 ) -> str:
     root = Path(repository_root).resolve(strict=False)
     entries: list[tuple[str, Path]] = []
-    makefile = root / "Makefile"
-    if makefile.is_file() and not makefile.is_symlink():
-        entries.append(("Makefile", makefile))
+    for pattern in RUNTIME_BUILD_RULE_GLOBS:
+        for rule in sorted(root.glob(pattern)):
+            if rule.is_file() and not rule.is_symlink():
+                entries.append((rule.relative_to(root).as_posix(), rule))
     for directory in directories:
         base = root / directory
         if not base.is_dir():
@@ -883,12 +903,59 @@ def _compiler_executable(
     return executable
 
 
+# The programs the compiler driver runs to turn C into the package's objects and
+# executable: the compiler proper, the assembler and the linker. A toolchain update can
+# replace any one of them without changing the driver (binutils updates replace as and
+# ld alone), so each is named in the identity by its own content hash.
+COMPILER_PROGRAMS: tuple[str, ...] = ("cc1", "as", "ld")
+
+
+def _compiler_query(executable: str, argument: str, env: Mapping[str, str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            [executable, argument],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    answer = completed.stdout.strip()
+    return answer if completed.returncode == 0 and answer else None
+
+
+def _compiler_program(executable: str, program: str, env: Mapping[str, str]) -> str:
+    """``name:sha256`` of the program the driver runs for ``program``, or ``program:unavailable``.
+
+    The driver names the file it would run (``-print-prog-name``); a bare name back means
+    it searches ``PATH``, as it would when compiling.
+    """
+    named = _compiler_query(executable, f"-print-prog-name={program}", env)
+    if named is None:
+        return f"{program}:unavailable"
+    candidate = Path(named)
+    resolved = str(candidate) if candidate.is_absolute() else shutil.which(named, path=env.get("PATH"))
+    if resolved is None or not Path(resolved).is_file():
+        return f"{program}:unavailable"
+    return f"{Path(resolved).name}:{sha256_file(Path(resolved))}"
+
+
 def compiler_identity(
     command: str | None = None,
     *,
     repository_root: Path | str | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> str:
+    """The C toolchain a package is compiled with, as one cache-key string.
+
+    ``<driver>:<sha256>`` names the driver file, then its version
+    (``-dumpfullversion``) and the content hash of each of COMPILER_PROGRAMS it runs,
+    separated by ``|``. Paths are left out, so moving an unchanged toolchain keeps the
+    key, while replacing any one of its programs changes it and recompiles the native
+    package (generated C is reused).
+    """
     env = os.environ if environment is None else environment
     selected = command or env.get("CC") or "gcc"
     executable = _compiler_executable(selected, env, repository_root)
@@ -897,7 +964,10 @@ def compiler_identity(
     path = Path(executable)
     if not path.is_file():
         return f"{selected}:unavailable"
-    return f"{path.name}:{sha256_file(path)}"
+    version = _compiler_query(executable, "-dumpfullversion", env) or "unavailable"
+    parts = [f"{path.name}:{sha256_file(path)}", f"version={version}"]
+    parts.extend(_compiler_program(executable, program, env) for program in COMPILER_PROGRAMS)
+    return "|".join(parts)
 
 
 def compiler_target(

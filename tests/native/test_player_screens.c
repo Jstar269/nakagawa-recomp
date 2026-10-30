@@ -1078,6 +1078,19 @@ static void test_library_demos(void) {
           "TEST THIS PC says what the demos are for");
     CHECK(strstr(dump, "SHOWCASE DEMO") == NULL && strstr(dump, "showcase demo") == NULL,
           "the count line no longer counts showcase demos as titles");
+    CHECK(strstr(dump, "newer Nakagawa") == NULL,
+          "a library this player reads shows no library notice");
+    /* A library.json a newer Nakagawa saved is kept, and the Library says why it
+       lists no games instead of looking like a first start. */
+    model.library_notice = "Your library was saved by a newer Nakagawa (format 2; this one "
+                           "reads 1). It is kept as it is: update Nakagawa to see your games.";
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "saved by a newer Nakagawa") != NULL &&
+              strstr(dump, "\"TEST THIS PC\"") != NULL,
+          "the Library names a library a newer Nakagawa saved, above the demos");
+    model.library_notice = NULL;
+    (void)library_frame_dump(ui, &model, NULL);
     push_nav(ui, NK_UI_DIR_DOWN);
     (void)library_frame_dump(ui, &model, NULL);
     CHECK(focused_on_demo(ui, model.titles, model.title_count),

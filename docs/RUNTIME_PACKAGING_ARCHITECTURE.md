@@ -272,8 +272,8 @@ following key components:
 | Codegen options (profile, base/entry, spans, chunking, selected options, correctness modes) | required | required |
 | Generated-code ABI epoch | required | required |
 | Runtime ABI epoch | compatibility decision | required |
-| Compiler identity and target triple | not required | required |
-| Runtime source/header digest and output-affecting compile/link flags | not required | required |
+| Compiler identity (driver, version, `cc1`/`as`/`ld` content hashes) and target triple | not required | required |
+| Runtime source/header digest (section 7) and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
 `GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
@@ -403,3 +403,58 @@ already held the key's generated C). The report's
 `counts.unsupported_opcodes` is read from the stub report inside the built
 package, so it describes the code that shipped; only a build that fails
 before packaging falls back to the stage's stub report.
+
+## 7. Per-user data formats and versions
+
+A user who updates Nakagawa keeps every library entry, setting, mapping and
+save, and rebuilds a package only when something the package was built from has
+changed. Every file the player keeps for the user carries its own version, and
+one rule (`src/core/nk_user_data_schema.h`) governs each writer:
+
+* An **older** file is read and carried forward one version at a time
+  (v1 to v2 to the current version). It is not rewritten on load; the first save
+  first copies the original, byte for byte, to `<file>.v<version>.bak`, and does
+  not write when that copy fails.
+* A **newer** file, written by a later player, is refused by name and never
+  replaced: the session runs on defaults, the screen says why, and every save
+  over it is refused with `NK_ERROR_NEWER_SCHEMA`. Returning to the newer player
+  finds the file as it left it.
+* A file with no readable version (empty, damaged, not JSON) is reported, and the
+  reader falls back as before (`library.json` to its `.bak`, the others to defaults).
+
+The folders are the per-user ones of [`SETUP.md`](SETUP.md) (on Windows
+`%LOCALAPPDATA%\Nakagawa\data` and `...\config`, plus the saves folder).
+
+| File | Version field and history | An older file | A newer file |
+| --- | --- | --- | --- |
+| `<data>/library.json` (`src/core/nk_library.c`; read too by `tools/nk_core/library.py` and `nk_cli`) | `schema_version` 1, the only version so far (v0.0.1 and later). `source_image_path`, added after v0.0.1, is an optional member v0.0.1 skips | (none exist) | Refused; the Library screen names it. The older `.bak` beside it is not loaded in its place, and no save replaces either file |
+| `<config>/settings.json` (`src/player/player_state.c`) | `schema_version` 1 (before v0.0.1), 2 (v0.0.1 and later) | 1 to 2: an `fps_cap` of 30 or 60 becomes PSP timing; `settings.json.v1.bak` on the first save | Refused; this session runs on defaults and every Settings page says changes are not saved |
+| `<config>/input_profile.json` (`src/core/nk_input_profile.c`) | `schema_version` 1, 2 (per-title map, #520), 3 (keyboard keys, #1299; v0.0.1 and later) | 1 to 2: no per-title map; 2 to 3: default keys. `.v1.bak` or `.v2.bak` on the first save | Refused; the Controls page names it and SAVE does not replace it |
+| `<saves>/<DISC_ID>/` | The PSP's own Memory Stick layout (`PSP/SAVEDATA/...`), defined by the PSP rather than by Nakagawa; the root rule (`nk_launch.c`) is unchanged since v0.0.1 | n/a | n/a |
+| `<data>/packages/<DISC_ID>/package.json`, `build-report.json`, `completion-manifest.json` | `nakagawa-aot-package` schema 2, cache key and completion schema 2, and the ABI epochs of section 6 (all unchanged since v0.0.1) | Built output, not user data: a package from another epoch is INCOMPATIBLE and its card offers REBUILD PACKAGE | INCOMPATIBLE with the card line "built by a newer Nakagawa (package format N; this player reads 2)". The player never changes it; only a rebuild the user asks for replaces it |
+| `<data>/title-input-identities/<DISC_ID>/title-input-identity.json` | `schema_version` 2 | Rebuilt by the next package build | Read as absent; the package card asks for a rebuild |
+| `<data>/fonts/v2/manifest.json` | `schema_version` 2, also named by the folder | n/a (v0.0.1 wrote `v2`) | A later layout gets a folder of its own and leaves `v2` as it is |
+| `<data>/experimental/<DISC_ID>/profile.json` | `schema_version` 1 | n/a | Not accepted: the package check fails closed |
+| `<data>/registry/system.json` (the PSP system settings a game changes; `src/rt/hle.c`, `SR_SYSTEM_REGISTRY` overrides the path) | `schema_version` 1, the only version so far (v0.0.1 and later) | (none exist) | Ignored: the game sees the modeled defaults, and the next registry flush moves the file to `system.json.corrupt` (kept, not deleted) before writing a fresh one |
+
+Logs, the update download (kept only when its SHA-256 matches) and the
+content-addressed package cache (section 6) hold no state a user could lose.
+
+`fixtures/user_data/` holds each of these files as an earlier player's own writer
+wrote it, and `tests/native/test_player_state.c`,
+`tests/native/test_input_profile.c` and `tools/test_nk_core.py` load, migrate and
+round-trip them, and prove that a newer file is kept.
+
+**What a package is keyed on after an update.** The native key's
+`compiler_identity` names the driver by its content hash, its version
+(`-dumpfullversion`) and the content hash of each program the driver runs to build
+the package (`cc1`, `as`, `ld`, as `-print-prog-name` resolves them), with no
+paths: a binutils update replaces the assembler and linker without touching the
+driver, and now recompiles the native package (generated C is reused), while an
+unchanged toolchain at another path keeps the key. `runtime_source_digest` covers
+what a package is compiled from: `src/rt`, `src/core`, the overlay's UI library
+`src/ui`, the third-party headers those include (`third_party/clay`, `stb`,
+`portable-snippets`), the `Makefile` and its `mk/*.mk` fragments. The player's own
+sources (`src/player`) are not in a package and no longer rebuild one;
+`tools/test_package_cache.py` checks that every third-party directory the runtime
+includes is listed.

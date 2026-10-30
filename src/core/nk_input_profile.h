@@ -26,6 +26,10 @@ extern "C" {
 /* The schema that introduced each optional member. */
 #define NK_INPUT_PROFILE_PER_TITLE_SCHEMA_VERSION 2
 #define NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION 3
+/* The largest profile file the loader reads. A newer schema_version than this
+ * build's is refused with NK_ERROR_NEWER_SCHEMA and the save path will not
+ * replace it; an older file is kept as <file>.v<n>.bak by the first save. */
+#define NK_INPUT_PROFILE_MAX_FILE_BYTES (1024 * 1024)
 #define NK_INPUT_GUID_MAX_LEN 64
 #define NK_INPUT_NAME_HINT_MAX_LEN 128
 #define NK_INPUT_DIAGNOSTIC_MAX_LEN 256

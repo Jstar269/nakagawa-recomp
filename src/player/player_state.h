@@ -575,6 +575,13 @@ struct PlayerApp {
        an enhancement-package build's 60 Hz logic. Never saved with the settings. */
     bool experimental_60hz_session;
     char settings_notice[128];
+    /* settings.json was written by a newer player: it is kept as it is, this
+     * session runs on the defaults, and settings_notice says so on every
+     * Settings page (player_app_load_settings). */
+    bool settings_newer_schema;
+    /* Why the library shows no saved games although library.json exists (a newer
+     * player wrote it), or an empty string. Shown on the Library screen. */
+    char library_notice[192];
 
     /* Window & layout metrics */
     int window_width;
@@ -609,6 +616,9 @@ struct PlayerApp {
 
 /* State management API */
 void player_app_init(PlayerApp *app);
+/* Sets library_notice from what nk_library_load returned into app->library:
+ * a newer player's library.json is named and kept, never read as empty. */
+void player_app_note_library_load(PlayerApp *app, NkResult load_result);
 bool player_app_add_game(PlayerApp *app, const GameRecord *game);
 /* Re-adding a disc that is already in the library re-inspects it, which yields a
  * record with no staging state. When `incoming` is the same disc as `existing`

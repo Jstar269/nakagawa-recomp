@@ -2518,6 +2518,121 @@ static void test_keyboard_bindings(void) {
  * Main Runner
  * -------------------------------------------------------------------------- */
 
+/* -----------------------------------------------------------------------------
+ * Versioned profile files: fixtures/user_data holds profiles that earlier
+ * players' own writers wrote (schema 1, schema 2, and v0.0.1's schema 3). Each
+ * loads, and the first save over it keeps the original as <file>.v<n>.bak; a
+ * newer file is never replaced (src/core/nk_user_data_schema.h).
+ * -------------------------------------------------------------------------- */
+
+#define VERSIONED_PROFILE_ROOT SR_SELFTEST_BUILD_ROOT "/versioned_input_profile"
+
+static char *versioned_read(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    assert(fseek(f, 0, SEEK_END) == 0);
+    long size = ftell(f);
+    assert(size >= 0);
+    rewind(f);
+    char *text = (char *)malloc((size_t)size + 1u);
+    assert(text != NULL);
+    assert(fread(text, 1, (size_t)size, f) == (size_t)size);
+    text[size] = '\0';
+    fclose(f);
+    return text;
+}
+
+static void versioned_write(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite(text, 1, strlen(text), f) == strlen(text));
+    assert(fclose(f) == 0);
+}
+
+static bool versioned_same(const char *path, const char *fixture) {
+    char *left = versioned_read(path);
+    char *right = versioned_read(fixture);
+    bool same = left && right && strcmp(left, right) == 0;
+    free(left);
+    free(right);
+    return same;
+}
+
+/* Loads `fixture` from a copy, checks the mapping it carries, saves over the
+ * copy and checks the backup and the reload. */
+static void versioned_profile_case(const char *fixture, int version, int title_count) {
+    static NkInputProfileFile doc;
+    static NkInputProfileFile reloaded;
+    char path[512], backup[560], diag[256];
+    snprintf(path, sizeof(path), VERSIONED_PROFILE_ROOT "/profile_v%d.json", version);
+    snprintf(backup, sizeof(backup), "%s.v%d.bak", path, version);
+    char *original = versioned_read(fixture);
+    assert(original != NULL && "run from the repository root");
+    versioned_write(path, original);
+    free(original);
+    remove(backup);
+
+    assert(nk_input_profile_file_load(&doc, path, diag, sizeof(diag)) == NK_OK);
+    assert(doc.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+    assert(doc.global.trigger_threshold == 12000);
+    assert(doc.global.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 3000);
+    assert(doc.title_count == title_count);
+    if (title_count) {
+        assert(strcmp(doc.title_disc_id[0], "TEST80001") == 0);
+        assert(doc.title[0].trigger_threshold == 9000);
+    }
+    /* A file older than keyboard_bindings keeps the default keys. */
+    NkInputProfile defaults;
+    nk_input_profile_init_default(&defaults);
+    if (version < NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION) {
+        assert(memcmp(doc.global.psp_keys, defaults.psp_keys, sizeof(defaults.psp_keys)) == 0);
+    }
+
+    assert(nk_input_profile_file_save(&doc, path, diag, sizeof(diag)) == NK_OK);
+    if (version < NK_INPUT_PROFILE_SCHEMA_VERSION) {
+        assert(versioned_same(backup, fixture));
+    } else {
+        FILE *none = fopen(backup, "rb");
+        assert(none == NULL);
+    }
+    char *saved = versioned_read(path);
+    assert(strstr(saved, "\"schema_version\": 3,") != NULL);
+    free(saved);
+    assert(nk_input_profile_file_load(&reloaded, path, diag, sizeof(diag)) == NK_OK);
+    assert(memcmp(&reloaded.global, &doc.global, sizeof(doc.global)) == 0);
+    assert(reloaded.title_count == doc.title_count);
+    remove(backup);
+    remove(path);
+}
+
+static void test_versioned_profile_files(void) {
+    printf("[INPUT_PROFILE_TEST] Versioned files: earlier players' profiles load, migrate "
+           "and keep a backup; a newer one is kept...\n");
+    assert(nk_platform_mkdir_p(VERSIONED_PROFILE_ROOT));
+    versioned_profile_case("fixtures/user_data/input_profile_v1.json", 1, 0);
+    versioned_profile_case("fixtures/user_data/input_profile_v2.json", 2, 1);
+    versioned_profile_case("fixtures/user_data/v0.0.1/input_profile.json", 3, 1);
+
+    /* A newer player's profile is refused by name, and a save leaves it as it is. */
+    static const char newer[] =
+        "{\"schema_version\": 4, \"device\": {\"guid\": \"g\", \"name_hint\": \"n\"},"
+        " \"a_later_member\": []}\n";
+    const char *path = VERSIONED_PROFILE_ROOT "/profile_newer.json";
+    char diag[256];
+    static NkInputProfileFile doc;
+    versioned_write(path, newer);
+    assert(nk_input_profile_file_load(&doc, path, diag, sizeof(diag)) == NK_ERROR_NEWER_SCHEMA);
+    assert(strstr(diag, "newer Nakagawa") != NULL);
+    nk_input_profile_file_init_default(&doc);
+    assert(nk_input_profile_file_save(&doc, path, diag, sizeof(diag)) == NK_ERROR_NEWER_SCHEMA);
+    assert(strstr(diag, "schema_version 4") != NULL);
+    char *kept = versioned_read(path);
+    assert(kept != NULL && strcmp(kept, newer) == 0);
+    free(kept);
+    remove(path);
+    printf("[INPUT_PROFILE_TEST] Versioned files PASSED!\n");
+}
+
 int main(void) {
     /* Unbuffered: a failing case names itself on stdout, and the harness reads
      * that line even when the run aborts on the assert that follows. */
@@ -2542,6 +2657,7 @@ int main(void) {
     test_psp_button_bitmask();
     test_overlay_input_gate();
     test_keyboard_bindings();
+    test_versioned_profile_files();
 
     printf("=================================================================\n");
     printf("ALL HOST INPUT PROFILE TESTS PASSED SUCCESSFULLY!\n");

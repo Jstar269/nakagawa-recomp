@@ -44,16 +44,22 @@ from nk_core.iso_inspect import (
 )
 import nk_cli
 
-# The package key asks the C compiler for its target (gcc -dumpmachine) before the planner
-# runs. The fakes below stand in for the planner only, so that host query is passed to
-# the real subprocess.run, captured here before any test patches it.
+# The package key asks the C compiler for its target (gcc -dumpmachine), its version
+# (-dumpfullversion) and the programs it runs (-print-prog-name=cc1/as/ld) before the
+# planner runs. The fakes below stand in for the planner only, so those host queries are
+# passed to the real subprocess.run, captured here before any test patches it.
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def _is_compiler_target_query(command) -> bool:
     # Match the flag anywhere in the argv, not only as the last element, so the helper
     # keeps working if the query ever gains trailing arguments.
-    return bool(command) and "-dumpmachine" in command
+    return bool(command) and any(
+        isinstance(arg, str) and (
+            arg in ("-dumpmachine", "-dumpfullversion") or arg.startswith("-print-prog-name=")
+        )
+        for arg in command
+    )
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
