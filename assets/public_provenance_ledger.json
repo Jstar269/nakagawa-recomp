@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0fbe7316aaabbf02953b0017908fa67472f6dd0053cf03834e512a9a1bef11a9"
+      "sha256": "9dc5f7be4670f200b66a9e99934e6752cfac68b0996791e7fe82c1bf597d6e97"
     },
     {
       "path": "NOTICE.md",
@@ -749,7 +749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ceb8e276d100b1bb9873ea7f007a46b05806f1db9940b7ae6c5df6d68ff582b2"
+      "sha256": "2f1e71a5555d932b27e4f9b07ce98784020afac5ca78013baab93dcb1dc5ff48"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -1441,7 +1441,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "40bff5fbf97f6dc0502650e6b29e8be55023282af0e666a8d548c70dfb052684"
+      "sha256": "564c8df18161068b974f660f587fba7cb3c311d6271b7fe05f219a4e756f9a0c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1828,7 +1828,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12c7a10cd7359c1879edba48021b77e01854df3bc53b71b2331f6e569715d4d9"
+      "sha256": "c24bf01e658bd34acb0f22f66935e01bf5414d1dfef33b9d55182312d7908c07"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -13217,7 +13217,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2aa9a96d3728f66c2a8642fe7758d0c54fc196ba16935e38b8706541e47ae931"
+      "sha256": "170a6e84dc1b9957da2616debb349f6fd52edbd3fb0ba3e1a7adf4cdebf61062"
     },
     {
       "path": "tools/lint_docs.py",
@@ -15444,7 +15444,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a0b388479152cb7f17b4e8bc4adea6e0c739945b0a52677c72c9e9cc2dac353"
+      "sha256": "91881855f3fa092625c304fc677db2f20c27495a4f6ea2eb8d7d8875e2a09a68"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -16693,7 +16693,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "483c533570c43866be5371d52b164edfd812d1f7b65f0eb3816f6c93b0f80208"
+      "sha256": "69ea131c18ac615d146770d32687c56847aa308ed4e1b00cf31f99e283fa7c34"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -17077,7 +17077,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "80186765773969070265285382af11bdebeaf1d52b6fea667e8f079a0738fb1e"
+      "sha256": "6d8ea27f676750a72b1f0a17305a64ee6e1dfbce7235bb61e3a5eb0a43cc82eb"
     },
     {
       "path": "tools/title_runtime_config.py",
