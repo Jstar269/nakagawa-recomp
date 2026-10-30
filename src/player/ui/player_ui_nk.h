@@ -241,7 +241,8 @@ typedef enum {
     PLAYER_UI_WIZARD_GO_TO_LIBRARY,
     PLAYER_UI_WIZARD_TOGGLE_ONLINE,      /* the options step's two switches */
     PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
-    PLAYER_UI_WIZARD_SKIP_OPTIONS        /* both off, on to the game step */
+    PLAYER_UI_WIZARD_SKIP_OPTIONS,       /* both off, on to the game step */
+    PLAYER_UI_WIZARD_PSP_FONTS           /* find a connected PSP's copied fonts and import them */
 } PlayerUiWizardOp;
 
 typedef struct {
@@ -308,6 +309,8 @@ typedef struct {
     size_t font_line_count;
     const char *font_message;
     PlayerUiNoteKind font_message_kind;
+    const char *font_summary;       /* how many of the PSP fonts are the user's own */
+    bool fonts_all_own;
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
@@ -414,7 +417,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
     PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
     PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
-    PLAYER_UI_SETTINGS_FACTORY_RESET       /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_FACTORY_RESET,      /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_PSP_FONTS           /* find a connected PSP's fonts and import them */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -487,6 +491,8 @@ typedef struct {
     /* Factory reset (VIEW_CONFIRM_FACTORY_RESET): the folders that move aside */
     const char *reset_folders[PLAYER_UI_RESET_FOLDERS];
     size_t reset_folder_count;
+    const char *font_summary;       /* how many of the PSP fonts are the user's own */
+    bool fonts_all_own;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -688,6 +694,7 @@ enum {
     PLAYER_UI_ID_WIZARD_REMOVE_FONTS = 0x4306u,
     PLAYER_UI_ID_WIZARD_ONLINE = 0x4307u,
     PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
+    PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x4309u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -752,6 +759,7 @@ enum {
     PLAYER_UI_ID_TITLE_REBUILD = 0x2007u,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
+    PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

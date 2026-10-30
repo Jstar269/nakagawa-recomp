@@ -46,6 +46,7 @@
 /.hst/
 /oracle/
 /fixtures/psp_oracle/build/
+/src/psp_companion/build/
 *.trace
 /tools/reference_hashes.json
 
