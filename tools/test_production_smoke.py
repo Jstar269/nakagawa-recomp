@@ -3066,7 +3066,7 @@ class TestSanitizedBringup(unittest.TestCase):
         expected = {
             "inspect": "INVALID_ISO",
             "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
-            "analyze": "ANALYZER_FAILURE_UNCLASSIFIED",
+            "analyze": "ANALYZER_INTERNAL_ERROR",
             "codegen": "CODEGEN_FAILED",
             "compile": "COMPILE_FAILED",
             "build_package": "BUILD_PACKAGE_FAILED",
@@ -3085,8 +3085,8 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["stages"][stage]["status"], "FAIL")
                 if stage == "analyze":
                     summary = nk_cli._bringup_human_summary(report)
-                    self.assertIn("ANALYZER_FAILURE_UNCLASSIFIED", summary)
-                    self.assertIn("not supported yet", summary)
+                    self.assertIn("ANALYZER_INTERNAL_ERROR", summary)
+                    self.assertIn("defect in Nakagawa", summary)
                     self.assertNotRegex(summary, r"#[0-9]+")
                 nk_cli.validate_bringup_report(report)
 
