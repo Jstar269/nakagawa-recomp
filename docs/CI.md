@@ -651,18 +651,18 @@ identical compile. `gcc` is a native symlink to the UCRT64 toolchain's
 (`tools/nk_doctor_checks.py`) follow the link into `/ucrt64/bin`. Each part's last
 step prints the cache statistics and fails if no compile went through the cache.
 
-Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
-`OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
-`CodeQL` on exact pull-request heads. Path-gated workflows also run the applicable
+Hosted GitHub Actions execution is active. The `main` ruleset requires `Trusted CI verdict`
+and `CodeQL` on exact pull-request heads (since 2026-10-29, #373). Path-gated workflows also run the applicable
 classifier, Markdown, native/translation, main-smoke, Python, and
 Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
 
-The four GitHub Actions contexts in that list come from `pull_request` workflows, whose
-definitions the pull request itself controls. The trusted gate that judges them is
-[Trusted CI verdict](#trusted-ci-verdict); once the owner applies its ruleset step, a
-required context means one produced by that gate.
+`CI required`, `Hygiene and security`, `OSV Vulnerability Scan` and `dependency-review` still
+run on every pull request, but they come from `pull_request` workflows whose definitions the
+pull request itself controls, so the ruleset no longer requires them by name.
+[Trusted CI verdict](#trusted-ci-verdict) judges each of them by its producer at the exact
+head, and that verdict is what the ruleset requires.
 
 The required `CodeQL` check is the code-scanning result GitHub reports after it
 processes the SARIF that `.github/workflows/codeql.yml` ("Trusted CodeQL")
@@ -830,13 +830,13 @@ behind; the open-pull-request check catches it only while that pull request is o
 groups get no verdict yet, so enabling a merge queue together with this gate needs a
 `merge_group` route first.
 
-**The owner's ruleset step.** No repository setting changes in this repository's code. To
-make the gate enforcing, the owner edits the `main-minimal` ruleset's required status checks
-to `Trusted CI verdict` (integration 15368, GitHub Actions) and `CodeQL` (integration 57789),
-keeps `strict_required_status_checks_policy` on, and creates the `ci-change-approved` label.
-Pull requests opened before the change get a status on their next event or by the dispatch
-command above. Then refresh the ruleset snapshot in `tools/test_public_ci_wiring.py` and the
-lists in this file and in `PROVENANCE_MERGE_GATE.md`.
+**The ruleset step (applied 2026-10-29).** The owner set the `main-minimal` ruleset's
+required status checks to `Trusted CI verdict` (integration 15368, GitHub Actions) and
+`CodeQL` (integration 57789), kept `strict_required_status_checks_policy` on, and created the
+`ci-change-approved` label. Pull requests opened before the change got a status by the
+dispatch command above. No repository setting changes in this repository's code, so re-read
+the ruleset before relying on this; `tools/test_public_ci_wiring.py` holds the snapshot this
+file and `PROVENANCE_MERGE_GATE.md` must match.
 
 **Live canary, after the ruleset step.** Use a fork or a second account, and keep every pull
 request a draft that is closed unmerged:

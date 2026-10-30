@@ -168,7 +168,7 @@ try:
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        validate_ledger,
+        claims_ledger, is_claims_ledger, validate_ledger,
     )
     from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from .public_export import build_control_document as _build_control_document
@@ -179,7 +179,7 @@ except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        validate_ledger,
+        claims_ledger, is_claims_ledger, validate_ledger,
     )
     from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from public_export import build_control_document as _build_control_document
@@ -1272,17 +1272,24 @@ def _ephemeral_verdict_findings(
 
     legacy_entries: dict[str, dict] | None = None
     legacy_raw = candidate_blobs.get(LEDGER_PATH)
+    # A claims-only committed ledger (#1673) must equal the claims form of the hashed
+    # ledger generated here, byte for byte; content is bound by that generation.
+    claims_form = False
     if legacy_raw is not None:
         try:
             legacy_document = strict_json(legacy_raw, code="CANDIDATE_LEDGER_INVALID", label="legacy candidate ledger")
             legacy_entries = _entry_map(
                 legacy_document, code="CANDIDATE_LEDGER_INVALID", label="legacy candidate ledger"
             )
+            claims_form = is_claims_ledger(legacy_document)
             for error in validate_ledger(legacy_document, require_hashes=True, require_resolved=True):
                 findings.append(Finding("LEDGER_SCHEMA", LEDGER_PATH, error))
         except VerifyError as error:
             findings.append(Finding(error.code, LEDGER_PATH, str(error)))
-        if legacy_raw != generated_ledger_bytes:
+        expected_ledger_bytes = generated_ledger_bytes
+        if claims_form:
+            expected_ledger_bytes = _canonical_json_bytes(claims_ledger(json.loads(generated_ledger_bytes)))
+        if legacy_raw != expected_ledger_bytes:
             findings.append(Finding(
                 "LEGACY_CONTROL_MISMATCH", LEDGER_PATH,
                 "candidate carries legacy ledger bytes different from the trusted integration-time output; "
@@ -1374,7 +1381,7 @@ def _ephemeral_verdict_findings(
             continue
         entry = legacy_entries[path]
         classification, record_id = _claim(entry)
-        if path not in CONTROL_PATHS:
+        if path not in CONTROL_PATHS and not claims_form:
             actual = hashlib.sha256(candidate_blobs[path]).hexdigest()
             if entry.get("sha256") != actual:
                 findings.append(Finding(
@@ -2134,8 +2141,11 @@ def verify(
         entry = candidate_entries[path]
         classification, record_id = _claim(entry)
 
-        # Tier A -- content binding.
-        if path not in UNHASHED_PATHS:
+        # Tier A -- content binding. A claims-only ledger (#1673) holds no hash to compare:
+        # its entries were generated from this same tree, so the comparison only ever proved
+        # self-consistency. The hosted attestation binds content by regenerating the hashed
+        # ledger from blobs, and the release builds that hashed ledger from trusted authority.
+        if path not in UNHASHED_PATHS and not is_claims_ledger(candidate_ledger):
             actual = hashlib.sha256(candidate_blobs[path]).hexdigest()
             if entry.get("sha256") != actual:
                 findings.append(Finding(

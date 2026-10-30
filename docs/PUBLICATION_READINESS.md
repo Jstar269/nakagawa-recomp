@@ -81,8 +81,8 @@ or a human legal decision.
    produced it. `Trusted CI verdict` ([`docs/CI.md`](CI.md#trusted-ci-verdict)) judges
    `CI required`, `Hygiene and security`, `OSV Vulnerability Scan`, `dependency-review`
    and the provenance attestation by producer at the exact head, and refuses an
-   unapproved change to a workflow or CI tool. It becomes merge-enforcing when the owner
-   makes it, with `CodeQL`, the ruleset's required checks.
+   unapproved change to a workflow or CI tool. Since 2026-10-29 the ruleset requires it,
+   with `CodeQL`, so it is merge-enforcing.
 
 ## Refreshing after an ordinary change
 
