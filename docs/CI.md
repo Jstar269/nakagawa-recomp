@@ -113,6 +113,28 @@ runner time on the expensive gates that started beside it. `main_smoke` is not
 changed: it runs on pushes to `main` and on manual and merge-queue runs (the full-matrix
 events), never on pull requests, and it is not a substantive gate.
 
+### Native gates in parallel parts
+
+The `native_tools` job runs as three matrix parts, as `windows_runtime` does (#694). Run
+serially, its gates took about 14.4 minutes and set the length of every CI run, while its
+setup took about 25 seconds with warm caches. Every part repeats that setup: the apt
+packages, the pinned SDL3 and SDL3_ttf installs, PSPDEV and the build directory. Each
+gate runs in exactly one part with the command it had in the serial job:
+
+- `core`: the FFmpeg H.264 media selftest, the import-audit and provenance-gap gates, the
+  portable objects and format check, the native core suite and its coverage upload, and the
+  GPU selftests on lavapipe.
+- `translation`: the HLE, scheduler and dispatch selftests, cosimulation and its mutation
+  corpus, the interpreter, VFPU, strbuf and ATRAC3+ selftests, and the microtest codegen
+  gates.
+- `player`: present pacing, the player UI tests and regressions, the CMake player, the
+  showcase and the two player smokes that stage its ISO.
+
+Steps that read what an earlier step built share its part. `needs.native_tools.result`
+aggregates the parts, so `CI required` fails when any part fails.
+`tools/test_public_ci_wiring.py` (`NativeToolsPartitionTests`) fails if a serial gate is
+dropped, runs in more than one part, or changes its command.
+
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit

@@ -507,6 +507,25 @@ jobs:
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
+    # The gates are split into parallel matrix parts of comparable length, as
+    # windows_runtime is (#694): run serially they took ~14.4 minutes, about 25
+    # seconds of it shared setup with warm caches, and set the length of every CI
+    # run. Every part repeats the cheap setup (apt packages, the pinned SDL3 and
+    # SDL3_ttf installs, PSPDEV and the build directory); each other step runs in
+    # exactly one part with its serial command, and steps that depend on one
+    # another share a part. tools/test_public_ci_wiring.py pins that every gate
+    # the serial job ran still runs in exactly one part. needs.native_tools.result
+    # aggregates all parts, so ci_required sees a failure in any of them.
+    #   core:        FFmpeg H.264 media, import and provenance gates, portable
+    #                objects, native core suite and its coverage, GPU selftests
+    #   translation: HLE, scheduler, dispatch, cosimulation and its mutation
+    #                corpus, interpreter and codec selftests, codegen gates
+    #   player:      present pacing, player UI, CMake player, showcase and the
+    #                player smokes that use its ISO
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, translation, player]
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -714,6 +733,7 @@ jobs:
           "$RUNNER_TEMP/sdl3-ttf-features"
 
       - name: Build and run the vendored FFmpeg H.264 media selftest
+        if: matrix.part == 'core'
         # Exercise the pinned, vendored FFmpeg H.264 subset (src/rt/h264_ffmpeg_sub, no system
         # FFmpeg installed), including guest-VRAM coherence, explicit backend selection,
         # native-format reporting, and the source-authored final-AU fixture. Use an isolated build
@@ -760,19 +780,23 @@ jobs:
           echo "PSPDEV=/usr/local/pspdev" >> "$GITHUB_ENV"
 
       - name: Run import-coverage and fake-success audit gate
+        if: matrix.part == 'core'
         # Public gate for issue #71: manifest extraction from src/rt/hle.c,
         # alias/waiver balance, classification-baseline drift, and synthetic
         # malformed-ELF fixtures. Requires no game inputs.
         run: python tools/import_audit_gate.py
 
       - name: Run provenance record and disposition gap check
+        if: matrix.part == 'core'
         # #355: ratchets disposition gaps for upstream-derived production paths.
         run: python tools/provenance_record_gap.py --check
 
       - name: Compile host-neutral runtime objects on Linux
+        if: matrix.part == 'core'
         run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
 
       - name: Check 32-bit format specifier portability across portable core
+        if: matrix.part == 'core'
         # libc6-dev-i386 (installed above) supplies the 32-bit C library headers for the
         # syntax-only -m32 build that gives this LP64 runner a 32-bit long; gcc-multilib
         # would do too but conflicts with the MIPS cross compiler this job installs.
@@ -782,6 +806,7 @@ jobs:
         run: mkdir -p build
 
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
+        if: matrix.part == 'core'
         run: make CC=gcc native-core-tests
 
       # Coverage measurement (informational). A second, isolated build of the same
@@ -792,6 +817,7 @@ jobs:
       # LDFLAGS (its targets that compile through those variables are measured;
       # see docs/CI.md, "Coverage").
       - name: Measure native core C statement coverage
+        if: matrix.part == 'core'
         run: |
           set -euo pipefail
           coverage_build="$RUNNER_TEMP/native-core-coverage"
@@ -834,6 +860,7 @@ jobs:
       # Informational only: the C number never gates a merge (.github/codecov.yml). The reports
       # are already generated above, so the action only uploads them (plugins: noop).
       - name: Upload C coverage to Codecov
+        if: matrix.part == 'core'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
@@ -848,6 +875,7 @@ jobs:
       # fresh object directory so the normal unprofiled ge.o cannot satisfy the
       # target without compiling the requested configuration.
       - name: Compile GE frontend profiling mode
+        if: matrix.part == 'core'
         run: |
           build_dir="$RUNNER_TEMP/ge-frontend-profile"
           mkdir -p "$build_dir"
@@ -858,11 +886,13 @@ jobs:
       # POSIX file, directory and host-data arms run here and the Win32 arms in the
       # windows_runtime selftests part (#306). It links SDL3 (sched.c's host clock).
       - name: Build and run HLE thread selftest (links SDL3)
+        if: matrix.part == 'translation'
         run: make CC=gcc -j4 hle-thread-selftest
 
       # The same production-HLE harness under the generic and both fixture title
       # configurations (#306); it ran on no hosted job before.
       - name: Run Linux title-configured HLE selftests
+        if: matrix.part == 'translation'
         run: make CC=gcc -j4 hle-title-selftest
 
       # The AOT linked-call return boundaries with the real recomp.c and scheduler
@@ -870,24 +900,30 @@ jobs:
       # return past its caller. Its own build directory, because it rebuilds
       # hle_thread_selftest with SR_HLE_AOT_BOUNDARY_TEST; it ran on no hosted job before.
       - name: Run Linux AOT return-boundary selftest
+        if: matrix.part == 'translation'
         run: |
           build_dir="$RUNNER_TEMP/aot-return-boundary"
           mkdir -p "$build_dir"
           make --no-print-directory CC=gcc BUILD_DIR="$build_dir" aot-return-boundary-thread-selftest
 
       - name: Run Linux scheduler selftest matrix
+        if: matrix.part == 'translation'
         run: make CC=gcc -j4 sched-selftest
 
       - name: Run Linux dispatch isolation selftest matrix
+        if: matrix.part == 'translation'
         run: make CC=gcc -j4 dispatch-isolation-selftest
 
       - name: Run Linux AOT/interpreter cosimulation
+        if: matrix.part == 'translation'
         run: make CC=gcc -j4 cosim-selftest
 
       - name: Run Linux cosimulation mutation corpus
+        if: matrix.part == 'translation'
         run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
 
       - name: Run Linux GPU snapshot sync selftest
+        if: matrix.part == 'core'
         run: |
           set -euo pipefail
           lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
@@ -899,17 +935,21 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 make CC=gcc -j4 gpu-snapsync-selftest
 
       - name: Run host present pacing selftest (links SDL3)
+        if: matrix.part == 'player'
         run: make CC=gcc gui-present-selftest
 
       # tests/native/test_player_ui.py forces SDL's dummy video and software
       # render drivers for every player it spawns, so no step env is needed.
       - name: Run native player UI regressions headlessly
+        if: matrix.part == 'player'
         run: make CC=gcc player-ui-regressions
 
       - name: Run Linux native player UI tests headlessly
+        if: matrix.part == 'player'
         run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests
 
       - name: Verify lavapipe and run GPU capture selftest
+        if: matrix.part == 'core'
         run: |
           set -euo pipefail
           lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
@@ -928,6 +968,7 @@ jobs:
       # against the software GE. It ran on no hosted job, so a regression from #1481 went
       # unseen; an exit 77 skip fails the step like the capture selftest's.
       - name: Run GPU coherence selftest on lavapipe
+        if: matrix.part == 'core'
         run: |
           set -euo pipefail
           lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
@@ -940,6 +981,7 @@ jobs:
             make CC=gcc gpu-coherence-selftest
 
       - name: Configure, build, and test CMake Linux player
+        if: matrix.part == 'player'
         run: |
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
           cmake -S . -B "$player_build" -G Ninja \
@@ -952,6 +994,7 @@ jobs:
           grep -Fq "Usage: nakagawa_player" <<<"$help_output"
 
       - name: Build and run the Linux showcase headlessly
+        if: matrix.part == 'player'
         id: showcase
         run: |
           export NK_SHOWCASE_BUILD_ROOT="$RUNNER_TEMP/showcase-build"
@@ -973,6 +1016,7 @@ jobs:
           retention-days: 14
 
       - name: Smoke the CMake Linux player headlessly
+        if: matrix.part == 'player'
         run: |
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
           iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
@@ -991,6 +1035,7 @@ jobs:
           grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
 
       - name: Stage the installed Linux player and smoke the installed binary
+        if: matrix.part == 'player'
         run: |
           set -euo pipefail
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
@@ -1023,6 +1068,7 @@ jobs:
           grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
 
       - name: Run selftest (C++ interpreter unit tests under UBSan)
+        if: matrix.part == 'translation'
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
             src/ref/selftest.cpp src/ref/interp.cpp src/ref/run_elf.cpp \
@@ -1031,6 +1077,7 @@ jobs:
           ./build/selftest
 
       - name: Run portable FPU/VFPU conversion selftest under UBSan
+        if: matrix.part == 'translation'
         # Fixed expected vectors exercise NaN, infinities, finite overflow,
         # signed boundaries, ties, all guest rounding modes and VFPU scaling.
         # float-cast-overflow remains enabled: the historical implementation
@@ -1042,6 +1089,7 @@ jobs:
           ./build/fp_convert_selftest_san
 
       - name: Run VFPU table loader selftest (source-owned, no game inputs)
+        if: matrix.part == 'translation'
         # Issue #187: fail-closed table load (exact length + EOF + SHA-256 +
         # value-domain invariants), atomic once-only publication and concurrent
         # first use. Linux gcc provides C11 threads, so the concurrency race is
@@ -1053,6 +1101,7 @@ jobs:
           ./build/vfpu_tables_selftest
 
       - name: Run watchpoints-file parser selftest (source-owned, no game inputs)
+        if: matrix.part == 'translation'
         # Issue #188: the derived watchpoints.json artifact round-trips a
         # canonical fixture into the expected native watchpoint set, plus
         # fail-closed cases (version/format, bounds, labels,
@@ -1064,12 +1113,14 @@ jobs:
           ./build/watchpoints_file_selftest
 
       - name: Run strbuf checked-append formatting selftest under UBSan
+        if: matrix.part == 'translation'
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
             -Isrc/rt -o build/strbuf_selftest_san src/rt/strbuf_selftest.c
           ./build/strbuf_selftest_san
 
       - name: Run VFPU interpreter selftest (source-owned, no game inputs)
+        if: matrix.part == 'translation'
         # Issue #184: quad/vector VFPU memory ops are all-or-nothing (span
         # preflight before any lane commit; rejected ops consume no prefixes),
         # vcrs rejects non-triple widths with zero state change, and the vrot
@@ -1104,6 +1155,7 @@ jobs:
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
+        if: matrix.part == 'translation'
         # #286/#32: PR-A raw decoder (4144 checks) and PR-B HLE decode bridge
         # (4138 checks) under ASan/UBSan. The suites cover the deterministic
         # terminator + MONO transform-path canaries, malformed/garbage-input
@@ -1143,14 +1195,17 @@ jobs:
           ./build/atrac3p_bridge_selftest_san
 
       - name: Build run_elf (Interpreter runner)
+        if: matrix.part == 'translation'
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/run_elf \
             src/ref/run_elf.cpp src/ref/interp.cpp -fno-exceptions
 
       - name: Generate synthetic microtest C source (Gate A — generic MIPS III + FPU)
+        if: matrix.part == 'translation'
         run: python tools/gen_microtest.py build/microtest_a.c 2 --groups integer,fpu
 
       - name: Compile MIPS microtest ELF (Gate A, -march=r4000 -mfp32)
+        if: matrix.part == 'translation'
         # -mfp32 is required so the single-precision FPU test group may use odd
         # float registers ($f1/$f3/...), which the generic MIPS assembler
         # otherwise rejects ("float register should be even").
@@ -1159,9 +1214,11 @@ jobs:
             -march=r4000 -mabi=32 -mfp32 -Ibuild -o build/microtest_a.elf build/microtest_a.c
 
       - name: Generate synthetic microtest C source (Gate B — Allegrex extensions)
+        if: matrix.part == 'translation'
         run: python tools/gen_microtest.py build/microtest_b.c 2 --groups allegrex
 
       - name: Compile MIPS microtest ELF (Gate B, -march=r4000)
+        if: matrix.part == 'translation'
         # -march=r4000 is a conservative base MIPS ISA sufficient for function
         # prologue, lui/ori, mult/multu, mfhi/mflo, general setup, and explicit
         # syscall termination. Every Allegrex instruction-under-test is emitted
@@ -1172,29 +1229,35 @@ jobs:
             -march=r4000 -mabi=32 -Ibuild -o build/microtest_b.elf build/microtest_b.c
 
       - name: Create dummy init trace for interpreter
+        if: matrix.part == 'translation'
         run: echo "# init r29=0x09f00000" > build/init.trace
 
       - name: Generate golden oracle trace (Gate A)
+        if: matrix.part == 'translation'
         run: |
           mkdir -p build/verify/gold
           SR_PPM_DUMP=build/verify/gold/frame_0001.ppm ./build/run_elf build/microtest_a.elf build/init.trace build/microtest_a.trace
 
       - name: Run recompiler codegen gate (Gate A — compile and verify MIPS-to-C translation)
+        if: matrix.part == 'translation'
         run: |
           mkdir -p build/verify/snap
           SR_PPM_DUMP=build/verify/snap/frame_0001.ppm CC=gcc python tools/codegen_gate.py build/microtest_a.elf build/microtest_a.trace build/verify
 
       - name: Generate golden oracle trace (Gate B)
+        if: matrix.part == 'translation'
         run: |
           mkdir -p build/verify/gold
           SR_PPM_DUMP=build/verify/gold/frame_0002.ppm ./build/run_elf build/microtest_b.elf build/init.trace build/microtest_b.trace
 
       - name: Run recompiler codegen gate (Gate B — Allegrex extensions)
+        if: matrix.part == 'translation'
         run: |
           mkdir -p build/verify/snap
           SR_PPM_DUMP=build/verify/snap/frame_0002.ppm CC=gcc python tools/codegen_gate.py build/microtest_b.elf build/microtest_b.trace build/verify
 
       - name: Run synthetic framebuffer-memory parity checks (A/B framebuffer diffs)
+        if: matrix.part == 'translation'
         run: |
           python tools/ppmdiff.py --threshold 3 build/verify/snap build/verify/gold
           python -c "import json; r=json.load(open('visual_regression_report.json')); exit(1 if r['summary']['failed_frames'] > 0 else 0)"

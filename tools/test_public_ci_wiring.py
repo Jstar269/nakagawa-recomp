@@ -171,7 +171,9 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn('xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11', text)
         self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest$")
         self.assertNotIn("continue-on-error", text)
-        self.assertNotIn("if:", text)
+        # Its only condition is the native_tools part that runs it; nothing can skip it there.
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'core'"])
         self.assertLess(
             _ci_step_index(native_tools, "Verify lavapipe and run GPU capture selftest"),
             _ci_step_index(native_tools, step_name),
@@ -221,7 +223,9 @@ class PublicCiWiringTests(unittest.TestCase):
         text = "\n".join(step)
         self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-thread-selftest$")
         self.assertNotIn("continue-on-error", text)
-        self.assertNotIn("if:", text)
+        # Its only condition is the native_tools part that runs it; nothing can skip it there.
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
         self.assertLess(
             _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
             _ci_step_index(native_tools, step_name),
@@ -247,7 +251,9 @@ class PublicCiWiringTests(unittest.TestCase):
         text = "\n".join(step)
         self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-title-selftest$")
         self.assertNotIn("continue-on-error", text)
-        self.assertNotIn("if:", text)
+        # Its only condition is the native_tools part that runs it; nothing can skip it there.
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
         self.assertLess(
             _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
             _ci_step_index(native_tools, step_name),
@@ -670,6 +676,191 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+# Every gate the serial native_tools job ran before it was split into parallel parts,
+# with the command that makes it that gate. As for windows_runtime, the split may move
+# a gate between parts; it may never drop one, run one twice, or change its command.
+_NATIVE_SERIAL_GATES = {
+    "Build and run the vendored FFmpeg H.264 media selftest":
+        'make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest',
+    "Run import-coverage and fake-success audit gate": "run: python tools/import_audit_gate.py",
+    "Run provenance record and disposition gap check": "run: python tools/provenance_record_gap.py --check",
+    "Compile host-neutral runtime objects on Linux":
+        "run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects",
+    "Check 32-bit format specifier portability across portable core":
+        "run: python tools/format_portability_check.py",
+    "Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)":
+        "run: make CC=gcc native-core-tests",
+    "Measure native core C statement coverage":
+        'CFLAGS="$base_cflags --coverage" LDFLAGS="--coverage" native-core-tests',
+    "Upload C coverage to Codecov": "directory: ${{ runner.temp }}/native-core-gcov",
+    "Compile GE frontend profiling mode":
+        'make --no-print-directory CC=gcc BUILD_DIR="$build_dir" GE_FRONTEND_PROFILE=1 "$build_dir/ge.o"',
+    "Build and run HLE thread selftest (links SDL3)": "run: make CC=gcc -j4 hle-thread-selftest",
+    "Run Linux title-configured HLE selftests": "run: make CC=gcc -j4 hle-title-selftest",
+    "Run Linux AOT return-boundary selftest":
+        'make --no-print-directory CC=gcc BUILD_DIR="$build_dir" aot-return-boundary-thread-selftest',
+    "Run Linux scheduler selftest matrix": "run: make CC=gcc -j4 sched-selftest",
+    "Run Linux dispatch isolation selftest matrix": "run: make CC=gcc -j4 dispatch-isolation-selftest",
+    "Run Linux AOT/interpreter cosimulation": "run: make CC=gcc -j4 cosim-selftest",
+    "Run Linux cosimulation mutation corpus":
+        "run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4",
+    "Run Linux GPU snapshot sync selftest":
+        'xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 make CC=gcc -j4 gpu-snapsync-selftest',
+    "Run host present pacing selftest (links SDL3)": "run: make CC=gcc gui-present-selftest",
+    "Run native player UI regressions headlessly": "run: make CC=gcc player-ui-regressions",
+    "Run Linux native player UI tests headlessly":
+        "run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests",
+    "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
+    "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest",
+    "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
+    "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
+    "Smoke the CMake Linux player headlessly": '"$player_build/nakagawa_player" "--iso=$iso" --stage-only)',
+    "Stage the installed Linux player and smoke the installed binary":
+        'python tools/stage_install.py --dest "$install_dir"',
+    "Run selftest (C++ interpreter unit tests under UBSan)": "./build/selftest",
+    "Run portable FPU/VFPU conversion selftest under UBSan": "./build/fp_convert_selftest_san",
+    "Run VFPU table loader selftest (source-owned, no game inputs)": "./build/vfpu_tables_selftest",
+    "Run watchpoints-file parser selftest (source-owned, no game inputs)": "./build/watchpoints_file_selftest",
+    "Run strbuf checked-append formatting selftest under UBSan": "./build/strbuf_selftest_san",
+    "Run VFPU interpreter selftest (source-owned, no game inputs)": "./build/vfpu_interp_selftest_san",
+    "Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)":
+        "./build/atrac3p_bridge_selftest_san",
+    "Build run_elf (Interpreter runner)": "-o build/run_elf",
+    "Generate synthetic microtest C source (Gate A — generic MIPS III + FPU)":
+        "run: python tools/gen_microtest.py build/microtest_a.c 2 --groups integer,fpu",
+    "Compile MIPS microtest ELF (Gate A, -march=r4000 -mfp32)": "-o build/microtest_a.elf build/microtest_a.c",
+    "Generate synthetic microtest C source (Gate B — Allegrex extensions)":
+        "run: python tools/gen_microtest.py build/microtest_b.c 2 --groups allegrex",
+    "Compile MIPS microtest ELF (Gate B, -march=r4000)": "-o build/microtest_b.elf build/microtest_b.c",
+    "Create dummy init trace for interpreter": 'run: echo "# init r29=0x09f00000" > build/init.trace',
+    "Generate golden oracle trace (Gate A)":
+        "./build/run_elf build/microtest_a.elf build/init.trace build/microtest_a.trace",
+    "Run recompiler codegen gate (Gate A — compile and verify MIPS-to-C translation)":
+        "CC=gcc python tools/codegen_gate.py build/microtest_a.elf build/microtest_a.trace build/verify",
+    "Generate golden oracle trace (Gate B)":
+        "./build/run_elf build/microtest_b.elf build/init.trace build/microtest_b.trace",
+    "Run recompiler codegen gate (Gate B — Allegrex extensions)":
+        "CC=gcc python tools/codegen_gate.py build/microtest_b.elf build/microtest_b.trace build/verify",
+    "Run synthetic framebuffer-memory parity checks (A/B framebuffer diffs)":
+        "python tools/ppmdiff.py --threshold 3 build/verify/snap build/verify/gold",
+}
+# Steps every part repeats: the toolchain and library setup and the build directory.
+_NATIVE_EVERY_PART = (
+    "Check out repository",
+    "Set up Python",
+    "Restore the native apt package cache",
+    "Install native test dependencies",
+    "Key the pinned SDL3 install",
+    "Restore the pinned SDL3 install",
+    "Install the pinned SDL3 into the Linux prefix",
+    "Key the pinned SDL3_ttf install",
+    "Restore the pinned SDL3_ttf install",
+    "Install and verify pinned SDL3_ttf and shaping libraries",
+    "Install PSPDEV from the checked-in lock",
+    "Create build directory",
+)
+# Steps with their own condition: the cache-miss library builds (every part) and the
+# showcase evidence upload, which can only fire in the part that ran the showcase.
+_NATIVE_OWN_CONDITION = {
+    "Build pinned SDL3 for headless Linux runtime": "if: steps.sdl3-cache.outputs.cache-hit != 'true'",
+    "Build pinned SDL3_ttf with vendored FreeType and HarfBuzz":
+        "if: steps.sdl3-ttf-cache.outputs.cache-hit != 'true'",
+    "Upload the Linux showcase smoke evidence on failure":
+        "if: failure() && steps.showcase.outcome == 'failure'",
+}
+# Gates that read what an earlier gate built, so they must share its part and follow it.
+_NATIVE_DEPENDENT_GATES = (
+    ("Run Linux AOT/interpreter cosimulation", "Run Linux cosimulation mutation corpus"),
+    ("Configure, build, and test CMake Linux player", "Smoke the CMake Linux player headlessly"),
+    ("Build and run the Linux showcase headlessly", "Smoke the CMake Linux player headlessly"),
+    ("Configure, build, and test CMake Linux player",
+     "Stage the installed Linux player and smoke the installed binary"),
+    ("Build and run the Linux showcase headlessly",
+     "Stage the installed Linux player and smoke the installed binary"),
+    ("Measure native core C statement coverage", "Upload C coverage to Codecov"),
+    ("Build run_elf (Interpreter runner)", "Generate golden oracle trace (Gate A)"),
+    ("Compile MIPS microtest ELF (Gate A, -march=r4000 -mfp32)", "Generate golden oracle trace (Gate A)"),
+    ("Create dummy init trace for interpreter", "Generate golden oracle trace (Gate A)"),
+    ("Generate golden oracle trace (Gate A)",
+     "Run recompiler codegen gate (Gate A — compile and verify MIPS-to-C translation)"),
+    ("Compile MIPS microtest ELF (Gate B, -march=r4000)", "Generate golden oracle trace (Gate B)"),
+    ("Generate golden oracle trace (Gate B)", "Run recompiler codegen gate (Gate B — Allegrex extensions)"),
+    ("Run recompiler codegen gate (Gate B — Allegrex extensions)",
+     "Run synthetic framebuffer-memory parity checks (A/B framebuffer diffs)"),
+)
+
+
+class NativeToolsPartitionTests(unittest.TestCase):
+    """Splitting native_tools into parallel parts must not drop, repeat or change a gate."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["native_tools"]
+        text = "\n".join(cls.block)
+        matrix = re.search(r"(?m)^\s+part:\s*\[([^\]]*)\]\s*$", text)
+        if matrix is None:
+            raise AssertionError("native_tools must declare its matrix parts explicitly")
+        cls.parts = [part.strip() for part in matrix.group(1).split(",")]
+        step_indent = "      - name: "
+        names = [line[len(step_indent):] for line in cls.block if line.startswith(step_indent)]
+        cls.names = names
+        cls.steps = {name: _ci_step(cls.block, name) for name in names}
+
+    def conditions(self, name: str) -> list[str]:
+        return [line.strip() for line in self.steps[name] if line.strip().startswith("if:")]
+
+    def part_of(self, name: str) -> str | None:
+        conditions = self.conditions(name)
+        if not conditions:
+            return None
+        self.assertEqual(len(conditions), 1, name)
+        match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
+        self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
+        return match.group(1)
+
+    def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
+        self.assertEqual(len(self.parts), len(set(self.parts)))
+        self.assertEqual(len(self.names), len(set(self.names)), "a native step name repeats")
+        for name, command in _NATIVE_SERIAL_GATES.items():
+            with self.subTest(step=name):
+                self.assertIn(name, self.steps, "a serial native gate was dropped")
+                self.assertIn(command, "\n".join(line.strip() for line in self.steps[name]))
+                self.assertIn(self.part_of(name), self.parts)
+
+    def test_shared_steps_run_in_every_part_and_nothing_else_is_unconditional(self) -> None:
+        for name in _NATIVE_EVERY_PART + tuple(_NATIVE_OWN_CONDITION):
+            self.assertIn(name, self.steps, f"native setup step {name!r} was dropped")
+        for name in self.names:
+            with self.subTest(step=name):
+                if name in _NATIVE_EVERY_PART:
+                    self.assertEqual(self.conditions(name), [], f"{name} must run in every part")
+                elif name in _NATIVE_OWN_CONDITION:
+                    self.assertEqual(self.conditions(name), [_NATIVE_OWN_CONDITION[name]])
+                else:
+                    self.assertIn(name, _NATIVE_SERIAL_GATES, f"unclassified native step {name!r}")
+
+    def test_every_part_runs_a_gate_and_dependent_steps_share_a_part(self) -> None:
+        used = {self.part_of(name) for name in _NATIVE_SERIAL_GATES}
+        self.assertEqual(used, set(self.parts), "a declared part runs no gate, or a gate names no part")
+        for earlier, later in _NATIVE_DEPENDENT_GATES:
+            with self.subTest(earlier=earlier, later=later):
+                self.assertEqual(self.part_of(earlier), self.part_of(later))
+                self.assertLess(_ci_step_index(self.block, earlier), _ci_step_index(self.block, later))
+        # The evidence upload reads the showcase step, so it must follow it.
+        self.assertLess(
+            _ci_step_index(self.block, "Build and run the Linux showcase headlessly"),
+            _ci_step_index(self.block, "Upload the Linux showcase smoke evidence on failure"),
+        )
+
+    def test_ci_required_reads_every_part(self) -> None:
+        """needs.native_tools.result aggregates the matrix: a failed part fails CI required."""
+        text = "\n".join(self.block)
+        self.assertIn("fail-fast: false", text)
+        required = "\n".join(_ci_job_blocks()["ci_required"])
+        self.assertRegex(required, r"needs: \[[^\]]*\bnative_tools\b[^\]]*\]")
+        self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required)
 
 
 class WindowsCompilerCacheTests(unittest.TestCase):
