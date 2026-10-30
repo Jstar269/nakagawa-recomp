@@ -4620,10 +4620,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         ]
         env["SR_PRESENT_TRACE"] = "1"
         timeout = max(1, min(int(args.launch_timeout), BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS))
+        # The game's own text reaches this output and need not be UTF-8; a strict decode
+        # would lose the whole output, and with it the report.
         process = subprocess.Popen(
             launch_command, cwd=package_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            encoding="utf-8", errors="replace",
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)

@@ -1300,6 +1300,24 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_status, 4)
         self.assertEqual(native_paths, [member])
 
+    def test_module_discovery_lists_a_directory_with_thousands_of_entries(self) -> None:
+        # Legal and within the byte bound: a disc in the library has one with 4,647 entries.
+        iso_file = self.temp_dir / "large-module-directory.iso"
+        member = "PSP_GAME/USRDIR/module/sdk.prx"
+        tree = {f"PSP_GAME/USRDIR/data/map/f{index:04d}.bin": b"x" for index in range(4200)}
+        tree[member] = build_psp_container()
+        create_test_iso_with_module_tree(iso_file, tree)
+
+        entries = iso_inspect.list_iso_directory(iso_file, ("PSP_GAME", "USRDIR", "data", "map"))
+        self.assertEqual(len(entries), 4200)
+        self.assertEqual(
+            [candidate["members"][0] for candidate in list_disc_module_candidates(iso_file)],
+            [tuple(member.split("/"))],
+        )
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(native_paths, [member])
+
     def test_module_discovery_rejects_dot_only_directory_name(self) -> None:
         iso_file = self.temp_dir / "dot-only-module-directory.iso"
         create_test_iso_with_module_tree(iso_file, {
