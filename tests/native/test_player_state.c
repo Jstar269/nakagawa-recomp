@@ -4646,7 +4646,8 @@ static void test_versioned_settings(PlayerApp *app) {
     assert(app->settings.launcher_window_x == 64 && app->settings.launcher_window_y == 48);
     assert(app->settings.launcher_window_width == 1600);
     assert(app->settings.launcher_window_height == 900);
-    assert(app->settings.reduce_motion == true);
+    /* Reduce motion was saved on: it stays On, not Automatic. */
+    assert(app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON);
     assert(app->settings.master_volume == 55);
     player_app_adjust_volume(app, 5);
     assert(!nk_platform_file_exists(v2_backup));
@@ -4665,7 +4666,8 @@ static void test_versioned_settings(PlayerApp *app) {
     assert(app->settings.resolution_scale == 2);
     assert(app->settings.launcher_window_maximized == true);
     assert(app->settings.launcher_window_width == 1440);
-    assert(app->settings.reduce_motion == true);
+    /* Reduce motion was saved on: it stays On, not Automatic. */
+    assert(app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON);
     assert(app->settings.master_volume == 65);
     assert(!nk_platform_file_exists(v1_backup));
     player_app_adjust_volume(app, -5);
