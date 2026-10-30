@@ -2729,6 +2729,7 @@ const char *player_runtime_stop_feature(const char *boundary) {
         "target-not-executable", "misaligned-control-target", "incomplete-executable-span",
         "unsupported-interpreter-form", "invalid-guest-memory-access",
         "misaligned-guest-memory-access", "invalid-control-flow", "interpreter-rejection",
+        "null-code-pointer",
     };
     static const char import_prefix[] = "unsupported-import-";
     if (!boundary) return "a system feature";
