@@ -168,6 +168,9 @@ enum {
     GE_TRANSFERDST = 0xB4, GE_TRANSFERDSTW = 0xB5,
     GE_TRANSFERSTART = 0xEA, GE_TRANSFERSRCPOS = 0xEB,
     GE_TRANSFERDSTPOS = 0xEC, GE_TRANSFERSIZE = 0xEE,
+    GE_VSCX = 0xF0, GE_VSCY = 0xF1, GE_VSCZ = 0xF2,
+    GE_VTCS = 0xF3, GE_VTCT = 0xF4, GE_VTCQ = 0xF5,
+    GE_VCV = 0xF6, GE_VAP = 0xF7, GE_VFC = 0xF8, GE_VSCV = 0xF9,
 };
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
@@ -4912,6 +4915,147 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     primitive_profile_clear_pending();
 }
 
+/* Immediate-mode vertex submission (GE commands 0xF0-0xF9). These commands are
+ * distinct from VADDR/VDATA: each VAP latches one screen-space vertex and optionally
+ * starts a primitive. Keep the transformed vertices in command-list order and hand
+ * them to the same raster entry points as through-mode PRIM data. */
+#define GE_IMM_MAX_VTX 2048
+#define GE_IMM_SHADING     0x00040000u
+#define GE_IMM_CULLENABLE  0x00080000u
+#define GE_IMM_CULLFACE    0x00100000u
+#define GE_IMM_TEXTURE     0x00200000u
+#define GE_IMM_FOG         0x00400000u
+#define GE_IMM_DITHER      0x00800000u
+
+static Vtx s_imm_vtx[GE_IMM_MAX_VTX];
+static int s_imm_count;
+static int s_imm_prim = -1;
+static uint32_t s_imm_flags;
+
+static int ge_imm_flush(void) {
+    if (s_imm_count <= 0 || s_imm_prim < 0 || s_imm_prim > 6) return 0;
+
+    const int type = s_imm_prim;
+    const int count = s_imm_count;
+    const uint32_t flags = s_imm_flags;
+    const int old_tex = ge.tex_enable;
+    const int old_cull = ge.cull_enable;
+    const uint32_t old_cull_face = ge.cull;
+    const int old_fog = ge.fog_enable;
+    const int old_dither = ge.dither_enable;
+    const int old_gouraud = ge.shade_gouraud;
+
+    /* The first VAP supplies the primitive pipeline flags. A keep-previous VAP
+     * continues that stream with the same flags. */
+    ge.tex_enable = (flags & GE_IMM_TEXTURE) != 0u;
+    ge.cull_enable = (flags & GE_IMM_CULLENABLE) != 0u;
+    ge.cull = (flags & GE_IMM_CULLFACE) != 0u;
+    ge.fog_enable = (flags & GE_IMM_FOG) != 0u;
+    ge.dither_enable = (flags & GE_IMM_DITHER) != 0u;
+    ge.shade_gouraud = (flags & GE_IMM_SHADING) != 0u;
+
+    int drawn = 0;
+    if (type == 0) {
+        for (int i = 0; i < count; i++, drawn++)
+            draw_point_vtx(&s_imm_vtx[i], 0);
+    } else if (type == 1) {
+        for (int i = 1; i < count; i += 2, drawn++)
+            draw_line_vtx(&s_imm_vtx[i - 1], &s_imm_vtx[i], 0);
+    } else if (type == 2) {
+        for (int i = 1; i < count; i++, drawn++)
+            draw_line_vtx(&s_imm_vtx[i - 1], &s_imm_vtx[i], 0);
+    } else if (type == 3) {
+        for (int i = 2; i < count; i += 3, drawn++) {
+            Vtx a = s_imm_vtx[i - 2], b = s_imm_vtx[i - 1], c = s_imm_vtx[i];
+            if (ge.cull_enable && !ge.clear && (ge.cull & 1u) == 0u) {
+                Vtx t = a; a = b; b = t;
+            }
+            raster_tri(&a, &b, &c, 0);
+        }
+    } else if (type == 4 || type == 5) {
+        for (int i = 2; i < count; i++, drawn++) {
+            Vtx a = type == 4 ? s_imm_vtx[i - 2] : s_imm_vtx[0];
+            Vtx b = s_imm_vtx[i - 1], c = s_imm_vtx[i];
+            if (ge.cull_enable && !ge.clear) {
+                int flip = ((ge.cull & 1u) == 0u) ^ (type == 4 ? (i & 1) : 0);
+                if (flip) {
+                    Vtx t = a; a = b; b = t;
+                }
+            }
+            raster_tri(&a, &b, &c, 0);
+        }
+    } else if (type == 6) {
+        for (int i = 1; i < count; i += 2, drawn++)
+            fill_sprite(&s_imm_vtx[i - 1], &s_imm_vtx[i], 0);
+    }
+
+    ge.tex_enable = old_tex;
+    ge.cull_enable = old_cull;
+    ge.cull = old_cull_face;
+    ge.fog_enable = old_fog;
+    ge.dither_enable = old_dither;
+    ge.shade_gouraud = old_gouraud;
+
+    g_frame_prims += (uint32_t)drawn;
+    g_ge_list_through_cmds++;
+    g_ge_list_through_vertices += (unsigned long)count;
+    if (type == 6)
+        g_ge_list_through_sprites += (unsigned long)(count / 2);
+    s_imm_count = 0;
+    return drawn;
+}
+
+static int ge_imm_vertex(uint32_t data) {
+    const int prim = (int)((data >> 8) & 7u);
+    int drawn = 0;
+
+    if (prim != 7) {
+        drawn += ge_imm_flush();
+        s_imm_prim = prim;
+        s_imm_flags = data & 0x00FFF800u;
+    } else if (s_imm_prim < 0) {
+        static int warned;
+        if (!warned++) {
+            fprintf(stderr, "GE immediate vertex: keep-previous primitive has no previous stream\n");
+        }
+        return drawn;
+    }
+
+    if (s_imm_count >= GE_IMM_MAX_VTX)
+        drawn += ge_imm_flush();
+
+    Vtx *v = &s_imm_vtx[s_imm_count++];
+    const uint32_t vx = s_ge_command[GE_VSCX] & 0xFFFFu;
+    const uint32_t vy = s_ge_command[GE_VSCY] & 0xFFFFu;
+    if ((ge.vtype & 0x00800000u) != 0u) {
+        v->x = ((int)vx - 0x8000) / 16.0f;
+        v->y = ((int)vy - 0x8000) / 16.0f;
+    } else {
+        v->x = ((int)vx - (int)(ge.offsetx & 0xFFFFu)) / 16.0f;
+        v->y = ((int)vy - (int)(ge.offsety & 0xFFFFu)) / 16.0f;
+    }
+    v->z = (float)(s_ge_command[GE_VSCZ] & 0xFFFFu);
+    v->rw = 1.0f;
+    v->u = decode_float24(s_ge_command[GE_VTCS]);
+    v->v = decode_float24(s_ge_command[GE_VTCT]);
+    v->fog = (float)(s_ge_command[GE_VFC] & 0xFFu) / 255.0f;
+    {
+        uint32_t c = (s_ge_command[GE_VCV] & 0x00FFFFFFu) |
+                     ((data & 0xFFu) << 24);
+        v->r = (int)(c & 0xFFu);
+        v->g = (int)((c >> 8) & 0xFFu);
+        v->b = (int)((c >> 16) & 0xFFu);
+        v->a = (int)((c >> 24) & 0xFFu);
+    }
+
+    static const unsigned char flush_count[7] = {1, 2, 0, 3, 0, 0, 2};
+    if (s_imm_prim >= 0 && s_imm_prim < 7 &&
+        flush_count[s_imm_prim] != 0 && s_imm_count >= flush_count[s_imm_prim]) {
+        drawn += ge_imm_flush();
+    }
+    return drawn;
+}
+
 /* Unconditional framebuffer snapshot (no "best frame" gating) for SR_FBSNAP. */
 static void ge_snapshot_plain(const char *path) {
     uint32_t fb = ge_fb_addr(), stride = ge.fbw ? ge.fbw : 512;
@@ -4957,6 +5101,11 @@ static const char *ge_cmd_name(uint32_t cmd) {
         case 0xDA: return "COLORTESTMASK";    case 0xE6: return "LOGICOP";
         case 0xEA: return "TRANSFERSTART";    case 0xEB: return "TRANSFERSRCPOS";
         case 0xEC: return "TRANSFERDSTPOS";   case 0xEE: return "TRANSFERSIZE";
+        case 0xF0: return "VSCX";             case 0xF1: return "VSCY";
+        case 0xF2: return "VSCZ";             case 0xF3: return "VTCS";
+        case 0xF4: return "VTCT";             case 0xF5: return "VTCQ";
+        case 0xF6: return "VCV";              case 0xF7: return "VAP";
+        case 0xF8: return "VFC";              case 0xF9: return "VSCV";
         default: return NULL;
     }
 }
@@ -5222,6 +5371,13 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         g_ge_list_commands++;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
+        /* Immediate vertices are part of the display-list state stream. Flush a
+         * pending primitive before any command that is not one of the ten vertex
+         * registers or the VAP submit itself, so later state cannot retroactively
+         * change a buffered draw. */
+        if (s_imm_count > 0 && cmd != GE_VAP &&
+            (cmd < GE_VSCX || cmd > GE_VSCV))
+            prims += (unsigned long)ge_imm_flush();
         switch (cmd) {
             case GE_NOP: case 0xFF: break;   /* 0xFF = GE_CMD_NOP_FF (padding, PPSSPP) */
             case GE_VADDR:    ge.vaddr=ge_rel_addr(data); break;
@@ -5523,6 +5679,15 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 ge_cpu_profile_end(GE_CPU_BLOCK_TRANSFER, profile_started);
                 break;
             }
+
+            /* Immediate-mode vertex registers. Only VAP submits; the other nine
+             * commands update the registers consumed by the next VAP. */
+            case GE_VSCX: case GE_VSCY: case GE_VSCZ:
+            case GE_VTCS: case GE_VTCT: case GE_VTCQ:
+            case GE_VCV: case GE_VAP: case GE_VFC: case GE_VSCV:
+                if (cmd == GE_VAP)
+                    prims += (unsigned long)ge_imm_vertex(data);
+                break;
 
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();

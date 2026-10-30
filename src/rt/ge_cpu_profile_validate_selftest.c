@@ -127,6 +127,7 @@ static void env_set(const char *name, const char *value) {
 #define LIST_VRAM_DEPTH 0x08110000u
 #define LIST_VRAM_CPU_WRITE 0x08112000u
 #define LIST_VRAM_AMBIGUOUS 0x08114000u
+#define LIST_IMMEDIATE 0x0811E000u
 #define VERTS         0x08200000u
 #define INDICES       0x08280000u
 #define CLUT_SRC      0x08290000u
@@ -746,9 +747,132 @@ static void test_ge_fb_direct_access(void) {
            "colour accesses that overlap the depth surface keep the accessor path");
 }
 
+/* Immediate-mode vertices arrive as VSCX/VSCY/VSCZ/VTCS/VTCT/VTCQ/VCV/VFC/VSCV
+ * register writes followed by a VAP submit. VAP bit 10:8 names PRIM type 0-6,
+ * or 7 to continue the previous stream; bits 23:11 carry the primitive flags
+ * replicated from the through-mode front end. This list exercises every type,
+ * keep-previous submission, the flush caused by starting another primitive, and
+ * the flush caused by a non-vertex command. */
+#define IMMEDIATE_FB 0x04160000u
+
+static unsigned s_hook_prims;
+static int hook_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp);
+static int hook_sprite(const GeVtx *a, const GeVtx *b, int persp);
+static int hook_line(const GeVtx *a, const GeVtx *b, int persp);
+static int hook_point(const GeVtx *a, int persp);
+static void hook_flush(const char *reason);
+static void hook_vram_dirty(uint32_t addr, uint32_t bytes);
+
+static uint32_t immediate_coord(int value) {
+    return 0x8000u + (uint32_t)value * 16u;
+}
+
+static void immediate_vertex(uint32_t type, int x, int y) {
+    W(0xF0, immediate_coord(x));   /* VSCX */
+    W(0xF1, immediate_coord(y));   /* VSCY */
+    W(0xF2, 0u);                  /* VSCZ */
+    W(0xF7, (type << 8) | 0xFFu); /* VAP: primitive type, opaque alpha */
+}
+
+static uint32_t immediate_pixel(unsigned x, unsigned y) {
+    return IMMEDIATE_FB + (y * 512u + x) * 4u;
+}
+
+static void test_ge_immediate_mode(void) {
+    static const struct {
+        unsigned x, y;
+        const char *name;
+    } probes[] = {
+        { 20u, 20u, "point" },
+        { 50u, 30u, "line" },
+        { 90u, 30u, "line_strip_first" },
+        { 110u, 30u, "line_strip_second" },
+        { 30u, 70u, "triangle" },
+        { 170u, 70u, "triangle_strip_first" },
+        { 180u, 70u, "triangle_strip_second" },
+        { 270u, 70u, "triangle_fan_first" },
+        { 280u, 70u, "triangle_fan_second" },
+        { 350u, 70u, "sprite" },
+    };
+    const uint32_t sentinel = 0xA5A5A5A5u;
+    for (size_t i = 0; i < sizeof probes / sizeof probes[0]; i++)
+        MEM_W32(immediate_pixel(probes[i].x, probes[i].y), sentinel);
+
+    s_pc = LIST_IMMEDIATE;
+    W(0x10, 0x080000u);                    /* BASE */
+    W(0x13, 0u);                           /* OFFSETADDR */
+    W(0x9C, IMMEDIATE_FB & 0x00FFFFFFu);   /* FRAMEBUFPTR */
+    W(0x9D, 512u);                         /* FRAMEBUFWIDTH */
+    W(0xD2, 3u);                           /* PIXFORMAT 8888 */
+    W(0xD4, 0u);                           /* SCISSOR1 */
+    W(0xD5, (271u << 10) | 479u);          /* SCISSOR2 */
+    W(0x1E, 0u);                           /* texture off */
+    W(0x23, 0u);                           /* depth test off */
+    W(0xDB, 0u);                           /* alpha test off */
+    W(0xDC, 0u);                           /* stencil off */
+    W(0xDF, 0u);                           /* blend off */
+    W(0xE6, 0u);                           /* logic op off */
+    W(0xE8, 0u);                           /* colour mask open */
+    W(0xE9, 0u);                           /* alpha mask open */
+    W(0xD3, 0u);                           /* not clear mode */
+    W(0x12, 1u << 23);                     /* through-position type */
+    W(0xF2, 0u);                           /* VSCZ */
+    W(0xF6, 0x00FFFFFFu);                  /* VCV: white */
+    W(0xF8, 255u);                         /* VFC */
+
+    immediate_vertex(0u, 20, 20);          /* point */
+    immediate_vertex(1u, 40, 30);          /* independent line */
+    immediate_vertex(7u, 60, 30);
+    immediate_vertex(2u, 80, 30);          /* line strip, flushed by type change */
+    immediate_vertex(7u, 100, 30);
+    immediate_vertex(7u, 120, 30);
+    immediate_vertex(3u, 20, 60);          /* triangle, auto-flushed at 3 vertices */
+    immediate_vertex(7u, 60, 60);
+    immediate_vertex(7u, 20, 100);
+    immediate_vertex(4u, 160, 60);         /* triangle strip, flushed by NOP */
+    immediate_vertex(7u, 200, 60);
+    immediate_vertex(7u, 160, 100);
+    immediate_vertex(7u, 200, 100);
+    W(0x00, 0u);                           /* NOP flushes the open strip */
+    immediate_vertex(5u, 260, 60);         /* triangle fan, flushed by type change */
+    immediate_vertex(7u, 300, 60);
+    immediate_vertex(7u, 260, 100);
+    immediate_vertex(7u, 300, 100);
+    immediate_vertex(6u, 340, 60);         /* sprite, auto-flushed at 2 vertices */
+    immediate_vertex(7u, 380, 90);
+    W(0x0C, 0u);                           /* END */
+
+    expect(ge_run_list(LIST_IMMEDIATE, 0) == 0, "immediate",
+           "immediate-mode list did not reach END");
+    for (size_t i = 0; i < sizeof probes / sizeof probes[0]; i++) {
+        char detail[96];
+        snprintf(detail, sizeof detail, "%s probe pixel was not drawn in white",
+                 probes[i].name);
+        expect((MEM_R32(immediate_pixel(probes[i].x, probes[i].y)) & 0x00FFFFFFu) ==
+                   0x00FFFFFFu,
+               "immediate", detail);
+    }
+
+    GeGpuHooks hooks;
+    memset(&hooks, 0, sizeof hooks);
+    hooks.tri = hook_tri;
+    hooks.sprite = hook_sprite;
+    hooks.line = hook_line;
+    hooks.point = hook_point;
+    hooks.flush = hook_flush;
+    hooks.vram_dirty = hook_vram_dirty;
+    unsigned hook_before = s_hook_prims;
+    ge_set_gpu_hooks(&hooks);
+    expect(ge_run_list(LIST_IMMEDIATE, 0) == 0, "immediate_gpu_hooks",
+           "GPU-hook list did not reach END");
+    ge_set_gpu_hooks(NULL);
+    expect(s_hook_prims - hook_before == 10u, "immediate_gpu_hooks",
+           "immediate primitives did not reach the GPU hook in command-list order");
+}
+
 /* ---- GPU backend stand-in (the hook contract src/rt/gpu_sdl3vk/ge_gpu.c fills) ---- */
 
-static unsigned s_hook_prims, s_hook_flushes;
+static unsigned s_hook_flushes;
 static int hook_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
     (void)a; (void)b; (void)c; (void)persp;
     s_hook_prims++;
@@ -1592,6 +1716,7 @@ int main(int argc, char **argv) {
     test_vram_mirror_cpu_stores();
     test_ge_zbuf_span_bounds_cache();
     test_ge_texture_mip_levels();
+    test_ge_immediate_mode();
     build_lists();
     expect_api_contract();
 
