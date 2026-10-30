@@ -87,6 +87,9 @@ void sched_clear_current_join_target(void) {}
 int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (void)uid; (void)result_out; return 0; }
 uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
+/* The generated sr_register_all() hands the main module's record to the HLE module manager,
+ * which the cosimulation harness does not have. */
+void sr_main_module_register(const SrMainModuleRecord *record) { (void)record; }
 uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
 void sr_yield(CpuState *s) { (void)s; }
 int sr_vfpu_interp(CpuState *s, uint32_t op) { (void)s; (void)op; return 0; }
