@@ -1505,7 +1505,9 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
         return 0, "header-truncated"
     e_entry, phoff = struct.unpack_from("<II", header, 24)
     phentsize, phnum = struct.unpack_from("<HH", header, 42)
-    if phentsize != 32 or not 1 <= phnum <= 128 or phoff + 32 * phnum > image_size:
+    # e_phnum is 16 bits and the table only has to lie inside the image, as in
+    # _elf32_mips_layout_violation.
+    if phentsize != 32 or phnum == 0 or phoff + 32 * phnum > image_size:
         return e_entry, "program-table-bounds"
     table = _image_read(read, phoff, 32 * phnum)
     if table is None:
