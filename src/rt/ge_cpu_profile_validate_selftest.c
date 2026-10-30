@@ -128,6 +128,7 @@ static void env_set(const char *name, const char *value) {
 #define LIST_VRAM_CPU_WRITE 0x08112000u
 #define LIST_VRAM_AMBIGUOUS 0x08114000u
 #define LIST_IMMEDIATE 0x0811E000u
+#define LIST_IMMEDIATE_STREAM 0x0811F000u
 #define VERTS         0x08200000u
 #define INDICES       0x08280000u
 #define CLUT_SRC      0x08290000u
@@ -756,6 +757,7 @@ static void test_ge_fb_direct_access(void) {
 #define IMMEDIATE_FB 0x04160000u
 
 static unsigned s_hook_prims;
+static GeVtx s_hook_last_tri_c;   /* third vertex of the last triangle a hook took */
 static int hook_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp);
 static int hook_sprite(const GeVtx *a, const GeVtx *b, int persp);
 static int hook_line(const GeVtx *a, const GeVtx *b, int persp);
@@ -833,7 +835,7 @@ static void test_ge_immediate_mode(void) {
     immediate_vertex(7u, 200, 60);
     immediate_vertex(7u, 160, 100);
     immediate_vertex(7u, 200, 100);
-    W(0x00, 0u);                           /* NOP flushes the open strip */
+    W(0x00, 0u);                           /* NOP between strips */
     immediate_vertex(5u, 260, 60);         /* triangle fan, flushed by type change */
     immediate_vertex(7u, 300, 60);
     immediate_vertex(7u, 260, 100);
@@ -870,11 +872,48 @@ static void test_ge_immediate_mode(void) {
            "immediate primitives did not reach the GPU hook in command-list order");
 }
 
+/* An immediate triangle strip keeps its previous two vertices across a command that is
+ * not a vertex register: the vertex after it still completes a triangle (PPSSPP's software
+ * renderer assembles each VAP as it arrives). VTCS/VTCT are normalized and reach the
+ * through-mode raster path as texels of the level-0 size. */
+static void test_ge_immediate_stream(void) {
+    s_pc = LIST_IMMEDIATE_STREAM;
+    W(0x12, 1u << 23);                     /* through-position type */
+    W(0xB8, (5u << 8) | 6u);               /* TEXSIZE0: 64 x 32 */
+    W(0xF3, 0x3F0000u);                    /* VTCS 0.5 */
+    W(0xF4, 0x3E8000u);                    /* VTCT 0.25 */
+    immediate_vertex(4u, 160, 160);        /* triangle strip */
+    immediate_vertex(7u, 200, 160);
+    immediate_vertex(7u, 160, 200);        /* first triangle */
+    W(0xE8, 0u);                           /* a state command inside the strip */
+    immediate_vertex(7u, 200, 200);        /* second triangle, from the kept pair */
+    W(0x0C, 0u);                           /* END */
+
+    GeGpuHooks hooks;
+    memset(&hooks, 0, sizeof hooks);
+    hooks.tri = hook_tri;
+    hooks.sprite = hook_sprite;
+    hooks.line = hook_line;
+    hooks.point = hook_point;
+    hooks.flush = hook_flush;
+    hooks.vram_dirty = hook_vram_dirty;
+    unsigned hook_before = s_hook_prims;
+    ge_set_gpu_hooks(&hooks);
+    expect(ge_run_list(LIST_IMMEDIATE_STREAM, 0) == 0, "immediate_stream",
+           "immediate strip list did not reach END");
+    ge_set_gpu_hooks(NULL);
+    expect(s_hook_prims - hook_before == 2u, "immediate_stream",
+           "a command inside an immediate strip dropped the strip's kept vertices");
+    expect(s_hook_last_tri_c.u == 32.0f && s_hook_last_tri_c.v == 8.0f, "immediate_stream",
+           "immediate texture coordinates were not scaled to level-0 texels");
+}
+
 /* ---- GPU backend stand-in (the hook contract src/rt/gpu_sdl3vk/ge_gpu.c fills) ---- */
 
 static unsigned s_hook_flushes;
 static int hook_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
-    (void)a; (void)b; (void)c; (void)persp;
+    (void)a; (void)b; (void)persp;
+    s_hook_last_tri_c = *c;
     s_hook_prims++;
     return 1;
 }
@@ -1717,6 +1756,7 @@ int main(int argc, char **argv) {
     test_ge_zbuf_span_bounds_cache();
     test_ge_texture_mip_levels();
     test_ge_immediate_mode();
+    test_ge_immediate_stream();
     build_lists();
     expect_api_contract();
 

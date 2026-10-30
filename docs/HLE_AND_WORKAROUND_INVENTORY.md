@@ -697,7 +697,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
-  - Limitation: formats a readable six-byte MAC address into the bounded 18-byte PSPSDK text form without a network stack; invalid pointer precedence and the complete text domain are not hardware measured
+  - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
   - Evidence: src/rt/hle_thread_selftest.c:test_named_refusals
 - **`h_NpDrmClearLicenseeKey`** (`sceNp`): `sceNpDrmClearLicenseeKey` (0x9b745542)
   - Limitation: forgets the recorded key and returns 0; not hardware measured
@@ -812,7 +812,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
   - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears
 - **`h_UmdActivate`** (`sceUmd`): `sceUmdActivate` (0xc6183d47)
-  - Limitation: the callback notification and pre-SDK-version PRESENT|READY state are host-selftested; the activation result and argument checks are not hardware measured
+  - Limitation: the callback argument follows PPSSPP (0x22 when no compiled SDK version is set, 0x32 otherwise) and is host-selftested, not hardware measured; the activation result and argument checks are not hardware measured either
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_unregister_callback
   - Evidence: PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version
 - **`h_UmdCheckMedium`** (`sceUmd`): `sceUmdCheckMedium` (0x46ebb729)
@@ -820,7 +820,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
 - **`h_UmdDeactivate`** (`sceUmd`): `sceUmdDeactivate` (0xe83742ba)
-  - Limitation: moves the modeled drive to the measured deactivated state 0x12 and notifies PRESENT|READY through the host-selftested callback path; its own return value (0) and argument checks are not hardware measured
+  - Limitation: moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdDriveStat`** (`sceUmd`): `sceUmdGetDriveStat` (0x6b4a146c)
