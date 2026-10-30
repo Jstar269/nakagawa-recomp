@@ -5801,6 +5801,7 @@ enum {
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
+static unsigned s_utility_usb_loaded;
 
 static const char *module_state_name(LoadedModuleState state) {
     switch (state) {
@@ -5946,6 +5947,26 @@ static uint32_t h_UtilityUnloadNetModule(CpuState *s) {
     if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
     return utility_module_unload("sceUtilityUnloadNetModule", 0x100u + module - 1u, 0);
 }
+
+/* sceUtilityLoadUsbModule(n) numbers its modules 1 to 5 (PSPSDK psputility_usbmodules.h:
+ * PSPCM, ACC, MIC, CAM, GPS), an order that does not follow the 0x108 and 0x2xx IDs of the
+ * utility-module table above, and which table ID each loads is unmeasured, so their state is
+ * kept here rather than guessed into the table. The USB functions themselves are not provided.
+ * The error mapping is inferred from the generic utility-module API, not measured. */
+static uint32_t utility_usb_module(uint32_t id, int load) {
+    if (id < 1u || id > 5u) return SCE_ERROR_MODULE_BAD_ID;
+    unsigned bit = 1u << (id - 1u);
+    if (load) {
+        if (s_utility_usb_loaded & bit) return SCE_ERROR_MODULE_ALREADY_LOADED;
+        s_utility_usb_loaded |= bit;
+    } else {
+        if (!(s_utility_usb_loaded & bit)) return SCE_ERROR_MODULE_NOT_LOADED;
+        s_utility_usb_loaded &= ~bit;
+    }
+    return 0;
+}
+static uint32_t h_UtilityLoadUsbModule(CpuState *s) { return utility_usb_module(A0, 1); }
+static uint32_t h_UtilityUnloadUsbModule(CpuState *s) { return utility_usb_module(A0, 0); }
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
 
@@ -10167,6 +10188,22 @@ static uint32_t h_FontOpen(CpuState *s) {
         fprintf(stderr, "h_FontOpen: lib=0x%08x index=%u mode=%u -> font=0x%08x\n", A0, A1, A2, fh);
     return fh;
 }
+/* Reads via the same VFS as sceIoOpen, defined with the descriptor implementation below. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size);
+static uint32_t h_FontOpenUserFile(CpuState *s) {
+    if (!A3 || !sr_guest_span_writable(A3, 4u)) return SR_FONT_ERROR_INVALID_ARG;
+    if (!A1) { MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG); return 0; }
+    SrFontLib lib;
+    if (!fontlib_snapshot(A0, &lib)) { MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    /* Mode 0 uses guest file callbacks, which are not implemented here. */
+    if (A2 != 1u) { MEM_W32(A3, 0x80010086u); return 0; }
+    uint8_t *bytes = NULL;
+    uint32_t size = 0, error = font_read_user_file(A1, &bytes, &size);
+    if (error) { MEM_W32(A3, error); return 0; }
+    PGF *owned = pgf_open_memory(bytes, size);
+    free(bytes);
+    return font_open_common(s, A0, 0, A2, owned, owned, NULL, A3);
+}
 static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
     font_load();
@@ -13313,6 +13350,13 @@ static uint32_t h_WlanGetEtherAddr(CpuState *s) {
     for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, mac[i]);
     return 0;
 }
+/* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
+ * model capability.  Use its PSP-1000 value until model selection exists. */
+static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
 static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
 
 static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
@@ -15059,6 +15103,28 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* Format and invalid-address result derived from PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384.
+ * Local offset comes from the PSP profile, as for the other local RTC calls. */
+static uint32_t h_RtcFormatRFC2822Local(CpuState *s) {
+    static const char *const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    uint64_t tick, local;
+    if (!A0 || !sr_guest_span_writable(A0, 32u) || (A1 & 3u) || !rtc_read_u64(A1, &tick)) return 0xffffffffu;
+    int64_t offset = psp_profile_local_offset_minutes(NULL, NULL);
+    rtc_add_offset_wrap(tick, offset, &local);
+    RtcDateTime date;
+    rtc_tick_to_datetime(local, &date);
+    uint64_t magnitude = offset < 0 ? (uint64_t)(-offset) : (uint64_t)offset;
+    char result[128];
+    snprintf(result, sizeof(result), "%s, %02u %s %04u %02u:%02u:%02u %c%02llu%02llu",
+             days[(local / 86400000000ull + 1u) % 7u], date.day, months[date.month - 1u], date.year,
+             date.hour, date.minute, date.second, offset < 0 ? '-' : '+',
+             (unsigned long long)(magnitude / 60u), (unsigned long long)(magnitude % 60u));
+    result[31] = 0;
+    for (size_t i = 0; i < 32u; i++) { MEM_W8(A0 + (uint32_t)i, result[i]); if (!result[i]) break; }
+    return 0;
+}
+
 static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
@@ -18086,6 +18152,31 @@ static uint32_t h_IoOpen(CpuState *s) {
     if (rc != 0u) return rc;
     return h_io_open_path(path, A1, -1);
 }
+/* Read an entire user font through the descriptor's actual backing, including ISO and archives. */
+static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size) {
+    char path[512];
+    if (io_guest_path(guest_path, path, sizeof(path)) != 0u) return SR_FONT_ERROR_INVALID_ARG;
+    uint32_t fd = h_io_open_path(path, 1u, -1);
+    if ((int32_t)fd < 0) return 0x80460005u; /* handler open failed */
+    Fd *f = &s_fds[fd];
+    uint32_t error = 0u, n = f->size;
+    uint8_t *data = NULL;
+    if (f->kind != FD_KIND_FILE || n < 16u || n > 16u * 1024u * 1024u) error = SR_FONT_ERROR_INVALID_DATA;
+    else if (!(data = (uint8_t *)malloc(n))) error = SR_FONT_ERROR_OOM;
+    else if (f->archive_vfs) {
+        SrArchiveFile file = { f->archive_mount, f->archive_entry, f->size, -1 };
+        size_t got = 0;
+        if (sr_archive_vfs_read(f->archive_vfs, &file, 0, data, n, &got) != NK_OK || got != n)
+            error = 0x80460005u;
+    } else if (f->host) {
+        if (fseek(f->host, 0, SEEK_SET) != 0 || fread(data, 1, n, f->host) != n) error = 0x80460005u;
+    } else if (iso_read(f->lba, 0, data, n) != (int)n) error = 0x80460005u;
+    hle_fd_release(f, 0);
+    if (error) { free(data); return error; }
+    *bytes = data; *size = n;
+    return 0;
+}
+
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
@@ -28520,6 +28611,7 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x3f7ad767, "sceRtcGetCurrentTick", h_RtcGetCurrentTick);
     sr_hle_register(0x34885e0d, "sceRtcConvertUtcToLocalTime", h_RtcConvertUtcToLocal);
     sr_hle_register(0x779242a2, "sceRtcConvertLocalTimeToUTC", h_RtcConvertLocalToUtc);
+    sr_hle_register(0x7de6711b, "sceRtcFormatRFC2822LocalTime", h_RtcFormatRFC2822Local);
     sr_hle_register(0x91e4f6a7, "sceKernelLibcClock", h_LibcClock);
     sr_hle_register(0x27cc57f0, "sceKernelLibcTime", h_LibcTime);
     sr_hle_register(0x71ec4271, "sceKernelLibcGettimeofday", h_LibcGettimeofday);
@@ -28706,6 +28798,8 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0x1579a159, "sceUtilityLoadNetModule", h_UtilityLoadNetModule);
     sr_hle_register(0x64d50c56, "sceUtilityUnloadNetModule", h_UtilityUnloadNetModule);
+    sr_hle_register(0x0d5bc6d2, "sceUtilityLoadUsbModule", h_UtilityLoadUsbModule);
+    sr_hle_register(0xf64910f0, "sceUtilityUnloadUsbModule", h_UtilityUnloadUsbModule);
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
@@ -28862,6 +28956,7 @@ static void hle_register_font_handlers(void) {
     sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+    sr_hle_register(0x57fcb733, "sceFontOpenUserFile", h_FontOpenUserFile);
 }
 
 static void hle_register_psmf_player_handlers(void) {
@@ -28882,6 +28977,10 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xdf089680, "scePsmfPlayerGetPsmfInfo", h_PsmfGetPsmfInfo);
     sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+}
+
+static void hle_register_power_coexistence_handlers(void) {
+    sr_hle_register(0xa85880d0u, "scePowerCheckWlanCoexistenceClock", h_PowerCheckWlanCoexistenceClock);
 }
 
 /* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The system-param getter reads
@@ -29287,6 +29386,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_power_register_callback();
     sr_hle_power_register_battery();
     hle_register_devkit_version_handler();
@@ -29405,6 +29505,7 @@ void sr_hle_init(void) {
      * sr_hle_power_register_clock(), which carries the canonical #86
      * getter NIDs noted above. */
     sr_hle_power_register_clock();
+    hle_register_power_coexistence_handlers();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -29708,6 +29809,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_request_pending = 0;
     s_exit_request_deadline_us = 0u;
     memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
+    s_utility_usb_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;
