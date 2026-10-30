@@ -4583,6 +4583,21 @@ static void test_ms0_unified_namespace(void) {
     free(save_fs);
 }
 
+static void test_utility_usb_module_state(void) {
+    const uint32_t load = 0x0d5bc6d2u, unload = 0xf64910f0u;
+    CpuState cpu = {0};
+    reset_fixture(); sr_hle_init();
+    expect(sr_hle_test_is_registered(load) && sr_hle_test_is_registered(unload), "USB utility imports are registered");
+    if (!sr_hle_test_is_registered(load) || !sr_hle_test_is_registered(unload)) return;
+    expect(utility_module_call(&cpu, load, 0u) == SCE_ERROR_MODULE_BAD_ID, "USB rejects invalid ID");
+    for (uint32_t id = 1; id <= 5; id++) {
+        expect(utility_module_call(&cpu, unload, id) == SCE_ERROR_MODULE_NOT_LOADED, "USB refuses unload before load");
+        expect(utility_module_call(&cpu, load, id) == 0u, "USB loads a valid module");
+        expect(utility_module_call(&cpu, load, id) == SCE_ERROR_MODULE_ALREADY_LOADED, "USB rejects duplicate load");
+        expect(utility_module_call(&cpu, unload, id) == 0u, "USB unloads a loaded module");
+    }
+}
+
 static void test_utility_av_module_state(void) {
     CpuState cpu;
     sr_hle_init();
@@ -8710,6 +8725,12 @@ static void test_psp_measured_power_battery_20261024(void) {
                sr_hle_test_is_registered(NID_POWER_LIFE_TIME),
            "scePowerGetBatteryChargingStatus and scePowerGetBatteryLifeTime are registered");
 
+    expect(sr_hle_test_is_registered(0xa85880d0u),
+           "scePowerCheckWlanCoexistenceClock is registered");
+    if (sr_hle_test_is_registered(0xa85880d0u))
+        expect(td24b_dispatch4(0xa85880d0u, 0u, 0u, 0u, 0u) == 0u,
+               "scePowerCheckWlanCoexistenceClock reports the PSP-1000 limit");
+
     /* On AC, battery full: online 1, exists 1, charging 0, status 0, 96 %, low 0, life time 0. */
     expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 1u,
            "on AC scePowerIsPowerOnline reports 1 (measured)");
@@ -9882,6 +9903,34 @@ static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_mi
  * reports, so the two can never disagree, and a setting a game writes through
  * sceReg moves local time at once. Production dispatch only; nothing is
  * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_rfc2822_local(void) {
+    const uint32_t nid = 0x7de6711bu, tick = 0x00200210u, out = 0x00200300u;
+    CpuState cpu = {0};
+    uint32_t rc, reg, cat;
+    reset_fixture(); sr_hle_init(); sysreg_scratch_clean(); sysreg_restart();
+    reg = sysreg_open_registry(2u, &rc);
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &rc);
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u &&
+           sysreg_set_int(cat, "summer_time", 0u) == 0u, "set RTC test zone");
+    expect(sr_hle_test_is_registered(nid), "RFC2822 local time is registered");
+    if (sr_hle_test_is_registered(nid)) {
+        uint64_t epoch = 62135596800000000ull;
+        MEM_W32(tick, (uint32_t)epoch); MEM_W32(tick + 4u, (uint32_t)(epoch >> 32));
+        cpu.r[4] = out; cpu.r[5] = tick;
+        expect(sr_syscall(&cpu, nid) == 0u, "RFC2822 local time succeeds");
+        const char *expected = "Thu, 01 Jan 1970 09:00:00 +0900";
+        int equal = 1;
+        for (size_t i = 0; i <= strlen(expected); i++)
+            if (MEM_R8(out + (uint32_t)i) != (uint8_t)expected[i]) equal = 0;
+        expect(equal, "RFC2822 local time formats the profile zone");
+        cpu.r[4] = 0u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects null output");
+        cpu.r[4] = out; cpu.r[5] = tick + 1u;
+        expect(sr_syscall(&cpu, nid) == 0xffffffffu, "RFC2822 rejects unaligned tick");
+    }
+    sysreg_scratch_clean();
+}
+
 static void test_rtc_local_time_follows_the_system_profile(void) {
     uint32_t r = 0u, reg, cat;
     reset_fixture();
@@ -37247,6 +37296,28 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
                MEM_R32(FLT_LIB_A + 0x10u) == FLT_FREE_ENTRY,
            "sceFontNewLib refuses an allocator block overlapping a live library and leaves it intact");
 
+    /* File opening must use the same flash0 VFS fixture as the registry. */
+    expect(sr_hle_test_is_registered(0x57fcb733u), "sceFontOpenUserFile is registered");
+    if (sr_hle_test_is_registered(0x57fcb733u)) {
+        const char *path = "flash0:/font/ltn0.pgf";
+        const uint32_t path_addr = FLT_PARAMS + 0x1000u;
+        for (size_t i = 0; i <= strlen(path); i++) MEM_W8(path_addr + (uint32_t)i, path[i]);
+        s_flt_alloc_ret = FLT_FONT;
+        uint32_t file_font = flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR);
+        expect(file_font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "sceFontOpenUserFile opens a VFS font");
+        if (file_font) expect(flt_call(FLT_NID_CLOSE, file_font, 0u, 0u, 0u) == 0u, "close user file font");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, 0u, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+               "user file rejects a null name");
+        expect(flt_call(0x57fcb733u, 0u, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+               "user file rejects an invalid library");
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 0u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80010086u,
+               "user file refuses unimplemented callback mode");
+        const char *missing = "flash0:/font/missing.pgf";
+        for (size_t i = 0; i <= strlen(missing); i++) MEM_W8(path_addr + (uint32_t)i, missing[i]);
+        expect(flt_call(0x57fcb733u, FLT_LIB_A, path_addr, 1u, FLT_ERR) == 0u && MEM_R32(FLT_ERR) == 0x80460005u,
+               "user file reports a missing VFS file");
+    }
+
     s_flt_alloc_ret = FLT_LIB_A + 0x20u;
     expect(flt_call(FLT_NID_OPEN, FLT_LIB_A, served_index, 0u, FLT_ERR) == 0u &&
                MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(FLT_LIB_A + 0x14u) == 0u,
@@ -39349,6 +39420,27 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
 
+    if (argc > 1 && strcmp(argv[1], "--rtc-rfc2822-local") == 0) {
+        test_rtc_rfc2822_local();
+        fprintf(stderr, "rtc-rfc2822-local: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--utility-usb") == 0) {
+        test_utility_usb_module_state();
+        fprintf(stderr, "utility-usb: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--power-battery") == 0) {
+        test_psp_measured_power_battery_20261024();
+        fprintf(stderr, "power-battery: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--msgpipe-rendezvous") == 0) {
         test_msgpipe_rendezvous();
         fprintf(stderr, "msgpipe-rendezvous: %d checks, %d failures\n", s_checks, s_failures);
@@ -39449,6 +39541,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
+    test_utility_usb_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
@@ -39584,6 +39677,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
     test_rtc_local_time_follows_the_system_profile();
+    test_rtc_rfc2822_local();
     test_first_run_time_zone_comes_from_the_host();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();

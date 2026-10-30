@@ -195,6 +195,12 @@
     "name": "sceRegCloseCategory",
     "status": "partial"
   },
+  "0x0d5bc6d2": {
+    "classification": "dedicated",
+    "handler": "h_UtilityLoadUsbModule",
+    "name": "sceUtilityLoadUsbModule",
+    "status": "unreviewed"
+  },
   "0x0d69bf40": {
     "classification": "dedicated",
     "handler": "h_RegFlushCategory",
@@ -1430,6 +1436,12 @@
     "name": "sceRegCreateKey",
     "status": "partial"
   },
+  "0x57fcb733": {
+    "classification": "dedicated",
+    "handler": "h_FontOpenUserFile",
+    "name": "sceFontOpenUserFile",
+    "status": "unreviewed"
+  },
   "0x58b1f937": {
     "classification": "dedicated",
     "handler": "h_PollSema",
@@ -1983,6 +1995,12 @@
     "classification": "dedicated",
     "handler": "h_AtracAddStreamData",
     "name": "sceAtracAddStreamData",
+    "status": "unreviewed"
+  },
+  "0x7de6711b": {
+    "classification": "dedicated",
+    "handler": "h_RtcFormatRFC2822Local",
+    "name": "sceRtcFormatRFC2822LocalTime",
     "status": "unreviewed"
   },
   "0x7e65b999": {
@@ -2695,6 +2713,12 @@
     "handler": "h_FontOpen",
     "name": "sceFontOpen",
     "status": "unreviewed"
+  },
+  "0xa85880d0": {
+    "classification": "fake_success",
+    "handler": "h_PowerCheckWlanCoexistenceClock",
+    "name": "scePowerCheckWlanCoexistenceClock",
+    "status": "stub"
   },
   "0xa8e8c846": {
     "classification": "dedicated",
@@ -3833,6 +3857,12 @@
     "handler": "h_FreeFpl",
     "name": "sceKernelFreeFpl",
     "status": "partial"
+  },
+  "0xf64910f0": {
+    "classification": "dedicated",
+    "handler": "h_UtilityUnloadUsbModule",
+    "name": "sceUtilityUnloadUsbModule",
+    "status": "unreviewed"
   },
   "0xf6837a1a": {
     "classification": "dedicated",
