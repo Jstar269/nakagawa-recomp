@@ -1287,6 +1287,32 @@ def _cell_fpu_compare() -> list[int]:
     return words
 
 
+def _cell_fpu_interp(a: int = 0x40B00000, b: int = 0x40000000, fcr: int = 3) -> list[int]:
+    """Scalar forms and FCR31 moves compared through both execution lanes."""
+    return [
+        _i(0x0F, ZERO, T0, a >> 16),
+        _i(0x0D, T0, T0, a & 0xffff),
+        _fp(0x04, T0, 0, 0, 0),
+        _i(0x0F, ZERO, T1, b >> 16),
+        _i(0x0D, T1, T1, b & 0xffff),
+        _fp(0x04, T1, 1, 0, 0),
+        _i(0x0F, ZERO, T2, fcr >> 16),
+        _i(0x0D, T2, T2, fcr & 0xffff),
+        _ctc1(T2),
+        _cfc1(T3),
+        *[_fp(0x10, 1, 0, 2 + fn, fn) for fn in range(4)],
+        *[_fp(0x10, 0, 0, 6 + fn - 4, fn) for fn in range(4, 8)],
+        *[_fp(0x10, 0, 0, 10 + fn - 12, fn) for fn in range(12, 16)],
+        _fp(0x10, 0, 0, 14, 0x24),
+        _fp(0x14, 0, 14, 15, 0x20),
+        _ccond(1, 0, 4),
+        _bc1(0, 2),
+        _i(0x09, ZERO, T4, 7),
+        _i(0x09, ZERO, T5, 9),
+        JR_RA, NOP,
+    ]
+
+
 def _cell_fpu_aot() -> list[int]:
     """AOT-only scalar operations checked against the integer reference lane.
 
@@ -1435,6 +1461,9 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
     ("fpu_moves", "raw scalar-FPU register and memory moves", _cell_fpu_moves),
     ("fpu_compare", "unordered COP1 compare predicates", _cell_fpu_compare),
+    ("fpu_interp", "scalar COP1 forms and FCR31", _cell_fpu_interp),
+    ("fpu_interp_nan", "scalar COP1 NaN and FCR31 masking",
+     lambda: _cell_fpu_interp(0x7fc12345, 0x80000000, 0xfe800001)),
     ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),
     ("negpad", "fail-closed negative corpus scratch", _cell_negpad),
