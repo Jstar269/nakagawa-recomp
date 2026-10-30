@@ -1246,6 +1246,49 @@ static int test_tab_rule_slides(void) {
     return 1;
 }
 
+/* How long a host may wait before the next frame: until the waves' next 30 Hz
+   step while they play (the launcher waited 50 ms, so they stepped at 20 Hz),
+   one display frame while something moves, the idle wait otherwise and under
+   Reduce motion, and never past the idle wait. */
+static int test_wait_follows_motion(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create wait context");
+    set_test_window(ui);
+    nk_ui_begin(ui, 40.0);
+    CHECK(nk_ui_end(ui) != NULL, "draw a still frame");
+    CHECK(nk_ui_wait_s(ui, 40.0, 0.05) == 0.05, "nothing moving: the idle wait");
+    nk_ui_begin(ui, 40.01);
+    CHECK(nk_ui_waves_element(ui, 9u, (NkUiRect){0.0f, 0.0f, 64.0f, 64.0f}, 0u), "queue the waves");
+    CHECK(nk_ui_end(ui) != NULL, "draw a frame with the waves");
+    CHECK(fabs(nk_ui_wait_s(ui, 40.01, 0.05) - (1201.0 / 30.0 - 40.01)) < 1e-9,
+          "the waves: until their next 30 Hz step");
+    CHECK(nk_ui_wait_s(ui, 40.01, 0.01) == 0.01, "never past the idle wait");
+    CHECK(nk_ui_wait_s(ui, 40.2, 0.05) == 0.0, "a step already due: no wait");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    CHECK(nk_ui_wait_s(ui, 40.01, 0.05) == 0.05, "Reduce motion holds the waves: the idle wait");
+    prefs.reduce_motion = false;
+    nk_ui_set_prefs(ui, &prefs);
+    nk_ui_focus(ui, 81u);
+    for (frame = 0; frame < 3; ++frame) (void)draw_ring_pair(ui, 41.0 + frame * 0.01);
+    nk_ui_focus(ui, 82u);
+    (void)draw_ring_pair(ui, 41.05);
+    (void)draw_ring_pair(ui, 41.06);
+    CHECK(nk_ui_in_motion(ui) && nk_ui_wait_s(ui, 41.06, 0.05) == NK_UI_MOTION_FRAME,
+          "a ring still moving: one display frame");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* Clay's layout inspector draws its panel, listing the layout's elements by
    their id strings, while it is on, and the frame is still drawn. */
 static int test_layout_debug(void) {
@@ -1803,6 +1846,7 @@ int main(int argc, char **argv) {
         !test_pointer_respects_clip() || !test_scroll_container() ||
         !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
         !test_focus_ring_moves() || !test_hover_fill_eases() || !test_tab_rule_slides() ||
+        !test_wait_follows_motion() ||
         !test_layout_debug() || !test_pointer_state_once_a_frame() ||
         !test_undrawn_command_is_reported()) {
         return 1;

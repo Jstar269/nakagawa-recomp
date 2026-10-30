@@ -136,7 +136,7 @@ A list longer than its room is a scroll container (`NkUiLayout.scroll`), scrolle
 three of its 16 px lines; a drag with the mouse held, or a finger, moves it with the pointer and a fling keeps going a
 moment; a drag that scrolls more than 8 px is no click on the control it started on. A control inside it that takes
 focus, by key, pad or pointer, is scrolled fully into view, by the least it takes. The launcher draws at 60 Hz while a
-list, or anything else, still moves (`player_ui_nk_in_motion`) and waits for input again once it settles. A wheel over anything else is
+list, or anything else, still moves (`player_ui_nk_wait_ms`) and waits for input again once it settles. A wheel over anything else is
 the screen's own: the library turns its page with it. Only the lines a long list shows are laid out, with spacers
 for the rest, so its length costs nothing (`test_scroll_container` in `tests/native/test_nk_ui_core.c`).
 
@@ -194,6 +194,10 @@ Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (t
 crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
 The waves step at 30 Hz. Reduce motion (the setting or the system's) makes every duration a cut and holds the
 waves on one frame. Nothing ever needs motion to be understood.
+
+The launcher's loop asks nk_ui how long it may wait for input (`nk_ui_wait_s`, `test_wait_follows_motion`): one
+display frame while something moves, until the waves' next 30 Hz step while they play, else 50 ms. It used to wait
+50 ms whenever nothing scrolled, so the waves stepped at 20 Hz.
 
 Moves and colour changes are Clay transitions: a container's `NkUiStyle.transition` names what eases (its colours,
 its box) and `transition_s` over how long, with Clay's ease-out, from its old value to its new one. A container's

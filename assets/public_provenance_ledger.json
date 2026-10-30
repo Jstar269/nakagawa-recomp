@@ -1828,7 +1828,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a40451aca33a2f572a8b9974134d59180e9e0c850ce6b866c46e0783c84cc2dd"
+      "sha256": "e6cb8352970d106b303d9b73e29d7a255a15c1a3d3a77f72435c924118cb6211"
     },
     {
       "path": "docs/PORTING.md",
@@ -4529,7 +4529,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "587dac1d700e0c7f63a66f2a333c55857946a731173557802a605b707edc5768"
+      "sha256": "757d428eb3abfedd6668f1779f18531cf2e1095d6a474521f2dd61dcb46d8572"
     },
     {
       "path": "src/player/package_builder.c",
@@ -4685,7 +4685,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bdb54e1225131b8d8bc1a3812a800595abecd02a956db92abdfad6e4f3d84464"
+      "sha256": "551c0df0c66adafc0f06dd6c36abb01e4b270ba34592ec288fe83f3e5cb34dea"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -4697,7 +4697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ddb8268c2eb552711b6ae30d09bfa1d8e4cc2fa9a3b9836bb463c906dec84a25"
+      "sha256": "f08960c3436128ddbc3da48084a40dcd9a7f013f93ce7cfadbeed0df35ac4a00"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -10632,7 +10632,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d850768a16d03e62c6eedf198f2b78f9b0b3aeae7881bbcde49b2b365280f4f"
+      "sha256": "56e3c6c56f4aa3d5d4f6a3b530170e6705440a5d22709bb9f0155b74bdca099c"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -10644,7 +10644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a516ed5a0491901918516146a387678358a6811ac399cb18050c53e4d8765b9"
+      "sha256": "a44ad436ebb3d60250df3cefc11c1d37ea852a490d694c724db5163f81efe290"
     },
     {
       "path": "src/ui/nk_ui_assets.c",
@@ -11232,7 +11232,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e50ffebd268ef8f6cf912ae74cdb38feeb89ff7cfb5fe42c0d6ed20d0d1079d"
+      "sha256": "1c65946125bd131a07f696c58b3a18029c6bc4285cee9102b9ae092e6e4c788e"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",

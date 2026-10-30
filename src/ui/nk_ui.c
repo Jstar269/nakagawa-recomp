@@ -1311,6 +1311,20 @@ bool nk_ui_next_wake(const NkUi *ui, double *at_s) {
     return true;
 }
 
+double nk_ui_wait_s(const NkUi *ui, double now_s, double idle_s) {
+    double wake;
+    double wait = idle_s;
+    if (ui == NULL || !isfinite(idle_s) || idle_s < 0.0) {
+        return 0.0;
+    }
+    if (nk_ui_in_motion(ui)) {
+        wait = NK_UI_MOTION_FRAME;
+    } else if (isfinite(now_s) && nk_ui_next_wake(ui, &wake)) {
+        wait = wake - now_s;
+    }
+    return wait < 0.0 ? 0.0 : wait < idle_s ? wait : idle_s;
+}
+
 NkUiId nk_ui_focused(const NkUi *ui) {
     return ui != NULL ? ui->focused : 0u;
 }

@@ -405,6 +405,11 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
    nk_ui_draw.h and is opaque to hosts that only forward it. */
 const NkUiDrawList *nk_ui_end(NkUi *ui);
 bool nk_ui_next_wake(const NkUi *ui, double *at_s);
+/* How long a host may wait for input before it draws the next frame, at most
+   idle_s: one display frame (NK_UI_MOTION_FRAME) while something moves
+   (nk_ui_in_motion), until the waves' next step (nk_ui_next_wake) while they
+   play, else idle_s. now_s is on the clock the frames are drawn with. */
+double nk_ui_wait_s(const NkUi *ui, double now_s, double idle_s);
 /* Scroll containers. nk_ui_scroll_to moves container id so the content shows
    from `offset` down (clamped to the content), from this frame on when called
    before the container opens; a container that has not opened yet starts

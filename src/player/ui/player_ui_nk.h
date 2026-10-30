@@ -946,10 +946,11 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
 bool player_ui_nk_built_with_launcher(void);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
-/* True while something on screen is still moving (a drag's momentum, a focus
-   ring or tab rule easing to its place, a fill easing in): the host's loop
-   draws the next frame within one 60 Hz frame instead of waiting for input. */
-bool player_ui_nk_in_motion(const PlayerUiNk *player);
+/* How long the host's loop may wait for input, at most idle_ms, before it
+   draws the next frame (nk_ui_wait_s): one 60 Hz frame while something on
+   screen still moves (a drag's momentum, a ring, rule or fill easing), until
+   the waves' next 30 Hz step while they play, else idle_ms. */
+uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
    shipped player has no other launcher. */
 bool player_ui_nk_draws_view(int view);
