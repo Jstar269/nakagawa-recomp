@@ -13,6 +13,7 @@
 #include "backend/nk_ui_vk.h"
 #include "clay.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
