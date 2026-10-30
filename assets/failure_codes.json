@@ -596,6 +596,12 @@
         "report"
       ]
     },
+    "ENHANCEMENT_UNAVAILABLE": {
+      "stage": "package",
+      "in": [
+        "player"
+      ]
+    },
     "PACKAGE_AMBIENT_ENHANCEMENT": {
       "stage": "package",
       "in": [
@@ -918,6 +924,7 @@
     "RUNTIME_SEMANTIC_BOUNDARY": {
       "stage": "run",
       "in": [
+        "report",
         "player"
       ]
     },
@@ -1279,6 +1286,12 @@
         "player"
       ]
     },
+    "UPDATE_CHECKSUM_WRONG_FILE": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
     "UPDATE_DOWNLOAD_CANCELLED": {
       "stage": "host",
       "in": [
@@ -1345,6 +1358,12 @@
         "player"
       ]
     },
+    "UPDATE_NO_SIGNING_KEY": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
     "UPDATE_NO_WINDOWS_ZIP": {
       "stage": "host",
       "in": [
@@ -1370,6 +1389,30 @@
       ]
     },
     "UPDATE_SAVE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_SIGNATURE_INVALID": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_SIGNATURE_MISSING": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_SIGNATURE_UNKNOWN_KEY": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "UPDATE_SIGNATURE_UNREADABLE": {
       "stage": "host",
       "in": [
         "player"
