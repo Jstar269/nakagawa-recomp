@@ -2062,7 +2062,7 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
                 nk_ui_tag(ui, DISC_ID_CHIPS + 2u, model->disc_id);
             }
             if (model->kind != PLAYER_UI_DISC_CHECKING) {
-                nk_ui_tag(ui, DISC_ID_CHIPS + 3u, "Your disc");
+                nk_ui_tag(ui, DISC_ID_CHIPS + 3u, safe_text(model->badge, "Your disc"));
             }
             nk_ui_end_container(ui);
         }

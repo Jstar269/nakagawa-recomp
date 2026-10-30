@@ -127,6 +127,14 @@ class IsoMetadata:
     param_sfo_facts: Mapping[str, str] = field(default_factory=dict)
     container_metadata: Mapping[str, Any] = field(default_factory=dict)
     qualification_error: str = ""
+    # The DISC_ID exactly as the disc's PARAM.SFO carries it. For a retail disc
+    # disc_id is its normalised form; for a non-retail disc (a beta, a prototype,
+    # an SDK placeholder ID) disc_id is the key derived from the disc's contents,
+    # identity_sha256 is the digest it came from, and this field is kept for
+    # display and diagnostics (iso_inspect.disc_id_library_key).
+    sfo_disc_id: str = ""
+    non_retail: bool = False
+    identity_sha256: str = ""
 
     @property
     def is_supported(self) -> bool:
