@@ -1609,6 +1609,11 @@ static void player_ui_developer_log_apply(PlayerApp *app, PlayerUiDeveloperLogOp
             break;
         case PLAYER_UI_DEVELOPER_LOG_SAVE: (void)player_dev_log_save(app); break;
         case PLAYER_UI_DEVELOPER_LOG_CLOSE: player_app_close_developer_log(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_INSPECT:
+            app->dev_log.inspect_layout = !app->dev_log.inspect_layout;
+            player_dev_log_add(app, "ui", "layout inspector %s",
+                               app->dev_log.inspect_layout ? "on" : "off");
+            break;
         case PLAYER_UI_DEVELOPER_LOG_NONE:
         default:
             break;

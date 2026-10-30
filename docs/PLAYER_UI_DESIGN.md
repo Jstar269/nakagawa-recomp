@@ -417,7 +417,10 @@ F12 in developer mode opens one card under a top bar without tabs: a `warning` `
 privacy line (on this PC only, paths as `%USERPROFILE%`), then the whole log in `DATA` on the ground colour, each line
 cut to the card's width, in a box that scrolls: it opens on the newest lines and follows new ones while it shows the
 end, and the wheel, a drag, Page Up and Page Down (the pad's triggers; a page is the box less one line) scroll it.
-Under it, COPY, SAVE and CLOSE (primary, focused first) with the last notice beside them. Esc or F12 closes it.
+Under it, COPY, SAVE, LAYOUT INSPECTOR: OFF (or ON) and CLOSE (primary, focused first), with the last notice beside
+them. Esc or F12 closes it. The layout inspector is Clay's own (`nk_ui_set_layout_debug`): a panel down the right of
+every launcher screen that lists the layout and outlines the element under the pointer, until it is turned off or
+developer mode ends. The screens keep their width, so the panel covers their right side.
 
 ### First run (C7)
 

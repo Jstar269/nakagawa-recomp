@@ -3328,15 +3328,20 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
                 if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_SAVE, "Save", 0u)) {
                     result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_SAVE);
                 }
+                if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_INSPECT,
+                                 model->inspecting ? "Layout inspector: On"
+                                                   : "Layout inspector: Off", 0u)) {
+                    result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_INSPECT);
+                }
                 if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_CLOSE, "Close",
                                  NK_UI_BUTTON_PRIMARY)) {
                     result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_CLOSE);
                 }
                 if (model->notice != NULL && model->notice[0] != '\0') {
                     NkUiTextStyle note = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
-                    /* The three buttons take about 300 px of the row. */
+                    /* The four buttons take about 480 px of the row. */
                     nk_ui_text(ui, DEV_ID_TEXT + 3u,
-                               nk_ui_text_clamp(ui, model->notice, &note, inner - 320.0f, 1),
+                               nk_ui_text_clamp(ui, model->notice, &note, inner - 500.0f, 1),
                                &note);
                 }
                 nk_ui_end_container(ui);

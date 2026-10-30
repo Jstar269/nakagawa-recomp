@@ -6679,6 +6679,11 @@ int main(int argc, char **argv) {
         assert(player_app_focus_count(dev) == 3);
         player_app_close_developer_log(dev);
         assert(dev->active_view == VIEW_SETTINGS);
+        /* The layout inspector lasts only while developer mode does. */
+        dev->dev_log.inspect_layout = true;
+        player_app_set_developer_mode(dev, false);
+        assert(!dev->dev_log.inspect_layout);
+        dev->settings.developer_mode = true;
         dev->active_view = VIEW_ONLINE_SETTINGS;
         assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
         dev->settings.online_mode = true;

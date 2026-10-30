@@ -390,6 +390,8 @@ typedef struct {
     size_t count;
     char notice[256];       /* the last copy or save result, redacted */
     PlayerView return_view; /* where closing the panel goes */
+    bool inspect_layout;    /* Clay's layout inspector, on every launcher screen while
+                               developer mode lasts */
 } PlayerDevLog;
 
 /* What a one-line outcome says, which picks its colour on screen (the UI's

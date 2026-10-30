@@ -524,17 +524,18 @@ typedef enum {
     PLAYER_UI_DEVELOPER_LOG_NONE = 0,
     PLAYER_UI_DEVELOPER_LOG_COPY,
     PLAYER_UI_DEVELOPER_LOG_SAVE,
-    PLAYER_UI_DEVELOPER_LOG_CLOSE
+    PLAYER_UI_DEVELOPER_LOG_CLOSE,
+    PLAYER_UI_DEVELOPER_LOG_INSPECT   /* turn Clay's layout inspector on or off */
 } PlayerUiDeveloperLogOp;
 
 #define PLAYER_UI_DEVELOPER_LOG_LINES 256u   /* PLAYER_DEV_LOG_LINES */
 
-/* The developer log panel (VIEW_DEVELOPER_LOG): the newest lines that fit,
-   oldest first. */
+/* The developer log panel (VIEW_DEVELOPER_LOG): the log's lines, oldest first. */
 typedef struct {
     const char *lines[PLAYER_UI_DEVELOPER_LOG_LINES];
     size_t line_count;
     const char *notice;             /* "Copied 12 lines.", or NULL */
+    bool inspecting;                /* Clay's layout inspector is on */
     float logical_width;
     float logical_height;
 } PlayerUiDeveloperLogModel;
@@ -708,7 +709,8 @@ enum {
     PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the PSP control, 0-13; not focusable */
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
-    PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u
+    PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u,
+    PLAYER_UI_ID_DEVELOPER_LOG_INSPECT = 0x4704u
 };
 
 #define PLAYER_UI_ID_CONTROLLER_BUTTON(control) \

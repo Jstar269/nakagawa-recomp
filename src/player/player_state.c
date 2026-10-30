@@ -2050,6 +2050,7 @@ void player_app_toggle_online_feature(PlayerApp *app, int feature) {
 void player_app_set_developer_mode(PlayerApp *app, bool on) {
     if (!app) return;
     app->settings.developer_mode = on;
+    if (!on) app->dev_log.inspect_layout = false;
     player_dev_log_add(app, "settings", "developer mode %s", on ? "on" : "off");
     if (!on && app->active_view == VIEW_DEVELOPER_LOG) player_app_close_developer_log(app);
     maybe_persist_settings(app);

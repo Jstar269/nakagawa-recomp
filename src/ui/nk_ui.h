@@ -404,6 +404,12 @@ bool nk_ui_next_wake(const NkUi *ui, double *at_s);
 void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset);
 bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out);
 bool nk_ui_scroll_in_motion(const NkUi *ui);
+/* Clay's layout inspector (Clay_SetDebugModeEnabled), for developer mode: a
+   panel down the window's right side that lists the layout and outlines the
+   element under the pointer. Clay narrows the layout by the panel's width, so
+   a screen sized from the window's own width runs on under the panel. Set
+   between frames. */
+void nk_ui_set_layout_debug(NkUi *ui, bool enabled);
 NkUiId nk_ui_focused(const NkUi *ui);
 void nk_ui_focus(NkUi *ui, NkUiId id);
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap);

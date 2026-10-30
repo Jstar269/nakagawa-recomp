@@ -997,6 +997,7 @@ static PlayerUiAction player_ui_render_developer_log(PlayerUiNk *player, PlayerA
     for (size_t i = 0u; i < count; ++i) model.lines[i] = player_dev_log_line(app, i);
     model.line_count = count;
     model.notice = app->dev_log.notice;
+    model.inspecting = app->dev_log.inspect_layout;
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
     return player_ui_screen_developer_log(player->ui, &model);
@@ -1810,6 +1811,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_sdl_input_set_event_scale(&player->input,
                                     point_to_pixel / scale.density);
     nk_ui_set_viewport(player->ui, &player->viewport);
+    nk_ui_set_layout_debug(player->ui,
+                           app->settings.developer_mode && app->dev_log.inspect_layout);
     nk_ui_sdlr_set_scale(player->backend, scale.density);
     now_s = (double)SDL_GetTicksNS() / 1000000000.0;
     repeat_count = nk_ui_input_poll(&player->input.input, now_s, repeats,

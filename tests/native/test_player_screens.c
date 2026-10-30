@@ -2092,6 +2092,10 @@ static void test_controller_and_developer_log_pages(void) {
                                                    FLOW_DEVLOG_EMPTY),
                               PLAYER_UI_DEVELOPER_LOG_CLOSE),
           "Close leaves the developer log");
+    CHECK(developer_log_op_is(activate_flow_button(PLAYER_UI_ID_DEVELOPER_LOG_INSPECT, FLOW_DEVLOG),
+                              PLAYER_UI_DEVELOPER_LOG_INSPECT) &&
+              flow_case_shows(FLOW_DEVLOG, 1280, 800, "LAYOUT INSPECTOR: OFF"),
+          "the layout inspector button says it is off and turns it on");
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
               strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"A (CROSS)\"") != NULL &&
@@ -2936,6 +2940,14 @@ static int capture_screens(const char *directory) {
                 goto done;
             }
         }
+        /* The developer log with Clay's layout inspector on. */
+        nk_ui_set_layout_debug(ui, true);
+        if (!capture_one(&rig, "developer-log-inspector", NULL, &title)) {
+            nk_ui_set_layout_debug(ui, false);
+            g_flow_case = FLOW_NONE;
+            goto done;
+        }
+        nk_ui_set_layout_debug(ui, false);
         g_flow_case = FLOW_NONE;
     }
     {

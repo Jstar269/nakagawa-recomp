@@ -1051,6 +1051,64 @@ static int test_focus_ring_floats(void) {
     return 1;
 }
 
+/* Clay's layout inspector draws its panel, listing the layout's elements by
+   their id strings, while it is on, and the frame is still drawn. */
+static int test_layout_debug(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    char dump[65536];
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create inspector context");
+    set_test_window(ui);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "nk_ui.container") == NULL, "no inspector by default");
+    nk_ui_set_layout_debug(ui, true);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_dump(ui, dump, sizeof(dump)) < sizeof(dump) &&
+              strstr(dump, "nk_ui.container") != NULL,
+          "the inspector lists the layout's elements");
+    nk_ui_set_layout_debug(ui, false);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "nk_ui.container") == NULL, "and is gone once turned off");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* Clay is told the pointer once a frame: a press reaches Clay as this frame's,
+   which the inspector's clicks and Clay's own hover handlers rely on. */
+static int test_pointer_state_once_a_frame(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    Clay_PointerDataInteractionState state;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create pointer state context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    push_pointer(ui, 10.0f, 10.0f, true);
+    nk_ui_begin(ui, 37.0);
+    state = Clay_GetPointerState().state;
+    (void)nk_ui_end(ui);
+    CHECK(state == CLAY_POINTER_DATA_PRESSED_THIS_FRAME, "Clay sees the press as this frame's");
+    nk_ui_begin(ui, 37.0);
+    state = Clay_GetPointerState().state;
+    (void)nk_ui_end(ui);
+    CHECK(state == CLAY_POINTER_DATA_PRESSED, "and as held on the next");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 static int test_control_owns_horizontal(void) {
     NkUiTextBackend fixed = nk_ui_text_fixed();
     NkUiConfig config;
@@ -1505,7 +1563,8 @@ int main(int argc, char **argv) {
         !test_display_text_rules() || !test_layout_error_kinds() ||
         !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
         !test_pointer_respects_clip() || !test_scroll_container() ||
-        !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats()) {
+        !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
+        !test_layout_debug() || !test_pointer_state_once_a_frame()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

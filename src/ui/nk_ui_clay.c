@@ -659,26 +659,43 @@ bool nk_ui_clay_scroll_state(void *opaque_clay, NkUiId id, NkUiScrollState *out)
     return true;
 }
 
-/* Whether the wheel at the pointer scrolls one of the containers in ids: one
-   is under the pointer and has more content than room. */
-bool nk_ui_clay_wheel_scrolls(void *opaque_clay, const NkUiId *ids, size_t count) {
+/* Whether the wheel at the pointer scrolls something: a vertical scroll
+   container under it (a screen's, or one in Clay's layout inspector) has more
+   content than room. */
+bool nk_ui_clay_wheel_scrolls(void *opaque_clay) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_Context *restore;
+    Clay_ElementIdArray over;
     bool scrolls = false;
-    size_t i;
-    if (clay == NULL || clay->context == NULL || ids == NULL) {
+    int32_t i;
+    if (clay == NULL || clay->context == NULL) {
         return false;
     }
     restore = Clay_GetCurrentContext();
     Clay_SetCurrentContext(clay->context);
-    for (i = 0; i < count && !scrolls; ++i) {
-        Clay_ElementId element = nk_ui_clay_container_id(ids[i]);
-        Clay_ScrollContainerData data = Clay_GetScrollContainerData(element);
-        scrolls = data.found && Clay_PointerOver(element) &&
+    over = Clay_GetPointerOverIds();
+    for (i = 0; i < over.length && !scrolls; ++i) {
+        Clay_ScrollContainerData data = Clay_GetScrollContainerData(over.internalArray[i]);
+        scrolls = data.found && data.config.vertical &&
                   data.contentDimensions.height > data.scrollContainerDimensions.height;
     }
     Clay_SetCurrentContext(restore);
     return scrolls;
+}
+
+/* Clay's layout inspector (Clay_SetDebugModeEnabled): a panel down the
+   window's right side that lists the layout and outlines the element under
+   the pointer. */
+void nk_ui_clay_set_debug(void *opaque_clay, bool enabled) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    if (clay == NULL || clay->context == NULL || clay->frame_open) {
+        return;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    Clay_SetDebugModeEnabled(enabled);
+    Clay_SetCurrentContext(restore);
 }
 
 /* Runs Clay's scrolling for this frame, between frames as its lifecycle asks:

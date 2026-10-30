@@ -1950,12 +1950,18 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual([view for view, _ in self.screens(mouse)], ["settings", "controller"])
 
     def test_next_ui_developer_log_buttons(self) -> None:
-        """The developer log opens on Close; Copy keeps it open."""
+        """The developer log opens on Close; Copy and the layout inspector keep it open."""
         closed = self.next_ui_run("developer-log", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
         self.assertEqual(self.focus_trail(closed)[0], str(0x4703))
         self.assertEqual([view for view, _ in self.screens(closed)], ["developer_log", "library"])
+        inspected = self.next_ui_run(
+            "developer-log", ("WAIT_MS=100", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(inspected)[-1], str(0x4704))
+        self.assertEqual([view for view, _ in self.screens(inspected)], ["developer_log"])
         copied = self.next_ui_run(
-            "developer-log", ("WAIT_MS=100", "KEY_LEFT", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+            "developer-log",
+            ("WAIT_MS=100", "KEY_LEFT", "KEY_LEFT", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
         )
         self.assertEqual(self.focus_trail(copied)[-1], str(0x4701))
         self.assertEqual([view for view, _ in self.screens(copied)], ["developer_log"])
