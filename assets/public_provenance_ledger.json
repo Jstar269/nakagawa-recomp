@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ab455f8832c935cc17c6066bac9e6ff9ef1d813000f60ede9b0d6028e9dda322"
+      "sha256": "9e51c244a34dedf1ec3b41d94c311e0322d6f3ca75445b32a5147b05f6788901"
     },
     {
       "path": "NOTICE.md",
@@ -749,7 +749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ceb8e276d100b1bb9873ea7f007a46b05806f1db9940b7ae6c5df6d68ff582b2"
+      "sha256": "2f1e71a5555d932b27e4f9b07ce98784020afac5ca78013baab93dcb1dc5ff48"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -1819,7 +1819,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12c7a10cd7359c1879edba48021b77e01854df3bc53b71b2331f6e569715d4d9"
+      "sha256": "c24bf01e658bd34acb0f22f66935e01bf5414d1dfef33b9d55182312d7908c07"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -16588,7 +16588,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "483c533570c43866be5371d52b164edfd812d1f7b65f0eb3816f6c93b0f80208"
+      "sha256": "782cf7ead4379b3537dc3da10f694d740207e2c5c738373d632ecb3b1fe0a63d"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -16972,7 +16972,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "80186765773969070265285382af11bdebeaf1d52b6fea667e8f079a0738fb1e"
+      "sha256": "56e51520b7f80da85bb639679a4969b06369fc3b86193a42d3749de245f916ff"
     },
     {
       "path": "tools/title_runtime_config.py",
