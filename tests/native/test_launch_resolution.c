@@ -382,7 +382,28 @@ static void test_no_iso_child_environment(const char *test_executable,
                                                            &had_launcher_display);
     set_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS", "7,7,7,7");
 
+    /* The enhanced build launches or nothing does (docs/ENHANCEMENT_CONTRACT.md
+       section 9): with no packages/<disc>-enhanced-<id>, neither the developer
+       layout that serves this entry nor any other package stands in for it, and
+       an id that is not a package name is refused before a path is formed. */
+    {
+        static NkLaunchSession enhanced_session;
+        NkGameEntry enhanced_game = game;
+        snprintf(enhanced_game.enhancement_package_id,
+                 sizeof(enhanced_game.enhancement_package_id), "fixture-60hz");
+        assert(nk_launch_prepare_session(&enhanced_session, &enhanced_game, root) != NK_OK);
+        assert(strstr(enhanced_session.last_error, "enhanced runtime package is missing") != NULL);
+        assert(enhanced_session.executable_path[0] == '\0');
+        assert(!enhanced_session.package_launch);
+        snprintf(enhanced_game.enhancement_package_id,
+                 sizeof(enhanced_game.enhancement_package_id), "../escape");
+        assert(nk_launch_prepare_session(&enhanced_session, &enhanced_game, root) != NK_OK);
+        assert(strstr(enhanced_session.last_error, "not a valid package name") != NULL);
+        assert(enhanced_session.executable_path[0] == '\0');
+    }
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
+    /* The authentic entry prepares the authentic route and exports 60 Hz off. */
+    assert(session.enhancement_package_id[0] == '\0');
     /* Prepare leaves the launcher's display unknown until the player sets it. */
     assert(session.config.launcher_display_bounds[2] == 0);
     assert(session.config.launcher_display_bounds[3] == 0);
@@ -530,7 +551,9 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
-    session.config.experimental_60hz = true;
+    /* An enhanced session (prepare copies the id from the entry) turns 60 Hz on. */
+    snprintf(session.enhancement_package_id, sizeof(session.enhancement_package_id),
+             "fixture-60hz");
     session.config.developer_mode = true;
     session.config.fps_cap = -1;
     /* A launcher that does not know its display exports an empty value, which
@@ -553,7 +576,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
     assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
     assert(strstr(observed, "7,7,7,7") == NULL);
-    session.config.experimental_60hz = false;
+    session.enhancement_package_id[0] = '\0';
     session.config.developer_mode = false;
 
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);

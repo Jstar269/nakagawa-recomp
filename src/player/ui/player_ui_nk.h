@@ -126,7 +126,8 @@ typedef enum {
     PLAYER_UI_ACTION_ERROR_SEE_REPORTS, /* the reports already filed for this disc */
     PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, /* the issue that tracks a known cause */
     PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
-    PLAYER_UI_ACTION_CHECK_INPUT_AGAIN /* the title page checks its files again (#308) */
+    PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
+    PLAYER_UI_ACTION_TOGGLE_60FPS      /* the title page's 60 FPS game logic switch */
 } PlayerUiActionKind;
 
 /* What a control about games an older Nakagawa built asks for
@@ -218,6 +219,17 @@ typedef struct {
     /* An older Nakagawa built this package (it still plays): the title page
        offers Rebuild beside PLAY, and library_status_detail says why. */
     bool rebuild_offered;
+    /* The ENHANCEMENTS card (docs/ENHANCEMENT_CONTRACT.md section 9): shown when
+       the title has an enhancement package, or when 60 FPS game logic is saved
+       on but the package is gone (enhancement_problem then says why). */
+    bool enhancement_shown;
+    bool enhancement_on;
+    /* The switch can change it now: not while a game starts or runs or this
+       title's package builds, and not while --experimental-60hz turns it on
+       for the session. */
+    bool enhancement_enabled;
+    bool enhancement_session;   /* on for this session by --experimental-60hz */
+    const char *enhancement_problem;
 } PlayerUiTitle;
 
 typedef struct {
@@ -740,6 +752,7 @@ enum {
     PLAYER_UI_ID_TITLE_CHECK_AGAIN = 0x2007u,
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
     PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
+    PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
