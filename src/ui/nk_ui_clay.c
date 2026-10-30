@@ -48,7 +48,21 @@ typedef struct {
     void *report_user;
     uint32_t frame_errors;      /* one bit per Clay_ErrorType raised this frame */
     uint32_t previous_errors;   /* the same for the frame before */
+    /* Where scroll containers Clay has not laid out yet start, applied as each
+       opens; a request no container took is dropped when the frame ends. */
+    struct {
+        NkUiId id;
+        float offset;
+    } starts[NK_UI_SCROLL_MAX];
+    size_t start_count;
 } NkUiClay;
+
+/* Clay moves a scroll container 10 px per unit of wheel delta. */
+#define NK_UI_CLAY_WHEEL_UNIT 10.0f
+
+static Clay_ElementId nk_ui_clay_container_id(NkUiId id) {
+    return Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.container"), id);
+}
 
 static int nk_ui_clay_clamp_int(double value) {
     if (value <= (double)INT_MIN + 2.0) {
@@ -408,8 +422,7 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
     declaration.layout.childAlignment.y =
         layout->align_y == NK_UI_ALIGN_CENTER ? CLAY_ALIGN_Y_CENTER :
         layout->align_y == NK_UI_ALIGN_END ? CLAY_ALIGN_Y_BOTTOM : CLAY_ALIGN_Y_TOP;
-    if (layout->clip) {
-        declaration.clip.horizontal = true;
+    if (layout->scroll) {
         declaration.clip.vertical = true;
     }
     if (custom_data != NULL) {
@@ -444,8 +457,33 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
     }
     /* nk_ui opens and closes a container in separate calls, which the CLAY()
        macro's scope cannot span, so the glue makes the calls the macro makes. */
-    Clay__OpenElementWithId(Clay_GetElementIdWithIndex(CLAY_STRING("nk_ui.container"), id));
-    Clay__ConfigureOpenElement(declaration);
+    Clay__OpenElementWithId(nk_ui_clay_container_id(id));
+    if (!layout->scroll) {
+        Clay__ConfigureOpenElement(declaration);
+        return true;
+    }
+    {
+        /* Clay keeps the offset; the children follow it, or the start a
+           screen asked for before Clay laid the container out. */
+        size_t i;
+        float start = -1.0f;
+        for (i = 0; i < clay->start_count; ++i) {
+            if (clay->starts[i].id == id) {
+                start = clay->starts[i].offset;
+                clay->starts[i] = clay->starts[--clay->start_count];
+                break;
+            }
+        }
+        declaration.clip.childOffset = start >= 0.0f ? (Clay_Vector2){0.0f, -start}
+                                                     : Clay_GetScrollOffset();
+        Clay__ConfigureOpenElement(declaration);
+        if (start >= 0.0f) {
+            Clay_ScrollContainerData data = Clay_GetScrollContainerData(nk_ui_clay_container_id(id));
+            if (data.found) {
+                data.scrollPosition->y = -start;
+            }
+        }
+    }
     return true;
 }
 
@@ -535,6 +573,120 @@ void nk_ui_clay_set_pointer(void *opaque_clay, float x, float y, bool down) {
     Clay_SetCurrentContext(restore);
 }
 
+/* Moves scroll container id to show its content from offset down: Clay's own
+   offset when Clay knows the container, clamped to its last content, or the
+   start it opens at. */
+void nk_ui_clay_scroll_to(void *opaque_clay, NkUiId id, float offset) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    Clay_ScrollContainerData data;
+    size_t i;
+    if (clay == NULL || clay->context == NULL || id == 0u || !isfinite(offset)) {
+        return;
+    }
+    if (offset < 0.0f) {
+        offset = 0.0f;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    data = Clay_GetScrollContainerData(nk_ui_clay_container_id(id));
+    Clay_SetCurrentContext(restore);
+    if (data.found) {
+        float max = data.contentDimensions.height - data.scrollContainerDimensions.height;
+        data.scrollPosition->y = -(offset < max ? offset : (max > 0.0f ? max : 0.0f));
+        return;
+    }
+    i = 0;
+    while (i < clay->start_count && clay->starts[i].id != id) {
+        ++i;
+    }
+    if (i == clay->start_count) {
+        if (clay->start_count == NK_UI_SCROLL_MAX) {
+            return;
+        }
+        ++clay->start_count;
+    }
+    clay->starts[i].id = id;
+    clay->starts[i].offset = offset;
+}
+
+bool nk_ui_clay_scroll_state(void *opaque_clay, NkUiId id, NkUiScrollState *out) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    Clay_ScrollContainerData data;
+    float max;
+    if (clay == NULL || clay->context == NULL || id == 0u || out == NULL) {
+        return false;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    data = Clay_GetScrollContainerData(nk_ui_clay_container_id(id));
+    Clay_SetCurrentContext(restore);
+    if (!data.found) {
+        return false;
+    }
+    max = data.contentDimensions.height - data.scrollContainerDimensions.height;
+    out->offset = -data.scrollPosition->y;
+    out->max_offset = max > 0.0f ? max : 0.0f;
+    out->viewport = data.scrollContainerDimensions.height;
+    return true;
+}
+
+/* Whether the wheel at the pointer scrolls one of the containers in ids: one
+   is under the pointer and has more content than room. */
+bool nk_ui_clay_wheel_scrolls(void *opaque_clay, const NkUiId *ids, size_t count) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    bool scrolls = false;
+    size_t i;
+    if (clay == NULL || clay->context == NULL || ids == NULL) {
+        return false;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    for (i = 0; i < count && !scrolls; ++i) {
+        Clay_ElementId element = nk_ui_clay_container_id(ids[i]);
+        Clay_ScrollContainerData data = Clay_GetScrollContainerData(element);
+        scrolls = data.found && Clay_PointerOver(element) &&
+                  data.contentDimensions.height > data.scrollContainerDimensions.height;
+    }
+    Clay_SetCurrentContext(restore);
+    return scrolls;
+}
+
+/* Runs Clay's scrolling for this frame, between frames as its lifecycle asks:
+   the wheel (wheel_px, positive towards the top), a drag or touch with the
+   pointer held, and the momentum a drag leaves. Returns how far, in logical px,
+   the container in ids that moved most has moved. */
+float nk_ui_clay_update_scroll(void *opaque_clay, const NkUiId *ids, size_t count,
+                               float wheel_px, float delta_s) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    float before[NK_UI_SCROLL_MAX];
+    float moved = 0.0f;
+    size_t i;
+    if (clay == NULL || clay->context == NULL || clay->frame_open || ids == NULL ||
+        count > NK_UI_SCROLL_MAX || !isfinite(wheel_px) || !isfinite(delta_s)) {
+        return 0.0f;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    for (i = 0; i < count; ++i) {
+        Clay_ScrollContainerData data = Clay_GetScrollContainerData(nk_ui_clay_container_id(ids[i]));
+        before[i] = data.found ? data.scrollPosition->y : 0.0f;
+    }
+    Clay_UpdateScrollContainers(true, (Clay_Vector2){0.0f, wheel_px / NK_UI_CLAY_WHEEL_UNIT},
+                                delta_s);
+    for (i = 0; i < count; ++i) {
+        Clay_ScrollContainerData data = Clay_GetScrollContainerData(nk_ui_clay_container_id(ids[i]));
+        if (data.found && fabsf(data.scrollPosition->y - before[i]) > moved) {
+            moved = fabsf(data.scrollPosition->y - before[i]);
+        }
+    }
+    Clay_SetCurrentContext(restore);
+    return moved;
+}
+
 /* The innermost container under the pointer that accept takes, or 0. Clay
    lists each element under the pointer after its ancestors, so the list is
    walked from its end. */
@@ -572,8 +724,7 @@ bool nk_ui_clay_element_rect(void *opaque_clay, NkUiId id, NkUiRect *out) {
     }
     restore = Clay_GetCurrentContext();
     Clay_SetCurrentContext(clay->context);
-    data = Clay_GetElementData(Clay_GetElementIdWithIndex(
-        CLAY_STRING("nk_ui.container"), id));
+    data = Clay_GetElementData(nk_ui_clay_container_id(id));
     Clay_SetCurrentContext(restore);
     if (!data.found || !isfinite(data.boundingBox.x) ||
         !isfinite(data.boundingBox.y) || !isfinite(data.boundingBox.width) ||
@@ -667,6 +818,7 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
             break;
         }
     }
+    clay->start_count = 0u;
     restore = clay->previous_context;
     clay->previous_context = NULL;
     clay->frame_open = false;

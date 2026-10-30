@@ -460,7 +460,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "08595b204b537d8c64a4f83d46cf2ff28d924bba4127bb49a112ff0eb57133da"
+      "sha256": "cdc31af95d11365e91c06986a3a74d734859a9e08e1b0397c0e2423e12dcb94e"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -1621,7 +1621,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "65b437086ced8e522b88400073b55f9addc780dfba03e238dda3043cdc85fa87"
+      "sha256": "1bd7f8023708ca47df881d82158b24db25afdd167cdbd7163717f5249895acf7"
     },
     {
       "path": "docs/PORTING.md",
@@ -4139,7 +4139,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f9c9d2bac7c0b633bc98497a9d4d68b814d46fb99ac0fbcd1778949fdcc8db7c"
+      "sha256": "c3f4ca5b305f09291f33e3401650acfb06462b85910925b9f953fde314c25b00"
     },
     {
       "path": "src/player/package_builder.c",
@@ -4247,7 +4247,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2963f04f77dedfd18692a18cfcbaa9521f85314ba81b0b9ee2faff2378605181"
+      "sha256": "3ae3ec277bbed91d3d3a3eb4b7549a761fc4f05bc32ebe588a416f6d9e365bea"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -4259,7 +4259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "680078f3e4e2e3de334280c99a96cf8bfe63bba4e3e6eefccf751ee3bb739531"
+      "sha256": "79d8dd677e2e7874b362db64bac5df741cf4d769f7e94790cd2cc3d5b0b561c7"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -4307,7 +4307,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5238414ba8d9047c7aad565d1b42c6a609afd2b94fd181ba31963f32a46edabd"
+      "sha256": "682765889bc3b5a4c856b456e94f6d0c1eaff1e356065dc6dcff62c39294bf65"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -10134,7 +10134,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "52d1c57d3f396596141adcc3f7f401cae80a136b96ecb6867ee87cd733f06863"
+      "sha256": "79c30fccb455127a2d6258809130084091ff8404e03b7f5a12147e2006ee5197"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -10146,7 +10146,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ffcc0229633d700e439a49ef63c82d8a3d400f810f16688c72c0311d3e059c07"
+      "sha256": "de14f354213bd65c9bc38e9efd0e66816b0ce0090354b5fa610676585cb8ed09"
     },
     {
       "path": "src/ui/nk_ui_assets.c",
@@ -10182,7 +10182,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c824cd45654812c05f26cd470f1e21a7038bc04fdeef4b9bc6622baf27532d5"
+      "sha256": "36660b6057f0129616d964d7294eab54161ade2ebbb71df5e28224b1ae1ae4bc"
     },
     {
       "path": "src/ui/nk_ui_draw.c",
@@ -10230,7 +10230,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e85aa2e7420c8a8165d5e7af6e6b7048d04a8d18635b3c8614b2e1fd88211d2b"
+      "sha256": "c14b187142c3b3b5a90b598bdfee06494826cf6ce131512b1fd81b075140dbfa"
     },
     {
       "path": "src/ui/nk_ui_focus.h",
@@ -10242,7 +10242,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d6b50b0eba496c8598e00958b5db74cce367f71452ad1330b2a37bec09cffae"
+      "sha256": "44960a1f1e0930fcbf98d4d600f3582d5d4dba6550bffc7b08b49128c535d42d"
     },
     {
       "path": "src/ui/nk_ui_image.c",
@@ -10626,7 +10626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be66cb0a0d9c89e3565f7cf33889f37d01d8c74952bd78f7dc63f4ef2c3bf99f"
+      "sha256": "30c82db5120e58e3a1762fbda147c43b496558de97086bce57da36e8f4caab5d"
     },
     {
       "path": "tests/native/test_core_catalog.c",
@@ -10734,7 +10734,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0436f25edda065e8a7933ec062a5761478cd807fb99bc7e05c577b472dfb7968"
+      "sha256": "d511575e57deed7479c37b43489e249b0e3ae082cdb744957c0c38b2860c791f"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
@@ -10746,7 +10746,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "467f42f5d54b8068421593e8f8cc7132b9ddb0696eb8714f70b12967f99b3685"
+      "sha256": "86d3076b0be14981eea212be3bc7a750ef503f09a806b3c524b0495e4c9ae023"
     },
     {
       "path": "tests/native/test_nk_ui_sdlr.c",
@@ -10866,7 +10866,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ba434f2761dc86a0c884e3d45c6f2ad923af07e92b0a23acbe25810f4fa7011"
+      "sha256": "a7ee871509407c23a848c928a3483873e9d0d9f66757bf03dd185f9b1340c935"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -11011,7 +11011,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b0e655b191889babeb95db538ddf085755f37e4e747ed2f49bd36b9c6790c6bf"
+      "sha256": "55281701e2ff60266cd33878e8b6b1b9d2268ae370437828cdea7129e0bc6b27"
     },
     {
       "path": "third_party/clay/clay.h",
@@ -11024,7 +11024,7 @@
         "license": "Zlib (upstream calls it the zlib/libpng license)",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3325d0bff19cb55d9769532c621988df9dd86b5a7b492ce87059a1bf83ff2ddf"
+      "sha256": "d9e5e2b1bc2662f6a85c14a3d3d64253057d38a7241c1d870a936aca80483f83"
     },
     {
       "path": "third_party/dr_libs/LICENSE.txt",

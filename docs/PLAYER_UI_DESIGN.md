@@ -124,6 +124,21 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
   BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
   when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
 
+### Scrolling
+
+A list longer than its room is a scroll container (`NkUiLayout.scroll`), scrolled by Clay
+(`Clay_UpdateScrollContainers`, every frame, with the time since the last one): a wheel notch over it moves it 48 px,
+three of its 16 px lines; a drag with the mouse held, or a finger, moves it with the pointer and a fling keeps going a
+moment; a drag that scrolls more than 8 px is no click on the control it started on. A control inside it that takes
+focus, by key, pad or pointer, is scrolled fully into view, by the least it takes. The launcher draws at 60 Hz while a
+list still moves (`player_ui_nk_in_motion`) and waits for input again once it settles. A wheel over anything else is
+the screen's own: the library turns its page with it. Only the lines a long list shows are laid out, with spacers
+for the rest, so its length costs nothing (`test_scroll_container` in `tests/native/test_nk_ui_core.c`).
+
+The library pages instead of scrolling. Its pager is the controller's way through a large library (a trigger is a page,
+and a page's cards are the D-pad's whole field), and only the page shown reads its disc icons and checks its packages,
+so a page costs what a small library does; a scrolled grid would read every icon it passes.
+
 ### Hover and press
 
 Hover and press are looks for the pointer, never needed to use the launcher. While the pointer is over a control
@@ -397,9 +412,10 @@ Every page fits 960 x 540.
 ### Developer log (built)
 
 F12 in developer mode opens one card under a top bar without tabs: a `warning` `▲ DEVELOPER MODE` eyebrow, the
-privacy line (on this PC only, paths as `%USERPROFILE%`), then the newest lines that fit in `DATA` on the ground
-colour, each cut to the card's width, and COPY, SAVE and CLOSE (primary, focused first) with the last notice beside
-them. Esc or F12 closes it.
+privacy line (on this PC only, paths as `%USERPROFILE%`), then the whole log in `DATA` on the ground colour, each line
+cut to the card's width, in a box that scrolls: it opens on the newest lines and follows new ones while it shows the
+end, and the wheel, a drag, Page Up and Page Down (the pad's triggers; a page is the box less one line) scroll it.
+Under it, COPY, SAVE and CLOSE (primary, focused first) with the last notice beside them. Esc or F12 closes it.
 
 ### First run (C7)
 

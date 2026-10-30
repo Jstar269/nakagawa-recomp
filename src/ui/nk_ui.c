@@ -39,6 +39,11 @@ typedef struct {
 } NkUiCustomSlot;
 
 #define NK_UI_CUSTOM_SLOTS 96u
+/* A wheel notch scrolls three 16 px lines, Windows' default of three lines a
+   notch. A held pointer that scrolls a container further than the slop is a
+   drag, so its release is no click. */
+#define NK_UI_WHEEL_NOTCH_PX 48.0f
+#define NK_UI_DRAG_SLOP 8.0f
 #define NK_UI_FRAME_TEXT_BYTES 16384u
 
 struct NkUi {
@@ -75,6 +80,19 @@ struct NkUi {
     bool pointer_inside;
     bool pointer_hover;
     NkUiId hover_id;
+    float press_travel;         /* how far a held pointer has scrolled since the press */
+    /* Scroll containers: the ones this frame opens, the ones the last layout
+       held (Clay's scrolling and the wheel work on those), the innermost one
+       open now, the wheel notches this frame's events gave them, and whether
+       one moved. */
+    NkUiId scroll_ids[NK_UI_SCROLL_MAX];
+    size_t scroll_count;
+    NkUiId laid_ids[NK_UI_SCROLL_MAX];
+    size_t laid_count;
+    NkUiId open_scroller;
+    NkUiId scroller_stack[64];
+    float wheel_notches;
+    bool scroll_moving;
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -112,6 +130,11 @@ bool nk_ui_clay_text(void *clay, NkUiId id, const char *text, size_t length,
                      int font, int size_px, uint32_t rgba);
 bool nk_ui_clay_element_rect(void *clay, NkUiId id, NkUiRect *out);
 void nk_ui_clay_set_pointer(void *clay, float x, float y, bool down);
+void nk_ui_clay_scroll_to(void *clay, NkUiId id, float offset);
+bool nk_ui_clay_scroll_state(void *clay, NkUiId id, NkUiScrollState *out);
+bool nk_ui_clay_wheel_scrolls(void *clay, const NkUiId *ids, size_t count);
+float nk_ui_clay_update_scroll(void *clay, const NkUiId *ids, size_t count, float wheel_px,
+                               float delta_s);
 NkUiId nk_ui_clay_pointer_target(void *clay, bool (*accept)(void *user, NkUiId id), void *user);
 bool nk_ui_clay_end(void *clay, NkUiDrawBuffer *draw, float density,
                     float delta_s, NkUiClayPaint paint, void *paint_user);
@@ -124,6 +147,18 @@ static void nk_ui_consume_event(NkUi *ui, size_t index) {
     memmove(&ui->events[index], &ui->events[index + 1u],
             (ui->event_count - index - 1u) * sizeof(ui->events[0]));
     --ui->event_count;
+}
+
+/* A scroll container's offset and content in this frame's layout, for
+   nk_ui_focus_place (which takes rects from nk_ui_clay_element_rect). */
+static bool nk_ui_layout_scroll(void *clay, NkUiId id, float *scroll_y, float *content_h) {
+    NkUiScrollState state;
+    if (!nk_ui_clay_scroll_state(clay, id, &state)) {
+        return false;
+    }
+    *scroll_y = state.offset;
+    *content_h = state.max_offset + state.viewport;
+    return true;
 }
 
 static bool nk_ui_accepts_pointer(void *user, NkUiId id) {
@@ -187,6 +222,7 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             focused = press || release ? nk_ui_pointer_target(ui) : 0u;
             if (press) {
                 ui->pointer_press_id = focused;
+                ui->press_travel = 0.0f;
                 if (focused != 0u && nk_ui_focus_set(ui->focus_graph, focused)) {
                     ui->focused = focused;
                 }
@@ -208,8 +244,20 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             ui->pointer_inside = false;
             nk_ui_consume_event(ui, i);
         } else if (event->type == NK_UI_EV_WHEEL) {
-            /* Screens with an actual scroller consume wheel events themselves. */
-            ++i;
+            /* Over a scroll container with room to move, the wheel scrolls it;
+               anywhere else it stays for the screen (the library turns its
+               page with it). */
+            ui->pointer_x = event->x;
+            ui->pointer_y = event->y;
+            ui->pointer_inside = true;
+            nk_ui_send_pointer(ui);
+            if ((event->dir == NK_UI_DIR_UP || event->dir == NK_UI_DIR_DOWN) &&
+                nk_ui_clay_wheel_scrolls(ui->clay, ui->laid_ids, ui->laid_count)) {
+                ui->wheel_notches += event->dir == NK_UI_DIR_UP ? 1.0f : -1.0f;
+                nk_ui_consume_event(ui, i);
+            } else {
+                ++i;
+            }
         } else {
             ++i;
         }
@@ -456,20 +504,42 @@ void nk_ui_begin(NkUi *ui, double now_s) {
         ui->event_count = first_spatial;
     }
     nk_ui_update_focus_from_events(ui);
+    now_s = isfinite(now_s) ? now_s : 37.0;
+    /* Clay's time-based layout and scrolling advance by the time since the last
+       frame. The first frame, and a clock that stands still or steps back, add
+       none. */
+    ui->frame_delta_s = ui->frame_clock_started && now_s > ui->now_s ? now_s - ui->now_s : 0.0;
+    ui->frame_clock_started = true;
+    ui->now_s = now_s;
     /* Every frame, as Clay's lifecycle asks: the layout under a still pointer
-       may have moved. */
+       may have moved. Then Clay's scrolling, over the containers the last
+       frame opened. */
     nk_ui_send_pointer(ui);
     ui->hover_id = ui->pointer_hover && ui->pointer_inside ? nk_ui_pointer_target(ui) : 0u;
+    {
+        NkUiFocusScrollRequest request;
+        float moved = nk_ui_clay_update_scroll(ui->clay, ui->laid_ids, ui->laid_count,
+                                               ui->wheel_notches * NK_UI_WHEEL_NOTCH_PX,
+                                               (float)ui->frame_delta_s);
+        ui->scroll_moving = moved > 0.0f;
+        ui->wheel_notches = 0.0f;
+        if (ui->pointer_down) {
+            ui->press_travel += moved;
+            if (ui->press_travel > NK_UI_DRAG_SLOP) {
+                ui->pointer_press_id = 0u;
+            }
+        }
+        /* Focus that moved into a scroll container brings its control into view. */
+        if (nk_ui_focus_take_scroll(ui->focus_graph, &request)) {
+            nk_ui_clay_scroll_to(ui->clay, request.scroller, request.scroll_y);
+        }
+        ui->scroll_count = 0u;
+        ui->open_scroller = 0u;
+    }
     ui->layout_pending = false;
     nk_ui_focus_begin_frame(ui->focus_graph);
     ui->focus_entry_count = 0u;
     nk_ui_draw_buffer_reset(&ui->draw);
-    now_s = isfinite(now_s) ? now_s : 37.0;
-    /* Clay's time-based layout advances by the time since the last frame. The
-       first frame, and a clock that stands still or steps back, add none. */
-    ui->frame_delta_s = ui->frame_clock_started && now_s > ui->now_s ? now_s - ui->now_s : 0.0;
-    ui->frame_clock_started = true;
-    ui->now_s = now_s;
     ui->container_depth = 0;
     ui->text_color = ui->theme.paper;
     ui->frame_ok = true;
@@ -484,11 +554,40 @@ void nk_ui_begin(NkUi *ui, double now_s) {
     }
 }
 
+/* A scroll container joins the focus graph, so focus moving to a control
+   inside it can bring the control into view. nk_ui_focus_place gives it this
+   frame's layout once the frame is laid out; a container Clay has not laid
+   out yet joins on its second frame. */
+static void nk_ui_register_scroller(NkUi *ui, NkUiId id) {
+    NkUiFocusScroller scroller;
+    NkUiScrollState state;
+    if (!nk_ui_clay_scroll_state(ui->clay, id, &state) ||
+        !nk_ui_clay_element_rect(ui->clay, id, &scroller.viewport)) {
+        return;
+    }
+    scroller.id = id;
+    scroller.scroll_x = 0.0f;
+    scroller.scroll_y = state.offset;
+    scroller.content_w = scroller.viewport.w;
+    scroller.content_h = state.max_offset + state.viewport;
+    (void)nk_ui_focus_register_scroller(ui->focus_graph, &scroller);
+}
+
 bool nk_ui_begin_container(NkUi *ui, NkUiId id,
                            const NkUiLayout *layout, const NkUiStyle *style) {
     if (ui == NULL || !ui->frame_open || layout == NULL || ui->container_depth >= 64u ||
         !nk_ui_clay_open_container(ui->clay, id, layout, style)) {
         return false;
+    }
+    ui->scroller_stack[ui->container_depth] = ui->open_scroller;
+    if (layout->scroll) {
+        if (ui->scroll_count == NK_UI_SCROLL_MAX) {
+            ui->frame_ok = false;
+        } else {
+            ui->scroll_ids[ui->scroll_count++] = id;
+        }
+        nk_ui_register_scroller(ui, id);
+        ui->open_scroller = id;
     }
     ui->text_color_stack[ui->container_depth] = ui->text_color;
     if (style != NULL && (style->fill_rgba == ui->theme.accent_dark ||
@@ -510,6 +609,7 @@ void nk_ui_end_container(NkUi *ui) {
     nk_ui_clay_close_container(ui->clay);
     --ui->container_depth;
     ui->text_color = ui->text_color_stack[ui->container_depth];
+    ui->open_scroller = ui->scroller_stack[ui->container_depth];
 }
 
 void nk_ui_button_configuration(const NkUi *ui, uint32_t flags,
@@ -1095,6 +1195,7 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             nk_ui_clay_close_container(ui->clay);
             --ui->container_depth;
             ui->text_color = ui->text_color_stack[ui->container_depth];
+            ui->open_scroller = ui->scroller_stack[ui->container_depth];
         }
     }
     if (ui->waves.active) {
@@ -1108,6 +1209,9 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
                         nk_ui_paint_custom, ui)) {
         ui->frame_ok = false;
     }
+    memcpy(ui->laid_ids, ui->scroll_ids, ui->scroll_count * sizeof(ui->scroll_ids[0]));
+    ui->laid_count = ui->scroll_count;
+    nk_ui_focus_place(ui->focus_graph, nk_ui_clay_element_rect, nk_ui_layout_scroll, ui->clay);
     if (!nk_ui_draw_focus_ring(ui)) {
         ui->frame_ok = false;
     }
@@ -1195,7 +1299,7 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
     entry.scope = NK_UI_SCOPE_ROOT;
-    entry.scroller = 0u;
+    entry.scroller = ui->open_scroller;
     (void)nk_ui_focus_register(ui->focus_graph, &entry);
     /* Controls that may not take default focus, disabled ones included, do
        not use up the default. */
@@ -1206,6 +1310,20 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
 
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id) {
     return ui != NULL && ui->focused == id;
+}
+
+void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset) {
+    if (ui != NULL) {
+        nk_ui_clay_scroll_to(ui->clay, id, offset);
+    }
+}
+
+bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out) {
+    return ui != NULL && nk_ui_clay_scroll_state(ui->clay, id, out);
+}
+
+bool nk_ui_scroll_in_motion(const NkUi *ui) {
+    return ui != NULL && ui->scroll_moving;
 }
 
 bool nk_ui_hovered(const NkUi *ui, NkUiId id) {

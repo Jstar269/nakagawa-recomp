@@ -78,6 +78,15 @@ void nk_ui_focus_begin_frame(NkUiFocusGraph *graph);
    of range, or out of memory. */
 bool nk_ui_focus_register(NkUiFocusGraph *graph, const NkUiFocusEntry *entry);
 bool nk_ui_focus_register_scroller(NkUiFocusGraph *graph, const NkUiFocusScroller *scroller);
+/* After a layout: each entry and scroller takes the rect the layout gave it,
+   and each scroller its scroll offset and content height, so moves made before
+   the next frame see the screen as it was drawn. Ids the layout did not place
+   keep what they were registered with. */
+void nk_ui_focus_place(NkUiFocusGraph *graph,
+                       bool (*rect_of)(void *user, NkUiId id, NkUiRect *rect),
+                       bool (*scroll_of)(void *user, NkUiId id, float *scroll_y,
+                                         float *content_h),
+                       void *user);
 /* Resolves the active scope and repairs focus: remembers the focus of the scope that
    was active, enters the new one (its remembered id, else a DEFAULT entry, else its
    first enabled entry), and drops focus that no longer exists or became disabled. */
@@ -113,8 +122,6 @@ bool nk_ui_focus_owns_horizontal(const NkUiFocusGraph *graph);
    the active scope. Clay finds what is under the pointer; hover never changes
    focus. */
 bool nk_ui_focus_accepts_pointer(const NkUiFocusGraph *graph, NkUiId id);
-/* The scroll container under the point (the wheel target), or 0. */
-NkUiId nk_ui_focus_scroller_at(const NkUiFocusGraph *graph, float x, float y);
 
 /* Stateless best-candidate pick over a plain entry list, for tests and one-off use:
    the best enabled entry from the scope of `current` in `direction`, or `current`

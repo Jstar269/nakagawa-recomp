@@ -60,7 +60,7 @@ typedef enum {
 
 /* Zero-initialise layouts and styles (memset or "= {0}") before setting fields:
    the fields after padding_bottom and corner_radius were added later and default
-   to zero (start alignment, no clipping, every corner rounded). */
+   to zero (start alignment, no scrolling, every corner rounded). */
 typedef struct {
     NkUiSizing width;
     NkUiSizing height;
@@ -72,8 +72,21 @@ typedef struct {
     float padding_bottom;
     NkUiAlign align_x;
     NkUiAlign align_y;
-    bool clip;          /* clip children to this container's bounds */
+    /* A vertical scroll container (a Clay clip container): its children are
+       clipped to its bounds and scroll with the wheel, a drag or touch, a
+       control inside it taking focus, and nk_ui_scroll_to. */
+    bool scroll;
 } NkUiLayout;
+
+/* Scroll containers one frame may hold; a frame that opens more is dropped. */
+#define NK_UI_SCROLL_MAX 16u
+
+/* A scroll container's state, in logical px: where it is now, and its last layout. */
+typedef struct {
+    float offset;       /* how far the content has moved up, 0 at the top */
+    float max_offset;   /* the offset that shows the end of the content */
+    float viewport;     /* the container's height */
+} NkUiScrollState;
 
 /* Corners that stay square even when corner_radius is set, for an art panel
    flush with the top of a rounded card. */
@@ -380,6 +393,17 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
    nk_ui_draw.h and is opaque to hosts that only forward it. */
 const NkUiDrawList *nk_ui_end(NkUi *ui);
 bool nk_ui_next_wake(const NkUi *ui, double *at_s);
+/* Scroll containers. nk_ui_scroll_to moves container id so the content shows
+   from `offset` down (clamped to the content), from this frame on when called
+   before the container opens; a container that has not opened yet starts
+   there. nk_ui_scroll_state gives where the container is now, after this
+   frame's scrolling, and its content and height from the last layout (false
+   before it was laid out). nk_ui_scroll_in_motion says a container moved this frame, by
+   wheel, drag or momentum: a host that waits for input between frames draws
+   the next one soon instead. */
+void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset);
+bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out);
+bool nk_ui_scroll_in_motion(const NkUi *ui);
 NkUiId nk_ui_focused(const NkUi *ui);
 void nk_ui_focus(NkUi *ui, NkUiId id);
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap);

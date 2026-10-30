@@ -1649,20 +1649,23 @@ static NkUiViewport launcher_viewport(int width, int height, float display_scale
 /* Lays a flow case out in a launcher window of width x height pixels with
    glyphs as wide as the mono face, and says whether every box and text run is
    inside the window and no text is painted over. */
-static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
+/* Lays a flow case out in a launcher window of width x height pixels, twice
+   (the focus graph uses the frame before's rects). The caller destroys *out_ui. */
+static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int height,
+                                            NkUi **out_ui) {
     NkUiConfig config;
     NkUiTextBackend text = screen_test_text_backend();
     NkUiViewport viewport = launcher_viewport(width, height, 1.0f);
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
-    bool inside = true;
     NkUi *ui;
     text.measure = screen_test_wide_measure;
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
     ui = nk_ui_create(&config);
-    if (ui == NULL) return false;
+    *out_ui = ui;
+    if (ui == NULL) return NULL;
     nk_ui_set_viewport(ui, &viewport);
     g_flow_width = scale.logical_w;
     g_flow_height = scale.logical_h;
@@ -1671,32 +1674,134 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
         (void)draw_flow_case(ui, which);
         draw = nk_ui_end(ui);
     }
-    if (draw == NULL) inside = false;
-    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+    g_flow_width = 1280.0f;
+    g_flow_height = 800.0f;
+    return draw;
+}
+
+/* The part of each command the window shows: its bounds inside every scissor
+   around it, as the backends clip. A scissor command, or a command its
+   scissors hide entirely, shows nothing (x1 <= x0). */
+static int (*visible_bounds(const NkUiDrawList *draw))[4] {
+    int (*visible)[4] = (int (*)[4])calloc(draw->ncmd > 0u ? draw->ncmd : 1u, sizeof(*visible));
+    int stack[16][4];
+    size_t depth = 0u;
+    if (visible == NULL) return NULL;
+    for (uint32_t i = 0u; i < draw->ncmd; ++i) {
         const NkUiDrawCmd *cmd = &draw->cmd[i];
+        int b[4] = {cmd->bounds[0], cmd->bounds[1], cmd->bounds[2], cmd->bounds[3]};
+        if (cmd->kind == NK_UI_DRAW_SCISSOR_START) {
+            if (depth > 0u) {
+                if (b[0] < stack[depth - 1u][0]) b[0] = stack[depth - 1u][0];
+                if (b[1] < stack[depth - 1u][1]) b[1] = stack[depth - 1u][1];
+                if (b[2] > stack[depth - 1u][2]) b[2] = stack[depth - 1u][2];
+                if (b[3] > stack[depth - 1u][3]) b[3] = stack[depth - 1u][3];
+            }
+            if (depth < 16u) memcpy(stack[depth++], b, sizeof(b));
+            continue;
+        }
+        if (cmd->kind == NK_UI_DRAW_SCISSOR_END) {
+            if (depth > 0u) --depth;
+            continue;
+        }
+        if (depth > 0u) {
+            if (b[0] < stack[depth - 1u][0]) b[0] = stack[depth - 1u][0];
+            if (b[1] < stack[depth - 1u][1]) b[1] = stack[depth - 1u][1];
+            if (b[2] > stack[depth - 1u][2]) b[2] = stack[depth - 1u][2];
+            if (b[3] > stack[depth - 1u][3]) b[3] = stack[depth - 1u][3];
+        }
+        if (b[2] > b[0] && b[3] > b[1]) memcpy(visible[i], b, sizeof(b));
+    }
+    return visible;
+}
+
+static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
+    int (*visible)[4] = draw != NULL ? visible_bounds(draw) : NULL;
+    bool inside = draw != NULL && visible != NULL;
+    for (uint32_t i = 0u; inside && i < draw->ncmd; ++i) {
+        const int *shown = visible[i];
+        if (shown[2] <= shown[0]) continue;
         /* Every box and run is on screen: a page that runs off the bottom
-           pushes the prompt bar (or its own buttons) out of the window. */
-        if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
-            (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
-             cmd->bounds[3] > height)) {
+           pushes the prompt bar (or its own buttons) out of the window. What a
+           scroll container clips away is not on screen. */
+        if (shown[0] < 0 || shown[1] < 0 || shown[2] > width || shown[3] > height) {
             inside = false;
         }
-        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
+        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
         for (uint32_t j = i + 1u; j < draw->ncmd; ++j) {
             const NkUiDrawCmd *other = &draw->cmd[j];
+            const int *over = visible[j];
             if ((other->kind == NK_UI_DRAW_TEXT || other->kind == NK_UI_DRAW_RECTANGLE) &&
-                cmd->bounds[0] < other->bounds[2] && other->bounds[0] < cmd->bounds[2] &&
-                cmd->bounds[1] < other->bounds[3] && other->bounds[1] < cmd->bounds[3]) {
+                over[2] > over[0] && shown[0] < over[2] && over[0] < shown[2] &&
+                shown[1] < over[3] && over[1] < shown[3]) {
                 inside = false;
             }
         }
     }
-    if (dump != NULL) (void)nk_ui_dump(ui, dump, cap);
-    g_flow_width = 1280.0f;
-    g_flow_height = 800.0f;
+    if (dump != NULL && ui != NULL) (void)nk_ui_dump(ui, dump, cap);
+    free(visible);
     nk_ui_destroy(ui);
     return inside;
+}
+
+/* Whether a text run containing `needle` shows in this draw list: drawn, and
+   not clipped away by a scroll container. */
+static bool draw_shows(const NkUiDrawList *draw, const char *needle) {
+    int (*visible)[4] = draw != NULL ? visible_bounds(draw) : NULL;
+    size_t needle_length = strlen(needle);
+    bool shows = false;
+    for (uint32_t i = 0u; visible != NULL && i < draw->ncmd && !shows; ++i) {
+        const NkUiTextRun *run = (const NkUiTextRun *)draw->cmd[i].custom;
+        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT || run == NULL || visible[i][2] <= visible[i][0]) {
+            continue;
+        }
+        for (size_t at = 0u; at + needle_length <= run->length && !shows; ++at) {
+            shows = memcmp(run->text + at, needle, needle_length) == 0;
+        }
+    }
+    free(visible);
+    return shows;
+}
+
+/* Whether a text run containing `needle` shows in the window: drawn, and not
+   clipped away by a scroll container. */
+static bool flow_case_shows(FlowCase which, int width, int height, const char *needle) {
+    NkUi *ui = NULL;
+    bool shows = draw_shows(flow_case_layout(which, width, height, &ui), needle);
+    nk_ui_destroy(ui);
+    return shows;
+}
+
+/* The developer log's box at 1280 x 800 is 479 px, about 30 of its 16 px
+   lines; a page is the box less one line. At the newest, 226 to 255 show;
+   Page Up shows 197 to 226, and Page Down returns to the newest. */
+static bool devlog_pages(void) {
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw = flow_case_layout(FLOW_DEVLOG, 1280, 800, &ui);
+    NkUiEvent page;
+    bool ok = draw_shows(draw, "[255] [runtime]") && draw_shows(draw, "[230] [runtime]") &&
+              !draw_shows(draw, "[220] [runtime]");
+    memset(&page, 0, sizeof(page));
+    page.type = NK_UI_EV_PAGE;
+    page.down = true;
+    page.dir = NK_UI_DIR_LEFT;
+    nk_ui_push_event(ui, &page);
+    nk_ui_begin(ui, 0.0);
+    (void)draw_flow_case(ui, FLOW_DEVLOG);
+    draw = nk_ui_end(ui);
+    ok = ok && draw_shows(draw, "[200] [runtime]") && draw_shows(draw, "[225] [runtime]") &&
+         !draw_shows(draw, "[240] [runtime]") && !draw_shows(draw, "[190] [runtime]");
+    page.dir = NK_UI_DIR_RIGHT;
+    nk_ui_push_event(ui, &page);
+    nk_ui_begin(ui, 0.0);
+    (void)draw_flow_case(ui, FLOW_DEVLOG);
+    draw = nk_ui_end(ui);
+    ok = ok && draw_shows(draw, "[255] [runtime]");
+    nk_ui_destroy(ui);
+    return ok;
 }
 
 /* #1302: the card a disc gets when it is added. Every check row has a name and
@@ -2032,9 +2137,12 @@ static void test_controller_and_developer_log_pages(void) {
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
     CHECK(dump_flow_case(FLOW_DEVLOG, dump, sizeof(dump)) &&
-              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "[000] [runtime]") == NULL &&
               strstr(dump, "\"Copied 256 lines.\"") != NULL,
-          "the log shows its newest lines and the last notice");
+          "the log shows the last notice");
+    CHECK(flow_case_shows(FLOW_DEVLOG, 1280, 800, "[255] [runtime]") &&
+              !flow_case_shows(FLOW_DEVLOG, 1280, 800, "[000] [runtime]"),
+          "the log opens on its newest lines, the oldest scrolled out of view");
+    CHECK(devlog_pages(), "Page Up and Page Down scroll the log a box at a time");
     CHECK(dump_flow_case(FLOW_DEVLOG_EMPTY, dump, sizeof(dump)) &&
               strstr(dump, "\"Nothing logged yet.\"") != NULL,
           "an empty log says so");
@@ -2049,7 +2157,8 @@ static void test_controller_and_developer_log_pages(void) {
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "every control, the live input and the mapping choice are on screen at 960 x 540");
     CHECK(flow_case_fits(FLOW_DEVLOG, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "\"CLOSE\"") != NULL,
+              flow_case_shows(FLOW_DEVLOG, 960, 540, "[255] [runtime]") &&
+              flow_case_shows(FLOW_DEVLOG, 960, 540, "CLOSE"),
           "the newest log line and Close are on screen at 960 x 540");
 }
 

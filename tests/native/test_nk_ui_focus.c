@@ -210,6 +210,43 @@ static void list_frame(NkUiFocusGraph *g, float scroll_y) {
     nk_ui_focus_end_frame(g);
 }
 
+/* nk_ui_focus_place callbacks: the list as drawn 150 px down, row 3 unplaced. */
+static bool placed_rect(void *user, NkUiId id, NkUiRect *rect) {
+    (void)user;
+    if (id == 100u) {
+        *rect = (NkUiRect){0.0f, 0.0f, 300.0f, 200.0f};
+        return true;
+    }
+    if (id == 3u || id < 1u || id > 10u) return false;
+    *rect = (NkUiRect){0.0f, (float)((int)id - 1) * 100.0f - 150.0f, 300.0f, 100.0f};
+    return true;
+}
+
+static bool placed_scroll(void *user, NkUiId id, float *scroll_y, float *content_h) {
+    (void)user;
+    if (id != 100u) return false;
+    *scroll_y = 150.0f;
+    *content_h = 1000.0f;
+    return true;
+}
+
+/* Registered with the frame before's layout, the graph takes the layout just
+   drawn: moves before the next frame judge rows where the user sees them. */
+static int test_place_follows_the_layout(void) {
+    NkUiFocusGraph *g = nk_ui_focus_graph_create();
+    NkUiFocusScrollRequest r;
+    CHECK(g != NULL, "create graph");
+    list_frame(g, 0.0f);
+    nk_ui_focus_place(g, placed_rect, placed_scroll, NULL);
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_DOWN) == 2u, "down to row 2");
+    CHECK(nk_ui_focus_take_scroll(g, &r) && r.scroll_y == 100.0f,
+          "row 2, half above the drawn list, scrolls back into view");
+    CHECK(nk_ui_focus_scroll_into_view(g, 3u, &r) && r.scroll_y == 250.0f,
+          "row 3, which the layout did not place, keeps its registered rect");
+    nk_ui_focus_graph_destroy(g);
+    return 1;
+}
+
 static int test_scroll_into_view(void) {
     NkUiFocusGraph *g = nk_ui_focus_graph_create();
     NkUiFocusScrollRequest r;
@@ -240,8 +277,6 @@ static int test_scroll_into_view(void) {
     CHECK(nk_ui_focus_take_scroll(g, &r) && r.scroll_y == 700.0f, "scrolls up by the hidden part");
 
     list_frame(g, 0.0f);
-    CHECK(nk_ui_focus_scroller_at(g, 10.0f, 10.0f) == 100u, "wheel target is the scroller under the pointer");
-    CHECK(nk_ui_focus_scroller_at(g, 400.0f, 10.0f) == 0u, "no scroller outside it");
     CHECK(nk_ui_focus_accepts_pointer(g, 2u), "a pointer may reach row 2");
     CHECK(!nk_ui_focus_accepts_pointer(g, 99u), "nor an id the frame did not register");
     CHECK(nk_ui_focus_current(g) != 2u, "asking does not move focus");
@@ -1420,7 +1455,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!test_grid() || !test_no_default_entry() || !test_owns_horizontal() ||
-        !test_ragged_row() || !test_scroll_into_view() ||
+        !test_ragged_row() || !test_scroll_into_view() || !test_place_follows_the_layout() ||
         !test_dialog_trap_and_scope_memory() || !test_tab_cycle_and_repair() ||
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
         !test_prompt_style_follows_device() ||

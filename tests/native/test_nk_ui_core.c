@@ -756,7 +756,7 @@ static NkUiId draw_clipped_column(NkUi *ui) {
     layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
     layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 50.0f, 0.0f, 0.0f};
     layout.direction = NK_UI_LAYOUT_COLUMN;
-    layout.clip = true;
+    layout.scroll = true;
     nk_ui_begin(ui, 37.0);
     if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
         for (id = 20u; id < 23u; ++id) {
@@ -793,6 +793,150 @@ static int test_pointer_respects_clip(void) {
     push_pointer(ui, 50.0f, 47.0f, false);
     (void)draw_clipped_column(ui);
     CHECK(nk_ui_hovered(ui, 21u), "the part inside the clip is");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* The top of text run `id` in the last frame's draw list, in device px, or
+   -1 when the frame drew no such run. */
+static int drawn_text_top(NkUi *ui, NkUiId id) {
+    char dump[16384];
+    char want[32];
+    const char *line;
+    int x0 = 0;
+    int y0 = -1;
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(want, sizeof(want), "%08X TEXT ", (unsigned)id);
+    line = strstr(dump, want);
+    if (line == NULL || sscanf(line + strlen(want), "%d %d", &x0, &y0) != 2) return -1;
+    return y0;
+}
+
+/* Ten 44 px rows (ids 40 to 49) in a 100 px scroll container (id 30) at the
+   window's top left. Returns the row activated this frame, or 0. */
+static NkUiId draw_scroll_list(NkUi *ui, bool *wheel_left) {
+    NkUiLayout root;
+    NkUiLayout list;
+    NkUiNavDir dir;
+    NkUiId activated = 0u;
+    NkUiId id;
+    memset(&root, 0, sizeof(root));
+    root.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    root.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    root.direction = NK_UI_LAYOUT_COLUMN;
+    memset(&list, 0, sizeof(list));
+    list.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    list.height = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    list.direction = NK_UI_LAYOUT_COLUMN;
+    list.scroll = true;
+    nk_ui_begin(ui, 37.0);
+    if (wheel_left != NULL) *wheel_left = nk_ui_take_event(ui, NK_UI_EV_WHEEL, &dir);
+    if (nk_ui_begin_container(ui, 1u, &root, NULL)) {
+        if (nk_ui_begin_container(ui, 30u, &list, NULL)) {
+            for (id = 40u; id < 50u; ++id) {
+                if (nk_ui_button(ui, id, "Row", NK_UI_BUTTON_GROW)) activated = id;
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+static void push_wheel(NkUi *ui, float x, float y, NkUiNavDir dir) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_WHEEL;
+    event.x = x;
+    event.y = y;
+    event.dir = dir;
+    event.down = true;
+    nk_ui_push_event(ui, &event);
+}
+
+static float scroll_offset(NkUi *ui) {
+    NkUiScrollState state;
+    return nk_ui_scroll_state(ui, 30u, &state) ? state.offset : -1.0f;
+}
+
+/* A scroll container scrolls through Clay: the wheel over it (a notch is 48
+   px; a wheel anywhere else stays for the screen), a drag with the pointer
+   held (and that drag is no click), focus moving to a row out of view, and
+   nk_ui_scroll_to, which also sets where a container starts. */
+static int test_scroll_container(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiScrollState state;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    bool wheel_left = false;
+    int frame;
+    int top;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create scroll context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_scroll_state(ui, 30u, &state) && state.offset == 0.0f &&
+          state.max_offset == 340.0f && state.viewport == 100.0f,
+          "the list starts at its top, with 340 px more than its 100 px of room");
+    top = drawn_text_top(ui, 45u);
+
+    push_wheel(ui, 50.0f, 50.0f, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, &wheel_left);
+    CHECK(!wheel_left && scroll_offset(ui) == 48.0f && nk_ui_scroll_in_motion(ui),
+          "a wheel notch over the list scrolls it 48 px and is not left for the screen");
+    CHECK(drawn_text_top(ui, 45u) == top - 48, "the rows are drawn 48 px higher");
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 48.0f && !nk_ui_scroll_in_motion(ui), "and stay there");
+    push_wheel(ui, 400.0f, 300.0f, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, &wheel_left);
+    CHECK(wheel_left && scroll_offset(ui) == 48.0f, "a wheel elsewhere stays for the screen");
+
+    /* Keys: down from row 40 to row 47 (308 to 352 px down the content). */
+    nk_ui_scroll_to(ui, 30u, 0.0f);
+    (void)draw_scroll_list(ui, NULL);
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_focused(ui) == 41u && scroll_offset(ui) == 0.0f,
+          "a move judges rows where the list was last drawn, so row 41 needs no scroll");
+    for (frame = 0; frame < 6; ++frame) {
+        push_nav(ui, NK_UI_DIR_DOWN);
+        (void)draw_scroll_list(ui, NULL);
+    }
+    CHECK(nk_ui_focused(ui) == 47u, "focus walks down to row 47");
+    CHECK(scroll_offset(ui) == 252.0f, "the list scrolls just enough to show the focused row");
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 252.0f, "a row already in view needs no scroll");
+
+    /* A drag: held on row 47 and moved up 70 px, the list follows the pointer
+       and the release on the same row is no click. */
+    push_pointer(ui, 50.0f, 80.0f, true);
+    (void)draw_scroll_list(ui, NULL);
+    push_pointer(ui, 50.0f, 10.0f, true);
+    activated = draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 322.0f, "a drag scrolls the list with the pointer");
+    push_pointer(ui, 50.0f, 10.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_scroll_list(ui, NULL);
+    CHECK(activated == 0u, "a drag that scrolled is no click");
+
+    nk_ui_scroll_to(ui, 30u, 1000.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 340.0f, "nk_ui_scroll_to stops at the end of the content");
+    nk_ui_destroy(ui);
+
+    /* A list asked to start 200 px down is drawn there from its first frame. */
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create second scroll context");
+    set_test_window(ui);
+    nk_ui_scroll_to(ui, 30u, 200.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(drawn_text_top(ui, 45u) == top - 200 && scroll_offset(ui) == 200.0f,
+          "a container starts where nk_ui_scroll_to asked");
     nk_ui_destroy(ui);
     return 1;
 }
@@ -1202,7 +1346,7 @@ int main(int argc, char **argv) {
         !test_image_decode() || !test_image_command() || !test_app_icon() ||
         !test_display_text_rules() || !test_layout_error_kinds() ||
         !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
-        !test_pointer_respects_clip()) {
+        !test_pointer_respects_clip() || !test_scroll_container()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

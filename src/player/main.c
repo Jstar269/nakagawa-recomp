@@ -5811,7 +5811,11 @@ int main(int argc, char *argv[]) {
         input.activate_pressed = false;
         bool close_request_handled_in_batch = false;
         SDL_Event event;
-        bool event_available = SDL_WaitEventTimeout(&event, 50);
+        /* A scroll still moving draws at 60 Hz until it settles: Clay's
+           momentum slows a little each frame. */
+        bool event_available = SDL_WaitEventTimeout(
+            &event, player_ui_nk_view_active(next_ui, &app) && player_ui_nk_in_motion(next_ui)
+                        ? 16 : 50);
         if (event_available) {
             do {
                 if (app.logical_ui &&

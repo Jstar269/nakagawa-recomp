@@ -8,6 +8,7 @@
 #include "player_ui_nk.h"
 #include "nk_ui_widgets.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -3191,9 +3192,10 @@ PlayerUiAction player_ui_screen_controller(NkUi *ui, const PlayerUiControllerMod
 }
 
 /* ---- Developer log --------------------------------------------------------------------
-   The newest lines the window has room for, in the data face on a dark inset,
-   with Copy, Save and Close under them. player_state.c has already written the
-   user's folders in the lines as %USERPROFILE%. */
+   The whole log in the data face on a dark inset that scrolls, opening on the
+   newest lines, with Copy, Save and Close under it. Only the lines the inset
+   shows are laid out; spacers stand for the rest. player_state.c has already
+   written the user's folders in the lines as %USERPROFILE%. */
 
 #define DEV_ID_ROOT 0x65000001u
 #define DEV_ID_TOP 0x65000010u
@@ -3233,8 +3235,13 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
     float column;
     float inner;
     float lines_height;
-    size_t rows;
+    float end;
+    float offset;
+    NkUiScrollState scroll;
+    NkUiNavDir page;
+    size_t count;
     size_t first;
+    size_t last;
     if (ui == NULL || model == NULL) return result;
     theme = nk_ui_theme(ui);
     width = model->logical_width > 80.0f ? model->logical_width : 1280.0f;
@@ -3244,8 +3251,31 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
     lines_height = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
                    2.0f * NK_UI_SPACE_4 - DEV_CARD_CHROME;
     if (lines_height < 4.0f * DEV_LINE_HEIGHT) lines_height = 4.0f * DEV_LINE_HEIGHT;
-    rows = (size_t)(lines_height / DEV_LINE_HEIGHT);
-    first = model->line_count > rows ? model->line_count - rows : 0u;
+    count = model->line_count < PLAYER_UI_DEVELOPER_LOG_LINES ? model->line_count
+                                                               : PLAYER_UI_DEVELOPER_LOG_LINES;
+    end = (float)count * DEV_LINE_HEIGHT > lines_height
+        ? (float)count * DEV_LINE_HEIGHT - lines_height : 0.0f;
+    /* The log opens on its newest lines and follows new ones while it shows the
+       end; scrolled up, it stays where it was put. Page Up and Page Down (the
+       pad's triggers) move it a box less one line, so a line carries over. */
+    offset = end;
+    if (nk_ui_scroll_state(ui, DEV_ID_BOX, &scroll) && scroll.offset < scroll.max_offset) {
+        offset = scroll.offset;
+    }
+    while (nk_ui_take_event(ui, NK_UI_EV_PAGE, &page)) {
+        offset += page == NK_UI_DIR_RIGHT ? lines_height - DEV_LINE_HEIGHT
+                                          : DEV_LINE_HEIGHT - lines_height;
+    }
+    if (offset > end) offset = end;
+    if (offset < 0.0f) offset = 0.0f;
+    nk_ui_scroll_to(ui, DEV_ID_BOX, offset);
+    /* Where Clay will draw the log this frame, which holds new lines back a
+       frame while their room is laid out. */
+    if (nk_ui_scroll_state(ui, DEV_ID_BOX, &scroll)) offset = scroll.offset;
+    first = (size_t)(offset / DEV_LINE_HEIGHT);
+    last = (size_t)ceilf((offset + lines_height) / DEV_LINE_HEIGHT);
+    if (first > count) first = count;
+    if (last > count) last = count;
     (void)nk_ui_waves_element(ui, DEV_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
     if (!nk_ui_begin_container(ui, DEV_ID_ROOT, &layout, NULL)) return result;
@@ -3270,15 +3300,19 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
                 NkUiStyle style = flow_box_style(theme, 0x080B0FFFu);
                 box.padding_top = box.padding_bottom = 10.0f;
                 box.padding_left = box.padding_right = 14.0f;
+                box.scroll = true;
                 if (nk_ui_begin_container(ui, DEV_ID_BOX, &box, &style)) {
                     NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
                     data.line_height = DEV_LINE_HEIGHT;
-                    for (size_t i = first; i < model->line_count &&
-                                           i < PLAYER_UI_DEVELOPER_LOG_LINES; ++i) {
-                        nk_ui_text(ui, (NkUiId)(DEV_ID_LINES + (NkUiId)(i - first)),
+                    nk_ui_spacer(ui, DEV_ID_TEXT + 4u, sizing_fixed(1.0f),
+                                 sizing_fixed((float)first * DEV_LINE_HEIGHT));
+                    for (size_t i = first; i < last; ++i) {
+                        nk_ui_text(ui, (NkUiId)(DEV_ID_LINES + (NkUiId)i),
                                    nk_ui_text_clamp(ui, safe_text(model->lines[i], " "), &data,
                                                     inner - 28.0f, 1), &data);
                     }
+                    nk_ui_spacer(ui, DEV_ID_TEXT + 5u, sizing_fixed(1.0f),
+                                 sizing_fixed((float)(count - last) * DEV_LINE_HEIGHT));
                     if (model->line_count == 0u) {
                         nk_ui_text(ui, DEV_ID_TEXT + 2u, "Nothing logged yet.", &data);
                     }

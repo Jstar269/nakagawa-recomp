@@ -4291,11 +4291,14 @@ void Clay_UpdateScrollContainers(bool enableDragScrolling, Clay_Vector2 scrollDe
 
         // Touch / click is released
         if (!isPointerActive && scrollData->pointerScrollActive) {
-            float xDiff = scrollData->scrollPosition.x - scrollData->scrollOrigin.x;
+            /* LOCAL DELTA (Nakagawa Recomp): momentum is the drag's distance over its time. A drag whose frames
+             * passed no time (deltaTime 0) has no speed to keep; upstream divides by that zero, and the infinite
+             * momentum pins the container at one end until the next scroll. */
+            float xDiff = scrollData->momentumTime > 0 ? scrollData->scrollPosition.x - scrollData->scrollOrigin.x : 0;
             if (xDiff < -10 || xDiff > 10) {
                 scrollData->scrollMomentum.x = (scrollData->scrollPosition.x - scrollData->scrollOrigin.x) / (scrollData->momentumTime * 25);
             }
-            float yDiff = scrollData->scrollPosition.y - scrollData->scrollOrigin.y;
+            float yDiff = scrollData->momentumTime > 0 ? scrollData->scrollPosition.y - scrollData->scrollOrigin.y : 0;
             if (yDiff < -10 || yDiff > 10) {
                 scrollData->scrollMomentum.y = (scrollData->scrollPosition.y - scrollData->scrollOrigin.y) / (scrollData->momentumTime * 25);
             }

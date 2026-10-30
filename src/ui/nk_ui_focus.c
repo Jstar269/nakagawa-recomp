@@ -276,6 +276,37 @@ static NkUiId nk_ui_focus_first_enabled(const NkUiFocusGraph *graph, int scope) 
     return 0u;
 }
 
+void nk_ui_focus_place(NkUiFocusGraph *graph,
+                       bool (*rect_of)(void *user, NkUiId id, NkUiRect *rect),
+                       bool (*scroll_of)(void *user, NkUiId id, float *scroll_y,
+                                         float *content_h),
+                       void *user) {
+    size_t i;
+    if (graph == NULL || rect_of == NULL || scroll_of == NULL) {
+        return;
+    }
+    for (i = 0; i < graph->count; ++i) {
+        NkUiRect rect;
+        if (rect_of(user, graph->entries[i].id, &rect) && nk_ui_focus_rect_valid(rect)) {
+            graph->entries[i].rect = rect;
+        }
+    }
+    for (i = 0; i < graph->scroller_count; ++i) {
+        NkUiFocusScroller *s = &graph->scrollers[i];
+        NkUiRect rect;
+        float scroll_y;
+        float content_h;
+        if (rect_of(user, s->id, &rect) && nk_ui_focus_rect_valid(rect) &&
+            scroll_of(user, s->id, &scroll_y, &content_h) && isfinite(scroll_y) &&
+            isfinite(content_h)) {
+            s->viewport = rect;
+            s->content_w = rect.w;
+            s->scroll_y = scroll_y;
+            s->content_h = content_h;
+        }
+    }
+}
+
 void nk_ui_focus_end_frame(NkUiFocusGraph *graph) {
     int top;
     long cur;
@@ -489,19 +520,4 @@ bool nk_ui_focus_accepts_pointer(const NkUiFocusGraph *graph, NkUiId id) {
     index = nk_ui_focus_find(graph->entries, graph->count, id);
     return index >= 0 && nk_ui_focus_enabled(&graph->entries[index]) &&
            (int)graph->entries[index].scope == nk_ui_focus_top_scope(graph->entries, graph->count);
-}
-
-NkUiId nk_ui_focus_scroller_at(const NkUiFocusGraph *graph, float x, float y) {
-    size_t i;
-    if (graph == NULL || !isfinite(x) || !isfinite(y)) {
-        return 0u;
-    }
-    for (i = graph->scroller_count; i > 0u; --i) {
-        const NkUiFocusScroller *s = &graph->scrollers[i - 1u];
-        if (x >= s->viewport.x && x < s->viewport.x + s->viewport.w &&
-            y >= s->viewport.y && y < s->viewport.y + s->viewport.h) {
-            return s->id;
-        }
-    }
-    return 0u;
 }

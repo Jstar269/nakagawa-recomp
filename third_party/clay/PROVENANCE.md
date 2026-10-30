@@ -24,13 +24,13 @@ launcher, the in-game overlay and their tests lay out through it:
 
 | File | Kind | Upstream blob SHA at the pin | SHA-256 |
 | --- | --- | --- | --- |
-| `clay.h` | imported + LOCAL DELTA | `7d9cf4cc7a918d1bdd766867c180851c949a3310` | `3325d0bff19cb55d9769532c621988df9dd86b5a7b492ce87059a1bf83ff2ddf` |
+| `clay.h` | imported + LOCAL DELTA | `7d9cf4cc7a918d1bdd766867c180851c949a3310` | `d9e5e2b1bc2662f6a85c14a3d3d64253057d38a7241c1d870a936aca80483f83` |
 | `LICENSE.md` | imported byte-identical | `2968c61bcdc6ecbef470e02edd45b47aba1d8c44` | `5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8` |
 | `PROVENANCE.md` | project-authored manifest | n/a | n/a |
 
 No generated Clay file is included. The upstream `clay.h` bytes have SHA-256
 `54aef6d5f96b14e296bebb6db4a755543e98fd7e6c188411afb2f22a4b4f7728`;
-applying the three changes below to them gives the SHA-256 in the table.
+applying the four changes below to them gives the SHA-256 in the table.
 
 ## Local deltas
 
@@ -58,3 +58,9 @@ Each change is marked `LOCAL DELTA` in the file, and
   every later layout fails with `HASH_MAP_CAPACITY_EXCEEDED`, though pruning
   has freed the slots of the elements that are gone. The selftest lays out past
   the limit, then checks that the next layout succeeds without an error.
+- `clay.h`, `Clay_UpdateScrollContainers`: a released drag keeps momentum only
+  when its frames passed time. Momentum is the drag's distance over its time,
+  and upstream at the pin divides by that time even when it is zero (a host
+  whose clock stood still across the drag's frames): the infinite momentum pins
+  the container at one end until the next scroll. The selftest drags with a
+  `deltaTime` of 0 and checks the container stays where the drag left it.

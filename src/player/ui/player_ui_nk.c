@@ -408,6 +408,10 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
+bool player_ui_nk_in_motion(const PlayerUiNk *player) {
+    return player != NULL && nk_ui_scroll_in_motion(player->ui);
+}
+
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
     if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
         snprintf(out, out_size, "%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
