@@ -30,9 +30,17 @@ typedef struct {
     uint32_t rgba_pm;
 } NkUiVertex;
 
+/* Scissors nested deeper than this make the frame fail. */
+#define NK_UI_DRAW_CLIP_DEPTH 32u
+
 typedef struct {
     int kind;
     uint32_t texture;
+    /* Where the command may draw, in device px (x0, y0, x1, y1): its bounds
+       inside every scissor open around it, empty (x1 <= x0 or y1 <= y0) when
+       they hide it all. A SCISSOR_START's clip is its scissor inside the ones
+       around it; a SCISSOR_END's is the scissor it closes. A backend clips
+       each command to it, so every backend clips alike. */
     int clip[4];
     uint32_t first;
     uint32_t count;
@@ -74,7 +82,21 @@ typedef struct {
     NkUiTextRun **text_runs;
     uint32_t text_run_count;
     uint32_t text_run_capacity;
+    int clip_stack[NK_UI_DRAW_CLIP_DEPTH][4]; /* the scissors open now, nested */
+    uint32_t clip_depth;
 } NkUiDrawBuffer;
+
+/* A floating container (a Clay floating element): laid out apart from the
+   container it is declared in and drawn over it, sized like that container
+   and attached to it. */
+typedef struct {
+    float expand;         /* grows its box this far on every side (logical px) */
+    int16_t z;            /* drawn over everything with a lower z */
+    bool centered;        /* centred on its container; else at its top left */
+    bool passthrough;     /* the pointer reaches what is under it; else it takes it */
+    bool clip_to_parent;  /* clipped like its container (inside a scroll container) */
+    NkUiId draw_id;       /* the element id its draw commands carry */
+} NkUiFloating;
 
 /* Paints one Clay custom element into the draw list at its laid-out rect
    (logical px). data is the element's custom payload. */

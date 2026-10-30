@@ -42,6 +42,25 @@ static Clay_Dimensions measure_text(Clay_StringSlice text,
     return (Clay_Dimensions){ 10.0f * (float)text.length, 10.0f };
 }
 
+/* A 50 x 50 scroll container over 500 px of content, at the top left. */
+static void scroll_frame(float pointer_y, bool pointer_down)
+{
+    Clay_SetPointerState((Clay_Vector2){ 10.0f, pointer_y }, pointer_down);
+    Clay_UpdateScrollContainers(true, (Clay_Vector2){ 0.0f, 0.0f }, 0.0f);
+    Clay_BeginLayout();
+    CLAY(CLAY_ID("scroller"), {
+        .layout = { .sizing = { .width = CLAY_SIZING_FIXED(50.0f),
+                                .height = CLAY_SIZING_FIXED(50.0f) } },
+        .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() },
+    }) {
+        CLAY(CLAY_ID("scrolled"), {
+            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(50.0f),
+                                    .height = CLAY_SIZING_FIXED(500.0f) } },
+        }) {}
+    }
+    (void)Clay_EndLayout(0.0f);
+}
+
 static int expect_rectangle(const char *name, Clay_ElementId id,
                             float x, float y, float width, float height)
 {
@@ -197,8 +216,51 @@ int main(void)
         }
     }
 
+    /* A layout past the element limit fills the element-id map. The next
+       layout, back under the limit, reuses the slots pruning freed and lays
+       out without an error. */
+    Clay_BeginLayout();
+    for (int i = 0; i < Clay_GetMaxElementCount() + 16; ++i) {
+        CLAY(CLAY_IDI("crowd", (uint32_t)i), {
+            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(1.0f),
+                                    .height = CLAY_SIZING_FIXED(1.0f) } },
+        }) {}
+    }
+    (void)Clay_EndLayout(0.0f);
+    clay_error_count = 0;
+    Clay_BeginLayout();
+    CLAY(CLAY_ID("after-crowd"), {
+        .layout = { .sizing = { .width = CLAY_SIZING_FIXED(30.0f),
+                                .height = CLAY_SIZING_FIXED(20.0f) } },
+    }) {}
+    (void)Clay_EndLayout(0.0f);
+    if (clay_error_count != 0 ||
+        !expect_rectangle("after-crowd", CLAY_ID("after-crowd"), 0.0f, 0.0f, 30.0f, 20.0f)) {
+        fprintf(stderr, "FAIL: the layout after a full element-id map did not recover\n");
+        free(memory);
+        return EXIT_FAILURE;
+    }
+
+    /* A drag whose frames passed no time scrolls with the pointer and keeps no
+       momentum when it is released. */
+    scroll_frame(40.0f, false);
+    scroll_frame(40.0f, true);
+    scroll_frame(10.0f, true);
+    scroll_frame(10.0f, false);
+    scroll_frame(10.0f, false);
+    {
+        Clay_ScrollContainerData scroll = Clay_GetScrollContainerData(CLAY_ID("scroller"));
+        if (clay_error_count != 0 || !scroll.found || scroll.scrollPosition->y != -30.0f) {
+            fprintf(stderr, "FAIL: a timeless drag ended at %g, not at -30\n",
+                    scroll.found ? (double)scroll.scrollPosition->y : 0.0);
+            free(memory);
+            return EXIT_FAILURE;
+        }
+    }
+
     free(memory);
     puts("Clay layout selftest passed: root, padding, child gap, fixed children, grow child, "
-         "wrapped text kept whole in an overfull column, and an oversized arena request refused");
+         "wrapped text kept whole in an overfull column, an oversized arena request refused, "
+         "a layout after a full element-id map, and a timeless drag without momentum");
     return EXIT_SUCCESS;
 }

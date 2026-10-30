@@ -39,6 +39,7 @@ struct NkUiTheme {
     uint32_t art_label;      /* #C9D6E3 labels drawn over title art */
     uint32_t placeholder;    /* #3A4552 outline of an art placeholder */
     uint32_t capture;        /* #1F2613 a row waiting for a button press */
+    uint32_t accent_hover;   /* #DDF465 primary button under the pointer */
 };
 
 /* nk_ui_theme_n1() is declared in nk_ui.h. */
