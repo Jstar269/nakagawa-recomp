@@ -578,13 +578,40 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
 /* Select is held: with R it toggles the developer log panel. */
 static bool s_pad_select_held;
 
+/* Backspace and the mouse's back button (X1) are Back: each is taken as Esc,
+   so every view goes back the same way. A key the Controls page is waiting
+   for keeps its own name, so Backspace can still be mapped. */
+static const SDL_Event *player_back_as_escape(const PlayerApp *app, const SDL_Event *event,
+                                              SDL_Event *escape) {
+    bool backspace = (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) &&
+                     event->key.key == SDLK_BACKSPACE &&
+                     !(app->active_view == VIEW_CONTROLLER_SETTINGS &&
+                       app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
+                       input_settings_is_capturing(&app->input_settings));
+    bool x1 = (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+               event->type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+              event->button.button == SDL_BUTTON_X1;
+    if (!backspace && !x1) return event;
+    memset(escape, 0, sizeof(*escape));
+    escape->type = backspace ? event->type
+        : event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    escape->key.windowID = backspace ? event->key.windowID : event->button.windowID;
+    escape->key.key = SDLK_ESCAPE;
+    escape->key.scancode = SDL_SCANCODE_ESCAPE;
+    escape->key.down = escape->type == SDL_EVENT_KEY_DOWN;
+    escape->key.repeat = backspace && event->key.repeat;
+    return escape;
+}
+
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                                      PlayerUiNk *next_ui,
                                      SDL_Window *window, bool *running,
                                      bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
+    SDL_Event escape;
     bool use_next_ui = player_ui_nk_view_active(next_ui, app);
     if (!app || !input || !running || !event) return false;
+    event = player_back_as_escape(app, event, &escape);
 
     switch (event->type) {
     case SDL_EVENT_QUIT:
@@ -2222,11 +2249,13 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         s_ui_test_mouse_y = (float)y;
         return 1;
     }
-    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
+    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0 ||
+        strcmp(token, "MOUSE_X1_DOWN") == 0 || strcmp(token, "MOUSE_X1_UP") == 0) {
         /* As SDL reports a real click: at the pointer, with its button state. */
-        event->type = strcmp(token, "MOUSE_DOWN") == 0
+        event->type = strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_X1_DOWN") == 0
             ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-        event->button.button = SDL_BUTTON_LEFT;
+        event->button.button = strncmp(token, "MOUSE_X1", 8) == 0 ? SDL_BUTTON_X1
+                                                                  : SDL_BUTTON_LEFT;
         event->button.down = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         event->button.clicks = 1u;
         event->button.x = s_ui_test_mouse_x;
@@ -2245,6 +2274,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "PAGEDOWN", SDLK_PAGEDOWN, SDL_SCANCODE_PAGEDOWN }, { "C", SDLK_C, SDL_SCANCODE_C },
             { "S", SDLK_S, SDL_SCANCODE_S }, { "O", SDLK_O, SDL_SCANCODE_O },
             { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
+            { "BACKSPACE", SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE },
             { "F12", SDLK_F12, SDL_SCANCODE_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {

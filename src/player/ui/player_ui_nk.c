@@ -1970,6 +1970,18 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player_ui_library_turn_page(player, count, page_size, slots, page);
             }
         }
+        if (games > 0u) {
+            /* Home and End: the first game, or the last on the last page. */
+            NkUiNavDir dir = NK_UI_DIR_NONE;
+            while (nk_ui_take_event(player->ui, NK_UI_EV_EDGE, &dir)) {
+                size_t position = dir == NK_UI_DIR_DOWN ? games - 1u : 0u;
+                size_t index = player_ui_library_title_at(player->titles, count, position);
+                if (index >= count) continue;
+                player->library_page = position / page_size;
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(index));
+                app->selected_game_index = (int)index;
+            }
+        }
         player_ui_library_page_art(player, app, count, player->library_page, page_size);
         PlayerUiLibraryModel model;
         memset(&model, 0, sizeof(model));

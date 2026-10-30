@@ -214,7 +214,8 @@ Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the cou
 grid of the user's games, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
 SETTINGS and no corner text. The first card, never the pager, has the first focus. Page Down and Page Up, the pad's
 right and left triggers and the mouse wheel turn the page too; a focused card hands focus to the card in the same place
-on the new page (the last one when that page is shorter). A library holds up to 4096 games; only the page shown reads
+on the new page (the last one when that page is shorter). Home and End go to the first game and to the last one, on
+its page (`NK_UI_EV_EDGE`). A library holds up to 4096 games; only the page shown reads
 its disc icons and checks its packages, so a page of a large library costs what a small library does. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.

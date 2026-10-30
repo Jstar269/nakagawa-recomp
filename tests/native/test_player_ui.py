@@ -1387,6 +1387,33 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(selected, checked)
         self.assertNotIn(299, checked, "the last page was never shown, so never checked")
 
+    def test_next_ui_backspace_and_the_mouse_back_button_go_back(self) -> None:
+        """Backspace and the mouse's back button (X1) are Back, as Esc is: from
+        Settings each returns to the library."""
+        for events in (("WAIT_MS=100", "KEY_BACKSPACE", "WAIT_MS=100"),
+                       ("WAIT_MS=100", "MOUSE_X1_DOWN", "MOUSE_X1_UP", "WAIT_MS=100")):
+            with self.subTest(events=events[1]):
+                run = self.next_ui_run("settings", events)
+                self.assertEqual([view for view, _ in self.screens(run)],
+                                 ["settings", "library"])
+
+    def test_next_ui_home_and_end_reach_the_first_and_last_game(self) -> None:
+        """Home and End in a library of several pages: End focuses the last game on
+        the last page, Home the first game on the first."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=2000", "KEY_END", "WAIT_MS=200", "KEY_HOME", "WAIT_MS=200"),
+            library_titles=40, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        selected = [frame["selected"] for frame in frames]
+        self.assertIn("39", selected, "End reaches the last game")
+        self.assertEqual(selected[-1], "0", "Home comes back to the first game")
+        self.assertLess(selected.index("39"), len(selected) - 1)
+
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.
 

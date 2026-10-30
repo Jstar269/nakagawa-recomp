@@ -35,9 +35,10 @@ so we use its contrast and target-size values as a guide for the launcher only.
 
 ### Input
 
-- **Keyboard and mouse** in the launcher: arrow keys move, Enter selects, Esc goes back, Space opens a screen's
-  extra options, `Q` and `E` switch tabs, Tab and Shift+Tab move focus in order, `O` adds a disc image, `S` opens Settings, `F11` or Alt+Enter
-  toggles full screen. The mouse works everywhere but is never required.
+- **Keyboard and mouse** in the launcher: arrow keys move, Enter selects, Esc or Backspace goes back, Space opens a
+  screen's extra options, `Q` and `E` switch tabs, Tab and Shift+Tab move focus in order, Home and End go to the
+  first and last game in the library, `O` adds a disc image, `S` opens Settings, `F11` or Alt+Enter toggles full
+  screen. The mouse works everywhere but is never required, and its back button goes back too.
 - **Controllers** the operating system exposes through SDL3 (Xbox, PlayStation and Switch-style pads): D-pad to move,
   the bottom face button to select, the right face button to go back, shoulder buttons to switch tabs.
 - **Prompts match what you are using.** The prompt bar at the bottom of each screen shows keyboard keycaps, or the

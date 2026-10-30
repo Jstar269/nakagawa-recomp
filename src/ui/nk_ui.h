@@ -246,7 +246,8 @@ typedef enum {
     NK_UI_EV_TEXT,
     NK_UI_EV_DEVICE,
     NK_UI_EV_CYCLE, /* Tab / Shift+Tab: dir RIGHT = next, LEFT = previous in declaration order. */
-    NK_UI_EV_PAGE   /* Page Down / Up and the pad's triggers: dir RIGHT = next page, LEFT = previous. */
+    NK_UI_EV_PAGE,  /* Page Down / Up and the pad's triggers: dir RIGHT = next page, LEFT = previous. */
+    NK_UI_EV_EDGE   /* Home / End: dir UP = the first item of a list, DOWN = the last. */
 } NkUiEventType;
 
 /* The x and y of NK_UI_EV_POINTER and NK_UI_EV_WHEEL events are LOGICAL UI pixels,
