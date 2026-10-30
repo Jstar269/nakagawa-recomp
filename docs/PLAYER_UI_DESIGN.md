@@ -53,8 +53,9 @@ Where this page and the code disagree, the code is current and this page is upda
 | `dim` | `#6B7684` | disabled text and footnotes only (4.2:1, not for body text) |
 | `accent_dark` | `#D7F24A` | focus ring, primary button, active tab rule, toggles, sliders, progress |
 | `ink` | `#10151C` | text on an accent fill (14.6:1) |
+| `accent_hover` | `#DDF465` | primary button under the pointer (ink on it 15.0:1) |
 | `accent_pressed` | `#B4D134` | pressed primary button |
-| `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary / danger button |
+| `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary or row / danger button |
 | `ready` | `#2DD4BF` | Ready; never the accent |
 | `warning` | `#DBB024` | needs setup |
 | `info` | `#6CB6FF` | experimental, untested, informational notes |
@@ -111,13 +112,27 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
-- Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
+- Arrow keys move to the nearest control in that direction.
+- The pointer is the other way in: a press focuses the control under it, and the release on the same control
+  activates it. Clay finds what is under the pointer from the last layout (`Clay_SetPointerState`, every frame),
+  inside clip containers, so a control scrolled or clipped out of view takes no click, and only controls of the
+  active scope respond: nothing under a dialog. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
   its row, so a row of actions under cards of different heights is walked end to end.
 - When the screen changes and the old focus is gone, focus lands on the page's first enabled control that may be the
   default: the title page's PLAY or BUILD PACKAGE, the new card after ADD TO LIBRARY. Top-bar tabs
   (`NK_UI_BUTTON_NOT_DEFAULT`) and danger buttons never are; a screen whose only control is a danger button (CANCEL
   BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
   when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
+
+### Hover and press
+
+Hover and press are looks for the pointer, never needed to use the launcher. While the pointer is over a control
+and was the last input, the control shows hover: a secondary, danger or tab control fills with `surface_high`, a
+primary button with `accent_hover`, a card fills with `surface_high` and its edge becomes `line_strong`, and the
+add card fills with `surface_raised`. Held down on the control it went down on, it shows press: `accent_pressed`,
+`pressed_danger`, or `pressed` for every other control (the add card: `surface_high`). A key or a pad button hides hover until the pointer moves
+again, and the pointer leaving the window clears it. Hover never moves focus, and only the ring shows focus
+(`test_pointer_hover_and_press` and `test_pointer_respects_clip` in `tests/native/test_nk_ui_core.c`).
 
 ### Layout grid
 

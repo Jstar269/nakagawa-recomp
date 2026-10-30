@@ -315,6 +315,17 @@ size_t nk_ui_input_pointer(NkUiInput *input, float x, float y, bool down,
     return nk_ui_input_emit(out, cap, used, event);
 }
 
+size_t nk_ui_input_pointer_leave(NkUiInput *input, NkUiEvent *out, size_t cap) {
+    if (input == NULL || !input->have_pointer) {
+        return 0u;
+    }
+    input->have_pointer = false;
+    return nk_ui_input_emit(out, cap, 0u,
+                            nk_ui_input_make_event(NK_UI_EV_POINTER_LEAVE,
+                                                   NK_UI_DEVICE_KEYBOARD_MOUSE,
+                                                   NK_UI_PAD_KEYBOARD));
+}
+
 size_t nk_ui_input_wheel(NkUiInput *input, float x, float y, NkUiNavDir dir,
                          NkUiEvent *out, size_t cap) {
     size_t used = 0u;

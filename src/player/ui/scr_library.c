@@ -285,8 +285,9 @@ static bool library_demo_card(NkUi *ui, NkUiId id, const PlayerUiTitle *title, f
     nk_ui_register_button(ui, id, NK_UI_BUTTON_NOT_DEFAULT);
     focused = nk_ui_button_focused(ui, id);
     memset(&style, 0, sizeof(style));
-    style.fill_rgba = theme->surface_raised;
-    style.border_rgba = focused ? theme->line_strong : theme->line;
+    style.fill_rgba = nk_ui_pressed(ui, id) ? theme->pressed :
+                      nk_ui_hovered(ui, id) ? theme->surface_high : theme->surface_raised;
+    style.border_rgba = focused || nk_ui_hovered(ui, id) ? theme->line_strong : theme->line;
     style.border_width = NK_UI_BORDER_HAIRLINE;
     style.corner_radius = NK_UI_RADIUS_TILE;
     if (!nk_ui_begin_container(ui, id, &layout, &style)) return false;

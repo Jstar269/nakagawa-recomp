@@ -66,6 +66,15 @@ struct NkUi {
        activates a control only when its press and its release both land on it. */
     bool pointer_down;
     NkUiId pointer_press_id;
+    /* Where the pointer is, in logical px, and whether it is over the window.
+       Hover shows only while the pointer was the last input: a key or a pad
+       button hides it until the pointer moves again. hover_id is the control
+       under the pointer, found from the last layout as the frame begins. */
+    float pointer_x;
+    float pointer_y;
+    bool pointer_inside;
+    bool pointer_hover;
+    NkUiId hover_id;
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -102,6 +111,8 @@ void nk_ui_clay_close_container(void *clay);
 bool nk_ui_clay_text(void *clay, NkUiId id, const char *text, size_t length,
                      int font, int size_px, uint32_t rgba);
 bool nk_ui_clay_element_rect(void *clay, NkUiId id, NkUiRect *out);
+void nk_ui_clay_set_pointer(void *clay, float x, float y, bool down);
+NkUiId nk_ui_clay_pointer_target(void *clay, bool (*accept)(void *user, NkUiId id), void *user);
 bool nk_ui_clay_end(void *clay, NkUiDrawBuffer *draw, float density,
                     float delta_s, NkUiClayPaint paint, void *paint_user);
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
@@ -115,11 +126,31 @@ static void nk_ui_consume_event(NkUi *ui, size_t index) {
     --ui->event_count;
 }
 
+static bool nk_ui_accepts_pointer(void *user, NkUiId id) {
+    return nk_ui_focus_accepts_pointer((const NkUiFocusGraph *)user, id);
+}
+
+/* The control under the pointer: the innermost container Clay finds there in
+   the last layout that the focus graph lets a pointer reach. */
+static NkUiId nk_ui_pointer_target(NkUi *ui) {
+    return nk_ui_clay_pointer_target(ui->clay, nk_ui_accepts_pointer, ui->focus_graph);
+}
+
+/* Off the window, Clay is told the pointer is at a point no layout reaches. */
+static void nk_ui_send_pointer(NkUi *ui) {
+    nk_ui_clay_set_pointer(ui->clay, ui->pointer_inside ? ui->pointer_x : -1.0f,
+                           ui->pointer_inside ? ui->pointer_y : -1.0f, ui->pointer_down);
+}
+
 static void nk_ui_update_focus_from_events(NkUi *ui) {
     size_t i = 0;
     while (ui != NULL && i < ui->event_count) {
         NkUiEvent *event = &ui->events[i];
         NkUiId focused = 0;
+        if (event->type != NK_UI_EV_POINTER && event->type != NK_UI_EV_WHEEL &&
+            event->type != NK_UI_EV_DEVICE) {
+            ui->pointer_hover = false;
+        }
         if (event->type == NK_UI_EV_NAV &&
             (event->dir == NK_UI_DIR_LEFT || event->dir == NK_UI_DIR_RIGHT) &&
             nk_ui_focus_owns_horizontal(ui->focus_graph)) {
@@ -148,8 +179,12 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             bool press = event->down && !ui->pointer_down;
             bool release = !event->down && ui->pointer_down;
             ui->pointer_down = event->down;
-            focused = press || release
-                ? nk_ui_focus_hit_test(ui->focus_graph, event->x, event->y) : 0u;
+            ui->pointer_x = event->x;
+            ui->pointer_y = event->y;
+            ui->pointer_inside = true;
+            ui->pointer_hover = true;
+            nk_ui_send_pointer(ui);
+            focused = press || release ? nk_ui_pointer_target(ui) : 0u;
             if (press) {
                 ui->pointer_press_id = focused;
                 if (focused != 0u && nk_ui_focus_set(ui->focus_graph, focused)) {
@@ -169,6 +204,9 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
                 if (release) ui->pointer_press_id = 0u;
                 nk_ui_consume_event(ui, i);
             }
+        } else if (event->type == NK_UI_EV_POINTER_LEAVE) {
+            ui->pointer_inside = false;
+            nk_ui_consume_event(ui, i);
         } else if (event->type == NK_UI_EV_WHEEL) {
             /* Screens with an actual scroller consume wheel events themselves. */
             ++i;
@@ -418,6 +456,10 @@ void nk_ui_begin(NkUi *ui, double now_s) {
         ui->event_count = first_spatial;
     }
     nk_ui_update_focus_from_events(ui);
+    /* Every frame, as Clay's lifecycle asks: the layout under a still pointer
+       may have moved. */
+    nk_ui_send_pointer(ui);
+    ui->hover_id = ui->pointer_hover && ui->pointer_inside ? nk_ui_pointer_target(ui) : 0u;
     ui->layout_pending = false;
     nk_ui_focus_begin_frame(ui->focus_graph);
     ui->focus_entry_count = 0u;
@@ -450,6 +492,8 @@ bool nk_ui_begin_container(NkUi *ui, NkUiId id,
     }
     ui->text_color_stack[ui->container_depth] = ui->text_color;
     if (style != NULL && (style->fill_rgba == ui->theme.accent_dark ||
+                          style->fill_rgba == ui->theme.accent_hover ||
+                          style->fill_rgba == ui->theme.accent_pressed ||
                           style->fill_rgba == ui->theme.accent_light)) {
         ui->text_color = ui->theme.ink;
     } else {
@@ -1162,6 +1206,14 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
 
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id) {
     return ui != NULL && ui->focused == id;
+}
+
+bool nk_ui_hovered(const NkUi *ui, NkUiId id) {
+    return ui != NULL && id != 0u && ui->hover_id == id;
+}
+
+bool nk_ui_pressed(const NkUi *ui, NkUiId id) {
+    return nk_ui_hovered(ui, id) && ui->pointer_down && ui->pointer_press_id == id;
 }
 
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap) {

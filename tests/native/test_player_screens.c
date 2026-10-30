@@ -2698,6 +2698,19 @@ static int capture_screens(const char *directory) {
     if (!capture_one(&rig, "library", &library, NULL)) goto done;
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ADD);
     if (!capture_one(&rig, "library-add-focused", &library, NULL)) goto done;
+    {
+        /* Focus on the first card, the pointer over the third: hover beside the ring. */
+        NkUiEvent pointer;
+        memset(&pointer, 0, sizeof(pointer));
+        pointer.type = NK_UI_EV_POINTER;
+        pointer.x = 32.0f + 2.0f * (236.0f + 20.0f) + 118.0f;
+        pointer.y = 260.0f;
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+        nk_ui_push_event(ui, &pointer);
+        if (!capture_one(&rig, "library-pointer-hover", &library, NULL)) goto done;
+        pointer.type = NK_UI_EV_POINTER_LEAVE;
+        nk_ui_push_event(ui, &pointer);
+    }
     capture_prefs(ui, NK_UI_PROMPT_NEUTRAL, true);
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     if (!capture_one(&rig, "library-controller-high-contrast", &library, NULL)) goto done;

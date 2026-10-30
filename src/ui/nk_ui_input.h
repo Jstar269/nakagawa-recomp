@@ -125,6 +125,9 @@ size_t nk_ui_input_stick(NkUiInput *input, float x, float y, int device,
    event whose down is true while the previous event's was false. Hover never focuses. */
 size_t nk_ui_input_pointer(NkUiInput *input, float x, float y, bool down,
                            NkUiEvent *out, size_t cap);
+/* The pointer left the window: emits NK_UI_EV_POINTER_LEAVE once, until the pointer
+   comes back with a position. */
+size_t nk_ui_input_pointer_leave(NkUiInput *input, NkUiEvent *out, size_t cap);
 /* One wheel notch at the pointer: dir is the scroll direction (UP, DOWN, LEFT or RIGHT). */
 size_t nk_ui_input_wheel(NkUiInput *input, float x, float y, NkUiNavDir dir,
                          NkUiEvent *out, size_t cap);

@@ -19,6 +19,12 @@
    move focus before the next screen is built. */
 void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags);
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id);
+/* The pointer is over control `id` and was the last input (a key or a pad button
+   hides hover until the pointer moves). A control under a dialog, or a disabled
+   one, is never hovered. Hover is a look only: it never moves focus. */
+bool nk_ui_hovered(const NkUi *ui, NkUiId id);
+/* Hovered, with the primary button held since it went down on `id`. */
+bool nk_ui_pressed(const NkUi *ui, NkUiId id);
 /* True once, on the frame an ACTIVATE press reaches the focused control `id`. */
 bool nk_ui_take_activation(NkUi *ui, NkUiId id);
 /* Label colour of a button with these flags. */

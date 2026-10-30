@@ -481,22 +481,14 @@ bool nk_ui_focus_take_scroll(NkUiFocusGraph *graph, NkUiFocusScrollRequest *requ
     return true;
 }
 
-NkUiId nk_ui_focus_hit_test(const NkUiFocusGraph *graph, float x, float y) {
-    int top;
-    size_t i;
-    if (graph == NULL || !isfinite(x) || !isfinite(y)) {
-        return 0u;
+bool nk_ui_focus_accepts_pointer(const NkUiFocusGraph *graph, NkUiId id) {
+    long index;
+    if (graph == NULL || id == 0u) {
+        return false;
     }
-    top = nk_ui_focus_top_scope(graph->entries, graph->count);
-    for (i = graph->count; i > 0u; --i) {
-        const NkUiFocusEntry *e = &graph->entries[i - 1u];
-        if ((int)e->scope == top && nk_ui_focus_enabled(e) &&
-            x >= e->rect.x && x < e->rect.x + e->rect.w &&
-            y >= e->rect.y && y < e->rect.y + e->rect.h) {
-            return e->id;
-        }
-    }
-    return 0u;
+    index = nk_ui_focus_find(graph->entries, graph->count, id);
+    return index >= 0 && nk_ui_focus_enabled(&graph->entries[index]) &&
+           (int)graph->entries[index].scope == nk_ui_focus_top_scope(graph->entries, graph->count);
 }
 
 NkUiId nk_ui_focus_scroller_at(const NkUiFocusGraph *graph, float x, float y) {

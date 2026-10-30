@@ -639,6 +639,9 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        /* The launcher's hover ends with the pointer off the window. */
+        return use_next_ui && player_ui_nk_handle_event(next_ui, event);
     case SDL_EVENT_KEY_DOWN:
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             app->input_settings.device == INPUT_DEVICE_KEYBOARD &&

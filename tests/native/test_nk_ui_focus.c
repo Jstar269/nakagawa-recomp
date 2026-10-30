@@ -242,8 +242,9 @@ static int test_scroll_into_view(void) {
     list_frame(g, 0.0f);
     CHECK(nk_ui_focus_scroller_at(g, 10.0f, 10.0f) == 100u, "wheel target is the scroller under the pointer");
     CHECK(nk_ui_focus_scroller_at(g, 400.0f, 10.0f) == 0u, "no scroller outside it");
-    CHECK(nk_ui_focus_hit_test(g, 10.0f, 150.0f) == 2u, "pointer hit-test finds row 2");
-    CHECK(nk_ui_focus_current(g) != 2u, "hover does not move focus");
+    CHECK(nk_ui_focus_accepts_pointer(g, 2u), "a pointer may reach row 2");
+    CHECK(!nk_ui_focus_accepts_pointer(g, 99u), "nor an id the frame did not register");
+    CHECK(nk_ui_focus_current(g) != 2u, "asking does not move focus");
     nk_ui_focus_graph_destroy(g);
     return 1;
 }
@@ -281,8 +282,8 @@ static int test_dialog_trap_and_scope_memory(void) {
         CHECK(nk_ui_focus_current(g) == 10u || nk_ui_focus_current(g) == 11u,
               "Tab never leaves the dialog");
     }
-    CHECK(nk_ui_focus_hit_test(g, 10.0f, 150.0f) == 0u, "root entries do not take pointer hits under a dialog");
-    CHECK(nk_ui_focus_hit_test(g, 30.0f, 30.0f) == 10u, "dialog entries do");
+    CHECK(!nk_ui_focus_accepts_pointer(g, 1u), "root entries do not take the pointer under a dialog");
+    CHECK(nk_ui_focus_accepts_pointer(g, 10u), "dialog entries do");
 
     /* Back closes the dialog: focus returns to where it came from. */
     nk_ui_focus_begin_frame(g);
@@ -352,6 +353,7 @@ static int test_tab_cycle_and_repair(void) {
     CHECK(nk_ui_focus_cycle(g, true) == 3u, "Shift+Tab wraps backwards");
     CHECK(nk_ui_focus_cycle(g, true) == 9u, "Shift+Tab: 3 -> 9");
     CHECK(!nk_ui_focus_set(g, 7u), "a disabled entry cannot be focused");
+    CHECK(!nk_ui_focus_accepts_pointer(g, 7u), "nor take the pointer");
 
     /* The focused entry disappears: focus falls back to a live one. */
     nk_ui_focus_begin_frame(g);
@@ -1332,6 +1334,17 @@ static int test_sdl_translation(void) {
           "a left click announces the keyboard and mouse, then presses");
     e.button.button = SDL_BUTTON_RIGHT;
     CHECK(tr(&s, &e, 8.2) == 0u, "other buttons are ignored");
+    memset(&e, 0, sizeof(e));
+    e.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+    n = tr(&s, &e, 8.21);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_POINTER_LEAVE, "the pointer leaving the window says so");
+    CHECK(tr(&s, &e, 8.22) == 0u, "once");
+    memset(&e, 0, sizeof(e));
+    e.type = SDL_EVENT_MOUSE_MOTION;
+    e.motion.x = 200.0f;
+    e.motion.y = 100.0f;
+    n = tr(&s, &e, 8.23);
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_POINTER, "the pointer coming back gives its place");
     memset(&e, 0, sizeof(e));
     e.type = SDL_EVENT_MOUSE_WHEEL;
     e.wheel.y = 0.5f;

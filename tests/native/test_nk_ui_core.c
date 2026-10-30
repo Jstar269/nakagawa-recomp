@@ -655,6 +655,148 @@ static void push_nav(NkUi *ui, NkUiNavDir dir) {
     nk_ui_push_event(ui, &event);
 }
 
+/* True when the last frame's draw list fills a rect for `id` with `rgba`. */
+static bool drew_fill(NkUi *ui, NkUiId id, uint32_t rgba) {
+    char dump[8192];
+    char want[48];
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(want, sizeof(want), "%08X RECT", (unsigned)id);
+    {
+        const char *line = strstr(dump, want);
+        char colour[16];
+        (void)snprintf(colour, sizeof(colour), " %08X ", (unsigned)rgba);
+        while (line != NULL) {
+            const char *end = strchr(line, '\n');
+            size_t length = end != NULL ? (size_t)(end - line) : strlen(line);
+            const char *found = strstr(line, colour);
+            if (found != NULL && (size_t)(found - line) < length) return true;
+            line = strstr(line + 1, want);
+        }
+    }
+    return false;
+}
+
+/* A 640 x 400 window at 1x, so nothing in these frames is culled. */
+static void set_test_window(NkUi *ui) {
+    NkUiViewport viewport;
+    memset(&viewport, 0, sizeof(viewport));
+    viewport.pixel_w = 640;
+    viewport.pixel_h = 400;
+    viewport.display_scale = 1.0f;
+    viewport.text_size_pct = 100;
+    nk_ui_set_viewport(ui, &viewport);
+}
+
+static void push_leave(NkUi *ui) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_POINTER_LEAVE;
+    nk_ui_push_event(ui, &event);
+}
+
+/* Hover and pressed looks come from Clay's pointer state over the last layout.
+   Hover is for the pointer only: a key hides it until the pointer moves, it
+   clears when the pointer leaves the window, and it never moves focus. */
+static int test_pointer_hover_and_press(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiConfig config;
+    NkUi *ui;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create hover context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
+    CHECK(!nk_ui_hovered(ui, 10u) && !nk_ui_hovered(ui, 11u), "nothing is hovered before the pointer moves");
+
+    push_pointer(ui, 100.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 11u) && !nk_ui_hovered(ui, 10u), "the pointer hovers the button under it");
+    CHECK(nk_ui_focused(ui) == 10u, "hover does not move focus");
+    CHECK(drew_fill(ui, 11u, theme->surface_high), "a hovered secondary button fills in");
+
+    push_nav(ui, NK_UI_DIR_RIGHT);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_hovered(ui, 11u), "a key hides hover");
+    push_pointer(ui, 101.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 11u), "moving the pointer shows it again");
+
+    push_pointer(ui, 101.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_pressed(ui, 11u) && drew_fill(ui, 11u, theme->pressed),
+          "a button held under the pointer is drawn pressed");
+    push_pointer(ui, 10.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_pressed(ui, 11u) && !nk_ui_pressed(ui, 10u),
+          "a held pointer dragged off it presses nothing");
+    push_pointer(ui, 10.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 10u) && drew_fill(ui, 10u, theme->accent_hover),
+          "a hovered primary button lightens");
+
+    push_leave(ui);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_hovered(ui, 10u) && drew_fill(ui, 10u, theme->accent_dark),
+          "leaving the window clears hover");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* Three 44 px buttons in a 50 px clip: the pointer below the clip is over no
+   button, though the second and third run on under it. */
+static NkUiId draw_clipped_column(NkUi *ui) {
+    NkUiLayout layout;
+    NkUiId activated = 0u;
+    NkUiId id;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 50.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    layout.clip = true;
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        for (id = 20u; id < 23u; ++id) {
+            if (nk_ui_button(ui, id, "Row", NK_UI_BUTTON_GROW)) activated = id;
+        }
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+static int test_pointer_respects_clip(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create clip context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_clipped_column(ui);
+    CHECK(nk_ui_focused(ui) == 20u, "the first row starts focused");
+    push_pointer(ui, 50.0f, 70.0f, false);
+    (void)draw_clipped_column(ui);
+    CHECK(!nk_ui_hovered(ui, 21u), "a row clipped away is not hovered");
+    push_pointer(ui, 50.0f, 70.0f, true);
+    (void)draw_clipped_column(ui);
+    push_pointer(ui, 50.0f, 70.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_clipped_column(ui);
+    CHECK(activated == 0u && nk_ui_focused(ui) == 20u, "nor clicked");
+    push_pointer(ui, 50.0f, 47.0f, false);
+    (void)draw_clipped_column(ui);
+    CHECK(nk_ui_hovered(ui, 21u), "the part inside the clip is");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 static int test_control_owns_horizontal(void) {
     NkUiTextBackend fixed = nk_ui_text_fixed();
     NkUiConfig config;
@@ -1059,7 +1201,8 @@ int main(int argc, char **argv) {
         !test_control_owns_horizontal() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command() || !test_app_icon() ||
         !test_display_text_rules() || !test_layout_error_kinds() ||
-        !test_layout_errors_reported()) {
+        !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
+        !test_pointer_respects_clip()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

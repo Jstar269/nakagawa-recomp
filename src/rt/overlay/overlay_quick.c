@@ -64,7 +64,8 @@ static bool row_begin(NkUi *ui, NkUiId id, unsigned row, const char *label,
                                         nk_overlay_fit(), 2.0f);
     memset(&style, 0, sizeof(style));
     style.corner_radius = NK_UI_RADIUS_CONTROL;
-    style.fill_rgba = focused ? theme->surface_high : 0u;
+    style.fill_rgba = nk_ui_pressed(ui, id) ? theme->pressed :
+                      focused || nk_ui_hovered(ui, id) ? theme->surface_high : 0u;
     layout.align_y = NK_UI_ALIGN_CENTER;
     layout.padding_left = layout.padding_right = NK_UI_SPACE_4;
     layout.padding_top = layout.padding_bottom = NK_UI_SPACE_2;

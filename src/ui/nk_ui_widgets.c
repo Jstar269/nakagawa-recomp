@@ -117,8 +117,18 @@ bool nk_ui_button(NkUi *ui, NkUiId id, const char *label, uint32_t flags) {
     nk_ui_register_button(ui, id, flags);
     nk_ui_button_configuration(ui, flags, &layout, &style);
     focused = nk_ui_button_focused(ui, id);
-    if (focused && (flags & (NK_UI_BUTTON_PRIMARY | NK_UI_BUTTON_DISABLED)) == 0u) {
-        style.fill_rgba = theme->surface_high;
+    if ((flags & NK_UI_BUTTON_DISABLED) == 0u) {
+        bool primary = (flags & NK_UI_BUTTON_PRIMARY) != 0u;
+        if (nk_ui_pressed(ui, id)) {
+            style.fill_rgba = primary ? theme->accent_pressed :
+                              (flags & NK_UI_BUTTON_DANGER) != 0u ? theme->pressed_danger :
+                              theme->pressed;
+        } else if (primary) {
+            if (nk_ui_hovered(ui, id)) style.fill_rgba = theme->accent_hover;
+        } else if (focused || nk_ui_hovered(ui, id)) {
+            style.fill_rgba = theme->surface_high;
+        }
+        if (primary) style.border_rgba = style.fill_rgba;
     }
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
@@ -488,7 +498,9 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
     focused = nk_ui_button_focused(ui, id);
     art_h = (float)(int)(spec->width * NK_UI_TILE_ART_RATIO + 0.5f);
     layout = nk_ui_column(nk_ui_fixed(spec->width), nk_ui_fit(), 0.0f);
-    style = nk_ui_fill(theme->surface_raised, focused ? theme->line_strong : theme->line,
+    style = nk_ui_fill(nk_ui_pressed(ui, id) ? theme->pressed :
+                       nk_ui_hovered(ui, id) ? theme->surface_high : theme->surface_raised,
+                       focused || nk_ui_hovered(ui, id) ? theme->line_strong : theme->line,
                        NK_UI_RADIUS_TILE);
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
@@ -568,8 +580,9 @@ bool nk_ui_add_tile(NkUi *ui, NkUiId id, const char *title, const char *detail,
     layout.align_x = NK_UI_ALIGN_CENTER;
     layout.align_y = NK_UI_ALIGN_CENTER;
     nk_ui_pad(&layout, NK_UI_SPACE_5, NK_UI_SPACE_5, NK_UI_SPACE_5, NK_UI_SPACE_5);
-    style = nk_ui_fill(focused ? theme->surface_raised : theme->surface, theme->line_strong,
-                       NK_UI_RADIUS_TILE);
+    style = nk_ui_fill(nk_ui_pressed(ui, id) ? theme->surface_high :
+                       focused || nk_ui_hovered(ui, id) ? theme->surface_raised : theme->surface,
+                       theme->line_strong, NK_UI_RADIUS_TILE);
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
     }
@@ -677,6 +690,7 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             NkUiId label_id = sections[i].id != 0u ? sections[i].id : nk_ui_child_id(tab_id, 2u);
             NkUiStyle label_style;
             bool focused = false;
+            bool hovered = false;
             tab.align_x = NK_UI_ALIGN_CENTER;
             if (sections[i].active) active = (int)i;
             memset(&label_style, 0, sizeof(label_style));
@@ -684,7 +698,9 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             if (sections[i].id != 0u) {
                 nk_ui_register_button(ui, label_id, NK_UI_BUTTON_NOT_DEFAULT);
                 focused = nk_ui_button_focused(ui, label_id);
-                if (focused) label_style.fill_rgba = theme->surface_high;
+                hovered = nk_ui_hovered(ui, label_id);
+                label_style.fill_rgba = nk_ui_pressed(ui, label_id) ? theme->pressed :
+                                        focused || hovered ? theme->surface_high : 0u;
             }
             if (!nk_ui_begin_container(ui, tab_id, &tab, NULL)) {
                 continue;
@@ -693,8 +709,8 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             {
                 NkUiLayout label = nk_ui_row(nk_ui_fit(), nk_ui_fixed(34.0f), 0.0f);
                 NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_LABEL,
-                                                sections[i].active || focused ? theme->paper
-                                                                              : theme->muted);
+                                                sections[i].active || focused || hovered
+                                                    ? theme->paper : theme->muted);
                 nk_ui_pad(&label, 0.0f, NK_UI_SPACE_3, 0.0f, NK_UI_SPACE_3);
                 label.align_y = NK_UI_ALIGN_CENTER;
                 text.letter_spacing = 1.2f;

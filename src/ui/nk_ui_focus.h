@@ -109,8 +109,10 @@ bool nk_ui_focus_scroll_into_view(const NkUiFocusGraph *graph, NkUiId id,
 /* True when the focused entry is enabled and has NK_UI_FOCUS_OWNS_HORIZONTAL. */
 bool nk_ui_focus_owns_horizontal(const NkUiFocusGraph *graph);
 
-/* Pointer queries against the active scope. Hover never changes focus. */
-NkUiId nk_ui_focus_hit_test(const NkUiFocusGraph *graph, float x, float y);
+/* Whether a pointer may press or hover id: it is registered, enabled and in
+   the active scope. Clay finds what is under the pointer; hover never changes
+   focus. */
+bool nk_ui_focus_accepts_pointer(const NkUiFocusGraph *graph, NkUiId id);
 /* The scroll container under the point (the wheel target), or 0. */
 NkUiId nk_ui_focus_scroller_at(const NkUiFocusGraph *graph, float x, float y);
 

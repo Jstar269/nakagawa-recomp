@@ -519,6 +519,50 @@ bool nk_ui_clay_text_styled(void *opaque_clay, NkUiId id, const char *text, size
     return true;
 }
 
+/* Tells Clay where the pointer is, between frames, as its lifecycle asks:
+   Clay finds the elements under it in the last layout, inside their clip
+   containers. down is whether the primary button is held now. */
+void nk_ui_clay_set_pointer(void *opaque_clay, float x, float y, bool down) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    if (clay == NULL || clay->context == NULL || clay->frame_open ||
+        !isfinite(x) || !isfinite(y)) {
+        return;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    Clay_SetPointerState((Clay_Vector2){x, y}, down);
+    Clay_SetCurrentContext(restore);
+}
+
+/* The innermost container under the pointer that accept takes, or 0. Clay
+   lists each element under the pointer after its ancestors, so the list is
+   walked from its end. */
+NkUiId nk_ui_clay_pointer_target(void *opaque_clay, bool (*accept)(void *user, NkUiId id),
+                                 void *user) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    Clay_ElementIdArray over;
+    uint32_t container;
+    NkUiId target = 0u;
+    int32_t i;
+    if (clay == NULL || clay->context == NULL || accept == NULL) {
+        return 0u;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    over = Clay_GetPointerOverIds();
+    container = Clay_GetElementId(CLAY_STRING("nk_ui.container")).baseId;
+    for (i = over.length - 1; i >= 0 && target == 0u; --i) {
+        Clay_ElementId element = over.internalArray[i];
+        if (element.baseId == container && accept(user, (NkUiId)element.offset)) {
+            target = (NkUiId)element.offset;
+        }
+    }
+    Clay_SetCurrentContext(restore);
+    return target;
+}
+
 bool nk_ui_clay_element_rect(void *opaque_clay, NkUiId id, NkUiRect *out) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_Context *restore;
