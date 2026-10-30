@@ -734,8 +734,9 @@ def cmd_build_smoke(args: argparse.Namespace) -> int:
         compiler = compiler_identity(args.compiler, repository_root=ROOT)
         if compiler.endswith(":unavailable"):
             raise QualificationError("BUILD_COMPILER_UNAVAILABLE")
-        artifact = staged_executable(args.build_root, "display-smoke-v1")
+        artifact = args.build_root / "display-smoke-v1" / "display-smoke-v1"
         artifact.unlink(missing_ok=True)
+        artifact.with_name(artifact.name + ".exe").unlink(missing_ok=True)
         started = time.perf_counter()
         result = subprocess.run([args.make, "-B", "display-smoke", "player", f"CC={args.compiler}"], cwd=ROOT)
         duration = int((time.perf_counter() - started) * 1000)
