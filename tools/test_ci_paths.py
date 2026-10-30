@@ -348,6 +348,25 @@ class CiPathAdversarialTests(unittest.TestCase):
     def test_pull_request_does_not_request_main_smoke(self) -> None:
         self.assertEqual(classify(["src/rt/hle.c"], event_name="pull_request")["run_main_smoke"], "false")
 
+    def test_only_a_run_on_main_saves_the_compiler_cache(self) -> None:
+        # #735: the persisted Windows compiler cache is written only by main's own
+        # code on main; pull requests, merge groups and other refs only read it.
+        for event_name, ref, expected in (
+            ("push", "refs/heads/main", "true"),
+            ("schedule", "refs/heads/main", "true"),
+            ("workflow_dispatch", "refs/heads/main", "true"),
+            ("pull_request", "refs/pull/1/merge", "false"),
+            ("pull_request", "refs/heads/main", "false"),
+            ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "false"),
+            ("merge_group", "refs/heads/main", "false"),
+            ("push", "refs/heads/feature", "false"),
+            ("workflow_dispatch", "refs/heads/feature", "false"),
+        ):
+            with self.subTest(event=event_name, ref=ref):
+                with patch.dict(os.environ, {"GITHUB_REF": ref}):
+                    result = classify(["src/rt/hle.c"], event_name=event_name)
+                self.assertEqual(result["save_compiler_cache"], expected)
+
     def test_git_extraction_retains_deleted_and_renamed_paths(self) -> None:
         status = "D\tsrc/rt/removed.c\nR100\tsrc/rt/old.c\tdocs/new.md\n"
         self.assertEqual(

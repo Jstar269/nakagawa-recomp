@@ -71,6 +71,7 @@ jobs:
       run_native: ${{ steps.paths.outputs.run_native }}
       run_windows: ${{ steps.paths.outputs.run_windows }}
       run_main_smoke: ${{ steps.paths.outputs.run_main_smoke }}
+      save_compiler_cache: ${{ steps.paths.outputs.save_compiler_cache }}
       allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
       draft: ${{ steps.paths.outputs.draft }}
     steps:
@@ -1258,10 +1259,11 @@ jobs:
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
-          # Keep the toolchain dependency install explicit.  Compiled objects
-          # are never restored from another job or run: Make's content-addressed
+          # Keep the toolchain dependency install explicit.  Build trees are
+          # never restored from another job or run: Make's content-addressed
           # invalidation and shader freshness checks remain authoritative. The
-          # only reuse is the job-local compiler cache set up below.
+          # only reuse is the compiler cache set up below, which returns an
+          # object only for an identical compile.
           update: false
           install: >-
             mingw-w64-ucrt-x86_64-ccache
@@ -1315,14 +1317,55 @@ jobs:
           grep -Fx 'CC=clang' <<<"$override_info"
           grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
 
+      # The compiler cache persists between runs (#735, owner decisions of
+      # 2026-10-27 and 2026-10-30). Its Actions cache key names this part, the
+      # toolchain (the exact installed package versions and the compiler's own
+      # version), the build's flags (the Makefile and its fragments) and the exact
+      # hashes of every file a compile can read or be generated from. A run
+      # restores its part's exact key, or else the newest entry main saved for the
+      # same part and toolchain, preferring one with the same flags. ccache itself
+      # keys each object on the compiler's contents, the full command line and the
+      # contents of every header, so a restored entry is used only for an
+      # identical compile, and Make still decides what to build. Only a run on
+      # main saves the cache; pull requests and merge groups read it and never
+      # write it.
+      - name: Compute the persisted compiler cache key
+        id: compiler-cache-key
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          toolchain="$(
+            {
+              pacman -Q mingw-w64-ucrt-x86_64-ccache mingw-w64-ucrt-x86_64-gcc \
+                mingw-w64-ucrt-x86_64-binutils mingw-w64-ucrt-x86_64-crt-git \
+                mingw-w64-ucrt-x86_64-headers-git mingw-w64-ucrt-x86_64-make \
+                mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-sdl3-ttf \
+                mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
+              gcc -v 2>&1
+            } | sha256sum | cut -c1-16
+          )"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the persisted compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\ccache\objects
+          key: >-
+            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{
+            hashFiles('Makefile', 'mk/**') }}-${{
+            hashFiles('src/**', 'third_party/**', 'tests/native/**', 'fixtures/**', 'tools/**', 'assets/**') }}
+          restore-keys: |
+            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{ hashFiles('Makefile', 'mk/**') }}-
+            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-
+
       # Each part compiles the same runtime sources into several build trees: the
-      # platform ladder once per rung, the smoke part once per smoke. A compiler
-      # cache local to this job serves those repeats (#735 item 2, owner decision
-      # 2026-10-27). ccache keys an entry on every input -- the compiler, the
-      # command line and the full contents of every header -- so it returns an
-      # object only for an identical compile, and Make still decides what to
-      # build. The cache starts empty under RUNNER_TEMP and is never restored,
-      # uploaded or shared with another job or run.
+      # platform ladder once per rung, the smoke part once per smoke. The compiler
+      # cache serves those repeats and, restored as above, the compiles an earlier
+      # main run already made (#735 item 2). compiler_check=content keys entries on
+      # the compiler's contents, not its timestamp, because every run installs the
+      # toolchain afresh. The cache lives under RUNNER_TEMP and reaches another run
+      # only through the main-only save below.
       #
       # `gcc` becomes a native symlink to the UCRT64 toolchain's own ccache.exe
       # (ccache's masquerade mode), which then runs /ucrt64/bin/gcc. A profile
@@ -1331,7 +1374,7 @@ jobs:
       # tools/nk_doctor_checks.py, which follow the link into /ucrt64/bin, still
       # find this toolchain. The compiler resolution check above runs before this,
       # against the plain toolchain.
-      - name: Route this job's compiles through a job-local compiler cache
+      - name: Route this job's compiles through the compiler cache
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1341,6 +1384,7 @@ jobs:
           MSYS=winsymlinks:nativestrict ln -s /ucrt64/bin/ccache.exe "$cache/bin/gcc.exe"
           {
             printf "export CCACHE_DIR='%s'\n" "$(cygpath -m "$cache/objects")"
+            printf "export CCACHE_COMPILERCHECK=content\n"
             printf "export PATH='%s':\"\$PATH\"\n" "$cache/bin"
           } > /etc/profile.d/zz-job-compiler-cache.sh
           # shellcheck disable=SC1091
@@ -1350,6 +1394,8 @@ jobs:
           gcc --version
           ccache --version
           ccache --zero-stats
+          # A main save (below) keeps only the entries this job used.
+          echo "COMPILER_CACHE_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
 
       # -j2 uses both vCPUs of the hosted runner for these independent object
       # compiles (#694); the gate is the same target and the same objects.
@@ -1655,16 +1701,44 @@ jobs:
           py="$(cygpath -u "$PYTHON")"
           PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
 
-      # What the job-local compiler cache served in this part. Every part compiles
-      # the runtime objects through it, so a part that recorded no compile at all
+      # A trusted run on main (a push, the nightly schedule or a manual dispatch;
+      # tools/ci_paths.py decides) saves this part's cache under the exact key
+      # computed above, unless that key was the one restored. Entries this job
+      # neither read nor wrote are evicted first (ccache records each use in the
+      # entry's modification time), so the saved cache holds exactly this run's
+      # compiles and does not grow from run to run.
+      - name: Keep only this run's compiler cache entries for the main save
+        if: >-
+          ${{ needs.classify.outputs.save_compiler_cache == 'true' &&
+              steps.compiler-cache.outputs.cache-hit != 'true' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          age=$(( $(date +%s) - COMPILER_CACHE_JOB_START + 60 ))
+          ccache --evict-older-than "${age}s"
+          ccache --show-stats
+
+      - name: Save the compiler cache from a main run
+        if: >-
+          ${{ needs.classify.outputs.save_compiler_cache == 'true' &&
+              steps.compiler-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\ccache\objects
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+      # What the compiler cache served in this part. Every part compiles the
+      # runtime objects through it, so a part that recorded no compile at all
       # bypassed the cache, and that fails here rather than passing unnoticed.
-      - name: Report the job-local compiler cache statistics
+      # Hits include the entries restored from main's saved cache.
+      - name: Report the compiler cache statistics
         shell: msys2 {0}
         run: |
           set -euo pipefail
           ccache --show-stats --verbose
           compiles="$(ccache --print-stats | awk '$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" || $1 == "cache_miss" { n += $2 } END { print n + 0 }')"
-          echo "compiles through the job-local cache: $compiles"
+          echo "restored cache entry: ${{ steps.compiler-cache.outputs.cache-matched-key || 'none' }}"
+          echo "compiles through the compiler cache: $compiles"
           test "$compiles" -gt 0
 
   main_smoke:
