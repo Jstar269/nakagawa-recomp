@@ -31,6 +31,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -335,6 +336,27 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertRegex(out.read_text(encoding="ascii"),
                          r'"code overlay cannot be translated: MWo3 header sizes do not add up')
 
+
+    def test_each_module_entry_is_walked_once(self):
+        # The body and its translated-word count come from one control-flow walk. A
+        # second walk per entry repeated the most expensive step of module translation.
+        path = self.root / "overlay.prx"
+        path.write_bytes(ladder.build_overlay_prx(ladder.OVERLAYS[0]))
+        walked = []
+        real_flow = codegen.function_flow
+
+        def counting_flow(elf, start, *args, **kwargs):
+            walked.append(start)
+            return real_flow(elf, start, *args, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()), \
+                unittest.mock.patch.object(codegen, "function_flow", counting_flow):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertTrue(walked)
+        self.assertEqual(len(walked), len(set(walked)), "an entry was walked more than once")
+        counts = dict(module.functions)
+        self.assertLessEqual(set(walked), set(counts))
+        self.assertTrue(all(counts[a] > 0 for a in walked))
 
     def test_executable_pointers_seed_entry_shaped_overlay_words_only(self):
         # The executable holds the table of an overlay's entry points; a pointer seeds the

@@ -12,12 +12,14 @@ import os
 from dataclasses import dataclass
 import functools
 from pathlib import Path
+import re
 import struct
 from typing import Dict, Iterator, Optional, Sequence
 
 import psp_import_table
 import title_manifest
 from . import disc_expand_tool
+from .synthetic_disc_ids import RETAIL_DISC_ID
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -31,6 +33,19 @@ MAX_DIRECTORY_BYTES = 512 * 1024
 MAX_SFO_BYTES = 64 * 1024
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
+# A PARAM.SFO DISC_ID is kept as data in at most 31 bytes, the native
+# NkIsoMetadata.sfo_disc_id field (NK_MAX_DISC_ID_LEN in src/core/nk_types.h).
+SFO_DISC_ID_MAX_BYTES = 31
+# Library keys of non-retail discs (disc_id_library_key). Retail ids start with U
+# or N and the project's synthetic ids with TEST, so no other key can start with
+# this letter, and the label "Beta / unofficial" follows from it.
+NON_RETAIL_KEY_PREFIX = "X"
+# The SHA-256 input starts with this tag, so the digest names nothing else.
+NON_RETAIL_KEY_DOMAIN = b"nakagawa-non-retail-disc-key-v1\0"
+# Three letters and five digits follow the prefix: 26^3 * 10^5 distinct keys.
+NON_RETAIL_KEY_SPACE = 26 ** 3 * 10 ** 5
+NON_RETAIL_MAIN_EXECUTABLE = ("PSP_GAME", "SYSDIR", "EBOOT.BIN")
+_SYNTHETIC_DISC_ID_KEY = re.compile(r"TEST[0-9]{5}")
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
 PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
@@ -539,10 +554,24 @@ def plan_guest_module_layout(
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
+# Identity strings that name the disc exactly. TITLE is shown to a person and is
+# decoded tolerantly; these two are never repaired.
+_EXACT_TEXT_KEYS = frozenset({"DISC_ID", "DISC_VERSION"})
 
 
-def parse_param_sfo(data: bytes) -> Dict[str, str]:
-    """Parse a bounded PSP PARAM.SFO structure."""
+def parse_param_sfo(data: bytes, *, warnings: list[str] | None = None) -> Dict[str, str]:
+    """Parse a bounded PSP PARAM.SFO structure.
+
+    The header, index table and key table must be sound, and so must the values of
+    DISC_ID, TITLE and DISC_VERSION. Three departures that leave the disc's identity
+    intact are tolerated, each with a note appended to ``warnings``: the value of
+    another key that lies past the end of the file is skipped; a UTF-8 string
+    (format 0x0204) ends at its first NUL, so bytes left after it are not part of
+    the value; and a TITLE or other display string that is not UTF-8 is decoded
+    with U+FFFD replacements, the note keeping its raw bytes. DISC_ID and
+    DISC_VERSION are never repaired.
+    Mirrors nk_iso_parse_sfo_buffer in src/core/nk_iso.c.
+    """
     if len(data) < 20 or data[:8] != SFO_MAGIC:
         return {}
 
@@ -584,10 +613,21 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             raise IsoInspectionError("PARAM.SFO key is not ASCII") from exc
 
         if data_offset > len(data) - data_table_start:
-            raise IsoInspectionError("PARAM.SFO data offset is outside the data table")
+            bounds_problem = "PARAM.SFO data offset is outside the data table"
+        elif data_len > len(data) - data_table_start - data_offset:
+            bounds_problem = "PARAM.SFO data length exceeds the buffer"
+        else:
+            bounds_problem = None
+        if bounds_problem is not None:
+            if key_name in _IDENTITY_KEYS:
+                raise IsoInspectionError(bounds_problem)
+            if warnings is not None:
+                warnings.append(
+                    f"{bounds_problem} for key '{key_name}' (offset {data_offset}, "
+                    f"length {data_len}, file {len(data)} bytes); the key was not read"
+                )
+            continue
         data_start = data_table_start + data_offset
-        if data_len > len(data) - data_start:
-            raise IsoInspectionError("PARAM.SFO data length exceeds the buffer")
         if max_len < data_len:
             raise IsoInspectionError("PARAM.SFO data length exceeds max length")
         raw_value = data[data_start : data_start + data_len]
@@ -602,7 +642,15 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             )
 
         if param_fmt == SFO_FMT_UTF8:
-            value_bytes = raw_value.rstrip(b"\0")
+            # A NUL-terminated string: the value ends at its first NUL.
+            terminator = raw_value.find(b"\0")
+            value_bytes = raw_value if terminator < 0 else raw_value[:terminator]
+            leftover = raw_value[terminator + 1:] if terminator >= 0 else b""
+            if any(leftover) and warnings is not None:
+                warnings.append(
+                    f"SFO key '{key_name}' has {len(leftover)} byte(s) after its "
+                    f"terminating NUL (raw {leftover.hex()}); they are not part of the value"
+                )
         elif param_fmt == SFO_FMT_UTF8_SPECIAL:
             value_bytes = raw_value
         else:
@@ -612,7 +660,16 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
             try:
                 value = value_bytes.decode("utf-8")
             except UnicodeDecodeError as exc:
-                raise IsoInspectionError(f"SFO key '{key_name}' is not valid UTF-8") from exc
+                if key_name in _EXACT_TEXT_KEYS:
+                    raise IsoInspectionError(
+                        f"SFO key '{key_name}' is not valid UTF-8"
+                    ) from exc
+                value = value_bytes.decode("utf-8", errors="replace")
+                if warnings is not None:
+                    warnings.append(
+                        f"SFO key '{key_name}' is not valid UTF-8; it is shown with U+FFFD "
+                        f"replacement characters (raw {value_bytes.hex()})"
+                    )
         elif param_fmt == SFO_FMT_UINT32:
             if data_len < 4:
                 raise IsoInspectionError(f"SFO key '{key_name}' has a short integer value")
@@ -633,6 +690,7 @@ def parse_param_sfo(data: bytes) -> Dict[str, str]:
 
 
 def _canonical_disc_id(value: str) -> str:
+    """The nine-character disc id a PlayStation Store package must carry to be named."""
     normalized = "".join(
         char for char in value.strip().upper() if char not in "-_ "
     )
@@ -641,6 +699,110 @@ def _canonical_disc_id(value: str) -> str:
             "PSP_GAME/PARAM.SFO does not contain a valid 9-character DISC_ID"
         )
     return normalized
+
+
+def disc_id_library_key(value: str) -> str | None:
+    """Return the library key a disc's PARAM.SFO DISC_ID gives, or None for a non-retail disc.
+
+    The rule, mirrored by nk_iso_parse_sfo_buffer and nk_disc_id_keyed_as_is in
+    src/core/nk_iso.c and described in docs/YOUR_OWN_GAMES.md:
+
+    1. The DISC_ID must be 1 to 31 printable ASCII characters (0x20 to 0x7E);
+       anything else refuses the disc.
+    2. It is normalised: '-', '_' and ' ' are dropped and letters upper-cased. An
+       id that normalises to nothing refuses the disc.
+    3. A retail id (``U[CL]`` or ``NP`` plus two letters, then five digits: the
+       formats of synthetic_disc_ids.RETAIL_DISC_ID) or one of the project's
+       synthetic ``TEST`` ids is its own key, as before.
+    4. Any other id (a beta's or prototype's, or an SDK placeholder such as a
+       12-character id) is a non-retail disc: the caller keys it by its contents
+       with non_retail_disc_key, and this returns None.
+    """
+    if not value or len(value.encode("utf-8")) > SFO_DISC_ID_MAX_BYTES or any(
+        not 0x20 <= ord(char) <= 0x7E for char in value
+    ):
+        raise IsoInspectionError(
+            "PSP_GAME/PARAM.SFO DISC_ID is not 1 to 31 printable ASCII characters"
+        )
+    normalized = "".join(char for char in value.upper() if char not in "-_ ")
+    if not normalized:
+        raise IsoInspectionError(
+            "PSP_GAME/PARAM.SFO DISC_ID is not 1 to 31 printable ASCII characters"
+        )
+    if RETAIL_DISC_ID.fullmatch(normalized) or _SYNTHETIC_DISC_ID_KEY.fullmatch(normalized):
+        return normalized
+    return None
+
+
+def non_retail_disc_key(digest: bytes) -> str:
+    """The library key of a non-retail disc, from its identity digest.
+
+    The first eight digest bytes, read as a big-endian integer, are reduced modulo
+    NON_RETAIL_KEY_SPACE (26^3 * 10^5, about 2^30.7) and written as three letters
+    and five digits after NON_RETAIL_KEY_PREFIX, so the key keeps the
+    ``[A-Z]{4}[0-9]{5}`` shape every per-disc path uses. Two different discs share
+    a key with probability about 1 / NON_RETAIL_KEY_SPACE; among n non-retail
+    discs, at most n(n-1) / (2 * NON_RETAIL_KEY_SPACE). The reduction's bias is
+    below 2^-33. Mirrored by nk_non_retail_disc_key in src/core/nk_iso.c.
+    """
+    if len(digest) != 32:
+        raise ValueError("a non-retail disc key needs a SHA-256 digest")
+    letters, digits = divmod(int.from_bytes(digest[:8], "big") % NON_RETAIL_KEY_SPACE, 10 ** 5)
+    return (
+        NON_RETAIL_KEY_PREFIX
+        + chr(ord("A") + letters // 676)
+        + chr(ord("A") + letters // 26 % 26)
+        + chr(ord("A") + letters % 26)
+        + f"{digits:05d}"
+    )
+
+
+def is_non_retail_key(disc_id: str) -> bool:
+    """True for a library key non_retail_disc_key made (labelled "Beta / unofficial")."""
+    return (
+        disc_id.startswith(NON_RETAIL_KEY_PREFIX)
+        and title_manifest.DISC_ID_RE.fullmatch(disc_id) is not None
+    )
+
+
+def _non_retail_identity(
+    stream, file_size: int, raw_sfo: bytes, sfo_disc_id: str
+) -> tuple[str, str]:
+    """Key a non-retail disc by its contents: returns (library key, SHA-256 hex).
+
+    The digest is SHA-256 over NON_RETAIL_KEY_DOMAIN, then the PARAM.SFO bytes and
+    the bytes of the disc's main executable, PSP_GAME/SYSDIR/EBOOT.BIN (the file a
+    PSP boots from a disc), each preceded by its length as a little-endian 64-bit
+    integer. Nothing on the disc is changed. A disc whose EBOOT.BIN is missing,
+    empty, over MAX_EXECUTABLE_BYTES or not fully inside the image cannot be told
+    apart from other discs and is refused.
+    """
+    refusal = IsoInspectionError(
+        f"PARAM.SFO names this disc '{sfo_disc_id}', which is not a retail disc ID, and "
+        "PSP_GAME/SYSDIR/EBOOT.BIN is missing or unreadable, so the disc cannot be "
+        "identified by its contents"
+    )
+    try:
+        entry = _lookup_iso_file(stream, file_size, NON_RETAIL_MAIN_EXECUTABLE)
+    except IsoInspectionError as exc:
+        raise refusal from exc
+    if entry is None or not 0 < entry[1] <= MAX_EXECUTABLE_BYTES:
+        raise refusal
+    lba, size = entry
+    digest = hashlib.sha256(NON_RETAIL_KEY_DOMAIN)
+    digest.update(struct.pack("<Q", len(raw_sfo)))
+    digest.update(raw_sfo)
+    digest.update(struct.pack("<Q", size))
+    offset = 0
+    try:
+        while offset < size:
+            count = min(1024 * 1024, size - offset)
+            digest.update(_read_iso_extent(stream, file_size, lba, size, offset, count))
+            offset += count
+    except IsoInspectionError as exc:
+        raise refusal from exc
+    value = digest.digest()
+    return non_retail_disc_key(value), value.hex()
 
 
 def _pbp_display_title(title: str) -> str:
@@ -769,8 +931,16 @@ def inspect_iso(
             raise IsoInspectionError("Not a valid ISO9660 image (missing PVD descriptor)")
 
         volume_id = pvd_data[40:72].decode("latin-1", errors="replace").rstrip("\x00 ")
+        # What the disc carries outside the standard but a PSP still reads; each
+        # note says what was tolerated, so nothing is silently repaired.
+        format_warnings: list[str] = []
+        root_note = _pvd_root_record_note(pvd_data)
+        if root_note is not None:
+            format_warnings.append(root_note)
         sfo_entry = _lookup_iso_file(f, size_bytes, ("PSP_GAME", "PARAM.SFO"))
 
+        sfo_disc_id = ""
+        identity_sha256 = ""
         if sfo_entry is None:
             disc_id = "UNKNOWN"
             title = "Unknown PSP Title"
@@ -782,8 +952,14 @@ def inspect_iso(
             if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
                 raise IsoInspectionError("PSP_GAME/PARAM.SFO has an unsupported size")
             raw_sfo = _read_iso_extent(f, size_bytes, sfo_lba, sfo_size, 0, sfo_size)
-            sfo_dict = parse_param_sfo(raw_sfo)
-            disc_id = _canonical_disc_id(sfo_dict.get("DISC_ID", ""))
+            sfo_dict = parse_param_sfo(raw_sfo, warnings=format_warnings)
+            sfo_disc_id = sfo_dict.get("DISC_ID", "")
+            key = disc_id_library_key(sfo_disc_id)
+            if key is None:
+                key, identity_sha256 = _non_retail_identity(
+                    f, size_bytes, raw_sfo, sfo_disc_id
+                )
+            disc_id = key
             title = sfo_dict.get("TITLE", "")
             version = sfo_dict.get("DISC_VERSION", "1.00")
             sfo_facts = {
@@ -841,6 +1017,15 @@ def inspect_iso(
                         "Register it with --register-local-compatibility-record after reviewing the local inputs."
                     )
 
+        container_metadata: dict[str, object] = {
+            "format": "iso9660",
+            "volume_id": volume_id,
+            "size_bytes": size_bytes,
+            "pvd_sector": PVD_SECTOR,
+            "sector_size": SECTOR_SIZE,
+        }
+        if format_warnings:
+            container_metadata["format_warnings"] = format_warnings
         return IsoMetadata(
             disc_id=disc_id,
             title=title,
@@ -850,14 +1035,11 @@ def inspect_iso(
             size_bytes=size_bytes,
             matched_profile=matched,
             param_sfo_facts=sfo_facts,
-            container_metadata={
-                "format": "iso9660",
-                "volume_id": volume_id,
-                "size_bytes": size_bytes,
-                "pvd_sector": PVD_SECTOR,
-                "sector_size": SECTOR_SIZE,
-            },
+            container_metadata=container_metadata,
             qualification_error=qualification_error,
+            sfo_disc_id=sfo_disc_id,
+            non_retail=bool(identity_sha256),
+            identity_sha256=identity_sha256,
         )
 
 
@@ -1094,6 +1276,34 @@ def _extent_from_record(record: bytes, file_size: int) -> tuple[int, int, bool]:
     name_size = record[32]
     if 33 + name_size > record[0]:
         raise IsoInspectionError("truncated ISO directory identifier")
+    return _extent_fields(record, file_size)
+
+
+def _pvd_root_extent(pvd: bytes, file_size: int) -> tuple[int, int, bool]:
+    """Locate the root directory from the primary volume descriptor.
+
+    ECMA-119 8.4.18 fixes the root directory record at BP 157-190 of the descriptor,
+    so its length byte and identifier are fixed by the standard and say nothing a
+    reader needs. Only the extent location, data length and file flags locate the
+    root, which is all the native reader (nk_iso_reader_open) reads too; some
+    rebuilt images copy a longer record's length byte there.
+    """
+    return _extent_fields(pvd[156:190], file_size)
+
+
+def _pvd_root_record_note(pvd: bytes) -> str | None:
+    """Describe a root directory record that is not the standard 34-byte form."""
+    length, name_size = pvd[156], pvd[188]
+    if length == 34 and name_size == 1 and pvd[189] == 0:
+        return None
+    return (
+        "The primary volume descriptor's root directory record is not the standard "
+        f"34-byte record (length byte {length}, identifier length {name_size}); "
+        "its extent location and length were used."
+    )
+
+
+def _extent_fields(record: bytes, file_size: int) -> tuple[int, int, bool]:
     lba_le = int.from_bytes(record[2:6], "little")
     lba_be = int.from_bytes(record[6:10], "big")
     size_le = int.from_bytes(record[10:14], "little")
@@ -1189,7 +1399,7 @@ def list_iso_directory(
             pvd = stream.read(SECTOR_SIZE)
             if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
                 raise IsoInspectionError("missing primary volume descriptor")
-            lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
+            lba, size, is_directory = _pvd_root_extent(pvd, file_size)
             if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
                 raise IsoInspectionError("root directory is not a bounded directory extent")
             for index, component in enumerate(path):
@@ -1221,7 +1431,7 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
     pvd = stream.read(SECTOR_SIZE)
     if len(pvd) != SECTOR_SIZE or pvd[:7] != ISO_MAGIC:
         raise IsoInspectionError("missing primary volume descriptor")
-    lba, size, is_dir = _extent_from_record(pvd[156:190], file_size)
+    lba, size, is_dir = _pvd_root_extent(pvd, file_size)
     if not is_dir or size == 0 or size > MAX_DIRECTORY_BYTES:
         raise IsoInspectionError("root directory is not a bounded directory extent")
 
@@ -1887,7 +2097,7 @@ def inspect_compatibility_preflight(
                 raw_sfo = _read_iso_extent(stream, size_bytes, *sfo_entry, 0, sfo_entry[1])
                 try:
                     values = parse_param_sfo(raw_sfo)
-                    _canonical_disc_id(values.get("DISC_ID", ""))
+                    disc_id_library_key(values.get("DISC_ID", ""))
                     sfo_parsed = True
                 except IsoInspectionError:
                     sfo_parsed = False

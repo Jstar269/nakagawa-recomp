@@ -89,6 +89,41 @@ is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308))
      with a message that says what is missing and which issue tracks it. It never
      pretends a build succeeded.
 
+### Betas and other non-retail discs
+
+A retail disc's `PARAM.SFO` names it with a retail disc ID: `U` then `C` or `L`
+(a UMD), or `NP` (a PSN release), then two letters and five digits. Betas,
+prototypes and discs built with an SDK placeholder ID carry something else, for
+example a 12-character ID. Nakagawa accepts such a disc and labels it
+**Beta / unofficial** on its library card, its title page and its **Game found**
+card.
+
+- **The rule.** The disc's `DISC_ID` must be 1 to 31 printable ASCII
+  characters, or the disc is refused. Dashes, underscores and spaces are dropped
+  and letters upper-cased. A retail ID (or one of the project's own `TEST`
+  fixture IDs) is the disc's key, as before. Any other ID makes the disc
+  non-retail.
+- **The key.** A non-retail disc is named by its contents: SHA-256 over the tag
+  `nakagawa-non-retail-disc-key-v1` (with its NUL), then the bytes of
+  `PSP_GAME/PARAM.SFO` and of `PSP_GAME/SYSDIR/EBOOT.BIN`, each preceded by its
+  length as a little-endian 64-bit number. The first eight bytes of the digest,
+  modulo 26³ × 10⁵, become three letters and five digits after an `X`, for
+  example `XRQY66517`. No retail or test ID starts with `X`, so the key never
+  meets another disc's ID, and the same disc always gets the same key. Two
+  different non-retail discs share a key with a chance of about one in
+  1.76 billion; for a library of 100 of them, about 3 in a million. The key is
+  what the library, `packages/<key>` and `titles/<key>` use.
+- **The disc's own ID** stays as it is. `python tools/nk_cli.py inspect <iso>`
+  shows it beside the key (`sfo_disc_id` in `--json`). Nakagawa never changes the
+  disc's `PARAM.SFO` or any other file on it.
+- **Fail closed.** A non-retail disc without a readable `EBOOT.BIN` cannot be
+  told apart from other discs and is refused, as is a disc without a usable
+  `PARAM.SFO`.
+
+A beta added before this rule existed, under an ID like `ABCD12345`, now reads
+with its `X` key, so its old library entry reports a different disc. Add the
+disc again; the new entry carries the label.
+
 ## Supplying unencrypted files
 
 When the player checks a disc you added (when you add it, on Check again, and

@@ -3645,6 +3645,37 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[-1]["error"], "NONE")
                 self.assertIn(f"[PLAYER] Disc image {name} expanded into TEST00042", run["stdout"])
 
+    def test_beta_disc_is_added_and_labelled_beta_unofficial(self) -> None:
+        """A disc whose own ID is a placeholder, not a retail ID, is added under the key the
+        Python tools derive from its contents, and its card says Beta / unofficial."""
+        from nk_core.iso_inspect import inspect_iso
+
+        with tempfile.TemporaryDirectory(prefix=".beta-disc-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic-beta.iso"
+            create_test_iso_with_executables(
+                iso_path, build_plain_mips_elf(), disc_id="PROTO1234567",
+                title="Synthetic Beta Disc",
+            )
+            iso = iso_path.read_bytes()
+            key = inspect_iso(iso_path).disc_id
+        self.assertRegex(key, r"^X[A-Z]{3}[0-9]{5}$")
+        events = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100",
+                  "KEY_RETURN", "WAIT_MS=300")
+        run = self.next_ui_run("library", events, drop_bytes=("source-owned-beta.iso", iso))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        views = [frame["view"] for frame in frames]
+        self.assertIn("experimental", views, run["stdout"])
+        self.assertNotIn("error", views, run["stdout"])
+        self.assertEqual(views[-1], "library", run["stdout"])
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        self.assertIn(f"next_ui_disc_badge disc={key} badge=Beta / unofficial", stdout,
+                      "the game-found card names the disc Beta / unofficial too")
+        badges = re.findall(r"next_ui_library_badge index=\d+ disc=(\S+) badge=(.+)", stdout)
+        self.assertIn((key, "Beta / unofficial"), badges, stdout)
+        self.assertNotIn((key, "Your disc"), badges)
+
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
                               width=960, height=540)

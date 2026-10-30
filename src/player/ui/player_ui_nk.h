@@ -387,6 +387,7 @@ typedef struct {
     PlayerUiDiscKind kind;
     const char *title_name;
     const char *disc_id;
+    const char *badge;              /* the disc's tag; NULL is "Your disc" */
     const char *iso_path;           /* checking: the file being read */
     const char *reason;             /* blocked: why, and what to do next */
     const char *profile_note;       /* a refused local title profile, in words */
