@@ -143,6 +143,22 @@ class DriftGuardTests(unittest.TestCase):
     def test_plans_match_emit_function_under_the_stack_census(self):
         self._check(self._run("--funcs-per-chunk=1", "--stack-census"))
 
+    def test_plans_match_emit_function_with_every_body_split(self):
+        # #1691: a split body's conditional edge into another entry is a TAIL transfer
+        # to that entry's symbol, and a not-taken branch continues into the next entry.
+        saved = codegen.REGION_SPLIT_THRESHOLD
+        try:
+            captured = self._run("--funcs-per-chunk=1", "--stack-census",
+                                 "--region-split-threshold=0")
+        finally:
+            codegen.REGION_SPLIT_THRESHOLD = saved
+        self._check(captured)
+        transfers = [step for _, _, plan in captured for step in plan.steps
+                     if isinstance(step, P.Transfer)]
+        self.assertTrue(any(t.kind == "branch-tail" and t.symbol is not None for t in transfers))
+        self.assertTrue(any(t.cond is not None and t.then_continuation is not None
+                            for t in transfers))
+
 
 class FakeElf:
     def __init__(self, words):
