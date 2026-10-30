@@ -1519,7 +1519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b2876892a73ffa4ae90f66416260ef1ce9f337a8de7a8e8beddd7699b3645d1"
+      "sha256": "6ac7211ce28e86072a9d8e04ae6e8d708e30637e9853844ddc28af51ed98f54b"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -9077,7 +9077,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b549deacc38cb1d011380fbb10551897af09f95e48379c234fb832de86f7c62e"
+      "sha256": "08e083be859a65dfb4a1bdc1f0e204b24132b7df1e7d126a72d7707fa68f41d2"
     },
     {
       "path": "src/rt/hle_power.c",
