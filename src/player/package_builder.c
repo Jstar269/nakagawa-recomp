@@ -2297,6 +2297,10 @@ NkResult package_builder_start(
         argv[argc++] = user_data_root;
     }
     if (session->no_shared_libraries) argv[argc++] = "--no-shared-libraries";
+    /* The enhanced build: nk_cli.py reads the package at
+       <user data>/enhancements/<disc id>-60hz.json and writes
+       packages/<disc_id>-enhanced-<id>, never the authentic package. */
+    if (session->enhancement_package_id[0]) argv[argc++] = "--experimental-60hz";
     argv[argc] = NULL;
 
     char path_override[32768];

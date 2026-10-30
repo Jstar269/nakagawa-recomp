@@ -71,7 +71,7 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(data["name"], "nakagawa-recomp")
         self.assertEqual(data["license"], "GPL-3.0-or-later")
 
-    def test_clay_layout_family_is_pinned_and_not_claimed_as_runtime_linked(self):
+    def test_clay_layout_family_is_pinned_to_its_manifest_commit(self):
         family = next(
             item for item in load_manifest()["provenance_families"]
             if item.get("id") == "clay-layout"
@@ -80,11 +80,13 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(family["origin"], "https://github.com/nicbarker/clay")
         self.assertEqual(
             family["revision"],
-            "v0.14 / b25a31c1a152915cd7dd6796e6592273e5a10aac",
+            "main / e6cc36941ab2af5d81107617039d6f527a1c660b",
         )
         self.assertEqual(family["notice_path"], "third_party/clay/LICENSE.md")
         self.assertEqual(family["evidence_path"], "third_party/clay/PROVENANCE.md")
-        self.assertIn("not linked into player runtime", family["disposition"])
+        manifest = (ROOT / family["evidence_path"]).read_text(encoding="utf-8")
+        self.assertIn("`e6cc36941ab2af5d81107617039d6f527a1c660b`", manifest)
+        self.assertIn("linked into the player", family["disposition"])
 
     def test_stb_image_and_kenney_families_are_pinned_public_domain(self):
         families = {item.get("id"): item for item in load_manifest()["provenance_families"]}

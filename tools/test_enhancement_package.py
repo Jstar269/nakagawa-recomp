@@ -22,6 +22,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,15 +44,24 @@ from enhancement_package import (
     ROOT_KEYS,
     SITE_TRANSFORMS,
     SUPPORTED_SCHEMA_VERSION,
+    UPDATE_BOUNDARY_KEYS,
     VALID_CATEGORIES,
     EnhancementPackageError,
     compute_stock_words_digest,
+    find_data_file,
     load_package,
+    plan_data_value,
+    plan_float_pair_rewrite,
+    plan_site_rewrite,
+    transform_data_file,
     validate_package,
+    verify_and_resolve_data_sites,
+    verify_and_resolve_sites,
 )
 from nk_core import package_cache
 
 SCHEMA_PATH = ROOT / "assets" / "enhancement_package.schema.json"
+GCC = shutil.which("gcc") or shutil.which("cc")
 
 
 class TestEnhancementPackageSchema(unittest.TestCase):
@@ -128,6 +138,13 @@ class TestEnhancementPackageSchema(unittest.TestCase):
         self.assertEqual(site_props["insn_offset"].get("multipleOf"), 4)
         self.assertIn("Byte offset", site_props["insn_offset"]["description"])
         self.assertEqual(set(site_props["transform"]["enum"]), SITE_TRANSFORMS)
+
+        # The update boundary is one pinned instruction: function, offset, digest.
+        boundary = schema["properties"]["update_boundary"]
+        self.assertFalse(boundary.get("additionalProperties"))
+        self.assertEqual(set(boundary["required"]), UPDATE_BOUNDARY_KEYS)
+        self.assertEqual(set(boundary["properties"]), UPDATE_BOUNDARY_KEYS)
+        self.assertEqual(boundary["properties"]["insn_offset"].get("multipleOf"), 4)
 
     def test_load_package_from_disk(self) -> None:
         """load_package must correctly read and parse JSON packages."""
@@ -480,6 +497,42 @@ class TestEnhancementPackageSchema(unittest.TestCase):
             validate_package(misaligned_pkg)
         self.assertIn("4-byte-aligned", str(ctx.exception))
 
+        # A package that gates must declare where each logic update begins.
+        gated_pkg = copy.deepcopy(valid_60hz_pkg)
+        gated_pkg["sites"].append(dict(gated_pkg["sites"][0], id="S002", insn_offset=8,
+                                       transform="gate_30hz"))
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(copy.deepcopy(gated_pkg))
+        self.assertIn("must declare update_boundary", str(ctx.exception))
+        boundary = {
+            "function": "synth_frame_body",
+            "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([0x27BDFFF0]),  # addiu sp, sp, -16
+        }
+        validate_package(dict(copy.deepcopy(gated_pkg), update_boundary=dict(boundary)))
+        bad_boundaries = (
+            ({**boundary, "insn_offset": 2}, "4-byte-aligned"),
+            ({**boundary, "function": "FUN_00047920"}, "Address-literal"),
+            ({**boundary, "stock_digest": "x"}, "SHA-256"),
+            ({k: v for k, v in boundary.items() if k != "stock_digest"}, "Missing required property"),
+            ({**boundary, "word_count": 1}, "Unknown properties"),
+            ({"function": "synth_vblank_sync_loop", "insn_offset": 0,
+              "stock_digest": boundary["stock_digest"]}, "must not be a rewritten site"),
+            ("synth_frame_body", "must be an object"),
+        )
+        for bad, why in bad_boundaries:
+            with self.subTest(boundary=bad):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    validate_package(dict(copy.deepcopy(valid_60hz_pkg), update_boundary=bad))
+                self.assertIn(why, str(ctx.exception))
+        # Only a timing package may name a boundary.
+        presentation_pkg = {k: v for k, v in valid_60hz_pkg.items()
+                            if k not in ("game_version", "executable_sha256", "rng_policy", "sites")}
+        presentation_pkg = dict(presentation_pkg, category="presentation_only", update_boundary=boundary)
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(presentation_pkg)
+        self.assertIn("only valid for category 'timing_frame_presentation'", str(ctx.exception))
+
         # Unknown transform rejected
         bad_transform_pkg = copy.deepcopy(valid_60hz_pkg)
         bad_transform_pkg["sites"][0]["transform"] = "accelerate_clock_x2"
@@ -488,8 +541,13 @@ class TestEnhancementPackageSchema(unittest.TestCase):
         self.assertIn("Unknown site transform", str(ctx.exception))
 
 
-def _write_synthetic_mips_elf(path: Path, words: dict[int, int], entry: int) -> bytes:
-    """Write a minimal synthetic MIPS32 little-endian ET_EXEC ELF for testing."""
+def _write_synthetic_mips_elf(path: Path, words: dict[int, int], entry: int,
+                              sections: tuple[tuple[str, int, int, int], ...] = ()) -> bytes:
+    """Write a minimal synthetic MIPS32 little-endian ET_EXEC ELF for testing.
+
+    ``sections`` adds a section header table of (name, addr, size, flags) PROGBITS
+    sections over the loaded image.
+    """
     filesz = max(max(words) + 8, 0x1000)
     payload_off = 52 + 32
     blob = bytearray(payload_off + filesz)
@@ -515,6 +573,21 @@ def _write_synthetic_mips_elf(path: Path, words: dict[int, int], entry: int) -> 
     struct.pack_into("<8I", blob, 52, 1, payload_off, 0, 0, filesz, filesz, 5, 4)
     for addr, word in words.items():
         struct.pack_into("<I", blob, payload_off + addr, word)
+    if sections:
+        names = b"\0.shstrtab\0" + b"".join(name.encode() + b"\0" for name, *_ in sections)
+        strtab_off = len(blob)
+        blob += names
+        while len(blob) % 4:
+            blob.append(0)
+        shoff = len(blob)
+        headers = [bytes(40), struct.pack("<10I", 1, 3, 0, 0, strtab_off, len(names), 0, 0, 1, 0)]
+        name_at = len(b"\0.shstrtab\0")
+        for name, addr, size, flags in sections:
+            headers.append(struct.pack("<10I", name_at, 1, flags, addr, payload_off + addr, size, 0, 0, 4, 0))
+            name_at += len(name) + 1
+        blob += b"".join(headers)
+        struct.pack_into("<I", blob, 32, shoff)
+        struct.pack_into("<HHH", blob, 46, 40, len(headers), 1)
     raw = bytes(blob)
     path.write_bytes(raw)
     return raw
@@ -684,6 +757,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     "transform": "gate_30hz",
                 },
             ],
+            # One update runs synth_vblank_wait once; its return's delay slot counts it.
+            "update_boundary": {
+                "function": "synth_vblank_wait",
+                "insn_offset": 8,
+                "stock_digest": compute_stock_words_digest([self.words[0x00001108]]),
+            },
         }
         return pkg, symbols
 
@@ -775,6 +854,233 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertNotEqual(rc_bad, 0, "Codegen must fail closed when a stock_digest mismatches")
             self.assertIn("Stock instruction digest mismatch", out_bad)
             self.assertEqual(files_bad, {}, "No partial enhanced output may be emitted on digest failure")
+
+    def _codegen_with(self, tmp: Path, name: str, pkg: dict[str, Any], symbols: dict[str, str]
+                      ) -> tuple[int, str, dict[str, bytes]]:
+        elf_path = tmp / "synth.elf"
+        pkg_path = tmp / f"{name}.json"
+        pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+        (tmp / f"{name}.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+        out_dir = tmp / name
+        out_dir.mkdir()
+        return self._run_codegen(elf_path, out_dir / "out.c", [f"--enhancement-package={pkg_path}"])
+
+    def test_gated_sites_count_logic_updates_at_the_update_boundary(self) -> None:
+        """The boundary statement counts each update once; gates read that count, not the display."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            rc, output, files = self._codegen_with(tmp, "boundary", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            self.assertEqual(combined.count("nk_enhancement_updates++"), 1)
+            self.assertIn("uint32_t nk_enhancement_updates;", combined)
+            self.assertIn("(nk_enhancement_updates & 1u) == 0u", combined)
+            self.assertNotIn("sr_display_vcount", combined)
+            # The count runs before the boundary's own stock statement.
+            count_at = combined.index("nk_enhancement_updates++")
+            self.assertLess(count_at, combined.index("sr_begin(s, 0x00001108u", count_at))
+
+    def test_update_boundary_refusals(self) -> None:
+        """A gate without a boundary, or a boundary that does not verify, refuses the package."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+
+            # A unit step under step_x0.5 plans a gate, so it needs a boundary too.
+            words = dict(self.words)
+            words[0x00001300] = 0x24A50001  # addiu a1, a1, 1
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", words, self.entry)
+            step_pkg = copy.deepcopy(pkg)
+            step_pkg["executable_sha256"] = hashlib.sha256(elf_bytes).hexdigest()
+            step_pkg["sites"] = [dict(step_pkg["sites"][2],
+                                      stock_digest=compute_stock_words_digest([0x24A50001]))]
+            del step_pkg["update_boundary"]
+            rc, output, files = self._codegen_with(tmp, "step-no-boundary", step_pkg, symbols)
+            self.assertEqual(rc, 1, output)
+            self.assertIn("declares no update_boundary", output)
+            self.assertEqual(files, {})
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+
+            cases = (
+                ("boundary-digest", {"stock_digest": compute_stock_words_digest([0x24020099])},
+                 "Stock instruction digest mismatch"),
+                ("boundary-control", {"insn_offset": 4,
+                                      "stock_digest": compute_stock_words_digest([0x03E00008])},
+                 "control transfer cannot begin a logic update"),
+            )
+            for name, change, why in cases:
+                with self.subTest(name):
+                    bad = copy.deepcopy(pkg)
+                    bad["update_boundary"].update(change)
+                    rc, output, files = self._codegen_with(tmp, name, bad, symbols)
+                    self.assertEqual(rc, 1, output)
+                    self.assertIn(why, output)
+                    self.assertEqual(files, {})
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_gates_alternate_on_updates_when_frames_drop(self) -> None:
+        """Compile the generated gate and boundary count and run updates of 1 to 3 vblanks.
+
+        A gated statement must run on every other logic update however many display
+        vblanks each update takes (a frame drop, or a stock two-vblank wait).
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            rc, output, files = self._codegen_with(tmp, "drops", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            header = files["out_funcs.h"].decode("utf-8")
+            gate_def = next(line for line in header.splitlines()
+                            if "int nk_enhancement_gate_30hz(void)" in line)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            count_stmt = next(line.strip() for line in combined.splitlines()
+                              if "nk_enhancement_updates++" in line)
+            harness = tmp / "drops.c"
+            harness.write_text(
+                "#include <stdint.h>\n#include <stdio.h>\n"
+                "static uint32_t vcount;\n"
+                "uint32_t sr_display_vcount(void) { return vcount; }\n"
+                "int nk_enhancement_on(void) { return 1; }\n"
+                "uint32_t nk_enhancement_updates;\n"
+                f"{gate_def}\n"
+                "int main(void) {\n"
+                "    static const unsigned vblanks[] = {1, 1, 2, 2, 2, 1, 3, 2, 1, 1, 2, 2};\n"
+                "    unsigned runs = 0, alternations = 0, last = 2;\n"
+                "    for (unsigned u = 0; u < 1200; u++) {\n"
+                f"        {count_stmt}\n"
+                "        unsigned ran = 0;\n"
+                "        if (nk_enhancement_gate_30hz()) { ran = 1; runs++; }\n"
+                "        if (ran != last) alternations++;\n"
+                "        last = ran;\n"
+                "        vcount += vblanks[u % 12];\n"
+                "    }\n"
+                "    printf(\"%u %u\\n\", runs, alternations);\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            exe = tmp / "drops.exe"
+            subprocess.run([GCC, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function",
+                            "-o", str(exe), str(harness)], check=True, capture_output=True)
+            out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
+            runs, alternations = (int(v) for v in out.split())
+            self.assertEqual(runs, 600)
+            self.assertEqual(alternations, 1200)
+
+    def test_data_sites_and_files_reach_the_generated_start_up(self) -> None:
+        """Data sites become a verified load-time patch; data files a verified registration."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            words = dict(self.words)
+            words[0x00001800] = 21           # s32 count in .data
+            words[0x00001804] = 0x3F800000   # f32 1.0 in .data
+            sections = (
+                (".text", 0x00001000, 0x700, 6),  # alloc + exec
+                (".data", 0x00001800, 0x10, 3),   # alloc + write
+            )
+            elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", words, self.entry, sections)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            symbols["synth_wait_table"] = "0x00001800"
+            symbols["synth_code_as_data"] = "0x00001200"
+            pkg["data_sites"] = [
+                {"id": "D_COUNT", "symbol": "synth_wait_table", "offset": 0, "type": "s32",
+                 "stock_digest": hashlib.sha256(struct.pack("<i", 21)).hexdigest(),
+                 "transform": "count_x2"},
+                {"id": "D_STEP", "symbol": "synth_wait_table", "offset": 4, "type": "f32",
+                 "stock_digest": hashlib.sha256(struct.pack("<f", 1.0)).hexdigest(),
+                 "transform": "step_x0.5"},
+            ]
+            csv = b"Name,Wait,Speed\r\nlabel,frames,rate\r\na,30,0.25\r\nb,12,1.5\r\n"
+            data_root = tmp / "game" / "xbdata" / "pack.xb.d" / "data" / "param"
+            data_root.mkdir(parents=True)
+            (data_root / "Timing.csv").write_bytes(csv)
+            pkg["data_files"] = [{
+                "id": "F_TIMING", "path": "data/param/timing.csv",
+                "sha256": hashlib.sha256(csv).hexdigest(), "format": "csv",
+                "header_row": 0, "first_data_row": 2,
+                "cells": [{"column": "Wait", "transform": "count_x2"},
+                          {"column": "Speed", "transform": "step_x0.5"}],
+            }]
+            elf_path = tmp / "synth.elf"
+            pkg_path = tmp / "data.json"
+            pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+            (tmp / "data.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+            out_dir = tmp / "data"
+            out_dir.mkdir()
+            rc, output, files = self._run_codegen(
+                elf_path, out_dir / "out.c",
+                [f"--enhancement-package={pkg_path}", f"--enhancement-data-root={tmp / 'game'}"])
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            self.assertIn("if (nk_enhancement_on()) nk_enhancement_apply_data();", combined)
+            self.assertIn("sr_enhancement_register_updates(&nk_enhancement_updates);", combined)
+            self.assertIn("nk_enh_data_new_0[] = {0x2a, 0x00, 0x00, 0x00}", combined)  # 21 -> 42
+            self.assertIn("nk_enh_data_new_1[] = {0x00, 0x00, 0x00, 0x3f}", combined)  # 1.0 -> 0.5
+            self.assertIn("ENHANCEMENT_DATA_MISMATCH: data site D_COUNT", combined)
+            rewritten = b"Name,Wait,Speed\r\nlabel,frames,rate\r\na,60,0.125\r\nb,24,0.75\r\n"
+            self.assertIn(f"nk_enh_file_data_0[] = {{{', '.join(f'0x{b:02x}' for b in rewritten)}}}",
+                          combined)
+            self.assertIn('sr_enhancement_file_register("data/param/timing.csv", nk_enh_file_sha_0, '
+                          f"nk_enh_file_data_0, {len(rewritten)}u)", combined)
+            if GCC:
+                # The start-up block is C the runtime build compiles; check it is valid C.
+                checked = subprocess.run(
+                    [GCC, "-std=gnu11", "-fsyntax-only", "-Wall", "-Werror", "-Wno-unused-function",
+                     f"-I{ROOT / 'src' / 'rt'}", f"-I{out_dir}", str(out_dir / "out.c")],
+                    capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr[-2000:])
+
+            refusals = (
+                ("no-data-root", None, [], "need --enhancement-data-root"),
+                ("code-as-data", {"symbol": "synth_code_as_data"}, None, "initialised data"),
+                ("data-digest", {"stock_digest": "0" * 64}, None, "Stock data digest mismatch"),
+            )
+            for name, change, extra, why in refusals:
+                with self.subTest(name):
+                    bad = copy.deepcopy(pkg)
+                    if change:
+                        bad["data_sites"][0].update(change)
+                    bad_path = tmp / f"{name}.json"
+                    bad_path.write_text(json.dumps(bad), encoding="utf-8")
+                    (tmp / f"{name}.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+                    bad_dir = tmp / name
+                    bad_dir.mkdir()
+                    args = [f"--enhancement-package={bad_path}"]
+                    args += extra if extra is not None else [f"--enhancement-data-root={tmp / 'game'}"]
+                    rc, output, files = self._run_codegen(elf_path, bad_dir / "out.c", args)
+                    self.assertEqual(rc, 1, output)
+                    self.assertIn(why, output)
+                    self.assertEqual(files, {})
+
+    def test_float_pair_rewrite_scales_the_whole_constant(self) -> None:
+        """lui+ori of one register names a float exactly; anything else refuses."""
+        site = {"id": "PAIR", "transform": "decay_k_to_1-sqrt(1-k)"}
+        lui, ori = 0x3C023F4C, 0x3442CCCD  # lui v0,0x3f4c; ori v0,v0,0xcccd = 0.8f
+        hi, lo = plan_float_pair_rewrite(site, lui, ori)
+        bits = ((hi["word"] & 0xFFFF) << 16) | (lo["word"] & 0xFFFF)
+        expected = struct.unpack("<I", struct.pack("<f", 1.0 - (1.0 - struct.unpack(
+            "<f", struct.pack("<I", 0x3F4CCCCD))[0]) ** 0.5))[0]
+        self.assertEqual(bits, expected)
+        self.assertEqual(hi["word"] >> 16, lui >> 16)
+        self.assertEqual(lo["word"] >> 16, ori >> 16)
+        step = {"id": "PAIR", "transform": "step_x0.5"}
+        hi, lo = plan_float_pair_rewrite(step, lui, ori)
+        self.assertEqual(((hi["word"] & 0xFFFF) << 16) | (lo["word"] & 0xFFFF), 0x3ECCCCCD)  # 0.4f
+        for w0, w1, why in (
+            (lui, 0x3463CCCD, "ori of the lui's register"),   # ori v1,v1 after lui v0
+            (0x24020002, ori, "starts with lui"),
+            (lui, 0x2442CCCD, "ori of the lui's register"),   # addiu, not ori
+        ):
+            with self.subTest(w0=hex(w0), w1=hex(w1)):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    plan_float_pair_rewrite(step, w0, w1)
+                self.assertIn(why, str(ctx.exception))
+        with self.assertRaises(EnhancementPackageError):
+            plan_float_pair_rewrite({"id": "PAIR", "transform": "gate_30hz"}, lui, ori)
 
     def test_rewrite_planner_is_defined_or_refuses(self) -> None:
         """Each (transform, instruction) pair has one defined rewrite; anything else refuses."""
@@ -948,6 +1254,218 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         finally:
             codegen.ENHANCEMENT_SITES, codegen.LLE_CPU = saved
             codegen.ENHANCEMENT_APPLIED.clear()
+
+
+class TestEnhancementDataTransforms(unittest.TestCase):
+    """Data values and CSV cells rescale exactly or refuse."""
+
+    def test_data_values(self) -> None:
+        self.assertEqual(plan_data_value("count_x2", "s32", struct.pack("<i", -3)), struct.pack("<i", -6))
+        self.assertEqual(plan_data_value("step_x0.5", "u16", struct.pack("<H", 40)), struct.pack("<H", 20))
+        self.assertEqual(plan_data_value("retention_m_to_sqrt(m)", "f32", struct.pack("<f", 0.25)),
+                         struct.pack("<f", 0.5))
+        for transform, dtype, raw in (
+            ("step_x0.5", "s32", struct.pack("<i", 7)),          # odd count
+            ("count_x2", "u8", struct.pack("<B", 200)),          # overflow
+            ("decay_k_to_1-sqrt(1-k)", "s32", struct.pack("<i", 1)),
+            ("decay_k_to_1-sqrt(1-k)", "f32", struct.pack("<f", 1.5)),
+        ):
+            with self.subTest(transform=transform, dtype=dtype), self.assertRaises(ValueError):
+                plan_data_value(transform, dtype, raw)
+
+    def test_data_sites_resolve_fail_closed(self) -> None:
+        stock = struct.pack("<2i", 15, 45)
+        pkg = {
+            "schema_version": 1, "id": "synth.data", "display_name": "Synthetic data", "version": "1.0.0",
+            "category": "timing_frame_presentation", "target_title_id": "synthetic-allegrex-v1",
+            "game_version": "1.00", "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "Every roll stays on alternate updates."},
+            "sites": [{"id": "S1", "function": "f", "insn_offset": 0,
+                       "stock_digest": "b" * 64, "transform": "count_x2"}],
+            "data_sites": [{"id": "D1", "symbol": "table", "offset": 4, "type": "s32", "count": 2,
+                            "stock_digest": hashlib.sha256(stock).hexdigest(), "transform": "count_x2"}],
+        }
+        image = {0x104: stock}
+        resolved = verify_and_resolve_data_sites(
+            pkg, symbol_to_addr={"table": 0x100}, read_data_fn=lambda a, n: image.get(a))
+        self.assertEqual(resolved, [{"id": "D1", "addr": 0x104, "stock": stock,
+                                     "data": struct.pack("<2i", 30, 90)}])
+        with self.assertRaisesRegex(EnhancementPackageError, "Cannot resolve data symbol"):
+            verify_and_resolve_data_sites(pkg, symbol_to_addr={}, read_data_fn=lambda a, n: image.get(a))
+        with self.assertRaisesRegex(EnhancementPackageError, "initialised data"):
+            verify_and_resolve_data_sites(pkg, symbol_to_addr={"table": 0x100}, read_data_fn=lambda a, n: None)
+        overlap = copy.deepcopy(pkg)
+        overlap["data_sites"].append(dict(overlap["data_sites"][0], id="D2", offset=8))
+        with self.assertRaisesRegex(EnhancementPackageError, "overlaps"):
+            validate_package(overlap)
+        misaligned = copy.deepcopy(pkg)
+        misaligned["data_sites"][0]["offset"] = 2
+        with self.assertRaisesRegex(EnhancementPackageError, "not aligned"):
+            validate_package(misaligned)
+        gate = copy.deepcopy(pkg)
+        gate["data_sites"][0]["transform"] = "gate_30hz"
+        with self.assertRaisesRegex(EnhancementPackageError, "has no data rescale"):
+            validate_package(gate)
+
+    def _csv_entry(self, csv: bytes, cells: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"id": "F1", "path": "data/p/t.csv", "sha256": hashlib.sha256(csv).hexdigest(),
+                "format": "csv", "header_row": 0, "first_data_row": 1, "cells": cells}
+
+    def test_csv_cells(self) -> None:
+        csv = b"Key,A,B\nx,3,0.1\ny,10,2.50\n\n"
+        out = transform_data_file(self._csv_entry(csv, [
+            {"column": "A", "transform": "count_x2", "rows": [1]},
+            {"column": "B", "transform": "decay_k_to_1-sqrt(1-k)", "rows": [0]},
+        ]), csv)
+        lines = out.split(b"\n")
+        self.assertEqual(lines[1].split(b",")[1], b"3")            # row 0 left alone
+        self.assertEqual(lines[2].split(b",")[1], b"20")
+        decayed = struct.unpack("<f", struct.pack("<f", 1.0 - (1.0 - struct.unpack(
+            "<f", struct.pack("<f", 0.1))[0]) ** 0.5))[0]
+        cell = float(lines[1].split(b",")[2])
+        self.assertEqual(struct.unpack("<f", struct.pack("<f", cell))[0], decayed)
+        self.assertEqual(lines[2].split(b",")[2], b"2.50")          # row 1 left alone
+        self.assertEqual(lines[3:], [b"", b""])                     # trailing lines kept
+        for cells, why in (
+            ([{"column": "C", "transform": "count_x2"}], "not exactly one header"),
+            ([{"column": "Key", "transform": "count_x2"}], "not a plain decimal"),
+            ([{"column": "A", "transform": "step_x0.5"}], "no exact rescale"),
+            ([{"column": "A", "transform": "count_x2", "rows": [5]}], "past the last data row"),
+        ):
+            with self.subTest(cells=cells), self.assertRaises(EnhancementPackageError) as ctx:
+                transform_data_file(self._csv_entry(csv, cells), csv)
+            self.assertIn(why, str(ctx.exception))
+        with self.assertRaisesRegex(EnhancementPackageError, "does not match its sha256"):
+            transform_data_file(self._csv_entry(csv, [{"column": "A", "transform": "count_x2"}]), csv + b"x")
+
+    def test_find_data_file_matches_path_without_case_and_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            for i, body in enumerate((b"old", b"new")):
+                folder = root / f"a{i}.xb.d" / "Data" / "P"
+                folder.mkdir(parents=True)
+                (folder / "T.CSV").write_bytes(body)
+            entry = self._csv_entry(b"new", [{"column": "A", "transform": "count_x2"}])
+            self.assertEqual(find_data_file(entry, root), b"new")
+            entry["sha256"] = hashlib.sha256(b"other").hexdigest()
+            with self.assertRaisesRegex(EnhancementPackageError, "No file data/p/t.csv"):
+                find_data_file(entry, root)
+            entry["path"] = "p/t.csv/../t.csv"
+            with self.assertRaisesRegex(EnhancementPackageError, "relative disc path"):
+                validate_package({
+                    "schema_version": 1, "id": "synth.data", "display_name": "Synthetic data",
+                    "version": "1.0.0", "category": "timing_frame_presentation",
+                    "target_title_id": "synthetic-allegrex-v1", "game_version": "1.00",
+                    "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
+                    "rng_policy": {"mode": "subtick_30hz", "reason": "Every roll stays on alternate updates."},
+                    "sites": [{"id": "S1", "function": "f", "insn_offset": 0,
+                               "stock_digest": "b" * 64, "transform": "count_x2"}],
+                    "data_files": [entry],
+                })
+
+
+def _f32_of(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+
+
+def _bits_of(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
+    """offset_x2, window_start_x2, accel_x0.25, launch_velocity_x0.5 and f64_high."""
+
+    def _plan(self, transform: str, word: int, **extra: Any) -> dict[str, Any]:
+        return plan_site_rewrite(dict({"id": "S", "transform": transform}, **extra), word)
+
+    def test_offsets_and_windows(self) -> None:
+        # addiu v0,v0,2 (a lookahead D + 2): offset_x2 doubles the term even though rt == rs.
+        self.assertEqual(self._plan("offset_x2", 0x24420002)["word"], 0x24420004)
+        self.assertEqual(self._plan("offset_x2", 0x2442FFFD)["word"], 0x2442FFFA)  # -3 -> -6
+        # addiu v1,a1,-4 (window head-4 .. head-1, 3 updates) -> -7 (6 updates).
+        self.assertEqual(self._plan("window_start_x2", 0x24A3FFFC)["word"], 0x24A3FFF9)
+        for transform, word, why in (
+            ("offset_x2", 0x24420000, "nonzero"),
+            ("offset_x2", 0x28420002, "addi/addiu"),          # slti
+            ("window_start_x2", 0x24A3FFFF, "-2 or less"),     # -1 has no span
+            ("window_start_x2", 0x24A30004, "-2 or less"),
+        ):
+            with self.subTest(transform=transform, word=hex(word)):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    self._plan(transform, word)
+                self.assertIn(why, str(ctx.exception))
+
+    def test_accel_and_double_upper_words(self) -> None:
+        # lui v0,0x3d05 (the upper half of 0.0326667): two exponent steps are exact.
+        word = self._plan("accel_x0.25", 0x3C023D05)["word"]
+        self.assertEqual(_f32_of((word & 0xFFFF) << 16), _f32_of(0x3D050000) / 4)
+        with self.assertRaises(EnhancementPackageError):
+            self._plan("accel_x0.25", 0x24020002)
+        # lui a0,0x4011 is the upper word of the double 4.25: halved is 2.125 (0x4001...).
+        hi = self._plan("step_x0.5", 0x3C044011, operand="f64_high")["word"] & 0xFFFF
+        self.assertEqual(hi, 0x4001)
+        hi = self._plan("count_x2", 0x3C04C011, operand="f64_high")["word"] & 0xFFFF  # -4.25 -> -8.5
+        self.assertEqual(hi, 0xC021)
+        self.assertEqual(struct.unpack(">d", bytes.fromhex("4021000000000000"))[0], 8.5)
+        with self.assertRaises(EnhancementPackageError):
+            self._plan("decay_k_to_1-sqrt(1-k)", 0x3C043FE0, operand="f64_high")
+
+    def test_launch_velocity_matches_the_30hz_arc_every_second_update(self) -> None:
+        """v0' = v0/2 + g/8 with g' = g/4 puts a semi-implicit Euler arc on the same points."""
+        v0, g = _f32_of(0xBE99999A), _f32_of(0x3D05CD7C)   # -0.3 and 0.032666668
+        words = {
+            0x1000: 0x3C02BE99, 0x1004: 0x3442999A,       # lui/ori v0 = v0
+            0x1100: 0x3C023D05, 0x1140: 0x3442CD7C,       # lui ... ori (not adjacent) = g
+        }
+        pkg = {
+            "schema_version": 1, "id": "synth.jump", "display_name": "Synthetic jump", "version": "1.0.0",
+            "category": "timing_frame_presentation", "target_title_id": "synthetic-allegrex-v1",
+            "game_version": "1.00", "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "No random rolls in this fixture."},
+            "sites": [
+                {"id": "V0", "function": "jump", "insn_offset": 0, "word_count": 2,
+                 "stock_digest": compute_stock_words_digest([words[0x1000], words[0x1004]]),
+                 "transform": "launch_velocity_x0.5", "acceleration_site": "G"},
+                {"id": "G", "function": "jump", "insn_offset": 0x100,
+                 "stock_digest": compute_stock_words_digest([words[0x1100]]),
+                 "low_insn_offset": 0x140, "low_stock_digest": compute_stock_words_digest([words[0x1140]]),
+                 "transform": "accel_x0.25"},
+            ],
+        }
+        resolved = verify_and_resolve_sites(
+            pkg, executable_sha256="a" * 64, symbol_to_addr={"jump": 0x1000},
+            read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+        new_v0 = _f32_of(((resolved[0x1000]["rewrite"]["word"] & 0xFFFF) << 16)
+                         | (resolved[0x1004]["rewrite"]["word"] & 0xFFFF))
+        new_g = _f32_of((resolved[0x1100]["rewrite"]["word"] & 0xFFFF) << 16 | 0xCD7C)
+        self.assertEqual(new_v0, _f32_of(_bits_of(v0 / 2 + g / 8)))
+        self.assertNotIn(0x1140, resolved)   # the pinned low word is read, never rewritten
+
+        def arc(v: float, a: float, steps: int) -> list[float]:
+            y, out = 0.0, []
+            for _ in range(steps):
+                v += a
+                y += v
+                out.append(y)
+            return out
+        stock, enhanced = arc(v0, g, 20), arc(new_v0, new_g, 40)
+        for n in range(20):
+            self.assertAlmostEqual(stock[n], enhanced[2 * n + 1], places=5)
+
+        no_pin = copy.deepcopy(pkg)
+        del no_pin["sites"][1]["low_insn_offset"], no_pin["sites"][1]["low_stock_digest"]
+        with self.assertRaisesRegex(EnhancementPackageError, "does not pin its whole float"):
+            verify_and_resolve_sites(
+                no_pin, executable_sha256="a" * 64, symbol_to_addr={"jump": 0x1000},
+                read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+        wrong = copy.deepcopy(pkg)
+        wrong["sites"][1]["transform"] = "step_x0.5"
+        with self.assertRaisesRegex(EnhancementPackageError, "must be an accel_x0.25 site"):
+            validate_package(wrong)
+        missing = copy.deepcopy(pkg)
+        del missing["sites"][0]["acceleration_site"]
+        with self.assertRaisesRegex(EnhancementPackageError, "needs acceleration_site"):
+            validate_package(missing)
 
 
 class TestEnhancementBuildPackageWiring(unittest.TestCase):

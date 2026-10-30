@@ -50,10 +50,11 @@
 #define PRESENT_FRAMES 3
 #define HUD_W 240
 #define HUD_H 108
+#define LOGIC_NOTICE_H 22
 /* The developer profile HUD (#314): the live view's rows and a bar per closed interval. */
 #define PROFILE_HUD_W 560
 #define PROFILE_HUD_H 232
-#define HUD_STAGING_BYTES (PROFILE_HUD_W * PROFILE_HUD_H * 4)
+#define HUD_STAGING_BYTES (PROFILE_HUD_W * (PROFILE_HUD_H + LOGIC_NOTICE_H) * 4)
 
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
@@ -135,6 +136,7 @@ uint64_t sdl3vk_frame_semaphore_generation(void) {
 static int s_hud_enabled = 0;    /* SDL3VK_HUD_*: 0 off */
 static int s_developer = 0;      /* SR_DEVELOPER_MODE: the profile HUD is offered */
 static int (*s_audio_active_cb)(void) = NULL;
+static int (*s_logic_slowed_cb)(unsigned *rate) = NULL;
 static SDL_Surface  *s_hud_surf = NULL;
 static SDL_Renderer *s_hud_ren = NULL;
 static VkFormat      s_hud_fmt = VK_FORMAT_UNDEFINED;
@@ -173,6 +175,10 @@ void sdl3vk_hud_set_enabled(int enabled) {
 
 void sdl3vk_set_audio_active_cb(int (*cb)(void)) {
     s_audio_active_cb = cb;
+}
+
+void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
+    s_logic_slowed_cb = cb;
 }
 
 static uint32_t s_buttons;
@@ -1504,10 +1510,17 @@ static void draw_profile_hud(SDL_Renderer *ren, int w, int h, double game_fps, d
 
 static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_img, int swap_w, int swap_h) {
     /* The profile HUD needs a window it fits in; a smaller one shows the performance HUD. */
+    /* 60 FPS logic that has fallen behind plays slower than the original game; say so even
+     * with the HUD off (section 9.5 of docs/ENHANCEMENT_CONTRACT.md). */
+    unsigned slow_rate = 0;
+    int slowed = s_logic_slowed_cb && s_logic_slowed_cb(&slow_rate);
+    int notice_only = !s_hud_enabled;
     int profile = s_hud_enabled == SDL3VK_HUD_PROFILE && swap_w >= PROFILE_HUD_W &&
-                  swap_h >= PROFILE_HUD_H;
+                  swap_h >= PROFILE_HUD_H + LOGIC_NOTICE_H;
     int hud_w = profile ? PROFILE_HUD_W : HUD_W;
-    int hud_h = profile ? PROFILE_HUD_H : HUD_H;
+    int hud_h = notice_only ? 0 : profile ? PROFILE_HUD_H : HUD_H;
+    if (!slowed && notice_only) return;
+    if (slowed) hud_h += LOGIC_NOTICE_H;
     if (!f || !f->hud_staging_map || swap_w < hud_w || swap_h < hud_h) return;
 
     if (!s_hud_surf || s_hud_fmt != s_swap_fmt || s_hud_surf->w != hud_w || s_hud_surf->h != hud_h) {
@@ -1567,6 +1580,12 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
         snprintf(line, sizeof(line), "Audio:     %s",
                  audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
         SDL_RenderDebugText(s_hud_ren, 12, 90, line);
+    }
+    if (slowed) {
+        char notice[64];
+        snprintf(notice, sizeof(notice), "60 FPS logic: %u/s - SLOWED", slow_rate);
+        SDL_SetRenderDrawColor(s_hud_ren, 255, 90, 80, 255);
+        SDL_RenderDebugText(s_hud_ren, 12, (float)(hud_h - LOGIC_NOTICE_H + 6), notice);
     }
 
     SDL_RenderPresent(s_hud_ren);
@@ -1705,7 +1724,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                            1, &blt, plan.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
         }
 
-        if (s_hud_enabled && f->hud_staging_map) {
+        if ((s_hud_enabled || s_logic_slowed_cb) && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
         }
 

@@ -75,8 +75,8 @@ class TestDCOPolicy(RuleStatementAssertions):
         # These are legal attestations: preserve the human sign-off, waiver,
         # third-party-source and AI-assistance statements verbatim.
         for legal_line in (
-            "- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](../docs/DCO_POLICY.md).",
-            "- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md). Outside contributions always need the first box.",
+            "- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).",
+            "- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#51-maintainer-standing-waiver). Outside contributions always need the first box.",
             "- [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.",
             "- [ ] Or: material AI assistance is disclosed below, with the source needed for review.",
         ):
@@ -206,6 +206,10 @@ class TestDCOPolicy(RuleStatementAssertions):
             "- [ ] Or: material AI assistance is disclosed below, with the source needed for review.",
             pr_tmpl,
         )
+        # A pull request body resolves relative links against the repository root URL, not the
+        # template's folder, so "../docs/X.md" opens a 404 page; template links must be absolute.
+        relative = re.findall(r"\]\((?!https?://|#|mailto:)([^)]+)\)", pr_tmpl)
+        self.assertEqual(relative, [], "PR template links must be absolute GitHub URLs")
 
     def test_dco_signoff_regex(self):
         pattern = re.compile(r"^Signed-off-by:\s+([^<]+)\s+<([^>]+)>$", re.MULTILINE)

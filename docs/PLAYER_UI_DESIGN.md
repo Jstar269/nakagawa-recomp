@@ -136,7 +136,7 @@ Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200
 device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
-the window. A larger window keeps its density and gains room. Clay clips at most ten containers per layout: shorten
+the window. A larger window keeps its density and gains room. Clay clips at most 100 containers per layout: shorten
 long text with `nk_ui_text_clamp` instead of clipping it.
 
 Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
@@ -165,11 +165,11 @@ frame until the command changes; the Vulkan backend will use the shader.
 | Component | Call | Spec |
 | --- | --- | --- |
 | Button | `nk_ui_button(ui, id, label, flags)` | label centred, `LABEL` caps; 44 px (`_LARGE` 52 with `LABEL_L`, `_SMALL` 34 with `LABEL_S`); fits its label (`_GROW` fills); primary = accent fill, ink text; secondary = clear fill, `line_strong` edge, paper text; danger = `error` text; disabled = `dim` text, `line` edge (primary keeps a `surface_high` fill) |
-| Game card | `nk_ui_tile(ui, id, &spec)` | `surface_raised`, `line` edge, radius 12; art panel flush with the top (tint per title, badge top-left; the disc's own `ICON0.PNG` once read, a showcase demo's picture, or the "ART FROM YOUR DISC" placeholder); name in `TILE_TITLE` (two lines); meta row: marker + status word in the status colour, disc ID right in `dim` |
+| Game card | `nk_ui_tile(ui, id, &spec)` | `surface_raised`, `line` edge, radius 12; art panel flush with the top (tint per title, badge top-left; the disc's own `ICON0.PNG` once read, a showcase demo's picture, or the "ART FROM YOUR DISC" placeholder); name in `TILE_TITLE` (two lines); meta row: marker + status word in the status colour, disc ID right in `dim`. The badge says YOUR DISC, or BETA / UNOFFICIAL for a disc whose own ID is not a retail disc ID (a beta or prototype; its disc ID is the X... key Nakagawa derived from its contents, [Betas and other non-retail discs](YOUR_OWN_GAMES.md#betas-and-other-non-retail-discs)) |
 | Add card | `nk_ui_add_tile` | ground fill, `line_strong` edge; 44 px outlined plus in accent, centred name and one-line note |
 | Hero | `nk_ui_hero` | the title's art panel at 480:272 with a badge caption and the size note; the disc's `PIC1.PNG` fills it, else its `ICON0.PNG` sits centred, else the placeholder |
 | Status pill | `nk_ui_status_pill` | 26 px, `surface_high`, `line_strong`, radius 4, `LABEL_S` in the status colour, marker first |
-| Tag | `nk_ui_tag` | as the pill, `muted` text (YOUR DISC, SHOWCASE DEMO) |
+| Tag | `nk_ui_tag` | as the pill, `muted` text (YOUR DISC, BETA / UNOFFICIAL, SHOWCASE DEMO) |
 | Badge | `nk_ui_badge` | 20 px on `art_scrim`, radius 4, `MICRO` |
 | Eyebrow | `nk_ui_eyebrow` | `EYEBROW`; names a section or a card |
 | Card | `nk_ui_card_begin` | `surface_raised`, `line`, radius 12, 16/20 px padding |
@@ -237,7 +237,7 @@ note in an inset `info` box). The detail follows the package state (ready, check
 missing, starting, running), never the primary action: while its game runs, a ready package says "Running now.
 Stop the game to rebuild or change settings." The input note about decrypted files shows only while the package
 still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
-pill and tag, one action row on the column's left edge with every button 52 px (the primary action, PLAY when
+pill and tag (YOUR DISC, or BETA / UNOFFICIAL as on the card), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
 the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
 BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
 and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
@@ -245,7 +245,12 @@ one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, the
 when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
 status word through the table in [Status words](COMPATIBILITY.md#status-words). The status word itself describes
 the project's test route and read as a claim about the user's game (#1297), so only developer mode names it, in a
-`FOOTNOTE`. Under the card, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
+`FOOTNOTE`. A title with an enhancement package then has an ENHANCEMENTS card (eyebrow and an OPTIONAL tag): the
+switch 60 FPS GAME LOGIC: ON or OFF (`PRIMARY` while on, never the default focus, disabled while a game starts or
+runs or the title's package builds), then a `BODY_S` line saying it is an optional enhancement made for this game
+and that off plays the original game as released ([ENHANCEMENT_CONTRACT.md](ENHANCEMENT_CONTRACT.md#9-declarative-frame-rate-rescale-packages-60-hz-logic)
+section 9). When the switch is saved on but the package is gone, the card stays and says why in `error`, and the
+primary action reads ENHANCEMENT UNAVAILABLE. Under the cards, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
 the showcase demos, and also while that game starts or runs, a package builds or a disc is being copied. Prompt
 bar: MOVE, SELECT, BACK.
 
@@ -295,7 +300,7 @@ MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is im
 
 The card a disc gets when it is added from the Library ([#1302](https://github.com/Jstar269/nakagawa-recomp/issues/1302)),
 in the dialog card the wizard and error screens use, 820 px wide. A status pill (GAME FOUND `ready`, NOT TESTED YET
-`info`, CAN'T PLAY YET or NOT ON THE LIST YET `error`) with the disc ID and YOUR DISC tags; the game's name in
+`info`, CAN'T PLAY YET or NOT ON THE LIST YET `error`) with the disc ID and YOUR DISC (or BETA / UNOFFICIAL) tags; the game's name in
 `TITLE` ("PSP game" when the disc has none); one `BODY` lead saying what Nakagawa can do with it; then the checks in an
 inset box, one row each: the status word in its colour (132 px), what was checked (124 px), and the sentence in
 `muted`, two lines of it from a 680 px tall window and one below that. Every row is a player sentence from
