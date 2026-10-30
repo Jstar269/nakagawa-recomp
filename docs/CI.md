@@ -634,22 +634,36 @@ belongs to a new subsystem.
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
 workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
 native gates, cancels superseded PR runs, and avoids repeating the full matrix on
-ordinary main pushes. The workflow uses dependency/tool caches only (pip);
-compiled runtime objects and generated shader/code output are not cached across
-jobs or runs, so the repository's content-addressed invalidation and freshness
-checks remain the source of truth. No volatile dollar figure is part of the
-repository contract.
+ordinary main pushes. Besides dependency and tool caches (pip, the SDL3 installs),
+the only cache is the Windows compiler cache below. Build trees and generated
+shader/code output are not cached across jobs or runs, so the repository's
+content-addressed invalidation and freshness checks remain the source of truth.
+No volatile dollar figure is part of the repository contract.
 
-Inside one `windows_runtime` part, repeated compiles of the same sources (the
-platform ladder builds the runtime once per rung, the smoke part once per smoke)
-go through a job-local `ccache` (#735 item 2). It starts empty under
-`RUNNER_TEMP`, keys each entry on the compiler, the command line and the contents
-of every header, and is never restored, uploaded or shared with another job or
-run. Make still decides what to build; the cache only returns an object for an
-identical compile. `gcc` is a native symlink to the UCRT64 toolchain's
-`ccache.exe`, so `CC` stays `gcc`, and SDL3 discovery and the toolchain check
-(`tools/nk_doctor_checks.py`) follow the link into `/ucrt64/bin`. Each part's last
-step prints the cache statistics and fails if no compile went through the cache.
+Every `windows_runtime` compile goes through `ccache` (#735 item 2; owner decisions
+of 2026-10-27 and 2026-10-30). Inside one part it serves repeated compiles of the
+same sources (the platform ladder builds the runtime once per rung, the smoke part
+once per smoke). Between runs it is persisted with the Actions cache:
+
+- Each part restores its own entry. The key names the part, the toolchain (the
+  installed package versions and `gcc -v`), the flags (`Makefile` and `mk/`) and
+  the exact hashes of every file a compile can read or be generated from. Without
+  an exact match it restores the newest entry for the same part and toolchain,
+  preferring one with the same flags.
+- ccache keys each object on the compiler's contents (`compiler_check=content`,
+  since every run installs the toolchain afresh), the full command line and the
+  contents of every header. A restored entry is used only for an identical
+  compile, and Make still decides what to build.
+- Only a run of `main` on `main` saves it: a push, the nightly schedule or a manual
+  dispatch (`save_compiler_cache` from `tools/ci_paths.py`). Pull requests and merge
+  groups restore it and never write it. Before a save, entries the run did not
+  use are evicted, so the saved cache holds exactly that run's compiles.
+
+`gcc` is a native symlink to the UCRT64 toolchain's `ccache.exe`, so `CC` stays
+`gcc`, and SDL3 discovery and the toolchain check (`tools/nk_doctor_checks.py`)
+follow the link into `/ucrt64/bin`. Each part's last step prints the cache
+statistics, including which saved entry was restored, and fails if no compile
+went through the cache.
 
 Hosted GitHub Actions execution is active. The `main` ruleset requires `Trusted CI verdict`
 and `CodeQL` on exact pull-request heads (since 2026-10-29, #373). Path-gated workflows also run the applicable
