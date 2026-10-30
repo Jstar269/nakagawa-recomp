@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 104)
+        self.assertEqual(len(routes), 105)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117, 119}, set(ids))
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 119, 120}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3111,6 +3111,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
                 "PSP-TRACE-001",
+                # The 2026-10-29 acceptance-eligible #325 runs: hle-intr-cells of 77a1a5e3 and
+                # intr-cause of 2c199df8.
+                "PSP-HLE-INTR-001", "PSP-INTR-CAUSE-001",
             },
         )
         self.assertEqual(
@@ -6258,7 +6261,9 @@ class HleIssuesProbeTests(unittest.TestCase):
 
     def _shared(self) -> str:
         text = self.probe
-        for *_head, macro, _test, _log in reversed(self.CASES):
+        # Every case section, including the ones with their own test class below.
+        macros = [macro for *_head, macro, _test, _log in self.CASES]
+        for macro in ["HLE_CASE_VFPU_FORMS", "HLE_CASE_INTR_CAUSE", *reversed(macros)]:
             start = text.rindex(f"#if PSP_ORACLE_CASE == {macro}\n")
             end = text.index(f"#endif /* {macro} */", start) + len(f"#endif /* {macro} */")
             text = text[:start] + text[end:]
@@ -6400,6 +6405,7 @@ class HleIssuesProbeTests(unittest.TestCase):
             "!s_hle_stop_requested", "offset < length",
             "(uint32_t)(sceKernelGetSystemTimeLow() - t) < hold",
             "(uint32_t)(sceKernelGetSystemTimeLow() - t0) < us",
+            "(uint32_t)(sceKernelGetSystemTimeLow() - base) < us",
         ]))
         for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceKernelAllocPartitionMemory"):
             self.assertNotIn(banned, code)
@@ -6440,7 +6446,7 @@ class HleIssuesProbeTests(unittest.TestCase):
         helpers = {name for name, body in functions.items()
                    if self.MEASURED_CALL_RE.search(body) and "hle_step(" not in body
                    and name not in self.HANDLERS}
-        self.assertEqual(helpers, {"ic_vbl_align"})
+        self.assertEqual(helpers, {"ic_vbl_align", "ca_snap"})
         event_re = re.compile(r"\bhle_step\(|\bhle_record\(|" + self.MEASURED_CALL_RE.pattern
                               + r"|\b(?:" + "|".join(sorted(helpers)) + r")\(")
         checked = 0
@@ -6625,11 +6631,21 @@ class HleIssuesProbeTests(unittest.TestCase):
                 self.assertEqual(sum(1 for test in self.manifest["tests"] if test["id"] == test_id), 1)
                 row = by_id[test_id]
                 self.assertEqual(row["status"], "implemented")
-                self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-                for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
-                    self.assertNotIn(absent, row)
-                self.assertIn("No acceptance-eligible capture exists",
-                              row["evidence_note"])
+                if case == "hle-intr-cells":
+                    # Measured by the 2026-10-29 run of 77a1a5e3 (boot 66); everything but the
+                    # done record is cited.
+                    self.assertEqual(row["hardware_evidence"], "MEASURED")
+                    self.assertIn("77a1a5e3", row["measurement_note"])
+                    self.assertIn("acceptance-eligible with 0 blockers", row["measurement_note"])
+                    self.assertEqual(row["uncited_cases"], [f"{case}-done"])
+                    self.assertEqual(row["evidence_cases"], row["case_ids"][:-1])
+                    hle_manifest.measured_evidence_section(row)
+                else:
+                    self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+                    for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
+                        self.assertNotIn(absent, row)
+                    self.assertIn("No acceptance-eligible capture exists",
+                                  row["evidence_note"])
                 self.assertIn("not in the campaign queue", row["evidence_note"])
                 self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
                 self.assertEqual(row["prx"], f"{stem}.prx")
@@ -6776,9 +6792,14 @@ class HleIssuesProbeTests(unittest.TestCase):
         readme = (self.fixture / "README.md").read_text(encoding="utf-8")
         for case, _cid, _stem, _macro, test_id, _log in self.CASES:
             with self.subTest(case=case):
-                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
-                              "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
-                              "single launch, not in the campaign queue) |", hardware)
+                if case == "hle-intr-cells":
+                    self.assertIn(f"| `{case}` | `{test_id}` | `MEASURED` (2026-10-29, `77a1a5e3`, "
+                                  "boot 66; observed earlier from `da97b2c0` without a runner "
+                                  "envelope; single launch, not in the campaign queue) |", hardware)
+                else:
+                    self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
+                                  "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
+                                  "single launch, not in the campaign queue) |", hardware)
                 self.assertIn(f"| `{case}` | `{test_id}` |", readme)
         self.assertIn("probe_hle_issues.c", readme)
 
@@ -7423,6 +7444,179 @@ class VfpuFormsProbeTests(unittest.TestCase):
         self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
         self.assertEqual(row["diagnostic_case_ids"], ["vfpu-forms"])
         self.assertEqual(row["issues"], [326])
+
+
+class IntrCauseProbeTests(unittest.TestCase):
+    """CASE=intr-cause (120, PSP-INTR-CAUSE-001) in probe_hle_issues.c: the #325 COP0
+    interrupt state. The kernel-mode reader only reads COP0 and the interrupt-enable word;
+    nothing is installed; every suspension is resumed on the one path through the window;
+    loops are bounded; each cell writes its step first and no host I/O runs while
+    interrupts are suspended; and the fixed-shape stream matches the registry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        manifest = json.loads((root / "tools" / "psp_oracle" / "manifest.json")
+                              .read_text(encoding="utf-8"))
+        cls.rows = [test for test in manifest["tests"] if test["id"] == "PSP-INTR-CAUSE-001"]
+        start = cls.probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_INTR_CAUSE\n")
+        end = cls.probe.index("#endif /* HLE_CASE_INTR_CAUSE */", start)
+        cls.raw_section = cls.probe[start:end]
+        cls.section = _c_code(cls.raw_section)
+        cls.functions = _c_function_bodies(cls.section)
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),intr-cause)\nCASE_ID = 120\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),intr-cause)\nTARGET = $(BUILD_DIR)/intr_cause\n"
+                      "OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define HLE_CASE_INTR_CAUSE 120\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "intr-cause"\n#define HLE_TEST_ID "PSP-INTR-CAUSE-001"\n'
+                      '#define HLE_LOG "host0:/intr_cause_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "intr-cause").name,
+                         "intr_cause_log.txt")
+        self.assertEqual(_campaign_completeness_contract("intr-cause"), "strict-golden-sequence")
+        self.assertNotIn("intr-cause", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("intr-cause", parse_golden.HLE_OBSERVATION_CASES)
+
+    def test_link_gate_pins_the_imports_exactly(self) -> None:
+        start = re.search(r"^ifeq \(\$\(CASE\),intr-cause\)\n", self.makefile, re.MULTILINE).start()
+        block = self.makefile[start:self.makefile.index("\nendif\n", start)]
+        self.assertIn("LIBS += -lpspkubridge\n", block)
+        pins = dict(re.findall(r"--exact-library (\w+)=([0-9A-Fx,]+)", block))
+        self.assertEqual(pins, {"KUBridge": "0x9060F69D",
+                                "sceDisplay": "0x984C27E7,0x9C6EAAD7",
+                                "Kernel_Library": "0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B"})
+        self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                         ["InterruptManager", "SystemCtrlForUser"])
+        calls = set(re.findall(r"\b((?:sce|ku|sctrl)\w+)\s*\(", self.section))
+        self.assertEqual(calls, {"kuKernelCall", "sceKernelGetSystemTimeLow", "sceDisplayGetVcount",
+                                 "sceDisplayWaitVblankStart", "sceKernelCpuSuspendIntr",
+                                 "sceKernelCpuResumeIntr", "sceKernelDelayThread"})
+
+    def test_the_kernel_reader_only_reads(self) -> None:
+        reader = self.functions["ca_cop0_read"]
+        raw = self.raw_section[self.raw_section.index("static int ca_cop0_read("):]
+        asm = raw[raw.index("__asm__ volatile("):raw.index(");", raw.index("__asm__ volatile("))]
+        self.assertEqual(re.findall(r'"(\w+) %\d, \$(\d+)', asm),
+                         [("mfc0", "13"), ("mfc0", "12"), ("mfc0", "9"), ("mfic", "0")])
+        self.assertNotRegex(asm, r"\bmt(?:c0|ic)\b|\bsw\b|\bsb\b|\bsh\b")
+        self.assertNotRegex(reader, r"\bsce\w*\(|\bku\w*\(")
+        self.assertEqual(re.findall(r"\bout\[(\d)\] = ", reader), ["0", "1", "2", "3"])
+        self.assertEqual(self.section.count("kuKernelCall("), 1)
+        snap = self.functions["ca_snap"]
+        self.assertIn("kuKernelCall((void *)ca_cop0_read, &arg)", snap)
+        self.assertLess(snap.index("s->cop0[i] = HLE_SENTINEL;"), snap.index("kuKernelCall("))
+        for banned in ("Register", "Set", "Install", "Alarm", "VTimer", "Handler"):
+            self.assertNotRegex(self.section, rf"\bsce\w*{banned}\w*\(")
+
+    def test_window_is_bounded_resumed_and_free_of_host_io(self) -> None:
+        self.assertNotIn("do {", self.section)
+        for banned in ("for (;;)", "goto ", "malloc(", "return"):
+            self.assertNotIn(banned, self.functions["ca_masked"])
+        self.assertEqual(re.findall(r"while \(([^{]*)\) \{", self.section),
+                         ["(uint32_t)(sceKernelGetSystemTimeLow() - base) < us"])
+        for header in re.findall(r"\bfor \(([^)]*)\)", self.section):
+            with self.subTest(loop=header):
+                self.assertRegex(header, r"^unsigned (\w+) = 0; \1 < (?:\d+u|CA_SNAPS|CA_PASSES); \1\+\+$")
+        self.assertIn("#define CA_SNAPS 25u", self.probe)
+        self.assertIn("#define CA_STEP_US 1000u", self.probe)
+        masked = self.functions["ca_masked"]
+        self.assertEqual(masked.count("sceKernelCpuSuspendIntr()"), 1)
+        self.assertEqual(masked.count("sceKernelCpuResumeIntr(flags);"), 1)
+        window = masked[masked.index("sceKernelCpuSuspendIntr()"):
+                        masked.index("sceKernelCpuResumeIntr(flags)")]
+        self.assertNotRegex(window, r"\bhle_\w+\(|snprintf\(")
+        self.assertLess(masked.index("hle_step(name);"), masked.index("sceDisplayWaitVblankStart();"))
+        self.assertLess(masked.index("sceKernelCpuResumeIntr(flags)"), masked.index("hle_record("))
+        self.assertEqual(re.findall(r"sceKernelDelayThread\((\w+)\)", self.section), ["30000"])
+        run = self.functions["hle_run"]
+        self.assertLess(run.index('hle_step("cause-enabled");'), run.index("sceDisplayWaitVblankStart();"))
+        self.assertLess(run.index("ca_snap(&enabled[i]);"), run.index("ca_row("))
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["intr-cause"]
+        self.assertEqual(spec.test_id, "PSP-INTR-CAUSE-001")
+        self.assertEqual(spec.terminal_case, "intr-cause-done")
+        self.assertEqual(len(parse_golden.INTR_CAUSE_CASES), 58)
+        self.assertEqual(counts["cause-masked-p1-t24"], 6)
+        self.assertEqual(counts["cause-window-p0"], 4)
+        self.assertIn(f"#define CA_SNAPS {parse_golden.INTR_CAUSE_SNAPS}u", self.probe)
+        self.assertIn(f"#define CA_PASSES {parse_golden.INTR_CAUSE_PASSES}u", self.probe)
+        self.assertIn(f"struct ca_snapshot enabled[{parse_golden.INTR_CAUSE_ENABLED}];", self.section)
+        self.assertIn('hle_record(name, "PASS", s->cop0[0], w, 6);', self.section)
+        self.assertIn('hle_record(name, "PASS", tr - ts, w, 4);', self.section)
+        for fragment in ('"cause-enabled-%u"', '"cause-masked-p%u-t%02u"', '"cause-resumed-p%u"',
+                         '"cause-window-p%u"'):
+            self.assertIn(fragment, self.raw_section)
+
+    def test_manifest_row_is_a_single_launch_case(self) -> None:
+        self.assertEqual(len(self.rows), 1)
+        row = self.rows[0]
+        self.assertEqual(row["prx"], "intr_cause.prx")
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+        self.assertEqual(row["diagnostic_case_ids"], ["intr-cause"])
+        self.assertEqual(row["issues"], [325])
+        self.assertEqual(row["case_ids"][-1], "intr-cause-done")
+        listed = {api for api in row["apis"] if not api.startswith("Allegrex ")}
+        shared = {"sceIoClose", "sceIoOpen", "sceIoRead", "sceIoWrite", "sceKernelDeleteThread",
+                  "sceKernelExitThread", "sceKernelGetThreadId", "sceKernelSleepThread",
+                  "sceKernelWaitThreadEnd", "sceKernelWakeupThread"}
+        calls = set(re.findall(r"\b((?:sce|ku|sctrl)\w+)\s*\(", self.section))
+        self.assertEqual(listed, shared | calls)
+
+
+class IntrCellsRuntimeContractTests(unittest.TestCase):
+    """The runtime follows the PSP-HLE-INTR-001 handler-return cells (#325): an alarm's non-zero
+    return counts from the call's scheduled time, and a VTimer return below 100 us reschedules
+    100 us on. The behaviour is asserted natively by the selftests named here; these pin the
+    source so a revert to the delivery-time rule or a dropped minimum fails here as well."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.sched = _c_code((root / "src" / "rt" / "sched.c").read_text(encoding="utf-8"))
+        cls.hle = _c_code((root / "src" / "rt" / "hle.c").read_text(encoding="utf-8"))
+        cls.sched_selftest = (root / "src" / "rt" / "sched_selftest.c").read_text(encoding="utf-8")
+        cls.hle_selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _body(code: str, signature: str) -> str:
+        start = code.index(signature)
+        brace = code.index("{", start)
+        return code[brace:_c_close(code, brace) + 1]
+
+    def test_alarm_reschedules_from_the_scheduled_time(self) -> None:
+        body = self._body(self.sched, "static void scheduler_alarm_deliver(int slot)")
+        self.assertIn("const uint64_t scheduled = a->deadline;", body)
+        self.assertLess(body.index("const uint64_t scheduled = a->deadline;"),
+                        body.index("a->deadline = SCHED_WAIT_FOREVER;"))
+        self.assertIn("a->deadline = period > UINT64_MAX - scheduled ? UINT64_MAX : scheduled + period;",
+                      body)
+        self.assertNotIn("s_vtime_us + period", body)
+        self.assertNotIn("delivered_at", body)
+
+    def test_vtimer_return_below_100us_reschedules_100us_on(self) -> None:
+        self.assertIn("#define VTIMER_MIN_DELAY_US 100u", self.hle)
+        body = self._body(self.hle, "static void vtimer_service_one(void)")
+        self.assertIn("t->schedule = scheduled + (delay < VTIMER_MIN_DELAY_US ? VTIMER_MIN_DELAY_US : delay);",
+                      body)
+
+    def test_selftests_carry_the_measured_cells_and_run(self) -> None:
+        self.assertIn("static const uint64_t measured_calls[6] = {10046u, 30049u, 50053u, 70046u, "
+                      "90047u, 110048u};", self.sched_selftest)
+        self.assertIn("    test_alarm_rearm_counts_from_the_scheduled_time();\n", self.sched_selftest)
+        self.assertNotIn("relative_to_delivery", self.sched_selftest)
+        self.assertIn("s_vth_sched[0] == 10000u && s_vth_sched[1] == 10100u && s_vth_sched[2] == 10200u",
+                      self.hle_selftest)
+        self.assertIn("s_vth_sched[1] == 15000u && s_vth_sched[2] == 45000u && s_vth_sched[3] == 46000u",
+                      self.hle_selftest)
+        # Registered in the full run and in the --vtimer subset.
+        self.assertEqual(self.hle_selftest.count(
+            "test_vtimer_handler_return_below_100us_reschedules_100us_on();\n"), 2)
 
 
 class GeSampleProbeTests(unittest.TestCase):
