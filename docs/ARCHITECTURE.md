@@ -139,6 +139,25 @@ title intake remains tracked in issue #309.
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 
+### Analysis IR view (advisory)
+
+`tools/analysis_ir.py` turns the CFG report that `codegen.py --cfg-report=<path>` writes into a
+module-wide view (#305): basic blocks with their delay slots, callables, resume entries and
+continuations from codegen's `emitted_ownership_map`, the call graph, cross-references (code edges
+and jump-table candidates) and, per instruction, the guest registers it reads and writes and its
+memory access. An encoding the register table does not name stays `gpr_known: false`; nothing is
+guessed. The IR is a projection, never an input: codegen does not read it, building it leaves the
+report unchanged, and `analysis_ir.py verify` fails unless every function, block and instruction
+owner matches the report it came from (`ANALYSIS_IR_PARITY PASS`).
+
+External annotations (`nakagawa-analysis-annotations-v1`: address, kind, source, evidence class
+and confidence) from Ghidra, decomp.me, manual review, runtime traces or hardware are compared
+with the IR by `analysis_ir.py annotate`, which lists agreements, advisories and disagreements and
+counts disagreements backed by runtime or hardware evidence separately. An annotation never adds,
+removes or renames an analyzer fact. `export-annotations` writes the analyzer's own entries in the
+same format, and importing it back gives only agreements. `explain <address>` prints why a word is
+owned, how control reaches it and what annotations say about it.
+
 ### Native title recognition projection
 
 `python tools/title_manifest.py --print-public-catalog` emits an immutable C99
