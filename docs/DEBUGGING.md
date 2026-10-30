@@ -1313,6 +1313,27 @@ Output uses `SR_WATCH: pc=... addr=... val=... width=... vblank=...`. A vblank v
 means no vblank has been delivered yet. The watch is inert when unset; the shared store helpers
 take only a predicted-false flag check in that case.
 
+### Sampling guest state per vblank
+
+A store watch says when a value changed; a timing comparison also needs the value at every
+vblank, including values inside objects whose address is only known through a pointer. Set
+`SR_SAMPLE_SPEC` to a file of lines `<label> <type> <address> [<offset>...]`. The sample starts
+at `<address>`; each `<offset>` reads the guest word there as a pointer and adds the offset.
+`<type>` is `u8`, `s8`, `u16`, `s16`, `u32`, `s32` or `f32`. `#` starts a comment.
+
+```text
+updates   u32 0x08a00010          # a global
+clock     f32 0x08a00020 0x1e0    # field 0x1e0 of the object the global at 0x08a00020 points to
+```
+
+At the end of every serviced vblank, at the same point `SR_EXIT_AT_VBLANK` is checked, one CSV
+row `vblank,<value>...` is appended to `SR_SAMPLE_OUT` (default `samples.csv` in the runtime's
+working directory). A value whose pointer chain leaves readable guest memory is left empty. A
+spec line the reader cannot use (unknown type, bad number, more than 32 samples or six offsets)
+stops the run before it starts. Sampling reads guest memory and never writes it, so two runs of
+the same route are comparable. Addresses are guest addresses, so a spec belongs with the private
+route it measures and is never committed.
+
 ### Adding Watches in Code
 
 ```c
@@ -1371,8 +1392,8 @@ still applies, and the option never changes vertex data or rendering.
 ## Flight Recorder (`SR_FLIGHT`)
 
 `SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
-named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
-and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
+named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`,
+`watch`) and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
 `assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles. A build
 with `NAN_TRAP=1` also records each `SR_NAN_TRAP` origin into the `fault` class (see the NaN section).
 
@@ -1386,6 +1407,7 @@ with `NAN_TRAP=1` also records each `SR_NAN_TRAP` origin into the `fault` class 
 | `hang` | The no-frame watchdog (`SR_WATCHDOG_EXIT`) aborted; `arg0` is the vblanks without a new frame. |
 | `fatal` | A fatal event; `kind` names it. |
 | `unsupported-nid` | An NID with no handler ended the run (`kind` 13). |
+| `trigger` | The `SR_FLIGHT_TRIGGER` mode matched (schema 7). `sequence` is the matched event, `kind` its kind, `arg0` the mode's argument. The run kept going. |
 
 A named refusal is a call answered with its registered error while the guest keeps running. It is
 never the terminal record. It is an `unsupported` event, counted in the bundle's `refusals` block:
@@ -1421,6 +1443,54 @@ memory.
 is incomparable because a window slid. A thread stuck in an allocation, for example, reads as
 `uid=0x110 why=object wait_object=0x... block_nid=0x... waited_us=...`. The block is reported,
 never compared.
+
+### Trigger modes (`SR_FLIGHT_TRIGGER`)
+
+By default the record runs to a terminal, so a long run keeps only its last `<limit>` events. A
+trigger mode stops it at a chosen event instead. `SR_FLIGHT_TRIGGER` selects one mode. Without it
+the mode is `none` and the recorder behaves as before. A mode matches only events of the enabled
+classes. It never matches an event that a terminal path records (fatal, fault, hang, an NID with
+no handler), because those keep their own trigger.
+
+| Spec | Fires at |
+| --- | --- |
+| `pc:ADDR` | The first event whose guest pc is `ADDR`: an HLE import call site (not its return address), a named refusal, a GE list dequeue call site, an LLE exception entry, a NaN origin or a watch change. |
+| `ge-draw:N` | The `N`th GE draw (class `ge`, kind 25). Needs the `ge` class. |
+| `watch` | The first watch change (below). Needs the `watch` class. |
+| `checkpoint:KIND:N:AFTER` | The `N`th event of kind `KIND`, then `AFTER` more events. `AFTER` must be below the limit, so the ring keeps `limit - 1 - AFTER` events before the checkpoint. Fatal kinds (11 to 17) are refused because they end the record on their own. |
+
+When the mode matches, the record freezes (for a checkpoint, after its window) and the bundle is
+written with terminal `trigger`. The guest keeps running and nothing more is recorded. If the
+freeze lands on an HLE import, the bundle is written again when that call returns, so it has the
+import's arguments and return value. A run that ends inside a checkpoint window keeps the
+`trigger` terminal, with a shorter window. A fatal inside the window ends it and becomes the
+terminal. A spec that cannot be honoured disables the recorder and says why on stderr: an
+unknown form, a mode whose class is off, or a window as long as the ring. The recorder never
+captures under a stop rule other than the one asked for.
+
+Each bundle records its policy in `recorder.triggers` (`mode`, `pc`, `ge_draw`, `checkpoint`), and
+`recorder.watch_range` holds the watch range. `tools/flight_diff.py` compares every policy field
+except `fired`, so two bundles under different trigger policies are `INCOMPARABLE`, never a
+`MATCH`. When a mode is armed the CLI prints it, for example `trigger mode: ge-draw=2`.
+
+The `watch` class records guest stores inside the `SR_WATCH=ADDR:LEN` range (at most 64 bytes
+when this class is on) that change a byte. The recorder keeps the last value it saw stored to
+each watched byte. It never reads guest memory, so a byte stays unknown until a store covers it.
+A store that writes the same bytes again records nothing. A watch-change event (kind 31) carries
+the storing pc (`arg0`), the store address (`arg1`), the width and a known bit (`arg2`: bits
+0 to 7, then bit 8 set when every covered byte had a known earlier value) and the stored value
+(`arg3`). `watch` fires at the first change, which may be the first write seen. Use
+`checkpoint:31:N:0` to stop at a later one. The `SR_WATCH:` stderr line is unchanged.
+
+A mode check is arithmetic on the event being recorded. It never sleeps, yields, takes a lock,
+reads the environment or touches the heap. The only extra host work is the one bundle write at
+the freeze. With `SR_FLIGHT_TRIGGER` unset no mode is armed.
+
+```powershell
+$env:SR_FLIGHT = 'hle,sched,ge;1024'; $env:SR_FLIGHT_TRIGGER = 'pc:0x08804010'
+$env:SR_FLIGHT = 'sched;256'; $env:SR_FLIGHT_TRIGGER = 'checkpoint:3:500:64'   # 500th pick, 64 after
+$env:SR_WATCH = '0x08a00000:4'; $env:SR_FLIGHT = 'watch,hle;256'; $env:SR_FLIGHT_TRIGGER = 'watch'
+```
 
 ### Disabled-recorder overhead (#320)
 
@@ -1586,6 +1656,9 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
     the game's frame rate. It used to be the overlay's "FPS" line.
   - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
   - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
+  - **60 FPS logic** (enhancement builds only): when a 60 Hz logic package runs below 57 updates per second for
+    three seconds, a red `60 FPS logic: <n>/s - SLOWED` line appears, also with the HUD off
+    ([ENHANCEMENT_CONTRACT.md section 9.5](ENHANCEMENT_CONTRACT.md#95-update-boundary-gating-counts-logic-updates)).
 - **Timing and Performance Guarantees**:
   - Reuses the low-overhead counters already tracked by `SR_PERF`; no parallel measurement system or polling thread is introduced.
   - When disabled, overhead is a single branch check (`if (s_hud_enabled && ...)`), executing zero extra Vulkan commands and performing zero extra GPU work.

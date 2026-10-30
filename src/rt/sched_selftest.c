@@ -880,38 +880,100 @@ static void test_blocked_excluded_until_wake(void) {
     expect(pick_next() == waiter, "sched_wake readies the blocked thread and it wins on priority");
 }
 
-/* #303 device transfer window: the owner, parked on the transfer object, stays
- * parked through exactly one decision that hands the CPU to another thread and is
- * released at the next one; with no other runnable thread it is released at once. */
-static void test_transfer_window_closes_after_one_other_dispatch(void) {
+/* #303 device transfer channel (PSP-DMAC-002): the window lasts its guest-time
+ * duration, not a scheduling decision. The owner, parked on the channel object, stays
+ * parked while other threads run and the clock is short of the deadline, and is woken
+ * at the first decision at or after it; with nobody else runnable the deadline is a wake
+ * source of the idle scheduler. */
+static void test_transfer_window_lasts_its_duration(void) {
     reset_sched();
+    s_vtime_us = 1000u;
     int owner = mk(0x200, TH_RUNNING, 16);
     int other = mk(0x201, TH_READY, 32);
     s_cur = owner;
-    expect(sched_transfer_begin(0xD0Au), "the running thread opens a transfer window");
-    expect(!sched_transfer_begin(0xD0Bu), "only one transfer window is open at a time");
+    expect(sched_transfer_begin(0xD0Au, 500u), "the running thread opens a 500 us transfer window");
+    expect(!sched_transfer_begin(0xD0Bu, 1u), "only one transfer window is open at a time");
     s_tcb[owner].state = TH_WAIT_OBJ;   /* as sched_block_on leaves the owner */
     s_tcb[owner].wait_obj = 0xD0Au;
     s_cur = -1;
     uint32_t who = 0;
     expect(pick_next() == other, "a weaker ready thread gets the CPU while the transfer is pending");
+    s_vtime_us = 1499u;
+    expect(pick_next() == other && s_tcb[owner].state == TH_WAIT_OBJ,
+           "one microsecond short of the deadline the owner is still blocked, however many decisions ran");
     expect(sched_transfer_pending(0xD0Au, &who) && who == 0x200u,
-           "the window stays open through that dispatch and names its owner");
-    expect(s_tcb[owner].state == TH_WAIT_OBJ, "the owner stays blocked during that dispatch");
-    expect(pick_next() == owner, "the next decision closes the window; the woken owner wins on priority");
-    expect(!sched_transfer_pending(0xD0Au, NULL), "the closed window is no longer pending");
+           "the window stays open and names its owner");
+    s_vtime_us = 1500u;
+    expect(pick_next() == owner, "at the deadline the window ends; the woken owner wins on priority");
+    expect(!sched_transfer_pending(0xD0Au, NULL), "the ended window is no longer pending");
 
     reset_sched();
+    s_vtime_us = 0u;
     int lone = mk(0x210, TH_RUNNING, 32);
     int parked = mk(0x211, TH_WAIT_OBJ, 16);
     s_tcb[parked].wait_obj = 0xABCu;
     s_cur = lone;
-    expect(sched_transfer_begin(0xD0Au), "a lone thread opens a transfer window");
+    expect(sched_transfer_begin(0xD0Au, 700u), "a lone thread opens a transfer window");
     s_tcb[lone].state = TH_WAIT_OBJ;
     s_tcb[lone].wait_obj = 0xD0Au;
     s_cur = -1;
-    expect(pick_next() == lone, "with no other runnable thread the window closes at once");
-    expect(s_tcb[parked].state == TH_WAIT_OBJ, "closing wakes only the transfer object's waiters");
+    expect(pick_next() == -1, "with nobody else runnable the window does not end before its deadline");
+    SchedIdleState idle = sched_classify_idle();
+    expect(idle.soonest == 700u && !idle.unwakeable,
+           "the open window's deadline is the idle scheduler's next wake");
+    s_vtime_us = 700u;
+    expect(pick_next() == lone, "at the deadline the lone owner is woken");
+    expect(s_tcb[parked].state == TH_WAIT_OBJ, "ending the window wakes only its owner");
+}
+
+/* #303 (PSP-DMAC-002 b3): callers queued behind a pending transfer get the channel in
+ * arrival order, whatever their priorities. At the deadline the oldest live waiter is
+ * woken holding the channel reserved; the others stay blocked, and a reservation keeps
+ * the channel pending until its holder begins. */
+static void test_transfer_queue_is_arrival_order(void) {
+    reset_sched();
+    s_vtime_us = 0u;
+    int owner = mk(0x200, TH_RUNNING, 16);
+    int first = mk(0x201, TH_RUNNING, 28);   /* queued first, weaker */
+    int second = mk(0x202, TH_RUNNING, 24);  /* queued second, stronger */
+    int gone = mk(0x203, TH_RUNNING, 20);    /* queued before both, then terminated */
+    s_cur = owner;
+    expect(sched_transfer_begin(0xD0Au, 100u), "the owner opens the window");
+    s_tcb[owner].state = TH_WAIT_OBJ;
+    s_tcb[owner].wait_obj = 0xD0Au;
+    const int order[3] = {gone, first, second};
+    for (int k = 0; k < 3; k++) {
+        s_cur = order[k];
+        expect(sched_transfer_enqueue(0xD0Au), "a blocking caller joins the channel queue");
+        expect(!sched_transfer_granted(0xD0Au), "a queued caller does not hold the channel");
+        s_tcb[order[k]].state = TH_WAIT_OBJ;
+        s_tcb[order[k]].wait_obj = 0xD0Au;
+    }
+    s_tcb[gone].state = TH_DORMANT;          /* terminated while it waited */
+    s_cur = -1;
+    s_vtime_us = 100u;
+    expect(pick_next() == owner, "at the deadline the owner is woken");
+    uint32_t who = 0;
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x201u,
+           "the channel passes to the oldest live waiter, not the strongest");
+    expect(s_tcb[first].state == TH_READY && s_tcb[second].state == TH_WAIT_OBJ,
+           "only the waiter that now holds the channel is woken");
+    s_tcb[owner].state = TH_DORMANT;
+    expect(pick_next() == first, "the woken holder runs");
+    s_cur = first;
+    expect(sched_transfer_granted(0xD0Au), "the holder sees the channel reserved for it");
+    s_cur = second;
+    expect(!sched_transfer_begin(0xD0Au, 1u), "nobody else can begin while it is reserved");
+    s_cur = first;
+    expect(sched_transfer_begin(0xD0Au, 50u), "the holder begins its own transfer");
+    s_tcb[first].state = TH_WAIT_OBJ;
+    s_tcb[first].wait_obj = 0xD0Au;
+    s_cur = -1;
+    s_vtime_us = 150u;
+    expect(pick_next() == second && s_tcb[first].state == TH_READY,
+           "its window ends after its own duration and the next waiter is woken too");
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x202u,
+           "the next queued waiter now holds the channel");
 }
 
 static void test_dormant_excluded(void) {
@@ -1069,6 +1131,57 @@ static void test_waiting_guest_keeps_host_window_pumped(void) {
            "no gap between window pumps exceeds one display period plus one poll");
 }
 
+/* The module-start thread sched_run creates takes the module's declared
+ * module_start_thread_parameter (uOFW modulemgr.c _StartModule), here {0x20, 0x400,
+ * 0x80000000} as a retail main module declares it, and the module's gp when the driver seeded
+ * none. Without a record it keeps the 256 KiB default stack.
+ *
+ * MUTANT: create the root as sched_create_thread(entry, 32, 0) again -- the thread reports a
+ *   0x40000 stack, attribute 0 and no name, and the 0x400 assertions fail. */
+enum { MST_ENTRY = 0x09320000u };
+static SrThreadInfo g_mst_info;
+static uint32_t g_mst_gp;
+static int g_mst_done;
+static void module_start_param_body(CpuState *s) {
+    g_mst_gp = s->r[28];
+    expect(sched_thread_info(0u, &g_mst_info) == 0, "the module-start thread reports its status");
+    g_mst_done = 1;
+}
+static int module_start_param_stop(void) { return g_mst_done; }
+
+static void run_module_start_thread(void) {
+    reset_sched();
+    memset(&g_mst_info, 0, sizeof(g_mst_info));
+    g_mst_gp = 0u;
+    g_mst_done = 0;
+    if (s_cpu) s_cpu->r[28] = 0u;
+    g_test_body = module_start_param_body;
+    sr_sched_stop_requested = module_start_param_stop;
+    sched_run(MST_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+}
+
+static void test_module_start_thread_uses_declared_parameters(void) {
+    sched_set_module_start_thread(0x20, 0x400u, 0x80000000u, "SceModmgrStart", 0x08c98d00u);
+    run_module_start_thread();
+    expect(g_mst_done == 1, "the module-start thread ran");
+    expect(g_mst_info.stackSize == 0x400u,
+           "the module-start thread's stack is the declared 0x400 bytes, not 0x40000");
+    expect(g_mst_info.initPriority == 0x20u, "the module-start thread has the declared priority");
+    expect(g_mst_info.attr == 0x80000000u, "the module-start thread has the declared attribute");
+    expect(strcmp(g_mst_info.name, "SceModmgrStart") == 0, "the module-start thread is named");
+    expect(g_mst_gp == 0x08c98d00u && g_mst_info.gpReg == 0x08c98d00u,
+           "the module-start thread starts with the module's gp when the driver seeded none");
+    expect(g_mst_info.stack >= SR_STACK_ARENA_CEIL - 0x400u,
+           "the 0x400-byte stack takes only the top of the arena");
+
+    sched_set_module_start_thread(32, 0u, 0u, NULL, 0u);
+    run_module_start_thread();
+    expect(g_mst_done == 1 && g_mst_info.stackSize == 0x40000u && g_mst_info.initPriority == 32u &&
+               g_mst_info.attr == 0u && g_mst_gp == 0u,
+           "with no module record the module-start thread keeps priority 32 and the 256 KiB stack");
+}
+
 static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
     expect(preempt_timer_run(16) == PT_DUE_AT_YIELD,
            "a stronger thread whose delay ran out runs at the weak thread's next yield point");
@@ -1095,6 +1208,49 @@ static int32_t g_explicit_exit_status;
 static void body_explicit_exit(CpuState *s) {
     (void)s;
     sched_exit_current(g_explicit_exit_status);
+}
+
+/* The thread sched_run starts at the module entry is the kernel's module_start thread. A
+ * PSP-3000 (6.61, PSP-MODULE-START-001) deletes it once module_start returns: its UID then
+ * answers UNKNOWN_THID and the user partition gets its 256 KiB stack back. Here module_start
+ * starts a lower-priority thread and returns; that thread finds the entry thread deleted and
+ * its stack range released.
+ *
+ * MUTANT: exit the module_start thread without deleting it in coro_body -- it stays DORMANT
+ *   with its stack held. */
+enum { MS_ENTRY = 0x09320000u, MS_SECOND = 0x09320100u };
+static uint32_t g_ms_root;
+static int g_ms_root_deleted, g_ms_done;
+static void module_start_return_body(CpuState *s) {
+    const TCB *cur = &s_tcb[s_cur];
+    if (cur->entry == MS_ENTRY) {
+        g_ms_root = cur->uid;
+        const uint32_t second = sched_create_thread(MS_SECOND, 40, 0x4000u);
+        sched_start_thread(second, 0u, 0u);
+        s->r[2] = 0u;                      /* module_start returns 0 (resident) */
+        return;
+    }
+    if (!g_ms_done && cur->entry == MS_SECOND) {
+        for (int i = 0; i < s_ntcb; i++)
+            if (s_tcb[i].uid == g_ms_root)
+                g_ms_root_deleted = s_tcb[i].deleted && s_tcb[i].stack_released;
+        g_ms_done = 1;
+    }
+    s->r[2] = 0u;
+}
+static int module_start_return_stop(void) { return g_ms_done; }
+
+static void test_module_start_thread_is_deleted_on_return(void) {
+    reset_sched();
+    g_ms_root = 0u;
+    g_ms_root_deleted = g_ms_done = 0;
+    g_test_body = module_start_return_body;
+    sr_sched_stop_requested = module_start_return_stop;
+    sched_run(MS_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    expect(g_ms_done, "the thread module_start started ran after module_start returned");
+    expect(g_ms_root_deleted,
+           "the module_start thread is deleted, its stack released, once module_start returns");
 }
 
 static void test_entry_return_is_thread_exit(void) {
@@ -1707,6 +1863,32 @@ static void test_stack_floor_and_partition_overlap(void) {
     expect(sched_guest_stack_floor() < floor1, "the floor follows the lowest live stack");
     g_test_partition_live = 0;
     sched_set_stack_range_refusal(NULL);
+}
+
+/* With several free blocks the highest one that holds the request is used, carved from its
+ * top, even when a lower block would also hold it. */
+static void test_stack_placement_prefers_the_highest_free_block(void) {
+    reset_sched();
+    uint32_t a = sched_create_thread(0x9200u, 32, 0x1000u);
+    uint32_t b = sched_create_thread(0x9204u, 32, 0x1000u);
+    uint32_t c = sched_create_thread(0x9208u, 32, 0x1000u);
+    TCB *ta = tcb_by_uid(a), *tb = tcb_by_uid(b), *tc = tcb_by_uid(c);
+    expect(ta && tb && tc && ta->stack_base == SR_STACK_ARENA_CEIL - 0x1000u &&
+               tb->stack_base == SR_STACK_ARENA_CEIL - 0x2000u &&
+               tc->stack_base == SR_STACK_ARENA_CEIL - 0x3000u,
+           "successive stacks descend from the partition top");
+    if (!ta || !tb || !tc) return;
+    const uint32_t a_base = ta->stack_base, c_base = tc->stack_base;
+    expect(sched_delete_thread(a) == 0u && sched_delete_thread(c) == 0u,
+           "the top and bottom threads are deleted");
+    uint32_t d = sched_create_thread(0x920cu, 32, 0x1000u);
+    TCB *td = tcb_by_uid(d);
+    expect(td != NULL && td->stack_base == a_base,
+           "a new stack takes the highest free block, not the lower one below the live stack");
+    uint32_t e = sched_create_thread(0x9210u, 32, 0x1000u);
+    TCB *te = tcb_by_uid(e);
+    expect(te != NULL && te->stack_base == c_base,
+           "with the top block used, the next stack comes from the top of the block below");
 }
 
 /* ---- sr_coro primitive tests ------------------------------------------------------- */
@@ -3471,7 +3653,7 @@ static void test_flight_recorder_thread_snapshot(void) {
     size = file ? fread(bundle, 1u, sizeof(bundle) - 1u, file) : 0u;
     if (file) fclose(file);
     bundle[size] = '\0';
-    expect(size > 0u && strstr(bundle, "\"schema_version\": 6") != NULL,
+    expect(size > 0u && strstr(bundle, "\"schema_version\": 7") != NULL,
            "thread snapshot: the bundle is schema 6");
     expect(strstr(bundle, "\"threads\": [") != NULL, "thread snapshot: the bundle has a threads block");
 
@@ -5193,7 +5375,8 @@ int main(int argc, char **argv) {
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();
-    test_transfer_window_closes_after_one_other_dispatch();
+    test_transfer_window_lasts_its_duration();
+    test_transfer_queue_is_arrival_order();
     test_dormant_excluded();
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
@@ -5222,6 +5405,7 @@ int main(int argc, char **argv) {
     test_uid_zero_is_never_a_role();
     test_stack_exhaustion_fails_create();
     test_stack_floor_and_partition_overlap();
+    test_stack_placement_prefers_the_highest_free_block();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();
@@ -5242,6 +5426,8 @@ int main(int argc, char **argv) {
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
+    test_module_start_thread_uses_declared_parameters();
+    test_module_start_thread_is_deleted_on_return();
     test_paced_vtime_is_host_anchored();
     test_idle_wait_runs_a_wait_that_came_due();
     test_paced_vblank_has_one_authority();
