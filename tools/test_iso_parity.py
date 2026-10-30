@@ -661,6 +661,10 @@ int main(int argc, char **argv) {{
         }}
         printf("RESULT:OK\\n");
         printf("DISC_ID:%s\\n", meta.disc_id);
+        printf("SFO_DISC_ID:%s\\n", meta.sfo_disc_id);
+        printf("NON_RETAIL:%d\\n", meta.non_retail ? 1 : 0);
+        printf("IDENTITY_SHA256:%s\\n", meta.identity_sha256);
+        printf("NON_RETAIL_KEY_LABEL:%d\\n", nk_disc_id_is_non_retail_key(meta.disc_id) ? 1 : 0);
         printf("TITLE:%s\\n", meta.title_name);
         printf("VERSION:%s\\n", meta.disc_version);
         printf("VOLUME_ID:%s\\n", meta.volume_id);
@@ -1745,6 +1749,167 @@ int main(int argc, char **argv) {{
         iso_file = self.temp_dir / "standard.iso"
         create_test_iso(iso_file, disc_id="TEST00001", title="Standard Disc")
         self.assertNotIn("format_warnings", inspect_iso(iso_file).container_metadata)
+
+    # A synthetic beta disc: a 12-character placeholder DISC_ID, outside the retail
+    # format, and a small executable. Its key is pinned below, because a library
+    # key that changed between versions would orphan the disc's packages.
+    BETA_DISC_ID = "PROTO1234567"
+    BETA_EXECUTABLE = b"synthetic beta executable\n"
+    BETA_KEY = "XRQY66517"
+
+    @staticmethod
+    def _expected_identity(sfo: bytes, executable: bytes) -> tuple[str, str]:
+        """The documented derivation, restated: SHA-256, then the key's 26^3 * 10^5 space."""
+        digest = hashlib.sha256(
+            b"nakagawa-non-retail-disc-key-v1\0"
+            + struct.pack("<Q", len(sfo)) + sfo
+            + struct.pack("<Q", len(executable)) + executable
+        ).digest()
+        value = int.from_bytes(digest[:8], "big") % (26 ** 3 * 10 ** 5)
+        letters, digits = divmod(value, 100000)
+        key = "X" + "".join(
+            chr(65 + part) for part in (letters // 676, letters // 26 % 26, letters % 26)
+        ) + f"{digits:05d}"
+        return key, digest.hex()
+
+    def test_non_retail_disc_is_keyed_by_its_contents_in_both_tiers(self) -> None:
+        """A beta disc with a placeholder DISC_ID is accepted, labelled and keyed the same way
+        by the Python and native inspectors; its own ID stays visible and the image is untouched."""
+        iso_file = self.temp_dir / "beta.iso"
+        create_test_iso_with_executables(
+            iso_file, self.BETA_EXECUTABLE, disc_id=self.BETA_DISC_ID, title="Synthetic Beta",
+        )
+        image_before = hashlib.sha256(iso_file.read_bytes()).hexdigest()
+        key, digest = self._expected_identity(
+            build_param_sfo(self.BETA_DISC_ID, "Synthetic Beta"), self.BETA_EXECUTABLE,
+        )
+        self.assertEqual(key, self.BETA_KEY)
+
+        py_meta = inspect_iso(iso_file)
+        self.assertEqual(
+            (py_meta.disc_id, py_meta.sfo_disc_id, py_meta.non_retail, py_meta.identity_sha256),
+            (key, self.BETA_DISC_ID, True, digest),
+        )
+        self.assertTrue(iso_inspect.is_non_retail_key(py_meta.disc_id))
+        self.assertIsNone(py_meta.matched_profile)
+        self.assertEqual(py_meta.title, "Synthetic Beta")
+
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertEqual(c_meta.get("RESULT"), "OK", c_meta)
+        self.assertEqual(
+            (c_meta.get("DISC_ID"), c_meta.get("SFO_DISC_ID"), c_meta.get("NON_RETAIL"),
+             c_meta.get("IDENTITY_SHA256"), c_meta.get("NON_RETAIL_KEY_LABEL")),
+            (key, self.BETA_DISC_ID, "1", digest, "1"),
+        )
+        self.assertEqual(c_meta.get("PARAM_SFO_PARSED"), "1")
+        self.assertEqual(c_meta.get("SUPPORTED"), "0")
+        self.assertEqual(hashlib.sha256(iso_file.read_bytes()).hexdigest(), image_before,
+                         "inspecting a disc never changes it")
+
+        # The same contents under another volume label keep the key; another executable
+        # with the same PARAM.SFO gets another one.
+        relabelled = self.temp_dir / "beta-copy.iso"
+        create_test_iso_with_executables(
+            relabelled, self.BETA_EXECUTABLE, disc_id=self.BETA_DISC_ID, title="Synthetic Beta",
+        )
+        data = bytearray(relabelled.read_bytes())
+        data[16 * 2048 + 40 : 16 * 2048 + 48] = b"COPY_VOL"
+        relabelled.write_bytes(bytes(data))
+        self.assertEqual(inspect_iso(relabelled).disc_id, key)
+        self.assertEqual(self._run_native_inspect(relabelled).get("DISC_ID"), key)
+        rebuilt = self.temp_dir / "beta-rebuilt.iso"
+        create_test_iso_with_executables(
+            rebuilt, b"another beta executable\n", disc_id=self.BETA_DISC_ID,
+            title="Synthetic Beta",
+        )
+        other = inspect_iso(rebuilt).disc_id
+        self.assertNotEqual(other, key)
+        self.assertEqual(self._run_native_inspect(rebuilt).get("DISC_ID"), other)
+
+    def test_disc_id_classification_agrees_in_both_tiers(self) -> None:
+        """Retail-format and synthetic ids keep their own key; any other printable id,
+        nine characters or not, is a non-retail disc; anything else is refused."""
+        cases = [
+            ("ULUS-99999", "ULUS99999"),
+            ("ucus99999", "UCUS99999"),
+            ("TEST00001", "TEST00001"),
+            ("ZZZZ99999", None),
+            ("XRQY66517", None),
+            ("PROTO1234567", None),
+            ("BETA 01", None),
+            ("Q" * 31, None),
+            ("--_", "refused"),
+            ("BETA\t0001", "refused"),
+            ("BÊTA0001", "refused"),
+            ("P" * 32, "refused"),
+        ]
+        executable = self.BETA_EXECUTABLE
+        for index, (sfo_id, expected) in enumerate(cases):
+            with self.subTest(sfo_id=sfo_id):
+                iso_file = self.temp_dir / f"classify-{index}.iso"
+                sfo = build_param_sfo(sfo_id, "Classified")
+                create_test_iso_with_executables(
+                    iso_file, executable, disc_id=sfo_id, title="Classified",
+                )
+                c_meta = self._run_native_inspect(iso_file)
+                if expected == "refused":
+                    with self.assertRaises(IsoInspectionError):
+                        inspect_iso(iso_file)
+                    self.assertTrue(c_meta.get("RESULT", "").startswith("ERROR:"), c_meta)
+                    continue
+                py_meta = inspect_iso(iso_file)
+                key = expected if expected is not None else \
+                    self._expected_identity(sfo, executable)[0]
+                self.assertEqual(py_meta.disc_id, key)
+                self.assertEqual(py_meta.non_retail, expected is None)
+                self.assertEqual(py_meta.sfo_disc_id, sfo_id)
+                self.assertEqual(c_meta.get("DISC_ID"), key, c_meta)
+                self.assertEqual(c_meta.get("NON_RETAIL"), "0" if expected else "1")
+                self.assertEqual(c_meta.get("SFO_DISC_ID"), sfo_id)
+
+    def test_non_retail_disc_without_a_main_executable_is_refused_in_both_tiers(self) -> None:
+        """Nothing else identifies a disc whose own id is not a retail id: no EBOOT.BIN, no key."""
+        iso_file = self.temp_dir / "beta-no-executable.iso"
+        create_test_iso(iso_file, disc_id=self.BETA_DISC_ID, title="Synthetic Beta")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(iso_file)
+        message = str(caught.exception)
+        self.assertIn(f"'{self.BETA_DISC_ID}', which is not a retail disc ID", message)
+        self.assertIn("PSP_GAME/SYSDIR/EBOOT.BIN is missing or unreadable", message)
+        c_meta = self._run_native_inspect(iso_file)
+        self.assertTrue(c_meta.get("RESULT", "").startswith("ERROR:"), c_meta)
+        self.assertEqual(c_meta.get("MESSAGE"), message)
+
+        empty = self.temp_dir / "beta-empty-executable.iso"
+        create_test_iso_with_executables(
+            empty, b"", disc_id=self.BETA_DISC_ID, title="Synthetic Beta",
+        )
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(empty)
+        self.assertEqual(self._run_native_inspect(empty).get("MESSAGE"), message)
+
+    def test_cli_inspect_names_a_non_retail_disc(self) -> None:
+        iso_file = self.temp_dir / "cli-beta.iso"
+        create_test_iso_with_executables(
+            iso_file, self.BETA_EXECUTABLE, disc_id=self.BETA_DISC_ID, title="Synthetic Beta",
+        )
+        runtime_root = self.temp_dir / "beta-runtime-root"
+        runtime_root.mkdir()
+        command = [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect", str(iso_file),
+                   "--root", str(runtime_root)]
+        result = subprocess.run(command + ["--json"], cwd=ROOT, capture_output=True,
+                                text=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            (payload["disc_id"], payload["sfo_disc_id"], payload["non_retail"]),
+            (self.BETA_KEY, self.BETA_DISC_ID, True),
+        )
+        by_code = {check["code"]: check for check in payload["compatibility_preflight"]["checks"]}
+        self.assertEqual(by_code["DISC_SFO"]["status"], "OK")
+        text = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertIn(f"Disc ID:    {self.BETA_KEY}", text.stdout)
+        self.assertIn(f"Beta / unofficial: the disc's own ID '{self.BETA_DISC_ID}'", text.stdout)
 
     def test_cli_inspect_shows_structured_compatibility_preflight(self) -> None:
         iso_file = self.temp_dir / "cli-preflight.iso"

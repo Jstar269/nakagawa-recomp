@@ -2918,6 +2918,9 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
     payload = {
         "disc_id": meta.disc_id,
+        "sfo_disc_id": meta.sfo_disc_id,
+        "non_retail": meta.non_retail,
+        "identity_sha256": meta.identity_sha256,
         "title": meta.title,
         "version": meta.version,
         "region": meta.region,
@@ -2934,6 +2937,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(f"Disc ID:    {meta.disc_id}")
+        if meta.non_retail:
+            print(f"Beta / unofficial: the disc's own ID {meta.sfo_disc_id!r} is not a "
+                  "retail disc ID, so Nakagawa names it by its contents "
+                  f"(SHA-256 {meta.identity_sha256})")
         print(f"Title:      {meta.title}")
         print(f"Region:     {meta.region}")
         print(f"Catalogued: {'YES' if meta.matched_profile else 'NO'}")
