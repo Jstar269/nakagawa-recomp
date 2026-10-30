@@ -1701,11 +1701,32 @@ SELF_HOSTED_RUNS_ON = """${{ fromJSON(needs.classify.outputs.linux_runner || '"u
 #: The jobs that read it. Each one is a Linux job whose steps the pool's Ubuntu 24.04
 #: image was built to match.
 SELF_HOSTED_JOBS = frozenset({"native_tools"})
+#: Trusted CodeQL's analyses read the runner its prepare job chose (tools/ci_paths.py
+#: codeql_runner).
+CODEQL_RUNS_ON = """${{ fromJSON(needs.prepare.outputs.analyze_runner || '"ubuntu-26.04"') }}"""
+#: Each workflow that may name a classifier-chosen runner, the one expression it uses,
+#: and the jobs that use it.
+POOL_ROUTED = {
+    "ci.yml": (SELF_HOSTED_RUNS_ON, SELF_HOSTED_JOBS),
+    "codeql.yml": (CODEQL_RUNS_ON, frozenset({"analyze"})),
+}
 _HOSTED_RUNS_ON = re.compile(r"^(ubuntu|windows|macos)-[0-9][0-9.]*$")
 
 
 def _uncommented(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _workflow_job_blocks(name: str) -> dict[str, list[str]]:
+    """Map each top-level job of one workflow to its lines, header included."""
+    lines = _workflow_text(name).splitlines()
+    start = lines.index("jobs:")
+    starts = [i for i in range(start + 1, len(lines)) if re.match(r"^ {2}[A-Za-z0-9_-]+:\s*$", lines[i])]
+    blocks = {}
+    for position, first in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        blocks[lines[first].strip().rstrip(":")] = lines[first:end]
+    return blocks
 
 
 class SelfHostedRunnerWiringTests(unittest.TestCase):
@@ -1731,10 +1752,9 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
                     continue
                 value = stripped[len("runs-on:"):].strip()
                 with self.subTest(workflow=path.name, runs_on=value):
-                    if value == SELF_HOSTED_RUNS_ON:
-                        self.assertEqual(path.name, "ci.yml")
-                    else:
-                        self.assertRegex(value, _HOSTED_RUNS_ON)
+                    if path.name in POOL_ROUTED and value == POOL_ROUTED[path.name][0]:
+                        continue
+                    self.assertRegex(value, _HOSTED_RUNS_ON)
 
     def test_only_the_listed_jobs_read_the_classifier_runner(self) -> None:
         blocks = _ci_job_blocks()
@@ -1749,6 +1769,39 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
                 # fallback in the expression never decides a real run.
                 self.assertRegex(block, r"(?m)^    needs: \[classify[,\]]")
                 self.assertIn("needs.classify.result == 'success'", block)
+
+    def test_codeql_routes_only_its_analyses_from_the_default_branch_classifier(self) -> None:
+        blocks = _workflow_job_blocks("codeql.yml")
+        users = {job for job, block in blocks.items() if f"    runs-on: {CODEQL_RUNS_ON}" in block}
+        self.assertEqual(users, {"analyze"})
+        analyze = "\n".join(blocks["analyze"])
+        self.assertIn("    needs: prepare", analyze)
+        self.assertIn("needs.prepare.result == 'success'", analyze)
+        # The analyses read the candidate as data only: no build of candidate code.
+        self.assertIn("build-mode: none", analyze)
+        self.assertNotIn("autobuild", analyze)
+        prepare = blocks["prepare"]
+        prepare_text = "\n".join(prepare)
+        # The job that decides stays hosted, as does the upload.
+        self.assertIn("    runs-on: ubuntu-26.04", prepare_text)
+        self.assertIn("    runs-on: ubuntu-26.04", "\n".join(blocks["upload"]))
+        self.assertIn("      analyze_runner: ${{ steps.runner.outputs.runner }}", prepare_text)
+        step = _ci_step(prepare, "Choose the analysis runner")
+        self.assertIsNotNone(step)
+        assert step is not None
+        step_text = "\n".join(step)
+        self.assertIn("          NK_SELF_HOSTED_LINUX: ${{ vars.NK_SELF_HOSTED_LINUX }}", step_text)
+        self.assertIn("          NK_SELF_HOSTED_HEARTBEAT: ${{ vars.NK_SELF_HOSTED_HEARTBEAT }}", step_text)
+        self.assertIn('run: python tools/ci_paths.py --codeql-runner --github-output "$GITHUB_OUTPUT"', step_text)
+        # The classifier it runs is the default branch's copy: the only checkout before it
+        # is the default branch.
+        before = prepare_text[: prepare_text.index("- name: Choose the analysis runner")]
+        self.assertEqual(before.count("uses: actions/checkout@"), 1)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", before)
+        on_block = "\n".join(_on_block(_workflow_text("codeql.yml")))
+        for trigger in ("pull_request:", "pull_request_target", "merge_group"):
+            with self.subTest(trigger=trigger):
+                self.assertNotIn(trigger, on_block)
 
     def test_classify_exports_the_runner_and_reads_the_pool_switch(self) -> None:
         classify_job = _ci_job_blocks()["classify"]

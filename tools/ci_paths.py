@@ -694,6 +694,73 @@ def self_hosted_pool_available(switch: str, heartbeat: str, now: float) -> bool:
     return -SELF_HOSTED_HEARTBEAT_MAX_SKEW <= age <= SELF_HOSTED_HEARTBEAT_MAX_AGE
 
 
+#: Trusted CodeQL's hosted image for the analyses (.github/workflows/codeql.yml).
+HOSTED_CODEQL_RUNNER = "ubuntu-26.04"
+
+
+def codeql_trusted_target(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+) -> bool:
+    """Whether a Trusted CodeQL run analyses a target that is already trusted.
+
+    Trusted CodeQL always runs the default branch's definition and reads the candidate tree
+    as data (``build-mode: none``), so no pull request's code or workflow runs in it. It
+    still takes the pool only for the targets CI would send there: a push to ``main``, and
+    a "CodeQL wake" run (``workflow_run``) of a merge group of ``main`` or of a desk batch
+    pull request (this repository's ``batch/`` branch, pushed by the owner). Every other
+    pull request's analysis stays hosted, so ordinary traffic cannot fill the pool.
+    """
+
+    if repository != SELF_HOSTED_REPOSITORY:
+        return False
+    if event_name == "push":
+        return ref == "refs/heads/main"
+    if event_name != "workflow_run":
+        return False
+    run = event.get("workflow_run")
+    if not isinstance(run, dict):
+        return False
+    head_repo = run.get("head_repository")
+    actor = run.get("actor")
+    head_branch = run.get("head_branch")
+    if not isinstance(head_repo, dict) or head_repo.get("full_name") != repository or not isinstance(head_branch, str):
+        return False
+    kind = run.get("event")
+    if kind == "merge_group":
+        return head_branch.startswith("gh-readonly-queue/main/")
+    if kind == "pull_request":
+        owner = repository.split("/", 1)[0]
+        return (
+            head_branch.startswith(SELF_HOSTED_BATCH_PREFIX)
+            and isinstance(actor, dict)
+            and actor.get("login") == owner
+        )
+    return False
+
+
+def codeql_runner(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+    switch: str,
+    heartbeat: str,
+    now: float,
+) -> str:
+    """The ``runs-on`` value, as JSON, for Trusted CodeQL's analyses."""
+
+    if codeql_trusted_target(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
+        switch, heartbeat, now
+    ):
+        return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
+    return json.dumps(HOSTED_CODEQL_RUNNER)
+
+
 def linux_runner(
     event_name: str,
     event: Mapping[str, object],
@@ -959,9 +1026,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", "pull_request"))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH"))
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
+    parser.add_argument(
+        "--codeql-runner",
+        action="store_true",
+        help="write only Trusted CodeQL's analysis runner (runner=...) and classify nothing",
+    )
     args = parser.parse_args(argv)
 
     event = _read_event(args.event_path)
+    pool = {
+        "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+        "ref": os.environ.get("GITHUB_REF", ""),
+        "switch": os.environ.get("NK_SELF_HOSTED_LINUX", ""),
+        "heartbeat": os.environ.get("NK_SELF_HOSTED_HEARTBEAT", ""),
+        "now": time.time(),
+    }
+    if args.codeql_runner:
+        runner = codeql_runner(args.event_name, event, **pool)
+        _write_outputs({"runner": runner}, args.github_output)
+        print(f"event={args.event_name}")
+        print(f"runner={runner}")
+        return 0
     if args.files is not None:
         paths = args.files
     else:
@@ -977,15 +1062,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         draft=_event_draft(args.event_name, event),
         makefile_change=makefile_change,
     )
-    outputs["linux_runner"] = linux_runner(
-        args.event_name,
-        event,
-        repository=os.environ.get("GITHUB_REPOSITORY", ""),
-        ref=os.environ.get("GITHUB_REF", ""),
-        switch=os.environ.get("NK_SELF_HOSTED_LINUX", ""),
-        heartbeat=os.environ.get("NK_SELF_HOSTED_HEARTBEAT", ""),
-        now=time.time(),
-    )
+    outputs["linux_runner"] = linux_runner(args.event_name, event, **pool)
     _write_outputs(outputs, args.github_output)
     print(f"event={args.event_name}")
     print(f"changed_files={len(paths)}")

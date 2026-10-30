@@ -1231,6 +1231,59 @@ def _pull_request(head_ref: str = "batch/desk-20261030T185810Z", *, head_repo: s
     }}
 
 
+def _wake(kind: str, head_branch: str, *, head_repo: str = REPO, actor: str = OWNER) -> dict[str, object]:
+    """A "CodeQL wake" workflow_run payload, as Trusted CodeQL receives it."""
+    return {"workflow_run": {
+        "event": kind, "head_branch": head_branch,
+        "head_repository": {"full_name": head_repo}, "actor": {"login": actor},
+    }}
+
+
+class CodeqlRunnerRoutingTests(unittest.TestCase):
+    """Trusted CodeQL analyses on the pool only for already-trusted targets."""
+
+    HOSTED = json.dumps("ubuntu-26.04")
+
+    def route(self, event_name: str, event: dict[str, object] | None = None, *, ref: str = "refs/heads/main",
+              repository: str = REPO, switch: str = "on", heartbeat: str = str(NOW - 30)) -> str:
+        return ci_paths_module.codeql_runner(
+            event_name, event or {}, repository=repository, ref=ref, switch=switch, heartbeat=heartbeat, now=NOW)
+
+    def test_trusted_targets_use_the_pool(self) -> None:
+        self.assertEqual(self.route("push"), SELF_HOSTED)
+        self.assertEqual(self.route("workflow_run", _wake("pull_request", "batch/desk-20261030T193657Z")),
+                         SELF_HOSTED)
+        self.assertEqual(self.route("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
+                         SELF_HOSTED)
+
+    def test_ordinary_and_fork_pull_requests_stay_hosted(self) -> None:
+        cases = {
+            "ordinary branch": _wake("pull_request", "fix/thing"),
+            "fork named like a batch": _wake("pull_request", "batch/desk-1", head_repo="evil/nakagawa-recomp",
+                                             actor="evil"),
+            "fork pushed as the owner's name": _wake("pull_request", "batch/desk-1",
+                                                     head_repo="evil/nakagawa-recomp"),
+            "batch branch pushed by someone else": _wake("pull_request", "batch/desk-1", actor="contributor"),
+            "merge group of another branch": _wake("merge_group", "gh-readonly-queue/dev/pr-1"),
+            "wake of a push": _wake("push", "main"),
+            "no payload": {},
+            "malformed payload": {"workflow_run": {"event": "pull_request", "head_branch": "batch/x"}},
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("workflow_run", event), self.HOSTED)
+
+    def test_other_events_switch_and_heartbeat_keep_analyses_hosted(self) -> None:
+        for event_name in ("workflow_dispatch", "schedule", "pull_request", "pull_request_target", "merge_group"):
+            with self.subTest(event=event_name):
+                self.assertEqual(self.route(event_name, _wake("pull_request", "batch/desk-1")), self.HOSTED)
+        self.assertEqual(self.route("push", ref="refs/heads/feature"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="someone/nakagawa-recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", switch="off"), self.HOSTED)
+        self.assertEqual(self.route("push", heartbeat=str(NOW - 601)), self.HOSTED)
+        self.assertEqual(self.route("push", heartbeat=""), self.HOSTED)
+
+
 class SelfHostedRunnerRoutingTests(unittest.TestCase):
     """Only trusted runs may reach the maintainer's self-hosted pool (docs/CI.md)."""
 
@@ -1325,6 +1378,19 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
         self.assertEqual(run_main("push", {}, {"GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "off"}),
                          HOSTED)
         self.assertEqual(run_main("push", {}, {"GITHUB_REF": "refs/heads/main"}), SELF_HOSTED)
+        # The CodeQL flag writes only the analysis runner.
+        with tempfile.TemporaryDirectory() as scratch:
+            event_path = Path(scratch) / "event.json"
+            event_path.write_text(json.dumps(_wake("pull_request", "batch/desk-1")), encoding="utf-8")
+            output_path = Path(scratch) / "github_output"
+            env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "on",
+                   "NK_SELF_HOSTED_HEARTBEAT": str(NOW - 5)}
+            with patch.dict(os.environ, env), patch.object(ci_paths_module.time, "time", return_value=NOW), \
+                    patch.object(ci_paths_module.subprocess, "run") as run, patch("sys.stdout"):
+                ci_paths_module.main(["--codeql-runner", "--event-name", "workflow_run",
+                                      "--event-path", str(event_path), "--github-output", str(output_path)])
+            run.assert_not_called()
+            self.assertEqual(output_path.read_text(encoding="utf-8"), f"runner={SELF_HOSTED}\n")
         # Unset variables (no pool configured) read as empty, which routes nothing.
         self.assertEqual(
             run_main("push", {}, {"GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "",

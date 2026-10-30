@@ -928,6 +928,15 @@ It names the pool only for a trusted run, whose code is already the maintainer's
   `batch/` (the integration desk's batches of already-reviewed pull requests), and was
   opened by the repository owner.
 
+Trusted CodeQL (`.github/workflows/codeql.yml`) sends its three analyses there for the
+same targets: its `prepare` job, which stays hosted, runs the default branch's
+classifier (`python tools/ci_paths.py --codeql-runner`) and the `analyze` jobs run on
+the runner it names. That workflow always runs the default branch's definition and
+reads the candidate tree as data (`build-mode: none`), and it takes the pool only when
+it was woken by a desk batch or a merge group, or for a push to `main`. Every other
+pull request's analysis stays on `ubuntu-26.04`, so ordinary traffic cannot fill the
+pool ahead of a landing.
+
 Every other run, a fork's pull request above all, gets `ubuntu-24.04`. Two repository
 variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
 must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
@@ -941,16 +950,19 @@ Trusted CI verdict are the same on either runner.
 so a fork could name the pool's labels itself. Three things stop that: the repository
 requires approval before a workflow runs for any outside contributor's pull request;
 the runner's job-started hook refuses every job that is not one of the trusted runs
-above, before any step runs; and each runner is an ephemeral container that takes one
+above (for `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch
+or a merge group), before any step runs; and each runner is an ephemeral container that takes one
 job and is discarded, has no access to the PC's files, Docker or local network, and
 holds no secrets (its one-job registration comes from the GitHub API when it starts).
-`tools/test_ci_paths.py` (`SelfHostedRunnerRoutingTests`) fails if a fork or ordinary
-pull request could route to the pool, and `tools/test_public_ci_wiring.py`
-(`SelfHostedRunnerWiringTests`) fails if any workflow names the pool's labels directly
-or a job other than the listed ones reads `linux_runner`.
+`tools/test_ci_paths.py` (`SelfHostedRunnerRoutingTests`, `CodeqlRunnerRoutingTests`)
+fails if a fork or ordinary pull request could route to the pool, and
+`tools/test_public_ci_wiring.py` (`SelfHostedRunnerWiringTests`) fails if any workflow
+names the pool's labels directly or a job other than the listed ones reads
+`linux_runner` or CodeQL's `analyze_runner`.
 
 The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
-packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match). Its
+packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
+the CodeQL bundle the pinned CodeQL action uses). Its
 build files and supervisor are kept in the maintainer's workspace, not in this
 repository, because nobody else can run them.
 
