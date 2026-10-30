@@ -5082,6 +5082,38 @@ static int prx_image_bounds(uint32_t base, uint32_t *start_out, uint32_t *end_ou
     return 0;
 }
 
+/* The build of the scePsmfPlayer library the title loaded, as that module records it: the
+ * module_sdk_version variable (system library NID 0x11B97506) of a module whose module info
+ * names the player library.  scePsmfPlayerGetPsmfInfo's width/height outputs exist only in
+ * build 0x03090510 (#279).  Names and rule follow PPSSPP Core/HLE/sceKernelModule.cpp
+ * (3f40ddc8), which takes the version from the ~PSP header when there is one; a plain ELF
+ * module such as LocoRoco 2's has only the export.  0 until such a module is placed. */
+#define PRX_NID_MODULE_SDK_VERSION 0x11B97506u
+static uint32_t s_psmfplayer_lib_version;
+
+static void note_psmfplayer_lib_version(const SrPrxImage *img) {
+    static const char *const names[] = {
+        "scePsmfP_library", "scePsmfPlayer", "libpsmfplayer", "psmf_jk", "jkPsmfP_library",
+    };
+    int player = 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strncmp(img->modname, names[i], sizeof(img->modname)) == 0) player = 1;
+    if (!player) return;
+    s_psmfplayer_lib_version = 0u;
+    for (uint32_t i = 0; i < img->nexp; i++) {
+        const SrPrxExport *e = &img->exps[i];
+        if (e->is_func || e->lib[0] != '\0' || e->nid != PRX_NID_MODULE_SDK_VERSION) continue;
+        if (sr_guest_span_readable(e->addr, 4u)) s_psmfplayer_lib_version = MEM_R32(e->addr);
+        break;
+    }
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_psmfplayer_lib_version(void) { return s_psmfplayer_lib_version; }
+#endif
+#ifdef SR_MPEG_MEDIA_SELFTEST
+void sr_hle_test_set_psmfplayer_lib_version(uint32_t version) { s_psmfplayer_lib_version = version; }
+#endif
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
     for (unsigned i = 0; i < s_prx_image_count; i++) {
         if (s_prx_images[i].base != base) continue;
@@ -5132,6 +5164,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
         s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0, NULL};
         s_last_prx_base = base;
+        note_psmfplayer_lib_version(&img);
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
@@ -5458,6 +5491,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         return guest_module_boundary("guest-module-bind-refused", file, detail);
     }
     s_prx_images[s_prx_image_count++] = (PrxImage){image, image + span, alloc_uid, 0, code};
+    note_psmfplayer_lib_version(&img);
 
     /* Exports: the named libraries' functions become link targets for importers once the
      * module has started (started_module_export); the system library supplies the stop
@@ -7001,8 +7035,9 @@ static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return 
  * video/psmfplayer/getpsmfinfo.expected records 567567 for its 570570-tick test.pmf.  The stream
  * table classification (psmf_parse_header) has no LPCM class, so numPcmStreams is 0, which is also
  * what that hardware run reports for both of its files.  The width/height outputs exist only in the
- * 0x03090510 libpsmfplayer build; the runtime does not record which build a title loaded, so they
- * are never written and the call keeps the two-argument contract. */
+ * 0x03090510 libpsmfplayer build (note_psmfplayer_lib_version): that build writes the video
+ * stream's size (stream 0 until Start selects one) to each usable pointer, and every other build
+ * keeps the two-argument contract.  LocoRoco 2 sizes its movie from them (#279). */
 static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 4u) || !A1 || !sr_guest_span_writable(A1, 20u))
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -7013,6 +7048,10 @@ static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
     MEM_W32(A1 + 8u, p->audioStreams);
     MEM_W32(A1 + 12u, 0u);
     MEM_W32(A1 + 16u, p->playerVersion);
+    if (s_psmfplayer_lib_version == 0x03090510u) {
+        if (A2 && sr_guest_span_writable(A2, 4u)) MEM_W32(A2, p->videoWidth);
+        if (A3 && sr_guest_span_writable(A3, 4u)) MEM_W32(A3, p->videoHeight);
+    }
     return 0;
 }
 static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;psmf_log_summary(p);}}return 0;}
@@ -14613,6 +14652,7 @@ void sr_hle_test_module_reset(void) {
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
     s_prx_image_count = 0;
     memset(s_prx_images, 0, sizeof(s_prx_images));
+    s_psmfplayer_lib_version = 0u;
     atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
 }
 
@@ -28474,6 +28514,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_last_prx_base = s_last_prx_entry = s_last_prx_stop = 0u;
     s_prx_stage_base = s_prx_stage_len = 0u;
     s_prx_staging = 0;
+    s_psmfplayer_lib_version = 0u;
     atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
     loadexec_reset_user_partition();
 
