@@ -4708,6 +4708,31 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     return "Check";
 }
 
+const char *player_input_class_name(PlayerInputClass input_class) {
+    switch (input_class) {
+        case PLAYER_INPUT_PLAIN_ELF: return "plain-elf";
+        case PLAYER_INPUT_HOMEBREW: return "homebrew";
+        case PLAYER_INPUT_DECRYPTED_RETAIL: return "decrypted-retail";
+        case PLAYER_INPUT_ENCRYPTED_RETAIL: return "encrypted-retail";
+        case PLAYER_INPUT_UNSUPPORTED: return "unsupported";
+        case PLAYER_INPUT_UNCHECKED:
+        default: return "unchecked";
+    }
+}
+
+/* One more file the user still has to supply (or replace) in the title's
+   folder. The first PLAYER_INPUT_FILES_MAX are named; every one is counted. */
+static void player_input_note_file(PlayerInputReport *input, const char *name,
+                                   const char *source, PlayerInputFileState state) {
+    if (!input) return;
+    input->files_needed++;
+    if (input->file_count >= PLAYER_INPUT_FILES_MAX) return;
+    PlayerInputFile *file = &input->files[input->file_count++];
+    snprintf(file->name, sizeof(file->name), "%s", name ? name : "");
+    snprintf(file->source, sizeof(file->source), "%s", source ? source : "");
+    file->state = state;
+}
+
 bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
     return check && check->status == PREFLIGHT_UNSUPPORTED &&
            (strcmp(check->code, "EXECUTABLE") == 0 ||
@@ -4766,8 +4791,8 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                   : "The title settings for this disc are missing or out of date. Add the disc again.";
     } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
         return ok ? "Found the game's other program files."
-                  : "Some of the game's program files are encrypted, and Nakagawa doesn't "
-                    "decrypt games.";
+                  : "Some of the game's program files are encrypted, and Nakagawa couldn't "
+                    "decrypt them.";
     } else if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
         switch (check->status) {
             case PREFLIGHT_OK: return "Built and ready to play.";
@@ -5774,9 +5799,13 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
 
-static void player_check_guest_modules(const GameRecord *game,
+/* Returns false when the disc's modules could not be listed, which makes the
+   disc's program input unsupported in this version. Each encrypted module and
+   each unusable user copy is recorded in preflight->input. */
+static bool player_check_guest_modules(const GameRecord *game,
                                        PlayerCompatibilityPreflight *preflight,
                                        const char *runtime_root) {
+    PlayerInputReport *input = &preflight->input;
     PlayerModuleCandidate *modules = NULL;
     char decrypted_dir[NK_MAX_PATH * 2];
     char decrypted_elf[NK_MAX_PATH * 2];
@@ -5789,13 +5818,14 @@ static void player_check_guest_modules(const GameRecord *game,
     bool first_encrypted = false;
     const char *first_status = "";
     PlayerModuleScanStatus scan_status;
+    bool listed = true;
     if (!game || !game->iso_path[0] || !game->disc_id[0]) {
-        return;
+        return true;
     }
     if (!player_decrypted_eboot_paths(runtime_root, game->disc_id,
                                       decrypted_dir, sizeof(decrypted_dir),
                                       decrypted_elf, sizeof(decrypted_elf))) {
-        return;
+        return true;
     }
     modules = (PlayerModuleCandidate *)calloc(PLAYER_MAX_GUEST_MODULES,
                                                sizeof(*modules));
@@ -5805,7 +5835,7 @@ static void player_check_guest_modules(const GameRecord *game,
                              "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
                              "could not allocate its bounded scan table.",
                              issues, 1);
-        return;
+        return false;
     }
     scan_status = player_scan_disc_modules(
         game->iso_path, game->selected_executable,
@@ -5819,11 +5849,11 @@ static void player_check_guest_modules(const GameRecord *game,
                                  "closed.",
                              issues, 1);
         free(modules);
-        return;
+        return false;
     }
     if (total == 0) {
         free(modules);
-        return;
+        return true;
     }
     first_name[0] = '\0';
     first_detail[0] = '\0';
@@ -5835,6 +5865,8 @@ static void player_check_guest_modules(const GameRecord *game,
                                module->name);
         FILE *existing;
         if (written < 0 || (size_t)written >= sizeof(module_path)) {
+            /* No file could be put there under this name. */
+            listed = false;
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5845,12 +5877,18 @@ static void player_check_guest_modules(const GameRecord *game,
         }
         /* A user-supplied plain module always wins and is never overwritten. */
         existing = nk_fopen_utf8(module_path, "rb");
+        if (module->encrypted) input->encrypted_total++;
         if (existing != NULL) {
             fclose(existing);
             if (player_is_usable_mips_elf32(module_path, true)) {
+                if (module->encrypted) input->encrypted_ready++;
                 ready++;
                 continue;
             }
+            /* A copy is there but can't be used: the user replaces it, whether
+               the disc's own module is encrypted or plain. */
+            player_input_note_file(input, module->name, module->rel_path,
+                                   PLAYER_INPUT_FILE_UNUSABLE);
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5871,10 +5909,14 @@ static void player_check_guest_modules(const GameRecord *game,
                 game->iso_path, module->lba, module->size, decrypted_dir,
                 module_path, true, decrypt_detail, sizeof(decrypt_detail));
             if (strcmp(status, "VALIDATED_DECRYPTED") == 0) {
+                input->encrypted_ready++;
                 ready++;
                 decrypted++;
                 continue;
             }
+            /* Decryption stopped: the user can still supply a plain copy. */
+            player_input_note_file(input, module->name, module->rel_path,
+                                   PLAYER_INPUT_FILE_NEEDED);
             not_ready++;
             if (first_name[0] == '\0') {
                 snprintf(first_name, sizeof(first_name), "%.200s", module->name);
@@ -5898,7 +5940,7 @@ static void player_check_guest_modules(const GameRecord *game,
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
                              NULL, 0);
         free(modules);
-        return;
+        return true;
     }
     more[0] = '\0';
     if (not_ready > 1) {
@@ -5935,6 +5977,7 @@ static void player_check_guest_modules(const GameRecord *game,
         }
     }
     free(modules);
+    return listed;
 }
 
 /* Append text to a bounded buffer, never past its end. */
@@ -6130,6 +6173,40 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     return removed >= 0;
 }
 
+/* The disc's program input class from the counts the EXECUTABLE and
+   GUEST_MODULES checks recorded (#308). A plain program of a title the
+   catalogue lists as homebrew or project-made reads as homebrew. The folder is
+   named whenever the disc has an encrypted program file or a file is still to
+   be supplied there. */
+static void player_classify_input(const GameRecord *game, const char *runtime_root,
+                                  PlayerInputReport *input, bool unsupported) {
+    char folder[NK_MAX_PATH * 2];
+    char elf[NK_MAX_PATH * 2];
+    if (!game || !input) return;
+    if ((input->encrypted_total > 0 || input->files_needed > 0) &&
+        player_decrypted_eboot_paths(runtime_root, game->disc_id, folder, sizeof(folder),
+                                     elf, sizeof(elf))) {
+        snprintf(input->folder, sizeof(input->folder), "%s", folder);
+    }
+    if (unsupported) {
+        input->input_class = PLAYER_INPUT_UNSUPPORTED;
+    } else if (input->encrypted_total == 0) {
+        NkTitleEntrySnapshot snapshot = {0};
+        bool homebrew = false;
+        if (!game->is_experimental && game->title_id[0] &&
+            nk_title_catalog_find_by_id(game->title_id, &snapshot)) {
+            homebrew = snapshot.entry.kind == NK_TITLE_KIND_HOMEBREW ||
+                       snapshot.entry.kind == NK_TITLE_KIND_SYNTHETIC;
+            nk_title_catalog_snapshot_release(&snapshot);
+        }
+        input->input_class = homebrew ? PLAYER_INPUT_HOMEBREW : PLAYER_INPUT_PLAIN_ELF;
+    } else if (input->encrypted_ready == input->encrypted_total) {
+        input->input_class = PLAYER_INPUT_DECRYPTED_RETAIL;
+    } else {
+        input->input_class = PLAYER_INPUT_ENCRYPTED_RETAIL;
+    }
+}
+
 static void player_build_compatibility_preflight_for_game(
     PlayerApp *app, const GameRecord *game,
     PlayerCompatibilityPreflight *preflight, bool disc_readable,
@@ -6144,6 +6221,10 @@ static void player_build_compatibility_preflight_for_game(
      * stay under the runtime root, which is the second argument of the nk_font calls below. */
     char font_root[NK_MAX_PATH];
     if (!player_app_font_root(font_root, sizeof(font_root))) font_root[0] = '\0';
+    /* What the disc's program input is (#308): counted below, as the EXECUTABLE
+       and GUEST_MODULES checks look at each program file. */
+    PlayerInputReport *input = &preflight->input;
+    bool input_unsupported = !disc_readable;
 
     if (game->is_experimental) {
         static const unsigned int issues[] = { 308 };
@@ -6200,6 +6281,15 @@ static void player_build_compatibility_preflight_for_game(
                                    game->disc_id, decrypt_status);
             }
         }
+        input->encrypted_total++;
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+            input->encrypted_ready++;
+        } else {
+            player_input_note_file(input, "EBOOT.elf", "PSP_GAME/SYSDIR/EBOOT.BIN",
+                                   decrypted_state == PLAYER_DECRYPTED_EBOOT_INVALID
+                                       ? PLAYER_INPUT_FILE_UNUSABLE
+                                       : PLAYER_INPUT_FILE_NEEDED);
+        }
         if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID &&
             strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
@@ -6252,6 +6342,7 @@ static void player_build_compatibility_preflight_for_game(
                 "your user folder can be written to.");
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
+        input_unsupported = true;
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
         player_preflight_set_plain(preflight,
@@ -6259,6 +6350,7 @@ static void player_build_compatibility_preflight_for_game(
                                    "image may be damaged.");
     } else {
         static const unsigned int issues[] = { 308 };
+        input_unsupported = true;
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
@@ -6290,9 +6382,10 @@ static void player_build_compatibility_preflight_for_game(
         }
     }
 
-    if (disc_readable) {
-        player_check_guest_modules(game, preflight, runtime_root);
+    if (disc_readable && !player_check_guest_modules(game, preflight, runtime_root)) {
+        input_unsupported = true;
     }
+    player_classify_input(game, runtime_root, input, input_unsupported);
 
     if (!game->title_id[0]) {
         static const unsigned int issues[] = { 308 };
@@ -6395,6 +6488,70 @@ void player_app_build_compatibility_preflight(
     player_build_compatibility_preflight_for_game(
         app, &app->inspecting_game, &app->wizard.preflight,
         disc_readable, param_sfo_parsed, executables);
+    player_dev_log_add(app, "disc", "%.16s program input: %s, %u of %u encrypted files have "
+                       "a decrypted copy, %u still to supply",
+                       app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "disc",
+                       player_input_class_name(app->wizard.preflight.input.input_class),
+                       (unsigned)app->wizard.preflight.input.encrypted_ready,
+                       (unsigned)app->wizard.preflight.input.encrypted_total,
+                       (unsigned)app->wizard.preflight.input.files_needed);
+}
+
+/* Each listed file's size in the input folder, -1 when it is absent. */
+static void player_input_file_sizes(const PlayerInputReport *input,
+                                    int64_t sizes[PLAYER_INPUT_FILES_MAX]) {
+    for (size_t i = 0; i < PLAYER_INPUT_FILES_MAX; i++) sizes[i] = -1;
+    if (!input || !input->folder[0]) return;
+    for (size_t i = 0; i < input->file_count && i < PLAYER_INPUT_FILES_MAX; i++) {
+        char path[NK_MAX_PATH * 2 + PLAYER_INPUT_FILE_NAME_MAX + 2];
+        int written = snprintf(path, sizeof(path), "%s%c%s", input->folder,
+                               nk_platform_path_separator(), input->files[i].name);
+        if (written > 0 && (size_t)written < sizeof(path)) {
+            sizes[i] = nk_platform_get_file_size(path);
+        }
+    }
+}
+
+bool player_app_recheck_inspected_disc(PlayerApp *app) {
+    IsoInspectResult inspected;
+    GameRecord *game;
+    if (!app) return false;
+    game = &app->inspecting_game;
+    if (!game->iso_path[0] || !game->disc_id[0]) {
+        player_dev_log_add(app, "disc", "check again: no disc image is being added");
+        return false;
+    }
+    memset(&inspected, 0, sizeof(inspected));
+    if (!iso_inspect_file(game->iso_path, &inspected) || !inspected.success ||
+        !inspected.param_sfo_parsed || strcmp(inspected.disc_id, game->disc_id) != 0) {
+        /* The image moved, stopped reading, or is now another game: the card
+           keeps the first disc's identity, so nothing from this file is used. */
+        player_app_build_compatibility_preflight(app, false, false, NULL);
+        for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+            PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+            if (strcmp(check->code, "DISC_SFO") != 0) continue;
+            snprintf(check->message, sizeof(check->message),
+                     "SOURCE_ISO_CHANGED: %.700s no longer reads as %.16s; check again refused.",
+                     game->iso_path, game->disc_id);
+            snprintf(check->plain, sizeof(check->plain),
+                     "The disc image isn't where it was, or it is now a different game. "
+                     "Choose the disc again.");
+        }
+        player_dev_log_add(app, "disc", "check again: %.16s refused, the disc image changed",
+                           game->disc_id);
+        return false;
+    }
+    game->iso_size_bytes = inspected.file_size;
+    game->executable_eboot_kind = (uint32_t)inspected.executables.eboot.kind;
+    game->executable_boot_kind = (uint32_t)inspected.executables.boot.kind;
+    game->executable_selection = (uint32_t)inspected.executables.selected;
+    game->executable_boot_fallback = inspected.executables.boot_fallback;
+    snprintf(game->selected_executable, sizeof(game->selected_executable), "%s",
+             inspected.executables.selected_path);
+    player_app_build_compatibility_preflight(app, inspected.success,
+                                             inspected.param_sfo_parsed,
+                                             &inspected.executables);
+    return player_preflight_blocking_check(&app->wizard.preflight) == NULL;
 }
 
 static void player_package_preflight_set_blocker(
@@ -6478,6 +6635,15 @@ static void player_package_preflight_action_folder(
     }
 }
 
+/* The files the last check asked for are as they were: none appeared, went
+   away or changed size. */
+static bool player_package_preflight_input_unchanged(
+    const PlayerPackageBuildPreflight *preflight) {
+    int64_t sizes[PLAYER_INPUT_FILES_MAX];
+    player_input_file_sizes(&preflight->input, sizes);
+    return memcmp(sizes, preflight->input_file_sizes, sizeof(sizes)) == 0;
+}
+
 static bool player_package_preflight_cache_matches(
     const PlayerPackageBuildPreflight *preflight, const GameRecord *game,
     const char *runtime_root, int64_t source_size, int64_t profile_size,
@@ -6491,7 +6657,8 @@ static bool player_package_preflight_cache_matches(
            strcmp(preflight->selected_executable, game->selected_executable) == 0 &&
            preflight->source_size_bytes == source_size &&
            preflight->profile_size_bytes == profile_size &&
-           preflight->decrypted_executable_size_bytes == decrypted_size;
+           preflight->decrypted_executable_size_bytes == decrypted_size &&
+           player_package_preflight_input_unchanged(preflight);
 }
 
 static void player_package_preflight_remember_identity(
@@ -6559,6 +6726,7 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     }
 
     memset(preflight, 0, sizeof(*preflight));
+    for (size_t i = 0; i < PLAYER_INPUT_FILES_MAX; i++) preflight->input_file_sizes[i] = -1;
     player_package_preflight_remember_identity(
         preflight, game, have_runtime_root ? runtime_root : "",
         source_size, profile_size, decrypted_size);
@@ -6662,6 +6830,8 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     player_build_compatibility_preflight_for_game(
         app, game, &checks, inspected.success, inspected.param_sfo_parsed,
         &inspected.executables);
+    preflight->input = checks.input;
+    player_input_file_sizes(&preflight->input, preflight->input_file_sizes);
     blocking = player_preflight_blocking_check(&checks);
     if (!blocking) {
         for (size_t i = 0; i < checks.count; ++i) {
@@ -6686,6 +6856,24 @@ bool player_app_build_package_preflight(PlayerApp *app, int game_index,
     player_dev_log_add(app, "build preflight", "%s: input checks passed",
                        game->disc_id);
     return true;
+}
+
+const PlayerInputReport *player_app_package_build_input(const PlayerApp *app,
+                                                        int game_index) {
+    const PlayerPackageBuildPreflight *preflight;
+    const GameRecord *game;
+    if (!app || game_index < 0 || game_index >= app->game_count) return NULL;
+    preflight = &app->package_build_preflight;
+    game = &app->games[game_index];
+    if (!preflight->checked ||
+        preflight->is_experimental != game->is_experimental ||
+        strcmp(preflight->disc_id, game->disc_id) != 0 ||
+        strcmp(preflight->title_id, game->title_id) != 0 ||
+        strcmp(preflight->iso_path, game->iso_path) != 0 ||
+        strcmp(preflight->selected_executable, game->selected_executable) != 0) {
+        return NULL;
+    }
+    return &preflight->input;
 }
 
 const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
