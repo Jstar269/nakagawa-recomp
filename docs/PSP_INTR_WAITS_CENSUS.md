@@ -29,7 +29,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 41
+- #341: 36
 
 ## Census
 
@@ -47,9 +47,9 @@ Open-owner counts:
 | `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
 | `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
 | `sceDisplayWaitVblankStartMultiCB` | controlled-unsupported | - | controlled_unsupported | controlled_unsupported | `h_ControlledUnsupported` | `0x77ed8b3a` |
-| `sceGeDrawSync` | implemented | #341 | dedicated | unreviewed | `h_GeDrawSync` | `0xb287bd61` |
+| `sceGeDrawSync` | implemented | - | dedicated | partial | `h_GeDrawSync` | `0xb287bd61` |
 | `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
-| `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
+| `sceGeListSync` | implemented | - | dedicated | partial | `h_GeListSync` | `0x03444eb4` |
 | `sceIoGetAsyncStat` | implemented | - | dedicated | partial | `h_IoGetAsyncStat` | `0xcb05f8d6` |
 | `sceIoRead` | implemented | - | dedicated | partial | `h_IoRead` | `0x6a638d83` |
 | `sceIoRemove` | implemented | - | dedicated | complete | `h_IoRemove` | `0xf27a9c51` |
@@ -67,8 +67,8 @@ Open-owner counts:
 | `sceKernelCreateTlspl` | implemented | #341 | dedicated | unreviewed | `h_CreateTlspl` | `0x8daff657` |
 | `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |
 | `sceKernelDelaySysClockThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThreadCB` | `0x1181e963` |
-| `sceKernelDelayThread` | implemented | #341 | dedicated | unreviewed | `h_DelayThread` | `0xceadeb47` |
-| `sceKernelDelayThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelayThreadCB` | `0x68da9e36` |
+| `sceKernelDelayThread` | implemented | - | dedicated | partial | `h_DelayThread` | `0xceadeb47` |
+| `sceKernelDelayThreadCB` | implemented | - | dedicated | partial | `h_DelayThreadCB` | `0x68da9e36` |
 | `sceKernelDeleteMbx` | implemented | - | dedicated | partial | `h_DeleteMbx` | `0x86255ada` |
 | `sceKernelDeleteTlspl` | implemented | #341 | dedicated | unreviewed | `h_DeleteTlspl` | `0x32bf938e` |
 | `sceKernelEnableSubIntr` | implemented | #341 | dedicated | unreviewed | `h_EnableSubIntr` | `0xfb8e22ec` |
@@ -102,7 +102,7 @@ Open-owner counts:
 | `sceKernelWaitEventFlagCB` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlagCB` | `0x328c546a` |
 | `sceKernelWaitSema` | implemented | - | dedicated | partial | `h_WaitSema` | `0x4e3a1105` |
 | `sceKernelWaitSemaCB` | implemented | #341 | dedicated | unreviewed | `h_WaitSemaCB` | `0x6d212bac` |
-| `sceKernelWaitThreadEnd` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEnd` | `0x278c0df5` |
+| `sceKernelWaitThreadEnd` | implemented | - | dedicated | partial | `h_WaitThreadEnd` | `0x278c0df5` |
 | `sceKernelWaitThreadEndCB` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEndCB` | `0x840e8133` |
 | `sceUmdWaitDriveStat` | implemented | #341 | dedicated | unreviewed | `h_UmdWaitDriveStat` | `0x8ef08fce` |
 | `sceUmdWaitDriveStatCB` | implemented | #341 | dedicated | unreviewed | `h_UmdWaitDriveStatCB` | `0x4a9e5e29` |

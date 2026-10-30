@@ -41,7 +41,7 @@
     "classification": "dedicated",
     "handler": "h_GeListSync",
     "name": "sceGeListSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x034a921f": {
     "classification": "dedicated",
@@ -66,7 +66,7 @@
     "classification": "dedicated",
     "handler": "h_ExitGame",
     "name": "sceKernelExitGame",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0558b075": {
     "classification": "dedicated",
@@ -160,7 +160,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlReadLatch",
     "name": "sceCtrlReadLatch",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0bf0a3ae": {
     "classification": "controlled_unsupported",
@@ -505,7 +505,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsRemoteExist",
     "name": "sceHprmIsRemoteExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x20b317a0": {
     "classification": "controlled_unsupported",
@@ -536,7 +536,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsMicrophoneExist",
     "name": "sceHprmIsMicrophoneExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x21ff80e4": {
     "classification": "dedicated",
@@ -592,7 +592,7 @@
     "classification": "dedicated",
     "handler": "h_WaitThreadEnd",
     "name": "sceKernelWaitThreadEnd",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x27cc57f0": {
     "classification": "dedicated",
@@ -861,7 +861,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemParamString",
     "name": "sceUtilityGetSystemParamString",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x34b9fa9e": {
     "classification": "dedicated",
@@ -873,7 +873,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetPllClockFrequencyInt",
     "name": "scePowerGetPllClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3548aec8": {
     "classification": "dedicated",
@@ -1081,7 +1081,7 @@
     "classification": "dedicated",
     "handler": "h_DcacheRangeMaintenance",
     "name": "sceKernelDcacheWritebackRange",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3f53e640": {
     "classification": "dedicated",
@@ -1192,7 +1192,7 @@
     "classification": "dedicated",
     "handler": "h_UmdCheckMedium",
     "name": "sceUmdCheckMedium",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x46f186c3": {
     "classification": "dedicated",
@@ -1216,7 +1216,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyInt",
     "name": "scePowerGetBusClockFrequency",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x47a0b729": {
     "classification": "dedicated",
@@ -1368,7 +1368,7 @@
     "classification": "dedicated",
     "handler": "h_CreateEventFlag",
     "name": "sceKernelCreateEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x55f4717d": {
     "classification": "dedicated",
@@ -1674,7 +1674,7 @@
     "classification": "dedicated",
     "handler": "h_DelayThreadCB",
     "name": "sceKernelDelayThreadCB",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6a2774f3": {
     "classification": "dedicated",
@@ -1717,7 +1717,7 @@
     "classification": "dedicated",
     "handler": "h_UmdDriveStat",
     "name": "sceUmdGetDriveStat",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6d212bac": {
     "classification": "dedicated",
@@ -1964,7 +1964,7 @@
     "classification": "dedicated",
     "handler": "h_HprmIsHeadphoneExist",
     "name": "sceHprmIsHeadphoneExist",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x7ed29e40": {
     "classification": "dedicated",
@@ -2473,7 +2473,7 @@
     "classification": "dedicated",
     "handler": "h_GetBlockHeadAddr",
     "name": "sceKernelGetBlockHeadAddr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x9dcfb7ea": {
     "classification": "dedicated",
@@ -2620,7 +2620,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemParamInt",
     "name": "sceUtilityGetSystemParamInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa62c6f57": {
     "classification": "controlled_unsupported",
@@ -2773,7 +2773,7 @@
     "classification": "dedicated",
     "handler": "h_GeDrawSync",
     "name": "sceGeDrawSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb293727f": {
     "classification": "dedicated",
@@ -2853,7 +2853,7 @@
     "classification": "dedicated",
     "handler": "h_FreePartitionMemory",
     "name": "sceKernelFreePartitionMemory",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb736e9ff": {
     "classification": "dedicated",
@@ -2962,7 +2962,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyInt",
     "name": "scePowerGetBusClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xbea46419": {
     "classification": "dedicated",
@@ -2986,7 +2986,7 @@
     "classification": "dedicated",
     "handler": "h_DcacheRangeMaintenance",
     "name": "sceKernelDcacheInvalidateRange",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc02cf6b5": {
     "classification": "dedicated",
@@ -3145,7 +3145,7 @@
     "classification": "dedicated",
     "handler": "h_DelayThread",
     "name": "sceKernelDelayThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xceb870b1": {
     "classification": "dedicated",
@@ -3680,7 +3680,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteEventFlag",
     "name": "sceKernelDeleteEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xefc6f80f": {
     "classification": "dedicated",
@@ -3698,7 +3698,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteMsgPipe",
     "name": "sceKernelDeleteMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf0eb1125": {
     "classification": "dedicated",
@@ -3902,7 +3902,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetCpuClockFrequencyInt",
     "name": "scePowerGetCpuClockFrequencyInt",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xfe246728": {
     "classification": "dedicated",
@@ -3920,7 +3920,7 @@
     "classification": "dedicated",
     "handler": "h_PowerGetCpuClockFrequencyInt",
     "name": "scePowerGetCpuClockFrequency",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xff5940b6": {
     "classification": "dedicated",
