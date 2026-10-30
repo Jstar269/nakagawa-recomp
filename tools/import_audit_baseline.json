@@ -335,11 +335,10 @@
     "status": "controlled_unsupported"
   },
   "0x1579a159": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_UtilityLoadNetModule",
     "name": "sceUtilityLoadNetModule",
-    "refusal_error": "0x80110001",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x157e6225": {
     "classification": "controlled_unsupported",
@@ -655,7 +654,7 @@
     "classification": "dedicated",
     "handler": "h_UtilityLoadModule",
     "name": "sceUtilityLoadModule",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x2a368661": {
     "classification": "dedicated",
@@ -1618,11 +1617,10 @@
     "status": "stub"
   },
   "0x64d50c56": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_UtilityUnloadNetModule",
     "name": "sceUtilityUnloadNetModule",
-    "refusal_error": "0x80110001",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x6652b8ca": {
     "classification": "dedicated",
@@ -3535,7 +3533,7 @@
     "classification": "dedicated",
     "handler": "h_UtilityUnloadModule",
     "name": "sceUtilityUnloadModule",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe7282cb6": {
     "classification": "dedicated",
