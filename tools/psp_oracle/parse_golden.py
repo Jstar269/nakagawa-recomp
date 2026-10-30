@@ -1782,6 +1782,91 @@ _register_campaign_probe(
     {case: (17 if case.startswith("rndf") else 13) for case in VFPU_FORMS_CASES},
 )
 
+# vfpu-funnel (118, probe_hle_issues.c): the #326 funnel add and average words, two passes.
+# Every row is emitted on every run, so the stream is fixed-shape: per pass, vfad then vavg,
+# each at .p, .t and .q (one step per form and size), over 26 operand sets, each under no S
+# prefix and the two TN_PFX forms. Rows are <form>-p<pass>-<size>-<i>-<prefix>, 13 words each.
+VFPU_FUNNEL_FORMS = ("fad", "avg")
+VFPU_FUNNEL_SIZES = ("p", "t", "q")
+VFPU_FUNNEL_PREFIXES = ("none", "p1", "p2")
+VFPU_FUNNEL_OPERAND_SETS = 26
+VFPU_FUNNEL_PASSES = 2
+VFPU_FUNNEL_CASES = tuple(
+    f"{form}-p{p}-{size}-{i}-{pfx}"
+    for p in range(VFPU_FUNNEL_PASSES)
+    for form in VFPU_FUNNEL_FORMS
+    for size in VFPU_FUNNEL_SIZES
+    for i in range(VFPU_FUNNEL_OPERAND_SETS)
+    for pfx in VFPU_FUNNEL_PREFIXES
+)
+_register_campaign_probe(
+    "vfpu-funnel", "PSP-VFPU-FUNNEL-001", VFPU_FUNNEL_CASES,
+    {case: 13 for case in VFPU_FUNNEL_CASES},
+)
+
+# vfpu-sort (120, probe_hle_issues.c): the #326 vsrt1.q to vsrt4.q words, two passes. Every
+# row is emitted on every run, so the stream is fixed-shape: per pass, the four forms (one
+# step each) over 24 operand sets, each under no S prefix and the two TN_PFX forms. Rows are
+# <form>-p<pass>-<i>-<prefix>, 13 words each.
+VFPU_SORT_FORMS = ("srt1", "srt2", "srt3", "srt4")
+VFPU_SORT_PREFIXES = ("none", "p1", "p2")
+VFPU_SORT_OPERAND_SETS = 24
+VFPU_SORT_PASSES = 2
+VFPU_SORT_CASES = tuple(
+    f"{form}-p{p}-{i}-{pfx}"
+    for p in range(VFPU_SORT_PASSES)
+    for form in VFPU_SORT_FORMS
+    for i in range(VFPU_SORT_OPERAND_SETS)
+    for pfx in VFPU_SORT_PREFIXES
+)
+_register_campaign_probe(
+    "vfpu-sort", "PSP-VFPU-SORT-001", VFPU_SORT_CASES,
+    {case: 13 for case in VFPU_SORT_CASES},
+)
+
+# vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
+# row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
+# words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at
+# .p, .t and .q from eight RCX states (<wrndi|wrndf1|wrndf2>-p<pass>-<p|t|q>-<k>, 20 words),
+# vf2h.p and vf2h.q over 28 operand quads and vc2i.s over 10 byte words, each under no S
+# prefix and the two TN_PFX forms (f2h-p<pass>-<p|q>-<i>-<pfx> and c2i-p<pass>-<i>-<pfx>, 13
+# words).
+VFPU_FORMS2_SEEDS = 24
+VFPU_FORMS2_SEED_STATES = ("a", "b")
+VFPU_FORMS2_DRAW_STEMS = ("wrndi", "wrndf1", "wrndf2")
+VFPU_FORMS2_DRAW_SIZES = ("p", "t", "q")
+VFPU_FORMS2_DRAW_STATES = 8
+VFPU_FORMS2_F2H_SIZES = ("p", "q")
+VFPU_FORMS2_F2H_QUADS = 28
+VFPU_FORMS2_C2I_OPERANDS = 10
+VFPU_FORMS2_PREFIXES = ("none", "p1", "p2")
+VFPU_FORMS2_PASSES = 2
+VFPU_FORMS2_SEED_WORDS = 25
+VFPU_FORMS2_DRAW_WORDS = 20
+VFPU_FORMS2_CELL_WORDS = 13
+
+
+def _vfpu_forms2_pass_cases(p: int) -> tuple[str, ...]:
+    rnds = tuple(f"rnds-p{p}-{i}-{s}" for i in range(VFPU_FORMS2_SEEDS)
+                 for s in VFPU_FORMS2_SEED_STATES)
+    draws = tuple(f"{stem}-p{p}-{size}-{k}" for stem in VFPU_FORMS2_DRAW_STEMS
+                  for size in VFPU_FORMS2_DRAW_SIZES for k in range(VFPU_FORMS2_DRAW_STATES))
+    f2h = tuple(f"f2h-p{p}-{size}-{i}-{x}" for size in VFPU_FORMS2_F2H_SIZES
+                for i in range(VFPU_FORMS2_F2H_QUADS) for x in VFPU_FORMS2_PREFIXES)
+    c2i = tuple(f"c2i-p{p}-{i}-{x}" for i in range(VFPU_FORMS2_C2I_OPERANDS)
+                for x in VFPU_FORMS2_PREFIXES)
+    return rnds + draws + f2h + c2i
+
+
+VFPU_FORMS2_CASES = tuple(case for p in range(VFPU_FORMS2_PASSES)
+                          for case in _vfpu_forms2_pass_cases(p))
+_register_campaign_probe(
+    "vfpu-forms2", "PSP-VFPU-FORMS2-001", VFPU_FORMS2_CASES,
+    {case: (VFPU_FORMS2_SEED_WORDS if case.startswith("rnds-")
+            else VFPU_FORMS2_DRAW_WORDS if case.startswith("wrnd")
+            else VFPU_FORMS2_CELL_WORDS) for case in VFPU_FORMS2_CASES},
+)
+
 # ge-sample (109, probe_ge_sample.c): the #282 GE texture sample-point cells. Every draw is
 # emitted on every run, so the stream is fixed-shape: per mapping, primitive (triangle pair
 # or sprite), filter and texture, one `-draw` record (the GE wait outcome, 7 words) and one
@@ -2176,7 +2261,8 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.
-HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "intr-cause"})
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch", "vfpu-forms", "intr-cause", "vfpu-forms2",
+                                   "vfpu-funnel", "vfpu-sort"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (
