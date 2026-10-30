@@ -37,6 +37,10 @@ uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerSetClockFrequency(CpuState *s);
 uint32_t h_PowerSetClockFrequency350(CpuState *s);
 uint32_t h_PowerSetCpuClockFrequency(CpuState *s);
+uint32_t h_PowerSetBusClockFrequency(CpuState *s);
+
+/* Stop the run by name for an argument shape the runtime does not model (hle.c, #308). */
+uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail);
 uint32_t h_PowerRegisterCallback(CpuState *s);
 uint32_t h_PowerLock(CpuState *s);
 uint32_t h_PowerUnlock(CpuState *s);
