@@ -17,6 +17,7 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -435,8 +436,15 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
-bool player_ui_nk_in_motion(const PlayerUiNk *player) {
-    return player != NULL && nk_ui_scroll_in_motion(player->ui);
+uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
+    double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    double wait_s;
+    if (player == NULL) {
+        return idle_ms;
+    }
+    /* Rounded up: a frame drawn a millisecond early would find nothing due. */
+    wait_s = nk_ui_wait_s(player->ui, now_s, (double)idle_ms / 1000.0);
+    return (uint32_t)ceil(wait_s * 1000.0);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
