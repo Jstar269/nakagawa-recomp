@@ -576,11 +576,13 @@ The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully va
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
 allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
 one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
-that starts a transfer stays blocked in the call while the scheduler's transfer window is open;
-another thread's `sceDmacTryMemcpy` then returns BUSY (`0x80000021`) and its blocking
-`sceDmacMemcpy` waits through the scheduler, as measured on a PSP-3000 (#303). The transfer's
-guest-time duration is unmeasured, so the window carries no time: it closes at the scheduling
-decision after one other thread has run, or at once when no other thread is runnable.
+that starts a channel transfer stays blocked in the call for the transfer's measured duration
+(a timing table by size and by main-RAM/VRAM source and destination, with surcharges when source
+and destination differ modulo 16); meanwhile another thread's `sceDmacTryMemcpy` returns BUSY
+(`0x80000021`) and its blocking `sceDmacMemcpy` queues, and queued callers get the channel in
+arrival order. A body of at most 0x100 bytes whose source and destination share their phase
+modulo 16 bypasses the channel. All of this was measured on a PSP-3000 (#303, `PSP-DMAC-001` and
+`PSP-DMAC-002`); the unmeasured choices are listed above `h_DmacMemcpy` in `src/rt/hle.c`.
 
 ### Scheduler / coroutines
 

@@ -1606,6 +1606,7 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-CPU-TIMING-001",
                 "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
+                "PSP-DMAC-002",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
                 "PSP-GE-CONTROL-001", "PSP-GE-SAMPLE-001", "PSP-GE-TIMING-001",
                 "PSP-HLE-AUDIO-SRC-001",
