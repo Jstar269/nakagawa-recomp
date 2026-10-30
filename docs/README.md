@@ -71,6 +71,8 @@ Each row is something you are about to do. Find yours and read what it points to
   and separate AOT cache epochs.
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
   external-input gates.
+- [`LLVM_BACKEND.md`](LLVM_BACKEND.md) — the opt-in LLVM IR code generation backend (#330):
+  structured IR, explicit MIPS semantics, verification, and the in-process stage.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
   source-owned probes are not hardware acceptance without measured provenance.
 - [`research/PSP_THREADING_SEMANTICS.md`](research/PSP_THREADING_SEMANTICS.md) —
@@ -207,6 +209,7 @@ Every substantial document carries one status.
 | `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
+| `LLVM_BACKEND.md` | CURRENT | Opt-in LLVM IR backend (#330): design, first-stage scope, verification and the in-process stage |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
 | `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite only, PSP-side runner unbuilt |
 | `PROVENANCE_MERGE_GATE.md` | CURRENT | Merge-path provenance control (observation mode) |

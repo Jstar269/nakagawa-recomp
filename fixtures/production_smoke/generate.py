@@ -692,6 +692,11 @@ def _artifact_stem(mode: str) -> str:
     return "production_smoke" if mode == "aot" else "production_smoke_gap"
 
 
+def _signed32(value: int) -> int:
+    """An i32 constant as LLVM IR prints it (signed decimal)."""
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
 def verify(build_dir: Path, mode: str = "aot") -> int:
     if mode not in MODES:
         raise RuntimeError(f"unknown mode {mode!r}")
@@ -715,12 +720,21 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         raise RuntimeError("production build is missing: " + ", ".join(missing))
 
     chunk_sources = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.c"))
-    chunk_objects = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.o"))
+    # With the LLVM IR backend (CODEGEN_BACKEND=llvm, #330) a chunk's lowered bodies are
+    # <chunk>.ll, compiled to <chunk>_ll.o beside the C chunk's own object.
+    llvm_objects = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*_ll.o"))
+    chunk_objects = sorted(set(build_dir.glob(f"{stem}_recomp_[0-9]*.o")) - set(llvm_objects))
     emitted_count = emitted_function_count(mode)
     if len(chunk_sources) != emitted_count or len(chunk_objects) != emitted_count:
         raise RuntimeError(
             f"expected {emitted_count} generated chunk sources and objects; "
             f"found sources={len(chunk_sources)} objects={len(chunk_objects)}"
+        )
+    llvm_sources = sorted(build_dir.glob(f"{stem}_recomp_[0-9]*.ll"))
+    if [p.with_name(p.stem + "_ll.o") for p in llvm_sources] != llvm_objects:
+        raise RuntimeError(
+            f"LLVM IR chunks and their objects differ: sources={len(llvm_sources)} "
+            f"objects={len(llvm_objects)}"
         )
 
     main_text = main_c.read_text(encoding="ascii")
@@ -741,7 +755,8 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         if f"sr_register_chunk_{index}();" not in main_text:
             raise RuntimeError(f"generated main omits chunk registration {index}")
 
-    generated_text = "\n".join(path.read_text(encoding="ascii") for path in chunk_sources)
+    generated_text = "\n".join(path.read_text(encoding="ascii")
+                               for path in [*chunk_sources, *llvm_sources])
     if mode == "aot":
         emitted = (ENTRY, HELPER, IMPORT_STUB)
         omitted = ()
@@ -804,7 +819,12 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
             f"dispatch_call(s, 0x{HELPER:08x}u, "
             f"0x{ENTRY + 0x10:08x}u)"
         )
-        if seam not in generated_text:
+        # The same CALL as the LLVM IR backend spells it (codegen_llvm.call_target).
+        llvm_seam = (
+            f"call void @dispatch_call(ptr %s, i32 {_signed32(HELPER)}, "
+            f"i32 {_signed32(ENTRY + 0x10)})"
+        )
+        if seam not in generated_text and llvm_seam not in generated_text:
             raise RuntimeError("AOT-gap generated code lacks the production dispatch seam")
         resume = f"f_{REGION_B:08x}"
         if resume not in generated_text:

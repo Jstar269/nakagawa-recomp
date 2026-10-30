@@ -208,6 +208,10 @@ These tools run on the development host before the native compiler.
 - **Chunking:** generated functions are split into `<game>_recomp_0.c` through
   `<game>_recomp_N.c`. The count is computed from the discovered functions and
   `FUNCS_PER_CHUNK`; it is not fixed to eight HST chunks.
+- **LLVM IR backend (opt-in, #330):** with `--backend=llvm` (`CODEGEN_BACKEND=llvm`),
+  `codegen_llvm.py` lowers each function it supports to LLVM IR in `<game>_recomp_<n>.ll`
+  beside its C chunk, from the same ownership and transfer rules, and keeps the C body,
+  with the reason recorded, for the rest. [`LLVM_BACKEND.md`](LLVM_BACKEND.md) is the design.
 
 ### Verification tools
 
