@@ -208,6 +208,10 @@ first frame and its last are cuts. Under Reduce motion nk_ui leaves the transiti
   (`test_hover_fill_eases`).
 - The 3 px tab rule is one element in the active tab's slot and slides to a newly active tab over base
   (`test_tab_rule_slides`).
+- A disc's picture that arrives on a card already on screen, read after the card was drawn, or that changes in
+  place, fades in over slow. One that comes with its card, on a new page, is there at once (`test_art_fades_in`).
+  A picture is an nk_ui custom element, which Clay transitions cannot fade, so nk_ui eases the alpha it draws it
+  with, on Clay's ease-out curve.
 
 Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle
 when nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and

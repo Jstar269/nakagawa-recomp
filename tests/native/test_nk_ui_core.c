@@ -1289,6 +1289,78 @@ static int test_wait_follows_motion(void) {
     return 1;
 }
 
+/* An art area, 160 x 90, holding `image` when there is one, drawn at `now_s`.
+   Returns the alpha the picture is drawn at, -1 when no picture is drawn. */
+static int draw_art_area(NkUi *ui, double now_s, const NkUiImage *image) {
+    NkUiLayout area;
+    const NkUiDrawList *list;
+    uint32_t i;
+    memset(&area, 0, sizeof(area));
+    area.width = (NkUiSizing){NK_UI_SIZE_FIXED, 160.0f, 0.0f, 0.0f};
+    area.height = (NkUiSizing){NK_UI_SIZE_FIXED, 90.0f, 0.0f, 0.0f};
+    nk_ui_begin(ui, now_s);
+    if (nk_ui_begin_container(ui, 97u, &area, NULL)) {
+        if (image != NULL) {
+            NkUiImageArt art;
+            memset(&art, 0, sizeof(art));
+            art.cover = image;
+            (void)nk_ui_image_art(ui, 98u, (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f},
+                                  (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f}, &art);
+        } else {
+            nk_ui_label(ui, 99u, "No picture", 0, 12);
+        }
+        nk_ui_end_container(ui);
+    }
+    list = nk_ui_end(ui);
+    for (i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_CUSTOM && cmd->custom_kind == NK_UI_CUSTOM_IMAGE) {
+            return (int)(cmd->rgba_pm & 0xFFu);
+        }
+    }
+    return -1;
+}
+
+/* A disc's picture read after its card is on screen eases in over
+   NK_UI_MOTION_SLOW; one that comes with its card is there at once, and so is
+   any under Reduce motion. */
+static int test_art_fades_in(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    static uint8_t pixels[2u * 2u * 4u] = {
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255
+    };
+    NkUiImage image = {2u, 2u, pixels, 1u};
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int mid;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create art fade context");
+    set_test_window(ui);
+    CHECK(draw_art_area(ui, 50.0, &image) == 255 && !nk_ui_in_motion(ui),
+          "a picture that comes with its card is there at once");
+    for (frame = 0; frame < 2; ++frame) (void)draw_art_area(ui, 50.1 + frame * 0.01, NULL);
+    CHECK(draw_art_area(ui, 50.2, &image) == 0 && nk_ui_in_motion(ui),
+          "a picture read after its card was drawn starts transparent");
+    mid = draw_art_area(ui, 50.2 + NK_UI_MOTION_SLOW / 2.0, &image);
+    CHECK(mid > 0 && mid < 255 && nk_ui_in_motion(ui), "half way through, it is fading in");
+    CHECK(draw_art_area(ui, 50.2 + NK_UI_MOTION_SLOW, &image) == 255, "then it is whole");
+    (void)draw_art_area(ui, 50.8, &image);
+    CHECK(!nk_ui_in_motion(ui), "and still");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    (void)draw_art_area(ui, 51.0, NULL);
+    CHECK(draw_art_area(ui, 51.1, &image) == 255 && !nk_ui_in_motion(ui),
+          "Reduce motion: the picture is there at once");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* Clay's layout inspector draws its panel, listing the layout's elements by
    their id strings, while it is on, and the frame is still drawn. */
 static int test_layout_debug(void) {
@@ -1846,7 +1918,7 @@ int main(int argc, char **argv) {
         !test_pointer_respects_clip() || !test_scroll_container() ||
         !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
         !test_focus_ring_moves() || !test_hover_fill_eases() || !test_tab_rule_slides() ||
-        !test_wait_follows_motion() ||
+        !test_wait_follows_motion() || !test_art_fades_in() ||
         !test_layout_debug() || !test_pointer_state_once_a_frame() ||
         !test_undrawn_command_is_reported()) {
         return 1;

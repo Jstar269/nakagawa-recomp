@@ -1828,7 +1828,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e6cb8352970d106b303d9b73e29d7a255a15c1a3d3a77f72435c924118cb6211"
+      "sha256": "6981e2331e5151b4305e92468bb58988ef86a8afcf22e9223af94f1a368137de"
     },
     {
       "path": "docs/PORTING.md",
@@ -10632,7 +10632,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56e3c6c56f4aa3d5d4f6a3b530170e6705440a5d22709bb9f0155b74bdca099c"
+      "sha256": "86ad3977a24f20947f02b003902523be0610d3c6885eb29482fae77c00d8c729"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -11232,7 +11232,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c65946125bd131a07f696c58b3a18029c6bc4285cee9102b9ae092e6e4c788e"
+      "sha256": "f32873f753c49e368792a83bc3183a87d3baa147236c5f8544bd957a3ad5e0e3"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
