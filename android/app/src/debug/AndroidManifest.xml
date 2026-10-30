@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 the Nakagawa Recomp authors -->
+<!-- Debug builds only: TitleActivity can be started from adb (am start) to run a bundled title
+     without the launcher, for device tests. Release builds keep it private. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity
+            android:name=".TitleActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

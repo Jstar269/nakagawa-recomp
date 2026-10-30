@@ -39,7 +39,7 @@ void nk_ui_router_destroy(NkUiRouter *router) {
 static bool nk_ui_router_known(PlayerUiRoute route) {
     return route == PLAYER_UI_ROUTE_LIBRARY || route == PLAYER_UI_ROUTE_TITLE ||
            route == PLAYER_UI_ROUTE_ABOUT || route == PLAYER_UI_ROUTE_REMOVE ||
-           route == PLAYER_UI_ROUTE_STOP;
+           route == PLAYER_UI_ROUTE_STOP || route == PLAYER_UI_ROUTE_REBUILD;
 }
 
 bool nk_ui_router_replace(NkUiRouter *router, PlayerUiRoute route) {

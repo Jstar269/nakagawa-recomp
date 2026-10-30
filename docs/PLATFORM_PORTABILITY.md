@@ -8,7 +8,7 @@ but a successful object compile is not the same as a linked, running port.
 | Area | Current state | Porting consequence |
 | --- | --- | --- |
 | Recompiler and guest memory | Mostly ISO C; guest arena is a 192 MiB host allocation | Compile on 64-bit targets, then validate address arithmetic, alignment, and memory budgets per device. |
-| Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on POSIX | Suitable for an initial glibc Linux port. Android and consoles need a supported platform backend behind `sr_coro`. |
+| Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on glibc/musl POSIX; on Android (bionic has no `swapcontext`) a stack-switch routine for x86-64 System V and AArch64, also selectable elsewhere with `SR_CORO_BACKEND_ASM` (`make coro-selftest-asm`) | Consoles need a supported platform backend behind `sr_coro`. |
 | Window, input, and presentation | SDL3/Vulkan path exists, but public `gui_*` functions are inside Windows-only `gui.c`; GDI is the fallback | Move the SDL path into platform-neutral code and keep GDI in a Windows backend. |
 | Audio | SDL3 audio stream | Portable in principle; validate device lifecycle, latency, and suspend/resume on each platform. |
 | Video decode | The common project-authored PSMF producer owns stream demux and AU boundaries; Windows uses Media Foundation; elsewhere the pinned, vendored FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, generic C, statically linked, no system FFmpeg) is the default `sr_h264` backend, and `H264_FFMPEG=0` keeps the fail-closed null backend | Android needs a build of the same subset for its ABI; validate decode speed on target devices (the C-only DSP paths are slower than SIMD). |
@@ -17,6 +17,38 @@ but a successful object compile is not the same as a linked, running port.
 | Savedata and ISO access | Already contain Windows/POSIX branches | Consolidate them into the same host filesystem layer and test path/case semantics. |
 | Build and packaging | GNU Make plus PowerShell, Windows library names, SDK paths, and `.exe`/DLL packaging | Preserve the working Windows flow while introducing a cross-platform build definition with equivalent targets. |
 | Diagnostic tooling | Some live process inspection is Windows-only | Keep it optional; ports need not block on debugger feature parity. |
+
+## One platform seam
+
+Host behaviour goes through one seam, so a new host (Android
+[#360](https://github.com/Jstar269/nakagawa-recomp/issues/360), macOS
+[#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) changes the backends and not every
+caller:
+
+- `src/core/nk_platform.h`, with `nk_platform_win32.c` and `nk_platform_posix.c`, owns paths and
+  the per-user folders, file primitives, process spawn and window fronting, the executable path,
+  UTF-8 `main` arguments, the GUI program's standard streams, the system UI font, the SDL3_ttf
+  library names, path-name comparison, and `nk_platform_host_kind()`.
+- `src/player/player_host.h` and `player_host.c` own the launcher pieces that need SDL: the file
+  pickers and their filters, showing a folder in the file manager, and the window icon.
+- Feature capabilities are asked, not inferred from the host: `package_builder_toolchain_download_available()`
+  and `nk_update_install_supported()`.
+- User-facing text that names a host's own tools or folders takes an `NkHostKind`
+  (`player_data_dir_unavailable_text`, `player_folder_open_failure_hint`,
+  `player_launcher_unavailable_message_for_host`), so every host's words compile and are tested on
+  every host.
+
+`src/player/main.c`, `ui_renderer.c`, `ui/player_ui_nk.c` and `player_state.h` hold no host
+conditionals. `tools/test_platform_seam.py` counts `_WIN32`, `__APPLE__`, `__linux__`,
+`__ANDROID__` and similar tests in `src/player`, `src/core` and `src/ui` outside the backends and
+holds every file to its recorded count, with the reason its branches stay. A new branch outside a
+backend fails that test; add the behaviour to the seam instead, or raise the count in review with
+its reason.
+
+What the seam does not cover yet, by file: `package_builder.c` (tool discovery and the Windows
+prerequisite download), `setup_staging.c` (PPSSPP folder discovery and wide file calls), the
+`settings.json` and `library.json` writers' durable replace, and the file-local UTF-8 file
+primitives that `nk_platform.h` lists for units built without the platform layer.
 
 ## Staged plan
 
@@ -43,10 +75,16 @@ Android and similar hosts are a planned target (maintainer decision, 2026-10-23)
 C toolchain for the user's own game, because the project never publishes recompiled game code; a
 user may build on their PC and move the result to their own device (`AGENTS.md`, section 5).
 
-1. Drive the native target with the Android NDK's CMake toolchain and Gradle packaging.
-2. Add an Android-compatible coroutine backend instead of assuming `ucontext` availability.
+Building and running it: [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md).
+
+1. Drive the native target with the Android NDK's CMake toolchain and Gradle packaging. Done for
+   the launcher and the showcase demos (`android/`), arm64-v8a and x86_64.
+2. Add an Android-compatible coroutine backend instead of assuming `ucontext` availability. Done
+   (`src/rt/sr_coro.c`). The scoped guest FP window has an AArch64 FPCR backend
+   (`src/rt/fp_convert.h`); FS=1 flushing is done in software so it gives the x86 FTZ bits.
 3. Implement app lifecycle, scoped-storage/content access, touch/controller input, audio focus,
-   and suspend/resume behavior.
+   and suspend/resume behavior. A title runs in its own Android process (`:title`), the Android
+   form of the desktop's one child process per title.
 4. Select and validate a platform-appropriate video decoder.
 5. Measure the guest arena and graphics memory footprint on representative 64-bit ARM devices.
 

@@ -644,7 +644,7 @@ static uint32_t g_uid = 0x100u;
 uint32_t sr_alloc_uid(void) { return g_uid++; }
 int gui_on(void) { return 0; }
 void gui_pump(void) {}
-int sr_thread_has_pending_callbacks(void) { return 0; }
+int sr_thread_has_pending_callbacks(uint32_t thread_uid) { (void)thread_uid; return 0; }
 int sr_thread_dispatch_callbacks(void) { return 0; }
 uint32_t g_frame_prims = 0;
 int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) {

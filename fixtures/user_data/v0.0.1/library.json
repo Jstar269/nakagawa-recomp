@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "games": [
+    {
+      "disc_id": "TEST80001",
+      "title_name": "Synthetic Title \"One\"",
+      "disc_version": "1.00",
+      "iso_path": "<drive>:\\Games\\synthetic-one.iso",
+      "prepared_root": "<drive>:\\NakagawaData\\games\\TEST80001",
+      "title_id": "synthetic_one",
+      "iso_size_bytes": 123456789,
+      "status": 3,
+      "is_experimental": false,
+      "executable_eboot_kind": 1,
+      "executable_boot_kind": 2,
+      "executable_selection": 1,
+      "executable_boot_fallback": false,
+      "boot_executable": "BOOT.BIN",
+      "selected_executable": "EBOOT.BIN",
+      "is_prepared": true,
+      "assets_staged": true,
+      "extracted_asset_count": 42,
+      "extracted_audio_count": 7,
+      "extracted_visual_count": 30,
+      "extracted_layout_count": 5,
+      "last_played": "2026-10-27T12:00:00Z"
+    },
+    {
+      "disc_id": "TEST80002",
+      "title_name": "Synthetic Two 日本",
+      "disc_version": "1.01",
+      "iso_path": "/srv/games/synthetic-two.iso",
+      "prepared_root": "",
+      "title_id": "synthetic_two",
+      "iso_size_bytes": 987654321,
+      "status": 1,
+      "is_experimental": true,
+      "executable_eboot_kind": 0,
+      "executable_boot_kind": 0,
+      "executable_selection": 0,
+      "executable_boot_fallback": false,
+      "boot_executable": "",
+      "selected_executable": "",
+      "is_prepared": false,
+      "assets_staged": false,
+      "extracted_asset_count": 0,
+      "extracted_audio_count": 0,
+      "extracted_visual_count": 0,
+      "extracted_layout_count": 0,
+      "last_played": ""
+    }
+  ]
+}

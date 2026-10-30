@@ -133,6 +133,12 @@ STRICT_C_UNITS: dict[str, StrictUnit] = {
         recipes=("$(GPU_COHERENCE_BIN)",),
         defines=("SR_GPU_COHERENCE_SELFTEST",),
     ),
+    # The UI regression harness is empty without its define; only the UI-test
+    # player links it.
+    "src/player/player_ui_test.c": StrictUnit(
+        recipes=("$(PLAYER_UI_TEST_EXE)",),
+        defines=("NK_PLAYER_UI_REGRESSION_TEST",),
+    ),
     "src/rt/atrac3p_bridge_selftest.c": StrictUnit(
         recipes=("atrac3p-bridge-selftest",),
         includes=("tests/native",),

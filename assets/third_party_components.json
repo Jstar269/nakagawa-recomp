@@ -48,7 +48,7 @@
     "system_dll_patterns": [
       "^api-ms-win-.*\\.dll$",
       "^ext-ms-win-.*\\.dll$",
-      "^(kernel32|kernelbase|user32|gdi32|shell32|ole32|oleaut32|advapi32|setupapi|imm32|version|winmm|comctl32|comdlg32|shlwapi|ws2_32|wsock32|dnsapi|iphlpapi|netapi32|userenv|uxtheme|dwmapi|d3d[0-9a-z_]*|dxgi|dinput[0-9a-z_]*|xinput[0-9a-z_]*|mfplat|mf|mfreadwrite|mfuuid|ntdll|msvcrt|ucrtbase|dwrite|rpcrt4|usp10)\\.dll$"
+      "^(kernel32|kernelbase|user32|gdi32|shell32|ole32|oleaut32|advapi32|setupapi|imm32|version|winmm|comctl32|comdlg32|shlwapi|ws2_32|wsock32|dnsapi|iphlpapi|netapi32|userenv|uxtheme|dwmapi|d3d[0-9a-z_]*|dxgi|dinput[0-9a-z_]*|xinput[0-9a-z_]*|mfplat|mf|mfreadwrite|mfuuid|ntdll|msvcrt|ucrtbase|dwrite|rpcrt4|usp10|bcrypt|winhttp)\\.dll$"
     ],
     "dlls": {
       "sdl3.dll": {

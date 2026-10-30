@@ -15,7 +15,10 @@
 extern "C" {
 #endif
 
+#ifndef NK_PLAYER_APP_TYPEDEF   /* also defined by player_state.h */
+#define NK_PLAYER_APP_TYPEDEF
 typedef struct PlayerApp PlayerApp;
+#endif
 typedef struct PlayerUiNk PlayerUiNk;
 typedef struct NkUiRouter NkUiRouter;
 struct NkUiImage;
@@ -31,7 +34,10 @@ typedef enum {
     /* Settings is a view over the routes, never pushed; the top bar takes it to
        show the SETTINGS tab as the active one. */
     PLAYER_UI_ROUTE_SETTINGS = 5,
-    PLAYER_UI_ROUTE_STOP = 6       /* confirm STOP GAME */
+    PLAYER_UI_ROUTE_STOP = 6,      /* confirm STOP GAME */
+    /* An older Nakagawa built some games: the once-per-update prompt, or the
+       reminder a launch of one shows. Pushed while player_state says so. */
+    PLAYER_UI_ROUTE_REBUILD = 7
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -114,9 +120,36 @@ typedef enum {
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
                                           op, .title_index the PSP control it rebinds */
     PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
+    PLAYER_UI_ACTION_REBUILD,          /* an older-build prompt, banner or reminder control;
+                                          .primary carries the PlayerUiRebuildOp */
+    PLAYER_UI_ACTION_ERROR_REPORT,     /* Report this game: the report link in the browser */
+    PLAYER_UI_ACTION_ERROR_SEE_REPORTS, /* the reports already filed for this disc */
+    PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, /* the issue that tracks a known cause */
+    PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
     PLAYER_UI_ACTION_TOGGLE_60FPS      /* the title page's 60 FPS game logic switch */
 } PlayerUiActionKind;
+
+/* What a control about games an older Nakagawa built asks for
+   (PLAYER_UI_ACTION_REBUILD). main.c runs the player_state handlers. */
+typedef enum {
+    PLAYER_UI_REBUILD_NONE = 0,
+    PLAYER_UI_REBUILD_ALL,           /* the prompt's or the banner's Rebuild all */
+    PLAYER_UI_REBUILD_LATER,         /* the prompt's Later */
+    PLAYER_UI_REBUILD_HIDE_BANNER,   /* the banner's Hide: for this session */
+    PLAYER_UI_REBUILD_NOW,           /* the launch reminder's Rebuild now */
+    PLAYER_UI_REBUILD_PLAY_ANYWAY,   /* the launch reminder's Play anyway */
+    PLAYER_UI_REBUILD_TITLE          /* the title page's Rebuild (.title_index) */
+} PlayerUiRebuildOp;
+
+/* The once-per-update prompt (two choices) and the launch reminder: one
+   sentence each, with the primary choice focused first. */
+typedef struct {
+    const char *title;          /* the reminder: the game's name; NULL for the prompt */
+    const char *text;
+    float logical_width;
+    float logical_height;
+} PlayerUiRebuildModel;
 
 typedef struct {
     PlayerUiActionKind kind;
@@ -183,6 +216,9 @@ typedef struct {
        not one of the user's games: the Library lists it under TEST THIS PC,
        apart from the grid. */
     bool is_demo;
+    /* An older Nakagawa built this package (it still plays): the title page
+       offers Rebuild beside PLAY, and library_status_detail says why. */
+    bool rebuild_offered;
     /* The ENHANCEMENTS card (docs/ENHANCEMENT_CONTRACT.md section 9): shown when
        the title has an enhancement package, or when 60 FPS game logic is saved
        on but the package is gone (enhancement_problem then says why). */
@@ -209,6 +245,14 @@ typedef struct {
     /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
        opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
     const char *update_notice;
+    /* Why no saved games are listed although a library file exists (a newer
+       Nakagawa wrote it, and it is kept as it is), or NULL. */
+    const char *library_notice;
+    /* Games an older Nakagawa built: "3 games were built by an older
+       Nakagawa." with Rebuild all and Hide, or "Rebuilding 2 of 5" while the
+       queue runs (no Rebuild all). NULL draws nothing. */
+    const char *rebuild_notice;
+    bool rebuild_notice_offers_all;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -231,6 +275,7 @@ typedef enum {
     PLAYER_UI_WIZARD_TOGGLE_ONLINE,      /* the options step's two switches */
     PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
     PLAYER_UI_WIZARD_SKIP_OPTIONS,       /* both off, on to the game step */
+    PLAYER_UI_WIZARD_PSP_FONTS,          /* find a connected PSP's copied fonts and import them */
     PLAYER_UI_WIZARD_CHECK_AGAIN,        /* check the same disc again, with no new import */
     PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER   /* open the folder the disc's files go in */
 } PlayerUiWizardOp;
@@ -299,6 +344,8 @@ typedef struct {
     size_t font_line_count;
     const char *font_message;
     PlayerUiNoteKind font_message_kind;
+    const char *font_summary;       /* how many of the PSP fonts are the user's own */
+    bool fonts_all_own;
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
@@ -414,7 +461,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
     PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
     PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
-    PLAYER_UI_SETTINGS_FACTORY_RESET       /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_FACTORY_RESET,      /* move the user data aside and start afresh */
+    PLAYER_UI_SETTINGS_PSP_FONTS           /* find a connected PSP's fonts and import them */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -462,6 +510,8 @@ typedef struct {
     const char *update_page_url;
     bool update_has_zip;
     bool update_can_download;       /* a Windows ZIP and a Windows build */
+    bool update_unverifiable;       /* this build has no update-signing key */
+    bool update_unsigned;           /* the release lists no signature */
     const char *update_zip_name;
     unsigned long long update_zip_bytes;
     unsigned long long update_received_bytes;
@@ -485,6 +535,8 @@ typedef struct {
     /* Factory reset (VIEW_CONFIRM_FACTORY_RESET): the folders that move aside */
     const char *reset_folders[PLAYER_UI_RESET_FOLDERS];
     size_t reset_folder_count;
+    const char *font_summary;       /* how many of the PSP fonts are the user's own */
+    bool fonts_all_own;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -636,6 +688,12 @@ typedef struct {
     const char *retry_label;    /* "Restart game", "Try again", or NULL for none */
     bool copy_available;        /* offer Copy details */
     bool copied;                /* the report is on the clipboard: say so */
+    /* A game that stopped, closed or did not start: offer Report this game
+       and See existing reports (links the user's browser opens). */
+    bool report_available;
+    /* The open issue behind a known cause, 0 for none: the card says so,
+       links it, and Report this game becomes a secondary button. */
+    unsigned int known_issue;
     float logical_width;
     float logical_height;
 } PlayerUiErrorModel;
@@ -673,6 +731,9 @@ enum {
     PLAYER_UI_ID_ERROR_RECOVER = 0x4201u,
     PLAYER_UI_ID_ERROR_RETRY = 0x4202u,
     PLAYER_UI_ID_ERROR_COPY = 0x4203u,
+    PLAYER_UI_ID_ERROR_REPORT = 0x4204u,
+    PLAYER_UI_ID_ERROR_REPORTS = 0x4205u,
+    PLAYER_UI_ID_ERROR_ISSUE = 0x4206u,
     PLAYER_UI_ID_WIZARD_PRIMARY = 0x4301u,
     PLAYER_UI_ID_WIZARD_SECOND = 0x4302u,
     PLAYER_UI_ID_WIZARD_BACK = 0x4303u,
@@ -682,6 +743,7 @@ enum {
     PLAYER_UI_ID_WIZARD_ONLINE = 0x4307u,
     PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
     PLAYER_UI_ID_WIZARD_OPEN_FOLDER = 0x4309u,
+    PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x430Au,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -691,6 +753,7 @@ enum {
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
     PLAYER_UI_ID_TITLE_CHECK_AGAIN = 0x2007u,
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
+    PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
@@ -742,8 +805,14 @@ enum {
     PLAYER_UI_ID_UPDATE_FOLDER = 0x4526u,
     PLAYER_UI_ID_UPDATE_PAGE = 0x4527u,
     PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
+    PLAYER_UI_ID_LIBRARY_REBUILD_ALL = 0x4530u,       /* the older-build banner's Rebuild all */
+    PLAYER_UI_ID_LIBRARY_REBUILD_HIDE = 0x4531u,      /* the older-build banner's Hide */
+    PLAYER_UI_ID_REBUILD_PRIMARY = 0x4532u,           /* Rebuild all / Rebuild now */
+    PLAYER_UI_ID_REBUILD_SECOND = 0x4533u,            /* Later / Play anyway */
+    PLAYER_UI_ID_TITLE_REBUILD = 0x2021u,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
+    PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -839,6 +908,9 @@ typedef struct {
 } PlayerUiStopModel;
 
 PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model);
+/* The older-build prompt (model->title NULL: Rebuild all, Later) and the launch
+   reminder (Rebuild now, Play anyway). Back is the second choice. */
+PlayerUiAction player_ui_screen_rebuild(NkUi *ui, const PlayerUiRebuildModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);
