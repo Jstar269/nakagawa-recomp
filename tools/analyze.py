@@ -334,6 +334,9 @@ class Elf:
         d = self.data
         self.reloc = None
         envelope = validate_elf32_envelope(d, input_label)
+        # Section-table defects the PSP loader never sees (tools/elf_bounds.py); the
+        # package route reports them as analysis diagnostics.
+        self.envelope_findings = list(envelope["findings"])
         self.entry = envelope["entry"]
         self.phoff = envelope["phoff"]
         self.shoff = envelope["shoff"]
@@ -712,15 +715,73 @@ def span_key(ranges):
     return tuple(zip(index.starts, index.ends, strict=True))
 
 
+#: Allocated sections whose name marks them as data, whatever their flags say: PSP PRX
+#: images declare almost every section SHF_EXECINSTR (see exec_ranges).
+DATA_SECTION_PREFIXES = (
+    ".rodata", ".data", ".sdata", ".bss", ".sbss", ".lib.", ".eh_frame",
+    ".gcc_except_table", ".ctors", ".dtors", ".init_array", ".fini_array",
+    ".preinit_array", ".got", ".reginfo", ".MIPS.",
+)
+SHF_ALLOC = 0x2
+SHF_EXECINSTR = 0x4
+
+
+def _section_name(elf, section):
+    """A section's name, read through the section-string table when the record has none."""
+    name = section.get("nm")
+    if name is not None:
+        return name
+    if elf.shnum <= 0 or elf.shentsize <= 0 or not elf.shstrndx:
+        return ""
+    shstr = elf.sections[elf.shstrndx]
+    start = shstr["off"] + section["name"]
+    end = elf.data.find(b"\x00", start, shstr["off"] + shstr["size"])
+    return elf.data[start:end].decode("ascii", "replace") if end >= 0 else ""
+
+
+def _data_section_spans(elf):
+    """Guest spans of the allocated sections the section table names as data.
+
+    A data section is allocated and either not SHF_EXECINSTR or named as data. Its
+    bytes are data even when the PT_LOAD that maps it is executable: a fixed-address
+    executable commonly maps .text, .rodata and .data with one R+X segment.
+    """
+    spans = []
+    for section in getattr(elf, "sections", ()):
+        flags = section.get("flags", 0)
+        if not (flags & SHF_ALLOC) or not section.get("size") or section.get("addr") is None:
+            continue
+        name = _section_name(elf, section)
+        if (flags & SHF_EXECINSTR) and not name.startswith(DATA_SECTION_PREFIXES):
+            continue
+        spans.append((section["addr"], section["addr"] + section["size"]))
+    return sorted(spans)
+
+
 def _file_backed_exec_ranges(elf):
-    """Executable bytes that are file-backed, including bytes outside named code sections."""
+    """Executable bytes that are file-backed, including bytes outside named code sections.
+
+    The executable PT_LOAD segments, less the data sections they map. Bytes outside
+    every named section (a module-start trampoline before .text, .init/.fini code)
+    stay executable; a pointer into .rodata or .data is data, never a code pointer.
+    """
     cached = getattr(elf, "_file_backed_exec_ranges", None)
     if cached is None:
-        cached = [
-            (segment["vaddr"], segment["vaddr"] + segment["filesz"])
-            for segment in getattr(elf, "segments", ())
-            if segment["type"] == 1 and (segment.get("flags", 0) & 1) and segment["filesz"] > 0
-        ]
+        data_spans = _data_section_spans(elf)
+        cached = []
+        for segment in getattr(elf, "segments", ()):
+            if segment["type"] != 1 or not (segment.get("flags", 0) & 1) or segment["filesz"] <= 0:
+                continue
+            pieces = [(segment["vaddr"], segment["vaddr"] + segment["filesz"])]
+            for data_lo, data_hi in data_spans:
+                # Keep what lies before and after this data section.
+                pieces = [
+                    piece
+                    for lo, hi in pieces
+                    for piece in ((lo, min(hi, data_lo)), (max(lo, data_hi), hi))
+                    if piece[0] < piece[1]
+                ]
+            cached.extend(pieces)
         elf._file_backed_exec_ranges = cached
     return cached
 

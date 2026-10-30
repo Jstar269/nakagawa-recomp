@@ -3298,6 +3298,28 @@ _ANALYZER_BOUNDARY_MESSAGES = {
         "The PSP import table is invalid or outside mapped data. "
         "This import-table layout is not supported yet."
     ),
+    "ANALYZER_ELF_INVALID": (
+        "The executable or one of its modules is not an ELF image the analyzer can read. "
+        "This input is not supported yet."
+    ),
+    "ANALYZER_NO_EXECUTABLE_REGIONS": (
+        "The analyzer found no executable code in the executable or one of its modules. "
+        "This input is not supported yet."
+    ),
+    "ANALYZER_INPUT_MISSING": (
+        "An input the analyzer needs (the executable, a module or the module folder) "
+        "is missing."
+    ),
+}
+
+#: The package route's analyze-stage boundaries (title_codegen_plan._make_input_images),
+#: named as analyzer failure classes. Import-table boundaries already carry their class.
+_ANALYZER_ROUTE_CLASSES = {
+    "PACKAGE_INVALID_ELF": "ANALYZER_ELF_INVALID",
+    "PACKAGE_INVALID_IMPORT_TABLE": "ANALYZER_IMPORT_TABLE_INVALID",
+    "PACKAGE_NO_EXECUTABLE_REGIONS": "ANALYZER_NO_EXECUTABLE_REGIONS",
+    "PACKAGE_INPUT_MISSING": "ANALYZER_INPUT_MISSING",
+    "PACKAGE_MODULE_DIR_REQUIRED": "ANALYZER_INPUT_MISSING",
 }
 
 
@@ -4324,12 +4346,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 pass
     except Exception as exc:
         analyzer_boundary = getattr(exc, "code", None)
-        failure = (
-            analyzer_boundary
-            if isinstance(analyzer_boundary, str)
-            and analyzer_boundary in _ANALYZER_BOUNDARY_MESSAGES
-            else "ANALYZER_FAILURE_UNCLASSIFIED"
-        )
+        failure = _ANALYZER_ROUTE_CLASSES.get(analyzer_boundary, analyzer_boundary)
+        if not isinstance(failure, str) or failure not in _ANALYZER_BOUNDARY_MESSAGES:
+            failure = "ANALYZER_FAILURE_UNCLASSIFIED"
         diagnostic = (
             f"{analyzer_boundary}: {type(exc).__name__}: {exc}"
             if isinstance(analyzer_boundary, str)
