@@ -203,7 +203,8 @@ POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
     "tools/vulkan_sdk.ps1": 1,
 }
 
-ACTION_USE = re.compile(r"uses:\s*([^\s#]+)")
+# A `uses:` key, not the tail of another key such as `statuses: write`.
+ACTION_USE = re.compile(r"(?<![\w-])uses:\s*([^\s#]+)")
 FULL_SHA_ACTION = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*@[0-9a-fA-F]{40}$")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
