@@ -615,10 +615,17 @@ typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
 static SchedStackRangeRefusal s_stack_range_refusal;
 void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
 
+/* A PSP allocates a thread stack from the high end of the user partition: the highest free
+ * block that holds the request, carved from that block's top. Measured on a PSP-3000
+ * (PSP-THREAD-K0-001, docs/HARDWARE_ORACLE.md): the probe's main thread, created by its
+ * module_start, holds [0x09f80000, 0x09fc0000); the module-start thread's own 256 KiB stack
+ * above it was released when module_start returned, and a new 0x4000-byte thread got
+ * [0x09ffc000, 0x0a000000), the top of that released block, not the space directly below
+ * the main thread. The free list is sorted by address, so the search runs from its end. */
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
     if (!base_out || size == 0u) return 0;
-    for (int i = 0; i < s_stack_free_count; i++) {
+    for (int i = s_stack_free_count - 1; i >= 0; i--) {
         StackRange *range = &s_stack_free[i];
         if (range->size < size) continue;
         uint32_t base = range->base + range->size - size;
