@@ -44,8 +44,8 @@ class TestDCOPolicy(RuleStatementAssertions):
         self.assertRegex(_section(content, 3), r"git commit -s\b")
         self.assertRuleStated(
             _blocks(_section(content, 4)),
-            ("Correction Workflow", "missing Sign-Offs"),
-            "the correction workflow for missing sign-offs",
+            ("missing `Signed-off-by:` line", "not** a merge blocker", "may merge"),
+            "that a pull request without a sign-off can still be merged",
         )
         self.assertRuleStated(
             _blocks(_section(content, 5)),
@@ -62,8 +62,13 @@ class TestDCOPolicy(RuleStatementAssertions):
         blocks = _blocks(content)
         self.assertRuleStated(
             blocks,
-            ("DCO 1.1", "every commit", "sign-off line"),
-            "the contribution sign-off requirement",
+            ("DCO 1.1", "sign-off", "optional"),
+            "that a DCO sign-off is optional",
+        )
+        self.assertRuleStated(
+            blocks,
+            ("right to submit", "GPL-3.0-or-later", "template"),
+            "the right-to-submit confirmation",
         )
         self.assertIn("Signed-off-by:", content)
 
@@ -72,11 +77,11 @@ class TestDCOPolicy(RuleStatementAssertions):
         self.assertTrue(pr_tmpl.is_file(), "PULL_REQUEST_TEMPLATE.md file missing")
 
         content = pr_tmpl.read_text(encoding="utf-8")
-        # These are legal attestations: preserve the human sign-off, waiver,
+        # These are legal attestations: preserve the right-to-submit, optional sign-off,
         # third-party-source and AI-assistance statements verbatim.
         for legal_line in (
-            "- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).",
-            "- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#51-maintainer-standing-waiver). Outside contributions always need the first box.",
+            "- [ ] I wrote this change, or have the right to submit it, under the project's license (GPL-3.0-or-later). See [contribution rights](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).",
+            "- [ ] Optional: every commit has a `Signed-off-by:` line from its human author, added with `git commit -s` ([Developer Certificate of Origin 1.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#3-how-to-sign-off-commits-optional)).",
             "- [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.",
             "- [ ] Or: material AI assistance is disclosed below, with the source needed for review.",
         ):
@@ -123,23 +128,18 @@ class TestDCOPolicy(RuleStatementAssertions):
             "the ban on retroactively rewriting history for sign-offs",
         )
 
-    def test_dco_not_required_status_check_while_waiver_active(self):
+    def test_dco_is_not_a_required_status_check(self):
         content = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
         blocks = _blocks(_section(content, 6))
         self.assertRuleStated(
             blocks,
-            ("DCO", "must not", "required status check", "public repository", "waiver is in force"),
-            "the DCO status-check ban while the waiver is active",
+            ("DCO is not a required status check", "public repository", "optional"),
+            "that DCO is not a required status check",
         )
         self.assertRuleStated(
             blocks,
             ("automated DCO check", "advisory", "non-blocking"),
             "the non-blocking DCO status-check mode",
-        )
-        self.assertRuleStated(
-            _blocks(_section(content, 5)),
-            ("only after", "explicit revocation", "required status check"),
-            "status-check promotion only after waiver revocation",
         )
         self.assertFalse(
             any(
@@ -179,21 +179,31 @@ class TestDCOPolicy(RuleStatementAssertions):
                     f"{rel}'s ban on adding sign-offs for the maintainer",
                 )
 
-    def test_outside_contributor_requirements_are_not_weakened(self):
-        # The waiver is personal to the maintainer. Outside contributors keep
-        # DCO 1.1 plus third-party and AI disclosure.
+    def test_outside_contributor_rules_are_forgiving_but_keep_the_license(self):
+        # Maintainer decision 2026-10-30: sign-off is optional and a missed box never closes a pull
+        # request, but borrowed code must still name its source and carry a GPL-compatible license.
         policy = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
         self.assertRuleStated(
             _blocks(_section(policy, 5)),
-            ("outside contributors", "DCO 1.1", "third-party source", "AI-assisted work disclosure"),
-            "outside contributors' DCO, third-party and AI disclosure requirements",
+            ("outside contributors", "right to submit", "third-party source", "AI-assisted work disclosure"),
+            "outside contributors' right-to-submit, third-party and AI disclosure",
+        )
+        self.assertRuleStated(
+            _blocks(_section(policy, 4)),
+            ("never by itself a reason to close", "asks", "GPL-compatible license"),
+            "that a missed box is asked about, not rejected, while the license rule stays",
+        )
+        self.assertRuleStated(
+            _blocks(policy),
+            ("GitHub's Terms of Service", "inbound = outbound", "GPL-3.0-or-later"),
+            "how a contribution is licensed",
         )
 
         contrib = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertRuleStated(
             _blocks(contrib),
-            ("outside contributions", "DCO 1.1", "every commit"),
-            "outside contributors' per-commit DCO requirement",
+            ("not blocked", "asks in review", "GPL-compatible license"),
+            "the forgiving review rule in CONTRIBUTING.md",
         )
 
         pr_tmpl = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")

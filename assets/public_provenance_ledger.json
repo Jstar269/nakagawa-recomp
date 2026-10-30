@@ -156,7 +156,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b732cc4c423eabdede53faa1964cc77c1f7049fe862196c9506c67338115b10"
+      "sha256": "ea2c1caa5562448e381a031ec604373086cb6a94be3627c4892d556b477637cf"
     },
     {
       "path": ".github/codecov.yml",
@@ -381,7 +381,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dbe4f57a3f03c5d341c441623655195954babbf4a0f4d14dd5638393e6a14c83"
+      "sha256": "e3bc70c6dde9b8b65eaf741e78b2e185093e694f27e8312b41b4ebc6aed45c12"
     },
     {
       "path": "CLAUDE.md",
@@ -420,7 +420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5d007668bba376068c7ea015554e91670a5acdd2d455b93ce1e48fa2a3c99d89"
+      "sha256": "06a8d999df315f37f42d7ab381219d92b0723e10bcb05d341b5e17b2640d9965"
     },
     {
       "path": "CREDITS.md",
@@ -486,7 +486,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "04ec8bf02e77fe66ec6846711a9d688fd529f8ddf74e226aab27761c94a1072e"
+      "sha256": "71bed70055058048b8d41710293c467cce8ebe25de308954f23aec8a82005012"
     },
     {
       "path": "SECURITY.md",
@@ -1564,7 +1564,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5574b15e4e0271d2da627129409c2abdaa7229f207fbf23f9c204e2bee9b49c"
+      "sha256": "d2fc3325910f79769a0acd6cf53211a4878727110e1b0dd0f1eba31989e02994"
     },
     {
       "path": "docs/ANDROID_DEVELOPMENT.md",
@@ -1639,7 +1639,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9671cff407e91c350a7a970afb9d1ee5ef958e9473157cf6eddd152231e28bb3"
+      "sha256": "e5ebb76f2e473f8414bd7a3deb5c117d1e54dd5984d49e14dcf5cdfc5a1d8d1b"
     },
     {
       "path": "docs/DEBUGGING.md",
@@ -15260,7 +15260,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "89fecfe122ba54cb98e7ebb9f7fb04c71d8368101d06ddc4918e419f0bd4e22b"
+      "sha256": "e8cce6c5051417aa5029f3e65b2bc023fe7f89b92d44b9b53414a323607aff62"
     },
     {
       "path": "tools/test_debug.py",
