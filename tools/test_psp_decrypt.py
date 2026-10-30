@@ -849,7 +849,7 @@ class TestSyntheticEndToEnd(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
         combined = out.stdout + out.stderr
-        self.assertIn("MISSING_KEY_ENTRY", combined)
+        self.assertIn("KEY_REQUIRED", combined)
         self.assertIn(f"prx.tag.0x{SYNTH_TAG:08X}", combined)
         self.assertIn("this executable needs key entry", combined)
 
@@ -870,8 +870,8 @@ class TestSyntheticEndToEnd(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
         combined = out.stdout + out.stderr
-        self.assertIn("MISSING_KEY_ENTRY", combined)
-        self.assertIn("kirk.", combined.split("MISSING_KEY_ENTRY", 1)[1].splitlines()[0])
+        self.assertIn("KEY_REQUIRED", combined)
+        self.assertIn("kirk.", combined.split("KEY_REQUIRED", 1)[1].splitlines()[0])
 
     def test_malformed_container_fails_closed(self):
         src = self.tmp / "EBOOT_malformed.BIN"
@@ -886,7 +886,7 @@ class TestSyntheticEndToEnd(unittest.TestCase):
         )
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
-        self.assertIn("CONTAINER_MALFORMED", out.stdout + out.stderr)
+        self.assertIn("MALFORMED_INPUT", out.stdout + out.stderr)
 
     def test_tampered_ciphertext_fails_integrity(self):
         container, entries, _ = self._seal(self.elf, compressed=False)
@@ -1000,7 +1000,7 @@ class TestBuiltinTables(unittest.TestCase):
     def test_a_tag_outside_the_tables_fails_closed_naming_it(self):
         out, dst = self._run("builtin_unknown", self._seal_builtin(SYNTH_TAG))
         self.assertEqual(out.returncode, 3, out.stdout + out.stderr)
-        self.assertIn(f"MISSING_KEY_ENTRY prx.tag.0x{SYNTH_TAG:08X}", out.stdout)
+        self.assertIn(f"KEY_REQUIRED prx.tag.0x{SYNTH_TAG:08X}", out.stdout)
         self.assertFalse(dst.exists())
 
     def test_firmware_containers_are_refused_before_any_key_lookup(self):
@@ -1028,7 +1028,7 @@ class TestBuiltinTables(unittest.TestCase):
                     self.assertEqual(out.returncode, 10, out.stdout + out.stderr)
                     self.assertIn("FIRMWARE_OUT_OF_SCOPE", out.stdout)
                     self.assertIn("never decrypts firmware", out.stdout)
-                    self.assertNotIn("MISSING_KEY_ENTRY", out.stdout)
+                    self.assertNotIn("KEY_REQUIRED", out.stdout)
                     self.assertFalse(dst.exists())
 
     def test_table_carries_no_firmware_recipe_or_psar_value(self):
@@ -1124,7 +1124,7 @@ class TestType01Containers(unittest.TestCase):
                 out, dst = self._decrypt(f"tamper{int(type1)}", bytes(tampered),
                                          "--key-file", str(keyfile))
                 self.assertNotEqual(out.returncode, 0)
-                self.assertIn("INTEGRITY_CHECK_FAILED", out.stdout)
+                self.assertIn("INTEGRITY_FAILURE", out.stdout)
                 self.assertFalse(dst.exists())
 
     def test_builtin_type0_and_type1_recipes_decrypt_without_a_key_file(self):
@@ -1194,9 +1194,9 @@ class TestMatchedTypeDiagnosis(unittest.TestCase):
         out, dst, combined = self._decrypt("diag_corrupt", tampered, entries)
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
-        self.assertNotIn("MISSING_KEY_ENTRY", combined)
+        self.assertNotIn("KEY_REQUIRED", combined)
         self.assertNotIn("kirk.ecdsa", combined)
-        self.assertIn("INTEGRITY_CHECK_FAILED", combined)
+        self.assertIn("INTEGRITY_FAILURE", combined)
 
     def test_valid_container_missing_keyvault_entry_names_exactly_it(self):
         """A well-formed container whose key entry is absent still names
@@ -1206,8 +1206,8 @@ class TestMatchedTypeDiagnosis(unittest.TestCase):
         out, dst, combined = self._decrypt("diag_missing", container, entries)
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
-        self.assertIn("MISSING_KEY_ENTRY", combined)
-        first = combined.split("MISSING_KEY_ENTRY", 1)[1].splitlines()[0].strip()
+        self.assertIn("KEY_REQUIRED", combined)
+        first = combined.split("KEY_REQUIRED", 1)[1].splitlines()[0].strip()
         self.assertTrue(
             first.startswith(f"kirk.keyvault.{SYNTH_CODE}"),
             f"expected the keyvault entry first, got: {first!r}",
@@ -1223,8 +1223,8 @@ class TestMatchedTypeDiagnosis(unittest.TestCase):
         out, dst, combined = self._decrypt("diag_nomatch", corrupted, entries)
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(dst.exists())
-        self.assertNotIn("MISSING_KEY_ENTRY", combined)
-        self.assertIn("CONTAINER_MALFORMED", combined)
+        self.assertNotIn("KEY_REQUIRED", combined)
+        self.assertIn("MALFORMED_INPUT", combined)
         self.assertIn("matches no supported PRX container type", combined)
 
 
@@ -1868,19 +1868,19 @@ class TestNpumdimg(unittest.TestCase):
                 self.assertNotEqual(out.returncode, 0, out.stdout)
                 self.assertFalse(dst.exists())
                 self.assertTrue(any(word in out.stdout for word in (
-                    "INTEGRITY_CHECK_FAILED", "DECOMPRESS_FAILED")), out.stdout)
+                    "INTEGRITY_FAILURE", "DECOMPRESS_FAILURE")), out.stdout)
 
     def test_a_bad_block_table_fails_closed_before_any_output(self):
         size = 4 * NP_SECTOR
         cases = {
             "size_past_block": (lambda i, r: (r[0], size + 16, r[2], r[3]) if i == 1 else r,
-                                5, "INTEGRITY_CHECK_FAILED"),
+                                5, "INTEGRITY_FAILURE"),
             "offset_past_file": (lambda i, r: (0x7FFFFFF0, r[1], r[2], r[3]) if i == 2 else r,
-                                 5, "INTEGRITY_CHECK_FAILED"),
+                                 5, "INTEGRITY_FAILURE"),
             "zero_size": (lambda i, r: (r[0], 0, r[2], r[3]) if i == 0 else r,
-                          5, "INTEGRITY_CHECK_FAILED"),
+                          5, "INTEGRITY_FAILURE"),
             "tool_marked": (lambda i, r: (r[0], r[1], r[2], 1) if i == 6 else r,
-                            7, "UNSUPPORTED_CONTAINER"),
+                            7, "UNSUPPORTED_SCHEME"),
         }
         for name, (rows, code, word) in cases.items():
             with self.subTest(table=name):
@@ -1891,7 +1891,7 @@ class TestNpumdimg(unittest.TestCase):
     def test_a_table_outside_the_file_fails_closed(self):
         psar = build_npumdimg(self.iso, self.entries)
         out, dst = self._run("table_cut", npumdimg_pbp(self.DISC, psar[:0x140]))
-        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+        self._refused(out, dst, 5, "INTEGRITY_FAILURE")
 
     def test_an_oversized_or_zero_block_size_is_refused_before_any_key(self):
         empty = self.tmp / "no-such-np-keys.json"
@@ -1901,9 +1901,9 @@ class TestNpumdimg(unittest.TestCase):
                                       struct.pack_into("<I", h, 0x0C, v))
                 out, dst = self._run(f"block_{lbas:x}", npumdimg_pbp(self.DISC, psar),
                                      keyfile=empty)
-                self._refused(out, dst, 4, "CONTAINER_MALFORMED")
+                self._refused(out, dst, 4, "MALFORMED_INPUT")
                 self.assertIn("impossible block size", out.stdout)
-                self.assertNotIn("MISSING_KEY_ENTRY", out.stdout)
+                self.assertNotIn("KEY_REQUIRED", out.stdout)
 
     def test_a_garbled_compressed_block_fails_closed(self):
         psar = bytearray(build_npumdimg(self.iso, self.entries, compress=(1,)))
@@ -1917,16 +1917,16 @@ class TestNpumdimg(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0, out.stdout)
         self.assertFalse(dst.exists())
         self.assertTrue(any(word in out.stdout for word in (
-            "DECOMPRESS_FAILED", "INTEGRITY_CHECK_FAILED")), out.stdout)
+            "DECOMPRESS_FAILURE", "INTEGRITY_FAILURE")), out.stdout)
 
     def test_the_result_must_be_the_packages_own_disc(self):
         other = build_npumdimg(build_tiny_iso("TEST80902"), self.entries)
         out, dst = self._run("wrong_disc", npumdimg_pbp(self.DISC, other))
-        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+        self._refused(out, dst, 5, "INTEGRITY_FAILURE")
         self.assertIn("TEST80902", out.stdout)
         no_pvd = build_npumdimg(build_tiny_iso(self.DISC, pvd=False), self.entries)
         out, dst = self._run("no_pvd", npumdimg_pbp(self.DISC, no_pvd))
-        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+        self._refused(out, dst, 5, "INTEGRITY_FAILURE")
         self.assertIn("volume descriptor", out.stdout)
 
     def test_a_missing_row_is_named(self):
@@ -1936,7 +1936,7 @@ class TestNpumdimg(unittest.TestCase):
         write_keyfile(keyfile, partial)
         psar = build_npumdimg(self.iso, self.entries)
         out, dst = self._run("missing_row", npumdimg_pbp(self.DISC, psar), keyfile=keyfile)
-        self._refused(out, dst, 3, f"MISSING_KEY_ENTRY kirk.keyvault.{NP_WRAP_ROW}")
+        self._refused(out, dst, 3, f"KEY_REQUIRED kirk.keyvault.{NP_WRAP_ROW}")
 
     def test_psone_classics_are_refused_by_name_before_any_key(self):
         empty = self.tmp / "no-such-np-keys.json"
@@ -1945,7 +1945,7 @@ class TestNpumdimg(unittest.TestCase):
                 pbp = npumdimg_pbp("SLUS99999", magic + bytes(0x400), category="ME")
                 out, dst = self._run(f"psone_{magic[:6].decode()}", pbp, keyfile=empty)
                 self._refused(out, dst, 12, "PSONE_CLASSIC_UNSUPPORTED")
-                self.assertNotIn("MISSING_KEY_ENTRY", out.stdout)
+                self.assertNotIn("KEY_REQUIRED", out.stdout)
 
     def test_updaters_stay_firmware_out_of_scope(self):
         empty = self.tmp / "no-such-np-keys.json"
@@ -1966,9 +1966,9 @@ class TestNpumdimg(unittest.TestCase):
 
     def test_other_packages_are_refused_by_name(self):
         out, dst = self._run("homebrew", npumdimg_pbp("TEST80903", b"\0" * 0x40))
-        self._refused(out, dst, 7, "UNSUPPORTED_CONTAINER")
+        self._refused(out, dst, 7, "UNSUPPORTED_SCHEME")
         out, dst = self._run("not_pbp", self.iso)
-        self._refused(out, dst, 4, "CONTAINER_MALFORMED")
+        self._refused(out, dst, 4, "MALFORMED_INPUT")
 
 
 # The DRM BB fuse-ID types and the LZRC decoder's bounds, through the C API.

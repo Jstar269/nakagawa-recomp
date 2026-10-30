@@ -34,7 +34,7 @@
 /* Guest AOT CALLs are native C calls (TAIL transfers are drained, not nested), so the
  * scheduler reserves this host stack size for each guest thread. Keep the size in the coroutine contract so runtime
  * stack guards and scheduler tests use the same production value. */
-#define SR_GUEST_FIBER_STACK_SIZE ((size_t)64u << 20)
+#define SR_GUEST_CORO_STACK_SIZE ((size_t)64u << 20)
 
 /* POSIX stacks get this much PROT_NONE address space below their usable range (rounded up to
  * the page size), so a frame that overruns the stack faults instead of writing into the next
@@ -75,6 +75,19 @@ int sr_coro_stack_remaining(size_t *remaining_out);
 /* Return the high end of the current coroutine's stack (every frame on it lies below).
  * Returns 1 when known, or 0 when unavailable. */
 int sr_coro_stack_top(uintptr_t *top_out);
+
+/* Run fn(arg) on the OS thread's own stack, below the suspended main coroutine's frames, and
+ * return to the calling coroutine. A host call that can enter a managed runtime must use it:
+ * Android's JVM checks that a JNI call's frame lies within the stack it registered for the
+ * thread, and a coroutine's mmap'ed stack does not, so SDL calls that reach Java (event pumping,
+ * device polling) raise StackOverflowError from a guest coroutine. fn must not switch
+ * coroutines. Called from the main coroutine, or on a backend whose coroutines need no such
+ * care (Win32 fibers, ucontext), it calls fn(arg) directly. */
+void sr_coro_call_on_thread_stack(void (*fn)(void *arg), void *arg);
+
+/* 1 when sr_coro_call_on_thread_stack moves a coroutine's call onto the thread stack (the
+ * stack-switch backend), 0 when it calls in place. For tests. */
+int sr_coro_thread_stack_calls_switch(void);
 
 /* ---- test-only lifecycle instrumentation ---------------------------------------------
  *

@@ -101,6 +101,20 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertTrue(PBP_BOUNDARY_CODES)
         self.assertEqual(set(PBP_BOUNDARY_CODES) - library_sweep._PUBLIC_BLOCKER_CODES, set())
 
+    def test_blocker_codes_require_the_sweep_boundaries_in_the_taxonomy(self) -> None:
+        # The sweep's own boundaries are failure codes too: a taxonomy that lost one
+        # stops the sweep rather than letting it emit an undocumented code.
+        registry = json.loads(library_sweep._PUBLIC_BLOCKER_CODE_SOURCE.read_text(encoding="utf-8"))
+        self.assertLessEqual(
+            library_sweep._PUBLIC_SWEEP_BLOCKER_CODES,
+            {code for code, entry in registry["codes"].items() if "library" in entry["in"]})
+        del registry["codes"]["SWEEP_TIME_BUDGET"]
+        source = Path(self.root) / "failure_codes.json"
+        source.write_text(json.dumps(registry), encoding="utf-8")
+        with mock.patch.object(library_sweep, "_PUBLIC_BLOCKER_CODE_SOURCE", source):
+            with self.assertRaisesRegex(RuntimeError, "missing a sweep boundary"):
+                library_sweep._load_public_blocker_codes()
+
     def test_interrupted_run_resumes_only_unrecorded_titles(self) -> None:
         first = _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Resume Sentinel One")
         _write_iso(self.iso_dir, "two.iso", "UCUS99992", "Resume Sentinel Two")
@@ -454,7 +468,7 @@ class LibrarySweepTests(unittest.TestCase):
         diagnostic = "ValueError: SYNTHETIC_ANALYZER_FAILURE"
 
         for index, failure_class in enumerate((
-            "ANALYSIS_FAILED",
+            "ANALYZER_INTERNAL_ERROR",
             "ANALYZER_IMPORT_NID_TABLE_MISSING",
         )):
             work_dir = self.private_dir / f"analysis-failure-work-{index}"
@@ -616,7 +630,7 @@ class LibrarySweepTests(unittest.TestCase):
         }
         failure_row = {
             **_sweep_row("analyze"),
-            "boundary_code": "ANALYSIS_FAILED",
+            "boundary_code": "ANALYZER_INTERNAL_ERROR",
             "issue_numbers": [308],
             "stopped_at_stage": "analyze",
             "stage_duration_ms": {**durations, "analyze": 1200},

@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from typing import Sequence
+from urllib.parse import parse_qs, quote, urlsplit
 import zlib
 
 
@@ -379,6 +380,22 @@ def break_package_manifest(runtime_root: Path) -> None:
     package.write_text("{ not a package manifest", encoding="utf-8")
 
 
+# The runtime source digest package_cache.source_tree_digest gives the v0.0.1 tag:
+# what every package v0.0.1 built records in cache.key.native.components.
+V001_RUNTIME_SOURCE_DIGEST = "d1de93861db9fa8c572e2ff473bc6aab1245e8338469d488e5cebbe0fce80beb"
+
+
+def current_build_identity() -> dict[str, str]:
+    """What a package build from this checkout records about its Nakagawa
+    (NkPackageBuildIdentity in src/core/nk_title_manifest.h)."""
+    return {
+        "runtime_source_digest": package_cache.source_tree_digest(ROOT),
+        "analyzer_sha256": package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        "codegen_sha256": package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
+        "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
+    }
+
+
 def synthetic_ready_package(
     runtime_root: Path,
     source_executable: bytes,
@@ -386,8 +403,14 @@ def synthetic_ready_package(
     data_root_present: bool = True,
     disc_id: str = "TEST00006",
     title_id: str = "display-smoke-v1",
+    built_by: str | None = None,
 ) -> None:
-    """Write a source-owned package accepted by the real native validator."""
+    """Write a source-owned package accepted by the real native validator.
+
+    ``built_by`` names the Nakagawa the package records as its builder:
+    ``"current"`` for this checkout, ``"v0.0.1"`` for the same checkout with
+    v0.0.1's runtime sources, and None for no build identity at all (all-zero
+    tool digests and no planner digest), which the player does not judge."""
     package = runtime_root / "packages" / disc_id
     package.mkdir(parents=True)
     executable_name = f"{title_id}.exe"
@@ -428,11 +451,25 @@ def synthetic_ready_package(
     identity_path.parent.mkdir(parents=True)
     identity_path.write_text(identity_text, encoding="utf-8")
 
+    builder: dict[str, str | None] = {
+        "runtime_source_digest": zero_hash, "analyzer_sha256": zero_hash,
+        "codegen_sha256": zero_hash, "planner_sha256": None,
+    }
+    if built_by is not None:
+        builder = dict(current_build_identity())
+        if built_by == "v0.0.1":
+            builder["runtime_source_digest"] = V001_RUNTIME_SOURCE_DIGEST
+        elif built_by != "current":
+            raise ValueError(f"unknown package builder: {built_by}")
+    codegen_options = (
+        {} if builder["planner_sha256"] is None
+        else {"planner_sha256": builder["planner_sha256"]}
+    )
     aot_components = {
         "analyzer_codegen_epoch": "analyzer-codegen-v1",
-        "analyzer_sha256": zero_hash,
-        "codegen_options_sha256": canonical_hash({}),
-        "codegen_sha256": zero_hash,
+        "analyzer_sha256": builder["analyzer_sha256"],
+        "codegen_options_sha256": canonical_hash(codegen_options),
+        "codegen_sha256": builder["codegen_sha256"],
         "executable_sha256": input_executable_hash,
         "generated_code_abi_epoch": package_cache.GENERATED_CODE_ABI_EPOCH,
         "manifest_sha256": zero_hash,
@@ -448,7 +485,7 @@ def synthetic_ready_package(
         "generated_code_digest": zero_hash,
         "link_flags": "",
         "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
-        "runtime_source_digest": zero_hash,
+        "runtime_source_digest": builder["runtime_source_digest"],
     }
     cache_key = {
         "schema_version": 2,
@@ -459,7 +496,7 @@ def synthetic_ready_package(
         "format": "nakagawa-aot-cache",
         "schema_version": 2,
         "key": cache_key,
-        "codegen_options": {},
+        "codegen_options": codegen_options,
         "runtime_abi_compatibility": {
             "current_epoch": package_cache.RUNTIME_ABI_EPOCH, "generated_code_reusable": True,
         },
@@ -685,6 +722,20 @@ def compute_effective_timeout(
     return effective + TIMEOUT_BUFFER_SECONDS
 
 
+class PlayerUiIdSourceTests(unittest.TestCase):
+    """Two controls with one PLAYER_UI_ID value share a layout element, and the second
+    one's screen lays out empty (the title page's Report a problem and Rebuild once did)."""
+
+    def test_every_player_ui_id_value_is_unique(self) -> None:
+        header = (ROOT / "src" / "player" / "ui" / "player_ui_nk.h").read_text(encoding="utf-8")
+        seen: dict[int, str] = {}
+        for name, value in re.findall(r"\b(PLAYER_UI_ID_\w+)\s*=\s*(0x[0-9A-Fa-f]+)u", header):
+            number = int(value, 16)
+            self.assertNotIn(number, seen, f"{name} reuses {value} from {seen.get(number)}")
+            seen[number] = name
+        self.assertGreater(len(seen), 50)
+
+
 class LegacyRendererSourceTests(unittest.TestCase):
     """The shipped player never reaches the old renderer (owner, v0.0.1)."""
 
@@ -726,15 +777,109 @@ class LegacyRendererSourceTests(unittest.TestCase):
 UPDATE_RELEASES_URL = "https://api.github.com/repos/Jstar269/nakagawa-recomp/releases?per_page=10"
 UPDATE_DOWNLOAD_PREFIX = "https://github.com/Jstar269/nakagawa-recomp/releases/download/"
 
+# A TEST-ONLY minisign signer for the synthetic releases: Ed25519 (RFC 8032) in plain
+# Python, so no package is needed. Its key pair is derived from a fixed label at run
+# time, so no key is stored anywhere. It is not the update-signing key: the player
+# accepts it only in the regression build, from NK_UI_TEST_UPDATE_DIR's
+# update_signing_key.pub, which these tests write. Output of this signer was checked
+# with `minisign -V` (minisign 0.12) when it was written.
+_ED_P = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+TEST_ONLY_SIGNER_LABEL = b"Nakagawa Recomp TEST-ONLY update signing key; never for releases"
+
+
+def _ed_add(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    p = _ED_P
+    x1, y1, z1, t1 = a
+    x2, y2, z2, t2 = b
+    aa = (y1 - x1) * (y2 - x2) % p
+    bb = (y1 + x1) * (y2 + x2) % p
+    cc = 2 * t1 * t2 * _ED_D % p
+    dd = 2 * z1 * z2 % p
+    e, f, g, h = bb - aa, dd - cc, dd + cc, bb + aa
+    return (e * f % p, g * h % p, f * g % p, e * h % p)
+
+
+def _ed_mul(scalar: int, point: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    result = (0, 1, 1, 0)
+    while scalar:
+        if scalar & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        scalar >>= 1
+    return result
+
+
+def _ed_encode(point: tuple[int, int, int, int]) -> bytes:
+    x, y, z, _ = point
+    inverse = pow(z, _ED_P - 2, _ED_P)
+    x, y = x * inverse % _ED_P, y * inverse % _ED_P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _ed_base() -> tuple[int, int, int, int]:
+    y = 4 * pow(5, _ED_P - 2, _ED_P) % _ED_P
+    xx = (y * y - 1) * pow(_ED_D * y * y + 1, _ED_P - 2, _ED_P) % _ED_P
+    x = pow(xx, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - xx) % _ED_P:
+        x = x * pow(2, (_ED_P - 1) // 4, _ED_P) % _ED_P
+    if x & 1:
+        x = _ED_P - x
+    return (x, y, 1, x * y % _ED_P)
+
+
+class TestOnlyMinisigner:
+    """minisign's formats (src/core/nk_sig.h) over a key derived from label."""
+
+    def __init__(self, label: bytes = TEST_ONLY_SIGNER_LABEL) -> None:
+        seed = hashlib.blake2b(label, digest_size=32).digest()
+        # minisign calls these 8 bytes the key ID; they are public.
+        self.signer_id = hashlib.blake2b(label, digest_size=64).digest()[:8]
+        digest = hashlib.sha512(seed).digest()
+        scalar = int.from_bytes(digest[:32], "little")
+        self._scalar = (scalar & ((1 << 254) - 8)) | (1 << 254)
+        self._prefix = digest[32:]
+        self._base = _ed_base()
+        self.public = _ed_encode(_ed_mul(self._scalar, self._base))
+
+    def _sign(self, message: bytes) -> bytes:
+        r = int.from_bytes(hashlib.sha512(self._prefix + message).digest(), "little") % _ED_L
+        big_r = _ed_encode(_ed_mul(r, self._base))
+        k = int.from_bytes(hashlib.sha512(big_r + self.public + message).digest(),
+                           "little") % _ED_L
+        return big_r + ((r + k * self._scalar) % _ED_L).to_bytes(32, "little")
+
+    def public_file(self) -> bytes:
+        import base64
+        number = int.from_bytes(self.signer_id, "little")
+        line = base64.b64encode(b"Ed" + self.signer_id + self.public).decode("ascii")
+        return f"untrusted comment: minisign public key {number:016X}\n{line}\n".encode("ascii")
+
+    def minisig(self, data: bytes, comment_text: str) -> bytes:
+        """What `minisign -S -t comment_text` writes: the prehashed (ED) form."""
+        import base64
+        signature = self._sign(hashlib.blake2b(data, digest_size=64).digest())
+        comment = comment_text.encode("utf-8")
+        global_signature = self._sign(signature + comment)
+        line = base64.b64encode(b"ED" + self.signer_id + signature).decode("ascii")
+        return (f"untrusted comment: signature from minisign secret key\n{line}\n"
+                f"trusted comment: {comment_text}\n"
+                f"{base64.b64encode(global_signature).decode('ascii')}\n").encode("utf-8")
+
 
 def write_update_fixture(
     folder: Path, version: str = "0.0.3", *, wrong_checksum: bool = False,
-    missing_file: bool = False,
+    missing_file: bool = False, signed: bool = True, bad_signature: bool = False,
+    player_key: bool = True,
 ) -> None:
     """Synthetic GitHub answers for Check for updates, as the regression build's
     transport reads them from NK_UI_TEST_UPDATE_DIR: releases.json for
     the Releases API, then each asset by its file name. The ZIP has the release
-    ZIP's layout (bin/nakagawa_player.exe and SHA256SUMS.txt)."""
+    ZIP's layout (bin/nakagawa_player.exe and SHA256SUMS.txt). The checksum file
+    is signed with the TEST-ONLY signer (unless signed is False; bad_signature
+    signs other bytes), and update_signing_key.pub gives the regression player
+    that signer's public key (unless player_key is False: a build with no key)."""
     import io
     import zipfile
 
@@ -752,7 +897,15 @@ def write_update_fixture(
     data = archive.getvalue()
     (folder / name).write_bytes(data)
     digest = "0" * 64 if wrong_checksum else hashlib.sha256(data).hexdigest()
-    (folder / f"{name}.sha256").write_bytes(f"{digest}  {name}".encode("ascii") + b"\r\n")
+    checksum = f"{digest}  {name}".encode("ascii") + b"\r\n"
+    (folder / f"{name}.sha256").write_bytes(checksum)
+    signer = TestOnlyMinisigner()
+    if player_key:
+        (folder / "update_signing_key.pub").write_bytes(signer.public_file())
+    signature = signer.minisig(checksum + (b"tampered" if bad_signature else b""),
+                               f"nakagawa-recomp {version} windows-x64 zip checksum")
+    if signed:
+        (folder / f"{name}.sha256.minisig").write_bytes(signature)
     tag = f"v{version}"
     release = {
         "tag_name": tag,
@@ -768,6 +921,10 @@ def write_update_fixture(
              "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}.sha256"},
         ],
     }
+    if signed:
+        release["assets"].append(  # type: ignore[union-attr]
+            {"name": f"{name}.sha256.minisig", "size": len(signature), "state": "uploaded",
+             "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}.sha256.minisig"})
     (folder / "releases.json").write_text(json.dumps([release]), encoding="utf-8")
 
 
@@ -858,6 +1015,7 @@ class NativePlayerUiTests(unittest.TestCase):
         timeout: float | None = None,
         library_titles: int = 0,
         dedicated_data_root: bool = False,
+        package_built_by: str | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -960,6 +1118,7 @@ class NativePlayerUiTests(unittest.TestCase):
                     synthetic_ready_package(
                         runtime_root, source_executable,
                         data_root_present=data_root_present,
+                        built_by=package_built_by,
                     )
             catalog_overlay: Path | None = None
             if catalog_reload_count:
@@ -1451,13 +1610,16 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_settings_psp_fonts_imports_and_removes(self) -> None:
         """Walkthrough blocker: the PSP font import is reachable from Settings."""
-        run = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        run = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_RIGHT", "WAIT_MS=100"))
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "psp_fonts")
-        self.assertIn(str(0x451E), self.focus_trail(run), "Import fonts folder has focus")
+        trail = self.focus_trail(run)
+        self.assertIn(str(0x452B), trail, "Get fonts from my PSP has focus first")
+        self.assertIn(str(0x451E), trail, "Right reaches Choose font files")
+        self.assertLess(trail.index(str(0x452B)), trail.index(str(0x451E)), trail)
         back = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"))
         self.assertEqual(self.screens(back)[-1][0], "settings", "Esc goes back to Settings")
 
@@ -1672,8 +1834,8 @@ class NativePlayerUiTests(unittest.TestCase):
         "build_cache": str(0x451A), "share_libraries": str(0x451B),
         "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
         "controller": str(0x450B), "scaling": str(0x4505),
-        "launcher_fullscreen": str(0x450A), "accessibility": str(0x452B),
-        "interface_size": str(0x452C), "high_contrast": str(0x452D),
+        "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
+        "interface_size": str(0x452D), "high_contrast": str(0x452E),
         "reduce_motion": str(0x4509),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
@@ -2108,8 +2270,9 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_update_check_finds_downloads_and_installs_a_newer_release(self) -> None:
         """Owner request 2026-10-28: CHECK FOR UPDATES asks GitHub once; Download and
-        Install each need their own click; the ZIP is checked against the published
-        SHA-256 before Install is offered, and Install unpacks into a new folder."""
+        Install each need their own click; the checksum file's signature is checked,
+        then the ZIP against that signed SHA-256, before Install is offered, and
+        Install unpacks into a new folder."""
         run, steps, requests = self.update_run(
             "updates",
             ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
@@ -2131,8 +2294,9 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(
             requests[1:],
             [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
+             UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256.minisig",
              UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip"],
-            "the checksum file first, then the ZIP, each once")
+            "the checksum file and its signature first, then the ZIP, each once")
         installed = steps[-1]
         self.assertTrue(installed["zip"].endswith(
             os.sep.join(("Nakagawa", "data", "downloads", "nakagawa-recomp-0.0.3-windows-x64.zip"))),
@@ -2161,6 +2325,38 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_HASH_MISMATCH")
         self.assertEqual(steps[-1]["zip"], "none", "nothing is kept or offered to install")
+
+    def test_update_download_with_a_bad_signature_is_refused(self) -> None:
+        """Owner request (v0.0.2): the checksum is trusted only under a valid signature
+        from the player's key; a bad one stops before the ZIP is asked for."""
+        if sys.platform != "win32":
+            self.skipTest("the update download runs on Windows only")
+        _, steps, requests = self.update_run(
+            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            {"bad_signature": True})
+        self.assertEqual(steps[-1]["update"], "failed", steps)
+        self.assertEqual(steps[-1]["error"], "UPDATE_SIGNATURE_INVALID")
+        self.assertEqual(steps[-1]["zip"], "none", "nothing is kept or offered to install")
+        self.assertEqual(
+            requests[1:],
+            [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
+             UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256.minisig"],
+            "the ZIP is never requested")
+
+    def test_update_without_a_signing_key_or_signature_offers_only_the_release_page(self) -> None:
+        """A build with no update-signing key, or a release with no signature, still
+        shows the newer version, but Download is not offered: Enter opens the release
+        page, and nothing past the release list is requested."""
+        for fixture in ({"player_key": False}, {"signed": False}):
+            with self.subTest(fixture=fixture):
+                run, steps, requests = self.update_run(
+                    "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN",
+                                "WAIT_MS=500"), fixture)
+                self.assertEqual([step["update"] for step in steps], ["available"], steps)
+                self.assertEqual(requests, [UPDATE_RELEASES_URL])
+                self.assertIn(
+                    "open_url=https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3",
+                    run["stdout"])
 
     def test_update_install_that_loses_a_listed_file_is_refused(self) -> None:
         if sys.platform != "win32":
@@ -3765,6 +3961,66 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "error", "Copy details keeps the card open")
         self.assertEqual(frames[-1]["error_copied"], "1")
 
+    def test_report_this_game_opens_only_links_the_user_clicks(self) -> None:
+        """Report this game, See existing reports and a known cause's issue.
+
+        Each is a link the user's browser opens on a click; the regression build
+        prints it instead of opening a browser, and the player makes no request.
+        The link carries the disc ID and the named boundary, and no path or user
+        name. Failing-before: the stop card had no second row of actions, so the
+        presses below opened nothing."""
+        user = "Synthetic Example"
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=50", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN",
+             "WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_SEMANTIC_BOUNDARY", ui_mode="next",
+            env_extra={"USERNAME": user, "USER": user},
+        )
+        stdout = str(run["stdout"])
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in stdout:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        urls = re.findall(r"\[PLAYER_UI_TEST\] open_url=(\S+)", stdout)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        disc = frames[0]["selected_disc"]
+        repo = "https://github.com/Jstar269/nakagawa-recomp"
+        # A known cause (an unsupported import, #308) leads with its issue.
+        self.assertEqual(len(urls), 3, stdout)
+        self.assertEqual(urls[0], f"{repo}/issues/308")
+        report = urlsplit(urls[1])
+        self.assertEqual(f"{report.scheme}://{report.netloc}{report.path}",
+                         f"{repo}/discussions/new")
+        query = parse_qs(report.query)
+        self.assertEqual(query["category"], ["compatibility-reports"])
+        self.assertTrue(query["title"][0].endswith(
+            f"({disc}): stopped at unsupported-import-scenetadhocinit"), query["title"])
+        body = query["body"][0]
+        for line in (f"- Disc ID: {disc}\n", "- Nakagawa: v",
+                     "- Problem: stopped at unsupported-import-scenetadhocinit\n",
+                     "### What I did\n", "### What I saw\n"):
+            self.assertIn(line, body)
+        self.assertLessEqual(len(urls[1]), 2000)
+        self.assertEqual(urls[2], f"{repo}/discussions/categories/compatibility-reports"
+                                  f"?discussions_q={disc}")
+        for url in urls:
+            # The checkout's path, not its folder name: a checkout named after the
+            # repository (as hosted CI's is) shares that name with every link here.
+            for leak in ("Synthetic", "%5C", ".player-ui-test-", "localappdata", "profile",
+                         ROOT.as_posix(), quote(ROOT.as_posix(), safe="")):
+                self.assertNotIn(leak, url)
+        self.assertEqual(frames[-1]["view"], "error", "the links keep the card open")
+
+        # A crash with no known cause: Report this game is the first link.
+        crash = self.run_player(
+            "library", ("WAIT_MS=50", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+        )
+        urls = re.findall(r"\[PLAYER_UI_TEST\] open_url=(\S+)", str(crash["stdout"]))
+        self.assertEqual(len(urls), 1, crash["stdout"])
+        title = parse_qs(urlsplit(urls[0]).query)["title"][0]
+        self.assertTrue(title.endswith(": RUNTIME_ERROR_EXIT, exit code 3"), title)
+
     def test_restart_game_relaunches_the_stopped_game(self) -> None:
         """#1282: Restart game runs the same launch PLAY does for that game.
 
@@ -3834,6 +4090,87 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
                                          "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
                       run["stdout"])
+
+    ROUTE_REBUILD = "7"
+    OUTDATED_LABEL = "Built_by_an_older_Nakagawa._Rebuild_for_the_latest_fixes."
+
+    def test_package_built_by_an_older_nakagawa_suggests_a_rebuild_and_still_plays(self) -> None:
+        """Owner decision 2026-10-29: a v0.0.1-built package is outdated, not refused.
+
+        The fixture has v0.0.1's package format and ABI epochs (they did not
+        change) and records v0.0.1's runtime source digest. The player says so
+        once at start (Later here), keeps a library line, labels the title, and
+        a PLAY asks once before launching (Play anyway here). Failing-before:
+        nothing read the package's build identity, so the package was simply
+        ready, with no prompt, label or reminder."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=2500",
+             "KEY_ESCAPE", "WAIT_MS=300",            # the prompt: Later
+             "KEY_RETURN", "WAIT_MS=400",            # open the title
+             "KEY_RETURN", "WAIT_MS=300",            # PLAY: the reminder
+             "KEY_ESCAPE", "WAIT_MS=2000"),          # Play anyway
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            package_built_by="v0.0.1",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        prompted = [frame for frame in frames if frame.get("rebuild_prompt", "0") == "1"]
+        self.assertTrue(prompted, run["stdout"])
+        self.assertEqual(prompted[0].get("outdated", "0"), "1")
+        self.assertEqual(prompted[-1]["next_route"], self.ROUTE_REBUILD)
+        self.assertEqual(prompted[0].get("prompt_version", "none"), "none")
+        after = frames[frames.index(prompted[-1]) + 1:]
+        self.assertTrue(after and all(frame.get("rebuild_prompt", "0") == "0" for frame in after),
+                        "Later closes the prompt for good")
+        self.assertTrue(all(frame.get("prompt_version", "none") != "none" for frame in after),
+                        "the answer is kept in settings for this version")
+        self.assertIn("1", [frame.get("rebuild_banner", "0") for frame in after],
+                      "the library line stays")
+        titled = [frame for frame in after
+                  if frame["next_route"] == "2" and frame["next_primary_label"] == "PLAY"]
+        self.assertTrue(titled, run["stdout"])
+        self.assertEqual(titled[0]["next_detail"], self.OUTDATED_LABEL)
+        self.assertEqual(titled[0]["next_package"], self.PACKAGE_READY)
+        self.assertIn("next_ui_library_status index=0 status=Older build", str(run["stdout"]))
+        reminded = [frame for frame in after if frame.get("rebuild_reminder", "0") == "1"]
+        self.assertTrue(reminded, "PLAY on an outdated game asks first")
+        self.assertEqual(reminded[-1]["next_route"], self.ROUTE_REBUILD)
+        launched = frames[frames.index(reminded[-1]) + 1:]
+        self.assertIn("1", [frame["launch_pending"] for frame in launched], run["stdout"])
+        self.assertTrue(all(frame.get("rebuild_queue", "0") == "0" for frame in frames),
+                        "nothing was queued: Later and Play anyway rebuild nothing")
+        # The synthetic package has no real program: the launch ends on the
+        # launch's own card, as for any ready package (see the slow-start test).
+        self.assertIn(frames[-1]["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
+                                            "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
+                      run["stdout"])
+
+    def test_package_built_by_this_nakagawa_is_not_outdated(self) -> None:
+        """The player's own build identity matches what package_cache.py records.
+
+        The package records this checkout's identity, computed in Python
+        (source_tree_digest and the tool hashes); the player computes its own
+        in C from the same tree. Any disagreement would call every package
+        outdated: here nothing is, no prompt shows, and PLAY launches at once."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=2500", "KEY_RETURN", "WAIT_MS=400", "KEY_RETURN", "WAIT_MS=1500"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            package_built_by="current",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        scanned = [frame for frame in frames if frame.get("outdated_scanned", "0") == "1"]
+        self.assertTrue(scanned, run["stdout"])
+        self.assertTrue(all(frame.get("outdated", "0") == "0" for frame in frames), run["stdout"])
+        self.assertTrue(all(frame.get("rebuild_prompt", "0") == "0" and
+                            frame.get("rebuild_reminder", "0") == "0" for frame in frames))
+        self.assertIn("1", [frame["launch_pending"] for frame in frames], run["stdout"])
 
     def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
         """The open title's last frame while NK_UI_TEST_GAME_RUNNING=`running`.

@@ -204,6 +204,12 @@ returns through its callee's `jr $ra` instead.
 | `branch` | conditional branch delay-slot ownership, taken and not taken, condition read before the slot |
 | `branch_likely` | all nine compiler branch-likely forms, with real taken slots and annulled not-taken slots |
 | `bitops` | `ext`/`ins` edge sizes, `seb`/`seh`, aliased `movn`/`movz`, and unsigned-to-float via `bltzl` |
+| `imm` | `addi`, `slti`, `sltiu` (unsigned against the sign-extended immediate), `andi`, `xori` |
+| `alu_more` | `sllv`/`srlv`/`rotrv`/`srav` with masked amounts, `nor`, `add`/`sub`, `clz`/`clo`, `max`/`min` |
+| `muldiv` | `div`/`divu`, including the PSP's zero-divisor and overflow results, `mthi`/`mtlo`, `madd`/`maddu`/`msub`/`msubu` |
+| `bshfl` | `wsbh`, `wsbw`, `bitrev` |
+| `zbranch` | `bltz`/`bgez`/`blez`/`bgtz`, each taken and not taken |
+| `zlink` | `bltzal` calling a leaf, and a not-taken `bgezal` that still links `$ra` |
 | `jump` | direct `j` with its slot, and a word only a mis-computed target could reach |
 | `jthunk` / `jtarget` | a known-entry direct `j` tail crossing with a this-adjusting delay slot |
 | `link` / `linkr` | `jal` and `jalr` link semantics with a conventional `$ra`-preserving frame |
@@ -247,9 +253,9 @@ checks all sixteen `c.cond.s` predicates through FCC0 and `bc1f`, and `bitops`
 checks `cvt.s.w` in the unsigned-to-float idiom. The two-tier `branch_likely`
 cell also executes `bc1tl`/`bc1fl`. These cells run the project-owned AOT and
 interpreter implementations over the same guest words.
-The oracle adds AOT-only coverage for `sub.s`, `div.s`, unary operations and
-rounding/ceiling/floor forms, and the independent reference values for `cvt.s.w`
-and the comparisons.
+The two-tier `fpu_interp` cell also covers `sub.s`, `div.s`, unary and word
+conversion forms, and FCR31 control moves. The independent reference oracle
+checks a wider corpus of scalar operands, rounding modes and comparisons.
 There is no scalar FPU madd/msub implementation to claim: the similarly named
 instructions in the fixture are integer HI/LO `madd`/`msub`.
 
