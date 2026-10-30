@@ -28,7 +28,7 @@ Tracks #
 - [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.
 - [ ] Or: material AI assistance is disclosed below, with the source needed for review.
 
-## Contributor Rights Attestation (DCO 1.1)
+## Contribution rights
 
-- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).
-- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#51-maintainer-standing-waiver). Outside contributions always need the first box.
+- [ ] I wrote this change, or have the right to submit it, under the project's license (GPL-3.0-or-later). See [contribution rights](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md).
+- [ ] Optional: every commit has a `Signed-off-by:` line from its human author, added with `git commit -s` ([Developer Certificate of Origin 1.1](https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/DCO_POLICY.md#3-how-to-sign-off-commits-optional)).
