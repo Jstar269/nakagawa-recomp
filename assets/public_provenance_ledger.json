@@ -460,7 +460,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cc10db9aaf22b5658d7d41b43cfa6ce4a91dcb81e455ace30cf72c06dab00a10"
+      "sha256": "ea00812945ab2eb6633f542c473854b000ff84a0718ff3ad2f97e40335df727f"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -1045,7 +1045,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b08af6eadaa64b21e087689409121e9cb8877da4229926896604039ecbc283bb"
+      "sha256": "33254db8152c7e157c29455ab243c3f38fae44f31c07fdacabe1ac000c79b67e"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1564,7 +1564,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "22855cf797b3602a6f116b1bd9d0e3b30264bf3f8b50eba4923d026f1a59a00c"
+      "sha256": "fb3d2b855162decf5fa3c3d0c76245b5b2ad1ecc1d7e44c4efeda12b204dc6c9"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1621,7 +1621,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3eee12fdfcc6ebeb853b3f8163f8be3529fde7ad6ea501b6d147d5ccdd85b43a"
+      "sha256": "f44eb13d6feccc604bde1a16ca87782f1ec13f88cd5dc860c11b14f819c54c3f"
     },
     {
       "path": "docs/PORTING.md",
@@ -10134,7 +10134,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92d35fb172267bab1dfb767beb1de6ae4cd0f039dd07894b69a875c71a097a4d"
+      "sha256": "6e1a746beb82922db95f74484bfbe4f13d2b8c4041369aee732aa081deb292be"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -10182,7 +10182,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8bd12a8c5859bf53fc3cbd3c7e61d72e80a0cc4147d908ea5f4833af30427058"
+      "sha256": "e747e79e8d0f24a878175471e2da88a3e93107dbdf6de4f09222be0fe686a2f6"
     },
     {
       "path": "src/ui/nk_ui_draw.c",
@@ -10626,7 +10626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "42c3129e6cbee29bd7b1d174de4ed2ee2d8211c22161e2a4f6a9907cf734ba4d"
+      "sha256": "29c7005c1c9609c2b7c927502dbf3f020784a5dc6ed9aaba44d4ee3adda6d201"
     },
     {
       "path": "tests/native/test_core_catalog.c",
@@ -11011,7 +11011,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a3395c3d9d725105126c7e0e2c2360181c1a2a5753faae95f07ac16b4118ac93"
+      "sha256": "1cf5dd1955aaa9381efbf792acb5c00632d12a201d508b7dcf0d9cfaeb68e465"
     },
     {
       "path": "third_party/clay/clay.h",
@@ -11024,7 +11024,7 @@
         "license": "Zlib (upstream calls it the zlib/libpng license)",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "79a845daa7af6eaa337ac3c9188d815faa0e59b551b2369e2f63cfb6c2f04a16"
+      "sha256": "9609c081df4413d718ef312b78e903528aa5fb7a8b64206dc4a307c958b2c758"
     },
     {
       "path": "third_party/dr_libs/LICENSE.txt",
@@ -16203,7 +16203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cb86c58aa8d656c7166ab40193b10bee470c5787a8e11ecb231c3987f0737b2"
+      "sha256": "9a1166750d636e4bf5513ef776b94bdd2a21811b2e700c91705a8df28151f0db"
     },
     {
       "path": "tools/test_relocated_clone.py",
