@@ -7,14 +7,17 @@
 #include <stdint.h>
 #include <string.h>
 
+/* The ribbons run from a steel blue to the brand's blues; the months tint
+   them along an arc from winter steel through spring teal-blue to the summer
+   accent, then autumn periwinkle and dusk slate. */
 static const uint32_t g_base_colors[NK_UI_WAVES_RIBBON_COUNT] = {
-    0x5E9CC2FFu, 0x6E9600FFu, 0xD7F24AFFu, 0xE3F77AFFu
+    0x5E9CC2FFu, 0x2F6FD0FFu, 0x6B9FF0FFu, 0xA9C8F7FFu
 };
 
 static const uint32_t g_month_tints[NK_UI_WAVES_TINT_COUNT] = {
-    0x60A9A7FFu, 0x4FB093FFu, 0x54B67EFFu, 0x4AB558FFu,
-    0x7BD85AFFu, 0xACE75FFFu, 0xD7F24AFFu, 0xD0CB39FFu,
-    0x899B31FFu, 0x598137FFu, 0x548357FFu, 0x628D79FFu
+    0x5E8CB8FFu, 0x5894C4FFu, 0x4F9CCBFFu, 0x4BA3C9FFu,
+    0x59A9DDFFu, 0x6AA9ECFFu, 0x6B9FF0FFu, 0x84AEF2FFu,
+    0x7C96DEFFu, 0x6F86C8FFu, 0x6479AEFFu, 0x5F7F9FFFu
 };
 
 static const double g_ribbon_base[NK_UI_WAVES_RIBBON_COUNT] = {

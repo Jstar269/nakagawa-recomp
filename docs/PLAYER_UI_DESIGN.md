@@ -17,7 +17,9 @@ Where this page and the code disagree, the code is current and this page is upda
 
 ## Principles
 
-- **One dark theme.** Ground `#0B0F14`; every surface steps up in colour, not with shadows.
+- **One dark theme, one accent.** Ground `#0B0F14`; every surface steps up in colour, not with shadows. The
+  accent is the brand blue the project website uses (`#6B9FF0`); the status colours keep clear of it (`info` is
+  violet).
 - **Controller first.** Every action is reachable with a D-pad and two buttons, focus is always visible, and the
   prompt bar names the buttons that work on this screen. Nothing needs a pointer or hover.
 - **Status is a word and a shape, then a colour:** `●` Ready, `▲` needs setup, `◆` experimental, `?` untested,
@@ -51,21 +53,21 @@ Where this page and the code disagree, the code is current and this page is upda
 | `paper` | `#F5F7FA` | primary text |
 | `muted` | `#9AA4B2` | secondary text (7.6:1 on the ground) |
 | `dim` | `#6B7684` | disabled text and footnotes only (4.2:1, not for body text) |
-| `accent_dark` | `#D7F24A` | focus ring, primary button, active tab rule, toggles, sliders, progress |
-| `ink` | `#10151C` | text on an accent fill (14.6:1) |
-| `accent_hover` | `#DDF465` | primary button under the pointer (ink on it 15.0:1) |
-| `accent_pressed` | `#B4D134` | pressed primary button |
+| `accent_dark` | `#6B9FF0` | the brand blue, the website's dark accent: focus ring, primary button, active tab rule, toggles, sliders, progress; as a ring 7.2:1 on the ground, 6.7:1 on `surface_raised`, 6.1:1 on `surface_high`, 3.7:1 on the scrim over a white frame, 4.4:1 over the brightest wave |
+| `ink` | `#10151C` | text on an accent fill (6.8:1 on `accent_dark`) |
+| `accent_hover` | `#8FB8F2` | primary button under the pointer, the website's mark blue (ink on it 9.0:1) |
+| `accent_pressed` | `#4F86DC` | pressed primary button (ink on it 5.0:1) |
 | `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary or row / danger button |
 | `ready` | `#2DD4BF` | Ready; never the accent |
 | `warning` | `#DBB024` | needs setup |
-| `info` | `#6CB6FF` | experimental, untested, informational notes |
+| `info` | `#C29AF4` | experimental, untested, informational notes: violet, 50 degrees of hue from the blue accent (8.4:1 on the ground, 7.2:1 on `surface_high`) |
 | `error` | `#FF7B72` | unsupported, failed, remove |
 | `scrim` | ground at 78% | behind dialogs and the in-game overlay |
 | `art_scrim` | ground at 72% | under a badge on title art |
 | `art_label` | `#C9D6E3` | captions over title art |
 | `placeholder` | `#3A4552` | art placeholder outline, inactive glyph dots |
-| `capture` | `#1F2613` | a row waiting for a button press (C6 controls) |
-| `accent_light` | `#6E9600` | accent on a light surface (reserved; the UI has none) |
+| `capture` | `#223046` | a row waiting for a button press (C6 controls): the accent at 18% over `surface_raised`, paper on it 12.4:1 |
+| `accent_light` | `#2F6FD0` | accent on a light surface, the website's light accent (4.9:1 on white; reserved, the UI has none) |
 
 ### Spacing, radii, borders
 
@@ -114,7 +116,9 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 - The ring is one element whichever control has it, so when focus moves Clay sees it change parent and eases it
   across over `NK_UI_MOTION_FAST`. A control that was not on screen in the last frame, a new page's, gets a new ring
   at once rather than one flying in from the last page (`test_focus_ring_moves`).
-- High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
+- High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines. The
+  launcher draws it when Settings > Accessibility > High contrast is On, or Automatic while Windows uses a contrast
+  theme.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
 - Arrow keys move to the nearest control in that direction.
@@ -168,7 +172,9 @@ again, and the pointer leaving the window clears it. Hover never moves focus, an
 | Safe area | nothing closer than 16 px to a window edge |
 
 Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
+device density, and the logical width decides the columns. The text size scales the whole layout, as the UI scale
+does, so the launcher offers one control for both: Settings > Accessibility > Interface size sets the UI scale and
+the text size stays 100%. The launcher's screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
 the window. A larger window keeps its density and gains room. Clay clips at most 100 containers per layout: shorten
@@ -192,8 +198,8 @@ is painted over.
 
 Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (toast, tab rule), slow 0.50 (art
 crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
-The waves step at 30 Hz. Reduce motion (the setting or the system's) makes every duration a cut and holds the
-waves on one frame. Nothing ever needs motion to be understood.
+The waves step at 30 Hz. Reduce motion (the setting, or with it on Automatic, Windows' Animation effects turned
+off) makes every duration a cut and holds the waves on one frame. Nothing ever needs motion to be understood.
 
 The launcher's loop asks nk_ui how long it may wait for input (`nk_ui_wait_s`, `test_wait_follows_motion`): one
 display frame while something moves, until the waves' next 30 Hz step while they play, else 50 ms. It used to wait
@@ -287,7 +293,27 @@ SETTINGS and no corner text. Past 1600 px of content the side margins grow, so a
 the grid and TEST THIS PC in one column, as Settings centres its cards. The first card, never the pager, has the first
 focus. Page Down and Page Up, the pad's
 right and left triggers and the mouse wheel turn the page too; a focused card hands focus to the card in the same place
-on the new page (the last one when that page is shorter). A library holds up to 4096 games; only the page shown reads
+on the new page (the last one when that page is shorter). Home and End go to the first game and to the last one, on
+its page (`NK_UI_EV_EDGE`). A small SORT button in the heading row names the sort and steps to the next: Recently
+played (the default: the last played first, then the games never played in the order they were added), Name A to Z,
+and Recently added (the last added first). The sort is saved as `library_sort`, and the grid starts again from its
+first page.
+
+FIND, beside it, opens the find box; so do the screen's Options action (the pad's west button, Space) and, from a
+hardware keyboard, "/" or Ctrl+F. The box takes TEST THIS PC's room: a field showing what is typed ("Type a name or
+disc ID" until then), a primary DONE, and an on-screen keyboard of 44 px keys in four rows 4 px apart (digits, three
+QWERTY rows with `-`, `.`, `'`, SPACE and DELETE), so a row of cards still fits at 1280 x 720. The grid shows the
+games whose name or disc ID holds what is typed, ignoring case, without the add card or the demos; the count reads
+"3 of 40 titles", and no match says "No games match". A hardware keyboard types straight in (SDL's text input is on
+while the box is open, so an input method works too), Backspace deletes, and letters that are launcher shortcuts
+(O, S, D, Q, E) are typed instead. Opened from the keyboard, focus is on DONE, so Enter moves to the first match; from
+a controller or the mouse, on Q. Esc or B clears and closes the box and focus returns to FIND. The prompt bar reads
+MOVE, SELECT and CLEAR while it is open.
+
+Decided 2026-10-30 (#1742): the sorts are those three, with room for a compatibility tier later (#1731). Find is one
+model for every input: a Find action (a button, and a controller button) opens a find box that filters the library
+as you type, with an on-screen keyboard for controllers, and Esc or B clears and closes it. Typing a letter to open it
+would collide with the letter shortcuts, so "/" and Ctrl+F open it from a hardware keyboard and every letter shortcut stays (decided 2026-10-30). A library holds up to 4096 games; only the page shown reads
 its disc icons and checks its packages, so a page of a large library costs what a small library does. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.
@@ -398,11 +424,16 @@ it under the action row while BUILD PACKAGE waits for the files, with CHECK AGAI
 
 Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
 button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
-volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, CHECK FOR UPDATES, then
+volume with - and +, launcher fullscreen, accessibility, menu sounds, controller settings, CHECK FOR UPDATES, then
 the controller and the saves folder as captions; CHECK FOR UPDATES opens the Updates card and asks GitHub, see
 [`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
+ACCESSIBILITY (#1739) is a dialog card of three settings, each a button that steps through its values beside a
+sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Automatic follows the display scale, or
+100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), HIGH
+CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
+read every frame, so a change there applies at once).
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
@@ -550,9 +581,11 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 
 - Text contrast is at least 4.5:1 for everything except `dim`, which is reserved for disabled controls and
   footnotes; over the brightest wave point muted and error text stay at 4.6:1.
-- Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background.
-- Targets are at least 44 px high; text size (90 to 150%) scales the whole layout through the density.
-- Reduce motion holds the waves and makes transitions cuts.
+- Focus ring 7.2:1 on the ground, at least 6.1:1 on any surface, 4.4:1 over the brightest wave point and 3.7:1 on
+  the scrim over a white game frame; high-contrast focus for any background, from Settings > Accessibility or a
+  Windows contrast theme.
+- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density.
+- Reduce motion holds the waves and makes transitions cuts; Automatic follows Windows' Animation effects.
 - Launcher sounds are off by default and never replace a visual cue.
 
 ## Building and checking a screen

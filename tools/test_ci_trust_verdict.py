@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 try:
     import ci_trust_verdict as ctv
@@ -696,6 +697,46 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
         self.assertEqual(request.get_header("X-github-api-version"), "2022-11-28")
+
+    def _response(self, body: bytes) -> mock.MagicMock:
+        response = mock.MagicMock()
+        response.read.return_value = body
+        response.headers = {}
+        response.__enter__.return_value = response
+        return response
+
+    def _http_error(self, code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://api.github.com/x", code, "error", {}, None)
+
+    def test_a_gateway_error_is_retried_until_github_answers(self) -> None:
+        # One HTTP 502 made the verifier post "could not judge this head" on several pull requests (2026-10-30).
+        gh = ctv.GitHub("owner/repo", "token")
+        answers = [self._http_error(502), urllib.error.URLError("reset"), self._response(b'{"ok": true}')]
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=answers) as urlopen, \
+                mock.patch.object(ctv.time, "sleep") as sleep:
+            self.assertEqual(gh.get("pulls/1"), {"ok": True})
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], list(ctv.RETRY_DELAYS))
+
+    def test_a_lasting_gateway_error_still_fails_after_the_last_attempt(self) -> None:
+        gh = ctv.GitHub("owner/repo", "token")
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=[self._http_error(503)] * 3), \
+                mock.patch.object(ctv.time, "sleep"):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                gh.get("pulls/1")
+        self.assertEqual(raised.exception.code, 503)
+
+    def test_a_refusal_is_not_retried(self) -> None:
+        # 404 and 403 are answers, not outages: retrying would only spend the token budget.
+        for code in (403, 404, 422):
+            with self.subTest(code=code):
+                gh = ctv.GitHub("owner/repo", "token")
+                with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=[self._http_error(code)]) as urlopen, \
+                        mock.patch.object(ctv.time, "sleep") as sleep:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        gh.get("pulls/1")
+                self.assertEqual(urlopen.call_count, 1)
+                sleep.assert_not_called()
 
     def test_an_unfinished_producer_is_reported_pending_from_the_runs_alone(self) -> None:
         # The full read made a dozen calls on every completion and exhausted the token budget (2026-10-30).

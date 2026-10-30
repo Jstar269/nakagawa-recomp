@@ -220,7 +220,7 @@ void nk_ui_badge(NkUi *ui, NkUiId id, const char *text) {
 
 /* ---- Art --------------------------------------------------------------------------- */
 
-#define NK_UI_ACCENT_RGBA 0xD7F24AFFu
+#define NK_UI_ACCENT_RGBA 0x6B9FF0FFu
 #define NK_UI_PAPER_RGBA 0xF5F7FAFFu
 
 static const NkUiShape g_n1_mark[] = {

@@ -1,9 +1,9 @@
-# Contributor Rights-Attestation Policy (DCO 1.1)
+# Contribution Rights and Sign-Off Policy (DCO 1.1)
 
-This document defines the contributor rights-attestation framework for the Nakagawa Recomp project (`https://github.com/Jstar269/nakagawa-recomp`), based on the standard **Developer Certificate of Origin (DCO) 1.1**.
+This document defines how contributions to Nakagawa Recomp (`https://github.com/Jstar269/nakagawa-recomp`) record the contributor's right to submit them. A sign-off under the standard **Developer Certificate of Origin (DCO) 1.1** is welcome but optional (maintainer decision, 2026-10-30).
 
 > [!IMPORTANT]
-> **DCO is Not Copyright Assignment**: A DCO sign-off certifies that you have the right to submit your contribution under the project's open-source terms. You retain copyright to your original work.
+> **How a contribution is licensed**: the project is licensed under GPL-3.0-or-later. Under GitHub's Terms of Service ("inbound = outbound", section D.6), a contribution you submit to this repository is provided under that same licence. In the pull request template, you confirm that you wrote the change or have the right to submit it under that licence. You retain copyright to your original work; neither the confirmation nor a sign-off is a copyright assignment.
 >
 > **Residual Provenance Boundary**: Contributions target the active sanitized
 > public repository, but component-level provenance remains unresolved for the
@@ -18,11 +18,11 @@ This document defines the contributor rights-attestation framework for the Nakag
 
 To maintain complete legal and technical transparency, contributions to Nakagawa Recomp distinguish four distinct layers:
 
-1. **DCO 1.1 Rights Attestation (`Signed-off-by:`)**:
-   Certification by the contributor that they authored the contribution or have sufficient rights to submit it under the project's applicable terms.
-2. **Third-Party Source & Asset Disclosure**:
+1. **Right to submit (required)**:
+   Every pull request confirms, in the template, that its author wrote the change or has the right to submit it under GPL-3.0-or-later. A DCO 1.1 sign-off (`Signed-off-by:`) is optional and adds a written, per-commit record of the same certification.
+2. **Third-Party Source & Asset Disclosure (required)**:
    Mandatory disclosure in the pull request and code comments of any third-party source code, libraries, or asset data incorporated into the PR, including exact upstream URLs, commit SHAs, and original license terms.
-3. **AI-Assisted Work Disclosure**:
+3. **AI-Assisted Work Disclosure (required)**:
    Mandatory disclosure of any AI-assisted code generation, translation, or reimplementation, adhering strictly to [`docs/AI_USAGE.md`](AI_USAGE.md).
 4. **Repository-Wide Legal Clearance**:
    Engineering evidence and DCO sign-offs do not constitute legal advice or repository-wide legal clearance. Open legal/license blockers remain managed through formal review packets.
@@ -70,9 +70,9 @@ By making a contribution to this project, I certify that:
 
 ---
 
-## 3. How to Sign Off Commits
+## 3. How to Sign Off Commits (Optional)
 
-To certify your contribution under DCO 1.1, append a `Signed-off-by:` line with your real name and email address to every commit message:
+If you choose to certify your contribution under DCO 1.1, append a `Signed-off-by:` line with your real name and email address to every commit in the pull request:
 
 ```text
 Signed-off-by: Real Name <email@example.com>
@@ -84,13 +84,19 @@ You can automatically add this line when committing using Git's `-s` / `--signof
 git commit -s -m "feat(component): add new functionality"
 ```
 
+Only the person who wrote a commit may sign it off.
+
 ---
 
-## 4. Correction Workflow for Missing Sign-Offs
+## 4. Pull Requests Without a Sign-Off
 
-This section applies to contributions that require a sign-off — that is, everything **not** covered by the §5.1 maintainer standing waiver. Waived maintainer commits need no correction, and their history must not be rewritten to add trailers.
+A missing `Signed-off-by:` line is **not** a merge blocker and not a defect. The maintainer may merge a pull request without one, on the strength of the right-to-submit confirmation in the template and the repository licence. Third-party and AI-assistance disclosure are still required.
 
-If you submitted a pull request with missing or incorrect DCO sign-off lines, follow these steps to correct your branch:
+The process is meant to be forgiving. An unticked box, a missing sign-off or an incomplete disclosure is never by itself a reason to close or reject a pull request: the maintainer asks about it in review, or fills in what is known. The only point that cannot be waived is the license itself: code taken from another project must name its source and be under a GPL-compatible license, because GPL-3.0-or-later requires it.
+
+- Nobody, person or agent, adds a sign-off on someone else's behalf.
+- History is not rewritten to add sign-offs to commits already merged.
+- If you want to add sign-offs to your own open pull request, amend your own commits:
 
 ### Single Commit Branch
 
@@ -102,7 +108,7 @@ git push --force-with-lease
 ### Multiple Commit Branch
 
 ```bash
-git rebase -i --exec "git commit --amend --no-edit -s" @~N  # where N is the number of commits
+git rebase --exec "git commit --amend --no-edit -s" @~N  # where N is the number of commits
 git push --force-with-lease
 ```
 
@@ -122,15 +128,15 @@ The maintainer operates under a **standing DCO waiver**. Its terms:
 - **Effect**: a missing `Signed-off-by:` trailer on a waived commit is **not** a merge blocker and is not a defect to be "corrected". The absence of a trailer on such a commit records that the maintainer did not make a separate written attestation, not that rights are unresolved.
 - **No retroactive rewrite**: sign-offs are never retroactively fabricated for existing Git history, and history is not rewritten to satisfy a sign-off checker while this waiver is in force.
 - **No fabrication by agents**: this waiver grants an agent **no** authority to add a sign-off. AI tools and automated agents must never invent or add a `Signed-off-by:` identity on behalf of any human, company, or the tool itself, whether or not a waiver applies. See [`AGENTS.md`](../AGENTS.md) and [`docs/AI_USAGE.md`](AI_USAGE.md).
-- **Not extended to outside contributors**: this waiver is personal to the maintainer. It confers nothing on third-party contributors, who remain fully subject to §1–§4 — DCO 1.1 sign-off on every commit, third-party source and asset disclosure, and AI-assisted work disclosure. Nothing in this section reduces those requirements.
+- **Outside contributors**: since sign-off is optional for everyone (§4), this waiver no longer separates the maintainer from other contributors. Outside contributors still confirm their right to submit in the pull request template and still make the third-party source and AI-assisted work disclosure (§1).
 
-**Revocation** is a deliberate maintainer act: strike this section (or mark it revoked with a date) in a normal commit. Commits made while the waiver was in force remain covered; the waiver is not retroactively undone. Only after explicit revocation may DCO become a required status check (§6).
+**Revocation** is a deliberate maintainer act: strike this section (or mark it revoked with a date) in a normal commit. Commits made while the waiver was in force remain covered; the waiver is not retroactively undone.
 
 ---
 
 ## 6. Maintenance & Enforcement
 
-- The pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) includes mandatory checkboxes for DCO sign-off status, third-party source disclosure, and AI-assisted work disclosure.
-- **DCO must not be configured as a required status check on the public repository while the §5.1 maintainer standing waiver is in force.** A required check would block the maintainer's own waived commits on a single-maintainer repository, which the waiver exists to prevent.
-- An automated DCO check **may** run in advisory (non-blocking) mode. Its `action_required` or failing result on a waived maintainer commit is expected and carries no merge significance; it is not evidence of a rights problem and must not be "fixed" by rewriting history or adding a trailer on the maintainer's behalf.
-- DCO may be promoted to a required status check only after the standing waiver is explicitly revoked under §5.1. Third-party contributions remain subject to DCO 1.1 by policy and review regardless of whether an automated check is enforcing it.
+- The pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) asks every contributor to confirm their right to submit, to disclose third-party material and AI assistance, and offers an optional DCO sign-off box.
+- **DCO is not a required status check on the public repository.** A sign-off is optional (§4), so a required check would block contributions this policy accepts.
+- An automated DCO check **may** run in advisory (non-blocking) mode. Its `action_required` or failing result on a commit without a sign-off carries no merge significance; it is not evidence of a rights problem and must not be "fixed" by rewriting history or adding a trailer on anyone's behalf.
+- Making sign-off required again is a maintainer policy change to this document, not a repository setting alone.

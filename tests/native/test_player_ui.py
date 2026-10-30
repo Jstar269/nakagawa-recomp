@@ -1015,6 +1015,7 @@ class NativePlayerUiTests(unittest.TestCase):
         timeout: float | None = None,
         library_titles: int = 0,
         dedicated_data_root: bool = False,
+        settings: dict[str, object] | None = None,
         package_built_by: str | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
@@ -1205,6 +1206,13 @@ class NativePlayerUiTests(unittest.TestCase):
                     else userprofile / "data" / "nakagawa-recomp",
                     library_titles,
                 )
+            if settings is not None:
+                # A settings.json saved before this run, where the player reads it.
+                config = (localappdata / "Nakagawa" / "config" if os.name == "nt"
+                          else userprofile / "config" / "nakagawa-recomp")
+                config.mkdir(parents=True, exist_ok=True)
+                (config / "settings.json").write_text(
+                    json.dumps({"schema_version": 2, **settings}), encoding="utf-8")
             if stale_package:
                 synthetic_stale_package(runtime_root)
             if incompatible_package:
@@ -1546,6 +1554,94 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(selected, checked)
         self.assertNotIn(299, checked, "the last page was never shown, so never checked")
 
+    def test_next_ui_backspace_and_the_mouse_back_button_go_back(self) -> None:
+        """Backspace and the mouse's back button (X1) are Back, as Esc is: from
+        Settings each returns to the library."""
+        for events in (("WAIT_MS=100", "KEY_BACKSPACE", "WAIT_MS=100"),
+                       ("WAIT_MS=100", "MOUSE_X1_DOWN", "MOUSE_X1_UP", "WAIT_MS=100")):
+            with self.subTest(events=events[1]):
+                run = self.next_ui_run("settings", events)
+                self.assertEqual([view for view, _ in self.screens(run)],
+                                 ["settings", "library"])
+
+    def test_next_ui_home_and_end_reach_the_first_and_last_game(self) -> None:
+        """Home and End in a library of several pages: End focuses the last game on
+        the last page, Home the first game on the first."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=2000", "KEY_END", "WAIT_MS=200", "KEY_HOME", "WAIT_MS=200"),
+            library_titles=40, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        selected = [frame["selected"] for frame in frames]
+        self.assertIn("39", selected, "End reaches the last game")
+        self.assertEqual(selected[-1], "0", "Home comes back to the first game")
+        self.assertLess(selected.index("39"), len(selected) - 1)
+
+    def test_next_ui_library_follows_the_saved_sort(self) -> None:
+        """The library's grid follows the saved sort: Recently added puts the last
+        game added first, where the first focus lands."""
+        added = self.run_player("library", ("WAIT_MS=1000",), library_titles=12,
+                                settings={"library_sort": "added"}, timeout=120.0)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in added["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = added["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["selected"], "11", "the last game added is first")
+        played = self.run_player("library", ("WAIT_MS=1000",), library_titles=12,
+                                 timeout=120.0)
+        frames = played["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["selected"], "0",
+                         "with nothing played yet, Recently played keeps the library's order")
+
+    # The library's find box (player_ui_nk.h).
+    FIND = str(0x1007)
+    FIND_DONE = str(0x1008)
+    FIND_KEY_Q = str(0x1080 + 10)
+
+    def test_next_ui_find_from_the_keyboard(self) -> None:
+        """'/' opens the find box on DONE; typing filters the library (D is typed,
+        not Details); Enter moves to the first match and opens it."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=1000", "KEY_SLASH", "WAIT_MS=100", "TEXT=title 1", "KEY_D", "TEXT=1",
+             "KEY_BACKSPACE", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN",
+             "WAIT_MS=200"),
+            library_titles=12, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertIn(self.FIND_DONE, [frame["next_focus"] for frame in frames],
+                      "'/' opens the box on DONE")
+        # "title 1" + "1" then Backspace is "title 1": titles 1, 10 and 11 match, 1 first.
+        self.assertEqual(frames[-1]["next_route"], "2", "Enter, Enter opens a match")
+        self.assertEqual(frames[-1]["selected"], "1", "the first match is Synthetic title 1")
+
+    def test_next_ui_find_with_a_controller_and_esc_clears_it(self) -> None:
+        """The pad's west button opens the box on the on-screen keyboard's Q, and the
+        east button (B) clears and closes it; Esc does too, without asking to quit."""
+        pad = self.run_player(
+            "library", ("WAIT_MS=1000", "PAD_WEST", "WAIT_MS=100", "PAD_EAST", "WAIT_MS=100"),
+            library_titles=4, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in pad["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        trail = self.focus_trail(pad)
+        self.assertIn(self.FIND_KEY_Q, trail, "the pad opens the box on Q")
+        self.assertEqual(trail[-1], self.FIND, "B closes it and focus returns to FIND")
+        keyboard = self.run_player(
+            "library", ("WAIT_MS=1000", "KEY_SLASH", "TEXT=zzz", "KEY_ESCAPE", "WAIT_MS=100"),
+            library_titles=4, timeout=120.0,
+        )
+        self.assertNotIn("QUIT_DIALOG", keyboard["stdout"], "Esc closes the box, not the player")
+        self.assertEqual(self.focus_trail(keyboard)[-1], self.FIND)
+
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.
 
@@ -1834,7 +1930,9 @@ class NativePlayerUiTests(unittest.TestCase):
         "build_cache": str(0x451A), "share_libraries": str(0x451B),
         "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
         "controller": str(0x450B), "scaling": str(0x4505),
-        "launcher_fullscreen": str(0x450A),
+        "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
+        "interface_size": str(0x452D), "high_contrast": str(0x452E),
+        "reduce_motion": str(0x4509),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
     # row, which it enters at Third-party notices.
@@ -1895,6 +1993,30 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn("config/settings.json", run["dedicated_files"])
         self.assertEqual(run["default_profile_files"], [],
                          "nothing is written under the default profile")
+
+    def test_next_ui_accessibility_settings_are_saved_and_back_returns(self) -> None:
+        """#1739: Settings > Accessibility steps each setting with the keyboard, saves it,
+        and Esc returns to Settings with its row focused. The test mode starts with
+        Reduce motion On, so one step turns it Off."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN",
+             "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(run)],
+                         ["accessibility_settings", "settings"])
+        self.assertEqual(self.focus_trail(run),
+                         [focus["interface_size"], focus["high_contrast"],
+                          focus["reduce_motion"], focus["accessibility"]],
+                         "the page opens on its first setting and Back focuses its row")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("interface_size"), 100, "Automatic steps to 100%")
+        self.assertEqual(settings.get("high_contrast_focus"), "on", "Automatic steps to On")
+        self.assertEqual(settings.get("reduce_motion_choice"), "off", "On steps to Off")
+        self.assertIs(settings.get("reduce_motion"), False,
+                      "older players read Off as reduce_motion false")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are

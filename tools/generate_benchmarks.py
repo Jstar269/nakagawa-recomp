@@ -315,8 +315,8 @@ def generate_pdf_report(runs, latencies, output_path):
         stream.append("ET")
 
     # Dark background header block
-    draw_rect(0, 770, 596, 72, fill=(0.08, 0.15, 0.1), stroke=None) # Dark forest / tennis green
-    draw_rect(0, 767, 596, 3, fill=(0.73, 0.94, 0.25), stroke=None) # Lime primary line
+    draw_rect(0, 770, 596, 72, fill=(0.063, 0.184, 0.341), stroke=None) # Deep blue #102F57, the site's top bar
+    draw_rect(0, 767, 596, 3, fill=(0.42, 0.624, 0.941), stroke=None) # Brand accent #6B9FF0
     draw_text("NAKAGAWA RECOMP OPTIMIZATION LAB", 40, 810, font="F2", size=16, color=(1, 1, 1))
     draw_text("High-Fidelity Telemetry Trend Report", 40, 792, font="F1", size=10, color=(0.7, 0.7, 0.7))
 
@@ -568,13 +568,13 @@ def generate_html_report(runs, latencies, output_path):
             padding: 2rem 1.5rem;
         }}
         header {{
-            border-bottom: 2px solid #73f43f; /* Tennis ball yellow-green */
+            border-bottom: 2px solid #6b9ff0; /* the brand accent */
             padding-bottom: 1.5rem;
             margin-bottom: 2rem;
             display: flex;
             justify-content: space-between;
             align-items: flex-end;
-            background: linear-gradient(135deg, #132415 0%, #0d0d0d 100%);
+            background: linear-gradient(135deg, #102f57 0%, #0d0d0d 100%);
             padding: 1.5rem;
             border-radius: 12px;
         }}
