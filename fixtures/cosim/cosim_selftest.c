@@ -1135,6 +1135,26 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
                 expect_lane_word(test, lane, field, lane_window_word(lane, address), want, &failed);
             }
         }
+    } else if (strcmp(test->name, "branch_likely_int") == 0) {
+        static const unsigned annulled_gprs[] = {10u, 11u, 12u, 13u, 14u, 15u, 24u};
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned li = 0u; li < 2u; li++) {
+            const CosimLane *lane = lanes[li];
+            expect_lane_word(test, lane, "v0 not-taken count", lane->state.r[2], 7u, &failed);
+            expect_lane_word(test, lane, "v1 branch-target count", lane->state.r[3], 14u, &failed);
+            for (unsigned i = 0u; i < sizeof annulled_gprs / sizeof annulled_gprs[0]; i++) {
+                char field[48];
+                snprintf(field, sizeof field, "annulled register r%u", annulled_gprs[i]);
+                expect_lane_word(test, lane, field, lane->state.r[annulled_gprs[i]], 0u, &failed);
+            }
+            for (unsigned i = 0u; i < 7u; i++) {
+                char field[48];
+                snprintf(field, sizeof field, "taken slot memory[%u]", i);
+                expect_lane_word(test, lane, field,
+                                 lane_window_word(lane, COSIM_SCRATCH + 4u * i), 0xC100u + i,
+                                 &failed);
+            }
+        }
     } else if (strcmp(test->name, "bitops") == 0) {
         static const struct { unsigned reg; uint32_t value; const char *name; } expected[] = {
             {22u, 0x89abcdefu, "ext full word"}, {23u, 1u, "ext bit 31"},

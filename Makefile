@@ -581,6 +581,25 @@ STACK_CENSUS_CFLAG := -DSR_STACK_CENSUS_ENABLED
 override CFLAGS += $(STACK_CENSUS_CFLAG)
 endif
 
+# Opt-in LLVM IR backend (#330, docs/LLVM_BACKEND.md). CODEGEN_BACKEND=llvm makes
+# codegen lower every function it supports to LLVM IR (<game>_recomp_<n>.ll) and keep
+# C for the rest, with each reason in <game>_recomp_llvm.json. Each .ll is linked with
+# the runtime ABI bitcode (src/rt/llvm_abi.c) by LLVM_LINK, which also runs LLVM's
+# verifier, and compiled by LLVM_CLANG at RECOMP_OPT. The toolchain identity joins the
+# generated-code profile only in an LLVM build, so a C build's profile is unchanged.
+CODEGEN_BACKEND ?= c
+LLVM_CLANG ?= clang
+LLVM_LINK ?= llvm-link
+RECOMP_LLVM_PROFILE_ENTRY :=
+ifeq ($(CODEGEN_BACKEND),llvm)
+override CODEGEN_USER_ARGS += --backend=llvm
+RECOMP_LLVM_PROFILE_ENTRY := LLVM_TOOLCHAIN=$(strip $(shell "$(LLVM_CLANG)" --version 2>&1) / $(shell "$(LLVM_LINK)" --version 2>&1))
+else ifneq ($(CODEGEN_BACKEND),c)
+$(error CODEGEN_BACKEND must be c or llvm, not $(CODEGEN_BACKEND))
+endif
+RECOMP_LLVM_HASH_ARG := $(if $(RECOMP_LLVM_PROFILE_ENTRY),--recomp-entry "$(RECOMP_LLVM_PROFILE_ENTRY)",)
+RECOMP_LLVM_ENTRY_ARG := $(if $(RECOMP_LLVM_PROFILE_ENTRY),--entry "$(RECOMP_LLVM_PROFILE_ENTRY)",)
+
 # SR_NAN_TRAP: build-time NaN/Inf origin diagnostic (issue #69). Off by default
 # and zero cost when off. `make NAN_TRAP=1` turns on BOTH halves at once:
 #   --nan-trap makes tools/codegen.py follow every generated FPU/VFPU result
@@ -1062,6 +1081,8 @@ PUBLIC_TARGETS := \
 	cosim-selftest-run \
 	cosim-selftest-clean \
 	cosim-mutants \
+	cosim-selftest-llvm \
+	cosim-mutants-llvm \
 	clean \
 	clean-fixtures \
 	tidy \
@@ -1198,6 +1219,8 @@ HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimula
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
 HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
+HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLVM IR backend (#330)
+HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -1861,7 +1884,7 @@ export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$
 ifdef NK_BUILD_DIR_READY
 $(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
 $(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
-_PROFILE_HASHES := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash-profiles --codegen-compiler "$(PYTHON)" --codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries" --runtime-compiler "$(CC)" --runtime-entries-file "$(BUILD_DIR)/.runtime-profile-entries" --recomp-compiler "$(CC)" --recomp-entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --recomp-entry "TRACE=$(TRACE)" --recomp-entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+_PROFILE_HASHES := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash-profiles --codegen-compiler "$(PYTHON)" --codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries" --runtime-compiler "$(CC)" --runtime-entries-file "$(BUILD_DIR)/.runtime-profile-entries" --recomp-compiler "$(CC)" --recomp-entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --recomp-entry "TRACE=$(TRACE)" --recomp-entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" $(RECOMP_LLVM_HASH_ARG) --file "$(CPU_STATE_ABI_HEADER)")
 CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))
 RUNTIME_PROFILE_HASH := $(word 2,$(_PROFILE_HASHES))
 RECOMP_PROFILE_HASH := $(word 3,$(_PROFILE_HASHES))
@@ -1921,11 +1944,11 @@ $(TRACE_STAMP):
 	"$(PYTHON)" $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
 ifndef NK_BUILD_DIR_READY
-RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" $(RECOMP_LLVM_ENTRY_ARG) --file "$(CPU_STATE_ABI_HEADER)")
 endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" $(RECOMP_LLVM_ENTRY_ARG) --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Compile the chunked generated C code.
 
@@ -1934,6 +1957,20 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp_%.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.c src/r
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/recomp.h $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
+
+# --backend=llvm (#330). The runtime ABI shim is compiled once to bitcode with the
+# generated-code flags (TRACE, PERF_AOT_INSTRUCTIONS and the stack census change what
+# its macros expand to). Each chunk's IR is linked with only the shim functions it
+# uses, internalized as the C chunks' static inline helpers are; llvm-link verifies the
+# input and the linked module, and Clang compiles the result at RECOMP_OPT.
+LLVM_RECOMP_FLAGS = $(filter-out -ftrack-macro-expansion=0,$(RECOMP_FLAGS))
+LLVM_ABI_BC := $(BUILD_DIR)/llvm_abi.bc
+$(LLVM_ABI_BC): src/rt/llvm_abi.c src/rt/llvm_abi.h src/rt/recomp.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
+	"$(LLVM_CLANG)" $(LLVM_RECOMP_FLAGS) -Isrc/rt -DSR_SDL3VK -emit-llvm -c $< -o $@
+
+$(BUILD_DIR)/$(GAME_NAME)_recomp_%_ll.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.ll $(LLVM_ABI_BC) $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
+	"$(LLVM_LINK)" $< --only-needed --internalize $(LLVM_ABI_BC) -o $(@:.o=.bc)
+	"$(LLVM_CLANG)" $(RECOMP_OPT) -Wno-override-module -c $(@:.o=.bc) -o $@
 
 # A system library carried once is its own translation unit (tools/codegen.py
 # shared_library_source_text), named by the module's bytes and including only the
@@ -2132,6 +2169,8 @@ player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regression
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
+# --backend=llvm: the LLVM IR half of a chunk is its own object (#330).
+CHUNK_OBJS += $(patsubst %.ll,%_ll.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.ll))
 LIBRARY_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/nk_lib_*.c))
 # The title link passes its objects through a GCC response file. A package build
 # under the player's user-data folder has long object paths, and the expanded list
@@ -2197,6 +2236,19 @@ cosim-selftest:
 		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
 		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC) \
 		CODEGEN_USER_ARGS=--stack-census
+
+# The cosimulation corpus with the LLVM IR backend (#330): every cell the backend lowers
+# runs as an LLVM body in the AOT lane, against the same interpreter lane and on every
+# channel. The manifest check fails the gate if no cell was actually lowered.
+cosim-selftest-llvm:
+	$(MAKE) cosim-selftest COSIM_DIR=$(BUILD_ROOT)/cosim-llvm CODEGEN_BACKEND=llvm
+	"$(PYTHON)" tools/codegen_llvm.py check-manifest $(BUILD_ROOT)/cosim-llvm/cosim_recomp_llvm.json --min-lowered 20
+
+# The LLVM backend's mutation campaign: wrong branch, lost or always-run delay slot,
+# missing state writes, a late-latched computed target and a wrong call resume, each a
+# defect in tools/codegen_llvm.py that the cosimulation must report.
+cosim-mutants-llvm:
+	"$(PYTHON)" fixtures/cosim/mutate.py --backend=llvm --build-dir $(BUILD_ROOT)/cosim-llvm-mutants
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.

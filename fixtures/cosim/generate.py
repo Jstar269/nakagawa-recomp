@@ -49,7 +49,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # Deliberately disjoint from fixtures/production_smoke (0x08804000) so a stale
 # artifact from one fixture can never satisfy the other's assertions.
 BASE = 0x08900000
-DATA_SEGMENT_OFFSET = 0x1000
+# The text segment may fill everything below the data segment (build_text_segment checks).
+DATA_SEGMENT_OFFSET = 0x2000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
@@ -62,7 +63,7 @@ WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
 TEXT_FILE_OFFSET = 0x100
-DATA_FILE_OFFSET = 0x1200
+DATA_FILE_OFFSET = TEXT_FILE_OFFSET + DATA_SEGMENT_OFFSET + 0x100
 DATA_FILE_SIZE = 0x40
 DATA_MEMORY_SIZE = 0x40 + SCRATCH_SIZE
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
@@ -353,24 +354,7 @@ def _cell_branch_likely() -> list[int]:
             _ccond_cc(1, 0, 0x02, 3),               # c.eq.s cc=3 (PSP FCC0)
         ]
 
-    cases = (
-        ("beql", lambda off: _i(0x14, T0, T1, off),
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)],
-         [_i(0x09, ZERO, T0, 2), _i(0x09, ZERO, T1, 2)]),
-        ("bnel", lambda off: _i(0x15, T0, T1, off),
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 1)],
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)]),
-        # bnezl is the standard `bnel rs, $zero` encoding.
-        ("bnezl", lambda off: _i(0x15, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
-        ("blezl", lambda off: _i(0x16, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 1)], [_i(0x09, ZERO, T0, 0)]),
-        ("bgtzl", lambda off: _i(0x17, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
-        ("bltzl", lambda off: _regimm(T0, 2, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, -1)]),
-        ("bgezl", lambda off: _regimm(T0, 3, off),
-         [_i(0x09, ZERO, T0, -1)], [_i(0x09, ZERO, T0, 0)]),
+    cases = INTEGER_LIKELY_CASES + (
         ("bc1tl", lambda off: _bc1_likely(1, 7, off),
          compare_setup(False), compare_setup(True)),
         ("bc1fl", lambda off: _bc1_likely(0, 7, off),
@@ -395,6 +379,64 @@ def _cell_branch_likely() -> list[int]:
             words.append(_fp(0x10, 1, 0, 2, 0x00))   # taken slot: add.s f2,f0,f1
         else:
             words.append(_i(0x2B, A0, S1, index * 4))  # taken slot: store marker
+        words.extend((
+            _i(0x09, V0, V0, 0x100),             # skipped by a taken branch
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+    words.extend((JR_RA, NOP))
+    return words
+
+
+#: The integer branch-likely forms of _cell_branch_likely, as (name, encoder, false setup,
+#: true setup). _cell_branch_likely_int runs them without the COP1 cases, so a code
+#: generator that keeps COP1 code in another tier (the LLVM IR backend, #330) still
+#: compares every integer likely form against the interpreter.
+INTEGER_LIKELY_CASES = (
+    ("beql", lambda off: _i(0x14, T0, T1, off),
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)],
+     [_i(0x09, ZERO, T0, 2), _i(0x09, ZERO, T1, 2)]),
+    ("bnel", lambda off: _i(0x15, T0, T1, off),
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 1)],
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)]),
+    # bnezl is the standard `bnel rs, $zero` encoding.
+    ("bnezl", lambda off: _i(0x15, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+    ("blezl", lambda off: _i(0x16, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 1)], [_i(0x09, ZERO, T0, 0)]),
+    ("bgtzl", lambda off: _i(0x17, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+    ("bltzl", lambda off: _regimm(T0, 2, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, -1)]),
+    ("bgezl", lambda off: _regimm(T0, 3, off),
+     [_i(0x09, ZERO, T0, -1)], [_i(0x09, ZERO, T0, 0)]),
+)
+
+
+def _cell_branch_likely_int() -> list[int]:
+    """The integer branch-likely forms, each once not taken and once taken.
+
+    The layout follows _cell_branch_likely: a not-taken branch annuls an `ori` into
+    its own register and falls through to the `$v0` marker; a taken branch runs its
+    slot, a store of a per-form marker, and skips that marker to the `$v1` target
+    marker. Expected: $v0 = 7, $v1 = 14, every annulled register 0, and scratch word
+    i = 0xC100 + i.
+    """
+    not_taken_outputs = (T2, T3, T4, T5, T6, T7, T8)
+    words = [_i(0x09, ZERO, V0, 0), _i(0x09, ZERO, V1, 0)]
+    for index, (_name, branch, false_setup, true_setup) in enumerate(INTEGER_LIKELY_CASES):
+        out = not_taken_outputs[index]
+        words.extend(false_setup)
+        words.extend((
+            _i(0x09, ZERO, out, 0),
+            branch(2),
+            _i(0x0D, ZERO, out, 0xD000 + index),  # annulled when not taken
+            _i(0x09, V0, V0, 1),                 # not-taken path marker
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+        words.extend(true_setup)
+        words.append(_i(0x0D, ZERO, S1, 0xC100 + index))
+        words.append(branch(2))
+        words.append(_i(0x2B, A0, S1, index * 4))  # taken slot: store marker
         words.extend((
             _i(0x09, V0, V0, 0x100),             # skipped by a taken branch
             _i(0x09, V1, V1, 1),                 # branch target marker
@@ -1063,6 +1105,8 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("unaligned", "lwl/lwr/swl/swr byte merges", _cell_unaligned_merge),
     ("branch", "conditional branch + delay slot", _cell_branch),
     ("branch_likely", "taken and nullified branch-likely slots", _cell_branch_likely),
+    ("branch_likely_int", "integer branch-likely slots without COP1 code",
+     _cell_branch_likely_int),
     ("bitops", "Allegrex bit fields and unsigned-to-float idiom", _cell_bitops),
     ("jump", "direct jump + delay slot", _cell_jump),
     ("jthunk", "direct-j this-adjusting tail thunk", _cell_jthunk),
@@ -1210,6 +1254,9 @@ def entry_words(layout: dict[str, tuple[int, list[int]]]) -> list[int]:
 def build_text_segment() -> bytes:
     layout = cell_layout()
     end = max(offset + len(words) * 4 for offset, words in layout.values())
+    if ((end + 15) & ~15) > DATA_SEGMENT_OFFSET:
+        raise ValueError(f"cells need 0x{end:x} bytes of text; the data segment starts at "
+                         f"0x{DATA_SEGMENT_OFFSET:x} (raise DATA_SEGMENT_OFFSET)")
     text = bytearray((end + 15) & ~15)
     head = entry_words(layout)
     text[0 : len(head) * 4] = struct.pack(f"<{len(head)}I", *head)

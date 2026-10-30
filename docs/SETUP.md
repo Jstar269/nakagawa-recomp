@@ -938,6 +938,18 @@ which Git for Windows rejects, so that mode scanned nothing on Windows. C format
 `pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
 contributor hook. These tools are not core runtime dependencies.
 
+### Optional LLVM backend
+
+The opt-in LLVM IR backend (`CODEGEN_BACKEND=llvm`, [`LLVM_BACKEND.md`](LLVM_BACKEND.md))
+compiles generated LLVM IR with Clang and links it with `llvm-link`; its tests also run `opt`.
+Install them from MSYS2 UCRT64 once:
+
+```powershell
+pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-llvm-tools
+```
+
+The default C backend needs none of this. `LLVM_CLANG` and `LLVM_LINK` name other copies.
+
 ### PSP analysis tools (optional, never runtime dependencies)
 
 - [PSPSDK](https://github.com/pspdev/pspsdk) is the preferred open source reference for PSP
