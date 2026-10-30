@@ -2585,7 +2585,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8323a4a04f372f430b071cf6642606d8deee14f5a875d750d606c74498087489"
+      "sha256": "37fcf89aee56744ac73c604c875ee0bbddff6ca5b4f8e79534ad01bab7fe6695"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
@@ -4568,7 +4568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e99679d73300467937ffcb1194f9289aafc6b9b1b325800988b6ee92b616dce4"
+      "sha256": "492c4cce8a0598b52f27ee938b88ee71681d7cf48058b60db3b78f2788e1c53e"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
