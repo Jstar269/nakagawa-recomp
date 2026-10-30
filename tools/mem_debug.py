@@ -600,7 +600,7 @@ class MemoryDebugger:
         self.candidate = chosen
 
         # Resolve symbols from the ATTACHED executable path (never the fallback
-        # when mutating).  For --pid the executable may live outside build/hst/,
+        # when mutating).  For --pid the executable may live outside the build tree,
         # so the on-disk identity source is the candidate's own path.
         disk_source = chosen.get("exe_path") or expected_exe
         self.rvas, self.rva_provenance = get_symbol_rvas(disk_source)

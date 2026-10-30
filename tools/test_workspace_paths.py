@@ -370,6 +370,40 @@ class CleanWorkspacePathTests(unittest.TestCase):
                 nk_clean._require_within(root_real, outside)
 
 
+class ExplicitAssetRootTests(unittest.TestCase):
+    """A command resolves its outputs from named roots, not the invoking cwd (#368)."""
+
+    def test_prepare_resolves_from_its_data_root_whatever_the_cwd(self) -> None:
+        import nk_cli  # noqa: PLC0415 - heavy; only this test needs it
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_root = Path(tmp) / "user data"
+            elsewhere = Path(tmp) / "another checkout"
+            elsewhere.mkdir()
+            args = mock.Mock(user_data_root=user_root, player=None,
+                             iso=str(Path(tmp) / "disc.iso"), dest=None)
+            seen: list[Path] = []
+
+            class _Engine:
+                def __init__(self, base_dir=None, **_kwargs) -> None:
+                    seen.append(base_dir)
+
+                def prepare_game(self, *_args, **_kwargs):
+                    return mock.Mock(success=False, error_code="TEST_STOP", error_message="stop")
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(elsewhere)
+                with mock.patch.object(nk_cli, "PreparationEngine", _Engine), \
+                        mock.patch.object(nk_cli, "NativeTitleStager"), \
+                        mock.patch("sys.stderr"):
+                    self.assertEqual(nk_cli.cmd_prepare(args), 1)
+            finally:
+                os.chdir(cwd)
+            # Left out, the engine's base folder was the cwd: "another checkout".
+            self.assertEqual(seen, [user_root.resolve(strict=False)])
+
+
 class TrackedMachinePathTests(unittest.TestCase):
     """No undeclared absolute machine/workspace path in tracked first-party files (#368).
 

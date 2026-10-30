@@ -368,6 +368,11 @@ bool package_builder_clear_shared_library_cache(const char *data_root,
  * player's preflight looks for the tool the build will actually call. */
 const char *package_builder_make_tool_name(void);
 
+/* Whether this host has the pinned build-tool download (the prerequisite consent
+ * card): Windows only. Elsewhere the build runs the system's python, gcc and make,
+ * and a missing one is reported by package_builder_toolchain_missing. */
+bool package_builder_toolchain_download_available(void);
+
 /* Pure: report the first missing build tool (python, gcc, then the make
  * package_builder_make_tool_name names). Returns false and clears the outputs
  * when all three are present. On success out_tool holds the tool name and

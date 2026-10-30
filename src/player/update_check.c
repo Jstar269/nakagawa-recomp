@@ -832,6 +832,14 @@ static bool listed_files_present(const char *root, char *missing, size_t missing
 }
 #endif
 
+bool nk_update_install_supported(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool nk_update_install(const char *zip_path, const char *target_dir, const char *log_path,
                        NkUpdateError *error) {
     clear_error(error);

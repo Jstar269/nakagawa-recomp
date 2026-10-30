@@ -18,6 +18,38 @@ but a successful object compile is not the same as a linked, running port.
 | Build and packaging | GNU Make plus PowerShell, Windows library names, SDK paths, and `.exe`/DLL packaging | Preserve the working Windows flow while introducing a cross-platform build definition with equivalent targets. |
 | Diagnostic tooling | Some live process inspection is Windows-only | Keep it optional; ports need not block on debugger feature parity. |
 
+## One platform seam
+
+Host behaviour goes through one seam, so a new host (Android
+[#360](https://github.com/Jstar269/nakagawa-recomp/issues/360), macOS
+[#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) changes the backends and not every
+caller:
+
+- `src/core/nk_platform.h`, with `nk_platform_win32.c` and `nk_platform_posix.c`, owns paths and
+  the per-user folders, file primitives, process spawn and window fronting, the executable path,
+  UTF-8 `main` arguments, the GUI program's standard streams, the system UI font, the SDL3_ttf
+  library names, path-name comparison, and `nk_platform_host_kind()`.
+- `src/player/player_host.h` and `player_host.c` own the launcher pieces that need SDL: the file
+  pickers and their filters, showing a folder in the file manager, and the window icon.
+- Feature capabilities are asked, not inferred from the host: `package_builder_toolchain_download_available()`
+  and `nk_update_install_supported()`.
+- User-facing text that names a host's own tools or folders takes an `NkHostKind`
+  (`player_data_dir_unavailable_text`, `player_folder_open_failure_hint`,
+  `player_launcher_unavailable_message_for_host`), so every host's words compile and are tested on
+  every host.
+
+`src/player/main.c`, `ui_renderer.c`, `ui/player_ui_nk.c` and `player_state.h` hold no host
+conditionals. `tools/test_platform_seam.py` counts `_WIN32`, `__APPLE__`, `__linux__`,
+`__ANDROID__` and similar tests in `src/player`, `src/core` and `src/ui` outside the backends and
+holds every file to its recorded count, with the reason its branches stay. A new branch outside a
+backend fails that test; add the behaviour to the seam instead, or raise the count in review with
+its reason.
+
+What the seam does not cover yet, by file: `package_builder.c` (tool discovery and the Windows
+prerequisite download), `setup_staging.c` (PPSSPP folder discovery and wide file calls), the
+`settings.json` and `library.json` writers' durable replace, and the file-local UTF-8 file
+primitives that `nk_platform.h` lists for units built without the platform layer.
+
 ## Staged plan
 
 ### 1. Keep Windows green and expose portable code

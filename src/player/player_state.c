@@ -38,9 +38,9 @@
 #include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
+/* Only the settings writer's durable replace (FlushFileBuffers, MoveFileExW). */
 #include <windows.h>
 #include <io.h>
-#include <process.h>
 #else
 #include <unistd.h>
 #endif
@@ -675,13 +675,7 @@ int player_app_ttf_library_candidates(const char *exe_dir,
                                       char out[][MAX_PATH_LEN], int max_out) {
     if (!out || max_out <= 0) return 0;
 
-#if defined(_WIN32) || defined(_WIN64)
-    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
-#elif defined(__APPLE__)
-    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
-#else
-    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
-#endif
+    const char *const *kLibs = nk_platform_sdl3_ttf_library_names();
 
     int count = 0;
     /* 1. Beside the executable: a user can drop the library next to the player
@@ -800,23 +794,13 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
     return app->showcase_count > 0;
 }
 
-#if defined(_WIN32) || defined(_WIN64)
+/* Profile-folder matching follows the host's file-name rules (nk_platform.h). */
 static bool player_display_path_char_equal(char a, char b) {
-    if (a == '/') a = '\\';
-    if (b == '/') b = '\\';
-    return tolower((unsigned char)a) == tolower((unsigned char)b);
+    return nk_platform_path_chars_equal(a, b);
 }
 static bool player_display_is_separator(char c) {
-    return c == '\\' || c == '/';
+    return nk_platform_is_path_separator(c);
 }
-#else
-static bool player_display_path_char_equal(char a, char b) {
-    return a == b;
-}
-static bool player_display_is_separator(char c) {
-    return c == '/';
-}
-#endif
 
 /* The profile folder without trailing separators; 0 when it is empty. */
 static size_t player_display_home_length(const char *home) {
@@ -871,12 +855,7 @@ size_t player_display_text(const char *in, char *out, size_t out_size) {
     static char home[MAX_PATH_LEN];
     static bool home_ready;
     if (!home_ready) {
-        const char *value = NULL;
-#if defined(_WIN32) || defined(_WIN64)
-        value = getenv("USERPROFILE");
-#else
-        value = getenv("HOME");
-#endif
+        const char *value = nk_platform_env_home_dir();
         if (value) snprintf(home, sizeof(home), "%s", value);
         else home[0] = '\0';
         home_ready = true;
@@ -1463,6 +1442,33 @@ bool player_path_parent_folder(const char *path, char *out, size_t out_size) {
     if (keep >= out_size) return false;
     memcpy(out, path, keep);
     out[keep] = '\0';
+    return true;
+}
+
+bool player_file_url(const char *path, char *out, size_t out_size) {
+    static const char prefix[] = "file://";
+    size_t used = sizeof(prefix) - 1u;
+    if (path == NULL || path[0] != '/' || out == NULL ||
+        out_size <= used) {
+        return false;
+    }
+    memcpy(out, prefix, used);
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p) {
+        unsigned char c = *p;
+        bool safe = isalnum(c) || c == '/' || c == '-' || c == '_' ||
+                    c == '.' || c == '~' || c == ':';
+        if (safe) {
+            if (used + 1u >= out_size) return false;
+            out[used++] = (char)c;
+        } else {
+            if (used + 3u >= out_size) return false;
+            static const char hex[] = "0123456789ABCDEF";
+            out[used++] = '%';
+            out[used++] = hex[c >> 4];
+            out[used++] = hex[c & 15u];
+        }
+    }
+    out[used] = '\0';
     return true;
 }
 
@@ -2058,12 +2064,7 @@ void player_app_set_developer_mode(PlayerApp *app, bool on) {
 /* ---- Developer log ---------------------------------------------------------------- */
 
 static bool player_dev_log_char_eq(char a, char b) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (a == '\\' || a == '/') return b == '\\' || b == '/';
-    return tolower((unsigned char)a) == tolower((unsigned char)b);
-#else
-    return a == b;
-#endif
+    return nk_platform_path_chars_equal(a, b);
 }
 
 static size_t player_dev_log_match(const char *at, const char *needle) {
@@ -2129,13 +2130,8 @@ bool player_dev_log_redact(const char *in, const char *profile, const char *user
 }
 
 static void player_dev_log_identity(const char **profile, const char **user) {
-#if defined(_WIN32) || defined(_WIN64)
-    *profile = getenv("USERPROFILE");
-    *user = getenv("USERNAME");
-#else
-    *profile = getenv("HOME");
-    *user = getenv("USER");
-#endif
+    *profile = nk_platform_env_home_dir();
+    *user = nk_platform_env_user_name();
 }
 
 void player_dev_log_add(PlayerApp *app, const char *source, const char *fmt, ...) {
@@ -2475,19 +2471,37 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
             app->last_error.details);
 }
 
+const char *player_folder_open_failure_hint(NkHostKind host) {
+    if (host == NK_HOST_WINDOWS) return "Windows could not open it.";
+    /* SDL opens folders through xdg-open (xdg-utils), which a minimal
+       install or a WSL distribution can lack. */
+    return "Nakagawa asks xdg-open (from xdg-utils) to show folders, and that "
+           "did not work here.";
+}
+
+const char *player_data_dir_unavailable_text(NkHostKind host) {
+    switch (host) {
+        case NK_HOST_WINDOWS:
+            return "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. "
+                   "Set LOCALAPPDATA or APPDATA";
+        case NK_HOST_MACOS:
+            return "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                   "Set HOME";
+        case NK_HOST_LINUX:
+        case NK_HOST_ANDROID:
+        case NK_HOST_OTHER_POSIX:
+        default:
+            return "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                   "Set XDG_DATA_HOME or HOME";
+    }
+}
+
 void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason) {
     char message[512];
     PlayerView back;
     if (!app) return;
     back = app->active_view == VIEW_ERROR ? VIEW_LIBRARY : app->active_view;
-#if defined(_WIN32) || defined(_WIN64)
-    const char *how = "Windows could not open it.";
-#else
-    /* SDL opens folders through xdg-open (xdg-utils), which a minimal
-       install or a WSL distribution can lack. */
-    const char *how = "Nakagawa asks xdg-open (from xdg-utils) to show folders, and that "
-                      "did not work here.";
-#endif
+    const char *how = player_folder_open_failure_hint(nk_platform_host_kind());
     (void)snprintf(message, sizeof(message),
                    "Nakagawa couldn't show this folder in a file manager. %s Open it "
                    "yourself; its path is in the details.", how);
@@ -2500,6 +2514,13 @@ void player_app_set_folder_open_error(PlayerApp *app, const char *path, const ch
 
 void player_launcher_unavailable_message(const char *reason, bool built_without_launcher,
                                          char *out, size_t out_size) {
+    player_launcher_unavailable_message_for_host(nk_platform_host_kind(), reason,
+                                                 built_without_launcher, out, out_size);
+}
+
+void player_launcher_unavailable_message_for_host(NkHostKind host, const char *reason,
+                                                  bool built_without_launcher,
+                                                  char *out, size_t out_size) {
     const char *fix;
     if (!out || out_size == 0u) return;
     if (!reason || !reason[0]) reason = "it could not initialize";
@@ -2509,17 +2530,15 @@ void player_launcher_unavailable_message(const char *reason, bool built_without_
               "SDL3_ttf support its launcher needs. Install the SDL3_ttf development "
               "files (sdl3-ttf for pkg-config on Linux, mingw-w64-ucrt-x86_64-SDL3_ttf "
               "in MSYS2 UCRT64 on Windows) and build the player again.";
-    } else {
-#if defined(_WIN32) || defined(_WIN64)
+    } else if (host == NK_HOST_WINDOWS) {
         fix = "Some of its files are missing. Extract the ZIP again, keeping "
               "every folder, and start nakagawa_player.exe from the extracted "
               "folder.";
-#else
+    } else {
         fix = "Some of the files it needs are missing: the SDL3_ttf library, or the "
               "assets folder installed beside the player. Install SDL3_ttf, then "
               "install the player again with tools/stage_install.py "
               "(docs/LINUX_DEVELOPMENT.md).";
-#endif
     }
     /* The launcher's own errors are sentences; add the full stop only when missing. */
     size_t reason_length = strlen(reason);
@@ -2894,11 +2913,7 @@ static int player_format_boot_event_path(char *out, size_t out_size,
         return 0;
     }
 
-#if defined(_WIN32) || defined(_WIN64)
-    unsigned long process_id = (unsigned long)_getpid();
-#else
-    unsigned long process_id = (unsigned long)getpid();
-#endif
+    unsigned long process_id = nk_platform_process_id();
     int written = snprintf(out, out_size, "%s%cplayer-boot-%lu-%u.events",
                            cache_dir, nk_platform_path_separator(),
                            process_id, sequence);
@@ -3789,9 +3804,12 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     if (app->runtime_root[0]) {
         snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
     } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
+        char unavailable[256];
+        snprintf(unavailable, sizeof(unavailable),
+                 "%s before building the package or installing tools.",
+                 player_data_dir_unavailable_text(nk_platform_host_kind()));
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             PLAYER_DATA_DIR_UNAVAILABLE_TEXT " before building the package or installing tools.",
-                             "Return to Library", VIEW_LIBRARY);
+                             unavailable, "Return to Library", VIEW_LIBRARY);
         return false;
     }
 
@@ -3833,8 +3851,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
                                                       make_path, sizeof(make_path));
     }
     bool missing_toolchain = !have_gcc || !have_make;
-    if (!have_python || missing_toolchain) {
-#if !defined(_WIN32) && !defined(_WIN64)
+    if ((!have_python || missing_toolchain) && !package_builder_toolchain_download_available()) {
         /* No download exists off Windows: the build runs the system's python,
            gcc and make, so the card names the first one missing and the
            package that provides it. */
@@ -3846,7 +3863,8 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         player_app_set_error(app, "BUILD_TOOLCHAIN_MISSING", "Build Tools Not Found",
                              missing_message, "Return to Library", VIEW_LIBRARY);
         return false;
-#else
+    }
+    if (!have_python || missing_toolchain) {
         PackagePrerequisiteList list;
         char manifest_error[512];
         if (!package_builder_load_prerequisites(cli_path, &list,
@@ -3864,7 +3882,6 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         app->prerequisites.total_bytes = list.total_bytes;
         app->prerequisites.bootstrap_python = !have_python;
         return true;
-#endif
     }
 
     if (!have_python) {
@@ -4059,9 +4076,11 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     char error[512];
     PackagePrerequisiteList list;
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        char unavailable[256];
+        snprintf(unavailable, sizeof(unavailable), "%s before inspecting installed tools.",
+                 player_data_dir_unavailable_text(nk_platform_host_kind()));
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             PLAYER_DATA_DIR_UNAVAILABLE_TEXT " before inspecting installed tools.",
-                             "Return to Settings", VIEW_SETTINGS);
+                             unavailable, "Return to Settings", VIEW_SETTINGS);
         return false;
     }
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
@@ -4145,7 +4164,8 @@ void player_app_remove_prerequisites(PlayerApp *app) {
     char message[512];
     if (!player_app_data_root(app, data_root, sizeof(data_root))) {
         snprintf(code, sizeof(code), "DATA_DIR_UNAVAILABLE");
-        snprintf(message, sizeof(message), PLAYER_DATA_DIR_UNAVAILABLE_TEXT ". No files were removed.");
+        snprintf(message, sizeof(message), "%s. No files were removed.",
+                 player_data_dir_unavailable_text(nk_platform_host_kind()));
     } else if (package_builder_remove_downloaded_tools(data_root, code, sizeof(code),
                                                        message, sizeof(message))) {
         for (size_t i = 0; i < app->prerequisites.items.count; i++)
@@ -4171,13 +4191,7 @@ static bool player_path_within(const char *path, const char *root) {
     for (size_t i = 0; i < n; ++i) {
         char a = path[i];
         char b = root[i];
-#if defined(_WIN32) || defined(_WIN64)
-        if (a == '/') a = '\\';
-        if (b == '/') b = '\\';
-        if (tolower((unsigned char)a) != tolower((unsigned char)b)) return false;
-#else
-        if (a != b) return false;
-#endif
+        if (!nk_platform_path_chars_equal(a, b)) return false;
     }
     return path[n] == '\0' || path[n] == '/' || path[n] == '\\';
 }
@@ -4248,10 +4262,7 @@ bool player_app_factory_reset(PlayerApp *app, const char *stamp) {
                        !nk_platform_dir_exists(moved[i]) &&
                        nk_rename_utf8(folders[i], moved[i]) == 0;
         if (!renamed) {
-            int os_error = errno;
-#if defined(_WIN32) || defined(_WIN64)
-            os_error = (int)GetLastError();
-#endif
+            int os_error = nk_platform_last_os_error();
             char reason[160] = "";
             (void)nk_platform_describe_os_error(os_error, reason, sizeof(reason));
             /* Put back what already moved, newest first. */

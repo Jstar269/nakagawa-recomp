@@ -2957,7 +2957,12 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     registry = get_default_registry()
     registry.load_local_manifests(user_data_root / "manifests")
     stager = NativeTitleStager(user_data_root, player=args.player)
-    engine = PreparationEngine(registry=registry, native_stager=stager)
+    # The engine resolves expanded disc images and the default games folder from
+    # its base folder. Name it: left out, it is the invoking shell's working
+    # directory, so the same command run from two checkouts wrote into two
+    # different places, the repository itself among them (#368).
+    engine = PreparationEngine(base_dir=user_data_root, registry=registry,
+                               native_stager=stager)
     result = engine.prepare_game(
         args.iso,
         on_progress=print_progress,
