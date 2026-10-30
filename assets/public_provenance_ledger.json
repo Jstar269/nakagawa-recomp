@@ -1423,7 +1423,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67c77f252533e5435294abe7d5398964ac65dca3e2ab91bfbf3c3f8dd8447681"
+      "sha256": "a041ec6778cd044cae910fbc44b1736f46dc0e6afbb433ae37cbcac094986afc"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -12636,7 +12636,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c40203357505c02d35b8ac2d5c364a826302fcc2eb9215dcddad39684af57a39"
+      "sha256": "0dc3ac81d4446c1b2eb33cf9c588ce692fa98a3b18e6aa84d2584409f4cba57a"
     },
     {
       "path": "tools/codegen.py",
@@ -14470,7 +14470,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "046829efb884e0611e67e1fba78813c5d43c27a62c7b606d466c9f7c6045a12d"
+      "sha256": "6a94c846d1e9a5fd755006aadb184e70144e1275e3f5a65aa8c346f525663a8e"
     },
     {
       "path": "tools/test_codegen_continuations.py",
