@@ -207,6 +207,10 @@ typedef struct GeGpuReplayStats {
     /* Stencil primitives that started a new batch because their box met the batch's
      * earlier primitives and the state reads what it writes (a snapshot copy between). */
     unsigned long long stencil_splits;
+    /* CPU writes into resident targets: each one noted, and the groups applied to an image
+     * when the GE next used the target (one or more patch uploads per group). */
+    unsigned long long cpu_write_notes;
+    unsigned long long cpu_write_syncs;
     unsigned long long snapshot_submits;
     unsigned long long snapshot_waits;
     unsigned long long snapshot_wait_ns;
