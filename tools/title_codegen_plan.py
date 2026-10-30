@@ -706,10 +706,6 @@ def _span_environment(manifest: dict[str, Any]) -> dict[str, str]:
         raise TitleCodegenPlanError(
             "the current analyzer accepts at most one explicit extra executable span"
         )
-    if spans and base != 0:
-        raise TitleCodegenPlanError(
-            "explicit extra executable spans are not yet supported with a nonzero base"
-        )
     rendered = ""
     if spans:
         rendered = f"{_hex(spans[0]['start'])},{_hex(spans[0]['end'])}"

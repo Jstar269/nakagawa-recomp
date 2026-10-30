@@ -46,16 +46,16 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **657** (dedicated **552**, fake_success **5**, controlled_unsupported **100**).
-Semantic handler census: **531** handlers across **25** API families, covering **558** handler-associated NID registrations.
+Registered NIDs: **659** (dedicated **553**, fake_success **5**, controlled_unsupported **101**).
+Semantic handler census: **532** handlers across **26** API families, covering **559** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 210 | 215 |
+| `partial` | 212 | 217 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 304 | 313 |
+| `unreviewed` | 303 | 312 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -74,6 +74,7 @@ Semantic handler census: **531** handlers across **25** API families, covering *
 | `sceKernel` | 3 | 93 | 0 | 0 | 93 | 189 | 207 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
+| `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 10 | 0 | 0 | 9 | 19 | 21 |
@@ -81,10 +82,10 @@ Semantic handler census: **531** handlers across **25** API families, covering *
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 5 | 7 | 0 | 0 | 1 | 13 | 13 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
-| `sceUmd` | 0 | 4 | 1 | 0 | 8 | 13 | 13 |
+| `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **210** | **1** | **2** | **304** | **531** | **558** |
+| **Total** | **14** | **212** | **1** | **2** | **303** | **532** | **559** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -315,7 +316,7 @@ Semantic handler census: **531** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
-  - Limitation: Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)
+  - Limitation: Memory Stick insert/eject callbacks, including the mscmhc0: 0x02015804/0x02015805 forms, are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)
 - **`h_IoDopen`** (`sceIo`): `sceIoDopen` (0xb29ddf9c)
   - Limitation: the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
@@ -695,6 +696,9 @@ Semantic handler census: **531** handlers across **25** API families, covering *
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
+  - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_named_refusals
 - **`h_NpDrmClearLicenseeKey`** (`sceNp`): `sceNpDrmClearLicenseeKey` (0x9b745542)
   - Limitation: forgets the recorded key and returns 0; not hardware measured
 - **`h_NpDrmSetLicenseeKey`** (`sceNp`): `sceNpDrmSetLicenseeKey` (0xa1336091)
@@ -807,12 +811,16 @@ Semantic handler census: **531** handlers across **25** API families, covering *
   - Limitation: moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
   - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears
+- **`h_UmdActivate`** (`sceUmd`): `sceUmdActivate` (0xc6183d47)
+  - Limitation: the callback argument follows PPSSPP (0x22 when no compiled SDK version is set, 0x32 otherwise) and is host-selftested, not hardware measured; the activation result and argument checks are not hardware measured either
+  - Evidence: src/rt/hle_thread_selftest.c:test_umd_unregister_callback
+  - Evidence: PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version
 - **`h_UmdCheckMedium`** (`sceUmd`): `sceUmdCheckMedium` (0x46ebb729)
   - Limitation: always reports a medium present (1), as measured with a disc inserted; the runtime serves one ISO, so the no-disc result and disc removal are not modeled
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
 - **`h_UmdDeactivate`** (`sceUmd`): `sceUmdDeactivate` (0xe83742ba)
-  - Limitation: moves the modeled drive to the measured deactivated state 0x12; its own return value (0) and argument checks are not hardware measured
+  - Limitation: moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdDriveStat`** (`sceUmd`): `sceUmdGetDriveStat` (0x6b4a146c)
