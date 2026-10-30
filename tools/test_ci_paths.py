@@ -574,12 +574,19 @@ class MergeGroupRoutingTests(unittest.TestCase):
                 self.assertEqual(result["draft"], "false")
 
     def test_merge_group_is_classified_exactly_like_a_manual_dispatch(self) -> None:
+        # Every gate decision matches a manual dispatch. The one intended difference is the
+        # compiler-cache save (#735): a dispatch of main may write the cache, a merge-group run
+        # never does. Pin GITHUB_REF to main, where the two differ, so the result does not
+        # depend on which ref the test itself runs under (it passed on pull requests and
+        # failed on main before this).
         for paths in (["docs/CI.md"], ["src/rt/hle.c"], ["new-tool-input.dat"]):
             with self.subTest(paths=paths):
-                self.assertEqual(
-                    classify(paths, event_name="merge_group"),
-                    classify(paths, event_name="workflow_dispatch"),
-                )
+                with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+                    merge_group = classify(paths, event_name="merge_group")
+                    dispatch = classify(paths, event_name="workflow_dispatch")
+                self.assertEqual(merge_group.pop("save_compiler_cache"), "false")
+                self.assertEqual(dispatch.pop("save_compiler_cache"), "true")
+                self.assertEqual(merge_group, dispatch)
 
     def test_merge_group_diff_endpoints_come_from_the_payload(self) -> None:
         event = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}

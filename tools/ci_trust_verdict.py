@@ -100,6 +100,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -601,6 +602,13 @@ def git_facts(repo: Path, repository: str, number: int, head_sha: str, remote: s
 # --- GitHub API ------------------------------------------------------------
 
 
+# GitHub's API answers a share of requests with a gateway error under load. One such answer made the verifier
+# post "could not judge this head: HTTPError" on several pull requests at once (HTTP 502, 2026-10-30), and each
+# needed a manual re-run. These statuses, and a dropped connection, are retried; any other answer is final.
+TRANSIENT_HTTP = frozenset({500, 502, 503, 504})
+RETRY_DELAYS = (5, 15)   # seconds before the second and third attempt
+
+
 class GitHub:
     def __init__(self, repository: str, token: str) -> None:
         self.repository = repository
@@ -615,9 +623,20 @@ class GitHub:
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "nakagawa-recomp-ci-trust-verdict",
         })
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = response.read()
-            return (json.loads(payload) if payload else None), dict(response.headers)
+        for delay in (*RETRY_DELAYS, None):
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    payload = response.read()
+                    return (json.loads(payload) if payload else None), dict(response.headers)
+            except urllib.error.HTTPError as error:
+                if delay is None or error.code not in TRANSIENT_HTTP:
+                    raise
+            except (urllib.error.URLError, TimeoutError):
+                if delay is None:
+                    raise
+            print(f"{method} {url}: transient GitHub error; retrying in {delay} s", file=sys.stderr)
+            time.sleep(delay)
+        raise AssertionError("unreachable")
 
     def get(self, path: str) -> object:
         return self._request("GET", path)[0]

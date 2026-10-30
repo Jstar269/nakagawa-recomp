@@ -207,6 +207,8 @@ size_t nk_ui_input_button(NkUiInput *input, NkUiInputButton button, bool down,
     case NK_UI_BTN_CYCLE_NEXT: type = NK_UI_EV_CYCLE; dir = NK_UI_DIR_RIGHT; break;
     case NK_UI_BTN_PAGE_PREV: type = NK_UI_EV_PAGE; dir = NK_UI_DIR_LEFT; break;
     case NK_UI_BTN_PAGE_NEXT: type = NK_UI_EV_PAGE; dir = NK_UI_DIR_RIGHT; break;
+    case NK_UI_BTN_FIRST: type = NK_UI_EV_EDGE; dir = NK_UI_DIR_UP; break;
+    case NK_UI_BTN_LAST: type = NK_UI_EV_EDGE; dir = NK_UI_DIR_DOWN; break;
     default: type = NK_UI_EV_CYCLE; dir = NK_UI_DIR_LEFT; break;
     }
     if (input->down[button] == down) {

@@ -13,6 +13,7 @@
 #include "backend/nk_ui_vk.h"
 #include "clay.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -105,8 +106,10 @@ static int test_no_platform_headers(void) {
 static int test_theme_tokens(void) {
     const NkUiTheme *theme = nk_ui_theme_n1();
     CHECK(theme != NULL, "N1 theme must be available");
-    CHECK(theme->accent_dark == 0xD7F24AFFu, "dark N1 accent token");
-    CHECK(theme->accent_light == 0x6E9600FFu, "light N1 accent token");
+    CHECK(theme->accent_dark == 0x6B9FF0FFu, "dark N1 accent token: the site's dark accent");
+    CHECK(theme->accent_light == 0x2F6FD0FFu, "light N1 accent token: the site's light accent");
+    CHECK(theme->focus == theme->accent_dark, "the focus ring is the accent");
+    CHECK(theme->info == 0xC29AF4FFu, "info is violet, apart from the blue accent");
     CHECK(theme->ready == 0x2DD4BFFFu, "Ready teal token");
     CHECK(theme->warning == 0xDBB024FFu, "warning gold token");
     CHECK(theme->ink == 0x10151CFFu && theme->paper == 0xF5F7FAFFu,
@@ -480,6 +483,9 @@ static int test_focused_button_activation(void) {
 
 /* One frame of a row of two buttons, base and base + 1. Returns the activated
    button, or 0. */
+/* The clock draw_button_pair draws at; the tests of motion move it. */
+static double g_button_pair_now = 37.0;
+
 static NkUiId draw_button_pair(NkUi *ui, NkUiId base, NkUiId focus_request) {
     NkUiLayout layout;
     NkUiStyle style;
@@ -490,7 +496,7 @@ static NkUiId draw_button_pair(NkUi *ui, NkUiId base, NkUiId focus_request) {
     layout.direction = NK_UI_LAYOUT_ROW;
     layout.gap = 16.0f;
     memset(&style, 0, sizeof(style));
-    nk_ui_begin(ui, 37.0);
+    nk_ui_begin(ui, g_button_pair_now);
     if (focus_request != 0u) {
         nk_ui_focus(ui, focus_request);
     }
@@ -696,11 +702,14 @@ static void push_leave(NkUi *ui) {
 
 /* Hover and pressed looks come from Clay's pointer state over the last layout.
    Hover is for the pointer only: a key hides it until the pointer moves, it
-   clears when the pointer leaves the window, and it never moves focus. */
+   clears when the pointer leaves the window, and it never moves focus. The
+   looks are checked at a clock that does not move, so motion is cut here;
+   test_hover_fill_eases covers the easing. */
 static int test_pointer_hover_and_press(void) {
     NkUiTextBackend fixed = nk_ui_text_fixed();
     const NkUiTheme *theme = nk_ui_theme_n1();
     NkUiConfig config;
+    NkUiPrefs prefs;
     NkUi *ui;
     int frame;
     memset(&config, 0, sizeof(config));
@@ -709,6 +718,9 @@ static int test_pointer_hover_and_press(void) {
     ui = nk_ui_create(&config);
     CHECK(ui != NULL, "create hover context");
     set_test_window(ui);
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
     for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
     CHECK(!nk_ui_hovered(ui, 10u) && !nk_ui_hovered(ui, 11u), "nothing is hovered before the pointer moves");
 
@@ -742,6 +754,55 @@ static int test_pointer_hover_and_press(void) {
     (void)draw_button_pair(ui, 10u, 0u);
     CHECK(!nk_ui_hovered(ui, 10u) && drew_fill(ui, 10u, theme->accent_dark),
           "leaving the window clears hover");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* A button's hover fill eases in over NK_UI_MOTION_FAST: half way through it
+   is neither the resting fill nor the hover fill, and nk_ui says it is still
+   moving; then it is the hover fill and still. Reduce motion cuts it. */
+static int test_hover_fill_eases(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create hover easing context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) {
+        g_button_pair_now = 20.0 + frame * 0.01;
+        (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
+    }
+    CHECK(!drew_fill(ui, 11u, theme->surface_high) && !nk_ui_in_motion(ui),
+          "the secondary button rests unfilled");
+    push_pointer(ui, 100.0f, 10.0f, false);
+    g_button_pair_now = 20.05;
+    (void)draw_button_pair(ui, 10u, 0u);
+    g_button_pair_now = 20.05 + NK_UI_MOTION_FAST / 2.0;
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 11u) && !drew_fill(ui, 11u, theme->surface_high) &&
+              nk_ui_in_motion(ui),
+          "half way through, the hover fill is still easing in");
+    for (frame = 1; frame <= 3; ++frame) {
+        g_button_pair_now = 20.05 + NK_UI_MOTION_FAST * 2.0 * frame;
+        (void)draw_button_pair(ui, 10u, 0u);
+    }
+    CHECK(drew_fill(ui, 11u, theme->surface_high) && !nk_ui_in_motion(ui),
+          "then the button is filled and still");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    push_pointer(ui, 10.0f, 10.0f, false);
+    g_button_pair_now = 21.0;
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(drew_fill(ui, 10u, theme->accent_hover) && !nk_ui_in_motion(ui),
+          "Reduce motion: the hover fill is there at once");
+    g_button_pair_now = 37.0;
     nk_ui_destroy(ui);
     return 1;
 }
@@ -1051,6 +1112,258 @@ static int test_focus_ring_floats(void) {
     return 1;
 }
 
+/* Two 120 px buttons, 200 px apart, drawn at `now_s`. Returns the left edge of
+   the focus ring's band, or INT_MIN when no ring is drawn. */
+static int draw_ring_pair(NkUi *ui, double now_s) {
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiLayout row;
+    const NkUiDrawList *list;
+    uint32_t i;
+    memset(&row, 0, sizeof(row));
+    row.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    row.height = (NkUiSizing){NK_UI_SIZE_FIT, 0.0f, 0.0f, 0.0f};
+    row.direction = NK_UI_LAYOUT_ROW;
+    row.gap = 80.0f;
+    row.padding_left = 40.0f;
+    row.padding_top = 40.0f;
+    nk_ui_begin(ui, now_s);
+    if (nk_ui_begin_container(ui, 90u, &row, NULL)) {
+        NkUiLayout cell = row;
+        cell.width = (NkUiSizing){NK_UI_SIZE_FIXED, 120.0f, 0.0f, 0.0f};
+        cell.gap = 0.0f;
+        cell.padding_left = 0.0f;
+        cell.padding_top = 0.0f;
+        if (nk_ui_begin_container(ui, 91u, &cell, NULL)) {
+            (void)nk_ui_button(ui, 81u, "One", 0u);
+            nk_ui_end_container(ui);
+        }
+        if (nk_ui_begin_container(ui, 92u, &cell, NULL)) {
+            (void)nk_ui_button(ui, 82u, "Two", 0u);
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    list = nk_ui_end(ui);
+    for (i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_BORDER && cmd->rgba_pm == theme->focus) return cmd->bounds[0];
+    }
+    return INT_MIN;
+}
+
+/* The ring eases from the control focus leaves to the one it reaches, over
+   NK_UI_MOTION_FAST, and nk_ui says so while it moves, so the host keeps
+   drawing. Reduce motion makes the move a cut. */
+static int test_focus_ring_moves(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int start;
+    int mid;
+    int end;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create ring move context");
+    set_test_window(ui);
+    nk_ui_focus(ui, 81u);
+    for (frame = 0; frame < 3; ++frame) start = draw_ring_pair(ui, 10.0 + frame * 0.01);
+    CHECK(start != INT_MIN && !nk_ui_in_motion(ui), "the ring rests on the first button");
+    nk_ui_focus(ui, 82u);
+    (void)draw_ring_pair(ui, 10.03);
+    mid = draw_ring_pair(ui, 10.03 + NK_UI_MOTION_FAST / 2.0);
+    CHECK(mid > start && mid < start + 200 && nk_ui_in_motion(ui),
+          "half way through, the ring is between the buttons and still moving");
+    for (frame = 1; frame <= 3; ++frame) end = draw_ring_pair(ui, 10.03 + NK_UI_MOTION_FAST * 2.0 * frame);
+    CHECK(end == start + 200 && !nk_ui_in_motion(ui), "then it rests on the second button");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    nk_ui_focus(ui, 81u);
+    (void)draw_ring_pair(ui, 11.0);
+    CHECK(draw_ring_pair(ui, 11.0 + NK_UI_MOTION_FAST / 2.0) == start && !nk_ui_in_motion(ui),
+          "Reduce motion: the ring is on the new control at once");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* A top bar whose second or third tab is active, drawn at `now_s`. Returns the
+   left edge of the accent rule under the active tab, or INT_MIN. */
+static int draw_tab_bar(NkUi *ui, double now_s, int active) {
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    const NkUiSection sections[] = {
+        {"Library", false, 0u}, {"Settings", active == 1, 0u}, {"Controller", active == 2, 0u}
+    };
+    const NkUiDrawList *list;
+    uint32_t i;
+    nk_ui_begin(ui, now_s);
+    (void)nk_ui_top_bar(ui, 95u, sections, 3u, NULL, false);
+    list = nk_ui_end(ui);
+    for (i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_RECTANGLE && cmd->rgba_pm == theme->accent_dark &&
+            cmd->bounds[3] - cmd->bounds[1] == 3) {
+            return cmd->bounds[0];
+        }
+    }
+    return INT_MIN;
+}
+
+/* The accent rule slides to the newly active tab over NK_UI_MOTION_BASE
+   instead of jumping; Reduce motion makes it a cut. */
+static int test_tab_rule_slides(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int from = INT_MIN;
+    int mid;
+    int to = INT_MIN;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create tab rule context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) to = draw_tab_bar(ui, 30.0 + frame * 0.01, 2);
+    for (frame = 0; frame < 4; ++frame) from = draw_tab_bar(ui, 31.0 + frame * 0.5, 1);
+    CHECK(from != INT_MIN && to != INT_MIN && to > from && !nk_ui_in_motion(ui),
+          "the rule rests under the active tab");
+    (void)draw_tab_bar(ui, 33.0, 2);
+    mid = draw_tab_bar(ui, 33.0 + NK_UI_MOTION_BASE / 2.0, 2);
+    CHECK(mid > from && mid < to && nk_ui_in_motion(ui),
+          "half way through, the rule is between the two tabs");
+    for (frame = 1; frame <= 3; ++frame) mid = draw_tab_bar(ui, 33.0 + NK_UI_MOTION_BASE * 2.0 * frame, 2);
+    CHECK(mid == to && !nk_ui_in_motion(ui), "then it rests under the new tab");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    (void)draw_tab_bar(ui, 35.0, 1);
+    CHECK(draw_tab_bar(ui, 35.0 + NK_UI_MOTION_BASE / 2.0, 1) == from && !nk_ui_in_motion(ui),
+          "Reduce motion: the rule is under the new tab at once");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* How long a host may wait before the next frame: until the waves' next 30 Hz
+   step while they play (the launcher waited 50 ms, so they stepped at 20 Hz),
+   one display frame while something moves, the idle wait otherwise and under
+   Reduce motion, and never past the idle wait. */
+static int test_wait_follows_motion(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create wait context");
+    set_test_window(ui);
+    nk_ui_begin(ui, 40.0);
+    CHECK(nk_ui_end(ui) != NULL, "draw a still frame");
+    CHECK(nk_ui_wait_s(ui, 40.0, 0.05) == 0.05, "nothing moving: the idle wait");
+    nk_ui_begin(ui, 40.01);
+    CHECK(nk_ui_waves_element(ui, 9u, (NkUiRect){0.0f, 0.0f, 64.0f, 64.0f}, 0u), "queue the waves");
+    CHECK(nk_ui_end(ui) != NULL, "draw a frame with the waves");
+    CHECK(fabs(nk_ui_wait_s(ui, 40.01, 0.05) - (1201.0 / 30.0 - 40.01)) < 1e-9,
+          "the waves: until their next 30 Hz step");
+    CHECK(nk_ui_wait_s(ui, 40.01, 0.01) == 0.01, "never past the idle wait");
+    CHECK(nk_ui_wait_s(ui, 40.2, 0.05) == 0.0, "a step already due: no wait");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    CHECK(nk_ui_wait_s(ui, 40.01, 0.05) == 0.05, "Reduce motion holds the waves: the idle wait");
+    prefs.reduce_motion = false;
+    nk_ui_set_prefs(ui, &prefs);
+    nk_ui_focus(ui, 81u);
+    for (frame = 0; frame < 3; ++frame) (void)draw_ring_pair(ui, 41.0 + frame * 0.01);
+    nk_ui_focus(ui, 82u);
+    (void)draw_ring_pair(ui, 41.05);
+    (void)draw_ring_pair(ui, 41.06);
+    CHECK(nk_ui_in_motion(ui) && nk_ui_wait_s(ui, 41.06, 0.05) == NK_UI_MOTION_FRAME,
+          "a ring still moving: one display frame");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* An art area, 160 x 90, holding `image` when there is one, drawn at `now_s`.
+   Returns the alpha the picture is drawn at, -1 when no picture is drawn. */
+static int draw_art_area(NkUi *ui, double now_s, const NkUiImage *image) {
+    NkUiLayout area;
+    const NkUiDrawList *list;
+    uint32_t i;
+    memset(&area, 0, sizeof(area));
+    area.width = (NkUiSizing){NK_UI_SIZE_FIXED, 160.0f, 0.0f, 0.0f};
+    area.height = (NkUiSizing){NK_UI_SIZE_FIXED, 90.0f, 0.0f, 0.0f};
+    nk_ui_begin(ui, now_s);
+    if (nk_ui_begin_container(ui, 97u, &area, NULL)) {
+        if (image != NULL) {
+            NkUiImageArt art;
+            memset(&art, 0, sizeof(art));
+            art.cover = image;
+            (void)nk_ui_image_art(ui, 98u, (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f},
+                                  (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f}, &art);
+        } else {
+            nk_ui_label(ui, 99u, "No picture", 0, 12);
+        }
+        nk_ui_end_container(ui);
+    }
+    list = nk_ui_end(ui);
+    for (i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_CUSTOM && cmd->custom_kind == NK_UI_CUSTOM_IMAGE) {
+            return (int)(cmd->rgba_pm & 0xFFu);
+        }
+    }
+    return -1;
+}
+
+/* A disc's picture read after its card is on screen eases in over
+   NK_UI_MOTION_SLOW; one that comes with its card is there at once, and so is
+   any under Reduce motion. */
+static int test_art_fades_in(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    static uint8_t pixels[2u * 2u * 4u] = {
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255
+    };
+    NkUiImage image = {2u, 2u, pixels, 1u};
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int mid;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create art fade context");
+    set_test_window(ui);
+    CHECK(draw_art_area(ui, 50.0, &image) == 255 && !nk_ui_in_motion(ui),
+          "a picture that comes with its card is there at once");
+    for (frame = 0; frame < 2; ++frame) (void)draw_art_area(ui, 50.1 + frame * 0.01, NULL);
+    CHECK(draw_art_area(ui, 50.2, &image) == 0 && nk_ui_in_motion(ui),
+          "a picture read after its card was drawn starts transparent");
+    mid = draw_art_area(ui, 50.2 + NK_UI_MOTION_SLOW / 2.0, &image);
+    CHECK(mid > 0 && mid < 255 && nk_ui_in_motion(ui), "half way through, it is fading in");
+    CHECK(draw_art_area(ui, 50.2 + NK_UI_MOTION_SLOW, &image) == 255, "then it is whole");
+    (void)draw_art_area(ui, 50.8, &image);
+    CHECK(!nk_ui_in_motion(ui), "and still");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    (void)draw_art_area(ui, 51.0, NULL);
+    CHECK(draw_art_area(ui, 51.1, &image) == 255 && !nk_ui_in_motion(ui),
+          "Reduce motion: the picture is there at once");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* Clay's layout inspector draws its panel, listing the layout's elements by
    their id strings, while it is on, and the frame is still drawn. */
 static int test_layout_debug(void) {
@@ -1300,7 +1613,7 @@ static int test_image_command(void) {
     return 1;
 }
 
-/* The app icon: a transparent rounded corner, the ink tile, a lime block and the
+/* The app icon: a transparent rounded corner, the ink tile, a blue block and the
    paper bar, row padding left alone, and refusals for sizes it does not draw. */
 static int test_app_icon(void) {
     enum { SIZE = 64, STRIDE = SIZE * 4 + 12 };
@@ -1310,7 +1623,7 @@ static int test_app_icon(void) {
 #define ICON_PIXEL(x, y) (rgba + (size_t)(y) * STRIDE + (size_t)(x) * 4u)
     CHECK(ICON_PIXEL(0, 0)[3] == 0u, "the rounded corner stays transparent");
     CHECK(memcmp(ICON_PIXEL(32, 3), "\x10\x15\x1C\xFF", 4) == 0, "ink tile above the mark");
-    CHECK(memcmp(ICON_PIXEL(15, 50), "\xD7\xF2\x4A\xFF", 4) == 0, "lime block, bottom left");
+    CHECK(memcmp(ICON_PIXEL(15, 50), "\x6B\x9F\xF0\xFF", 4) == 0, "blue block, bottom left");
     CHECK(memcmp(ICON_PIXEL(47, 32), "\xF5\xF7\xFA\xFF", 4) == 0, "paper bar, right");
     CHECK(ICON_PIXEL(SIZE, 10)[0] == 0xABu && ICON_PIXEL(SIZE, 10)[11] == 0xABu,
           "the row padding is not written");
@@ -1607,6 +1920,8 @@ int main(int argc, char **argv) {
         !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
         !test_pointer_respects_clip() || !test_scroll_container() ||
         !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
+        !test_focus_ring_moves() || !test_hover_fill_eases() || !test_tab_rule_slides() ||
+        !test_wait_follows_motion() || !test_art_fades_in() ||
         !test_layout_debug() || !test_pointer_state_once_a_frame() ||
         !test_undrawn_command_is_reported()) {
         return 1;

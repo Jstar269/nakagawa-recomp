@@ -37,9 +37,10 @@ The rules it links to decide whether a change can land, so read them once.
    `Assisted-by: <tool> (<model>)` trailer per tool to each commit it helped produce (not `Co-Authored-By:`),
    and say so in the pull request. If you work with an AI agent, point it at [AGENTS.md](AGENTS.md): its
    "Where to start" section is written for your agent and covers the same steps as this list.
-8. **Sign off as the human author.** Sign off every commit with `git commit -s`, which adds
-   `Signed-off-by: Your Name <you@example.com>`. Only the person who wrote the change may sign it off.
-   See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
+8. **Confirm your right to submit.** Tick the box in the pull request template: you wrote the change, or
+   have the right to submit it, under GPL-3.0-or-later. A DCO sign-off (`git commit -s`, which adds
+   `Signed-off-by: Your Name <you@example.com>`) is welcome but optional, and only the person who wrote the
+   change may add it. See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
 9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
    Ask questions in the [Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category
    of GitHub Discussions, or comment on the issue you are working on.
@@ -147,22 +148,23 @@ Kilo Code Review is an advisory AI review and never blocks a merge.
 4. Never submit game binaries/assets, decrypted PRXs, private oracle traces, generated asset hashes, local databases, logs containing private paths, or files under the private-input directories documented by the project.
 5. Do not edit generated `build/<game>/<game>_recomp_*.c`; change the generator/runtime and rebuild.
 6. Follow [docs/AI_USAGE.md](docs/AI_USAGE.md) when using AI-assisted development tools.
-7. Sign off every commit using standard **Developer Certificate of Origin (DCO 1.1)** (`git commit -s`), unless the maintainer standing waiver applies to you. See [docs/DCO_POLICY.md](docs/DCO_POLICY.md) for complete details.
+7. Confirm in the pull request template that you wrote the change or have the right to submit it under GPL-3.0-or-later. A **Developer Certificate of Origin (DCO 1.1)** sign-off (`git commit -s`) is optional. See [docs/DCO_POLICY.md](docs/DCO_POLICY.md) for complete details.
 
-## Contributor Rights Attestation (DCO 1.1)
+## Contribution rights
 
-Outside contributions to Nakagawa Recomp require a **Developer Certificate of Origin (DCO 1.1)** sign-off line in every commit message:
+A contribution to Nakagawa Recomp is provided under the project's license, GPL-3.0-or-later (GitHub's Terms of Service, "inbound = outbound"). Every pull request confirms, with a box in the template, that its author wrote the change or has the right to submit it under that license.
+
+A **Developer Certificate of Origin (DCO 1.1)** sign-off is welcome but optional. If you add one, put a sign-off line in every commit of the pull request:
 
 ```text
 Signed-off-by: Real Name <email@example.com>
 ```
 
-- Use `git commit -s` to automatically append this line.
-- The maintainer's own commits — including work prepared under the maintainer's direction by AI assistants or agents — are covered by a standing waiver that stays in force until the maintainer explicitly revokes it, on the public repository as well as this one. That waiver is personal to the maintainer and changes nothing for outside contributors. See [docs/DCO_POLICY.md §5.1](docs/DCO_POLICY.md).
-- DCO sign-off certifies that you authored the change or have the right to submit it under the project's applicable terms.
-- DCO is **not** a copyright assignment—you retain ownership of your original contributions.
+- Use `git commit -s` to automatically append this line. Only the person who wrote a commit may sign it off, and no tool or agent adds one for anyone.
+- A pull request without sign-offs is not blocked for that reason; the maintainer may merge it (maintainer decision, 2026-10-30). The same goes for a box you forgot to tick or a disclosure you left out: the maintainer asks in review instead of closing the pull request. Only code from another project has a firm rule, because the license requires it: name where it came from, and it must be under a GPL-compatible license.
+- Neither the confirmation nor a sign-off is a copyright assignment—you retain ownership of your original contributions.
 - Disclose third-party source origins and AI-assisted generation separately in pull request descriptions. Commits that an AI tool helped produce end with one `Assisted-by: <tool> (<model>)` line per tool; see [docs/AI_USAGE.md](docs/AI_USAGE.md#disclosing-ai-help-in-commits).
-- For complete policy details, bot exceptions, and sign-off correction steps, see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
+- For complete policy details, bot exceptions, and how to add sign-offs to your own open pull request, see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
 
 ## Development setup
 
@@ -277,7 +279,7 @@ a pass.
 
 ## Developer Certificate of Origin (DCO 1.1)
 
-To ensure clear contribution rights, all contributions to this project must be certified under the **Developer Certificate of Origin (DCO 1.1)** via a `Signed-off-by:` line on each commit (`git commit -s`). The complete text of DCO 1.1, author obligations, maintainer standing waiver details, bot submission rules, and sign-off correction procedures are maintained in [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md).
+Contributors confirm their right to submit in the pull request template; a **Developer Certificate of Origin (DCO 1.1)** sign-off via a `Signed-off-by:` line (`git commit -s`) is optional. The complete text of DCO 1.1, the maintainer standing waiver, bot submission rules, and how to add sign-offs are maintained in [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md).
 
 ## Governance and roles
 
@@ -287,7 +289,7 @@ Nakagawa Recomp is a maintainer-led project.
   releases, handles security reports ([SECURITY.md](SECURITY.md)) and enforces the
   [code of conduct](CODE_OF_CONDUCT.md). Decisions are made in public issues and pull requests whenever they are not
   security-sensitive.
-- **Contributors**: anyone who opens an issue or pull request under this guide and the DCO.
+- **Contributors**: anyone who opens an issue or pull request under this guide.
 - **AI agents**: used by the maintainer and by contributors as assistants under [`AGENTS.md`](AGENTS.md); their
   commits say so with an `Assisted-by:` trailer. The person who submits a change is accountable for it, and a human
   maintainer for everything merged.
@@ -317,7 +319,7 @@ is no longer used.
 
 ## Pull requests
 
-Use a descriptive branch and commit message with DCO sign-off (`git commit -s`). The repository PR template prompts for the required
+Use a descriptive branch and commit message (a DCO sign-off with `git commit -s` is optional). The repository PR template prompts for the required
 evidence. In every substantive pull request:
 
 - explain the problem and approach;
@@ -326,7 +328,7 @@ evidence. In every substantive pull request:
 - call out anything blocked or unavailable;
 - keep generated `build/` output and private/proprietary inputs out of Git;
 - update the linked `docs/STATUS.md` status when the current milestone materially changes;
-- certify DCO 1.1 sign-off status;
+- confirm your right to submit the change under GPL-3.0-or-later;
 - disclose any new third-party source/data with exact source/revision/license; and
 - disclose material AI-assisted translation/reimplementation so provenance can be reviewed.
 

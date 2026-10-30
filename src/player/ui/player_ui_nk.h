@@ -127,8 +127,16 @@ typedef enum {
     PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, /* the issue that tracks a known cause */
     PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
-    PLAYER_UI_ACTION_TOGGLE_60FPS      /* the title page's 60 FPS game logic switch */
+    PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
+    PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
+    PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
+    PLAYER_UI_ACTION_FIND_KEY           /* an on-screen key: title_index is a codepoint, or
+                                           PLAYER_UI_FIND_DELETE or PLAYER_UI_FIND_DONE */
 } PlayerUiActionKind;
+
+/* The find box's keys that are not characters. */
+#define PLAYER_UI_FIND_DELETE 8u
+#define PLAYER_UI_FIND_DONE 10u
 
 /* What a control about games an older Nakagawa built asks for
    (PLAYER_UI_ACTION_REBUILD). main.c runs the player_state handlers. */
@@ -245,6 +253,19 @@ typedef struct {
     /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
        opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
     const char *update_notice;
+    /* The grid of the user's games, in order: title indices, none a demo. NULL
+       shows every title that is not a demo, in the order of `titles`. */
+    const size_t *grid;
+    size_t grid_count;
+    /* The sort on the SORT button ("Recently played"), or NULL for no button. */
+    const char *sort_label;
+    /* The find box is open: the grid holds the games that match find_query (the
+       host filters `grid`), the add card and the demos are left out, and the
+       box and its on-screen keyboard sit above the grid. game_total is the
+       number of games, for "3 of 40 titles". */
+    bool find_open;
+    const char *find_query;
+    size_t game_total;
     /* Why no saved games are listed although a library file exists (a newer
        Nakagawa wrote it, and it is kept as it is), or NULL. */
     const char *library_notice;
@@ -408,7 +429,8 @@ typedef struct {
    options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
    tools (VIEW_PREREQ_ABOUT), the build tool removal check
    (VIEW_CONFIRM_REMOVE_TOOLS), build tools and cache (VIEW_BUILD_CACHE, #1306),
-   the page that opens the removal check, and Updates (VIEW_UPDATES). */
+   the page that opens the removal check, Updates (VIEW_UPDATES), and
+   Accessibility (VIEW_ACCESSIBILITY_SETTINGS). */
 typedef enum {
     PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
@@ -417,7 +439,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
     PLAYER_UI_SETTINGS_PAGE_FONTS,
     PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
-    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET /* VIEW_CONFIRM_FACTORY_RESET */
+    PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET, /* VIEW_CONFIRM_FACTORY_RESET */
+    PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY  /* VIEW_ACCESSIBILITY_SETTINGS */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -432,7 +455,7 @@ typedef enum {
     PLAYER_UI_SETTINGS_VOLUME_DOWN,
     PLAYER_UI_SETTINGS_VOLUME_UP,
     PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS,
-    PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION,
+    PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION,   /* Automatic, On, Off */
     PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN,
     PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
     PLAYER_UI_SETTINGS_OPEN_ONLINE,
@@ -464,7 +487,10 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,  /* the release page, in the browser */
     PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET, /* the factory reset check */
     PLAYER_UI_SETTINGS_FACTORY_RESET,      /* move the user data aside and start afresh */
-    PLAYER_UI_SETTINGS_PSP_FONTS           /* find a connected PSP's fonts and import them */
+    PLAYER_UI_SETTINGS_PSP_FONTS,          /* find a connected PSP's fonts and import them */
+    PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY,
+    PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
+    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST   /* Automatic, On, Off */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -493,8 +519,18 @@ typedef struct {
     bool fullscreen;
     int volume;                     /* 0-100 */
     bool ui_sounds;
-    bool reduce_motion;
     bool launcher_fullscreen;
+    /* Accessibility (VIEW_ACCESSIBILITY_SETTINGS): each setting's word, whether it
+       is in effect, and what Automatic follows now */
+    const char *interface_size;         /* "Automatic" or "125%" */
+    const char *high_contrast_choice;   /* "Automatic", "On" or "Off" */
+    const char *reduce_motion_choice;
+    bool high_contrast;                 /* in effect */
+    bool reduce_motion;                 /* in effect */
+    const char *system_name;            /* "Windows", or "your system" elsewhere */
+    int system_scale_pct;               /* the display's scale */
+    bool system_high_contrast;
+    bool system_reduced_motion;
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -727,6 +763,10 @@ enum {
     PLAYER_UI_ID_LIBRARY_PAGE_PREVIOUS = 0x1003u,
     PLAYER_UI_ID_LIBRARY_PAGE_NEXT = 0x1004u,
     PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD = 0x1005u,
+    PLAYER_UI_ID_LIBRARY_SORT = 0x1006u,
+    PLAYER_UI_ID_LIBRARY_FIND = 0x1007u,          /* FIND in the heading */
+    PLAYER_UI_ID_LIBRARY_FIND_DONE = 0x1008u,
+    PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE = 0x1080u, /* + the key's place on the keyboard */
     PLAYER_UI_ID_BUILD_ACTION = 0x4001u,
     PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
     PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
@@ -815,6 +855,9 @@ enum {
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */
+    PLAYER_UI_ID_SETTINGS_ACCESSIBILITY = 0x452Cu,    /* Settings: opens Accessibility */
+    PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
+    PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -858,6 +901,10 @@ NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router);
 /* Library grid for a logical window size: the number of columns that fit at the
    minimum tile width, and the number of grid slots (titles plus the add card)
    one page shows. */
+/* The page size while the find box and its keyboard take the room of TEST THIS
+   PC. */
+size_t player_ui_library_page_size_finding(float logical_width, float logical_height,
+                                           size_t *columns_out);
 size_t player_ui_library_page_size(float logical_width, float logical_height,
                                    size_t *columns_out);
 /* The same with `demo_count` demos under TEST THIS PC, whose rows take their
@@ -866,10 +913,12 @@ size_t player_ui_library_page_size_with_demos(float logical_width, float logical
                                               size_t demo_count, size_t *columns_out);
 /* How many titles are demos (PlayerUiTitle.is_demo). */
 size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
-/* Where title `index` sits in the grid of the user's games (titles that are
-   not demos), from 0; `count` for a demo or an index out of range. */
-size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
-                                       size_t index);
+/* The grid of the user's games, as the model orders it: how many it holds, the
+   title at a position, and the position of a title. A position or index with
+   no match gives model->title_count. */
+size_t player_ui_library_grid_count(const PlayerUiLibraryModel *model);
+size_t player_ui_library_grid_title(const PlayerUiLibraryModel *model, size_t position);
+size_t player_ui_library_grid_position(const PlayerUiLibraryModel *model, size_t index);
 
 PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);
@@ -930,6 +979,24 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
    shown, or PLAYER_UI_ROUTE_SETTINGS on the Settings page. */
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active);
 
+/* The launcher's display settings, as every frame hands them to the design
+   system. */
+typedef struct {
+    bool reduce_motion;        /* hold the waves on one frame, and every pulse and sweep */
+    bool high_contrast_focus;  /* the white ring between black keylines */
+    int interface_size_pct;    /* NkUiViewport.ui_scale_pct: 0 follows the display */
+} PlayerUiDisplay;
+
+/* Gives the design system the launcher's display settings and the prompt
+   style: its preferences, and the UI scale in the viewport, which the caller
+   then sets with nk_ui_set_viewport. The text size stays 100%: the design
+   system scales the whole layout for it, as it does for the UI scale, so the
+   interface size is the one control for both. Every launcher frame goes
+   through here, so no setting is left out on the way (Reduce motion was, and
+   the waves kept moving). */
+void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
+                             NkUiPromptStyle prompt_style);
+
 /* The build date for an epoch (Unix seconds, UTC) as MM-DD-YYYY. Returns false
    for a negative epoch or a short buffer. */
 bool player_ui_build_date(long long epoch, char *out, size_t cap);
@@ -946,13 +1013,17 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
 bool player_ui_nk_built_with_launcher(void);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
-/* True while a scroll container is still moving (a drag's momentum): the
-   host's loop draws the next frame within one 60 Hz frame instead of waiting
-   for input. */
-bool player_ui_nk_in_motion(const PlayerUiNk *player);
+/* How long the host's loop may wait for input, at most idle_ms, before it
+   draws the next frame (nk_ui_wait_s): one 60 Hz frame while something on
+   screen still moves (a drag's momentum, a ring, rule or fill easing), until
+   the waves' next 30 Hz step while they play, else idle_ms. */
+uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
    shipped player has no other launcher. */
 bool player_ui_nk_draws_view(int view);
+/* True while the library's find box is open on the library: what the keyboard
+   types goes into it, so the host's letter shortcuts and Backspace-as-Back wait. */
+bool player_ui_nk_find_open(const PlayerUiNk *player);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);

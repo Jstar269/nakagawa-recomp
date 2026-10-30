@@ -694,7 +694,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
+        "sha256": "9520cd1f6a3208d8f7989b53556968bea9d9346580d39624d421236a67caef11"
       },
       "comment": "Project-authored N1 Block & Branch artwork for light page themes."
     },
@@ -711,7 +711,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "bf3222761674dda813fb9fe3044159f7bc70050175168932ff4548e9b1391f36"
+        "sha256": "b96d8659532051a4758b8c48b1ec7a32135eabf94303b8fbf395a719488aee51"
       },
       "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
     },
@@ -728,7 +728,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "5510ec6f1154f9f0eb0f5c3b6c671912d269f2db78703622c6fece3b7b61ef7d"
+        "sha256": "12e54111d63342a0c6baa6a9ffeaece01a1dddd7c5e90698bec563193766f5fe"
       },
       "comment": "Project-authored app icon drawn from docs/images/brand/nakagawa-mark-dark.svg by tools/make_app_icon.py; linked into the Windows executables through assets/brand/nakagawa.rc."
     },
@@ -745,7 +745,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
+        "sha256": "49df1cf342198bbee93b80258decd49719f5030be4bcd868aed4682521831529"
       },
       "comment": "Project-authored link preview: the N1 mark, the site's tennis court and text in Geist (OFL-1.1). No game imagery."
     },

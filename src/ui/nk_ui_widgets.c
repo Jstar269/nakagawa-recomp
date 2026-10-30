@@ -67,6 +67,13 @@ static NkUiStyle nk_ui_fill(uint32_t fill, uint32_t border, float radius) {
     return style;
 }
 
+/* A control's hover, press and focus fills ease into each other over
+   NK_UI_MOTION_FAST instead of cutting. */
+static void nk_ui_ease_fills(NkUiStyle *style) {
+    style->transition = NK_UI_TRANSITION_COLOR;
+    style->transition_s = (float)NK_UI_MOTION_FAST;
+}
+
 NkUiId nk_ui_child_id(NkUiId id, uint32_t k) {
     uint32_t hash = (uint32_t)id * 2654435761u;
     hash ^= (k + 1u) * 0x9E3779B9u;
@@ -129,6 +136,7 @@ bool nk_ui_button(NkUi *ui, NkUiId id, const char *label, uint32_t flags) {
             style.fill_rgba = theme->surface_high;
         }
         if (primary) style.border_rgba = style.fill_rgba;
+        nk_ui_ease_fills(&style);
     }
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
@@ -212,7 +220,7 @@ void nk_ui_badge(NkUi *ui, NkUiId id, const char *text) {
 
 /* ---- Art --------------------------------------------------------------------------- */
 
-#define NK_UI_ACCENT_RGBA 0xD7F24AFFu
+#define NK_UI_ACCENT_RGBA 0x6B9FF0FFu
 #define NK_UI_PAPER_RGBA 0xF5F7FAFFu
 
 static const NkUiShape g_n1_mark[] = {
@@ -502,6 +510,7 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
                        nk_ui_hovered(ui, id) ? theme->surface_high : theme->surface_raised,
                        focused || nk_ui_hovered(ui, id) ? theme->line_strong : theme->line,
                        NK_UI_RADIUS_TILE);
+    nk_ui_ease_fills(&style);
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
     }
@@ -583,6 +592,7 @@ bool nk_ui_add_tile(NkUi *ui, NkUiId id, const char *title, const char *detail,
     style = nk_ui_fill(nk_ui_pressed(ui, id) ? theme->surface_high :
                        focused || nk_ui_hovered(ui, id) ? theme->surface_raised : theme->surface,
                        theme->line_strong, NK_UI_RADIUS_TILE);
+    nk_ui_ease_fills(&style);
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return false;
     }
@@ -701,6 +711,7 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
                 hovered = nk_ui_hovered(ui, label_id);
                 label_style.fill_rgba = nk_ui_pressed(ui, label_id) ? theme->pressed :
                                         focused || hovered ? theme->surface_high : 0u;
+                nk_ui_ease_fills(&label_style);
             }
             if (!nk_ui_begin_container(ui, tab_id, &tab, NULL)) {
                 continue;
@@ -728,10 +739,20 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             }
             nk_ui_spacer(ui, nk_ui_child_id(tab_id, 4u), nk_ui_fixed(1.0f), nk_ui_grow());
             {
+                /* Every tab keeps a slot for the 3 px rule; the rule itself is
+                   one element in the active tab's slot, so when the active tab
+                   changes it slides across instead of jumping. */
                 NkUiLayout rule = nk_ui_row(nk_ui_grow(), nk_ui_fixed(3.0f), 0.0f);
-                NkUiStyle fill = nk_ui_fill(sections[i].active ? theme->accent_dark : 0u, 0u,
-                                            0.0f);
-                if (nk_ui_begin_container(ui, nk_ui_child_id(tab_id, 5u), &rule, &fill)) {
+                if (nk_ui_begin_container(ui, nk_ui_child_id(tab_id, 5u), &rule, NULL)) {
+                    if (sections[i].active) {
+                        NkUiLayout bar = nk_ui_row(nk_ui_grow(), nk_ui_grow(), 0.0f);
+                        NkUiStyle fill = nk_ui_fill(theme->accent_dark, 0u, 0.0f);
+                        fill.transition = NK_UI_TRANSITION_BOX;
+                        fill.transition_s = (float)NK_UI_MOTION_BASE;
+                        if (nk_ui_begin_container(ui, nk_ui_child_id(id, 9u), &bar, &fill)) {
+                            nk_ui_end_container(ui);
+                        }
+                    }
                     nk_ui_end_container(ui);
                 }
             }

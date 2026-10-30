@@ -538,13 +538,41 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
 /* Select is held: with R it toggles the developer log panel. */
 static bool s_pad_select_held;
 
+/* Backspace and the mouse's back button (X1) are Back: each is taken as Esc,
+   so every view goes back the same way. A key the Controls page is waiting
+   for keeps its own name, so Backspace can still be mapped, and so does
+   Backspace in the library's find box, where it deletes. */
+static const SDL_Event *player_back_as_escape(const PlayerApp *app, const PlayerUiNk *next_ui,
+                                              const SDL_Event *event, SDL_Event *escape) {
+    bool backspace = (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) &&
+                     event->key.key == SDLK_BACKSPACE && !player_ui_nk_find_open(next_ui) &&
+                     !(app->active_view == VIEW_CONTROLLER_SETTINGS &&
+                       app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
+                       input_settings_is_capturing(&app->input_settings));
+    bool x1 = (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+               event->type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+              event->button.button == SDL_BUTTON_X1;
+    if (!backspace && !x1) return event;
+    memset(escape, 0, sizeof(*escape));
+    escape->type = backspace ? event->type
+        : event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    escape->key.windowID = backspace ? event->key.windowID : event->button.windowID;
+    escape->key.key = SDLK_ESCAPE;
+    escape->key.scancode = SDL_SCANCODE_ESCAPE;
+    escape->key.down = escape->type == SDL_EVENT_KEY_DOWN;
+    escape->key.repeat = backspace && event->key.repeat;
+    return escape;
+}
+
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                                      PlayerUiNk *next_ui,
                                      SDL_Window *window, bool *running,
                                      bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
+    SDL_Event escape;
     bool use_next_ui = player_ui_nk_view_active(next_ui, app);
     if (!app || !input || !running || !event) return false;
+    event = player_back_as_escape(app, next_ui, event, &escape);
 
     switch (event->type) {
     case SDL_EVENT_QUIT:
@@ -630,6 +658,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
+        } else if (use_next_ui && player_ui_nk_find_open(next_ui)) {
+            /* The library's find box takes the keyboard: letters are typed, and
+               Esc clears the box instead of asking to quit. */
+            return player_ui_nk_handle_event(next_ui, event);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_O &&
                    !app->wizard.is_extracting) {
             /* The library's shortcuts work the same in the next UI: O adds a
@@ -666,7 +698,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
-                       app->active_view == VIEW_ONLINE_SETTINGS) {
+                       app->active_view == VIEW_ONLINE_SETTINGS ||
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -720,6 +753,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_KEY_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
+    case SDL_EVENT_TEXT_INPUT:
+        /* Typed text, while the library's find box has SDL's text input on. */
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         return false;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -830,7 +867,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
-                       app->active_view == VIEW_ONLINE_SETTINGS) {
+                       app->active_view == VIEW_ONLINE_SETTINGS ||
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -1492,7 +1530,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_VOLUME_DOWN: player_app_adjust_volume(app, -5); break;
         case PLAYER_UI_SETTINGS_VOLUME_UP: player_app_adjust_volume(app, 5); break;
         case PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS: player_app_toggle_ui_sounds(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION: player_app_toggle_reduce_motion(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY:
+            player_app_set_view(app, VIEW_ACCESSIBILITY_SETTINGS);
+            break;
+        case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
             player_app_toggle_launcher_fullscreen(app);
             break;
@@ -4250,6 +4293,8 @@ int main(int argc, char *argv[]) {
             app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
         } else if (strcmp(test_view, "online-settings") == 0) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+        } else if (strcmp(test_view, "accessibility-settings") == 0) {
+            player_app_set_view(&app, VIEW_ACCESSIBILITY_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "updates") == 0) {
@@ -4423,7 +4468,7 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode) app.settings.reduce_motion = true;
+    if (ui_test_mode) app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
 #endif
 
     app.window_width = override_w;
@@ -4651,8 +4696,8 @@ int main(int argc, char *argv[]) {
         player_ui_nk_test_report_compatibility();
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_CONFIRM_FACTORY_RESET. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_CONFIRM_FACTORY_RESET; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACCESSIBILITY_SETTINGS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACCESSIBILITY_SETTINGS; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -5159,11 +5204,12 @@ int main(int argc, char *argv[]) {
         input.activate_pressed = false;
         bool close_request_handled_in_batch = false;
         SDL_Event event;
-        /* A scroll still moving draws at 60 Hz until it settles: Clay's
-           momentum slows a little each frame. */
+        /* Anything still moving (a scroll's momentum, an easing ring, rule
+           or fill) draws at 60 Hz until it settles, and the waves at their
+           30 Hz; otherwise the loop wakes for input or every 50 ms. */
         bool event_available = SDL_WaitEventTimeout(
-            &event, player_ui_nk_view_active(next_ui, &app) && player_ui_nk_in_motion(next_ui)
-                        ? 16 : 50);
+            &event, player_ui_nk_view_active(next_ui, &app)
+                        ? (Sint32)player_ui_nk_wait_ms(next_ui, 50u) : 50);
         if (event_available) {
             do {
                 if (app.logical_ui &&
