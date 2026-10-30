@@ -11,6 +11,7 @@
 #include "nk_ui_widgets.h"
 #include "backend/nk_ui_sdlr.h"
 #include "backend/nk_ui_vk.h"
+#include "clay.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #include <string.h>
 
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
+bool nk_ui_clay_error_kind(int type, const char **kind);
 
 #define CHECK(condition, message) do { \
     if (!(condition)) { \
@@ -319,6 +321,9 @@ static int dump_synthetic_frame(const char *scale_name, int pixel_w, int pixel_h
     config.text = &fixed;
     ui = nk_ui_create(&config);
     CHECK(ui != NULL, "create Clay-backed nk_ui context");
+    /* Every field, min_logical_w and min_logical_h included: a stale minimum
+       layout lowers the density. */
+    memset(&viewport, 0, sizeof(viewport));
     viewport.pixel_w = pixel_w;
     viewport.pixel_h = pixel_h;
     viewport.display_scale = display_scale;
@@ -650,6 +655,460 @@ static void push_nav(NkUi *ui, NkUiNavDir dir) {
     nk_ui_push_event(ui, &event);
 }
 
+/* True when the last frame's draw list fills a rect for `id` with `rgba`. */
+static bool drew_fill(NkUi *ui, NkUiId id, uint32_t rgba) {
+    char dump[8192];
+    char want[48];
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(want, sizeof(want), "%08X RECT", (unsigned)id);
+    {
+        const char *line = strstr(dump, want);
+        char colour[16];
+        (void)snprintf(colour, sizeof(colour), " %08X ", (unsigned)rgba);
+        while (line != NULL) {
+            const char *end = strchr(line, '\n');
+            size_t length = end != NULL ? (size_t)(end - line) : strlen(line);
+            const char *found = strstr(line, colour);
+            if (found != NULL && (size_t)(found - line) < length) return true;
+            line = strstr(line + 1, want);
+        }
+    }
+    return false;
+}
+
+/* A 640 x 400 window at 1x, so nothing in these frames is culled. */
+static void set_test_window(NkUi *ui) {
+    NkUiViewport viewport;
+    memset(&viewport, 0, sizeof(viewport));
+    viewport.pixel_w = 640;
+    viewport.pixel_h = 400;
+    viewport.display_scale = 1.0f;
+    viewport.text_size_pct = 100;
+    nk_ui_set_viewport(ui, &viewport);
+}
+
+static void push_leave(NkUi *ui) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_POINTER_LEAVE;
+    nk_ui_push_event(ui, &event);
+}
+
+/* Hover and pressed looks come from Clay's pointer state over the last layout.
+   Hover is for the pointer only: a key hides it until the pointer moves, it
+   clears when the pointer leaves the window, and it never moves focus. */
+static int test_pointer_hover_and_press(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiConfig config;
+    NkUi *ui;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create hover context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
+    CHECK(!nk_ui_hovered(ui, 10u) && !nk_ui_hovered(ui, 11u), "nothing is hovered before the pointer moves");
+
+    push_pointer(ui, 100.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 11u) && !nk_ui_hovered(ui, 10u), "the pointer hovers the button under it");
+    CHECK(nk_ui_focused(ui) == 10u, "hover does not move focus");
+    CHECK(drew_fill(ui, 11u, theme->surface_high), "a hovered secondary button fills in");
+
+    push_nav(ui, NK_UI_DIR_RIGHT);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_hovered(ui, 11u), "a key hides hover");
+    push_pointer(ui, 101.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 11u), "moving the pointer shows it again");
+
+    push_pointer(ui, 101.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_pressed(ui, 11u) && drew_fill(ui, 11u, theme->pressed),
+          "a button held under the pointer is drawn pressed");
+    push_pointer(ui, 10.0f, 10.0f, true);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_pressed(ui, 11u) && !nk_ui_pressed(ui, 10u),
+          "a held pointer dragged off it presses nothing");
+    push_pointer(ui, 10.0f, 10.0f, false);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_hovered(ui, 10u) && drew_fill(ui, 10u, theme->accent_hover),
+          "a hovered primary button lightens");
+
+    push_leave(ui);
+    (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(!nk_ui_hovered(ui, 10u) && drew_fill(ui, 10u, theme->accent_dark),
+          "leaving the window clears hover");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* Three 44 px buttons in a 50 px clip: the pointer below the clip is over no
+   button, though the second and third run on under it. */
+static NkUiId draw_clipped_column(NkUi *ui) {
+    NkUiLayout layout;
+    NkUiId activated = 0u;
+    NkUiId id;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 50.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    layout.scroll = true;
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        for (id = 20u; id < 23u; ++id) {
+            if (nk_ui_button(ui, id, "Row", NK_UI_BUTTON_GROW)) activated = id;
+        }
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+static int test_pointer_respects_clip(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create clip context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_clipped_column(ui);
+    CHECK(nk_ui_focused(ui) == 20u, "the first row starts focused");
+    push_pointer(ui, 50.0f, 70.0f, false);
+    (void)draw_clipped_column(ui);
+    CHECK(!nk_ui_hovered(ui, 21u), "a row clipped away is not hovered");
+    push_pointer(ui, 50.0f, 70.0f, true);
+    (void)draw_clipped_column(ui);
+    push_pointer(ui, 50.0f, 70.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_clipped_column(ui);
+    CHECK(activated == 0u && nk_ui_focused(ui) == 20u, "nor clicked");
+    push_pointer(ui, 50.0f, 47.0f, false);
+    (void)draw_clipped_column(ui);
+    CHECK(nk_ui_hovered(ui, 21u), "the part inside the clip is");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* The top of text run `id` in the last frame's draw list, in device px, or
+   -1 when the frame drew no such run. */
+static int drawn_text_top(NkUi *ui, NkUiId id) {
+    char dump[16384];
+    char want[32];
+    const char *line;
+    int x0 = 0;
+    int y0 = -1;
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(want, sizeof(want), "%08X TEXT ", (unsigned)id);
+    line = strstr(dump, want);
+    if (line == NULL || sscanf(line + strlen(want), "%d %d", &x0, &y0) != 2) return -1;
+    return y0;
+}
+
+/* The draw list of the last scroll-list frame. */
+static const NkUiDrawList *g_scroll_list;
+
+/* Ten 44 px rows (ids 40 to 49) in a 100 px scroll container (id 30) at the
+   window's top left. Returns the row activated this frame, or 0. */
+static NkUiId draw_scroll_list(NkUi *ui, bool *wheel_left) {
+    NkUiLayout root;
+    NkUiLayout list;
+    NkUiNavDir dir;
+    NkUiId activated = 0u;
+    NkUiId id;
+    memset(&root, 0, sizeof(root));
+    root.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    root.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    root.direction = NK_UI_LAYOUT_COLUMN;
+    memset(&list, 0, sizeof(list));
+    list.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+    list.height = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    list.direction = NK_UI_LAYOUT_COLUMN;
+    list.scroll = true;
+    nk_ui_begin(ui, 37.0);
+    if (wheel_left != NULL) *wheel_left = nk_ui_take_event(ui, NK_UI_EV_WHEEL, &dir);
+    if (nk_ui_begin_container(ui, 1u, &root, NULL)) {
+        if (nk_ui_begin_container(ui, 30u, &list, NULL)) {
+            for (id = 40u; id < 50u; ++id) {
+                if (nk_ui_button(ui, id, "Row", NK_UI_BUTTON_GROW)) activated = id;
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    g_scroll_list = nk_ui_end(ui);
+    return activated;
+}
+
+static void push_wheel(NkUi *ui, float x, float y, NkUiNavDir dir) {
+    NkUiEvent event;
+    memset(&event, 0, sizeof(event));
+    event.type = NK_UI_EV_WHEEL;
+    event.x = x;
+    event.y = y;
+    event.dir = dir;
+    event.down = true;
+    nk_ui_push_event(ui, &event);
+}
+
+static float scroll_offset(NkUi *ui) {
+    NkUiScrollState state;
+    return nk_ui_scroll_state(ui, 30u, &state) ? state.offset : -1.0f;
+}
+
+/* A scroll container scrolls through Clay: the wheel over it (a notch is 48
+   px; a wheel anywhere else stays for the screen), a drag with the pointer
+   held (and that drag is no click), focus moving to a row out of view, and
+   nk_ui_scroll_to, which also sets where a container starts. */
+static int test_scroll_container(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiScrollState state;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    bool wheel_left = false;
+    int frame;
+    int top;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create scroll context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_scroll_state(ui, 30u, &state) && state.offset == 0.0f &&
+          state.max_offset == 340.0f && state.viewport == 100.0f,
+          "the list starts at its top, with 340 px more than its 100 px of room");
+    top = drawn_text_top(ui, 45u);
+
+    push_wheel(ui, 50.0f, 50.0f, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, &wheel_left);
+    CHECK(!wheel_left && scroll_offset(ui) == 48.0f && nk_ui_scroll_in_motion(ui),
+          "a wheel notch over the list scrolls it 48 px and is not left for the screen");
+    CHECK(drawn_text_top(ui, 45u) == top - 48, "the rows are drawn 48 px higher");
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 48.0f && !nk_ui_scroll_in_motion(ui), "and stay there");
+    push_wheel(ui, 400.0f, 300.0f, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, &wheel_left);
+    CHECK(wheel_left && scroll_offset(ui) == 48.0f, "a wheel elsewhere stays for the screen");
+
+    /* Keys: down from row 40 to row 47 (308 to 352 px down the content). */
+    nk_ui_scroll_to(ui, 30u, 0.0f);
+    (void)draw_scroll_list(ui, NULL);
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_focused(ui) == 41u && scroll_offset(ui) == 0.0f,
+          "a move judges rows where the list was last drawn, so row 41 needs no scroll");
+    for (frame = 0; frame < 6; ++frame) {
+        push_nav(ui, NK_UI_DIR_DOWN);
+        (void)draw_scroll_list(ui, NULL);
+    }
+    CHECK(nk_ui_focused(ui) == 47u, "focus walks down to row 47");
+    CHECK(scroll_offset(ui) == 252.0f, "the list scrolls just enough to show the focused row");
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 252.0f, "a row already in view needs no scroll");
+
+    /* A drag: held on row 47 and moved up 70 px, the list follows the pointer
+       and the release on the same row is no click. */
+    push_pointer(ui, 50.0f, 80.0f, true);
+    (void)draw_scroll_list(ui, NULL);
+    push_pointer(ui, 50.0f, 10.0f, true);
+    activated = draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 322.0f, "a drag scrolls the list with the pointer");
+    push_pointer(ui, 50.0f, 10.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_scroll_list(ui, NULL);
+    CHECK(activated == 0u, "a drag that scrolled is no click");
+
+    nk_ui_scroll_to(ui, 30u, 1000.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(scroll_offset(ui) == 340.0f, "nk_ui_scroll_to stops at the end of the content");
+    nk_ui_destroy(ui);
+
+    /* A list asked to start 200 px down is drawn there from its first frame. */
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create second scroll context");
+    set_test_window(ui);
+    nk_ui_scroll_to(ui, 30u, 200.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(drawn_text_top(ui, 45u) == top - 200 && scroll_offset(ui) == 200.0f,
+          "a container starts where nk_ui_scroll_to asked");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* A 60 px band (id 1) holding one wide page button (60); with `modal`, a
+   200 px dialog card (70) with its own button (71) floats centred over it. */
+static NkUiId draw_modal_page(NkUi *ui, bool modal) {
+    NkUiLayout band;
+    NkUiId activated = 0u;
+    memset(&band, 0, sizeof(band));
+    band.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    band.height = (NkUiSizing){NK_UI_SIZE_FIXED, 60.0f, 0.0f, 0.0f};
+    band.direction = NK_UI_LAYOUT_COLUMN;
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &band, NULL)) {
+        if (nk_ui_button(ui, 60u, "Page", NK_UI_BUTTON_GROW)) activated = 60u;
+        if (modal && nk_ui_dialog_begin(ui, 70u, 200.0f)) {
+            if (nk_ui_button(ui, 71u, "Card", 0u)) activated = 71u;
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+/* A dialog card is a Clay floating element: it moves none of the page around
+   it, draws over it, and takes the pointer, so the page under it is neither
+   hovered nor clicked. */
+static int test_modal_card_floats(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    int page_top;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create modal context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_modal_page(ui, false);
+    page_top = drawn_text_top(ui, 60u);
+    for (frame = 0; frame < 3; ++frame) (void)draw_modal_page(ui, true);
+    CHECK(drawn_text_top(ui, 60u) == page_top, "the card moves nothing on the page");
+    /* The card is 200 px wide, centred on the 640 px band, so its edge runs
+       from 220 to 248 px before its button; the page button runs under it. */
+    push_pointer(ui, 230.0f, 20.0f, false);
+    (void)draw_modal_page(ui, true);
+    CHECK(!nk_ui_hovered(ui, 60u) && !nk_ui_hovered(ui, 71u),
+          "the pointer on the card's edge hovers nothing under it");
+    push_pointer(ui, 230.0f, 20.0f, true);
+    (void)draw_modal_page(ui, true);
+    push_pointer(ui, 230.0f, 20.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_modal_page(ui, true);
+    CHECK(activated == 0u, "nor clicks it");
+    push_pointer(ui, 600.0f, 20.0f, false);
+    (void)draw_modal_page(ui, true);
+    CHECK(nk_ui_hovered(ui, 60u), "the page beside the card is still the pointer's");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* The focus ring is a floating element on its control: drawn after every
+   other command, and clipped by the scroll container the control is in. */
+static int test_focus_ring_floats(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiConfig config;
+    const NkUiDrawList *list;
+    NkUi *ui;
+    uint32_t first_ring = UINT32_MAX;
+    uint32_t last_other = 0u;
+    uint32_t i;
+    bool reaches_above = false;
+    bool clipped = true;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create ring context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_scroll_list(ui, NULL);
+    nk_ui_focus(ui, 41u);
+    (void)draw_scroll_list(ui, NULL);
+    /* Row 41 runs from 44 to 88 px down the list; 60 px down, it starts 16 px
+       above the list's top and its ring 22 px above. */
+    nk_ui_scroll_to(ui, 30u, 60.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_focused(ui) == 41u, "row 41 keeps focus");
+    list = g_scroll_list;
+    CHECK(list != NULL, "the frame was drawn");
+    for (i = 0u; i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_BORDER && cmd->element_id == 41u &&
+            cmd->rgba_pm == theme->focus) {
+            if (first_ring == UINT32_MAX) first_ring = i;
+            if (cmd->bounds[1] < 0) reaches_above = true;
+            if (cmd->clip[3] > cmd->clip[1] && cmd->clip[1] < 0) clipped = false;
+        } else if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END) {
+            last_other = i;
+        }
+    }
+    CHECK(first_ring != UINT32_MAX && first_ring > last_other, "the ring is drawn over everything");
+    CHECK(reaches_above && clipped, "the ring is clipped where the list clips its row");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* Clay's layout inspector draws its panel, listing the layout's elements by
+   their id strings, while it is on, and the frame is still drawn. */
+static int test_layout_debug(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    char dump[65536];
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create inspector context");
+    set_test_window(ui);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "nk_ui.container") == NULL, "no inspector by default");
+    nk_ui_set_layout_debug(ui, true);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    CHECK(nk_ui_dump(ui, dump, sizeof(dump)) < sizeof(dump) &&
+              strstr(dump, "nk_ui.container") != NULL,
+          "the inspector lists the layout's elements");
+    nk_ui_set_layout_debug(ui, false);
+    for (frame = 0; frame < 2; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "nk_ui.container") == NULL, "and is gone once turned off");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* Clay is told the pointer once a frame: a press reaches Clay as this frame's,
+   which the inspector's clicks and Clay's own hover handlers rely on. */
+static int test_pointer_state_once_a_frame(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    Clay_PointerDataInteractionState state;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create pointer state context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_button_pair(ui, 10u, 0u);
+    push_pointer(ui, 10.0f, 10.0f, true);
+    nk_ui_begin(ui, 37.0);
+    state = Clay_GetPointerState().state;
+    (void)nk_ui_end(ui);
+    CHECK(state == CLAY_POINTER_DATA_PRESSED_THIS_FRAME, "Clay sees the press as this frame's");
+    nk_ui_begin(ui, 37.0);
+    state = Clay_GetPointerState().state;
+    (void)nk_ui_end(ui);
+    CHECK(state == CLAY_POINTER_DATA_PRESSED, "and as held on the next");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 static int test_control_owns_horizontal(void) {
     NkUiTextBackend fixed = nk_ui_text_fixed();
     NkUiConfig config;
@@ -925,6 +1384,213 @@ static int test_display_text_rules(void) {
     return 1;
 }
 
+static bool clip_is(const NkUiDrawList *list, uint32_t index, int x0, int y0, int x1, int y1) {
+    const int *clip = list->cmd[index].clip;
+    return clip[0] == x0 && clip[1] == y0 && clip[2] == x1 && clip[3] == y1;
+}
+
+/* Each command carries where it may draw: its bounds inside every scissor open
+   around it, nested, so a backend clips by the command alone (the Vulkan
+   backend's contract) and agrees with the SDL_Renderer backend's stack. */
+static int test_draw_clips_nest(void) {
+    NkUiDrawBuffer buffer;
+    const NkUiDrawList *list;
+    memset(&buffer, 0, sizeof(buffer));
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 300.0f, 300.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 1u), "add an unclipped rect");
+    CHECK(nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){0, 0, 100, 100}, 2u) &&
+              nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){50, 50, 200, 200}, 3u),
+          "open two nested scissors");
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 4u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){150.0f, 150.0f, 20.0f, 20.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 5u) &&
+              nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){50, 50, 200, 200}, 3u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 6u) &&
+              nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){0, 0, 100, 100}, 2u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 7u),
+          "draw inside, across and after the scissors");
+    list = &buffer.list;
+    CHECK(list->ncmd == 9u, "nine commands");
+    CHECK(clip_is(list, 0u, 0, 0, 300, 300), "a command outside every scissor keeps its bounds");
+    CHECK(clip_is(list, 1u, 0, 0, 100, 100) && clip_is(list, 2u, 50, 50, 100, 100),
+          "a nested scissor is narrowed by the one around it");
+    CHECK(clip_is(list, 3u, 80, 80, 100, 100), "a rect is clipped by both");
+    CHECK(list->cmd[4].clip[2] <= list->cmd[4].clip[0], "a rect they hide is empty");
+    CHECK(clip_is(list, 5u, 50, 50, 100, 100) && clip_is(list, 6u, 80, 80, 100, 100),
+          "closing the inner scissor leaves the outer one");
+    CHECK(clip_is(list, 8u, 80, 80, 150, 150), "closing both leaves the bounds");
+    CHECK(!nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){0, 0, 1, 1}, 9u),
+          "a scissor end with none open is refused");
+    nk_ui_draw_buffer_reset(&buffer);
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 10.0f, 10.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 1u) && clip_is(&buffer.list, 0u, 0, 0, 10, 10),
+          "a reset buffer has no scissor open");
+    nk_ui_draw_buffer_destroy(&buffer);
+    return 1;
+}
+
+/* Every Clay error type has a name, and only the ones that leave a whole
+   layout keep their frame. A type Clay adds later is fatal until it is named. */
+static int test_layout_error_kinds(void) {
+    static const struct {
+        int type;
+        const char *kind;
+        bool fatal;
+    } expected[] = {
+        {CLAY_ERROR_TYPE_TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED,
+         "TEXT_MEASUREMENT_FUNCTION_NOT_PROVIDED", true},
+        {CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED, "ARENA_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED, "ELEMENTS_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_TEXT_MEASUREMENT_CAPACITY_EXCEEDED,
+         "TEXT_MEASUREMENT_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_DUPLICATE_ID, "DUPLICATE_ID", false},
+        {CLAY_ERROR_TYPE_FLOATING_CONTAINER_PARENT_NOT_FOUND,
+         "FLOATING_CONTAINER_PARENT_NOT_FOUND", false},
+        {CLAY_ERROR_TYPE_PERCENTAGE_OVER_1, "PERCENTAGE_OVER_1", false},
+        {CLAY_ERROR_TYPE_INTERNAL_ERROR, "INTERNAL_ERROR", true},
+        {CLAY_ERROR_TYPE_UNBALANCED_OPEN_CLOSE, "UNBALANCED_OPEN_CLOSE", true},
+        {CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED, "HASH_MAP_CAPACITY_EXCEEDED", true},
+        {CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED + 1, "UNKNOWN", true}
+    };
+    size_t i;
+    for (i = 0; i < sizeof(expected) / sizeof(expected[0]); ++i) {
+        const char *kind = NULL;
+        bool fatal = nk_ui_clay_error_kind(expected[i].type, &kind);
+        if (kind == NULL || strcmp(kind, expected[i].kind) != 0 || fatal != expected[i].fatal) {
+            fprintf(stderr, "FAIL: Clay error type %d is %s (%s), expected %s (%s)\n",
+                    expected[i].type, kind != NULL ? kind : "(none)",
+                    fatal ? "fatal" : "drawn", expected[i].kind,
+                    expected[i].fatal ? "fatal" : "drawn");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typedef struct {
+    int count;
+    int fatal;
+    char kinds[256];   /* every kind reported, space-separated */
+    bool all_have_text;
+} LayoutErrorLog;
+
+static void record_layout_error(void *user, const NkUiLayoutError *error) {
+    LayoutErrorLog *log = (LayoutErrorLog *)user;
+    size_t used = strlen(log->kinds);
+    ++log->count;
+    if (error->fatal) ++log->fatal;
+    (void)snprintf(log->kinds + used, sizeof(log->kinds) - used, "%s ", error->kind);
+    if (error->text == NULL || error->text_length == 0u) log->all_have_text = false;
+}
+
+/* One frame of `spacers` spacers under a root, the first `duplicates` of them
+   sharing one id. Returns whether nk_ui_end kept the frame. */
+static bool layout_error_frame(NkUi *ui, double now_s, size_t spacers, size_t duplicates) {
+    NkUiLayout layout;
+    size_t i;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_COLUMN;
+    nk_ui_begin(ui, now_s);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        for (i = 0; i < spacers; ++i) {
+            NkUiId id = i < duplicates ? 2u : (NkUiId)(100u + i);
+            nk_ui_spacer(ui, id, (NkUiSizing){NK_UI_SIZE_FIXED, 4.0f, 0.0f, 0.0f},
+                         (NkUiSizing){NK_UI_SIZE_FIXED, 1.0f, 0.0f, 0.0f});
+        }
+        nk_ui_end_container(ui);
+    }
+    return nk_ui_end(ui) != NULL;
+}
+
+/* A duplicate id still lays out a whole frame: it is drawn and reported once
+   when it starts, not every frame it repeats. Past Clay's element limit the
+   layout is incomplete, so that frame is dropped, and the next whole frame is
+   drawn again. */
+static int test_layout_errors_reported(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    LayoutErrorLog log;
+    NkUiConfig config;
+    NkUi *ui;
+    memset(&log, 0, sizeof(log));
+    log.all_have_text = true;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.report_error = record_layout_error;
+    config.report_user = &log;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create context with an error reporter");
+    CHECK(layout_error_frame(ui, 1.0, 3u, 2u), "a frame with a duplicate id is drawn");
+    CHECK(log.count == 1 && strcmp(log.kinds, "DUPLICATE_ID ") == 0 && log.fatal == 0 &&
+          log.all_have_text, "the duplicate id is reported as drawn, with Clay's text");
+    CHECK(layout_error_frame(ui, 2.0, 3u, 2u) && log.count == 1,
+          "a duplicate id that repeats the next frame is not reported again");
+    CHECK(layout_error_frame(ui, 3.0, 3u, 0u) && log.count == 1, "a clean frame reports nothing");
+    CHECK(layout_error_frame(ui, 4.0, 3u, 2u) && log.count == 2,
+          "a duplicate id that comes back is reported again");
+    /* Clay raises no error of its own past the limit; it also stops closing
+       elements, so the frame is unbalanced too. */
+    CHECK(!layout_error_frame(ui, 5.0, 9000u, 0u), "a frame past the element limit is dropped");
+    CHECK(strstr(log.kinds, "ELEMENTS_CAPACITY_EXCEEDED ") != NULL &&
+          log.fatal == log.count - 2 && log.all_have_text,
+          "the element limit is reported as fatal");
+    {
+        int reported = log.count;
+        CHECK(layout_error_frame(ui, 6.0, 3u, 0u) && log.count == reported,
+              "the next whole frame is drawn again");
+    }
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* nk_ui draws pictures as its own custom elements. A Clay image element (here
+   declared straight through Clay, as nothing in nk_ui does) is a command the
+   draw list cannot carry: the frame is dropped and reported, never drawn
+   with the picture silently missing. */
+static int test_undrawn_command_is_reported(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    LayoutErrorLog log;
+    NkUiConfig config;
+    NkUiLayout layout;
+    NkUi *ui;
+    int picture = 0;
+    memset(&log, 0, sizeof(log));
+    log.all_have_text = true;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    config.report_error = record_layout_error;
+    config.report_user = &log;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create undrawn-command context");
+    set_test_window(ui);
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 100.0f, 0.0f, 0.0f};
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &layout, NULL)) {
+        Clay_ElementDeclaration image;
+        memset(&image, 0, sizeof(image));
+        image.layout.sizing.width = CLAY_SIZING_FIXED(10.0f);
+        image.layout.sizing.height = CLAY_SIZING_FIXED(10.0f);
+        image.image.imageData = &picture;
+        Clay__OpenElementWithId(Clay_GetElementId(CLAY_STRING("test.image")));
+        Clay__ConfigureOpenElement(image);
+        Clay__CloseElement();
+        nk_ui_end_container(ui);
+    }
+    CHECK(nk_ui_end(ui) == NULL, "a frame with a Clay image element is dropped");
+    CHECK(log.count == 1 && strcmp(log.kinds, "UNDRAWN_RENDER_COMMAND ") == 0 && log.fatal == 1 &&
+          log.all_have_text, "and the command it could not draw is reported");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -937,7 +1603,12 @@ int main(int argc, char **argv) {
         !test_click_needs_press_and_release_on_one_control() ||
         !test_control_owns_horizontal() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command() || !test_app_icon() ||
-        !test_display_text_rules()) {
+        !test_display_text_rules() || !test_layout_error_kinds() ||
+        !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
+        !test_pointer_respects_clip() || !test_scroll_container() ||
+        !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
+        !test_layout_debug() || !test_pointer_state_once_a_frame() ||
+        !test_undrawn_command_is_reported()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

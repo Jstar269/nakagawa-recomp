@@ -88,8 +88,16 @@ static PlayerUiAction action(PlayerUiActionKind kind, size_t title_index) {
     return result;
 }
 
+/* The library's side margin. Past LIBRARY_MAX_WIDTH of content the margins
+   grow, so a wide window centres the heading, the grid and TEST THIS PC in one
+   column, as Settings centres its cards, instead of leaving them at the left
+   edge with the rest of the window empty. */
+#define LIBRARY_MAX_WIDTH 1600.0f
+
 static float library_gutter(float width) {
-    return width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER;
+    float gutter = width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER;
+    float centred = (float)(int)((width - LIBRARY_MAX_WIDTH) * 0.5f);
+    return centred > gutter ? centred : gutter;
 }
 
 static float library_tile_width(float width, size_t columns) {
@@ -290,8 +298,9 @@ static bool library_demo_card(NkUi *ui, NkUiId id, const PlayerUiTitle *title, f
     nk_ui_register_button(ui, id, NK_UI_BUTTON_NOT_DEFAULT);
     focused = nk_ui_button_focused(ui, id);
     memset(&style, 0, sizeof(style));
-    style.fill_rgba = theme->surface_raised;
-    style.border_rgba = focused ? theme->line_strong : theme->line;
+    style.fill_rgba = nk_ui_pressed(ui, id) ? theme->pressed :
+                      nk_ui_hovered(ui, id) ? theme->surface_high : theme->surface_raised;
+    style.border_rgba = focused || nk_ui_hovered(ui, id) ? theme->line_strong : theme->line;
     style.border_width = NK_UI_BORDER_HAIRLINE;
     style.corner_radius = NK_UI_RADIUS_TILE;
     if (!nk_ui_begin_container(ui, id, &layout, &style)) return false;

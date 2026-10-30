@@ -53,8 +53,9 @@ Where this page and the code disagree, the code is current and this page is upda
 | `dim` | `#6B7684` | disabled text and footnotes only (4.2:1, not for body text) |
 | `accent_dark` | `#D7F24A` | focus ring, primary button, active tab rule, toggles, sliders, progress |
 | `ink` | `#10151C` | text on an accent fill (14.6:1) |
+| `accent_hover` | `#DDF465` | primary button under the pointer (ink on it 15.0:1) |
 | `accent_pressed` | `#B4D134` | pressed primary button |
-| `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary / danger button |
+| `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary or row / danger button |
 | `ready` | `#2DD4BF` | Ready; never the accent |
 | `warning` | `#DBB024` | needs setup |
 | `info` | `#6CB6FF` | experimental, untested, informational notes |
@@ -107,17 +108,48 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 ### Focus
 
 - The ring is drawn by the core outside the focused element, so nothing moves when focus moves: 3 px
-  `accent_dark`, 3 px gap, radius = the element's radius + 6.
+  `accent_dark`, 3 px gap, radius = the element's radius + 6. It is a Clay floating element on the control, drawn
+  over everything else and clipped like the control, so a control half scrolled out of a list shows half a ring
+  (`test_focus_ring_floats` in `tests/native/test_nk_ui_core.c`).
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
-- Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
+- Arrow keys move to the nearest control in that direction.
+- The pointer is the other way in: a press focuses the control under it, and the release on the same control
+  activates it. Clay finds what is under the pointer from the last layout (`Clay_SetPointerState`, every frame),
+  inside clip containers, so a control scrolled or clipped out of view takes no click, and only controls of the
+  active scope respond: nothing under a dialog. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
   its row, so a row of actions under cards of different heights is walked end to end.
 - When the screen changes and the old focus is gone, focus lands on the page's first enabled control that may be the
   default: the title page's PLAY or BUILD PACKAGE, the new card after ADD TO LIBRARY. Top-bar tabs
   (`NK_UI_BUTTON_NOT_DEFAULT`) and danger buttons never are; a screen whose only control is a danger button (CANCEL
   BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
   when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
+
+### Scrolling
+
+A list longer than its room is a scroll container (`NkUiLayout.scroll`), scrolled by Clay
+(`Clay_UpdateScrollContainers`, every frame, with the time since the last one): a wheel notch over it moves it 48 px,
+three of its 16 px lines; a drag with the mouse held, or a finger, moves it with the pointer and a fling keeps going a
+moment; a drag that scrolls more than 8 px is no click on the control it started on. A control inside it that takes
+focus, by key, pad or pointer, is scrolled fully into view, by the least it takes. The launcher draws at 60 Hz while a
+list still moves (`player_ui_nk_in_motion`) and waits for input again once it settles. A wheel over anything else is
+the screen's own: the library turns its page with it. Only the lines a long list shows are laid out, with spacers
+for the rest, so its length costs nothing (`test_scroll_container` in `tests/native/test_nk_ui_core.c`).
+
+The library pages instead of scrolling. Its pager is the controller's way through a large library (a trigger is a page,
+and a page's cards are the D-pad's whole field), and only the page shown reads its disc icons and checks its packages,
+so a page costs what a small library does; a scrolled grid would read every icon it passes.
+
+### Hover and press
+
+Hover and press are looks for the pointer, never needed to use the launcher. While the pointer is over a control
+and was the last input, the control shows hover: a secondary, danger or tab control fills with `surface_high`, a
+primary button with `accent_hover`, a card fills with `surface_high` and its edge becomes `line_strong`, and the
+add card fills with `surface_raised`. Held down on the control it went down on, it shows press: `accent_pressed`,
+`pressed_danger`, or `pressed` for every other control (the add card: `surface_high`). A key or a pad button hides hover until the pointer moves
+again, and the pointer leaving the window clears it. Hover never moves focus, and only the ring shows focus
+(`test_pointer_hover_and_press` and `test_pointer_respects_clip` in `tests/native/test_nk_ui_core.c`).
 
 ### Layout grid
 
@@ -142,6 +174,13 @@ long text with `nk_ui_text_clamp` instead of clipping it.
 Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
 wrapping, as one line, so compressing an overfull column squeezed the paragraph back and the next block painted over
 its later lines; the vendored `clay.h` carries the wrapped height into the minimum (`third_party/clay/PROVENANCE.md`).
+Clay's layout errors are for developers: the launcher writes each one to the developer log (`ui` source) with Clay's
+own text, and the in-game overlay writes it to stderr, once when it starts and not again while it repeats frame after
+frame. A duplicate id, a floating element without its parent, or a percentage over 100% still lays out a whole frame,
+so that frame is drawn. Every other error leaves elements, words or memory out of the layout; that frame is dropped and
+the window shows the ground colour until a whole frame comes back (`test_layout_errors_reported` in
+`tests/native/test_nk_ui_core.c`).
+
 `test_every_screen_fits_the_window` in `tests/native/test_player_screens.c` lays every screen out in launcher windows
 of 1280 x 720, 960 x 540, 1366 x 705 and 853 x 480 pixels and fails when a box or text run leaves the window or text
 is painted over.
@@ -196,7 +235,10 @@ decode falls back to the project-drawn geometric form, which tests and SDL-free 
 Disc art is read on a background thread from the user's own disc image, one disc at a time, and decoded with
 stb_image (`third_party/stb/`) inside fixed limits (512 x 512 for `ICON0.PNG`, 1024 x 1024 for `PIC1.PNG`, 1 MiB
 encoded). It lives in memory only: nothing is written to disk or kept in the repository, and a disc without art, or
-art that fails the checks, keeps the placeholder.
+art that fails the checks, keeps the placeholder. A picture is drawn by nk_ui itself (`nk_ui_image_art`): a cover
+picture fills the art panel, cropped, and a contain picture (the icon) sits whole over it, both snapped to whole
+device pixels. Clay's image elements hold one picture each, cannot crop to fill, and keep an aspect ratio only by
+deriving the height from the width, so they would not make this simpler.
 
 Optional launcher sounds (Kenney's CC0 "Interface Sounds": a tick when focus moves, a chime on confirm, a click on
 back) are off by default; **UI sounds** in Settings (`ui_sounds` in `settings.json`) turns them on. While they are off
@@ -212,7 +254,9 @@ Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view,
 Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count of the user's games in `CAPTION` beside it ("7 titles"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
 grid of the user's games, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
-SETTINGS and no corner text. The first card, never the pager, has the first focus. Page Down and Page Up, the pad's
+SETTINGS and no corner text. Past 1600 px of content the side margins grow, so a wide window centres the heading,
+the grid and TEST THIS PC in one column, as Settings centres its cards. The first card, never the pager, has the first
+focus. Page Down and Page Up, the pad's
 right and left triggers and the mouse wheel turn the page too; a focused card hands focus to the card in the same place
 on the new page (the last one when that page is shorter). A library holds up to 4096 games; only the page shown reads
 its disc icons and checks its packages, so a page of a large library costs what a small library does. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
@@ -393,9 +437,13 @@ Every page fits 960 x 540.
 ### Developer log (built)
 
 F12 in developer mode opens one card under a top bar without tabs: a `warning` `▲ DEVELOPER MODE` eyebrow, the
-privacy line (on this PC only, paths as `%USERPROFILE%`), then the newest lines that fit in `DATA` on the ground
-colour, each cut to the card's width, and COPY, SAVE and CLOSE (primary, focused first) with the last notice beside
-them. Esc or F12 closes it.
+privacy line (on this PC only, paths as `%USERPROFILE%`), then the whole log in `DATA` on the ground colour, each line
+cut to the card's width, in a box that scrolls: it opens on the newest lines and follows new ones while it shows the
+end, and the wheel, a drag, Page Up and Page Down (the pad's triggers; a page is the box less one line) scroll it.
+Under it, COPY, SAVE, LAYOUT INSPECTOR: OFF (or ON) and CLOSE (primary, focused first), with the last notice beside
+them. Esc or F12 closes it. The layout inspector is Clay's own (`nk_ui_set_layout_debug`): a panel down the right of
+every launcher screen that lists the layout and outlines the element under the pointer, until it is turned off or
+developer mode ends. The screens keep their width, so the panel covers their right side.
 
 ### First run (C7)
 
@@ -427,6 +475,9 @@ step says the privacy promise once. The left rail below is the target layout for
   a boundary), whose line budget grows by one per 16 px of window height past 540 so its fix is never cut off;
   `surface_raised`,
   `line_strong` edge, radius 16, 26/28/22 px padding, 14 px gap.
+- The card (`nk_ui_dialog_begin`, also every flow card and the in-game overlay's) is a Clay floating element,
+  centred on the area it opens in: it moves nothing on the page, draws over it, and takes the pointer, so nothing
+  under it is hovered or clicked (`test_modal_card_floats`).
 - Order: a status eyebrow in its colour with marker ("▲ CONTROLLER DISCONNECTED · GAME PAUSED"), a `TITLE` that says
   what happened in plain words, a `BODY` `muted` paragraph that says what to do, an optional detail box (ground
   fill, `line`, radius 10, `DATA` lines for paths or codes), then the button row: the recommended action first as

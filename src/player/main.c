@@ -599,6 +599,9 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        /* The launcher's hover ends with the pointer off the window. */
+        return use_next_ui && player_ui_nk_handle_event(next_ui, event);
     case SDL_EVENT_KEY_DOWN:
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
@@ -1633,6 +1636,11 @@ static void player_ui_developer_log_apply(PlayerApp *app, PlayerUiDeveloperLogOp
             break;
         case PLAYER_UI_DEVELOPER_LOG_SAVE: (void)player_dev_log_save(app); break;
         case PLAYER_UI_DEVELOPER_LOG_CLOSE: player_app_close_developer_log(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_INSPECT:
+            app->dev_log.inspect_layout = !app->dev_log.inspect_layout;
+            player_dev_log_add(app, "ui", "layout inspector %s",
+                               app->dev_log.inspect_layout ? "on" : "off");
+            break;
         case PLAYER_UI_DEVELOPER_LOG_NONE:
         default:
             break;
@@ -4610,7 +4618,7 @@ int main(int argc, char *argv[]) {
     PlayerUiNk *next_ui = NULL;
     if (ui_next_requested) {
         char ui_error[256] = "";
-        next_ui = player_ui_nk_create(renderer, window,
+        next_ui = player_ui_nk_create(renderer, window, &app,
                                       ui_error, sizeof(ui_error));
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         g_ui_test_next_ui = next_ui;
@@ -5151,7 +5159,11 @@ int main(int argc, char *argv[]) {
         input.activate_pressed = false;
         bool close_request_handled_in_batch = false;
         SDL_Event event;
-        bool event_available = SDL_WaitEventTimeout(&event, 50);
+        /* A scroll still moving draws at 60 Hz until it settles: Clay's
+           momentum slows a little each frame. */
+        bool event_available = SDL_WaitEventTimeout(
+            &event, player_ui_nk_view_active(next_ui, &app) && player_ui_nk_in_motion(next_ui)
+                        ? 16 : 50);
         if (event_available) {
             do {
                 if (app.logical_ui &&

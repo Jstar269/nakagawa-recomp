@@ -71,7 +71,7 @@ We aim to respond promptly and will remove material where appropriate.
   the project wrapper `src/rt/mp3_bridge.c` and decodes for `sceMp3`. CC0 asks for no
   notice; it is listed here so the lineage stays discoverable.
 - **Clay layout library** (upstream `main` at `e6cc36941ab2`) — `Zlib` (the upstream
-  `LICENSE.md` calls it the "zlib/libpng license"). The header (upstream plus two
+  `LICENSE.md` calls it the "zlib/libpng license"). The header (upstream plus four
   documented LOCAL DELTAs), complete license, pinned source manifest, and SHA-256
   values are recorded under `third_party/clay/`. Clay is linked into the native
   player, where the launcher and the in-game overlay lay out through `nk_ui`.

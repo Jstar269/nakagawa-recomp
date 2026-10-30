@@ -60,7 +60,7 @@ typedef enum {
 
 /* Zero-initialise layouts and styles (memset or "= {0}") before setting fields:
    the fields after padding_bottom and corner_radius were added later and default
-   to zero (start alignment, no clipping, every corner rounded). */
+   to zero (start alignment, no scrolling, every corner rounded). */
 typedef struct {
     NkUiSizing width;
     NkUiSizing height;
@@ -72,8 +72,21 @@ typedef struct {
     float padding_bottom;
     NkUiAlign align_x;
     NkUiAlign align_y;
-    bool clip;          /* clip children to this container's bounds */
+    /* A vertical scroll container (a Clay clip container): its children are
+       clipped to its bounds and scroll with the wheel, a drag or touch, a
+       control inside it taking focus, and nk_ui_scroll_to. */
+    bool scroll;
 } NkUiLayout;
+
+/* Scroll containers one frame may hold; a frame that opens more is dropped. */
+#define NK_UI_SCROLL_MAX 16u
+
+/* A scroll container's state, in logical px: where it is now, and its last layout. */
+typedef struct {
+    float offset;       /* how far the content has moved up, 0 at the top */
+    float max_offset;   /* the offset that shows the end of the content */
+    float viewport;     /* the container's height */
+} NkUiScrollState;
 
 /* Corners that stay square even when corner_radius is set, for an art panel
    flush with the top of a rounded card. */
@@ -140,6 +153,18 @@ typedef struct {
                    NkUiGlyphBitmap *out);
 } NkUiTextBackend;
 
+/* A layout error Clay reported. Most leave the layout incomplete (an element,
+   word or byte that did not fit, an internal error): those are fatal and
+   nk_ui_end drops the frame. A duplicate id, a floating element without its
+   parent, or a percentage over 100% still lays out a whole frame, so it is
+   drawn and the error is only reported. */
+typedef struct {
+    const char *kind;   /* Clay's error type without its prefix, e.g. "DUPLICATE_ID" */
+    const char *text;   /* Clay's explanation: text_length bytes, not NUL-terminated */
+    size_t text_length;
+    bool fatal;
+} NkUiLayoutError;
+
 typedef struct {
     NkUiHostKind host;
     size_t arena_bytes; /* 0 selects Clay_MinMemorySize(). */
@@ -150,6 +175,11 @@ typedef struct {
        screenshots carry no user name. The rewrite must never grow its input;
        it writes at most out_size bytes, NUL included. NULL draws text as given. */
     size_t (*display_text)(const char *in, char *out, size_t out_size);
+    /* Receives each layout error when it starts: an error that repeats every
+       frame is reported again only after a frame without it. NULL ignores
+       them; a fatal one still drops its frame. */
+    void (*report_error)(void *user, const NkUiLayoutError *error);
+    void *report_user;
 } NkUiConfig;
 
 /* The only theme shipped today. The pointer is static, never NULL, and stays
@@ -246,7 +276,8 @@ typedef enum {
     NK_UI_EV_TEXT,
     NK_UI_EV_DEVICE,
     NK_UI_EV_CYCLE, /* Tab / Shift+Tab: dir RIGHT = next, LEFT = previous in declaration order. */
-    NK_UI_EV_PAGE   /* Page Down / Up and the pad's triggers: dir RIGHT = next page, LEFT = previous. */
+    NK_UI_EV_PAGE,  /* Page Down / Up and the pad's triggers: dir RIGHT = next page, LEFT = previous. */
+    NK_UI_EV_POINTER_LEAVE /* the pointer left the window: nothing is under it */
 } NkUiEventType;
 
 /* The x and y of NK_UI_EV_POINTER and NK_UI_EV_WHEEL events are LOGICAL UI pixels,
@@ -362,6 +393,23 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
    nk_ui_draw.h and is opaque to hosts that only forward it. */
 const NkUiDrawList *nk_ui_end(NkUi *ui);
 bool nk_ui_next_wake(const NkUi *ui, double *at_s);
+/* Scroll containers. nk_ui_scroll_to moves container id so the content shows
+   from `offset` down (clamped to the content), from this frame on when called
+   before the container opens; a container that has not opened yet starts
+   there. nk_ui_scroll_state gives where the container is now, after this
+   frame's scrolling, and its content and height from the last layout (false
+   before it was laid out). nk_ui_scroll_in_motion says a container moved this frame, by
+   wheel, drag or momentum: a host that waits for input between frames draws
+   the next one soon instead. */
+void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset);
+bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out);
+bool nk_ui_scroll_in_motion(const NkUi *ui);
+/* Clay's layout inspector (Clay_SetDebugModeEnabled), for developer mode: a
+   panel down the window's right side that lists the layout and outlines the
+   element under the pointer. Clay narrows the layout by the panel's width, so
+   a screen sized from the window's own width runs on under the panel. Set
+   between frames. */
+void nk_ui_set_layout_debug(NkUi *ui, bool enabled);
 NkUiId nk_ui_focused(const NkUi *ui);
 void nk_ui_focus(NkUi *ui, NkUiId id);
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap);

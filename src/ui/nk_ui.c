@@ -39,6 +39,14 @@ typedef struct {
 } NkUiCustomSlot;
 
 #define NK_UI_CUSTOM_SLOTS 96u
+/* A wheel notch scrolls three 16 px lines, Windows' default of three lines a
+   notch. A held pointer that scrolls a container further than the slop is a
+   drag, so its release is no click. */
+#define NK_UI_WHEEL_NOTCH_PX 48.0f
+#define NK_UI_DRAG_SLOP 8.0f
+/* Floating layers: a modal card over the page, the focus ring over both. */
+#define NK_UI_Z_MODAL 1
+#define NK_UI_Z_RING 2
 #define NK_UI_FRAME_TEXT_BYTES 16384u
 
 struct NkUi {
@@ -66,6 +74,29 @@ struct NkUi {
        activates a control only when its press and its release both land on it. */
     bool pointer_down;
     NkUiId pointer_press_id;
+    /* Where the pointer is, in logical px, and whether it is over the window.
+       Hover shows only while the pointer was the last input: a key or a pad
+       button hides it until the pointer moves again. hover_id is the control
+       under the pointer, found from the last layout as the frame begins. */
+    float pointer_x;
+    float pointer_y;
+    bool pointer_inside;
+    bool pointer_hover;
+    bool pointer_sent;          /* this frame's events already told Clay */
+    NkUiId hover_id;
+    float press_travel;         /* how far a held pointer has scrolled since the press */
+    /* Scroll containers: the ones this frame opens, the ones the last layout
+       held (Clay's scrolling and the wheel work on those), the innermost one
+       open now, the wheel notches this frame's events gave them, and whether
+       one moved. */
+    NkUiId scroll_ids[NK_UI_SCROLL_MAX];
+    size_t scroll_count;
+    NkUiId laid_ids[NK_UI_SCROLL_MAX];
+    size_t laid_count;
+    NkUiId open_scroller;
+    NkUiId scroller_stack[64];
+    float wheel_notches;
+    bool scroll_moving;
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -80,16 +111,18 @@ struct NkUi {
     char frame_text[NK_UI_FRAME_TEXT_BYTES];
     size_t frame_text_used;
     size_t (*display_text)(const char *in, char *out, size_t out_size);
-    NkUiId ring_id;
-    float ring_radius;
     const NkUiPromptImages *prompt_images;
 };
 
 void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
-                        const NkUiTextBackend *text);
+                        const NkUiTextBackend *text,
+                        void (*report_error)(void *user, const NkUiLayoutError *error),
+                        void *report_user);
 void nk_ui_clay_destroy(void *clay);
 bool nk_ui_clay_set_dimensions(void *clay, float width, float height, float density);
 bool nk_ui_clay_begin(void *clay);
+bool nk_ui_clay_open_floating(void *clay, NkUiId id, const NkUiLayout *layout,
+                              const NkUiStyle *style, const NkUiFloating *floating);
 bool nk_ui_clay_open_container(void *clay, NkUiId id,
                                const NkUiLayout *layout, const NkUiStyle *style);
 bool nk_ui_clay_open_element(void *clay, NkUiId id, const NkUiLayout *layout,
@@ -100,6 +133,14 @@ void nk_ui_clay_close_container(void *clay);
 bool nk_ui_clay_text(void *clay, NkUiId id, const char *text, size_t length,
                      int font, int size_px, uint32_t rgba);
 bool nk_ui_clay_element_rect(void *clay, NkUiId id, NkUiRect *out);
+void nk_ui_clay_set_pointer(void *clay, float x, float y, bool down);
+void nk_ui_clay_scroll_to(void *clay, NkUiId id, float offset);
+bool nk_ui_clay_scroll_state(void *clay, NkUiId id, NkUiScrollState *out);
+bool nk_ui_clay_wheel_scrolls(void *clay);
+void nk_ui_clay_set_debug(void *clay, bool enabled);
+float nk_ui_clay_update_scroll(void *clay, const NkUiId *ids, size_t count, float wheel_px,
+                               float delta_s);
+NkUiId nk_ui_clay_pointer_target(void *clay, bool (*accept)(void *user, NkUiId id), void *user);
 bool nk_ui_clay_end(void *clay, NkUiDrawBuffer *draw, float density,
                     float delta_s, NkUiClayPaint paint, void *paint_user);
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
@@ -113,11 +154,44 @@ static void nk_ui_consume_event(NkUi *ui, size_t index) {
     --ui->event_count;
 }
 
+/* A scroll container's offset and content in this frame's layout, for
+   nk_ui_focus_place (which takes rects from nk_ui_clay_element_rect). */
+static bool nk_ui_layout_scroll(void *clay, NkUiId id, float *scroll_y, float *content_h) {
+    NkUiScrollState state;
+    if (!nk_ui_clay_scroll_state(clay, id, &state)) {
+        return false;
+    }
+    *scroll_y = state.offset;
+    *content_h = state.max_offset + state.viewport;
+    return true;
+}
+
+static bool nk_ui_accepts_pointer(void *user, NkUiId id) {
+    return nk_ui_focus_accepts_pointer((const NkUiFocusGraph *)user, id);
+}
+
+/* The control under the pointer: the innermost container Clay finds there in
+   the last layout that the focus graph lets a pointer reach. */
+static NkUiId nk_ui_pointer_target(NkUi *ui) {
+    return nk_ui_clay_pointer_target(ui->clay, nk_ui_accepts_pointer, ui->focus_graph);
+}
+
+/* Off the window, Clay is told the pointer is at a point no layout reaches. */
+static void nk_ui_send_pointer(NkUi *ui) {
+    nk_ui_clay_set_pointer(ui->clay, ui->pointer_inside ? ui->pointer_x : -1.0f,
+                           ui->pointer_inside ? ui->pointer_y : -1.0f, ui->pointer_down);
+    ui->pointer_sent = true;
+}
+
 static void nk_ui_update_focus_from_events(NkUi *ui) {
     size_t i = 0;
     while (ui != NULL && i < ui->event_count) {
         NkUiEvent *event = &ui->events[i];
         NkUiId focused = 0;
+        if (event->type != NK_UI_EV_POINTER && event->type != NK_UI_EV_WHEEL &&
+            event->type != NK_UI_EV_DEVICE) {
+            ui->pointer_hover = false;
+        }
         if (event->type == NK_UI_EV_NAV &&
             (event->dir == NK_UI_DIR_LEFT || event->dir == NK_UI_DIR_RIGHT) &&
             nk_ui_focus_owns_horizontal(ui->focus_graph)) {
@@ -146,10 +220,15 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
             bool press = event->down && !ui->pointer_down;
             bool release = !event->down && ui->pointer_down;
             ui->pointer_down = event->down;
-            focused = press || release
-                ? nk_ui_focus_hit_test(ui->focus_graph, event->x, event->y) : 0u;
+            ui->pointer_x = event->x;
+            ui->pointer_y = event->y;
+            ui->pointer_inside = true;
+            ui->pointer_hover = true;
+            nk_ui_send_pointer(ui);
+            focused = press || release ? nk_ui_pointer_target(ui) : 0u;
             if (press) {
                 ui->pointer_press_id = focused;
+                ui->press_travel = 0.0f;
                 if (focused != 0u && nk_ui_focus_set(ui->focus_graph, focused)) {
                     ui->focused = focused;
                 }
@@ -167,9 +246,26 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
                 if (release) ui->pointer_press_id = 0u;
                 nk_ui_consume_event(ui, i);
             }
+        } else if (event->type == NK_UI_EV_POINTER_LEAVE) {
+            ui->pointer_inside = false;
+            nk_ui_consume_event(ui, i);
         } else if (event->type == NK_UI_EV_WHEEL) {
-            /* Screens with an actual scroller consume wheel events themselves. */
-            ++i;
+            /* Over a scroll container with room to move, the wheel scrolls it;
+               anywhere else it stays for the screen (the library turns its
+               page with it). */
+            if (!ui->pointer_inside || event->x != ui->pointer_x || event->y != ui->pointer_y) {
+                ui->pointer_x = event->x;
+                ui->pointer_y = event->y;
+                ui->pointer_inside = true;
+                nk_ui_send_pointer(ui);
+            }
+            if ((event->dir == NK_UI_DIR_UP || event->dir == NK_UI_DIR_DOWN) &&
+                nk_ui_clay_wheel_scrolls(ui->clay)) {
+                ui->wheel_notches += event->dir == NK_UI_DIR_UP ? 1.0f : -1.0f;
+                nk_ui_consume_event(ui, i);
+            } else {
+                ++i;
+            }
         } else {
             ++i;
         }
@@ -272,6 +368,8 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     NkUiTextBackend fixed;
     const NkUiTheme *theme;
     size_t arena_bytes = 0;
+    void (*report_error)(void *user, const NkUiLayoutError *error) = NULL;
+    void *report_user = NULL;
     if (ui == NULL) {
         return NULL;
     }
@@ -302,9 +400,12 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     ui->scale = nk_ui_scale_for_viewport(&ui->viewport);
     if (config != NULL) {
         arena_bytes = config->arena_bytes;
+        report_error = config->report_error;
+        report_user = config->report_user;
     }
     ui->clay = nk_ui_clay_create(arena_bytes, ui->scale.logical_w,
-                                 ui->scale.logical_h, &ui->text);
+                                 ui->scale.logical_h, &ui->text,
+                                 report_error, report_user);
     if (ui->clay == NULL) {
         nk_ui_draw_buffer_destroy(&ui->draw);
         nk_ui_focus_graph_destroy(ui->focus_graph);
@@ -410,39 +511,99 @@ void nk_ui_begin(NkUi *ui, double now_s) {
                ui->held_count * sizeof(ui->events[0]));
         ui->event_count = first_spatial;
     }
+    ui->pointer_sent = false;
     nk_ui_update_focus_from_events(ui);
+    now_s = isfinite(now_s) ? now_s : 37.0;
+    /* Clay's time-based layout and scrolling advance by the time since the last
+       frame. The first frame, and a clock that stands still or steps back, add
+       none. */
+    ui->frame_delta_s = ui->frame_clock_started && now_s > ui->now_s ? now_s - ui->now_s : 0.0;
+    ui->frame_clock_started = true;
+    ui->now_s = now_s;
+    /* Once a frame, as Clay's lifecycle asks: the layout under a still pointer
+       may have moved. A frame whose events told Clay already keeps that state,
+       so Clay sees a press or release as this frame's. Then Clay's scrolling,
+       over the containers the last frame opened. */
+    if (!ui->pointer_sent) {
+        nk_ui_send_pointer(ui);
+    }
+    ui->hover_id = ui->pointer_hover && ui->pointer_inside ? nk_ui_pointer_target(ui) : 0u;
+    {
+        NkUiFocusScrollRequest request;
+        float moved = nk_ui_clay_update_scroll(ui->clay, ui->laid_ids, ui->laid_count,
+                                               ui->wheel_notches * NK_UI_WHEEL_NOTCH_PX,
+                                               (float)ui->frame_delta_s);
+        ui->scroll_moving = moved > 0.0f;
+        ui->wheel_notches = 0.0f;
+        if (ui->pointer_down) {
+            ui->press_travel += moved;
+            if (ui->press_travel > NK_UI_DRAG_SLOP) {
+                ui->pointer_press_id = 0u;
+            }
+        }
+        /* Focus that moved into a scroll container brings its control into view. */
+        if (nk_ui_focus_take_scroll(ui->focus_graph, &request)) {
+            nk_ui_clay_scroll_to(ui->clay, request.scroller, request.scroll_y);
+        }
+        ui->scroll_count = 0u;
+        ui->open_scroller = 0u;
+    }
     ui->layout_pending = false;
     nk_ui_focus_begin_frame(ui->focus_graph);
     ui->focus_entry_count = 0u;
     nk_ui_draw_buffer_reset(&ui->draw);
-    now_s = isfinite(now_s) ? now_s : 37.0;
-    /* Clay's time-based layout advances by the time since the last frame. The
-       first frame, and a clock that stands still or steps back, add none. */
-    ui->frame_delta_s = ui->frame_clock_started && now_s > ui->now_s ? now_s - ui->now_s : 0.0;
-    ui->frame_clock_started = true;
-    ui->now_s = now_s;
     ui->container_depth = 0;
     ui->text_color = ui->theme.paper;
     ui->frame_ok = true;
     memset(&ui->waves, 0, sizeof(ui->waves));
     ui->custom_count = 0u;
     ui->frame_text_used = 0u;
-    ui->ring_id = 0u;
-    ui->ring_radius = 0.0f;
     ui->frame_open = nk_ui_clay_begin(ui->clay);
     if (!ui->frame_open) {
         ui->frame_ok = false;
     }
 }
 
-bool nk_ui_begin_container(NkUi *ui, NkUiId id,
-                           const NkUiLayout *layout, const NkUiStyle *style) {
+/* A scroll container joins the focus graph, so focus moving to a control
+   inside it can bring the control into view. nk_ui_focus_place gives it this
+   frame's layout once the frame is laid out; a container Clay has not laid
+   out yet joins on its second frame. */
+static void nk_ui_register_scroller(NkUi *ui, NkUiId id) {
+    NkUiFocusScroller scroller;
+    NkUiScrollState state;
+    if (!nk_ui_clay_scroll_state(ui->clay, id, &state) ||
+        !nk_ui_clay_element_rect(ui->clay, id, &scroller.viewport)) {
+        return;
+    }
+    scroller.id = id;
+    scroller.scroll_x = 0.0f;
+    scroller.scroll_y = state.offset;
+    scroller.content_w = scroller.viewport.w;
+    scroller.content_h = state.max_offset + state.viewport;
+    (void)nk_ui_focus_register_scroller(ui->focus_graph, &scroller);
+}
+
+static bool nk_ui_open(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style,
+                       const NkUiFloating *floating) {
     if (ui == NULL || !ui->frame_open || layout == NULL || ui->container_depth >= 64u ||
-        !nk_ui_clay_open_container(ui->clay, id, layout, style)) {
+        !(floating != NULL ? nk_ui_clay_open_floating(ui->clay, id, layout, style, floating)
+                           : nk_ui_clay_open_container(ui->clay, id, layout, style))) {
         return false;
+    }
+    ui->scroller_stack[ui->container_depth] = ui->open_scroller;
+    if (layout->scroll) {
+        if (ui->scroll_count == NK_UI_SCROLL_MAX) {
+            ui->frame_ok = false;
+        } else {
+            ui->scroll_ids[ui->scroll_count++] = id;
+        }
+        nk_ui_register_scroller(ui, id);
+        ui->open_scroller = id;
     }
     ui->text_color_stack[ui->container_depth] = ui->text_color;
     if (style != NULL && (style->fill_rgba == ui->theme.accent_dark ||
+                          style->fill_rgba == ui->theme.accent_hover ||
+                          style->fill_rgba == ui->theme.accent_pressed ||
                           style->fill_rgba == ui->theme.accent_light)) {
         ui->text_color = ui->theme.ink;
     } else {
@@ -452,6 +613,19 @@ bool nk_ui_begin_container(NkUi *ui, NkUiId id,
     return true;
 }
 
+bool nk_ui_begin_container(NkUi *ui, NkUiId id,
+                           const NkUiLayout *layout, const NkUiStyle *style) {
+    return nk_ui_open(ui, id, layout, style, NULL);
+}
+
+bool nk_ui_begin_modal(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style) {
+    NkUiFloating modal;
+    memset(&modal, 0, sizeof(modal));
+    modal.z = NK_UI_Z_MODAL;
+    modal.centered = true;
+    return nk_ui_open(ui, id, layout, style, &modal);
+}
+
 void nk_ui_end_container(NkUi *ui) {
     if (ui == NULL || !ui->frame_open || ui->container_depth == 0u) {
         return;
@@ -459,6 +633,7 @@ void nk_ui_end_container(NkUi *ui) {
     nk_ui_clay_close_container(ui->clay);
     --ui->container_depth;
     ui->text_color = ui->text_color_stack[ui->container_depth];
+    ui->open_scroller = ui->scroller_stack[ui->container_depth];
 }
 
 void nk_ui_button_configuration(const NkUi *ui, uint32_t flags,
@@ -698,12 +873,54 @@ void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height) {
     }
 }
 
+/* One band of the ring: a floating border around the open container, `expand`
+   outside it, over everything else, clipped as the container is, and taking
+   no pointer. Its draw commands carry the control's id. */
+static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, float width,
+                            float radius, uint32_t rgba) {
+    NkUiLayout layout;
+    NkUiStyle style;
+    NkUiFloating ring;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    memset(&style, 0, sizeof(style));
+    style.border_rgba = rgba;
+    style.border_width = width;
+    style.corner_radius = radius;
+    memset(&ring, 0, sizeof(ring));
+    ring.expand = expand;
+    ring.z = NK_UI_Z_RING;
+    ring.passthrough = true;
+    ring.clip_to_parent = true;
+    ring.draw_id = id;
+    if (nk_ui_open(ui, nk_ui_child_id(id, part), &layout, &style, &ring)) {
+        nk_ui_end_container(ui);
+    }
+}
+
+/* The focus ring sits outside the element: 3 px accent, 3 px gap, radius =
+   element radius + 6. High contrast: a 4 px white ring between 2 px black
+   keylines, so it reads on any colour. Each band is a Clay floating element
+   on the focused control, the container open now. */
 void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius) {
-    if (ui == NULL || id == 0u) {
+    float radius;
+    if (ui == NULL || !ui->frame_open || id == 0u || id != ui->focused ||
+        ui->container_depth == 0u) {
         return;
     }
-    ui->ring_id = id;
-    ui->ring_radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    if (ui->prefs.high_contrast_focus) {
+        float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
+        nk_ui_ring_band(ui, id, 0xF0u, outer, outer, radius + outer, 0x000000FFu);
+        nk_ui_ring_band(ui, id, 0xF1u, outer - NK_UI_FOCUS_HC_KEYLINE,
+                        NK_UI_FOCUS_HC_RING_WIDTH, radius + outer - NK_UI_FOCUS_HC_KEYLINE,
+                        0xFFFFFFFFu);
+    } else {
+        float grow = NK_UI_FOCUS_RING_GAP + NK_UI_FOCUS_RING_WIDTH;
+        nk_ui_ring_band(ui, id, 0xF0u, grow, NK_UI_FOCUS_RING_WIDTH, radius + grow,
+                        ui->theme.focus);
+    }
 }
 
 const NkUiTheme *nk_ui_theme(const NkUi *ui) {
@@ -967,43 +1184,6 @@ static bool nk_ui_paint_custom(void *user, void *data, NkUiRect rect, float dens
     return true;
 }
 
-/* The focus ring sits outside the element: 3 px accent, 3 px gap, radius =
-   element radius + 6. High contrast: a 4 px white ring between 2 px black
-   keylines, so it reads on any colour. */
-static bool nk_ui_draw_focus_ring(NkUi *ui) {
-    NkUiRect rect;
-    float gap = NK_UI_FOCUS_RING_GAP;
-    float width = NK_UI_FOCUS_RING_WIDTH;
-    if (ui->ring_id == 0u || ui->ring_id != ui->focused ||
-        !nk_ui_clay_element_rect(ui->clay, ui->ring_id, &rect) ||
-        rect.w <= 0.0f || rect.h <= 0.0f) {
-        return true;
-    }
-    if (ui->prefs.high_contrast_focus) {
-        float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
-        float r0 = ui->ring_radius + outer;
-        float r1 = ui->ring_radius + outer - NK_UI_FOCUS_HC_KEYLINE;
-        const float black[4] = {r0, r0, r0, r0};
-        const float white[4] = {r1, r1, r1, r1};
-        NkUiRect a = {rect.x - outer, rect.y - outer, rect.w + outer * 2.0f, rect.h + outer * 2.0f};
-        float inset = NK_UI_FOCUS_HC_KEYLINE;
-        NkUiRect b = {a.x + inset, a.y + inset, a.w - inset * 2.0f, a.h - inset * 2.0f};
-        return nk_ui_draw_add_border_corners(&ui->draw, a, ui->scale.density, outer,
-                                             black, 0x000000FFu, ui->ring_id) &&
-               nk_ui_draw_add_border_corners(&ui->draw, b, ui->scale.density,
-                                             NK_UI_FOCUS_HC_RING_WIDTH, white,
-                                             0xFFFFFFFFu, ui->ring_id);
-    }
-    {
-        float grow = gap + width;
-        float r = ui->ring_radius + grow;
-        const float radii[4] = {r, r, r, r};
-        NkUiRect ring = {rect.x - grow, rect.y - grow, rect.w + grow * 2.0f, rect.h + grow * 2.0f};
-        return nk_ui_draw_add_border_corners(&ui->draw, ring, ui->scale.density, width,
-                                             radii, ui->theme.focus, ui->ring_id);
-    }
-}
-
 bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index) {
     NkUiWavePalette palette;
     NkUiPixelRect bounds;
@@ -1044,6 +1224,7 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             nk_ui_clay_close_container(ui->clay);
             --ui->container_depth;
             ui->text_color = ui->text_color_stack[ui->container_depth];
+            ui->open_scroller = ui->scroller_stack[ui->container_depth];
         }
     }
     if (ui->waves.active) {
@@ -1057,9 +1238,9 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
                         nk_ui_paint_custom, ui)) {
         ui->frame_ok = false;
     }
-    if (!nk_ui_draw_focus_ring(ui)) {
-        ui->frame_ok = false;
-    }
+    memcpy(ui->laid_ids, ui->scroll_ids, ui->scroll_count * sizeof(ui->scroll_ids[0]));
+    ui->laid_count = ui->scroll_count;
+    nk_ui_focus_place(ui->focus_graph, nk_ui_clay_element_rect, nk_ui_layout_scroll, ui->clay);
     if (ui->focus_pending) {
         if (ui->focus_request == 0u) {
             ui->focused = 0u;
@@ -1144,7 +1325,7 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
     entry.scope = NK_UI_SCOPE_ROOT;
-    entry.scroller = 0u;
+    entry.scroller = ui->open_scroller;
     (void)nk_ui_focus_register(ui->focus_graph, &entry);
     /* Controls that may not take default focus, disabled ones included, do
        not use up the default. */
@@ -1155,6 +1336,34 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
 
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id) {
     return ui != NULL && ui->focused == id;
+}
+
+void nk_ui_set_layout_debug(NkUi *ui, bool enabled) {
+    if (ui != NULL && !ui->frame_open) {
+        nk_ui_clay_set_debug(ui->clay, enabled);
+    }
+}
+
+void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset) {
+    if (ui != NULL) {
+        nk_ui_clay_scroll_to(ui->clay, id, offset);
+    }
+}
+
+bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out) {
+    return ui != NULL && nk_ui_clay_scroll_state(ui->clay, id, out);
+}
+
+bool nk_ui_scroll_in_motion(const NkUi *ui) {
+    return ui != NULL && ui->scroll_moving;
+}
+
+bool nk_ui_hovered(const NkUi *ui, NkUiId id) {
+    return ui != NULL && id != 0u && ui->hover_id == id;
+}
+
+bool nk_ui_pressed(const NkUi *ui, NkUiId id) {
+    return nk_ui_hovered(ui, id) && ui->pointer_down && ui->pointer_press_id == id;
 }
 
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap) {

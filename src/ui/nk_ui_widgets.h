@@ -19,6 +19,16 @@
    move focus before the next screen is built. */
 void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags);
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id);
+/* The pointer is over control `id` and was the last input (a key or a pad button
+   hides hover until the pointer moves). A control under a dialog, or a disabled
+   one, is never hovered. Hover is a look only: it never moves focus. */
+bool nk_ui_hovered(const NkUi *ui, NkUiId id);
+/* Hovered, with the primary button held since it went down on `id`. */
+bool nk_ui_pressed(const NkUi *ui, NkUiId id);
+/* Opens a modal card: a container that floats centred over the one it is
+   declared in, above the page (a Clay floating element), and keeps the pointer
+   from what is under it. Close it with nk_ui_end_container. */
+bool nk_ui_begin_modal(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style);
 /* True once, on the frame an ACTIVATE press reaches the focused control `id`. */
 bool nk_ui_take_activation(NkUi *ui, NkUiId id);
 /* Label colour of a button with these flags. */
@@ -67,6 +77,12 @@ typedef struct {
     float contain_scale;
 } NkUiImageArt;
 
+/* A picture is one nk_ui custom element, not a Clay image element: it layers a
+   cover picture (filling the element, cropped) under a contain picture
+   (fitted whole, centred, at contain_scale), both snapped to whole device
+   pixels. Clay's image element holds one picture, has no cover fit, and keeps
+   an aspect ratio by deriving the height from the width only, so it could not
+   draw these without the same fitting in every backend. */
 bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
                      const NkUiImageArt *art);
 

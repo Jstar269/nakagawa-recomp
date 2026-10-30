@@ -45,6 +45,14 @@ static void host_error(char *out, size_t size, const char *message) {
     if (out != NULL && size > 0u) snprintf(out, size, "%s", message);
 }
 
+/* The runtime's log is stderr; Clay's layout errors join it there. */
+static void overlay_report_layout_error(void *user, const NkUiLayoutError *error) {
+    int length = error->text_length > 512u ? 512 : (int)error->text_length;
+    (void)user;
+    fprintf(stderr, "overlay: layout %s (%s): %.*s\n", error->kind,
+            error->fatal ? "frame dropped" : "frame drawn", length, error->text);
+}
+
 static bool join(const char *root, const char *relative, char *out, size_t size) {
     size_t length;
     int written;
@@ -134,6 +142,7 @@ NkOverlayHost *nk_overlay_host_create(const char *ui_root, char *error, size_t e
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_OVERLAY;
     config.text = &host->text;
+    config.report_error = overlay_report_layout_error;
     host->ui = nk_ui_create(&config);
     if (host->ui == NULL) {
         host_error(error, error_size, "the UI layout core could not be created");
