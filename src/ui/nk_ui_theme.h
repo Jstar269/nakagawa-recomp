@@ -38,7 +38,7 @@ struct NkUiTheme {
     uint32_t art_scrim;      /* page at 72% under a badge on title art */
     uint32_t art_label;      /* #C9D6E3 labels drawn over title art */
     uint32_t placeholder;    /* #3A4552 outline of an art placeholder */
-    uint32_t capture;        /* #1F2613 a row waiting for a button press */
+    uint32_t capture;        /* #223046 a row waiting for a button press */
     uint32_t accent_hover;   /* #8FB8F2 primary button under the pointer (the site's --mark) */
 };
 

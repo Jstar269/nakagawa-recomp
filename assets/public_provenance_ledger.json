@@ -1828,7 +1828,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dc27c52cb1fae6e432bb381edbeff51e2a866e450a1c309563d7021e55fe2bb2"
+      "sha256": "2851826d4fcf30c52a9d760b94c82741b8e9b9ff6796137133b75dd68cc7d4dc"
     },
     {
       "path": "docs/PORTING.md",
@@ -10848,7 +10848,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "737f0d52fce15a6e2040abeeb7932b93fbf2972289ddd9a0e944a0acf37d2ab0"
+      "sha256": "b20dcf16c097dddb28805d2085b8a97dabcf9d1d7ea3ec55a80962c77e1a5ba7"
     },
     {
       "path": "src/ui/nk_ui_theme.h",
@@ -10860,7 +10860,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f787b6e645d837cbd88531c0ee3828362ec76efd96fcde78c97d0a79e638bb1d"
+      "sha256": "25e96aa24c9e08de31e4064d46efa3b85aaba53196b2a7ec423367136f6b941d"
     },
     {
       "path": "src/ui/nk_ui_ttf.c",

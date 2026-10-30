@@ -66,7 +66,7 @@ Where this page and the code disagree, the code is current and this page is upda
 | `art_scrim` | ground at 72% | under a badge on title art |
 | `art_label` | `#C9D6E3` | captions over title art |
 | `placeholder` | `#3A4552` | art placeholder outline, inactive glyph dots |
-| `capture` | `#1F2613` | a row waiting for a button press (C6 controls) |
+| `capture` | `#223046` | a row waiting for a button press (C6 controls): the accent at 18% over `surface_raised`, paper on it 12.4:1 |
 | `accent_light` | `#2F6FD0` | accent on a light surface, the website's light accent (4.9:1 on white; reserved, the UI has none) |
 
 ### Spacing, radii, borders
