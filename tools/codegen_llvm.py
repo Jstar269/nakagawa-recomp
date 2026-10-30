@@ -605,12 +605,13 @@ class FunctionLowering:
                 if t.backward:
                     self.yield_(t.addr)
                 self.goto(self.at_label(t.target))
+            elif t.symbol is not None:                         # into another entry
+                self.tail_transfer(self.c32(t.target), t.symbol)
             else:
                 self.store_field("pc", self.c32(t.target))
                 self.tail_transfer(self.load_field("pc"), None)
             self.enter(join)
-            if t.then_label is not None:
-                self.goto(self.at_label(t.then_label))
+            then()
 
 
 def lower(cg, elf, start, ranges, known, *, c_text: str, resume_owners=None, resumable=False,

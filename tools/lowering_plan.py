@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-PLAN_VERSION = "nakagawa-lowering-plan-1"
+PLAN_VERSION = "nakagawa-lowering-plan-2"
 
 
 class Unsupported(Exception):
@@ -88,6 +88,7 @@ class Transfer:
       jump-tail       j out of the body: TAIL-record ``target`` (``symbol`` when known)
       branch-label    a conditional branch to an in-body label
       branch-tail     a conditional branch out of the body: TAIL-record ``target``
+                      (``symbol`` when it is another entry a split body stops at)
     """
 
     addr: int
@@ -421,6 +422,13 @@ def _transfer(cg, elf, ranges, addr, w, ds, dsw, known, resume_owners, labels, c
     if cg.is_linked_call(elf, addr, w, ranges):
         return Transfer(addr, w, "call", target=target, symbol=callee(target), link_reg=link,
                         cond=cond, slot=slot, **then)
-    kind = "branch-label" if target in labels else "branch-tail"
-    return Transfer(addr, w, kind, target=target, link_reg=link, cond=cond, likely=cg.is_likely(w),
-                    backward=target <= addr, slot=slot, then_label=dup_slot_skips.get(addr))
+    if target in labels:
+        kind, entry = "branch-label", None
+    else:
+        # A split body's edge into another entry (codegen.function_flow) is the same TAIL
+        # transfer as `j` to that entry; any other target leaves through the dispatcher.
+        kind = "branch-tail"
+        entry = (symbol(target) if cg.in_ranges(target, ranges)
+                 and (target in known or target in resume_owners) else None)
+    return Transfer(addr, w, kind, target=target, symbol=entry, link_reg=link, cond=cond,
+                    likely=cg.is_likely(w), backward=target <= addr, slot=slot, **then)
