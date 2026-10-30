@@ -131,11 +131,14 @@ The **Where** column of each table names the places a code can appear:
 
 | Code | Where | Meaning |
 | --- | --- | --- |
+| `ANALYZER_ELF_INVALID` | report | The executable or one of its modules is not an ELF image the analyzer can read. |
 | `ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED` | report, route | An import entry's library-name pointer is null, or the name runs outside mapped data. |
 | `ANALYZER_IMPORT_NID_TABLE_MISSING` | report, route | The import table declares functions without NID data. |
 | `ANALYZER_IMPORT_REGIONS_MISMATCH` | report, route | The import stub and NID regions do not pair one to one. |
 | `ANALYZER_IMPORT_TABLE_INVALID` | report, route | The import table is invalid or outside mapped data. |
+| `ANALYZER_INPUT_MISSING` | report | An input the analyzer needs (the executable, a module or the module folder) is missing. |
 | `ANALYZER_INTERNAL_ERROR` | report | The analyzer stopped on an internal error. This is a defect in Nakagawa, not an unsupported game feature; the run's private diagnostic names it. |
+| `ANALYZER_NO_EXECUTABLE_REGIONS` | report | The analyzer found no executable code in the executable or one of its modules. |
 | `ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED` | report, route | The executable imports variables, which are not supported yet. |
 | `PACKAGE_INVALID_ELF` | route | The executable or a module is not a valid ELF image. |
 | `PACKAGE_INVALID_IMPORT_TABLE` | route | The import table could not be read. |
@@ -315,6 +318,7 @@ name is written as `BOOT_EVENT phase=stop reason=semantic-boundary boundary=<nam
 
 | Boundary | Issue | Meaning |
 | --- | --- | --- |
+| `aot-return-target-mismatch` | 1034 | A translated function returned to an address that is neither its caller's resume point nor the resume point of an enclosing call. |
 | `host-fiber-stack-bounds-unavailable` | 118 | The dispatcher could not measure the host fiber stack before a nested guest call. |
 | `host-fiber-stack-exhausted` | 118 | A nested guest call would leave less than the 128 KiB safety margin on the host fiber stack. |
 | `incomplete-executable-span` | 118 | An instruction fetch ran past the end of an executable span. |
@@ -324,6 +328,7 @@ name is written as `BOOT_EVENT phase=stop reason=semantic-boundary boundary=<nam
 | `libfont-startup-unavailable` | 299 | The game's libfont `module_start` could not run, so its font library never becomes ready. |
 | `misaligned-control-target` | 118 | The game jumped to a misaligned address. |
 | `misaligned-guest-memory-access` | 118 | The game made a misaligned memory access. |
+| `null-code-pointer` | 1375 | The game jumped to address 0, a null code pointer. |
 | `target-not-executable` | 118 | The game jumped to an address outside executable code. |
 | `unsupported-import-<name>` | 308 | The game called the system function `<name>`, which Nakagawa does not provide yet. |
 | `unsupported-interpreter-form` | 118 | The interpreter met an instruction form it does not run. |

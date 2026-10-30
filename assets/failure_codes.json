@@ -471,6 +471,12 @@
         "player"
       ]
     },
+    "ANALYZER_ELF_INVALID": {
+      "stage": "analyze",
+      "in": [
+        "report"
+      ]
+    },
     "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED": {
       "stage": "analyze",
       "in": [
@@ -499,7 +505,19 @@
         "route"
       ]
     },
+    "ANALYZER_INPUT_MISSING": {
+      "stage": "analyze",
+      "in": [
+        "report"
+      ]
+    },
     "ANALYZER_INTERNAL_ERROR": {
+      "stage": "analyze",
+      "in": [
+        "report"
+      ]
+    },
+    "ANALYZER_NO_EXECUTABLE_REGIONS": {
       "stage": "analyze",
       "in": [
         "report"
@@ -1388,6 +1406,9 @@
   },
   "stop_boundaries": {
     "names": {
+      "aot-return-target-mismatch": {
+        "issue": 1034
+      },
       "host-fiber-stack-bounds-unavailable": {
         "issue": 118
       },
@@ -1414,6 +1435,9 @@
       },
       "misaligned-guest-memory-access": {
         "issue": 118
+      },
+      "null-code-pointer": {
+        "issue": 1375
       },
       "target-not-executable": {
         "issue": 118
