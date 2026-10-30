@@ -6,6 +6,7 @@
 #include "nk_input_profile.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_user_data_schema.h"
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1666,9 +1667,14 @@ NkResult nk_input_profile_file_parse_json(
         return NK_ERROR_GENERIC;
     }
 
-    /* 1. schema_version. A version 1 file carries no per_title map, a version 1
-     *    or 2 file no keyboard_bindings; both migrate in memory. A future version
-     *    is never downgraded. */
+    /* 1. schema_version. Each older version migrates forward in memory, one step
+     *    at a time, as the members it could not carry are read:
+     *      v1 -> v2: no per_title map, so every disc uses the global mapping;
+     *      v2 -> v3: no keyboard_bindings, so each mapping keeps the default keys.
+     *    v0.0.1 wrote version 3. The file on disk is rewritten only by the next
+     *    save, which keeps the original as <file>.v<n>.bak first. A future version
+     *    is never downgraded: it is refused with NK_ERROR_NEWER_SCHEMA, and the
+     *    writer will not replace it (nk_user_data_schema.h). */
     JsonNode *sv = obj_get(root, "schema_version");
     if (!sv || sv->type != JSON_NUMBER) {
         diag_set(diag_buf, diag_buf_sz, "missing or non-numeric schema_version");
@@ -1679,11 +1685,12 @@ NkResult nk_input_profile_file_parse_json(
     int ver = (int)sv->u.num.num_val;
     if (ver > NK_INPUT_PROFILE_SCHEMA_VERSION) {
         diag_set(diag_buf, diag_buf_sz,
-                 "unsupported future schema_version %d (current version is %d)",
-                 ver, NK_INPUT_PROFILE_SCHEMA_VERSION);
+                 "unsupported future schema_version %d (current version is %d): a newer "
+                 "Nakagawa saved this profile; it is kept as it is and changes here are "
+                 "not saved", ver, NK_INPUT_PROFILE_SCHEMA_VERSION);
         json_free(root);
         nk_input_profile_file_init_default(doc);
-        return NK_ERROR_GENERIC;
+        return NK_ERROR_NEWER_SCHEMA;
     }
     if (ver < NK_INPUT_PROFILE_MIN_SCHEMA_VERSION) {
         diag_set(diag_buf, diag_buf_sz,
@@ -1950,6 +1957,26 @@ static NkResult profile_document_write(
         }
     }
 
+    /* A profile a newer player saved is never replaced, and an older one is kept
+       as <file>.v<n>.bak before this one replaces it (nk_user_data_schema.h). */
+    long found_version = NK_USER_DATA_VERSION_ABSENT;
+    NkResult guard = nk_user_data_prepare_replace(file_path, NK_INPUT_PROFILE_SCHEMA_VERSION,
+                                                  NK_INPUT_PROFILE_MAX_FILE_BYTES,
+                                                  &found_version);
+    if (guard == NK_ERROR_NEWER_SCHEMA) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "not saved: a newer Nakagawa saved this profile (schema_version %ld; this "
+                 "one writes %d), and it is kept as it is", found_version,
+                 NK_INPUT_PROFILE_SCHEMA_VERSION);
+        return guard;
+    }
+    if (guard != NK_OK) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "not saved: the schema_version %ld profile could not be copied to its "
+                 ".v%ld.bak backup first", found_version, found_version);
+        return guard;
+    }
+
     char tmp_path[NK_MAX_PATH + 8];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", file_path);
 
@@ -2087,7 +2114,7 @@ NkResult nk_input_profile_file_load(
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (sz <= 0 || sz > 1024 * 1024) {
+    if (sz <= 0 || sz > NK_INPUT_PROFILE_MAX_FILE_BYTES) {
         fclose(f);
         diag_set(diag_buf, diag_buf_sz, "profile file size %ld is invalid or exceeds 1 MB", sz);
         return NK_ERROR_IO;

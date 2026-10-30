@@ -1307,6 +1307,11 @@ static void write_input_class_iso(const char *path, const char *disc_id,
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
+/* The Nakagawa the next fixture package records as its builder. NULL keeps the
+ * fixtures' all-zero tool digests and empty codegen options, which record no
+ * planner and so no build identity at all. */
+static const NkPackageBuildIdentity *g_fixture_build_identity = NULL;
+
 /* `folder_enhancement_id` names the package folder (NULL: the authentic
    packages/<disc_id>, else packages/<disc_id>-enhanced-<id>), and
    `recorded_enhancement_id` the enhancement package the build's codegen options
@@ -1327,13 +1332,36 @@ static void write_runtime_package_fixture_variant(
     char codegen_options_json[512] = "{}";
     char codegen_options_digest[65] =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
-    if (recorded_enhancement_id) {
-        char options_hash_input[520];
-        snprintf(codegen_options_json, sizeof(codegen_options_json),
-                 "{\"enhancement_package_epoch\":\"aot-enhancement-package-v1\","
-                 "\"enhancement_package_id\":\"%s\","
-                 "\"enhancement_package_sha256\":\"%064d\"}",
-                 recorded_enhancement_id, 0);
+    char analyzer_sha256[65], codegen_sha256[65], runtime_source_digest[65];
+    const NkPackageBuildIdentity *builder = g_fixture_build_identity;
+    snprintf(analyzer_sha256, sizeof(analyzer_sha256), "%064d", 0);
+    snprintf(codegen_sha256, sizeof(codegen_sha256), "%064d", 0);
+    snprintf(runtime_source_digest, sizeof(runtime_source_digest), "%064d", 0);
+    if (builder) {
+        snprintf(analyzer_sha256, sizeof(analyzer_sha256), "%s", builder->analyzer_sha256);
+        snprintf(codegen_sha256, sizeof(codegen_sha256), "%s", builder->codegen_sha256);
+        snprintf(runtime_source_digest, sizeof(runtime_source_digest), "%s",
+                 builder->runtime_source_digest);
+    }
+    if (builder || recorded_enhancement_id) {
+        /* codegen_options as tools/nk_core/package_cache.py writes them: sorted keys. */
+        char options_hash_input[sizeof(codegen_options_json) + 2];
+        int used = snprintf(codegen_options_json, sizeof(codegen_options_json), "{");
+        if (recorded_enhancement_id) {
+            used += snprintf(codegen_options_json + used, sizeof(codegen_options_json) - (size_t)used,
+                             "\"enhancement_package_epoch\":\"aot-enhancement-package-v1\","
+                             "\"enhancement_package_id\":\"%s\","
+                             "\"enhancement_package_sha256\":\"%064d\"",
+                             recorded_enhancement_id, 0);
+        }
+        if (builder) {
+            used += snprintf(codegen_options_json + used, sizeof(codegen_options_json) - (size_t)used,
+                             "%s\"planner_sha256\":\"%s\"", recorded_enhancement_id ? "," : "",
+                             builder->planner_sha256);
+        }
+        used += snprintf(codegen_options_json + used, sizeof(codegen_options_json) - (size_t)used,
+                         "}");
+        assert(used > 0 && (size_t)used < sizeof(codegen_options_json));
         int options_hash_length = snprintf(options_hash_input, sizeof(options_hash_input),
                                            "%s\n", codegen_options_json);
         assert(options_hash_length > 0 &&
@@ -1405,19 +1433,20 @@ static void write_runtime_package_fixture_variant(
     fixture_sha_bytes("[]\n", 3, modules_digest);
     int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
         "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
-        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
-        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"analyzer_sha256\":\"%s\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%s\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
         "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
-        0, codegen_options_digest, 0, input_executable_sha256, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        analyzer_sha256, codegen_options_digest, codegen_sha256, input_executable_sha256,
+        NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
         modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
-        0, NK_AOT_RUNTIME_ABI_EPOCH, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%s\"}",
+        0, NK_AOT_RUNTIME_ABI_EPOCH, runtime_source_digest);
     assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
     int aot_hash_length = snprintf(aot_hash_input, sizeof(aot_hash_input), "%s\n", aot_components_json);
     int native_hash_length = snprintf(native_hash_input, sizeof(native_hash_input), "%s\n", native_components_json);
@@ -2034,6 +2063,267 @@ static void test_license_folder_request(void) {
     free(app);
 }
 
+/* Decodes one query value of a report link (up to the next '&'), or returns
+   false on a malformed escape. */
+static bool report_query_value(const char *url, const char *key, char *out, size_t out_size) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s=", key);
+    const char *p = strstr(url, needle);
+    size_t used = 0;
+    if (!p || out_size == 0) return false;
+    for (p += strlen(needle); *p && *p != '&'; p++) {
+        unsigned value;
+        if (used + 1u >= out_size) return false;
+        if (*p == '%') {
+            if (!isxdigit((unsigned char)p[1]) || !isxdigit((unsigned char)p[2]) ||
+                sscanf(p + 1, "%2x", &value) != 1) {
+                return false;
+            }
+            out[used++] = (char)value;
+            p += 2;
+        } else {
+            out[used++] = *p;
+        }
+    }
+    out[used] = '\0';
+    return true;
+}
+
+/* Every character of a report link is from RFC 3986's unreserved set, a
+   query delimiter, or a whole %XX escape. */
+static bool report_url_is_encoded(const char *url) {
+    const char *query = strchr(url, '?');
+    if (!query) return false;
+    for (const char *p = query + 1; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '%') {
+            if (!isxdigit((unsigned char)p[1]) || !isxdigit((unsigned char)p[2])) return false;
+            p += 2;
+        } else if (!(isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~' ||
+                     c == '&' || c == '=')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool report_utf8_valid(const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        size_t extra = *p < 0x80u ? 0u : (*p & 0xE0u) == 0xC0u ? 1u
+                     : (*p & 0xF0u) == 0xE0u ? 2u : (*p & 0xF8u) == 0xF0u ? 3u : 9u;
+        if (extra == 9u) return false;
+        for (size_t i = 1; i <= extra; i++) {
+            if ((p[i] & 0xC0u) != 0x80u) return false;
+        }
+        p += extra + 1u;
+    }
+    return true;
+}
+
+/* Report this game: the discussion link, the search link, the known causes
+   and the Copy details redaction. Synthetic profile folders and user names
+   only; nothing here opens a browser or the network. */
+static void test_report_this_game(void) {
+#if defined(_WIN32) || defined(_WIN64)
+#define RP_HOME "C:\\path\\Synthetic Example"
+#define RP_SEP "\\"
+#else
+#define RP_HOME "/srv/synthetic-example"
+#define RP_SEP "/"
+#endif
+    static const char user[] = "Synthetic Example";
+    char url[PLAYER_REPORT_URL_MAX + 64];
+    char value[1200];
+
+    /* Encoding: spaces, '&', '#', '+', '%', a newline and non-ASCII text all
+       become escapes; the unreserved set stays as it is. */
+    {
+        size_t used = 0;
+        assert(player_url_encode_append("a b&c#d+e%f/g\nh~i_j.k-l", url, sizeof(url),
+                                        &used, sizeof(url)));
+        assert(strcmp(url, "a%20b%26c%23d%2Be%25f%2Fg%0Ah~i_j.k-l") == 0);
+        used = 0;
+        assert(player_url_encode_append("\xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9 \xC3\xA9", url,
+                                        sizeof(url), &used, sizeof(url)));
+        assert(strcmp(url, "%E3%83%86%E3%83%8B%E3%82%B9%20%C3%A9") == 0);
+        /* A limit inside the second character's escapes stops before it. */
+        used = 0;
+        assert(!player_url_encode_append("\xE3\x83\x86\xE3\x83\x8B", url, sizeof(url),
+                                         &used, 12u));
+        assert(strcmp(url, "%E3%83%86") == 0 && used == 9u);
+    }
+
+    /* The link: title "<game> (<DISC>): <problem>", the facts and two empty
+       headed sections, and nothing else. */
+    PlayerReportFacts facts = {
+        "Synthetic & Co. #1 + \xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9", "TEST00042", "1.01",
+        "v0.0.2-dev (commit 3efc890)", "Windows (x86-64)",
+        "stopped at unsupported-import-scenetadhocinit"
+    };
+    assert(player_report_discussion_url(&facts, RP_HOME, user, url, sizeof(url)));
+    assert(strncmp(url, "https://github.com/Jstar269/nakagawa-recomp/discussions/new"
+                        "?category=compatibility-reports&title=", 97) == 0);
+    assert(strlen(url) <= PLAYER_REPORT_URL_MAX);
+    assert(report_url_is_encoded(url));
+    assert(report_query_value(url, "title", value, sizeof(value)));
+    assert(strcmp(value, "Synthetic & Co. #1 + \xE3\x83\x86\xE3\x83\x8B\xE3\x82\xB9 (TEST00042): "
+                         "stopped at unsupported-import-scenetadhocinit") == 0);
+    assert(report_query_value(url, "body", value, sizeof(value)));
+    assert(strstr(value, "- Disc ID: TEST00042\n") != NULL);
+    assert(strstr(value, "- Disc version: 1.01\n") != NULL);
+    assert(strstr(value, "- Nakagawa: v0.0.2-dev (commit 3efc890)\n") != NULL);
+    assert(strstr(value, "- System: Windows (x86-64)\n") != NULL);
+    assert(strstr(value, "- Problem: stopped at unsupported-import-scenetadhocinit\n") != NULL);
+    assert(strstr(value, "### What I did\n\n\n### What I saw\n") != NULL);
+    /* The raw '&', '#' and '+' of the title never reach the query unescaped. */
+    assert(strstr(url, "Co.%20%231%20%2B%20") != NULL);
+
+    /* The length cap: a title far longer than any disc's is cut on a
+       character boundary, the link stays under the cap, both headings stay,
+       and every escape is whole. */
+    {
+        static char long_title[4096];
+        size_t n = 0;
+        while (n + 3u < sizeof(long_title)) {
+            memcpy(long_title + n, "\xE3\x83\x86", 3u);
+            n += 3u;
+        }
+        long_title[n] = '\0';
+        PlayerReportFacts big = facts;
+        big.title_name = long_title;
+        big.problem = long_title;
+        assert(player_report_discussion_url(&big, RP_HOME, user, url, sizeof(url)));
+        assert(strlen(url) <= PLAYER_REPORT_URL_MAX);
+        assert(report_url_is_encoded(url));
+        assert(report_query_value(url, "title", value, sizeof(value)));
+        assert(report_utf8_valid(value));
+        assert(report_query_value(url, "body", value, sizeof(value)));
+        assert(report_utf8_valid(value));
+        assert(strstr(value, "### What I saw") != NULL);
+        /* A buffer smaller than the cap still ends on a whole escape. */
+        char small[300];
+        assert(player_report_discussion_url(&big, RP_HOME, user, small, sizeof(small)));
+        assert(strlen(small) < sizeof(small) && report_url_is_encoded(small));
+    }
+
+    /* No path or user name leaks: the profile folder and the user name in
+       the boundary text, the details and the run log never reach the link. */
+    {
+        PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(app != NULL);
+        nk_library_init(&app->library);
+        snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00042");
+        snprintf(app->games[0].title_name, sizeof(app->games[0].title_name),
+                 "Report Fixture");
+        snprintf(app->games[0].disc_version, sizeof(app->games[0].disc_version), "1.00");
+        app->game_count = 1;
+        const char *run_log = SR_SELFTEST_BUILD_ROOT "/player_state_report_link-last.txt";
+        write_text_file(run_log,
+                        "loading " RP_HOME RP_SEP "Games" RP_SEP "disc.iso for Synthetic Example\n"
+                        "BOOT_EVENT phase=window_ready backend=vulkan\n"
+                        "BOOT_EVENT phase=stop reason=semantic-boundary "
+                        "boundary=unsupported-import-scenetadhocinit issue=308\n");
+        player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
+                                       "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
+                                       "TEST00042", run_log);
+        snprintf(app->last_error.details, sizeof(app->last_error.details),
+                 "Seen in " RP_HOME RP_SEP "AppData by Synthetic Example");
+        snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text),
+                 "Stopped at " RP_HOME RP_SEP "x (Synthetic Example)");
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
+                 "%s", run_log);
+        assert(player_error_offers_report(&app->last_error));
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "stopped at unsupported-import-scenetadhocinit") == 0);
+        PlayerReportFacts from_card = {
+            app->games[0].title_name, app->games[0].disc_id, app->games[0].disc_version,
+            "v0.0.2-dev", player_platform_name(), value
+        };
+        assert(player_report_discussion_url(&from_card, RP_HOME, user, url, sizeof(url)));
+        assert(strstr(url, "Synthetic") == NULL && strstr(url, "synthetic") == NULL);
+        assert(strstr(url, "%5C") == NULL && strstr(url, "%2Fsrv") == NULL);
+        assert(strstr(url, "path") == NULL && strstr(url, "AppData") == NULL);
+        assert(strstr(url, "player_state_report_link") == NULL);
+        assert(player_app_report_url(app, 0, &app->last_error, "v0.0.2-dev", url, sizeof(url)));
+        assert(strstr(url, "player_state_report_link") == NULL && strstr(url, "%5C") == NULL);
+        /* A user name that is also part of the game's own title is still redacted. */
+        PlayerReportFacts named = from_card;
+        named.title_name = "Synthetic Example Tennis";
+        assert(player_report_discussion_url(&named, RP_HOME, user, url, sizeof(url)));
+        assert(strstr(url, "Synthetic") == NULL);
+        assert(strstr(url, "%3Cuser%3E%20Tennis") != NULL);
+
+        /* The known cause: the card links issue 308; the copied details name
+           the boundary, the renderer and the known issue. Paths show as "~",
+           and the user name appears nowhere, in a path or out of it. */
+        assert(player_error_known_issue(&app->last_error) == 308u);
+        static char report[PLAYER_ERROR_DETAILS_MAX + 4096];
+        assert(player_app_format_error_report_for(app, "v0.0.2-dev (commit 3efc890)",
+                                                  RP_HOME, user, report, sizeof(report)) > 0);
+        assert(strstr(report, "Nakagawa Recomp v0.0.2-dev (commit 3efc890)\n") != NULL);
+        assert(strstr(report, "Disc version: 1.00\n") != NULL);
+        assert(strstr(report, "Boundary: unsupported-import-scenetadhocinit\n") != NULL);
+        assert(strstr(report, "Known issue: #308\n") != NULL);
+        assert(strstr(report, "Renderer: vulkan\n") != NULL);
+        assert(strstr(report, "System: ") != NULL);
+        assert(strstr(report, "Details: Seen in ~" RP_SEP "AppData by <user>\n") != NULL);
+        assert(strstr(report, "Reason: Stopped at ~" RP_SEP "x (<user>)\n") != NULL);
+        assert(strstr(report, "Synthetic") == NULL && strstr(report, "synthetic-example") == NULL);
+        assert(strstr(report, "%USERPROFILE%") == NULL);
+
+        /* A crash with no boundary: no known issue, its exit code in the
+           problem, Windows crash codes in hex. */
+        player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, -1073741819, 9000u,
+                                       "TEST00042", NULL);
+        assert(player_error_offers_report(&app->last_error));
+        assert(player_error_known_issue(&app->last_error) == 0u);
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "RUNTIME_ERROR_EXIT, exit code 0xC0000005") == 0);
+        player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, 3, 120u,
+                                       "TEST00042", NULL);
+        assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
+        assert(strcmp(value, "RUNTIME_PREMATURE_EXIT, exit code 3") == 0);
+        /* A card that is not about a game stopping offers no report. */
+        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library", "x",
+                             "Return to Library", VIEW_LIBRARY);
+        assert(!player_error_offers_report(&app->last_error));
+        assert(app->last_error.stop_boundary[0] == '\0');
+        /* The title page's report has no problem line. */
+        assert(player_app_report_url(app, 0, NULL, "v0.0.2-dev", url, sizeof(url)));
+        assert(report_query_value(url, "title", value, sizeof(value)));
+        assert(strcmp(value, "Report Fixture (TEST00042)") == 0);
+        assert(report_query_value(url, "body", value, sizeof(value)));
+        assert(strstr(value, "Problem") == NULL);
+        assert(!player_app_report_url(app, 1, NULL, "v0.0.2-dev", url, sizeof(url)));
+        remove(run_log);
+        free(app);
+    }
+
+    /* The known causes: imports and interpreter boundaries are tracked by
+       #308; boundaries whose issues are closed, and unknown names, are not. */
+    assert(player_known_issue_for_boundary("unsupported-import-scenetadhocinit") == 308u);
+    assert(player_known_issue_for_boundary("unsupported-import-0x12345678") == 308u);
+    assert(player_known_issue_for_boundary("unsupported-interpreter-form") == 308u);
+    assert(player_known_issue_for_boundary("interpreter-rejection") == 308u);
+    assert(player_known_issue_for_boundary("host-fiber-stack-exhausted") == 0u);
+    assert(player_known_issue_for_boundary("libfont-startup-unavailable") == 0u);
+    assert(player_known_issue_for_boundary("unsupported-interpreter-form-2") == 0u);
+    assert(player_known_issue_for_boundary("") == 0u);
+    assert(player_known_issue_for_boundary(NULL) == 0u);
+
+    /* The other links. */
+    assert(player_report_search_url("TEST00042", url, sizeof(url)));
+    assert(strcmp(url, "https://github.com/Jstar269/nakagawa-recomp/discussions/categories/"
+                       "compatibility-reports?discussions_q=TEST00042") == 0);
+    assert(player_report_issue_url(308u, url, sizeof(url)));
+    assert(strcmp(url, "https://github.com/Jstar269/nakagawa-recomp/issues/308") == 0);
+    assert(!player_report_issue_url(0u, url, sizeof(url)));
+#undef RP_HOME
+#undef RP_SEP
+    printf("[PLAYER_STATE_TEST] report this game links and redaction PASS\n");
+}
+
 static void test_display_path_hides_profile_folder(void) {
     /* Each platform's own path spelling: the profile folder and its separator. */
 #if defined(_WIN32) || defined(_WIN64)
@@ -2205,6 +2495,21 @@ static int player_state_package_builder_child(int argc, char **argv) {
         const char *title_id = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID");
         const char *source_media = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA");
         if (!title_id || !title_id[0]) return 92;
+        /* A real build records the Nakagawa it ran from: the source tree above
+           tools/nk_cli.py (argv[1]). A tree without the tool files records
+           none, as the fixtures always did. */
+        static NkPackageBuildIdentity built_by;
+        char source_root[NK_MAX_PATH];
+        snprintf(source_root, sizeof(source_root), "%s", argv[1]);
+        for (int level = 0; level < 2; level++) {
+            char *cut = strrchr(source_root, '/');
+            char *back = strrchr(source_root, '\\');
+            if (back && (!cut || back > cut)) cut = back;
+            if (cut) *cut = '\0';
+        }
+        if (nk_title_manifest_source_build_identity(source_root, &built_by)) {
+            g_fixture_build_identity = &built_by;
+        }
         char executable[128];
         snprintf(executable, sizeof(executable), "%s.exe", title_id);
         bool enhanced = false;
@@ -2292,6 +2597,139 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
 /* #1282, #1286, #1280: the cards say what happened in plain words. Codes and
    raw boundaries go to the details, the developer log and the copied report,
    never the badge or the headline. */
+/* One platform seam (docs/PLATFORM_PORTABILITY.md): what main.c and
+   player_state.c used to decide with #if now comes from nk_platform.h and
+   package_builder.h, and each host's words are reachable on every host. */
+static bool same_env_value(const char *a, const char *b) {
+    return (a == NULL && b == NULL) || (a != NULL && b != NULL && strcmp(a, b) == 0);
+}
+
+static void test_platform_seam_answers_for_this_host(void) {
+    NkHostKind host = nk_platform_host_kind();
+#if defined(_WIN32) || defined(_WIN64)
+    assert(host == NK_HOST_WINDOWS);
+    assert(nk_platform_is_path_separator('\\') && nk_platform_is_path_separator('/'));
+    assert(nk_platform_path_chars_equal('A', 'a'));
+    assert(nk_platform_path_chars_equal('/', '\\'));
+    assert(nk_platform_can_front_process_windows());
+    assert(package_builder_toolchain_download_available());
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "SDL3_ttf.dll") == 0);
+    assert(same_env_value(nk_platform_env_home_dir(), getenv("USERPROFILE")));
+    assert(same_env_value(nk_platform_env_user_name(), getenv("USERNAME")));
+#else
+#if defined(__ANDROID__)
+    assert(host == NK_HOST_ANDROID);
+#elif defined(__APPLE__)
+    assert(host == NK_HOST_MACOS);
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "libSDL3_ttf.0.dylib") == 0);
+#elif defined(__linux__)
+    assert(host == NK_HOST_LINUX);
+    assert(strcmp(nk_platform_sdl3_ttf_library_names()[0], "libSDL3_ttf.so.0") == 0);
+#endif
+    assert(!nk_platform_is_path_separator('\\') && nk_platform_is_path_separator('/'));
+    assert(!nk_platform_path_chars_equal('A', 'a'));
+    assert(!nk_platform_path_chars_equal('/', '\\'));
+    assert(!nk_platform_can_front_process_windows());
+    assert(!package_builder_toolchain_download_available());
+    assert(same_env_value(nk_platform_env_home_dir(), getenv("HOME")));
+    assert(same_env_value(nk_platform_env_user_name(), getenv("USER")));
+    {
+        /* POSIX arguments are already UTF-8: main's array is kept. */
+        char arg0[] = "player";
+        char *args[] = { arg0, NULL };
+        char **argv = args;
+        int argc = 1;
+        assert(nk_platform_init_utf8_main(&argc, &argv));
+        assert(argc == 1 && argv == args);
+    }
+#endif
+    assert(nk_platform_path_chars_equal('x', 'x'));
+    assert(!nk_platform_path_chars_equal('x', 'y'));
+    assert(nk_platform_process_id() != 0ul);
+
+    /* The launcher's library candidates come from the same table. */
+    {
+        char candidates[4][MAX_PATH_LEN];
+        const char *const *names = nk_platform_sdl3_ttf_library_names();
+        int n = player_app_ttf_library_candidates(NULL, candidates, 4);
+        assert(n >= 1);
+        for (int i = 0; i < n; i++) assert(strcmp(candidates[i], names[i]) == 0);
+        assert(names[n] == NULL);
+    }
+
+    /* A failed rename reports the host's own error code. */
+    {
+        char missing[MAX_PATH_LEN];
+        snprintf(missing, sizeof(missing), "%s%cplatform-seam-missing-%lu",
+                 SR_SELFTEST_BUILD_ROOT, nk_platform_path_separator(),
+                 nk_platform_process_id());
+        assert(nk_rename_utf8(missing, SR_SELFTEST_BUILD_ROOT "/platform-seam-target") != 0);
+        assert(nk_platform_last_os_error() != 0);
+    }
+
+    /* A system font, when the backend finds one, is a file that opens. */
+    {
+        char font[MAX_PATH_LEN];
+        if (nk_platform_find_system_ui_font(font, sizeof(font))) {
+            FILE *f = nk_fopen_utf8(font, "rb");
+            assert(f != NULL);
+            fclose(f);
+        }
+        assert(!nk_platform_find_system_ui_font(NULL, 0));
+    }
+
+    /* Every host's card words, on every host. */
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS),
+                  "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. "
+                  "Set LOCALAPPDATA or APPDATA") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_MACOS),
+                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Set HOME") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_LINUX),
+                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Set XDG_DATA_HOME or HOME") == 0);
+    assert(strcmp(player_data_dir_unavailable_text(NK_HOST_ANDROID),
+                  player_data_dir_unavailable_text(NK_HOST_LINUX)) == 0);
+    assert(strcmp(player_folder_open_failure_hint(NK_HOST_WINDOWS),
+                  "Windows could not open it.") == 0);
+    assert(strstr(player_folder_open_failure_hint(NK_HOST_LINUX), "xdg-utils") != NULL);
+    {
+        char message[1024];
+        player_launcher_unavailable_message_for_host(NK_HOST_WINDOWS, "", false,
+                                                     message, sizeof(message));
+        assert(strstr(message, "Extract the ZIP again") != NULL);
+        assert(strstr(message, "nakagawa_player.exe") != NULL);
+        player_launcher_unavailable_message_for_host(NK_HOST_LINUX, "", false,
+                                                     message, sizeof(message));
+        assert(strstr(message, "ZIP") == NULL);
+        assert(strstr(message, "tools/stage_install.py") != NULL);
+        char here[1024];
+        player_launcher_unavailable_message("", false, here, sizeof(here));
+        player_launcher_unavailable_message_for_host(host, "", false, message, sizeof(message));
+        assert(strcmp(here, message) == 0);
+    }
+
+    /* The file:// URL a non-Windows host opens folders with (player_host.c). */
+    {
+        char url[64];
+        assert(player_file_url("/srv/a b/Saves-1_x.~:", url, sizeof(url)));
+        assert(strcmp(url, "file:///srv/a%20b/Saves-1_x.~:") == 0);
+        assert(player_file_url("/caf\xc3\xa9", url, sizeof(url)));
+        assert(strcmp(url, "file:///caf%C3%A9") == 0);
+        assert(player_file_url("/%", url, sizeof(url)));
+        assert(strcmp(url, "file:///%25") == 0);
+        assert(!player_file_url("relative/path", url, sizeof(url)));
+        assert(!player_file_url("\\\\server\\share", url, sizeof(url)));  /* UNC */
+        assert(!player_file_url(NULL, url, sizeof(url)));
+        assert(!player_file_url("/x", url, 7));       /* "file://" alone does not fit */
+        assert(!player_file_url("/ab", url, 10));     /* "file:///ab" needs 11 */
+        assert(player_file_url("/ab", url, 11));
+        assert(!player_file_url("/ ", url, 11));      /* "file:///%20" needs 12 */
+        assert(player_file_url("/ ", url, 12));
+    }
+    printf("[PLAYER_STATE_TEST] platform seam answers for this host PASS\n");
+}
+
 /* #306: a card names this platform's fix. A Linux build compiled without
    SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
    and a missing data root named Windows' LOCALAPPDATA. */
@@ -2318,8 +2756,8 @@ static void test_platform_cards_name_this_platform(void) {
     assert(strstr(message, "ZIP") == NULL);
     assert(strstr(message, "nakagawa_player.exe") == NULL);
     assert(strstr(message, "tools/stage_install.py") != NULL);
-    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "LOCALAPPDATA") == NULL);
-    assert(strstr(PLAYER_DATA_DIR_UNAVAILABLE_TEXT, "Windows") == NULL);
+    assert(strstr(player_data_dir_unavailable_text(nk_platform_host_kind()), "LOCALAPPDATA") == NULL);
+    assert(strstr(player_data_dir_unavailable_text(nk_platform_host_kind()), "Windows") == NULL);
 
     /* The production card, with no data root to resolve. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -2684,6 +3122,362 @@ static void test_skipped_showcase_logs_its_reason(void) {
 /* #1277: the main loop asks for the build outcome every frame. A failure card
    and a cancel's return to the Library are shown once per build session, so
    the card can be dismissed and the Library left. */
+static void write_tree_file(const char *root, const char *relative, const char *text) {
+    char path[NATIVE_TEST_PATH_MAX + 256];
+    char sep = nk_platform_path_separator();
+    int written = snprintf(path, sizeof(path), "%s%c%s", root, sep, relative);
+    assert(written > 0 && (size_t)written < sizeof(path));
+    for (char *p = path; *p; p++) {
+        if (*p == '/') *p = sep;
+    }
+    char *leaf = strrchr(path, sep);
+    assert(leaf != NULL);
+    *leaf = '\0';
+    assert(nk_platform_mkdir_p(path));
+    *leaf = sep;
+    write_text_file(path, text);
+}
+
+/* The identity a build records about its Nakagawa is computed twice: by
+ * tools/nk_core/package_cache.py when a package is built, and by the player
+ * when it asks whether a package is outdated. They must agree byte for byte,
+ * or every package would look outdated. The expected digests come from
+ * package_cache.source_tree_digest and hashlib.sha256 over this same tree:
+ * suffixes compared without case, hidden files counted, other files left out
+ * of the source folders, every file of assets/vfpu counted, only the listed
+ * third_party folders, the Makefile and mk/<name>.mk rules (src/player is not
+ * in a package and does not count), paths in code point order ("Z.c" before
+ * "a.c"). */
+static void test_build_identity_matches_the_python_digest(void) {
+    char root[NATIVE_TEST_PATH_MAX + 64];
+    snprintf(root, sizeof(root), "%s%cbuild-identity-tree", native_test_get_root(),
+             nk_platform_path_separator());
+    static const char *const files[][2] = {
+        {"Makefile", "all:\n"},
+        {"src/rt/a.c", "int a;\n"},
+        {"src/rt/sub/B.H", "#define B 1\n"},
+        {"src/rt/.hidden.c", "int hidden;\n"},
+        {"src/rt/notes.txt", "not hashed\n"},
+        {"src/core/Z.c", "int z;\n"},
+        {"src/core/a.c", "int ca;\n"},
+        {"src/player/ui/d.hpp", "int d;\n"},
+        {"src/ui/e.h", "int e;\n"},
+        {"third_party/stb/s.h", "int s;\n"},
+        {"third_party/other/o.h", "int o;\n"},
+        {"mk/x.mk", "X := 1\n"},
+        {"mk/readme.txt", "not a rule\n"},
+        {"assets/vfpu/lut.dat", "lut\n"},
+        {"assets/vfpu/sub/more.bin", "more\n"},
+        {"tools/analyze.py", "analyzer\n"},
+        {"tools/codegen.py", "codegen\n"},
+        {"tools/title_codegen_plan.py", "planner\n"},
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        write_tree_file(root, files[i][0], files[i][1]);
+    }
+    NkPackageBuildIdentity identity;
+    assert(nk_title_manifest_source_build_identity(root, &identity));
+    assert(strcmp(identity.runtime_source_digest,
+                  "61aa969c1ec9460b856e36b5f4703a2f809bbd6d385d640f1ec930ade70da478") == 0);
+    assert(strcmp(identity.analyzer_sha256,
+                  "23e136a01229cfb27a5d25b96ee0a6320b3cfa394e2ffeb369cc4c5c7c444cef") == 0);
+    assert(strcmp(identity.codegen_sha256,
+                  "bd472cf656c14d9ac711ff39655f747c8d25f97d1f735905bd771a40d0054929") == 0);
+    assert(strcmp(identity.planner_sha256,
+                  "a2b0739fba9eb7787e30e81257d6d7b0ecec03bcf377f0ad0a2888506fc3ab43") == 0);
+    /* Any runtime source change is a different Nakagawa. */
+    write_tree_file(root, "src/rt/a.c", "int a2;\n");
+    NkPackageBuildIdentity changed;
+    assert(nk_title_manifest_source_build_identity(root, &changed));
+    assert(!nk_package_build_identity_equal(&identity, &changed));
+    assert(strcmp(identity.analyzer_sha256, changed.analyzer_sha256) == 0);
+    /* Without the translator's files there is no build to compare with. */
+    char missing[NATIVE_TEST_PATH_MAX + 128];
+    snprintf(missing, sizeof(missing), "%s%ctools%ccodegen.py", root,
+             nk_platform_path_separator(), nk_platform_path_separator());
+    assert(nk_remove_utf8(missing) == 0);
+    assert(!nk_title_manifest_source_build_identity(root, &changed));
+    assert(test_remove_tree(root));
+    printf("[PLAYER_STATE_TEST] package build identity matches package_cache.py PASS\n");
+}
+
+static void scan_outdated(PlayerApp *app, const char *version) {
+    PlayerOutdatedScan *scan = (PlayerOutdatedScan *)calloc(1, sizeof(*scan));
+    assert(scan != NULL);
+    assert(player_app_outdated_scan_begin(app, scan));
+    player_outdated_scan_run(scan);
+    player_app_outdated_scan_finish(app, scan, version);
+    free(scan);
+}
+
+static bool queue_file_exists(const PlayerApp *app) {
+    char path[MAX_PATH_LEN];
+    assert(player_app_rebuild_queue_path(app, path, sizeof(path)));
+    return nk_platform_file_exists(path);
+}
+
+/* Games built by an older Nakagawa (owner decision, 2026-10-29), through the
+ * same package-builder child as the rebuild test above. `app` holds one
+ * experimental title with a valid package and a disc in place; install_root
+ * is the build's source tree. A v0.0.1 package has the same format and ABI
+ * epochs as this build's: only its recorded build identity differs. */
+static void test_outdated_packages_rebuild(PlayerApp *app, const char *user_root,
+                                           const char *install_root,
+                                           const char *source_media_json) {
+    char sep = nk_platform_path_separator();
+    char package_path[NATIVE_TEST_PATH_MAX + 192];
+    char reason[2048];
+    char hash_before[65];
+    char hash_after[65];
+    char text[256];
+    bool offers = false;
+    PlayerRebuildCard card;
+
+    write_tree_file(install_root, "tools/analyze.py", "analyzer, this version\n");
+    write_tree_file(install_root, "tools/codegen.py", "codegen, this version\n");
+    write_tree_file(install_root, "tools/title_codegen_plan.py", "planner, this version\n");
+    write_tree_file(install_root, "src/rt/runtime.c", "int runtime_this_version;\n");
+    NkPackageBuildIdentity current;
+    assert(nk_title_manifest_source_build_identity(install_root, &current));
+    NkPackageBuildIdentity older = current;
+    /* The runtime source digest measured on the v0.0.1 tag. */
+    snprintf(older.runtime_source_digest, sizeof(older.runtime_source_digest), "%s",
+             "d1de93861db9fa8c572e2ff473bc6aab1245e8338469d488e5cebbe0fce80beb");
+
+    /* ULUS99998: built by v0.0.1, disc in place. ULUS99997: built by v0.0.1,
+       disc gone. ULUS99996: built by this Nakagawa. ULUS99995: records no
+       identity (not judged). */
+    static const char *const discs[] = {"ULUS99997", "ULUS99996", "ULUS99995"};
+    for (int i = 0; i < 3; i++) {
+        GameRecord *game = &app->games[1 + i];
+        memset(game, 0, sizeof(*game));
+        snprintf(game->disc_id, sizeof(game->disc_id), "%s", discs[i]);
+        snprintf(game->title_id, sizeof(game->title_id), "experimental-ulus%s", discs[i] + 4);
+        snprintf(game->title_name, sizeof(game->title_name), "Outdated fixture %d", i + 2);
+        snprintf(game->selected_executable, sizeof(game->selected_executable), "EBOOT.BIN");
+        snprintf(game->iso_path, sizeof(game->iso_path), "%s%cgone-%s.iso", user_root, sep,
+                 discs[i]);
+        game->is_experimental = true;
+        g_fixture_build_identity = i == 0 ? &older : i == 1 ? &current : NULL;
+        write_runtime_package_fixture_with_source_media(
+            user_root, game->disc_id, game->title_id, SR_CPUSTATE_ABI_VERSION,
+            "fixture.exe", FIXTURE_SHA256, NULL, source_media_json);
+    }
+    g_fixture_build_identity = &older;
+    write_runtime_package_fixture_with_source_media(
+        user_root, app->games[0].disc_id, app->games[0].title_id, SR_CPUSTATE_ABI_VERSION,
+        "experimental-ulus99998.exe", FIXTURE_SHA256, NULL, source_media_json);
+    g_fixture_build_identity = NULL;
+    app->game_count = 4;
+    memset(&app->outdated, 0, sizeof(app->outdated));
+    memset(&app->rebuild_queue, 0, sizeof(app->rebuild_queue));
+    snprintf(app->settings_path, sizeof(app->settings_path), "%s%csettings.json",
+             user_root, sep);
+    app->settings.rebuild_prompt_version[0] = '\0';
+    app->active_view = VIEW_LIBRARY;
+    app->last_error.error_code[0] = '\0';
+    player_app_runtime_package_cache_invalidate(app);
+
+    /* The v0.0.1 package is outdated, and still a valid package: nothing
+       about it is incompatible. */
+    assert(player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                               sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    NkPackageBuildIdentity recorded;
+    assert(nk_title_manifest_aot_package_build_identity(user_root, "ULUS99998", &recorded));
+    assert(!nk_package_build_identity_equal(&recorded, &current));
+    assert(!nk_title_manifest_aot_package_build_identity(user_root, "ULUS99995", &recorded));
+    assert(!player_app_game_is_outdated(app, &app->games[0]));   /* no scan yet */
+    scan_outdated(app, "9.9.9-test");
+    assert(app->outdated.identity_known);
+    assert(nk_package_build_identity_equal(&app->outdated.identity, &current));
+    assert(player_app_outdated_count(app) == 2);
+    assert(player_app_game_is_outdated(app, &app->games[0]));
+    assert(player_app_game_is_outdated(app, &app->games[1]));
+    assert(!player_app_game_is_outdated(app, &app->games[2]));
+    assert(!player_app_game_is_outdated(app, &app->games[3]));
+    assert(player_app_rebuild_card(app, &app->games[0], &card));
+    assert(strcmp(card.detail, "Built by an older Nakagawa. Rebuild for the latest fixes.") == 0);
+    assert(strcmp(card.word, "Older build") == 0 && card.can_rebuild && !card.rebuilding);
+    assert(player_app_rebuild_card(app, &app->games[1], &card));
+    assert(strcmp(card.word, "Disc missing") == 0 && !card.can_rebuild);
+    assert(strstr(card.detail, "Add the disc again") != NULL);
+    assert(!player_app_rebuild_card(app, &app->games[2], &card));
+    printf("[PLAYER_STATE_TEST] a v0.0.1-built package is outdated and still valid PASS\n");
+
+    /* The prompt: once per update, with the count. */
+    assert(player_app_rebuild_prompt_visible(app));
+    assert(!player_app_rebuild_banner_visible(app));
+    (void)player_app_rebuild_prompt_text(app, text, sizeof(text));
+    assert(strcmp(text, "2 games were built by an older Nakagawa. Rebuild them to get this "
+                        "version's fixes and new features.") == 0);
+    player_app_rebuild_prompt_answer(app, false);
+    assert(!player_app_rebuild_prompt_visible(app));
+    assert(strcmp(app->settings.rebuild_prompt_version, "9.9.9-test") == 0);
+    assert(!app->rebuild_queue.active);
+    assert(player_app_rebuild_banner_visible(app));
+    (void)player_app_rebuild_banner_text(app, text, sizeof(text), &offers);
+    assert(strcmp(text, "2 games were built by an older Nakagawa.") == 0 && offers);
+    {
+        PlayerApp *restart = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(restart != NULL);
+        assert(player_app_load_settings(restart, app->settings_path) == NK_OK);
+        assert(strcmp(restart->settings.rebuild_prompt_version, "9.9.9-test") == 0);
+        memcpy(restart->games, app->games, sizeof(GameRecord) * 4u);
+        restart->game_count = 4;
+        snprintf(restart->runtime_root, sizeof(restart->runtime_root), "%s", app->runtime_root);
+        snprintf(restart->install_root, sizeof(restart->install_root), "%s", app->install_root);
+        scan_outdated(restart, "9.9.9-test");
+        assert(player_app_outdated_count(restart) == 2);
+        assert(!player_app_rebuild_prompt_visible(restart));   /* Later was the answer */
+        assert(player_app_rebuild_banner_visible(restart));    /* until none remain */
+        scan_outdated(restart, "9.9.10-test");
+        assert(player_app_rebuild_prompt_visible(restart));    /* the next update asks again */
+        player_app_rebuild_prompt_answer(restart, true);
+        assert(strcmp(restart->settings.rebuild_prompt_version, "9.9.10-test") == 0);
+        assert(restart->rebuild_queue.active && restart->rebuild_queue.count == 2);
+        scan_outdated(restart, "9.9.10-test");
+        assert(!player_app_rebuild_prompt_visible(restart));   /* not after Rebuild all */
+        restart->rebuild_queue.active = false;
+        assert(player_app_rebuild_queue_save(restart));       /* removes its file */
+        free(restart);
+    }
+    assert(!queue_file_exists(app));
+    player_app_rebuild_banner_dismiss(app);
+    assert(!player_app_rebuild_banner_visible(app));
+    printf("[PLAYER_STATE_TEST] the rebuild prompt shows once per update, the banner until none remain PASS\n");
+
+    /* Launching an outdated game reminds once; Play anyway launches. */
+    app->request_launch = false;
+    assert(!player_app_request_play(app, 0));
+    assert(player_app_rebuild_reminder_visible(app) && !app->request_launch);
+    player_app_rebuild_reminder_play_anyway(app);
+    assert(!player_app_rebuild_reminder_visible(app));
+    assert(app->request_launch && app->request_launch_index == 0);
+    app->request_launch = false;
+    assert(player_app_request_play(app, 0));
+    /* With its disc gone a rebuild cannot follow, so it just plays. */
+    app->request_launch = false;
+    assert(player_app_request_play(app, 1) && app->request_launch_index == 1);
+    app->request_launch = false;
+    /* Rebuild now enqueues. */
+    app->outdated.played_anyway_count = 0;
+    assert(!player_app_request_play(app, 0));
+    player_app_rebuild_reminder_rebuild_now(app);
+    assert(!app->request_launch && !player_app_rebuild_reminder_visible(app));
+    assert(app->rebuild_queue.active && app->rebuild_queue.count == 1);
+    assert(strcmp(app->rebuild_queue.entries[0].disc_id, "ULUS99998") == 0);
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_PENDING);
+    assert(player_app_rebuild_card(app, &app->games[0], &card) &&
+           strcmp(card.word, "Queued") == 0 && !card.can_rebuild);
+    assert(player_app_rebuild_all(app));
+    assert(app->rebuild_queue.count == 2);
+    assert(!player_app_rebuild_all(app));                     /* nothing more to add */
+    assert(queue_file_exists(app));
+    assert(player_app_rebuild_banner_visible(app));           /* the count, though hidden */
+    (void)player_app_rebuild_banner_text(app, text, sizeof(text), &offers);
+    assert(strcmp(text, "Rebuilding 1 of 2") == 0 && !offers);
+    printf("[PLAYER_STATE_TEST] Play anyway launches, Rebuild now enqueues PASS\n");
+
+    /* A restart resumes the queue from its file. */
+    {
+        PlayerApp *resumed = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(resumed != NULL);
+        snprintf(resumed->settings_path, sizeof(resumed->settings_path), "%s",
+                 app->settings_path);
+        memcpy(resumed->games, app->games, sizeof(GameRecord) * 4u);
+        resumed->game_count = 4;
+        assert(player_app_rebuild_queue_load(resumed));
+        assert(resumed->rebuild_queue.active && resumed->rebuild_queue.count == 2);
+        assert(strcmp(resumed->rebuild_queue.entries[0].disc_id, "ULUS99998") == 0);
+        assert(strcmp(resumed->rebuild_queue.entries[1].disc_id, "ULUS99997") == 0);
+        assert(resumed->rebuild_queue.entries[0].state == PLAYER_REBUILD_PENDING &&
+               resumed->rebuild_queue.entries[1].state == PLAYER_REBUILD_PENDING);
+        free(resumed);
+    }
+    printf("[PLAYER_STATE_TEST] the rebuild queue resumes after a restart PASS\n");
+
+    /* A failed rebuild keeps the old package, says so, and the queue goes on:
+       the next title's disc is missing, so it is skipped and the queue ends. */
+    snprintf(package_path, sizeof(package_path), "%s%cpackages%cULUS99998%cpackage.json",
+             user_root, sep, sep, sep);
+    fixture_sha_file(package_path, hash_before);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "failure");
+    player_app_rebuild_queue_step(app);
+    assert(app->build_session.is_building);
+    assert(app->active_view == VIEW_LIBRARY);                 /* in the background */
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_ACTIVE);
+    assert(player_app_rebuild_queue_owns_build(app));
+    assert(player_app_rebuild_card(app, &app->games[0], &card) && card.rebuilding);
+    assert(strcmp(card.word, "Rebuilding") == 0);
+    app->request_launch = false;
+    assert(!player_app_request_play(app, 0) && !app->request_launch);   /* its own rebuild runs */
+    assert(player_app_request_play(app, 2) && app->request_launch_index == 2);  /* others play */
+    app->request_launch = false;
+    player_app_rebuild_queue_step(app);                       /* one build at a time */
+    assert(app->rebuild_queue.entries[1].state == PLAYER_REBUILD_PENDING);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_failed);
+    assert(!player_app_apply_build_outcome(app));
+    assert(app->active_view == VIEW_LIBRARY && app->last_error.error_code[0] == '\0');
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_FAILED);
+    assert(player_app_rebuild_card(app, &app->games[0], &card));
+    assert(strcmp(card.detail, "The rebuild did not finish. The old build still works.") == 0);
+    fixture_sha_file(package_path, hash_after);
+    assert(strcmp(hash_before, hash_after) == 0);
+    player_app_runtime_package_cache_invalidate(app);
+    assert(player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                               sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    player_app_rebuild_queue_step(app);
+    assert(app->rebuild_queue.entries[1].state == PLAYER_REBUILD_NO_DISC);
+    assert(!app->build_session.is_building);
+    assert(!app->rebuild_queue.active && !queue_file_exists(app));
+    assert(player_app_rebuild_card(app, &app->games[1], &card) &&
+           strcmp(card.word, "Disc missing") == 0);
+    printf("[PLAYER_STATE_TEST] a failed rebuild keeps the old package; a missing disc is skipped PASS\n");
+
+    /* A rebuild that passes leaves a package this Nakagawa built. */
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+    assert(player_app_rebuild_enqueue(app, "ULUS99998"));
+    assert(app->rebuild_queue.count == 1);                    /* a new run */
+    player_app_rebuild_queue_step(app);
+    assert(app->build_session.is_building);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_complete);
+    assert(player_app_rebuild_queue_owns_build(app));
+    player_app_runtime_package_cache_invalidate(app);
+    /* The check main.c runs after a build, and its outcome. */
+    player_app_rebuild_queue_build_checked(
+        app, player_app_validate_runtime_package(app, &app->games[0], NULL, reason,
+                                                 sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    assert(app->rebuild_queue.entries[0].state == PLAYER_REBUILD_DONE);
+    assert(!app->rebuild_queue.active && app->outdated.scan_requested);
+    assert(player_app_outdated_count(app) == 1);
+    scan_outdated(app, "9.9.9-test");
+    assert(!player_app_game_is_outdated(app, &app->games[0]));
+    assert(player_app_outdated_count(app) == 1);
+    printf("[PLAYER_STATE_TEST] a passing rebuild leaves a current package PASS\n");
+
+    /* A queue file a newer player wrote is left alone and not resumed. */
+    char queue_path[MAX_PATH_LEN];
+    assert(player_app_rebuild_queue_path(app, queue_path, sizeof(queue_path)));
+    write_text_file(queue_path,
+        "{\"format\":\"nakagawa-rebuild-queue\",\"schema_version\":2,"
+        "\"titles\":[{\"disc_id\":\"ULUS99997\",\"state\":\"pending\"}]}\n");
+    assert(!player_app_rebuild_queue_load(app));
+    assert(!app->rebuild_queue.active && nk_platform_file_exists(queue_path));
+    write_text_file(queue_path,
+        "{\"format\":\"nakagawa-rebuild-queue\",\"schema_version\":1,\"extra\":true,"
+        "\"titles\":[{\"disc_id\":\"ULUS99997\",\"state\":\"pending\"}]}\n");
+    assert(!player_app_rebuild_queue_load(app));
+    assert(nk_remove_utf8(queue_path) == 0);
+    printf("[PLAYER_STATE_TEST] a newer rebuild queue file is not resumed PASS\n");
+
+    app->game_count = 1;
+    memset(&app->outdated, 0, sizeof(app->outdated));
+    memset(&app->rebuild_queue, 0, sizeof(app->rebuild_queue));
+    app->settings_path[0] = '\0';
+}
+
 static void test_build_outcome_is_shown_once_per_session(void) {
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(app != NULL);
@@ -3019,6 +3813,37 @@ static void test_package_build_lifecycle(const char *self_executable) {
         printf("[PLAYER_STATE_TEST] enhanced build writes its own package, authentic untouched PASS\n");
     }
 
+    /* A package a newer Nakagawa built says so on its card, before any member
+       check its newer layout would fail, and the player leaves it as it is. */
+    {
+        static const char current_format[] =
+            "\"format\":\"nakagawa-aot-package\",\"schema_version\":2,";
+        char line[256];
+        snprintf(package_path, sizeof(package_path), "%s%cpackages%c%s%cpackage.json",
+                 user_root, sep, sep, rebuild_app->games[0].disc_id, sep);
+        char *package_text = read_text_file(package_path);
+        char *at = strstr(package_text, current_format);
+        assert(at != NULL);
+        at[strlen(current_format) - 2u] = '3';
+        write_text_file(package_path, package_text);
+        player_app_runtime_package_cache_invalidate(rebuild_app);
+        assert(player_app_validate_runtime_package(
+                   rebuild_app, &rebuild_app->games[0], NULL,
+                   incompatible_reason, sizeof(incompatible_reason)) ==
+               NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(strstr(incompatible_reason,
+                      "built by a newer Nakagawa (package format 3; this player reads 2)") !=
+               NULL);
+        assert(player_incompatible_reason_line(incompatible_reason, line, sizeof(line)) > 0);
+        static const char card_line[] = "No longer fits this player: built by a newer Nakagawa";
+        assert(strncmp(line, card_line, strlen(card_line)) == 0);
+        char *after = read_text_file(package_path);
+        assert(strcmp(after, package_text) == 0);
+        free(after);
+        free(package_text);
+        printf("[PLAYER_STATE_TEST] a newer package format is named on its card PASS\n");
+    }
+
     write_runtime_package_fixture_with_source_media(
         user_root, rebuild_app->games[0].disc_id,
         rebuild_app->games[0].title_id, incompatible_abi,
@@ -3150,6 +3975,8 @@ static void test_package_build_lifecycle(const char *self_executable) {
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_OK);
     printf("[PLAYER_STATE_TEST] synthetic package reliability 10 builds, rebuild, reuse PASS\n");
+
+    test_outdated_packages_rebuild(rebuild_app, user_root, install_root, source_media_json);
 
     /* A profile that binds no executable gives the entry nothing to adopt. */
     write_experimental_profile_fixture(
@@ -3772,6 +4599,198 @@ static void psn_test_refused(const char *path, const char *want_code, const char
     assert(package.iso_path[0] == '\0');
 }
 
+/* ---- Versioned per-user data ---------------------------------------------------------
+   The files fixtures/user_data holds were written by earlier players' own writers. Each
+   loads, migrates forward and round-trips here; an older file is kept byte for byte as
+   <file>.v<n>.bak before the first save replaces it; a newer one is refused by name and
+   never replaced (src/core/nk_user_data_schema.h). */
+
+#define VERSIONED_DATA_ROOT SR_SELFTEST_BUILD_ROOT "/versioned_user_data"
+
+static void versioned_copy_fixture(const char *fixture, const char *destination) {
+    char *bytes = read_text_file(fixture);
+    write_text_file(destination, bytes);
+    free(bytes);
+}
+
+static bool versioned_file_equals(const char *path, const char *fixture) {
+    if (!nk_platform_file_exists(path)) return false;
+    char *left = read_text_file(path);
+    char *right = read_text_file(fixture);
+    bool same = strcmp(left, right) == 0;
+    free(left);
+    free(right);
+    return same;
+}
+
+static void versioned_remove(const char *path) {
+    if (nk_platform_file_exists(path)) assert(remove(path) == 0);
+}
+
+static void test_versioned_settings(PlayerApp *app) {
+    const char *path = VERSIONED_DATA_ROOT "/settings.json";
+    const char *v1_backup = VERSIONED_DATA_ROOT "/settings.json.v1.bak";
+    const char *v2_backup = VERSIONED_DATA_ROOT "/settings.json.v2.bak";
+
+    /* v0.0.1 wrote schema 2: every value loads as it was saved, and a save
+       writes the same version again with no backup. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/settings.json", path);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings_notice[0] == '\0' && !app->settings_newer_schema);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(app->settings.fps_cap == 0);
+    assert(app->settings.vsync == false);
+    assert(app->settings.launcher_window_position_valid);
+    assert(app->settings.launcher_window_x == 64 && app->settings.launcher_window_y == 48);
+    assert(app->settings.launcher_window_width == 1600);
+    assert(app->settings.launcher_window_height == 900);
+    assert(app->settings.reduce_motion == true);
+    assert(app->settings.master_volume == 55);
+    player_app_adjust_volume(app, 5);
+    assert(!nk_platform_file_exists(v2_backup));
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.master_volume == 60);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.launcher_window_width == 1600);
+
+    /* Schema 1 (before v0.0.1) migrates to 2: its 60 fps cap becomes PSP
+       timing, and the first save keeps the schema 1 file as settings.json.v1.bak. */
+    versioned_copy_fixture("fixtures/user_data/settings_v1.json", path);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.fps_cap == -1);
+    assert(app->settings.resolution_scale == 2);
+    assert(app->settings.launcher_window_maximized == true);
+    assert(app->settings.launcher_window_width == 1440);
+    assert(app->settings.reduce_motion == true);
+    assert(app->settings.master_volume == 65);
+    assert(!nk_platform_file_exists(v1_backup));
+    player_app_adjust_volume(app, -5);
+    assert(versioned_file_equals(v1_backup, "fixtures/user_data/settings_v1.json"));
+    {
+        char *saved = read_text_file(path);
+        assert(strstr(saved, "\"schema_version\": 2,") != NULL);
+        free(saved);
+    }
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.fps_cap == -1 && app->settings.master_volume == 60);
+    assert(app->settings.launcher_window_width == 1440);
+
+    /* A newer player's settings are refused by name and never replaced, by any
+       change made in this session. */
+    static const char newer[] =
+        "{\"schema_version\": 3, \"master_volume\": 12, \"a_later_setting\": true}\n";
+    write_text_file(path, newer);
+    app->settings_path[0] = '\0';
+    assert(player_app_load_settings(app, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(app->settings_newer_schema);
+    assert(strstr(app->settings_notice, "newer Nakagawa (format 3)") != NULL);
+    assert(strstr(app->settings_notice, "not saved") != NULL);
+    assert(app->settings.master_volume == 80);
+    player_app_adjust_volume(app, 5);
+    player_app_set_resolution_scale(app, 4);
+    assert(player_app_save_settings(app, path) == NK_ERROR_NEWER_SCHEMA);
+    {
+        char *kept = read_text_file(path);
+        assert(strcmp(kept, newer) == 0);
+        free(kept);
+    }
+    assert(!nk_platform_file_exists(VERSIONED_DATA_ROOT "/settings.json.v3.bak"));
+    versioned_remove(v1_backup);
+    versioned_remove(path);
+    printf("[PLAYER_STATE_TEST] settings.json: v0.0.1 and schema 1 load and migrate, "
+           "a newer file is kept PASS\n");
+}
+
+static void test_versioned_library(PlayerApp *app) {
+    static NkLibrary library;
+    static NkLibrary reloaded;
+    const char *path = VERSIONED_DATA_ROOT "/library.json";
+    const char *bak = VERSIONED_DATA_ROOT "/library.json.bak";
+
+    /* v0.0.1's library.json (schema 1) loads whole and round-trips. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/library.json", path);
+    assert(nk_library_load(&library, path) == NK_OK);
+    assert(library.count == 2 && library.newer_schema_version == 0);
+    const NkGameEntry *one = nk_library_find_by_disc_id(&library, "TEST80001");
+    const NkGameEntry *two = nk_library_find_by_disc_id(&library, "TEST80002");
+    assert(one != NULL && two != NULL);
+    assert(strcmp(one->title_name, "Synthetic Title \"One\"") == 0);
+    assert(strcmp(one->iso_path, "<drive>:\\Games\\synthetic-one.iso") == 0);
+    assert(one->source_image_path[0] == '\0');
+    assert(one->status == NK_STATUS_PREPARED && one->is_prepared && one->assets_staged);
+    assert(one->executable_eboot_kind == 1 && one->executable_boot_kind == 2);
+    assert(one->executable_selection == 1);
+    assert(strcmp(one->boot_executable, "BOOT.BIN") == 0);
+    assert(strcmp(one->selected_executable, "EBOOT.BIN") == 0);
+    assert(one->extracted_asset_count == 42 && one->extracted_layout_count == 5);
+    assert(one->iso_size_bytes == 123456789ull);
+    assert(strcmp(one->last_played, "2026-10-27T12:00:00Z") == 0);
+    assert(strcmp(two->title_name, "Synthetic Two \xE6\x97\xA5\xE6\x9C\xAC") == 0);
+    assert(two->is_experimental && two->status == NK_STATUS_IDENTIFIED);
+    assert(nk_library_save(&library, path) == NK_OK);
+    assert(!nk_platform_file_exists(VERSIONED_DATA_ROOT "/library.json.v1.bak"));
+    assert(nk_library_load(&reloaded, path) == NK_OK);
+    assert(reloaded.count == 2);
+    assert(memcmp(reloaded.entries, library.entries,
+                  sizeof(library.entries[0]) * (size_t)library.count) == 0);
+
+    /* A newer player's library is refused by name. The older .bak beside it is
+       not loaded in its place, and no save replaces either file. */
+    static const char newer[] =
+        "{\n  \"schema_version\": 2,\n  \"games\": [\n    {\n"
+        "      \"disc_id\": \"TEST80003\",\n      \"a_later_member\": 7\n    }\n  ]\n}\n";
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/library.json", bak);
+    write_text_file(path, newer);
+    assert(nk_library_load(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(library.count == 0 && library.newer_schema_version == 2);
+    NkGameEntry added;
+    seed_entry(&added, "TEST80004", "Added While Refused");
+    assert(nk_library_add_or_update(&library, &added) == NK_OK);
+    assert(nk_library_save(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(nk_library_save(&library, NULL) == NK_ERROR_NEWER_SCHEMA);
+    {
+        char *kept = read_text_file(path);
+        assert(strcmp(kept, newer) == 0);
+        free(kept);
+    }
+    assert(versioned_file_equals(bak, "fixtures/user_data/v0.0.1/library.json"));
+
+    /* The Library screen names it. */
+    app->library = library;
+    player_app_note_library_load(app, NK_ERROR_NEWER_SCHEMA);
+    assert(strstr(app->library_notice, "newer Nakagawa (format 2; this one reads 1)") != NULL);
+    player_app_note_library_load(app, NK_OK);
+    assert(app->library_notice[0] == '\0');
+
+    /* With no primary, a newer .bak is refused the same way, and a save does not
+       write a primary the next save would rotate over it. */
+    versioned_remove(path);
+    write_text_file(bak, newer);
+    assert(nk_library_load(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(library.count == 0 && library.newer_schema_version == 2);
+    assert(nk_library_save(&library, path) == NK_ERROR_NEWER_SCHEMA);
+    assert(!nk_platform_file_exists(path));
+    versioned_remove(bak);
+    printf("[PLAYER_STATE_TEST] library.json: v0.0.1 loads and round-trips, a newer file "
+           "and its .bak are kept PASS\n");
+}
+
+static void test_versioned_user_data(void) {
+    assert(nk_platform_file_exists("fixtures/user_data/v0.0.1/library.json") &&
+           "run from the repository root");
+    assert(nk_platform_mkdir_p(VERSIONED_DATA_ROOT));
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    test_versioned_settings(app);
+    test_versioned_library(app);
+    free(app);
+}
+
 /* A synthetic PSN package imports as its ISO: converted once into
    <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
    nothing, reuse of a checked conversion, and the wizard panel returning to
@@ -4383,6 +5402,7 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_versioned_user_data();
     test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
@@ -4390,15 +5410,18 @@ int main(int argc, char **argv) {
     test_remove_tree_deeper_than_max_path();
 #endif
     test_remove_from_library_deletes_what_nakagawa_built();
+    test_build_identity_matches_the_python_digest();
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_platform_seam_answers_for_this_host();
     test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
     test_skipped_showcase_logs_its_reason();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_report_this_game();
     test_license_folder_request();
     test_library_card_status_text();
     test_enhanced_package_variants();
@@ -6450,6 +7473,143 @@ int main(int argc, char **argv) {
         assert(test_remove_tree(source));
     }
 
+    /* 14p: "Get fonts from my PSP". The drive roots are folders under a test root, so the result
+       never depends on the drives of the machine running the test: one has no font-copy folder,
+       one has NAKAGAWA/fonts with no .pgf in it, and two hold fonts as Nakagawa Font Copy leaves
+       them (jpn0.pgf, kr0.pgf, ltnN.pgf). The first PSP folder is imported, and the summary
+       counts only fonts that are exactly the user's own. */
+    printf("[PLAYER_STATE_TEST] Subtest 14p: fonts from a connected PSP's font-copy folder\n");
+    fflush(stdout);
+    {
+        char psp_base[512];
+        char psp_test[640];
+        char per_user[768];
+        char drive[4][800];
+        const char *roots[4];
+        char folder[4][1024];
+        char path[1200];
+        char found[1024];
+        char tiny[8];
+        char with_separator[820];
+        const char *one_root[1];
+        const char sep = nk_platform_path_separator();
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, psp_base, sizeof(psp_base)));
+        snprintf(psp_test, sizeof(psp_test), "%s%cpsp_font_copy_test", psp_base, sep);
+        snprintf(per_user, sizeof(per_user), "%s%cper_user", psp_test, sep);
+        assert(nk_platform_mkdir_p(psp_test));
+        assert(test_remove_tree(psp_test));
+        assert(nk_platform_mkdir_p(per_user));
+        for (int d = 0; d < 4; d++) {
+            snprintf(drive[d], sizeof(drive[d]), "%s%cdrive%d", psp_test, sep, d);
+            snprintf(folder[d], sizeof(folder[d]), "%s%c%s%c%s", drive[d], sep,
+                     NK_FONT_PSP_COPY_PARENT, sep, NK_FONT_PSP_COPY_FOLDER);
+            roots[d] = drive[d];
+        }
+        assert(nk_platform_mkdir_p(drive[0]));
+        assert(nk_platform_mkdir_p(folder[1]));
+        snprintf(path, sizeof(path), "%s%cnotes.txt", folder[1], sep);
+        write_text_file(path, "not a font");
+        for (int d = 2; d < 4; d++) {
+            assert(nk_platform_mkdir_p(folder[d]));
+            snprintf(path, sizeof(path), "%s%cjpn0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+            snprintf(path, sizeof(path), "%s%ckr0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+            snprintf(path, sizeof(path), "%s%cltn0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+
+        assert(nk_font_find_psp_folder_in(roots, 2, found, sizeof(found)) == 0);
+        assert(found[0] == '\0');
+        assert(nk_font_find_psp_folder_in(roots, 4, found, sizeof(found)) == 2);
+        assert(strcmp(found, folder[2]) == 0);
+        snprintf(with_separator, sizeof(with_separator), "%s%c", drive[2], sep);
+        one_root[0] = with_separator;
+        assert(nk_font_find_psp_folder_in(one_root, 1, found, sizeof(found)) == 1);
+        assert(strcmp(found, folder[2]) == 0);
+        assert(nk_font_find_psp_folder_in(one_root, 1, tiny, sizeof(tiny)) == 0);
+        assert(tiny[0] == '\0');
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *psp_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(psp_app != NULL);
+        nk_library_init(&psp_app->library);
+        player_app_set_runtime_root(psp_app, per_user);
+
+        player_app_refresh_font_status(psp_app);
+        assert(psp_app->wizard.font_own_count == 0);
+        assert(strstr(psp_app->wizard.font_summary,
+                      "None of the 18 PSP fonts is your PSP's original yet") != NULL);
+
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 2) == false);
+        assert(strstr(psp_app->wizard.font_message, "No PSP fonts were found on this PC's drives. "
+                                                    "Connect your PSP by USB") != NULL);
+        assert(psp_app->wizard.font_message_kind == PLAYER_NOTE_WARNING);
+
+        /* The message names the storage and the drive's own name, never the folder's path: a
+           Linux mount point such as /media/<user>/<drive> holds the user's name (#1630). */
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 4));
+        assert(strncmp(psp_app->wizard.font_message,
+                       "From your PSP's Memory Stick (drive2), the first of several drives with "
+                       "PSP fonts: Imported 3 PSP font file(s)", 110) == 0);
+        assert(strstr(psp_app->wizard.font_message, psp_test) == NULL);
+        assert(psp_app->wizard.font_message_kind == PLAYER_NOTE_DONE);
+        /* Japanese, Korean and Latin index 1 (ltn0.pgf) are the user's own; the other fifteen
+           Latin indices are served by a stand-in. */
+        assert(psp_app->wizard.font_own_count == 3);
+        assert(nk_font_own_font_count(per_user, per_user) == 3);
+        assert(strstr(psp_app->wizard.font_summary,
+                      "3 of the 18 PSP fonts are your PSP's originals") != NULL);
+        assert(strcmp(psp_app->wizard.font_latin_index_detail[0], "L1 exact ltn0.pgf") == 0);
+        assert(strncmp(psp_app->wizard.font_latin_index_detail[1], "L2 missing; fallback ", 21) == 0);
+
+        /* The PSP's system storage shown as a USB drive: its font folder counts beside kd and
+           vsh, and a lone "font" folder on another drive does not. */
+        {
+            char system_drive[2][800];
+            char system_folder[2][1024];
+            const char *system_roots[2];
+            for (int d = 0; d < 2; d++) {
+                snprintf(system_drive[d], sizeof(system_drive[d]), "%s%csystem%d", psp_test, sep, d);
+                snprintf(system_folder[d], sizeof(system_folder[d]), "%s%c%s", system_drive[d], sep,
+                         NK_FONT_PSP_SYSTEM_FOLDER);
+                assert(nk_platform_mkdir_p(system_folder[d]));
+                snprintf(path, sizeof(path), "%s%cltn0.pgf", system_folder[d], sep);
+                write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+                system_roots[d] = system_drive[d];
+            }
+            snprintf(path, sizeof(path), "%s%c%s", system_drive[1], sep, NK_FONT_PSP_SYSTEM_MARK_A);
+            assert(nk_platform_mkdir_p(path));
+            snprintf(path, sizeof(path), "%s%c%s", system_drive[1], sep, NK_FONT_PSP_SYSTEM_MARK_B);
+            assert(nk_platform_mkdir_p(path));
+            assert(nk_font_find_psp_folder_in(system_roots, 1, found, sizeof(found)) == 0);
+            assert(nk_font_find_psp_folder_in(system_roots, 2, found, sizeof(found)) == 1);
+            assert(strcmp(found, system_folder[1]) == 0);
+            assert(player_app_fonts_import_from_psp_roots(psp_app, system_roots, 2));
+            assert(strncmp(psp_app->wizard.font_message,
+                           "From your PSP's system storage (system1): Imported 1 PSP font file(s)",
+                           69) == 0);
+            assert(strstr(psp_app->wizard.font_message, psp_test) == NULL);
+        }
+
+        /* The full set: every one of the eighteen is the user's own. */
+        for (int index = 1; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+            snprintf(path, sizeof(path), "%s%c%s", folder[2], sep,
+                     nk_font_latin_index_filename(index));
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots + 2, 1));
+        assert(strstr(psp_app->wizard.font_message, "Imported 18 PSP font file(s)") != NULL);
+        assert(strstr(psp_app->wizard.font_message, "several drives") == NULL);
+        assert(psp_app->wizard.font_own_count == NK_FONT_PSP_FONT_COUNT);
+        assert(strcmp(psp_app->wizard.font_summary, "All 18 PSP fonts are your PSP's originals.") == 0);
+
+        free(psp_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(psp_test));
+    }
+
     /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and
        the Fonts step must read and write that same directory. The directory is also the project
        root the preflight checks, so a project font there is named by both surfaces. */
@@ -7264,15 +8424,22 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "corrupt") != NULL);
 
-        /* Unknown / unsupported schema version resets to defaults and produces notice */
+        /* A newer schema version runs this session on the defaults, says why, and
+           keeps the file (test_versioned_settings covers the save refusal). */
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
-        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_NEWER_SCHEMA);
         assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
         assert(s_app2->settings.master_volume == 80);
+        assert(strstr(s_app2->settings_notice, "newer Nakagawa (format 999)") != NULL);
+
+        /* A version below 1 is not one any player wrote: defaults, with a notice. */
+        write_text_file(test_settings_path, "{\"schema_version\": 0, \"resolution_scale\": 2}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
 
         /* A legacy persisted 8x preset is refused at load: the GPU rasterizer
