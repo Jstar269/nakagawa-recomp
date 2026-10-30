@@ -64,23 +64,31 @@ class TestDmacValidationOrder(unittest.TestCase):
         prefix = region.index("const uint32_t src_prefix = sr_guest_span_prefix(src, n);")
         policy = region.index("n - src_prefix != 1u")
         effective = region.index("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;")
-        copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
-        dirty = region.index("sr_guest_vram_write_commit_bytes(dst, effective)")
+        transfer = region.index("static uint32_t dmac_transfer(CpuState *s, int try_only) {")
+        copy = region.index("dmac_copy(dst, src, effective);", transfer)
+        helper = region.index("static void dmac_copy(uint32_t dst, uint32_t src, uint32_t n) {")
+        helper_copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), n);", helper)
+        dirty = region.index("sr_guest_vram_write_commit_bytes(dst, n);", helper)
 
         self.assertLess(size_check, null_check)
         self.assertLess(null_check, prefix)
         self.assertLess(prefix, effective)
         self.assertLess(effective, policy)
         self.assertLess(effective, copy, "the effective length must be selected before copying")
-        self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
+        self.assertLess(helper_copy, dirty, "the GPU is notified only after a real transfer")
+        # Every write in the transfer goes through dmac_copy, after validation.
+        body = region[transfer:]
+        self.assertLess(body.index("return SCE_DMAC_ERROR_ILLEGAL_ADDR;\n    }\n\n"),
+                        body.index("dmac_copy("))
         self.assertIn("sr_guest_span_readable_current(src, effective)", region)
         self.assertIn("sr_guest_span_writable(dst, effective)", region)
 
     def test_overlap_safe_primitive(self) -> None:
         """Hardware showed both overlap directions landing memmove-correct."""
         region = _dmac_region()
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", region)
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n);", region)
         self.assertNotIn("memcpy(SR_HOST(dst), SR_HOST(src)", region)
+        self.assertEqual(region.count("memmove(SR_HOST("), 1, "one copy primitive, dmac_copy")
 
     def test_both_copy_nids_register_in_the_shared_bulk_helper(self) -> None:
         """Both NIDs must route through production registration."""
@@ -104,9 +112,14 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
 
     def test_only_effective_prefix_has_side_effects(self) -> None:
         region = _dmac_region()
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", region)
-        self.assertIn("sr_guest_vram_write_commit_bytes(dst, effective)", region)
-        self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
+        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n);", region)
+        self.assertIn("sr_guest_vram_write_commit_bytes(dst, n);", region)
+        self.assertIn("sr_heap_note_bulk_write(dst, n, 0u)", region)
+        # Only the effective span, or its head and tail on a refused Try, is written.
+        self.assertIn("dmac_copy(dst, src, effective);", region)
+        self.assertIn("dmac_copy(dst, src, head);", region)
+        self.assertIn("dmac_copy(dst + effective - tail, src + effective - tail, tail);", region)
+        self.assertIn("const uint32_t body = effective - head - tail;", region)
 
     def test_busy_only_for_a_try_during_a_pending_transfer(self) -> None:
         """BUSY is the measured cross-thread Try result and nothing else."""
@@ -116,18 +129,23 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
         self.assertIn("#define SCE_DMAC_ERROR_BUSY 0x80000021u", code)
         self.assertEqual(code.count("0x80000021"), 1)
         self.assertEqual(code.count("return SCE_DMAC_ERROR_BUSY;"), 1)
-        pending = code.index("if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {")
-        busy = code.index("if (try_only) return SCE_DMAC_ERROR_BUSY;")
-        self.assertLess(code.index("if (dst == 0u || src == 0u)"), pending)
+        pending = code.index("if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &holder) &&")
+        bypass = code.index("if (same_phase && body <= DMAC_BYPASS_BODY_MAX) {")
+        busy = code.index("return SCE_DMAC_ERROR_BUSY;")
+        self.assertLess(code.index("if (dst == 0u || src == 0u)"), bypass)
+        self.assertLess(bypass, pending, "a short same-phase body never sees the channel")
         self.assertLess(pending, busy)
-        self.assertLess(busy, code.index("memmove(SR_HOST(dst), SR_HOST(src), effective)"),
-                        "a BUSY Try returns before any byte is copied")
+        self.assertLess(busy, code.index("dmac_copy(dst, src, effective);\n\n"),
+                        "a BUSY Try returns before the body is copied")
+        self.assertIn("#define DMAC_BYPASS_BODY_MAX 0x100u", code)
 
     def test_waits_are_scheduler_blocks(self) -> None:
         """The blocking form waits through the scheduler, never a sleep or a spin."""
         code = re.sub(r"/\*.*?\*/", "", _dmac_region(), flags=re.S)
         self.assertEqual(code.count("sched_block_on(DMAC_TRANSFER_WAIT_OBJ);"), 2)
-        self.assertIn("sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)", code)
+        self.assertIn("sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ, dmac_duration_us(dst, src, body))", code)
+        self.assertIn("sched_transfer_enqueue(DMAC_TRANSFER_WAIT_OBJ)", code)
+        self.assertIn("while (!sched_transfer_granted(DMAC_TRANSFER_WAIT_OBJ))", code)
         self.assertIn("sched_guest_thread_running() && sched_wait_permitted()", code)
         for forbidden in ("sched_delay_current", "sched_preempt", "Sleep(", "usleep", "sr_yield"):
             self.assertNotIn(forbidden, code)

@@ -99,6 +99,10 @@ int  sdl3vk_hud_mode(void);
  * in developer mode, then off again. */
 int  sdl3vk_hud_next_mode(int mode, int developer);
 void sdl3vk_set_audio_active_cb(int (*cb)(void));
+/* Whether an enhancement build's 60 FPS logic has fallen behind, and its rate in updates/s
+ * (sr_enhancement_logic_slowed in the runtime). With a query that answers yes the presenter
+ * shows a notice whether or not the HUD is on. */
+void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate));
 
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);

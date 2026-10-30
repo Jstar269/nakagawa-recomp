@@ -48,6 +48,7 @@ from analyze import (
     in_ranges,
     is_hard_terminator,
     linked_branch_target,
+    span_index,
     span_key,
     trace_function,
 )
@@ -339,6 +340,8 @@ def _walk_frame(elf, addr, ranges, limit, gated):
     """:func:`profile_entry`'s walk.  ``gated=False`` is the structural form
     :func:`linked_target_role` uses: there every linking branch except
     ``bal .+8`` is a call, without asking for its target's role."""
+    # One membership test per step: index the spans once per walk.
+    ranges = span_index(ranges)
     seen = set()
     stack = [(addr, 0)]
     returns = set()

@@ -625,6 +625,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
+    model.badge = nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial" : NULL;
     model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
@@ -667,6 +668,8 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
                    model.input_guide.files[i].name, model.input_guide.files[i].replace ? 1 : 0,
                    model.input_guide.files[i].source);
         }
+        printf("[PLAYER_UI_TEST] next_ui_disc_badge disc=%s badge=%s\n", game->disc_id,
+               model.badge != NULL ? model.badge : "Your disc");
         for (size_t i = 0u; i < model.check_count; ++i) {
             printf("[PLAYER_UI_TEST] next_ui_disc_row status=%s tone=%s label=%s message=%s\n",
                    model.checks[i].status,
@@ -1693,7 +1696,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     } else if (running) {
         out->package_state = PLAYER_UI_PACKAGE_RUNNING;
     } else if (app->build_session.is_building &&
-               strcmp(app->build_session.disc_id, game->disc_id) == 0) {
+               strcmp(app->build_session.disc_id, game->disc_id) == 0 &&
+               strcmp(app->build_session.enhancement_package_id,
+                      game->enhancement_package_id) == 0) {
+        /* A build of the other variant is not this package's build. */
         out->package_state = PLAYER_UI_PACKAGE_BUILDING;
     } else if (package_ready) {
         out->package_state = PLAYER_UI_PACKAGE_READY;
@@ -1745,8 +1751,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
        PC. The --demo fixtures are the project's test programs, not a disc the
        user added. */
     out->is_demo = game->is_showcase_package;
+    /* A disc whose own ID is not a retail ID (a beta or a prototype) has a
+       library key Nakagawa derived from its contents (nk_iso.h). */
     out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
-               : game->is_sample ? "Test program" : "Your disc";
+               : game->is_sample ? "Test program"
+               : nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial"
+               : "Your disc";
     /* Disc art is asked for by the screen that shows it
        (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
@@ -1757,10 +1767,28 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                  out->library_status);
         printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
                out->library_status);
+        printf("[PLAYER_UI_TEST] next_ui_library_badge index=%d disc=%s badge=%s\n", index,
+               game->disc_id, out->badge);
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->can_remove = player_app_removal_blocker(app, index) == NULL;
+    {
+        const PlayerTitleEnhancement *enhancement = &app->title_enhancements[index];
+        bool saved = player_app_title_60hz_saved(app, game->disc_id);
+        out->enhancement_shown = enhancement->available || saved;
+        out->enhancement_on = player_app_title_60hz_on(app, index);
+        out->enhancement_session = app->experimental_60hz_session &&
+                                   enhancement->available && !saved;
+        out->enhancement_enabled = !app->launch_pending && !app->is_game_running &&
+            !out->enhancement_session &&
+            !(app->build_session.is_building &&
+              strcmp(app->build_session.disc_id, game->disc_id) == 0);
+        out->enhancement_problem = player_app_title_60hz_blocked(app, index)
+            ? (enhancement->problem[0] ? enhancement->problem
+                                       : "Its enhancement package is missing.")
+            : "";
+    }
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
@@ -1770,6 +1798,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
+    } else if (player_app_title_60hz_blocked(app, index)) {
+        /* 60 FPS game logic is on but its package is gone: neither variant
+           builds or plays until the user turns it off or brings it back. */
+        out->primary_action_label = "ENHANCEMENT UNAVAILABLE";
     } else if (package_ready) {
         out->primary_action_label = "PLAY";
         out->primary_action_enabled = true;
@@ -2340,6 +2372,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             if (action.kind == PLAYER_UI_ACTION_BACK) {
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                 (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_TOGGLE_60FPS) {
+                if (player->titles[index].enhancement_enabled) {
+                    player_app_set_title_60hz(app, index,
+                                              !player->titles[index].enhancement_on);
+                }
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {

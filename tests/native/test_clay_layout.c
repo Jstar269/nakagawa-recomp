@@ -4,14 +4,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Upstream's own warnings, silenced as src/ui/nk_ui_clay.c does. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
 #define CLAY_IMPLEMENTATION
 #include "../../third_party/clay/clay.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 static int clay_error_count;
+static Clay_ErrorType clay_last_error;
 
 static void record_clay_error(Clay_ErrorData error)
 {
     clay_error_count++;
+    clay_last_error = error.errorType;
     fprintf(stderr, "Clay error %d\n", (int)error.errorType);
 }
 
@@ -75,8 +89,7 @@ int main(void)
     Clay_SetMeasureTextFunction(measure_text, NULL);
 
     Clay_BeginLayout();
-    CLAY({
-        .id = CLAY_ID("root"),
+    CLAY(CLAY_ID("root"), {
         .layout = {
             .sizing = {
                 .width = CLAY_SIZING_FIXED(120.0f),
@@ -87,8 +100,7 @@ int main(void)
             .layoutDirection = CLAY_LEFT_TO_RIGHT,
         },
     }) {
-        CLAY({
-            .id = CLAY_ID("fixed-a"),
+        CLAY(CLAY_ID("fixed-a"), {
             .layout = {
                 .sizing = {
                     .width = CLAY_SIZING_FIXED(20.0f),
@@ -96,8 +108,7 @@ int main(void)
                 },
             },
         }) {}
-        CLAY({
-            .id = CLAY_ID("fixed-b"),
+        CLAY(CLAY_ID("fixed-b"), {
             .layout = {
                 .sizing = {
                     .width = CLAY_SIZING_FIXED(30.0f),
@@ -105,8 +116,7 @@ int main(void)
                 },
             },
         }) {}
-        CLAY({
-            .id = CLAY_ID("grow"),
+        CLAY(CLAY_ID("grow"), {
             .layout = {
                 .sizing = {
                     .width = CLAY_SIZING_GROW(0),
@@ -115,7 +125,7 @@ int main(void)
             },
         }) {}
     }
-    (void)Clay_EndLayout();
+    (void)Clay_EndLayout(0.0f);
 
     if (clay_error_count != 0 ||
         !expect_rectangle("root", CLAY_ID("root"), 0.0f, 0.0f, 120.0f, 80.0f) ||
@@ -132,8 +142,7 @@ int main(void)
        column must not squeeze the paragraph back toward one line, or the box
        paints over its later lines. */
     Clay_BeginLayout();
-    CLAY({
-        .id = CLAY_ID("column"),
+    CLAY(CLAY_ID("column"), {
         .layout = {
             .sizing = {
                 .width = CLAY_SIZING_FIXED(50.0f),
@@ -142,8 +151,7 @@ int main(void)
             .layoutDirection = CLAY_TOP_TO_BOTTOM,
         },
     }) {
-        CLAY({
-            .id = CLAY_ID("paragraph"),
+        CLAY(CLAY_ID("paragraph"), {
             .layout = {
                 .sizing = {
                     .width = CLAY_SIZING_GROW(0),
@@ -155,8 +163,7 @@ int main(void)
                       CLAY_TEXT_CONFIG({ .fontSize = 10, .lineHeight = 10,
                                          .wrapMode = CLAY_TEXT_WRAP_WORDS }));
         }
-        CLAY({
-            .id = CLAY_ID("after"),
+        CLAY(CLAY_ID("after"), {
             .layout = {
                 .sizing = {
                     .width = CLAY_SIZING_FIXED(50.0f),
@@ -165,7 +172,7 @@ int main(void)
             },
         }) {}
     }
-    (void)Clay_EndLayout();
+    (void)Clay_EndLayout(0.0f);
 
     if (clay_error_count != 0 ||
         !expect_rectangle("paragraph", CLAY_ID("paragraph"), 0.0f, 0.0f, 50.0f, 40.0f) ||
@@ -174,8 +181,24 @@ int main(void)
         return EXIT_FAILURE;
     }
 
+    /* An arena request whose byte count passes 32 bits is refused. Formed in
+       32 bits, 65536 items of 65536 bytes wrap to 0 and the request
+       "succeeds" with no room behind it. */
+    {
+        char small[256];
+        Clay_Arena tiny = Clay_CreateArenaWithCapacityAndMemory(sizeof(small), small);
+        void *block = Clay__Array_Allocate_Arena(65536, 65536u, &tiny);
+
+        if (block != NULL || clay_error_count != 1 ||
+            clay_last_error != CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED) {
+            fprintf(stderr, "FAIL: a 4 GiB arena request was not refused\n");
+            free(memory);
+            return EXIT_FAILURE;
+        }
+    }
+
     free(memory);
     puts("Clay layout selftest passed: root, padding, child gap, fixed children, grow child, "
-         "and wrapped text kept whole in an overfull column");
+         "wrapped text kept whole in an overfull column, and an oversized arena request refused");
     return EXIT_SUCCESS;
 }

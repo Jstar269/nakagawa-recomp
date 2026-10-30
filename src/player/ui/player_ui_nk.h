@@ -115,6 +115,7 @@ typedef enum {
                                           op, .title_index the PSP control it rebinds */
     PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
+    PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY           /* an on-screen key: title_index is a codepoint, or
@@ -190,6 +191,17 @@ typedef struct {
        not one of the user's games: the Library lists it under TEST THIS PC,
        apart from the grid. */
     bool is_demo;
+    /* The ENHANCEMENTS card (docs/ENHANCEMENT_CONTRACT.md section 9): shown when
+       the title has an enhancement package, or when 60 FPS game logic is saved
+       on but the package is gone (enhancement_problem then says why). */
+    bool enhancement_shown;
+    bool enhancement_on;
+    /* The switch can change it now: not while a game starts or runs or this
+       title's package builds, and not while --experimental-60hz turns it on
+       for the session. */
+    bool enhancement_enabled;
+    bool enhancement_session;   /* on for this session by --experimental-60hz */
+    const char *enhancement_problem;
 } PlayerUiTitle;
 
 typedef struct {
@@ -349,6 +361,7 @@ typedef struct {
     PlayerUiDiscKind kind;
     const char *title_name;
     const char *disc_id;
+    const char *badge;              /* the disc's tag; NULL is "Your disc" */
     const char *iso_path;           /* checking: the file being read */
     const char *reason;             /* blocked: why, and what to do next */
     const char *profile_note;       /* a refused local title profile, in words */
@@ -702,6 +715,7 @@ enum {
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
     PLAYER_UI_ID_TITLE_CHECK_AGAIN = 0x2007u,
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
+    PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,

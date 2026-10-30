@@ -477,7 +477,8 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
  * A through-mode sprite samples an 8x8 8888 texture whose levels 0-3 are one colour each,
  * so the colour drawn names the level the sampler chose. Level 1 stores its 4 texels per
  * row in a buffer 8 wide with magenta beyond them, which only a sampler ignoring that
- * level's own buffer width reaches. The PSP's nearest-level rounding, slope formula and
+ * level's own buffer width reaches. Levels 2 and 3 use buffer width 4: a linear texture's
+ * rows are whole 16-byte lines on the PSP (ge_tex_row_bytes, PSP-GE-RASTER-001). The PSP's nearest-level rounding, slope formula and
  * between-level weights are unmeasured (ge.c tex_lod); these cases pin the PSPSDK modes and
  * keep today's level-0 output wherever mip levels are off. */
 #define MIP_LIST  0x08116000u
@@ -491,7 +492,7 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
 static const uint32_t k_mip_color[4] = { 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u, 0xFFFFFFFFu };
 
 static uint32_t mip_level_addr(unsigned level) { return MIP_TEX + level * 0x1000u; }
-static unsigned mip_level_bufw(unsigned level) { return level == 1u ? 8u : (8u >> level); }
+static unsigned mip_level_bufw(unsigned level) { return level <= 1u ? 8u : 4u; }
 
 static void mip_fill_texture(void) {
     for (unsigned level = 0; level < 4u; level++) {

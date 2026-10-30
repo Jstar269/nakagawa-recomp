@@ -80,13 +80,13 @@
     },
     {
       "id": "clay-layout",
-      "name": "Clay v0.14 layout library",
+      "name": "Clay layout library",
       "license": "Zlib",
       "origin": "https://github.com/nicbarker/clay",
-      "revision": "v0.14 / b25a31c1a152915cd7dd6796e6592273e5a10aac",
+      "revision": "main / e6cc36941ab2af5d81107617039d6f527a1c660b",
       "notice_path": "third_party/clay/LICENSE.md",
       "evidence_path": "third_party/clay/PROVENANCE.md",
-      "disposition": "vendored_source_only; not linked into player runtime yet"
+      "disposition": "vendored_header; linked into the player and the in-game overlay via src/ui/nk_ui_clay.c"
     },
     {
       "id": "portable-snippets-safe-math",
