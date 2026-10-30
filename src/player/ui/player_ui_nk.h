@@ -739,7 +739,7 @@ enum {
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
     PLAYER_UI_ID_TITLE_CHECK_AGAIN = 0x2007u,
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
-    PLAYER_UI_ID_TITLE_REPORT = 0x2009u,
+    PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -794,7 +794,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_REBUILD_HIDE = 0x4531u,      /* the older-build banner's Hide */
     PLAYER_UI_ID_REBUILD_PRIMARY = 0x4532u,           /* Rebuild all / Rebuild now */
     PLAYER_UI_ID_REBUILD_SECOND = 0x4533u,            /* Later / Play anyway */
-    PLAYER_UI_ID_TITLE_REBUILD = 0x200Au,             /* the title page's Rebuild */
+    PLAYER_UI_ID_TITLE_REBUILD = 0x2021u,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */
