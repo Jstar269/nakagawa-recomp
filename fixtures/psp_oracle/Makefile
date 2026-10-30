@@ -207,6 +207,10 @@ CASE_ID = 108
 # through-mode triangle pair and sprite show, nearest and bilinear.
 else ifeq ($(CASE),ge-sample)
 CASE_ID = 109
+# 123: the GE raster semantics corpus (probe_ge_sample.c, #343): blend, tests, texture
+# functions and formats, wrap, coverage, framebuffer formats, dither, masks, logic, clear, fog.
+else ifeq ($(CASE),ge-raster)
+CASE_ID = 123
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -449,6 +453,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),dma-timing)
 TARGET = $(BUILD_DIR)/dma_timing
 OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE raster corpus: the same source as the sample-point cells, case 123.
+else ifeq ($(CASE),ge-raster)
+TARGET = $(BUILD_DIR)/ge_raster
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
 # issue cells.

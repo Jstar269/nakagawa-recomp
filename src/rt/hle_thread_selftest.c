@@ -19970,6 +19970,852 @@ static void test_ge_linear_filter_stays_inside_region(void) {
     #undef LIN_TEXEL
 }
 
+/* ==== GE raster cells (PSP-GE-RASTER-001, #343) ====
+ * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
+ * side, CASE=ge-raster) and src/rt/hle_thread_selftest.c (the software GE side);
+ * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
+ * command words over generated patterns (no game data). It draws into the 16x4 window
+ * x 16..31, y 8..11 of a 64x32 colour buffer at VRAM offset GR_FB_OFFSET whose other pixels
+ * are 0 and whose window holds gr_dst() before the list runs. The base state turns every
+ * per-fragment unit off and selects a 16x4 texture drawn 1:1 by a through-mode sprite with
+ * REPLACE/RGBA, so a sprite's source colour is the texel; a cell's words then change only
+ * what it measures. Transform-mode cells (GR_K_FOG, GR_K_XTRI) use identity world and view
+ * matrices and a viewport that maps view x, y back to window pixels. The result is the
+ * window's 64 pixels (16-bit formats zero-extended). */
+
+#define GR_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GR_ZB_OFFSET 0x00110000u   /* VRAM-relative depth buffer, stride 64 */
+#define GR_STRIDE 64u
+#define GR_ROWS 32u
+#define GR_WX 16u                  /* window x 16..31, y 8..11 */
+#define GR_WY 8u
+#define GR_WW 16u
+#define GR_WH 4u
+#define GR_N 64u                   /* pixels in the window, and texels in each texture */
+#define GR_LIST_WORDS 256u
+#define GR_VTX_WORDS 800u
+#define GR_TEX_BYTES 512u          /* room for the largest texture (GR_T_8888W, 320 bytes) */
+#define GR_CLUT_BYTES 1024u
+#define GR_Z 32768.0f              /* depth of every tested through-mode primitive */
+#define GR_RED 0xff0000ffu
+#define GR_GREEN 0xff00ff00u
+
+enum { GR_K_SPRITE, GR_K_ZSPRITE, GR_K_TRI, GR_K_WRAP, GR_K_CLEAR, GR_K_FOG, GR_K_XTRI,
+       GR_K_LINE, GR_K_POINT };
+enum { GR_T_8888, GR_T_5650, GR_T_5551, GR_T_4444, GR_T_CLUT8, GR_T_CLUT4, GR_T_CLUT4W,
+       GR_T_8888W, GR_T_COUNT };
+enum { GR_D_PATTERN, GR_D_WHITE };
+
+/* kind: what is drawn (GR_K_*); psm: framebuffer format; tex: source texture (GR_T_*);
+   dst: window contents before the draw (GR_D_*); arg: the kind's table row, the texture
+   buffer width of a GR_K_SPRITE (0: 16) or, for GR_K_FOG, 1 to give every pixel colour vcol;
+   vcol: vertex colour (ABGR); w: command words applied after the base state, 0 ends them. */
+struct gr_cell {
+    const char *name;
+    uint8_t kind, psm, tex, dst, arg;
+    uint32_t vcol;
+    uint32_t w[6];
+};
+
+#define GR_CELL_COUNT 189u
+static const struct gr_cell gr_cells[GR_CELL_COUNT] = {
+    {"b-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe040c0ffu, 0xe17f3f01u}},
+    {"b-fix-ff", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000aau, 0xe0ffffffu, 0xe1ffffffu}},
+    {"b-dc-sc", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000000u}},
+    {"b-idc-isc", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000011u}},
+    {"b-da-ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b-2sa-2isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000076u}},
+    {"b-2isa-2sa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000067u}},
+    {"b-2da-2ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000098u}},
+    {"b-sub-sa-fix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0001a2u, 0xe1806040u}},
+    {"b-rsub-sa-isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000232u}},
+    {"b-min", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000332u}},
+    {"b-max", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000432u}},
+    {"b-abs", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000532u}},
+    {"b-eq6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000632u}},
+    {"b-eq7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000732u}},
+    {"b-fac11-15", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000fbu, 0xe0102030u, 0xe1c0b0a0u}},
+    {"b565-sa-isa", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b5551-sa-isa", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b4444-sa-isa", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000032u}},
+    {"b565-da-ida", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b-2sa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a6u, 0xe1000000u}},
+    {"b-2isa-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a7u, 0xe1000000u}},
+    {"b-2da-fix0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf0000a8u, 0xe1000000u}},
+    {"b-ffix-2isa", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00007au, 0xe0ffffffu}},
+    {"b-ffix-2ida", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf00009au, 0xe0ffffffu}},
+    {"b5551-da-ida", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"b4444-da-ida", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x21000001u, 0xdf000054u}},
+    {"at-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8000u}},
+    {"at-f1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8001u}},
+    {"at-f2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8002u}},
+    {"at-f3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8003u}},
+    {"at-f4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8004u}},
+    {"at-f5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8005u}},
+    {"at-f6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8006u}},
+    {"at-f7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff8007u}},
+    {"at-mask", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdb3c3007u}},
+    {"at-gt0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x22000001u, 0xdbff0006u}},
+    {"ct-never", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000000u, 0xd9800000u, 0xda800000u}},
+    {"ct-always", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000001u, 0xd9800000u, 0xda800000u}},
+    {"ct-eq", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000002u, 0xd9800000u, 0xda800000u}},
+    {"ct-ne", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000003u, 0xd9800000u, 0xda800000u}},
+    {"ct-eq-mix", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x27000001u, 0xd8000002u, 0xd9004080u, 0xda00c0c0u}},
+    {"st-f0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8000u, 0xdd040003u}},
+    {"st-f1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8001u, 0xdd040003u}},
+    {"st-f2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8002u, 0xdd040003u}},
+    {"st-f3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8003u, 0xdd040003u}},
+    {"st-f4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8004u, 0xdd040003u}},
+    {"st-f5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8005u, 0xdd040003u}},
+    {"st-f6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8006u, 0xdd040003u}},
+    {"st-f7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8007u, 0xdd040003u}},
+    {"st-op0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd000000u}},
+    {"st-op1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd010000u}},
+    {"st-op2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st-op3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd030000u}},
+    {"st-op4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st-op5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st-op6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd060000u}},
+    {"st-op7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd070000u}},
+    {"st-mask", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcf05002u, 0xdd050002u}},
+    {"st4444-incr", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st4444-decr", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st4444-repl", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st4444-lt", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff8004u, 0xdd040003u}},
+    {"st5551-incr", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd040000u}},
+    {"st5551-decr", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd050000u}},
+    {"st5551-repl7f", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff7f01u, 0xdd020000u}},
+    {"st5551-inv", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd030000u}},
+    {"st565-repl", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"st565-eq0", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x24000001u, 0xdcff0002u, 0xdd000000u}},
+    {"z-f0", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000000u}},
+    {"z-f1", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000001u}},
+    {"z-f2", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000002u}},
+    {"z-f3", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000003u}},
+    {"z-f4", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000004u}},
+    {"z-f5", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000005u}},
+    {"z-f6", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000006u}},
+    {"z-f7", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000007u}},
+    {"z-lt-st", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000004u, 0x24000001u, 0xdcff0001u, 0xdd040300u}},
+    {"z-gt-st", GR_K_ZSPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x23000001u, 0xde000006u, 0x24000001u, 0xdcff6006u, 0xdd040302u}},
+    {"tf-mod-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000000u, 0xca30a0e0u}},
+    {"tf-mod-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010000u, 0xca30a0e0u}},
+    {"tf-mod-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000100u, 0xca30a0e0u}},
+    {"tf-mod-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010100u, 0xca30a0e0u}},
+    {"tf-dec-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000001u, 0xca30a0e0u}},
+    {"tf-dec-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010001u, 0xca30a0e0u}},
+    {"tf-dec-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000101u, 0xca30a0e0u}},
+    {"tf-dec-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010101u, 0xca30a0e0u}},
+    {"tf-bld-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000002u, 0xca30a0e0u}},
+    {"tf-bld-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010002u, 0xca30a0e0u}},
+    {"tf-bld-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000102u, 0xca30a0e0u}},
+    {"tf-bld-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010102u, 0xca30a0e0u}},
+    {"tf-rep-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000003u, 0xca30a0e0u}},
+    {"tf-rep-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010003u, 0xca30a0e0u}},
+    {"tf-rep-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000103u, 0xca30a0e0u}},
+    {"tf-rep-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010103u, 0xca30a0e0u}},
+    {"tf-add-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000004u, 0xca30a0e0u}},
+    {"tf-add-rgb-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010004u, 0xca30a0e0u}},
+    {"tf-add-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9000104u, 0xca30a0e0u}},
+    {"tf-add-rgba-x2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc9010104u, 0xca30a0e0u}},
+    {"tf-mod-rgba-w", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0xffffffffu, {0xc9000100u}},
+    {"tf-mod-rgba-1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x01010101u, {0xc9000100u}},
+    {"tfa-mod-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000100u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-dec-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000101u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-bld-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000102u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-rep-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000103u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-add-rgba", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000104u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tfa-mod-rgb", GR_K_SPRITE, 3u, GR_T_8888, GR_D_WHITE, 0u, 0x9aff7f20u, {0xc9000000u, 0xca30a0e0u, 0x21000001u, 0xdf00002au, 0xe0000000u}},
+    {"tx-5650", GR_K_SPRITE, 3u, GR_T_5650, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000000u}},
+    {"tx-5551", GR_K_SPRITE, 3u, GR_T_5551, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000001u}},
+    {"tx-4444", GR_K_SPRITE, 3u, GR_T_4444, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000002u}},
+    {"tx-c8-8888", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff03u}},
+    {"tx-c8-sh4", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc5020f13u}},
+    {"tx-c8-5551", GR_K_SPRITE, 3u, GR_T_CLUT8, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000005u, 0xc500ff01u}},
+    {"tx-c4-4444", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-off3", GR_K_SPRITE, 3u, GR_T_CLUT4, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc3000004u, 0xc503ff03u}},
+    {"tx-c4-bw48", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 48u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-c4-bw64", GR_K_SPRITE, 3u, GR_T_CLUT4W, GR_D_PATTERN, 64u, 0x9aff7f20u, {0xc3000004u, 0xc500ff02u}},
+    {"tx-8888-bw20", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 20u, 0x9aff7f20u, {0u}},
+    {"tx-c8-bw24", GR_K_SPRITE, 3u, GR_T_8888W, GR_D_PATTERN, 24u, 0x9aff7f20u, {0xc3000005u, 0xc500ff03u}},
+    {"wr-c-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u}},
+    {"wr-w-neg", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-uw-vc", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000100u}},
+    {"wr-c-big", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0xc7000101u}},
+    {"wr-w-big", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-w-min4", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0xc7000000u}},
+    {"wr-w-neg-lin", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000000u, 0xc6000101u}},
+    {"wr-c-neg-lin", GR_K_WRAP, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xc7000101u, 0xc6000101u}},
+    {"e-tri0", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri1", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri2", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri3", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 3u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri4", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 4u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri5", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 5u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri6", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 6u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-tri7", GR_K_TRI, 3u, GR_T_8888, GR_D_PATTERN, 7u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line0", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line1", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line2", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 2u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-line3", GR_K_LINE, 3u, GR_T_8888, GR_D_PATTERN, 3u, 0x9aff7f20u, {0x1e000000u}},
+    {"e-points", GR_K_POINT, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"fmt-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"fmt-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"fmt-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0u}},
+    {"dth-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-5551", GR_K_SPRITE, 1u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-8888", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u}},
+    {"dth-565-b", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x20000001u, 0x21000001u, 0xdf000032u}},
+    {"msk-8888", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe80f55f0u, 0xe90000c3u}},
+    {"msk-565", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe8f0f0f0u}},
+    {"msk-4444", GR_K_SPRITE, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe8000f0fu, 0xe90000f0u}},
+    {"msk-8888-st", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0xe9000f0fu, 0x24000001u, 0xdcff5a01u, 0xdd020000u}},
+    {"lo-0", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000000u}},
+    {"lo-1", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000001u}},
+    {"lo-2", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000002u}},
+    {"lo-3", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000003u}},
+    {"lo-4", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000004u}},
+    {"lo-5", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000005u}},
+    {"lo-6", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000006u}},
+    {"lo-7", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000007u}},
+    {"lo-8", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000008u}},
+    {"lo-9", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000009u}},
+    {"lo-10", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000au}},
+    {"lo-11", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000bu}},
+    {"lo-12", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000cu}},
+    {"lo-13", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000du}},
+    {"lo-14", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000eu}},
+    {"lo-15", GR_K_SPRITE, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe600000fu}},
+    {"lo-565-xor", GR_K_SPRITE, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x28000001u, 0xe6000006u}},
+    {"clr-c", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000101u}},
+    {"clr-a", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000201u}},
+    {"clr-ca", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u}},
+    {"clr-ca-msk", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0xe80f55f0u, 0xe90000c3u}},
+    {"clr-ca-dth565", GR_K_CLEAR, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x20000001u}},
+    {"clr-ca-dth8888", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x20000001u}},
+    {"clr-c-565", GR_K_CLEAR, 0u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000101u}},
+    {"clr-ca-blend", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x21000001u, 0xdf000032u}},
+    {"clr-ca-atest", GR_K_CLEAR, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000301u, 0x22000001u, 0xdb000000u}},
+    {"clr-a-4444", GR_K_CLEAR, 2u, GR_T_8888, GR_D_PATTERN, 0u, 0x5ac3a50fu, {0xd3000201u}},
+    {"xf-tri", GR_K_XTRI, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"xf-plain", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u}},
+    {"fog-a", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf8040c0u, 0xcdc08000u, 0xce3c9249u}},
+    {"fog-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcf0080ffu, 0xcd000000u, 0xce3c8080u}},
+    {"fog-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 0u, 0x9aff7f20u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k0-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k0-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xff000000u, {0x1e000000u, 0x1f000001u, 0xcfffffffu, 0xcd3f0000u, 0xce3c8000u}},
+    {"fog-k1-b", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd000000u, 0xce3c8080u}},
+    {"fog-k1-c", GR_K_FOG, 3u, GR_T_8888, GR_D_PATTERN, 1u, 0xffffffffu, {0x1e000000u, 0x1f000001u, 0xcf000000u, 0xcd3f0000u, 0xce3c8000u}},
+};
+
+/* GR_K_WRAP texture rectangles: u0, v0 at the left/top edge, u1, v1 at the right/bottom. */
+static const float gr_wrap_uv[3][4] = {
+    {-8.0f, -2.0f, 8.0f, 2.0f}, {12.0f, 3.0f, 28.0f, 7.0f}, {-16.0f, -4.0f, 48.0f, 12.0f},
+};
+
+/* GR_K_TRI: two flat triangles (red, then green), x/y relative to the window origin. */
+static const float gr_tris[8][12] = {
+    {0.0f, 0.0f, 16.0f, 0.0f, 0.0f, 4.0f, 16.0f, 0.0f, 16.0f, 4.0f, 0.0f, 4.0f},
+    {0.5f, 0.5f, 15.5f, 0.5f, 0.5f, 3.5f, 15.5f, 0.5f, 15.5f, 3.5f, 0.5f, 3.5f},
+    {0.25f, 0.25f, 15.75f, 0.25f, 0.25f, 3.75f, 15.75f, 0.25f, 15.75f, 3.75f, 0.25f, 3.75f},
+    {0.96875f, 0.96875f, 15.03125f, 0.03125f, 2.03125f, 3.03125f,
+     8.53125f, 1.46875f, 15.96875f, 3.96875f, 4.46875f, 3.53125f},
+    {0.0f, 0.5f, 16.0f, 1.0f, 0.0f, 1.5f, 0.0f, 2.25f, 16.0f, 2.0f, 16.0f, 3.75f},
+    {0.0f, 0.0f, 7.5f, 0.0f, 7.5f, 4.0f, 7.5f, 0.0f, 16.0f, 4.0f, 7.5f, 4.0f},
+    {0.0f, 2.0f, 8.0f, 0.0f, 16.0f, 2.0f, 0.0f, 2.0f, 16.0f, 2.0f, 8.0f, 4.0f},
+    {0.0f, 0.0f, 0.0f, 4.0f, 16.0f, 0.0f, 16.0f, 0.0f, 0.0f, 4.0f, 16.0f, 4.0f},
+};
+
+/* GR_K_LINE: two lines (red, then green), x/y of both ends relative to the window origin. */
+static const float gr_lines[4][8] = {
+    {0.0f, 0.0f, 16.0f, 0.0f, 0.5f, 2.5f, 15.5f, 2.5f},
+    {0.0f, 0.0f, 15.0f, 3.0f, 2.0f, 3.5f, 13.0f, 0.5f},
+    {3.25f, 0.0f, 3.25f, 4.0f, 10.75f, 0.5f, 12.5f, 3.75f},
+    {15.5f, 3.0f, 0.25f, 0.5f, 12.0f, 3.75f, 9.5f, 0.25f},
+};
+
+/* GR_K_POINT: eight points, alternately red and green. */
+static const float gr_points[16] = {
+    0.0f, 0.0f, 2.5f, 0.0f, 4.25f, 1.0f, 6.75f, 1.5f,
+    8.0f, 2.0f, 10.5f, 2.5f, 12.375f, 3.0f, 14.625f, 3.625f,
+};
+
+/* Pattern byte `i` of stream `seed`: in every stream eight indices carry the edge values,
+   the rest a fixed integer hash. */
+static uint8_t gr_byte(uint32_t seed, uint32_t i)
+{
+    static const uint8_t edge[8] = {0x00u, 0xffu, 0x01u, 0xfeu, 0x7fu, 0x80u, 0x40u, 0xc0u};
+    const uint32_t slot = (i * 5u + seed * 11u) & 63u;
+    if (slot < 8u) {
+        return edge[slot];
+    }
+    uint32_t x = seed * 0x9e3779b9u + i * 0x85ebca6bu + 0x165667b1u;
+    x ^= x >> 15;
+    x *= 0x2c1b3c6du;
+    x ^= x >> 12;
+    x *= 0x297a2d39u;
+    x ^= x >> 15;
+    return (uint8_t)(x >> 24);
+}
+
+/* An ABGR word from streams seed .. seed + 3 (R, G, B, A). */
+static uint32_t gr_rgba(uint32_t seed, uint32_t i)
+{
+    return (uint32_t)gr_byte(seed, i) | ((uint32_t)gr_byte(seed + 1u, i) << 8) |
+           ((uint32_t)gr_byte(seed + 2u, i) << 16) | ((uint32_t)gr_byte(seed + 3u, i) << 24);
+}
+
+/* Window pixel i before the draw, in the cell's framebuffer format. */
+static uint32_t gr_dst(const struct gr_cell *c, uint32_t i)
+{
+    if (c->dst == GR_D_WHITE) {
+        return c->psm == 3u ? 0xffffffffu : 0xffffu;
+    }
+    if (c->psm == 3u) {
+        return gr_rgba(5u, i);
+    }
+    return (uint32_t)gr_byte(9u, i) | ((uint32_t)gr_byte(10u, i) << 8);
+}
+
+/* GR_K_ZSPRITE: the depth window pixel i holds before the tested z = 0x8000 sprite. */
+static uint32_t gr_depth(uint32_t i)
+{
+    static const uint16_t near_ref[8] = {0x8000u, 0x7fffu, 0x8001u, 0x0000u,
+                                         0xffffu, 0x7ffeu, 0x8002u, 0x8000u};
+    if ((i & 3u) == 0u) {
+        return near_ref[(i >> 2) & 7u];
+    }
+    return ((uint32_t)gr_byte(40u, i) << 8) | gr_byte(41u, i);
+}
+
+/* Texture t's bytes (16x4 texels at buffer width 16; GR_T_CLUT4W and GR_T_8888W carry 128
+   and 320 bytes for wider buffers); returns the byte count. */
+static uint32_t gr_texture(uint32_t t, uint8_t *out)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < GR_N; i++) {
+        if (t == GR_T_8888) {
+            const uint32_t v = gr_rgba(1u, i);
+            for (uint32_t b = 0; b < 4u; b++) {
+                out[n++] = (uint8_t)(v >> (8u * b));
+            }
+        } else if (t == GR_T_CLUT8) {
+            out[n++] = gr_byte(13u, i);
+        } else if (t == GR_T_CLUT4) {
+            if (i < GR_N / 2u) {
+                out[n++] = gr_byte(18u, i);
+            }
+        } else if (t == GR_T_CLUT4W) {
+            out[n++] = gr_byte(44u, i);
+            out[n++] = gr_byte(45u, i);
+        } else if (t == GR_T_8888W) {
+            for (uint32_t b = 0; b < 5u; b++) {
+                out[n++] = gr_byte(46u + b, i);
+            }
+        } else {
+            out[n++] = gr_byte(21u + t, i);
+            out[n++] = gr_byte(25u + t, i);
+        }
+    }
+    return n;
+}
+
+/* The CLUT the CLUT8/CLUT4 cells load: 256 8888 entries (512 16-bit ones). */
+static void gr_clut(uint8_t *out)
+{
+    for (uint32_t k = 0; k < GR_CLUT_BYTES / 4u; k++) {
+        const uint32_t v = gr_rgba(30u, k);
+        for (uint32_t b = 0; b < 4u; b++) {
+            out[k * 4u + b] = (uint8_t)(v >> (8u * b));
+        }
+    }
+}
+
+static uint32_t gr_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+/* One through-mode vertex: float u, v; 8888 colour; float x, y, z (vertex type 0x80019f). */
+static uint32_t gr_tvtx(uint32_t *out, float u, float v, uint32_t col, float x, float y, float z)
+{
+    out[0] = gr_fbits(u);
+    out[1] = gr_fbits(v);
+    out[2] = col;
+    out[3] = gr_fbits(x);
+    out[4] = gr_fbits(y);
+    out[5] = gr_fbits(z);
+    return 6u;
+}
+
+/* One transform-mode vertex: 8888 colour; float x, y, z (vertex type 0x19c). The x, y
+   given in window pixels become the view-space x, y that the GR_K_FOG viewport maps back
+   to those pixels: x = 32 + 32 * X and y = 16 + 16 * Y on the 64x32 buffer. */
+static uint32_t gr_xvtx(uint32_t *out, uint32_t col, float x, float y, float z)
+{
+    out[0] = col;
+    out[1] = gr_fbits((x - 32.0f) / 32.0f);
+    out[2] = gr_fbits((y - 16.0f) / 16.0f);
+    out[3] = gr_fbits(z);
+    return 4u;
+}
+
+/* The cell's vertex words; returns the count. */
+static uint32_t gr_vertices(const struct gr_cell *c, uint32_t *out)
+{
+    const float x0 = (float)GR_WX, y0 = (float)GR_WY;
+    const float x1 = x0 + (float)GR_WW, y1 = y0 + (float)GR_WH;
+    uint32_t n = 0;
+    if (c->kind == GR_K_ZSPRITE || c->kind == GR_K_FOG) {
+        /* One 1x1 sprite per window pixel: a depth in clear mode, or a colour at view z = i. */
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const float x = x0 + (float)(i % GR_WW), y = y0 + (float)(i / GR_WW);
+            if (c->kind == GR_K_ZSPRITE) {
+                const float z = (float)gr_depth(i);
+                n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x, y, z);
+                n += gr_tvtx(out + n, 0.0f, 0.0f, 0u, x + 1.0f, y + 1.0f, z);
+            } else {
+                const uint32_t col = c->arg == 1u ? c->vcol : gr_rgba(1u, i);
+                n += gr_xvtx(out + n, col, x, y, (float)i);
+                n += gr_xvtx(out + n, col, x + 1.0f, y + 1.0f, (float)i);
+            }
+        }
+    }
+    if (c->kind == GR_K_TRI || c->kind == GR_K_XTRI) {
+        for (uint32_t k = 0; k < 6u; k++) {
+            const uint32_t col = k < 3u ? GR_RED : GR_GREEN;
+            const float x = x0 + gr_tris[c->arg][2u * k], y = y0 + gr_tris[c->arg][2u * k + 1u];
+            n += c->kind == GR_K_TRI ? gr_tvtx(out + n, 0.0f, 0.0f, col, x, y, GR_Z)
+                                     : gr_xvtx(out + n, col, x, y, 0.0f);
+        }
+    } else if (c->kind == GR_K_LINE) {
+        for (uint32_t k = 0; k < 4u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, k < 2u ? GR_RED : GR_GREEN,
+                         x0 + gr_lines[c->arg][2u * k], y0 + gr_lines[c->arg][2u * k + 1u], GR_Z);
+        }
+    } else if (c->kind == GR_K_POINT) {
+        for (uint32_t k = 0; k < 8u; k++) {
+            n += gr_tvtx(out + n, 0.0f, 0.0f, (k & 1u) ? GR_GREEN : GR_RED,
+                         x0 + gr_points[2u * k], y0 + gr_points[2u * k + 1u], GR_Z);
+        }
+    } else if (c->kind == GR_K_WRAP) {
+        const float *uv = gr_wrap_uv[c->arg];
+        n += gr_tvtx(out + n, uv[0], uv[1], c->vcol, x0, y0, GR_Z);
+        n += gr_tvtx(out + n, uv[2], uv[3], c->vcol, x1, y1, GR_Z);
+    } else if (c->kind != GR_K_FOG) {
+        n += gr_tvtx(out + n, 0.0f, 0.0f, c->vcol, x0, y0, GR_Z);
+        n += gr_tvtx(out + n, (float)GR_WW, (float)GR_WH, c->vcol, x1, y1, GR_Z);
+    }
+    return n;
+}
+
+/* The cell's display list for vertex words at `vtx`, texture t at tex[t] and the CLUT at
+   `clut` (physical addresses); returns the word count. Every state the draw reads is set. */
+static uint32_t gr_list(const struct gr_cell *c, uint32_t vtx, const uint32_t *tex, uint32_t clut,
+                        uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    /* Clip z = 0 and w = 1 for every vertex, so the view z only feeds fog. */
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    const uint32_t t = tex[c->tex];
+    const uint32_t full = (GR_STRIDE - 1u) | ((GR_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GR_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GR_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GR_W(0x9c, GR_FB_OFFSET);
+    GR_W(0x9d, GR_STRIDE);
+    GR_W(0xd2, c->psm);
+    GR_W(0x9e, GR_ZB_OFFSET);
+    GR_W(0x9f, GR_STRIDE);
+    GR_W(0x15, 0);
+    GR_W(0x16, full);
+    GR_W(0xd4, 0);
+    GR_W(0xd5, full);
+    GR_W(0x4c, 0);
+    GR_W(0x4d, 0);
+    GR_W(0xd6, 0);
+    GR_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GR_W(off_units[i], 0);
+    }
+    GR_W(0x50, 0);              /* flat shading */
+    GR_W(0xd3, 0);              /* clear mode off */
+    GR_W(0xe7, 1);              /* depth writes off */
+    GR_W(0xe8, 0);
+    GR_W(0xe9, 0);
+    GR_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GR_W(0xd8, 1);              /* colour test ALWAYS */
+    GR_W(0xd9, 0);
+    GR_W(0xda, 0);
+    GR_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GR_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GR_W(0xde, 1);              /* depth test ALWAYS */
+    GR_W(0xdf, 0x32u);
+    GR_W(0xe0, 0);
+    GR_W(0xe1, 0);
+    GR_W(0xe6, 3);              /* logic op COPY */
+    GR_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GR_W(0xe3, 0xf3e2u);
+    GR_W(0xe4, 0x0c1du);
+    GR_W(0xe5, 0xe2f3u);
+    GR_W(0xcf, 0);
+    GR_W(0xcd, 0);
+    GR_W(0xce, 0);
+    GR_W(0x55, 0xffffffu);
+    GR_W(0x58, 0xffu);
+    GR_W(0x1e, 1);              /* texture on: UV, linear, one level, 8888 */
+    GR_W(0xc0, 0);
+    GR_W(0xc2, 0);
+    GR_W(0xc3, 3);
+    GR_W(0xa0, t);
+    GR_W(0xa8, ((t >> 8) & 0x000f0000u) | (c->kind == GR_K_SPRITE && c->arg ? c->arg : GR_WW));
+    GR_W(0xb8, (2u << 8) | 4u); /* 16x4 */
+    GR_W(0xc6, 0);              /* nearest */
+    GR_W(0xc7, 0x101u);         /* clamp u and v */
+    GR_W(0xc8, 0);
+    GR_W(0xc9, 0x103u);         /* REPLACE, RGBA */
+    GR_W(0xca, 0);
+    GR_W(0x48, gr_fbits(1.0f) >> 8);
+    GR_W(0x49, gr_fbits(1.0f) >> 8);
+    GR_W(0x4a, 0);
+    GR_W(0x4b, 0);
+    if (c->tex == GR_T_CLUT8 || c->tex == GR_T_CLUT4 || c->tex == GR_T_CLUT4W ||
+        c->tex == GR_T_8888W) {
+        GR_W(0xb0, clut);
+        GR_W(0xb1, (clut >> 8) & 0x000f0000u);
+        GR_W(0xc5, 0x00ff03u);
+        GR_W(0xc4, GR_CLUT_BYTES / 32u);
+    }
+    GR_W(0xcb, 0);              /* texture flush */
+    GR_W(0x12, 0x0080019fu);    /* through, float uv, 8888 colour, float position */
+    GR_W(0x01, vtx);
+    if (c->kind == GR_K_ZSPRITE) {
+        GR_W(0xe7, 0);
+        GR_W(0xd3, 0x401u);     /* clear mode, depth only: one 1x1 sprite per pixel */
+        GR_W(0x04, (6u << 16) | (2u * GR_N));
+        GR_W(0xd3, 0);
+        GR_W(0xe7, 1);
+        GR_W(0x01, vtx + 2u * GR_N * 24u);
+    }
+    for (uint32_t i = 0; i < 6u && c->w[i] != 0u; i++) {
+        out[n++] = c->w[i];
+    }
+    if (c->kind == GR_K_FOG || c->kind == GR_K_XTRI) {
+        GR_W(0x3a, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GR_W(0x3b, gr_fbits(ident43[i]) >> 8);
+        }
+        GR_W(0x3c, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GR_W(0x3d, gr_fbits(ident43[i]) >> 8);
+        }
+        GR_W(0x3e, 0);
+        for (uint32_t i = 0; i < 16u; i++) {
+            GR_W(0x3f, gr_fbits(proj[i]) >> 8);
+        }
+        GR_W(0x42, gr_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+        GR_W(0x43, gr_fbits(16.0f) >> 8);
+        GR_W(0x44, 0);
+        GR_W(0x45, gr_fbits(2048.0f) >> 8);
+        GR_W(0x46, gr_fbits(2048.0f) >> 8);
+        GR_W(0x47, gr_fbits(32768.0f) >> 8);
+        GR_W(0x4c, (2048u - 32u) << 4);
+        GR_W(0x4d, (2048u - 16u) << 4);
+        GR_W(0x12, 0x0000019cu);  /* transform, 8888 colour, float position */
+        if (c->kind == GR_K_FOG) {
+            GR_W(0x04, (6u << 16) | (2u * GR_N));
+        } else {
+            GR_W(0x04, (3u << 16) | 6u);
+        }
+    } else if (c->kind == GR_K_TRI) {
+        GR_W(0x04, (3u << 16) | 6u);
+    } else if (c->kind == GR_K_LINE) {
+        GR_W(0x04, (1u << 16) | 4u);
+    } else if (c->kind == GR_K_POINT) {
+        GR_W(0x04, 8u);
+    } else {
+        GR_W(0x04, (6u << 16) | 2u);
+    }
+    GR_W(0x0f, 0);
+    GR_W(0x0c, 0);
+#undef GR_W
+    return n;
+}
+
+/* FNV-1a 64 over the window's 64 result words, each little-endian. */
+static uint64_t gr_digest(const uint32_t *px)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GR_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            h ^= (px[i] >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+/* ==== end of the GE raster cells ==== */
+
+/* PSP-GE-RASTER-001 (#343): the window digest each cell left on a PSP-3000 (firmware 6.6.1,
+ * probe case ge-raster, docs/HARDWARE_ORACLE.md). Index k is gr_cells[k]. */
+static const struct {
+    const char *name;
+    uint64_t psp;
+} s_gr_psp[GR_CELL_COUNT] = {
+    {"b-sa-isa", 0xe2e3dd342f1b7aedull},
+    {"b-fix", 0x8ec220832fb9a609ull},
+    {"b-fix-ff", 0xa4df29b706351f0aull},
+    {"b-dc-sc", 0xae80e197b2487b80ull},
+    {"b-idc-isc", 0xc158ab0c9e67248eull},
+    {"b-da-ida", 0xd9612ab5d2b56816ull},
+    {"b-2sa-2isa", 0xf00f5598f5e83a8dull},
+    {"b-2isa-2sa", 0xd66d5d5af2f30cd9ull},
+    {"b-2da-2ida", 0xa847911d0f1e673full},
+    {"b-sub-sa-fix", 0x8759886443b6004full},
+    {"b-rsub-sa-isa", 0x00f648218bafb8f8ull},
+    {"b-min", 0xf21f885e6b14a8b6ull},
+    {"b-max", 0xd1b0e597970e8debull},
+    {"b-abs", 0x4d6f82babe9d8152ull},
+    {"b-eq6", 0x61b0b02428e84441ull},
+    {"b-eq7", 0x61b0b02428e84441ull},
+    {"b-fac11-15", 0x4def31c864814aafull},
+    {"b565-sa-isa", 0xa688406e73344322ull},
+    {"b5551-sa-isa", 0xc13232bb3a0ebe30ull},
+    {"b4444-sa-isa", 0x4aa79875c953edf2ull},
+    {"b565-da-ida", 0x4f0a3a47648a81c7ull},
+    {"b-2sa-fix0", 0x93349d9a477a8aa2ull},
+    {"b-2isa-fix0", 0x0fc0361ab21e8438ull},
+    {"b-2da-fix0", 0xc2b1ff28c04b6cfcull},
+    {"b-ffix-2isa", 0x4753d8fff6a1bc9bull},
+    {"b-ffix-2ida", 0x4973b119622d734cull},
+    {"b5551-da-ida", 0x130ed831ea47c0d5ull},
+    {"b4444-da-ida", 0x7eafc1cb089c2a0aull},
+    {"at-f0", 0x6b417febbd03b2ecull},
+    {"at-f1", 0x61b0b02428e84441ull},
+    {"at-f2", 0xcdc817528c030710ull},
+    {"at-f3", 0x3805351c8739f6fdull},
+    {"at-f4", 0x75af15df6b356590ull},
+    {"at-f5", 0xcd7d40eb15f0ab1cull},
+    {"at-f6", 0x71901108fa18e3b1ull},
+    {"at-f7", 0x2c3737c841f7433dull},
+    {"at-mask", 0xcc38ed26427815fbull},
+    {"at-gt0", 0x96354b2e62a1da37ull},
+    {"ct-never", 0x6b417febbd03b2ecull},
+    {"ct-always", 0x61b0b02428e84441ull},
+    {"ct-eq", 0x10c0807ec120af51ull},
+    {"ct-ne", 0x4475b5231e05efacull},
+    {"ct-eq-mix", 0x4d0afb4fb8bf5a0aull},
+    {"st-f0", 0xb3e5e86b6c945c14ull},
+    {"st-f1", 0xa673adbc5a81af31ull},
+    {"st-f2", 0xaa81ea4dcd87ab12ull},
+    {"st-f3", 0x5e193d5ad9c2e8ebull},
+    {"st-f4", 0xd4290d62c2eb2b52ull},
+    {"st-f5", 0xc2ae2f09fb82c06cull},
+    {"st-f6", 0xbd8efe4f49808d99ull},
+    {"st-f7", 0xb80ae59808ab34d3ull},
+    {"st-op0", 0x61b0b02428e84441ull},
+    {"st-op1", 0x8cce44c95088fe39ull},
+    {"st-op2", 0x8deef11e3a45a095ull},
+    {"st-op3", 0xe28eaf938faee78dull},
+    {"st-op4", 0xa673adbc5a81af31ull},
+    {"st-op5", 0x2e98a36ee874b23cull},
+    {"st-op6", 0x61b0b02428e84441ull},
+    {"st-op7", 0x61b0b02428e84441ull},
+    {"st-mask", 0xfc5213f372a980d8ull},
+    {"st4444-incr", 0x761201d2693253d6ull},
+    {"st4444-decr", 0xda56a206ea639db6ull},
+    {"st4444-repl", 0xf6fa0571670cd636ull},
+    {"st4444-lt", 0x89267a5400327090ull},
+    {"st5551-incr", 0x99788ba9f6d725f6ull},
+    {"st5551-decr", 0x11f6554bd26e93f6ull},
+    {"st5551-repl7f", 0x11f6554bd26e93f6ull},
+    {"st5551-inv", 0xb94551d4a09fff76ull},
+    {"st565-repl", 0x12eb7b0d599b524eull},
+    {"st565-eq0", 0x12eb7b0d599b524eull},
+    {"z-f0", 0x6b417febbd03b2ecull},
+    {"z-f1", 0x61b0b02428e84441ull},
+    {"z-f2", 0x0d4abd68740baa99ull},
+    {"z-f3", 0x8856970cd47244c8ull},
+    {"z-f4", 0xcacab511e92ade03ull},
+    {"z-f5", 0xe0adf135f4b58dfeull},
+    {"z-f6", 0x9ce9403e66b0f8cfull},
+    {"z-f7", 0xe27a10bc7d55a32eull},
+    {"z-lt-st", 0x5e0dbd0e6ba47d80ull},
+    {"z-gt-st", 0x9744cfbf2f4a20b2ull},
+    {"tf-mod-rgb", 0x528021cf7dc9ab2cull},
+    {"tf-mod-rgb-x2", 0xdfd3e8b5cf373522ull},
+    {"tf-mod-rgba", 0x528021cf7dc9ab2cull},
+    {"tf-mod-rgba-x2", 0xdfd3e8b5cf373522ull},
+    {"tf-dec-rgb", 0x61b0b02428e84441ull},
+    {"tf-dec-rgb-x2", 0x718a6690670a04bfull},
+    {"tf-dec-rgba", 0xc3662b29f8e75d67ull},
+    {"tf-dec-rgba-x2", 0xf87b6fb185779d15ull},
+    {"tf-bld-rgb", 0xc322f1a42d989cc0ull},
+    {"tf-bld-rgb-x2", 0xe2ca5f19c4d50788ull},
+    {"tf-bld-rgba", 0xc322f1a42d989cc0ull},
+    {"tf-bld-rgba-x2", 0xe2ca5f19c4d50788ull},
+    {"tf-rep-rgb", 0x61b0b02428e84441ull},
+    {"tf-rep-rgb-x2", 0x718a6690670a04bfull},
+    {"tf-rep-rgba", 0x61b0b02428e84441ull},
+    {"tf-rep-rgba-x2", 0x718a6690670a04bfull},
+    {"tf-add-rgb", 0x3ff03fb3785db8fbull},
+    {"tf-add-rgb-x2", 0x09e444041ba1e76aull},
+    {"tf-add-rgba", 0x3ff03fb3785db8fbull},
+    {"tf-add-rgba-x2", 0x09e444041ba1e76aull},
+    {"tf-mod-rgba-w", 0x61b0b02428e84441ull},
+    {"tf-mod-rgba-1", 0x1f26bf30dbbd11adull},
+    {"tfa-mod-rgba", 0xdc8184067b497b4cull},
+    {"tfa-dec-rgba", 0xd2cfdae5ad35a825ull},
+    {"tfa-bld-rgba", 0xdc8184067b497b4cull},
+    {"tfa-rep-rgba", 0xf50f75b899a90725ull},
+    {"tfa-add-rgba", 0xdc8184067b497b4cull},
+    {"tfa-mod-rgb", 0xd2cfdae5ad35a825ull},
+    {"tx-5650", 0x55191b7986f94bc5ull},
+    {"tx-5551", 0x50fd51ab4a3dc1bdull},
+    {"tx-4444", 0x48a401c483f8a640ull},
+    {"tx-c8-8888", 0xcc8e999943f08733ull},
+    {"tx-c8-sh4", 0xa4539c4c08f2b348ull},
+    {"tx-c8-5551", 0x672d960cefbf2f50ull},
+    {"tx-c4-4444", 0xca1b5888bc0a73b8ull},
+    {"tx-c4-off3", 0xe9f25d4569db9d85ull},
+    {"tx-c4-bw48", 0xc6e98ff96fefe004ull},
+    {"tx-c4-bw64", 0x7839e58d724c70b5ull},
+    {"tx-8888-bw20", 0x9fa773b0a1d72d9bull},
+    {"tx-c8-bw24", 0xb620ae02e7089a79ull},
+    {"wr-c-neg", 0x7c9b1a47a3d70368ull},
+    {"wr-w-neg", 0xb28ae2c44b1f4c09ull},
+    {"wr-uw-vc", 0xc209862396d56a05ull},
+    {"wr-c-big", 0x7e2190ed8778a2d5ull},
+    {"wr-w-big", 0x8b682ff667ebaaedull},
+    {"wr-w-min4", 0xa2e42f222f589b49ull},
+    {"wr-w-neg-lin", 0xb28ae2c44b1f4c09ull},
+    {"wr-c-neg-lin", 0x7c9b1a47a3d70368ull},
+    {"e-tri0", 0xf5a0993ec9228d41ull},
+    {"e-tri1", 0x0eaa42aa6b33ed99ull},
+    {"e-tri2", 0x9a27cacbebcdd6f1ull},
+    {"e-tri3", 0x58a0d3f1740cecf0ull},
+    {"e-tri4", 0xbac04c9003489048ull},
+    {"e-tri5", 0x6d8b51ec978358f3ull},
+    {"e-tri6", 0x44c4675b69c3e467ull},
+    {"e-tri7", 0xf5a0993ec9228d41ull},
+    {"e-line0", 0x4a67f079217de8beull},
+    {"e-line1", 0xa896e3153d5cc0bbull},
+    {"e-line2", 0x5ce41b1df46da45aull},
+    {"e-line3", 0x936dca4d32a5e7b7ull},
+    {"e-points", 0x68c7b5aa88c253a7ull},
+    {"fmt-565", 0x12eb7b0d599b524eull},
+    {"fmt-5551", 0x673de6b93dd90776ull},
+    {"fmt-4444", 0xe4ddad427dc21de6ull},
+    {"dth-565", 0xf0ef3c90518c45fdull},
+    {"dth-5551", 0x12406110445fa3b1ull},
+    {"dth-4444", 0x127c48c1dccd5544ull},
+    {"dth-8888", 0xdd0aecff5f0fa36bull},
+    {"dth-565-b", 0x2f4ed56110282d97ull},
+    {"msk-8888", 0xc554066569201d85ull},
+    {"msk-565", 0xfb76050e8e1f9ebaull},
+    {"msk-4444", 0xe4ddad427dc21de6ull},
+    {"msk-8888-st", 0x324672ef2806c4a1ull},
+    {"lo-0", 0xbe910e17deca3a2dull},
+    {"lo-1", 0xb410e3e5c05ac6ebull},
+    {"lo-2", 0x9f7d03d69cb73583ull},
+    {"lo-3", 0x61b0b02428e84441ull},
+    {"lo-4", 0x62b2029c0cf444d2ull},
+    {"lo-5", 0x6b417febbd03b2ecull},
+    {"lo-6", 0x8f3cc93ed2e25e10ull},
+    {"lo-7", 0x41043d49cee09bd2ull},
+    {"lo-8", 0x24b86f70ebc4230eull},
+    {"lo-9", 0x3c44a6f726c2b570ull},
+    {"lo-10", 0x07610972524b83a8ull},
+    {"lo-11", 0xf50bc89ce82a2c72ull},
+    {"lo-12", 0x274253721c649fbdull},
+    {"lo-13", 0x272bb88f382da21bull},
+    {"lo-14", 0x2254372563da19afull},
+    {"lo-15", 0x74b58b05fdf3eaadull},
+    {"lo-565-xor", 0x7b4ad7adbbf198bcull},
+    {"clr-c", 0x5982dec5529ace6dull},
+    {"clr-a", 0x7c24b06f87d84da0ull},
+    {"clr-ca", 0x6635ffd176aa2b25ull},
+    {"clr-ca-msk", 0xcec5ae97a8e37f30ull},
+    {"clr-ca-dth565", 0x7341485be704cba5ull},
+    {"clr-ca-dth8888", 0xa8195cd6205ffae5ull},
+    {"clr-c-565", 0xf3d7b8b640c9a8a5ull},
+    {"clr-ca-blend", 0x6635ffd176aa2b25ull},
+    {"clr-ca-atest", 0x6635ffd176aa2b25ull},
+    {"clr-a-4444", 0x24ffba3b563c2017ull},
+    {"xf-tri", 0xf5a0993ec9228d41ull},
+    {"xf-plain", 0x61b0b02428e84441ull},
+    {"fog-a", 0xfc6d7b8405af2fa1ull},
+    {"fog-b", 0x8545d166b94e44acull},
+    {"fog-c", 0x5a6d3e6eceb6619bull},
+    {"fog-k0-b", 0x89adaadf98387375ull},
+    {"fog-k0-c", 0x578c3b95de454f25ull},
+    {"fog-k1-b", 0xe3d831492858103dull},
+    {"fog-k1-c", 0x75e634dc776d8575ull},
+};
+
+/* Every PSP-GE-RASTER-001 cell through production dispatch and the software GE, with the
+ * probe's own list, vertices, textures and destination pattern; the window must match the
+ * PSP's digest. A diverging cell prints its software window for comparison with the raw
+ * hardware rows. */
+static void test_ge_raster_cells_match_psp(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    const uint32_t list = 0x08900000u, vtx = 0x08904000u, clut = 0x08918000u;
+    const uint32_t fb = 0x04000000u + GR_FB_OFFSET;
+    uint32_t tex[GR_T_COUNT];
+    for (uint32_t t = 0; t < GR_T_COUNT; t++) {
+        tex[t] = 0x08910000u + t * 0x400u;
+        (void)gr_texture(t, (uint8_t *)SR_HOST(tex[t]));
+    }
+    gr_clut((uint8_t *)SR_HOST(clut));
+    unsigned diverged = 0, names_ok = 1, synced = 1;
+    for (uint32_t k = 0; k < GR_CELL_COUNT; k++) {
+        const struct gr_cell *c = &gr_cells[k];
+        uint32_t px[GR_N];
+        memset(SR_HOST(fb), 0, GR_STRIDE * GR_ROWS * 4u);
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const uint32_t at = (GR_WY + i / GR_WW) * GR_STRIDE + GR_WX + i % GR_WW;
+            if (c->psm == 3u) MEM_W32(fb + at * 4u, gr_dst(c, i));
+            else MEM_W16(fb + at * 2u, (uint16_t)gr_dst(c, i));
+        }
+        (void)gr_vertices(c, (uint32_t *)SR_HOST(vtx));
+        (void)gr_list(c, vtx, tex, clut, (uint32_t *)SR_HOST(list));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = list;
+        const uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        if ((qid & 0xFF000000u) != 0x35000000u || sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) != 0u)
+            synced = 0;
+        for (uint32_t i = 0; i < GR_N; i++) {
+            const uint32_t at = (GR_WY + i / GR_WW) * GR_STRIDE + GR_WX + i % GR_WW;
+            px[i] = c->psm == 3u ? MEM_R32(fb + at * 4u) : (uint32_t)MEM_R16(fb + at * 2u);
+        }
+        if (strcmp(s_gr_psp[k].name, c->name) != 0) names_ok = 0;
+        const uint64_t digest = gr_digest(px);
+        if (digest != s_gr_psp[k].psp) {
+            diverged++;
+            fprintf(stderr, "GE-RASTER %s software=0x%016llx psp=0x%016llx", c->name,
+                    (unsigned long long)digest, (unsigned long long)s_gr_psp[k].psp);
+            for (uint32_t i = 0; i < GR_N; i++)
+                fprintf(stderr, "%s%08x", i % GR_WW ? " " : "\n  ", (unsigned)px[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+    expect(names_ok, "PSP-GE-RASTER-001 digest table rows name the cells in table order");
+    expect(synced, "every PSP-GE-RASTER-001 list is accepted and completes");
+    expect(diverged == 0, "every PSP-GE-RASTER-001 cell matches the PSP window digest");
+}
+
 static void test_ge_guest_sentinel(void) {
     CpuState cpu;
     reset_fixture();
@@ -21691,20 +22537,22 @@ static void test_ge_block_transfer_span_atomicity(void) {
      * can place a 16-bpp linear texture at an odd address whose final row ends
      * exactly ONE byte past the arena. Widening the accepted extent by a single
      * byte is invisible to every other assertion in this file, so pin both sides
-     * of that boundary through the same production decode helper. */
+     * of that boundary through the same production decode helper. Rows are whole
+     * 16-byte lines (ge_tex_row_bytes), so buffer width 8 puts the second row's
+     * texel 16 bytes after the first. */
     state->tex_fmt = 0u;
-    state->tex_bufw = 1u;
+    state->tex_bufw = 8u;
     state->tex_w = 1;
     state->tex_h = 2;
-    state->tex_addr = 0x0bfffffdu;                 /* last row ends at arena_end + 1 */
+    state->tex_addr = 0x0bffffefu;                 /* last row ends at arena_end + 1 */
     memcpy(scratch + arena_bytes, &(uint16_t){0x7fffu}, 2u);
     decoded[0] = 0x55555555u; decoded[1] = 0x66666666u;
     ge_decode_tex_rgba(decoded);
     expect(decoded[0] == 0u && decoded[1] == 0u,
            "a texture rectangle ending one byte past the arena is rejected whole");
 
-    state->tex_addr = 0x0bfffffcu;                 /* last row ends AT arena_end */
-    MEM_W16(0x0bfffffcu, 0xffffu);
+    state->tex_addr = 0x0bffffeeu;                 /* last row ends AT arena_end */
+    MEM_W16(0x0bffffeeu, 0xffffu);
     MEM_W16(0x0bfffffeu, 0xffffu);
     decoded[0] = 0u; decoded[1] = 0u;
     ge_decode_tex_rgba(decoded);
@@ -38325,6 +39173,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_stall_alias_across_call_return();
     test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
+    test_ge_raster_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
