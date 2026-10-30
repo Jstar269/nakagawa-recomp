@@ -297,6 +297,10 @@ static size_t test_iso_add_node(TestIsoNode *nodes, size_t *node_count,
     return index;
 }
 
+/* When set, the synthetic containers declare a second, empty (data) segment, as
+ * small user libraries do. */
+static bool s_module_scan_empty_data_segment = false;
+
 static void write_module_scan_iso(const char *path, size_t candidate_count,
                                   bool duplicate_name, size_t child_directories,
                                   bool malformed_usrdir) {
@@ -399,8 +403,8 @@ static void write_module_scan_iso(const char *path, size_t candidate_count,
         } else {
             uint8_t *module = image + (size_t)nodes[i].lba * TEST_ISO_SECTOR_BYTES;
             memcpy(module, "~PSP", 4);
-            module[0x27] = 1;
-            module[0x54] = 0x40;
+            module[0x27] = s_module_scan_empty_data_segment ? 2 : 1;
+            module[0x54] = 0x40;  /* a second segment's size (0x58) stays 0 */
         }
     }
 
@@ -5233,9 +5237,31 @@ int main(int argc, char **argv) {
         snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-duplicate.iso",
                  preflight_root, nk_platform_path_separator());
         write_module_scan_iso(module_iso_path, 0, true, 0, false);
-        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
-                                    "DUPLICATE_DISC_MODULE_BASENAME");
+        /* One file name in two disc folders: each module gets its path-qualified
+         * host name (the tools compute the same names), so the scan goes on to
+         * the modules themselves -- here synthetic containers that do not
+         * decrypt -- instead of stopping at the shared name. */
+        assert(strlen(module_iso_path) < sizeof(wiz->inspecting_game.iso_path));
+        memcpy(wiz->inspecting_game.iso_path, module_iso_path, strlen(module_iso_path) + 1);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+        assert(check != NULL && check->status != PREFLIGHT_OK);
+        assert(strstr(check->message, "DUPLICATE_DISC_MODULE_BASENAME") == NULL);
+        assert(strstr(check->message, "0 of 2 ready") != NULL);
+        assert(strstr(check->message, "shared.167b7754.prx") != NULL);
         assert(remove(module_iso_path) == 0);
+        {
+            char host_name[256];
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/SHARED.PRX", "SHARED.PRX",
+                                          host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "SHARED.bf26060f.PRX") == 0);
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/data/pspsys/module/libadler.prx",
+                                          "libadler.prx", host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "libadler.1951c218.prx") == 0);
+            assert(player_module_qualified_name("PSP_GAME/USRDIR/OVL", "OVL", host_name, sizeof(host_name)));
+            assert(strcmp(host_name, "OVL.d0b7d601") == 0);
+            assert(!player_module_qualified_name("PSP_GAME/USRDIR/OVL", "OVL", host_name, 8));
+        }
 
         snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-candidate-limit.iso",
                  preflight_root, nk_platform_path_separator());
@@ -5256,6 +5282,21 @@ int main(int argc, char **argv) {
         write_module_scan_iso(module_iso_path, 1, false, 0, true);
         assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
                                     "DISC_MODULE_TREE_INVALID");
+        assert(remove(module_iso_path) == 0);
+
+        /* A container with an empty data segment is a module candidate (the
+         * decryption step opens it), not a file the scan passes over. */
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-empty-data.iso",
+                 preflight_root, nk_platform_path_separator());
+        s_module_scan_empty_data_segment = true;
+        write_module_scan_iso(module_iso_path, 1, false, 0, false);
+        s_module_scan_empty_data_segment = false;
+        assert(strlen(module_iso_path) < sizeof(wiz->inspecting_game.iso_path));
+        memcpy(wiz->inspecting_game.iso_path, module_iso_path, strlen(module_iso_path) + 1);
+        player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+        check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+        assert(check != NULL && strstr(check->message, "0 of 1 ready") != NULL);
+        assert(strstr(check->message, "module-000.prx") != NULL);
         assert(remove(module_iso_path) == 0);
         wiz->inspecting_game.iso_path[0] = '\0';
 
