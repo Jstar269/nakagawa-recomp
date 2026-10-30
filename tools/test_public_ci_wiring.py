@@ -1695,20 +1695,22 @@ def _on_block(text: str) -> list[str]:
     return body
 
 
-#: The one ``runs-on`` form that may reach the self-hosted pool: the classifier's
-#: ``linux_runner`` output (tools/ci_paths.py, docs/CI.md "Self-hosted Linux runners").
+#: The ``runs-on`` forms that may reach the self-hosted pool: the classifier's
+#: ``linux_runner`` (hosted fallback ubuntu-24.04) and ``linux_runner_2604`` (ubuntu-26.04)
+#: outputs (tools/ci_paths.py, docs/CI.md "Self-hosted Linux runners").
 SELF_HOSTED_RUNS_ON = """${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}"""
-#: The jobs that read it. Each one is a Linux job whose steps the pool's Ubuntu 24.04
-#: image was built to match.
-SELF_HOSTED_JOBS = frozenset({"native_tools"})
+SELF_HOSTED_RUNS_ON_2604 = """${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}"""
+#: The jobs that read each: every Linux job of CI except classify, which decides.
+SELF_HOSTED_JOBS = frozenset({"native_tools", "python_tools"})
+SELF_HOSTED_JOBS_2604 = frozenset({"hygiene", "markdown", "public_export", "profile_zero_fixture", "main_smoke",
+                                   "ci_required"})
 #: Trusted CodeQL's analyses read the runner its prepare job chose (tools/ci_paths.py
 #: codeql_runner).
 CODEQL_RUNS_ON = """${{ fromJSON(needs.prepare.outputs.analyze_runner || '"ubuntu-26.04"') }}"""
-#: Each workflow that may name a classifier-chosen runner, the one expression it uses,
-#: and the jobs that use it.
+#: Each workflow that may name a classifier-chosen runner: the expressions it may use.
 POOL_ROUTED = {
-    "ci.yml": (SELF_HOSTED_RUNS_ON, SELF_HOSTED_JOBS),
-    "codeql.yml": (CODEQL_RUNS_ON, frozenset({"analyze"})),
+    "ci.yml": (SELF_HOSTED_RUNS_ON, SELF_HOSTED_RUNS_ON_2604),
+    "codeql.yml": (CODEQL_RUNS_ON,),
 }
 _HOSTED_RUNS_ON = re.compile(r"^(ubuntu|windows|macos)-[0-9][0-9.]*$")
 
@@ -1752,23 +1754,30 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
                     continue
                 value = stripped[len("runs-on:"):].strip()
                 with self.subTest(workflow=path.name, runs_on=value):
-                    if path.name in POOL_ROUTED and value == POOL_ROUTED[path.name][0]:
+                    if value in POOL_ROUTED.get(path.name, ()):
                         continue
                     self.assertRegex(value, _HOSTED_RUNS_ON)
 
     def test_only_the_listed_jobs_read_the_classifier_runner(self) -> None:
         blocks = _ci_job_blocks()
-        users = {job for job, block in blocks.items() if f"    runs-on: {SELF_HOSTED_RUNS_ON}" in block}
-        self.assertEqual(users, set(SELF_HOSTED_JOBS))
+        for expression, jobs in ((SELF_HOSTED_RUNS_ON, SELF_HOSTED_JOBS),
+                                 (SELF_HOSTED_RUNS_ON_2604, SELF_HOSTED_JOBS_2604)):
+            with self.subTest(expression=expression):
+                users = {job for job, block in blocks.items() if f"    runs-on: {expression}" in block}
+                self.assertEqual(users, set(jobs))
         ci = _workflow_text("ci.yml")
-        self.assertEqual(ci.count("needs.classify.outputs.linux_runner"), len(SELF_HOSTED_JOBS))
-        for job in SELF_HOSTED_JOBS:
+        self.assertEqual(ci.count("needs.classify.outputs.linux_runner "), len(SELF_HOSTED_JOBS))
+        self.assertEqual(ci.count("needs.classify.outputs.linux_runner_2604 "), len(SELF_HOSTED_JOBS_2604))
+        # The classifier, which decides, and the Windows gates stay hosted.
+        self.assertIn("    runs-on: ubuntu-26.04", "\n".join(blocks["classify"]))
+        self.assertIn("    runs-on: windows-2022", "\n".join(blocks["windows_runtime"]))
+        for job in SELF_HOSTED_JOBS | SELF_HOSTED_JOBS_2604:
             block = "\n".join(blocks[job])
             with self.subTest(job=job):
-                # The job runs only after a successful classification, so the hosted
-                # fallback in the expression never decides a real run.
-                self.assertRegex(block, r"(?m)^    needs: \[classify[,\]]")
-                self.assertIn("needs.classify.result == 'success'", block)
+                # Every routed job needs classify. If classify failed (only CI required
+                # still runs then), its outputs are empty and the expression falls back
+                # to the hosted image, never to the pool.
+                self.assertRegex(block, r"(?m)^    needs: (classify$|\[classify[,\]])")
 
     def test_codeql_routes_only_its_analyses_from_the_default_branch_classifier(self) -> None:
         blocks = _workflow_job_blocks("codeql.yml")

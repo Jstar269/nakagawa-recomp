@@ -918,9 +918,14 @@ maintainer runs a small pool of self-hosted Linux runners, labelled `nk-wsl`, on
 own PC. Contributors need nothing from it: every run they can start uses GitHub's
 hosted images, exactly as before.
 
-**What runs there.** The classifier's `linux_runner` output (`tools/ci_paths.py`)
-names the runner for the jobs that read it, today the native and translation gates.
-It names the pool only for a trusted run, whose code is already the maintainer's:
+**What runs there.** The classifier's `linux_runner` and `linux_runner_2604` outputs
+(`tools/ci_paths.py`) name the runner for every Linux job of CI except `classify`, which
+decides and so stays hosted: the native and translation gates and the Python shards
+(hosted fallback `ubuntu-24.04`), and hygiene, Markdown, the export audit, the
+profile-zero fixture, main smoke and `CI required` (hosted fallback `ubuntu-26.04`; the
+pool's image is Ubuntu 24.04 for all of them). The Windows gates stay on GitHub's
+Windows runners. The outputs name the pool only for a trusted run, whose code is
+already the maintainer's:
 
 - a push to `main` of this repository;
 - a merge-queue group (`merge_group`) of `main`;

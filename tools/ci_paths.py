@@ -622,6 +622,7 @@ COMPILER_CACHE_WRITE_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"
 #: maintainer's machine. The runner refuses any other job itself as well (its job-started
 #: hook), so this routing is not the only guard.
 HOSTED_LINUX_RUNNER = "ubuntu-24.04"
+HOSTED_LINUX_RUNNER_2604 = "ubuntu-26.04"
 SELF_HOSTED_LINUX_RUNNER = ("self-hosted", "linux", "x64", "nk-wsl")
 SELF_HOSTED_REPOSITORY = "Jstar269/nakagawa-recomp"
 #: The desk's batch branches (one commit per folded pull request, built from main).
@@ -770,14 +771,20 @@ def linux_runner(
     switch: str,
     heartbeat: str,
     now: float,
+    hosted: str = HOSTED_LINUX_RUNNER,
 ) -> str:
-    """The ``runs-on`` value, as JSON, for the jobs that read the ``linux_runner`` output."""
+    """The ``runs-on`` value, as JSON, for the jobs that read a ``linux_runner*`` output.
+
+    ``hosted`` is the job's own hosted image: ``linux_runner`` falls back to
+    ``ubuntu-24.04``, ``linux_runner_2604`` to ``ubuntu-26.04``. The pool's image is
+    Ubuntu 24.04 for both.
+    """
 
     if trusted_for_self_hosted(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
         switch, heartbeat, now
     ):
         return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
-    return json.dumps(HOSTED_LINUX_RUNNER)
+    return json.dumps(hosted)
 
 
 def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, str] | None:
@@ -1063,6 +1070,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         makefile_change=makefile_change,
     )
     outputs["linux_runner"] = linux_runner(args.event_name, event, **pool)
+    outputs["linux_runner_2604"] = linux_runner(args.event_name, event, **pool, hosted=HOSTED_LINUX_RUNNER_2604)
     _write_outputs(outputs, args.github_output)
     print(f"event={args.event_name}")
     print(f"changed_files={len(paths)}")

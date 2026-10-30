@@ -1352,6 +1352,23 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
             with self.subTest(heartbeat=heartbeat):
                 self.assertEqual(self.route("push", ref="refs/heads/main", heartbeat=heartbeat), expected)
 
+    def test_the_2604_output_shares_the_decision_and_falls_back_to_its_own_image(self) -> None:
+        hosted_2604 = json.dumps("ubuntu-26.04")
+        for event_name, event, ref, expected in (
+            ("pull_request", _pull_request(), "refs/pull/1/merge", SELF_HOSTED),
+            ("push", {}, "refs/heads/main", SELF_HOSTED),
+            ("pull_request", _pull_request("fix/x"), "refs/pull/1/merge", hosted_2604),
+            ("pull_request", _pull_request(head_repo="evil/nakagawa-recomp", fork=True, author="evil"),
+             "refs/pull/1/merge", hosted_2604),
+            ("push", {}, "refs/heads/feature", hosted_2604),
+        ):
+            with self.subTest(event=event_name, ref=ref):
+                self.assertEqual(
+                    ci_paths_module.linux_runner(event_name, event, repository=REPO, ref=ref, switch="on",
+                                                 heartbeat=str(NOW), now=NOW, hosted="ubuntu-26.04"),
+                    expected,
+                )
+
     def test_main_writes_the_runner_from_the_environment(self) -> None:
         def run_main(event_name: str, event: dict[str, object], env: dict[str, str]) -> str:
             with tempfile.TemporaryDirectory() as scratch:
@@ -1366,6 +1383,9 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
                     ci_paths_module.main(["--files", "src/rt/hle.c", "--event-name", event_name,
                                           "--event-path", str(event_path), "--github-output", str(output_path)])
                 values = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+            # Both outputs come from the same decision; only the hosted fallback differs.
+            pooled = values["linux_runner"] == SELF_HOSTED
+            self.assertEqual(values["linux_runner_2604"], SELF_HOSTED if pooled else json.dumps("ubuntu-26.04"))
             return values["linux_runner"]
 
         self.assertEqual(run_main("pull_request", _pull_request(), {"GITHUB_REF": "refs/pull/9/merge"}), SELF_HOSTED)
