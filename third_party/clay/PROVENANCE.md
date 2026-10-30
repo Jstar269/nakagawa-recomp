@@ -24,17 +24,17 @@ launcher, the in-game overlay and their tests lay out through it:
 
 | File | Kind | Upstream blob SHA at the pin | SHA-256 |
 | --- | --- | --- | --- |
-| `clay.h` | imported + LOCAL DELTA | `7d9cf4cc7a918d1bdd766867c180851c949a3310` | `9609c081df4413d718ef312b78e903528aa5fb7a8b64206dc4a307c958b2c758` |
+| `clay.h` | imported + LOCAL DELTA | `7d9cf4cc7a918d1bdd766867c180851c949a3310` | `d9e5e2b1bc2662f6a85c14a3d3d64253057d38a7241c1d870a936aca80483f83` |
 | `LICENSE.md` | imported byte-identical | `2968c61bcdc6ecbef470e02edd45b47aba1d8c44` | `5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8` |
 | `PROVENANCE.md` | project-authored manifest | n/a | n/a |
 
 No generated Clay file is included. The upstream `clay.h` bytes have SHA-256
 `54aef6d5f96b14e296bebb6db4a755543e98fd7e6c188411afb2f22a4b4f7728`;
-re-applying both changes below to them gives the SHA-256 in the table.
+applying the four changes below to them gives the SHA-256 in the table.
 
 ## Local deltas
 
-Both changes are marked `LOCAL DELTA` in the file, and
+Each change is marked `LOCAL DELTA` in the file, and
 `tests/native/test_clay_layout.c` fails on the upstream bytes for each of them.
 
 - `clay.h`, `Clay__Array_Allocate_Arena`: `capacity * itemSize` is computed as
@@ -51,3 +51,16 @@ Both changes are marked `LOCAL DELTA` in the file, and
   wrapping, as one line, so compressing an overfull parent squeezes wrapped text
   back toward one line and the next element paints over its later lines; the
   selftest checks the overfull case.
+- `clay.h`, `Clay__AddHashMapItem`: the element-id map is full only when a new
+  slot is needed and its free list is empty. Upstream at the pin checks the
+  slot array's length first, before a repeated id or a freed slot can be used,
+  and that array never shrinks: after one layout passes the element limit,
+  every later layout fails with `HASH_MAP_CAPACITY_EXCEEDED`, though pruning
+  has freed the slots of the elements that are gone. The selftest lays out past
+  the limit, then checks that the next layout succeeds without an error.
+- `clay.h`, `Clay_UpdateScrollContainers`: a released drag keeps momentum only
+  when its frames passed time. Momentum is the drag's distance over its time,
+  and upstream at the pin divides by that time even when it is zero (a host
+  whose clock stood still across the drag's frames): the infinite momentum pins
+  the container at one end until the next scroll. The selftest drags with a
+  `deltaTime` of 0 and checks the container stays where the drag left it.

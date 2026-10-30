@@ -27,7 +27,8 @@ static const NkUiTheme g_n1_theme = {
     0x0B0F14B8u, /* art_scrim, 72% */
     0xC9D6E3FFu, /* art_label */
     0x3A4552FFu, /* placeholder */
-    0x1F2613FFu  /* capture */
+    0x1F2613FFu, /* capture */
+    0xDDF465FFu  /* accent_hover */
 };
 
 const NkUiTheme *nk_ui_theme_n1(void) {

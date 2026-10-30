@@ -124,10 +124,38 @@ static void nk_ui_sync_view(NkUiDrawBuffer *buffer) {
     buffer->list.cmd = buffer->commands;
 }
 
+/* Narrows clip to the scissor open now, if any. */
+static void nk_ui_clip_to_scissor(const NkUiDrawBuffer *buffer, int clip[4]) {
+    const int *scissor;
+    if (buffer->clip_depth == 0u) {
+        return;
+    }
+    scissor = buffer->clip_stack[buffer->clip_depth - 1u];
+    if (clip[0] < scissor[0]) clip[0] = scissor[0];
+    if (clip[1] < scissor[1]) clip[1] = scissor[1];
+    if (clip[2] > scissor[2]) clip[2] = scissor[2];
+    if (clip[3] > scissor[3]) clip[3] = scissor[3];
+}
+
 static bool nk_ui_append_command(NkUiDrawBuffer *buffer, NkUiDrawCmd command) {
     if (buffer->list.ncmd == UINT32_MAX ||
         !nk_ui_reserve_commands(buffer, buffer->list.ncmd + 1u)) {
         return false;
+    }
+    if (command.kind == NK_UI_DRAW_SCISSOR_END) {
+        if (buffer->clip_depth == 0u) {
+            return false;
+        }
+        --buffer->clip_depth;
+        memcpy(command.clip, buffer->clip_stack[buffer->clip_depth], sizeof(command.clip));
+    } else {
+        nk_ui_clip_to_scissor(buffer, command.clip);
+        if (command.kind == NK_UI_DRAW_SCISSOR_START) {
+            if (buffer->clip_depth == NK_UI_DRAW_CLIP_DEPTH) {
+                return false;
+            }
+            memcpy(buffer->clip_stack[buffer->clip_depth++], command.clip, sizeof(command.clip));
+        }
     }
     buffer->commands[buffer->list.ncmd++] = command;
     buffer->list.v = buffer->vertices;
@@ -346,6 +374,7 @@ void nk_ui_draw_buffer_reset(NkUiDrawBuffer *buffer) {
         }
     }
     buffer->text_run_count = 0;
+    buffer->clip_depth = 0u;
     buffer->list.nv = 0;
     buffer->list.ni = 0;
     buffer->list.ncmd = 0;

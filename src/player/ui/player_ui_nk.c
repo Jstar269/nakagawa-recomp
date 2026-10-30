@@ -278,11 +278,19 @@ static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
     return true;
 }
 
+/* Clay's layout errors are for developers: the developer log gets them, the
+   screen never does. */
+static void player_ui_report_layout_error(void *user, const NkUiLayoutError *error) {
+    int length = error->text_length > 512u ? 512 : (int)error->text_length;
+    player_dev_log_add((PlayerApp *)user, "ui", "layout %s (%s): %.*s", error->kind,
+                       error->fatal ? "frame dropped" : "frame drawn", length, error->text);
+}
+
 bool player_ui_nk_built_with_launcher(void) {
     return nk_ui_sdlr_available() && nk_ui_ttf_available();
 }
 
-PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
+PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, PlayerApp *app,
                                 char *error, size_t error_size) {
     PlayerUiNk *player;
     const char *base_path;
@@ -329,6 +337,8 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
     /* The launcher's display rules, as the old renderer applied them to every
        string it drew: the profile folder shows as "~". */
     config.display_text = player_display_text;
+    config.report_error = player_ui_report_layout_error;
+    config.report_user = app;
     player->ui = nk_ui_create(&config);
     if (player->ui == NULL) {
         player_ui_set_error(error, error_size,
@@ -408,6 +418,10 @@ bool player_ui_nk_draws_view(int view_value) {
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
     return player != NULL && player->ready && app != NULL &&
            player_ui_nk_draws_view(app->active_view);
+}
+
+bool player_ui_nk_in_motion(const PlayerUiNk *player) {
+    return player != NULL && nk_ui_scroll_in_motion(player->ui);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
@@ -1053,6 +1067,7 @@ static PlayerUiAction player_ui_render_developer_log(PlayerUiNk *player, PlayerA
     for (size_t i = 0u; i < count; ++i) model.lines[i] = player_dev_log_line(app, i);
     model.line_count = count;
     model.notice = app->dev_log.notice;
+    model.inspecting = app->dev_log.inspect_layout;
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
     return player_ui_screen_developer_log(player->ui, &model);
@@ -1923,6 +1938,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_sdl_input_set_event_scale(&player->input,
                                     point_to_pixel / scale.density);
     nk_ui_set_viewport(player->ui, &player->viewport);
+    nk_ui_set_layout_debug(player->ui,
+                           app->settings.developer_mode && app->dev_log.inspect_layout);
     nk_ui_sdlr_set_scale(player->backend, scale.density);
     now_s = (double)SDL_GetTicksNS() / 1000000000.0;
     repeat_count = nk_ui_input_poll(&player->input.input, now_s, repeats,

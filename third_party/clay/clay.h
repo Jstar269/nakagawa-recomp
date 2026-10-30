@@ -1783,16 +1783,6 @@ bool Clay__PointIsInsideRect(Clay_Vector2 point, Clay_BoundingBox rect) {
 
 Clay_LayoutElementHashMapItem* Clay__AddHashMapItem(Clay_ElementId elementId, Clay_LayoutElement* layoutElement) {
     Clay_Context* context = Clay_GetCurrentContext();
-    if (context->layoutElementsHashMapInternal.length == context->layoutElementsHashMapInternal.capacity - 1) {
-        if (!context->booleanWarnings.hashMapCapacityExceeded) {
-            context->errorHandler.errorHandlerFunction(CLAY__INIT(Clay_ErrorData) {
-                .errorType = CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED,
-                .errorText = CLAY_STRING("Clay has run out of space in it's internal element ID hashmap.  Try using Clay_SetMaxElementCount() with a higher value."),
-                .userData = context->errorHandler.userData });
-            context->booleanWarnings.hashMapCapacityExceeded = true;
-        }
-        return NULL;
-    }
     Clay_LayoutElementHashMapItem item = { .elementId = elementId, .layoutElement = layoutElement, .nextIndex = -1, .generation = context->generation + 1, .appearedThisFrame = true };
     uint32_t hashBucket = elementId.id % context->layoutElementsHashMap.capacity;
     int32_t hashItemPrevious = -1;
@@ -1829,6 +1819,20 @@ Clay_LayoutElementHashMapItem* Clay__AddHashMapItem(Clay_ElementId elementId, Cl
         indexToUse = Clay__int32_tArray_GetValue(&context->layoutElementsHashMapFreeList, context->layoutElementsHashMapFreeList.length - 1);
         context->layoutElementsHashMapFreeList.length--;
     } else {
+        /* LOCAL DELTA (Nakagawa Recomp): the map is full only when a new slot is needed and the free list is
+         * empty. Upstream checks the array length first, before a repeated id or a freed slot can be used, and
+         * the array never shrinks: after one frame fills it, every later layout fails, though pruning has
+         * freed the slots of the elements that are gone. */
+        if (context->layoutElementsHashMapInternal.length == context->layoutElementsHashMapInternal.capacity - 1) {
+            if (!context->booleanWarnings.hashMapCapacityExceeded) {
+                context->errorHandler.errorHandlerFunction(CLAY__INIT(Clay_ErrorData) {
+                    .errorType = CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED,
+                    .errorText = CLAY_STRING("Clay has run out of space in it's internal element ID hashmap.  Try using Clay_SetMaxElementCount() with a higher value."),
+                    .userData = context->errorHandler.userData });
+                context->booleanWarnings.hashMapCapacityExceeded = true;
+            }
+            return NULL;
+        }
         indexToUse = context->layoutElementsHashMapInternal.length;
     }
     Clay_LayoutElementHashMapItem *hashItem = Clay__LayoutElementHashMapItemArray_Set(&context->layoutElementsHashMapInternal, indexToUse, item);
@@ -4287,11 +4291,14 @@ void Clay_UpdateScrollContainers(bool enableDragScrolling, Clay_Vector2 scrollDe
 
         // Touch / click is released
         if (!isPointerActive && scrollData->pointerScrollActive) {
-            float xDiff = scrollData->scrollPosition.x - scrollData->scrollOrigin.x;
+            /* LOCAL DELTA (Nakagawa Recomp): momentum is the drag's distance over its time. A drag whose frames
+             * passed no time (deltaTime 0) has no speed to keep; upstream divides by that zero, and the infinite
+             * momentum pins the container at one end until the next scroll. */
+            float xDiff = scrollData->momentumTime > 0 ? scrollData->scrollPosition.x - scrollData->scrollOrigin.x : 0;
             if (xDiff < -10 || xDiff > 10) {
                 scrollData->scrollMomentum.x = (scrollData->scrollPosition.x - scrollData->scrollOrigin.x) / (scrollData->momentumTime * 25);
             }
-            float yDiff = scrollData->scrollPosition.y - scrollData->scrollOrigin.y;
+            float yDiff = scrollData->momentumTime > 0 ? scrollData->scrollPosition.y - scrollData->scrollOrigin.y : 0;
             if (yDiff < -10 || yDiff > 10) {
                 scrollData->scrollMomentum.y = (scrollData->scrollPosition.y - scrollData->scrollOrigin.y) / (scrollData->momentumTime * 25);
             }
