@@ -352,6 +352,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_llvm_ir.py` | The structured LLVM IR builder: type checks, linking, renames and LLVM's verifier. |
 | `test_lowering_plan.py` | The lowering plan: decoding, and the drift guard against `emit_function` over a real build. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
+| `test_codegen_register_promotion.py` | Opt-in local register promotion (`--promote-registers`, #284): loads, write-backs at every boundary, and the line safety check. |
 | `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |

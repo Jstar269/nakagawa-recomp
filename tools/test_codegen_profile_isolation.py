@@ -578,6 +578,7 @@ ADDRESS_TABLES = {
     "NULL_BASE_WORD_LOADS": "hst_profile",
     "GUEST_PATCHES": "hst_profile",
     "_SV_SPECIAL": "hst_profile",
+    "_HST_INLINE_SITES": "hst_profile",
     "SIMPLE_STUBS": "empty-under-none",
     "HST_MANUAL_CALLABLES": "catalog-early-return",
     "HST_RESUME_OWNERS": "catalog-early-return",
