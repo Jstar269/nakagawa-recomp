@@ -612,6 +612,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
     }
     model.title_name = game->title_name;
     model.disc_id = game->disc_id;
+    model.badge = nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial" : NULL;
     model.iso_path = game->source_image_path[0] ? game->source_image_path : game->iso_path;
     if (model.kind == PLAYER_UI_DISC_BLOCKED) {
         snprintf(player->disc_reason, sizeof(player->disc_reason),
@@ -654,6 +655,8 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
                    model.input_guide.files[i].name, model.input_guide.files[i].replace ? 1 : 0,
                    model.input_guide.files[i].source);
         }
+        printf("[PLAYER_UI_TEST] next_ui_disc_badge disc=%s badge=%s\n", game->disc_id,
+               model.badge != NULL ? model.badge : "Your disc");
         for (size_t i = 0u; i < model.check_count; ++i) {
             printf("[PLAYER_UI_TEST] next_ui_disc_row status=%s tone=%s label=%s message=%s\n",
                    model.checks[i].status,
@@ -1628,8 +1631,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
        PC. The --demo fixtures are the project's test programs, not a disc the
        user added. */
     out->is_demo = game->is_showcase_package;
+    /* A disc whose own ID is not a retail ID (a beta or a prototype) has a
+       library key Nakagawa derived from its contents (nk_iso.h). */
     out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
-               : game->is_sample ? "Test program" : "Your disc";
+               : game->is_sample ? "Test program"
+               : nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial"
+               : "Your disc";
     /* Disc art is asked for by the screen that shows it
        (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
@@ -1640,6 +1647,8 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                  out->library_status);
         printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
                out->library_status);
+        printf("[PLAYER_UI_TEST] next_ui_library_badge index=%d disc=%s badge=%s\n", index,
+               game->disc_id, out->badge);
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
