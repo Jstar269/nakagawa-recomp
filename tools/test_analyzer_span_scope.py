@@ -488,12 +488,13 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn((0x00500000, 0x00500100), second)
         self.assertNotIn((0x00400000, 0x00400100), second)
 
-    def test_explicit_span_fails_closed_on_a_rebased_image(self) -> None:
+    def test_explicit_span_applies_to_a_rebased_image(self) -> None:
         rebased = analyze.Elf(str(self.elf), base=REBASED_BASE)
-        with self.assertRaisesRegex(RuntimeError, "GAME_BASE != 0"):
-            analyze.exec_ranges(rebased, extra_spans=[FOREIGN_SPAN])
-        with self.assertRaisesRegex(RuntimeError, "GAME_BASE != 0"):
-            analyze.analyze(rebased, extra_spans=[FOREIGN_SPAN])
+        ranges = analyze.exec_ranges(rebased, extra_spans=[FOREIGN_SPAN])
+        self.assertIn((PRIMARY_BASE, PRIMARY_BASE + 8), ranges)
+        self.assertIn(FOREIGN_SPAN, ranges)
+        _, from_analyze = analyze.analyze(rebased, extra_spans=[FOREIGN_SPAN])
+        self.assertEqual(from_analyze, ranges)
 
     # --- span parsing -----------------------------------------------------
 
@@ -560,10 +561,12 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "look like"):
             analyze.parse_extra_spans("0x1000,0x2000,0x3000,0x4000")
 
-    def test_nonzero_base_plus_extra_span_fails_closed_A7(self) -> None:
+    def test_nonzero_base_plus_extra_span_uses_guest_addresses_A7(self) -> None:
         loaded = analyze.Elf(str(self.elf), base=REBASED_BASE)
-        with self.assertRaisesRegex(RuntimeError, "GAME_BASE != 0"):
-            analyze.exec_ranges(loaded, extra_spans=[FOREIGN_SPAN])
+        self.assertIn(
+            FOREIGN_SPAN,
+            analyze.exec_ranges(loaded, extra_spans=[FOREIGN_SPAN]),
+        )
 
     def test_hst_legacy_translation_outside_analyzer_A8(self) -> None:
         # A8: HST translation must happen before analyzer, not inside it.

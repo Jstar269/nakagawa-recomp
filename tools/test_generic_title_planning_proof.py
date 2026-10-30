@@ -402,18 +402,7 @@ class InvalidManifestsFailClosed(unittest.TestCase):
                     title_manifest.validate_manifest(mutated)
                 self.assertIn(fragment.lower(), str(cm.exception).lower())
 
-    def test_malformed_span_and_profile_combos_fail_in_planner(self) -> None:
-        base = _load(SYNTHETIC2)
-        # Extra span with nonzero base is rejected by planner
-        with self.assertRaises(title_codegen_plan.TitleCodegenPlanError):
-            bad = copy.deepcopy(base)
-            bad["executable"]["extra_executable_spans"] = [{"start": 0x1000, "end": 0x2000}]
-            title_codegen_plan.build_manager_plan(
-                bad,
-                game_name="synthetic_title2",
-                game_elf=pathlib.Path("build/fixtures/synthetic2.elf"),
-                build_dir=pathlib.Path("build/synthetic_title2"),
-            )
+    def test_conflicting_codegen_profile_fails_in_planner(self) -> None:
         # Conflicting codegen profile is rejected
         with self.assertRaises(title_codegen_plan.TitleCodegenPlanError):
             title_codegen_plan.build_manager_plan(

@@ -552,8 +552,8 @@ class TitleCodegenPlanTests(unittest.TestCase):
         manifest["executable"]["extra_executable_spans"] = [{"start": 1, "end": 2}]
         manifest["executable"]["base"] = 0x08804000
         manifest["codegen_profile"] = "none"
-        with self.assertRaisesRegex(ValueError, "nonzero base"):
-            self.plan(manifest, codegen_profile="none")
+        plan = self.plan(manifest, codegen_profile="none")
+        self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "0x00000001,0x00000002")
         manifest["executable"]["extra_executable_spans"] = []
         manifest["codegen_profile"] = "hst"
         with self.assertRaisesRegex(ValueError, "hst codegen profile requires"):

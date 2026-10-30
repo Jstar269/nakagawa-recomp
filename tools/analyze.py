@@ -643,17 +643,10 @@ def exec_ranges(elf, extra_spans=None):
             continue
         spans.append((s["addr"], s["addr"] + s["size"]))
     # Extra code spans that live outside the section table are *caller-supplied title
-    # configuration*, never a built-in default: a generic base-zero image must not
-    # silently inherit some other title's executable span. The span is only meaningful
-    # for an unrebased image -- a rebased guest lives at different addresses -- so
-    # applying one to a rebased module fails closed instead of analyzing garbage.
+    # configuration*, never a built-in default. They are guest addresses, and section
+    # addresses above were rebased when needed, so the same span applies to both a
+    # base-zero image and a fixed-address executable.
     if extra_spans:
-        effective_base = 0 if elf.base is None else elf.base
-        if effective_base != 0:
-            raise RuntimeError(
-                "explicit extra executable spans cannot be applied when "
-                "GAME_BASE != 0 (got GAME_BASE=0x%x)" % effective_base
-            )
         spans.extend((lo, hi) for lo, hi in extra_spans)
     if not spans:
         return [(0, 0)]
