@@ -357,11 +357,15 @@ class FpScalarHeaderMutantTests(unittest.TestCase):
 
     @unittest.skipUnless(CC, "gcc required")
     def test_M9_helper_leaks_modified_mxcsr(self):
+        # The anchor ends sr_fpu_mul_s: the software FS flush (AArch64 only) sits between
+        # the product and the closing barrier.
         self.assert_killed(
-            "    volatile float vr = va * vb;\n"
+            "    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_mul(va, vb, vr);\n"
+            "#endif\n"
             "    sr_fpu_scalar_barrier();\n"
             "    sr_fpu_env_restore(saved);",
-            "    volatile float vr = va * vb;\n"
+            "    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_mul(va, vb, vr);\n"
+            "#endif\n"
             "    sr_fpu_scalar_barrier();",
             ("FAIL: hostile-env restoration inexact",
              "FAIL: helper left host FP env modified"))

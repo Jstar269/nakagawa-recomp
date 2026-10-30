@@ -285,16 +285,19 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
     size_t len = strlen(s);
     if (len > 240) return false;
     if (s[0] == '/' || s[0] == '\\' || strchr(s, '\\') != NULL || strchr(s, ':') != NULL) return false;
-    /* strtok() treats repeated and trailing separators as delimiters rather
-       than empty path components. Reject them before tokenization so the
-       native parser agrees with the schema parser and never normalizes an
-       ambiguous path into a different path. */
+    /* Repeated and trailing separators would be empty path components. Reject
+       them before splitting so the native parser agrees with the schema parser
+       and never normalizes an ambiguous path into a different path. */
     if (s[len - 1] == '/' || strstr(s, "//") != NULL) return false;
 
     char temp[256];
     snprintf(temp, sizeof(temp), "%s", s);
-    char *token = strtok(temp, "/");
+    /* Split in place rather than with strtok(), whose hidden state is shared by
+       every thread. */
+    char *token = temp;
     while (token) {
+        char *slash = strchr(token, '/');
+        if (slash) *slash = '\0';
         if (strcmp(token, "") == 0 || strcmp(token, ".") == 0 || strcmp(token, "..") == 0) return false;
         size_t tlen = strlen(token);
         if (token[tlen - 1] == '.' || token[tlen - 1] == ' ') return false;
@@ -319,7 +322,7 @@ static bool is_valid_relative_path(const char *s, bool allow_plus) {
         for (int r = 0; reserved[r]; r++) {
             if (strcmp(base, reserved[r]) == 0) return false;
         }
-        token = strtok(NULL, "/");
+        token = slash ? slash + 1 : NULL;
     }
     return true;
 }
@@ -2663,6 +2666,24 @@ static bool package_number(const JsonNode *node, int64_t expected) {
            node->u.num.int_val == expected;
 }
 
+/* True, with the reason in `error`, when `node` holds a format number above the
+ * one this player reads: a later Nakagawa built the package. It is named as
+ * such, before any member check a newer layout would fail, and never mistaken
+ * for a damaged package. The player does not change it; only a rebuild the user
+ * asks for replaces it. */
+static bool package_newer_format(const JsonNode *node, int64_t reads, const char *what,
+                                 char *error, size_t error_size) {
+    if (!node || node->type != JSON_NUMBER || !node->u.num.is_integer ||
+        node->u.num.int_val <= reads) return false;
+    if (error && error_size) {
+        snprintf(error, error_size,
+                 "built by a newer Nakagawa (%s format %lld; this player reads %lld); "
+                 "update Nakagawa to play it, or rebuild it for this one.",
+                 what, (long long)node->u.num.int_val, (long long)reads);
+    }
+    return true;
+}
+
 static bool package_read_json(const char *path, size_t max_bytes,
                               bool *out_exceeds_limit,
                               char **out_text, size_t *out_length,
@@ -4074,6 +4095,13 @@ static bool package_validate_contract(const JsonNode *package,
     static const char * const object_keys[] = {"path", "sha256", NULL};
     static const char * const object_required[] = {"path", "sha256", NULL};
     const char *value = NULL;
+    if (package_newer_format(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION,
+                             "package", error, error_size) ||
+        package_newer_format(obj_get(obj_get(package, "cache"), "schema_version"),
+                             NK_AOT_CACHE_SCHEMA_VERSION, "package cache", error,
+                             error_size)) {
+        return false;
+    }
     if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
     if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
         !package_number(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION)) {
@@ -4415,6 +4443,12 @@ static bool package_validate_completion(const char *package_root,
         return false;
     }
     const char *value = NULL;
+    if (package_newer_format(obj_get(completion, "schema_version"),
+                             NK_AOT_COMPLETION_SCHEMA_VERSION, "package completion", error,
+                             error_size)) {
+        json_free(completion);
+        return false;
+    }
     if (!package_check_object(completion, "completion-manifest", allowed_keys, required_keys,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
@@ -5174,4 +5208,332 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     if (out_info) *out_info = resolved_info;
     if (reason && reason_size) snprintf(reason, reason_size, "Runtime package v1 is valid for %s.", normalized);
     return NK_RUNTIME_PACKAGE_OK;
+}
+
+/* -----------------------------------------------------------------------------
+ * Package build identity: which Nakagawa built a package (owner, 2026-10-29)
+ * -------------------------------------------------------------------------- */
+
+/* The relative paths (forward slashes) a source-tree digest covers, collected
+ * before any file is read so they can be hashed in one sorted order. */
+typedef struct {
+    char **paths;
+    size_t count;
+    size_t capacity;
+    bool failed;
+} PackageSourceList;
+
+typedef struct {
+    PackageSourceList *list;
+    char **pending;          /* directories still to list, relative */
+    size_t pending_count;
+    size_t pending_capacity;
+    const char *parent;      /* the relative directory being listed */
+    bool all_files;          /* assets/vfpu: every file, whatever its suffix */
+} PackageSourceWalk;
+
+static char *package_source_copy(const char *text) {
+    size_t length = strlen(text);
+    char *copy = (char *)malloc(length + 1u);
+    if (copy) memcpy(copy, text, length + 1u);
+    return copy;
+}
+
+static char *package_source_join(const char *parent, const char *name) {
+    size_t parent_length = strlen(parent);
+    size_t name_length = strlen(name);
+    char *joined = (char *)malloc(parent_length + 1u + name_length + 1u);
+    if (!joined) return NULL;
+    memcpy(joined, parent, parent_length);
+    joined[parent_length] = '/';
+    memcpy(joined + parent_length + 1u, name, name_length + 1u);
+    return joined;
+}
+
+/* Takes ownership of item, which may be NULL (an allocation that failed). */
+static bool package_source_push(char ***items, size_t *count, size_t *capacity, char *item) {
+    if (!item) return false;
+    if (*count == *capacity) {
+        size_t grown = *capacity ? *capacity * 2u : 256u;
+        char **resized = (char **)realloc(*items, grown * sizeof(char *));
+        if (!resized) {
+            free(item);
+            return false;
+        }
+        *items = resized;
+        *capacity = grown;
+    }
+    (*items)[(*count)++] = item;
+    return true;
+}
+
+/* Python's Path.suffix: the text from the last dot when that dot neither
+ * starts nor ends the name, compared without case as source_tree_digest's
+ * suffix.lower() does. */
+static bool package_source_suffix_counts(const char *name) {
+    static const char * const suffixes[] = {".c", ".h", ".cpp", ".hpp", NULL};
+    const char *dot = strrchr(name, '.');
+    if (!dot || dot == name || dot[1] == '\0') return false;
+    for (size_t i = 0; suffixes[i]; i++) {
+        if (nk_ascii_casecmp(dot, suffixes[i]) == 0) return true;
+    }
+    return false;
+}
+
+static bool package_source_walk_entry(const char *name, bool is_dir, void *ctx) {
+    PackageSourceWalk *walk = (PackageSourceWalk *)ctx;
+    bool pushed;
+    if (is_dir) {
+        pushed = package_source_push(&walk->pending, &walk->pending_count,
+                                     &walk->pending_capacity,
+                                     package_source_join(walk->parent, name));
+    } else if (walk->all_files || package_source_suffix_counts(name)) {
+        pushed = package_source_push(&walk->list->paths, &walk->list->count,
+                                     &walk->list->capacity,
+                                     package_source_join(walk->parent, name));
+    } else {
+        return true;
+    }
+    if (!pushed) walk->list->failed = true;
+    return pushed;
+}
+
+static bool package_source_absolute(const char *source_root, const char *relative,
+                                    char *out, size_t out_size) {
+    char sep = nk_platform_path_separator();
+    int written = snprintf(out, out_size, "%s%c%s", source_root, sep, relative);
+    if (written <= 0 || (size_t)written >= out_size) return false;
+    if (sep != '/') {
+        for (char *p = out; *p; p++) {
+            if (*p == '/') *p = sep;
+        }
+    }
+    return true;
+}
+
+/* Collect every counted file under source_root/base. A missing base adds
+ * nothing, as the Python digest skips a directory that is not there. */
+static void package_source_collect(const char *source_root, const char *base,
+                                   bool all_files, PackageSourceList *list) {
+    char absolute[NK_MAX_PATH * 2];
+    if (list->failed) return;
+    if (!package_source_absolute(source_root, base, absolute, sizeof(absolute))) {
+        list->failed = true;
+        return;
+    }
+    if (!nk_platform_dir_exists(absolute)) return;
+    /* assets/vfpu counts only as a real directory (is_dir and not is_symlink). */
+    if (all_files && package_path_is_symlink(absolute)) return;
+    PackageSourceWalk walk;
+    memset(&walk, 0, sizeof(walk));
+    walk.list = list;
+    walk.all_files = all_files;
+    if (!package_source_push(&walk.pending, &walk.pending_count, &walk.pending_capacity,
+                             package_source_copy(base))) {
+        list->failed = true;
+    }
+    while (walk.pending_count > 0 && !list->failed) {
+        char *directory = walk.pending[--walk.pending_count];
+        walk.parent = directory;
+        if (!package_source_absolute(source_root, directory, absolute, sizeof(absolute)) ||
+            !nk_platform_list_dir(absolute, package_source_walk_entry, &walk)) {
+            list->failed = true;
+        }
+        free(directory);
+    }
+    while (walk.pending_count > 0) free(walk.pending[--walk.pending_count]);
+    free(walk.pending);
+}
+
+typedef struct {
+    const char *source_root;
+    PackageSourceList *list;
+} PackageBuildRuleWalk;
+
+/* The "mk/<name>.mk" glob: the files directly in mk/ whose name ends in .mk, symlinks left out,
+ * as Path.glob gives them to source_tree_digest. */
+static bool package_build_rule_entry(const char *name, bool is_dir, void *ctx) {
+    PackageBuildRuleWalk *walk = (PackageBuildRuleWalk *)ctx;
+    char relative[NK_MAX_PATH];
+    char absolute[NK_MAX_PATH * 2];
+    size_t length = strlen(name);
+    if (is_dir || length <= 3u || nk_ascii_casecmp(name + length - 3u, ".mk") != 0) return true;
+    int written = snprintf(relative, sizeof(relative), "mk/%s", name);
+    if (written <= 0 || (size_t)written >= sizeof(relative) ||
+        !package_source_absolute(walk->source_root, relative, absolute, sizeof(absolute))) {
+        walk->list->failed = true;
+        return false;
+    }
+    if (package_path_is_symlink(absolute)) return true;
+    if (!package_source_push(&walk->list->paths, &walk->list->count, &walk->list->capacity,
+                             package_source_copy(relative))) {
+        walk->list->failed = true;
+        return false;
+    }
+    return true;
+}
+
+static void package_source_collect_build_rules(const char *source_root, PackageSourceList *list) {
+    char absolute[NK_MAX_PATH * 2];
+    if (list->failed) return;
+    if (!package_source_absolute(source_root, "mk", absolute, sizeof(absolute))) {
+        list->failed = true;
+        return;
+    }
+    if (!nk_platform_dir_exists(absolute)) return;
+    PackageBuildRuleWalk walk = {source_root, list};
+    if (!nk_platform_list_dir(absolute, package_build_rule_entry, &walk)) list->failed = true;
+}
+
+static int package_source_compare(const void *left, const void *right) {
+    return strcmp(*(const char * const *)left, *(const char * const *)right);
+}
+
+/* source_tree_digest in tools/nk_core/package_cache.py, byte for byte: the
+ * sorted relative paths (code point order, which is UTF-8 byte order), each
+ * followed by NUL, the file's bytes and NUL. */
+static bool package_runtime_source_digest(const char *source_root, char out_hex[65]) {
+    /* RUNTIME_SOURCE_DIRECTORIES and RUNTIME_BUILD_RULE_GLOBS (the Makefile and mk/<name>.mk). */
+    static const char * const source_dirs[] = {"src/rt", "src/core", "src/ui", "third_party/clay",
+                                               "third_party/portable-snippets",
+                                               "third_party/stb", NULL};
+    static const uint8_t nul = 0;
+    PackageSourceList list;
+    char absolute[NK_MAX_PATH * 2];
+    memset(&list, 0, sizeof(list));
+    if (package_source_absolute(source_root, "Makefile", absolute, sizeof(absolute)) &&
+        nk_platform_file_exists(absolute) && !nk_platform_dir_exists(absolute) &&
+        !package_path_is_symlink(absolute) &&
+        !package_source_push(&list.paths, &list.count, &list.capacity,
+                             package_source_copy("Makefile"))) {
+        list.failed = true;
+    }
+    package_source_collect_build_rules(source_root, &list);
+    for (size_t i = 0; source_dirs[i]; i++) {
+        package_source_collect(source_root, source_dirs[i], false, &list);
+    }
+    package_source_collect(source_root, "assets/vfpu", true, &list);
+    bool ok = !list.failed;
+    if (ok && list.count > 1) {
+        qsort(list.paths, list.count, sizeof(char *), package_source_compare);
+    }
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    uint8_t *buffer = ok ? (uint8_t *)malloc(65536u) : NULL;
+    if (!buffer) ok = false;
+    for (size_t i = 0; ok && i < list.count; i++) {
+        FILE *file = NULL;
+        if (!package_source_absolute(source_root, list.paths[i], absolute, sizeof(absolute)) ||
+            (file = manifest_fopen(absolute)) == NULL) {
+            ok = false;
+            break;
+        }
+        nk_sha256_update(&ctx, (const uint8_t *)list.paths[i], strlen(list.paths[i]));
+        nk_sha256_update(&ctx, &nul, 1u);
+        size_t count;
+        while ((count = fread(buffer, 1, 65536u, file)) != 0) {
+            if (manifest_cancelled()) {
+                ok = false;
+                break;
+            }
+            nk_sha256_update(&ctx, buffer, count);
+        }
+        if (ferror(file)) ok = false;
+        fclose(file);
+        nk_sha256_update(&ctx, &nul, 1u);
+    }
+    free(buffer);
+    for (size_t i = 0; i < list.count; i++) free(list.paths[i]);
+    free(list.paths);
+    if (!ok) return false;
+    package_identity_finish(&ctx, out_hex);
+    return true;
+}
+
+bool nk_title_manifest_source_build_identity(const char *source_root,
+                                             NkPackageBuildIdentity *out) {
+    static const char * const tools[] = {
+        "tools/analyze.py", "tools/codegen.py", "tools/title_codegen_plan.py"
+    };
+    char absolute[NK_MAX_PATH * 2];
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!source_root || !*source_root || !nk_platform_dir_exists(source_root)) return false;
+    char *const targets[] = {
+        out->analyzer_sha256, out->codegen_sha256, out->planner_sha256
+    };
+    for (size_t i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+        if (!package_source_absolute(source_root, tools[i], absolute, sizeof(absolute)) ||
+            !nk_platform_file_exists(absolute) || !package_hash_file(absolute, targets[i])) {
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+    }
+    if (!package_runtime_source_digest(source_root, out->runtime_source_digest)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return true;
+}
+
+bool nk_title_manifest_aot_package_build_identity(const char *user_data_root,
+                                                  const char *disc_id,
+                                                  NkPackageBuildIdentity *out) {
+    char normalized[10];
+    char package_relative[NK_MAX_DISC_ID_LEN + 32];
+    char package_root[NK_MAX_PATH * 2];
+    char resolved_root[NK_MAX_PATH * 2];
+    char package_path[NK_MAX_PATH * 2];
+    char *text = NULL;
+    size_t length = 0;
+    char error[160] = "";
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!user_data_root || !*user_data_root ||
+        !nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+    snprintf(package_relative, sizeof(package_relative), "packages%c%s",
+             nk_platform_path_separator(), normalized);
+    if (!package_join_path(package_root, sizeof(package_root), user_data_root,
+                           package_relative) ||
+        !nk_platform_dir_exists(package_root) ||
+        !nk_platform_absolute_path(package_root, resolved_root, sizeof(resolved_root)) ||
+        !package_path_is_within(user_data_root, resolved_root) ||
+        !package_direct_file(resolved_root, "package.json", package_path,
+                             sizeof(package_path)) ||
+        !package_read_json(package_path, NK_MANIFEST_MAX_BYTES, NULL, &text, &length,
+                           error, sizeof(error))) return false;
+    JsonNode *package = json_parse(text, length, error, sizeof(error));
+    free(text);
+    if (!package) return false;
+    const JsonNode *cache = obj_get(package, "cache");
+    const JsonNode *key = obj_get(cache, "key");
+    const JsonNode *aot = obj_get(obj_get(key, "aot"), "components");
+    const JsonNode *native = obj_get(obj_get(key, "native"), "components");
+    const JsonNode *options = obj_get(cache, "codegen_options");
+    const char *runtime_source = NULL;
+    const char *analyzer = NULL;
+    const char *codegen = NULL;
+    const char *planner = NULL;
+    bool ok = package->type == JSON_OBJECT &&
+        package_sha256(obj_get(native, "runtime_source_digest"), &runtime_source) &&
+        package_sha256(obj_get(aot, "analyzer_sha256"), &analyzer) &&
+        package_sha256(obj_get(aot, "codegen_sha256"), &codegen) &&
+        package_sha256(obj_get(options, "planner_sha256"), &planner);
+    if (ok) {
+        memcpy(out->runtime_source_digest, runtime_source, 65);
+        memcpy(out->analyzer_sha256, analyzer, 65);
+        memcpy(out->codegen_sha256, codegen, 65);
+        memcpy(out->planner_sha256, planner, 65);
+    }
+    json_free(package);
+    return ok;
+}
+
+bool nk_package_build_identity_equal(const NkPackageBuildIdentity *a,
+                                     const NkPackageBuildIdentity *b) {
+    return a && b &&
+        strcmp(a->runtime_source_digest, b->runtime_source_digest) == 0 &&
+        strcmp(a->analyzer_sha256, b->analyzer_sha256) == 0 &&
+        strcmp(a->codegen_sha256, b->codegen_sha256) == 0 &&
+        strcmp(a->planner_sha256, b->planner_sha256) == 0;
 }

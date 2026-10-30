@@ -697,6 +697,54 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
         self.assertEqual(request.get_header("X-github-api-version"), "2022-11-28")
 
+    def test_an_unfinished_producer_is_reported_pending_from_the_runs_alone(self) -> None:
+        # The full read made a dozen calls on every completion and exhausted the token budget (2026-10-30).
+        scenario = Scenario()
+        scenario.raw["workflow_runs"][0].update(status="in_progress", conclusion=None)
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts") as facts:
+            self.assertEqual(self._main(gh, "--head-sha", HEAD), 0)
+        facts.assert_not_called()
+        self.assertEqual(gh.reads, ["pulls?state=open", f"actions/runs?head_sha={HEAD}"])
+        self.assertEqual([(path, body["state"], body["description"]) for path, body in gh.posts], [
+            (f"statuses/{HEAD}", "pending", "Waiting for: CI required, Hygiene and security"),
+        ])
+
+    def test_a_producer_with_no_run_yet_is_waited_for(self) -> None:
+        scenario = Scenario()
+        runs = [run for run in scenario.raw["workflow_runs"] if run["path"] != OSV]
+        self.assertEqual(ctv.unfinished_producers(runs, HEAD), ["OSV Vulnerability Scan"])
+
+    def test_a_producer_whose_runs_were_all_cancelled_gets_the_full_judgement(self) -> None:
+        scenario = Scenario()
+        scenario.raw["workflow_runs"][1].update(conclusion="cancelled")
+        self.assertEqual(ctv.unfinished_producers(scenario.raw["workflow_runs"], HEAD), [])
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()):
+            self.assertEqual(self._main(gh, "--head-sha", HEAD), 1)
+        self.assertIn("JOB_CANCELLED", gh.posts[0][1]["description"])
+
+    def test_runs_for_other_heads_do_not_count_as_finished(self) -> None:
+        scenario = Scenario()
+        stale = copy.deepcopy(scenario.raw["workflow_runs"])
+        for run in stale:
+            run["head_sha"] = "d" * 40
+        self.assertEqual(ctv.unfinished_producers(stale, HEAD),
+                         [producer.context for producer in ctv.PRODUCERS])
+
+    def test_label_events_are_read_only_when_the_label_is_on(self) -> None:
+        gh = FakeGitHub(Scenario())
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()):
+            raw = ctv.collect(gh, Path("."), "main", HEAD, PR)
+        assert raw is not None
+        self.assertNotIn(f"issues/{PR}/events", gh.reads)
+        labelled = Scenario()
+        labelled.label(at="2026-10-28T10:05:00Z", permission="write")
+        gh = FakeGitHub(labelled)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()):
+            ctv.collect(gh, Path("."), "main", HEAD, PR)
+        self.assertIn(f"issues/{PR}/events", gh.reads)
+
     def test_main_rejects_a_malformed_head(self) -> None:
         gh = FakeGitHub(Scenario())
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):

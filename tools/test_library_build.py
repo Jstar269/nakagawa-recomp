@@ -232,9 +232,12 @@ class LibraryBuildTests(unittest.TestCase):
                          "every bring-up runs after its disc check, even a failed one")
         records = self.by_source(result)
         self.assertEqual(records["ok-test70050.iso"]["decrypt_step"],
-                         {"files": 2, "failed": ["A.PRX"], "first_failure": "refused"})
+                         {"files": 2, "failed": ["A.PRX"], "first_failure": "refused",
+                          "first_failure_code": "IO_FAILURE"})
         self.assertIn("synthetic engine failure",
                       records["ok-test70051.iso"]["decrypt_step"]["first_failure"])
+        self.assertEqual(records["ok-test70051.iso"]["decrypt_step"]["first_failure_code"],
+                         "INTERNAL_ERROR")
         self.assertEqual(result["counts"], {"BUILT": 2})
 
     def test_decrypt_disc_writes_the_executable_where_the_player_reads_it(self) -> None:
@@ -251,8 +254,9 @@ class LibraryBuildTests(unittest.TestCase):
 
         rows = decrypt_tool.decrypt_disc(encrypted, self.data, "test70060", runner=runner)
         target = self.data / "titles" / "TEST70060" / "decrypted" / "EBOOT.elf"
-        self.assertEqual([(row["member"], row["name"], row["status"]) for row in rows],
-                         [("PSP_GAME/SYSDIR/EBOOT.BIN", "EBOOT.elf", 0)])
+        self.assertEqual([(row["member"], row["name"], row["status"], row["code"])
+                          for row in rows],
+                         [("PSP_GAME/SYSDIR/EBOOT.BIN", "EBOOT.elf", 0, None)])
         self.assertEqual(seen, [b"~PSP"])
         self.assertEqual(target.read_bytes(), b"decrypted")
         again = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
@@ -267,8 +271,9 @@ class LibraryBuildTests(unittest.TestCase):
         target.unlink()
         with mock.patch.object(iso_inspect, "list_disc_module_candidates", side_effect=refused):
             rows = decrypt_tool.decrypt_disc(encrypted, self.data, "TEST70060", runner=runner)
-        self.assertEqual([(row["name"], row["status"]) for row in rows],
-                         [("(guest modules)", -1), ("EBOOT.elf", 0)])
+        self.assertEqual([(row["name"], row["status"], row["code"]) for row in rows],
+                         [("(guest modules)", -1, "GUEST_MODULE_DISCOVERY_FAILED"),
+                          ("EBOOT.elf", 0, None)])
         self.assertIn("DUPLICATE_DISC_MODULE_BASENAME", rows[0]["message"])
         self.assertTrue(target.is_file())
 

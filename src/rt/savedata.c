@@ -11,9 +11,8 @@
  * Save operations write real files under memstick/PSP/SAVEDATA/<gameName><saveName>/ next to
  * the executable (override the root with SR_MEMSTICK), the same layout PPSSPP and a real PSP
  * use, so saves can be copied between this build and PPSSPP. Field offsets and result codes
- * follow PPSSPP's SceUtilitySavedataParam (Core/Dialog/SavedataParam.h); the earlier no-op
- * implementation was also missing the abortStatus word, putting msFree/idList/fileList four
- * bytes too low.
+ * follow PPSSPP's SceUtilitySavedataParam (Core/Dialog/SavedataParam.h), including the
+ * abortStatus word that comes before msFree, idList and fileList.
  *
  * Implemented modes: AUTOLOAD/LOAD/LISTLOAD read the data file back into dataBuf;
  * AUTOSAVE/SAVE/LISTSAVE write dataBuf plus PARAM.SFO and the icon/pic/snd blobs;

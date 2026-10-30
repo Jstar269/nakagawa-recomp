@@ -235,6 +235,40 @@ static inline void sr_fpu_env_restore(uint32_t saved) {
     _mm_setcsr(saved);
 }
 
+#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+/* AArch64 (Android arm64-v8a, Linux arm64): the guest window runs under FPCR.
+ *
+ * RMode [23:22] encodes RN=0, RP=1, RM=2, RZ=3, so the MIPS RM field is translated as it is for
+ * MXCSR. FS is NOT mapped onto FPCR.FZ: FZ also flushes subnormal inputs, and without FEAT_AFP it
+ * detects tininess before rounding, while the modeled contract (above) keeps subnormal inputs
+ * gradual and the x86 backend detects tininess after rounding. The window therefore runs with
+ * FZ=0 and the helpers below flush in software (sr_fpu_soft_ftz_*), which reproduces the x86
+ * FTZ result bit for bit. Inside the window the trap enables (IOE..IXE, IDE) are cleared so a
+ * guest operation never raises a host FP fault, and DN, FZ16 and the FEAT_AFP controls (AH, FIZ,
+ * NEP) are cleared so NaN propagation and input handling are the IEEE defaults; the caller's FPCR
+ * is restored exactly afterwards. FPCR's defined fields all sit in bits [26:0]. */
+#define SR_FPU_SOFT_FS 1
+
+static inline uint32_t sr_fpu_env_save(void) {
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr) :: "memory");
+    return (uint32_t)fpcr;
+}
+
+static inline void sr_fpu_env_apply_guest(uint32_t fcr31) {
+    static const uint32_t rm_to_rmode[4] = {0u, 3u, 1u, 2u};
+    uint64_t fpcr = sr_fpu_env_save();
+    fpcr &= ~(uint64_t)((3u << 22) | (1u << 24) | (1u << 25) | (1u << 19) |
+                        (1u << 15) | (0x1fu << 8) | 0x7u);
+    fpcr |= (uint64_t)rm_to_rmode[fcr31 & SR_FCR31_RM_MASK] << 22;
+    __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr) : "memory");
+}
+
+static inline void sr_fpu_env_restore(uint32_t saved) {
+    const uint64_t fpcr = saved;
+    __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr) : "memory");
+}
+
 #else
 /* Support boundary: the scoped-host-mechanism backend currently exists for
  * x86/x64 SSE2 hosts compiled with GCC-compatible toolchains -- which covers
@@ -242,9 +276,9 @@ static inline void sr_fpu_env_restore(uint32_t saved) {
  * locally across -O0..-O3, gcc on ubuntu CI). Clang appears in CI only as a
  * compiler-info make-override probe and has NOT yet been exercised against
  * these helpers; MSVC is not used for them. Those compilers fail closed here
- * rather than risk a silently miscompiled window. AArch64 (FPCR) and other
- * backends are recorded follow-up work, deliberately out of scope here. */
-#error "sr_fpu scalar helpers need SSE2 + GCC-compatible barriers for scoped host FP-environment control"
+ * rather than risk a silently miscompiled window. AArch64 has the FPCR backend
+ * above; any other host architecture fails closed here. */
+#error "sr_fpu scalar helpers need SSE2 or AArch64 FPCR, with GCC-compatible barriers, for scoped host FP-environment control"
 #endif
 
 /* Ordering + opacity fence for the bounded operation inside each helper.
@@ -270,6 +304,56 @@ static inline void sr_fpu_scalar_barrier(void) {
 #else
 #error "sr_fpu scalar helpers need a memory-clobber compiler barrier"
 #endif
+
+/* ---- Software FS flush (the AArch64 backend; testable on every host) ----
+ *
+ * The x86 backend implements FS=1 with MXCSR.FTZ: a result that is tiny AFTER rounding (rounded
+ * to 24 significant bits with an unbounded exponent, the result has magnitude below 2^-126) is
+ * replaced by a zero of its sign. These functions produce the same bits from the result of the
+ * same operation computed with gradual underflow, under the guest rounding mode, inside the
+ * guest window:
+ *   - a subnormal gradual result always means the result was tiny, so it flushes;
+ *   - add/sub: a sum of two binary32 values is a multiple of 2^-149, so a tiny sum is exact and
+ *     its gradual result is subnormal (or zero); the rule above is complete;
+ *   - mul/div: a gradual result of exactly +-2^-126 is ambiguous (the unbounded-exponent result
+ *     may be just below 2^-126), so the operation is repeated with one operand scaled by 2^64,
+ *     which is exact and lands the result in the normal range where rounding is unbounded, and
+ *     the scaled magnitude is compared with 2^-62.
+ * Scaling cannot overflow in that case: a product or quotient of magnitude near 2^-126 bounds the
+ * scaled operand well below 2^128 (|a| <= 2^23 for mul, |a| <= 2^2 for div). */
+static inline float sr_fpu_soft_signed_zero(float r) {
+    const uint32_t sign = sr_float_bits(r) & 0x80000000u;
+    float z;
+    memcpy(&z, &sign, sizeof z);
+    return z;
+}
+
+static inline int sr_fpu_soft_is_subnormal(float r) {
+    const uint32_t bits = sr_float_bits(r);
+    return (bits & 0x7f800000u) == 0u && (bits & 0x007fffffu) != 0u;
+}
+
+static inline float sr_fpu_soft_ftz_sum(float r) {
+    return sr_fpu_soft_is_subnormal(r) ? sr_fpu_soft_signed_zero(r) : r;
+}
+
+static inline float sr_fpu_soft_ftz_mul(float a, float b, float r) {
+    if (sr_fpu_soft_is_subnormal(r)) return sr_fpu_soft_signed_zero(r);
+    if ((sr_float_bits(r) & 0x7fffffffu) != 0x00800000u) return r;
+    volatile float va = a * 0x1p64f;
+    volatile float vb = b;
+    volatile float vs = va * vb;
+    return (sr_float_bits(vs) & 0x7fffffffu) < 0x20800000u ? sr_fpu_soft_signed_zero(r) : r;
+}
+
+static inline float sr_fpu_soft_ftz_div(float a, float b, float r) {
+    if (sr_fpu_soft_is_subnormal(r)) return sr_fpu_soft_signed_zero(r);
+    if ((sr_float_bits(r) & 0x7fffffffu) != 0x00800000u) return r;
+    volatile float va = a * 0x1p64f;
+    volatile float vb = b;
+    volatile float vs = va / vb;
+    return (sr_float_bits(vs) & 0x7fffffffu) < 0x20800000u ? sr_fpu_soft_signed_zero(r) : r;
+}
 
 /* Each wrapper bounds exactly one operation inside the guest environment.
  *
@@ -300,6 +384,9 @@ static inline float sr_fpu_add_s(float a, float b, uint32_t fcr31) {
     sr_fpu_env_apply_guest(fcr31);
     sr_fpu_scalar_barrier();
     volatile float vr = va + vb;
+#if defined(SR_FPU_SOFT_FS)
+    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_sum(vr);
+#endif
     sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
     return vr;
@@ -312,6 +399,9 @@ static inline float sr_fpu_sub_s(float a, float b, uint32_t fcr31) {
     sr_fpu_env_apply_guest(fcr31);
     sr_fpu_scalar_barrier();
     volatile float vr = va - vb;
+#if defined(SR_FPU_SOFT_FS)
+    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_sum(vr);
+#endif
     sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
     return vr;
@@ -333,6 +423,9 @@ static inline float sr_fpu_mul_s(float a, float b, uint32_t fcr31) {
     sr_fpu_env_apply_guest(fcr31);
     sr_fpu_scalar_barrier();
     volatile float vr = va * vb;
+#if defined(SR_FPU_SOFT_FS)
+    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_mul(va, vb, vr);
+#endif
     sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
     return vr;
@@ -345,6 +438,9 @@ static inline float sr_fpu_div_s(float a, float b, uint32_t fcr31) {
     sr_fpu_env_apply_guest(fcr31);
     sr_fpu_scalar_barrier();
     volatile float vr = va / vb;
+#if defined(SR_FPU_SOFT_FS)
+    if (fcr31 & SR_FCR31_FS) vr = sr_fpu_soft_ftz_div(va, vb, vr);
+#endif
     sr_fpu_scalar_barrier();
     sr_fpu_env_restore(saved);
     return vr;

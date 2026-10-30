@@ -50,19 +50,26 @@ def decode(word: int) -> tuple:
 # adds or drops a form is a visible, reviewed change rather than a silent one.
 EXPECTED_FORMS = frozenset(
     {
+        ("op", 0x08),   # addi
         ("op", 0x09),   # addiu
+        ("op", 0x0A),   # slti
+        ("op", 0x0B),   # sltiu
+        ("op", 0x0C),   # andi
+        ("op", 0x0E),   # xori
         ("op", 0x0D),   # ori
         ("op", 0x0F),   # lui
         ("op", 0x02),   # j
         ("op", 0x03),   # jal
         ("op", 0x04),   # beq
         ("op", 0x05),   # bne
-        ("op", 0x01),   # bltzl / bgezl
+        ("op", 0x01),   # bltz / bgez / bltzal / bgezal / bltzl / bgezl
+        ("op", 0x06),   # blez
+        ("op", 0x07),   # bgtz
         ("op", 0x14),   # beql
         ("op", 0x15),   # bnel / bnezl
         ("op", 0x16),   # blezl
         ("op", 0x17),   # bgtzl
-        ("op", 0x1F),   # Allegrex ext/ins/seb/seh
+        ("op", 0x1F),   # Allegrex ext/ins/seb/seh/wsbh/wsbw/bitrev
         ("op", 0x20),   # lb
         ("op", 0x21),   # lh
         ("op", 0x22),   # lwl
@@ -82,21 +89,43 @@ EXPECTED_FORMS = frozenset(
         ("special", 0x00),  # sll (and the nop encoding)
         ("special", 0x02),  # srl
         ("special", 0x03),  # sra
+        ("special", 0x04),  # sllv
+        ("special", 0x06),  # srlv / rotrv
+        ("special", 0x07),  # srav
         ("special", 0x08),  # jr
         ("special", 0x09),  # jalr
         ("special", 0x0A),  # movz
         ("special", 0x0B),  # movn
         ("special", 0x10),  # mfhi
+        ("special", 0x11),  # mthi
         ("special", 0x12),  # mflo
+        ("special", 0x13),  # mtlo
+        ("special", 0x16),  # clz
+        ("special", 0x17),  # clo
         ("special", 0x18),  # mult
         ("special", 0x19),  # multu
+        ("special", 0x1A),  # div
+        ("special", 0x1B),  # divu
+        ("special", 0x1C),  # madd
+        ("special", 0x1D),  # maddu
+        ("special", 0x20),  # add
         ("special", 0x21),  # addu
+        ("special", 0x22),  # sub
         ("special", 0x23),  # subu
         ("special", 0x24),  # and
         ("special", 0x25),  # or
         ("special", 0x26),  # xor
+        ("special", 0x27),  # nor
         ("special", 0x2A),  # slt
         ("special", 0x2B),  # sltu
+        ("special", 0x2C),  # max
+        ("special", 0x2D),  # min
+        ("special", 0x2E),  # msub
+        ("special", 0x2F),  # msubu
+        ("cop1", 0x02, 0x00),  # cfc1
+        ("cop1", 0x06, 0x00),  # ctc1
+        *( ("cop1", 0x10, fn) for fn in (0x01, 0x03, 0x04, 0x05, 0x07,
+                                              0x0c, 0x0d, 0x0e, 0x0f) ),
         ("cop1", 0x00, 0x00),  # mfc1
         ("cop1", 0x04, 0x00),  # mtc1
         ("cop1_branch",),  # bc1f/t and likely forms share a branch group
@@ -164,19 +193,11 @@ class FpuOracleStructureTests(unittest.TestCase):
         self.assertIn(cvt_sw, words)
         self.assertLess(words.index(mtc1), words.index(cvt_sw))
 
-    def test_aot_oracle_cell_is_not_claimed_by_the_two_lane_interpreter(self):
+    def test_scalar_oracle_and_interpreter_cells_are_distinct(self):
         self.assertIn("fpu_aot", cosim.AOT_ORACLE_ONLY_CELLS)
-        self.assertIn("fpu_aot", cosim.NON_ENTRY_CELLS)
-        layout = cosim.cell_layout()
-        for name, (_offset, words) in layout.items():
-            if name in cosim.AOT_ORACLE_ONLY_CELLS:
-                continue
-            for word in words:
-                self.assertNotEqual(
-                    cosim.decode_form(word),
-                    ("cop1", 0x10, 0x04),
-                    f"{name} executes sqrt.s outside the AOT-only oracle",
-                )
+        self.assertNotIn("fpu_interp", cosim.NON_ENTRY_CELLS)
+        self.assertIn(("cop1", 0x10, 0x04),
+                      {cosim.decode_form(w) for w in cosim.cell_layout()["fpu_interp"][1]})
 
 
 @unittest.skipUnless(shutil.which("gcc"), "gcc is required for the C.cond truth-table regression")

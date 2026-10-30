@@ -166,8 +166,10 @@ class ReadmeImageTests(unittest.TestCase):
                 self.assertFalse(any(p.fullmatch(url) for p in BADGE_URL_RES))
 
     def test_published_images_are_native_sized_and_small(self) -> None:
+        # The README shows the showcase demos as GIFs (checked below); its last two
+        # PNG stills were removed in #1531. A PNG screenshot added here later is
+        # still held to the native framebuffer size and the byte budget.
         images = sorted(IMAGES.glob("*.png"))
-        self.assertTrue(images, "docs/images holds no published screenshots")
         for image in images:
             with self.subTest(image=image.name):
                 data = image.read_bytes()
