@@ -953,6 +953,102 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
                 self._assert_cited_oracle_cells_exist(evidence)
 
+    ROUTE_A_BATCH_11 = {
+        0xA5DA2406: "h_GetSystemParamInt",
+        0x34B78343: "h_GetSystemParamString",
+        0x0B588501: "h_CtrlReadLatch",
+        0x208DB1BD: "h_HprmIsRemoteExist",
+        0x7E69EDA4: "h_HprmIsHeadphoneExist",
+        0x219C58F1: "h_HprmIsMicrophoneExist",
+        0x34F9C463: "h_PowerGetPllClockFrequencyInt",
+        0xFDB5BFE9: "h_PowerGetCpuClockFrequencyInt",
+        0xFEE03A2F: "h_PowerGetCpuClockFrequencyInt",
+        0x478FE6F5: "h_PowerGetBusClockFrequencyInt",
+        0xBD681969: "h_PowerGetBusClockFrequencyInt",
+        0x03444EB4: "h_GeListSync",
+        0xB287BD61: "h_GeDrawSync",
+        0x3EE30821: "h_DcacheRangeMaintenance",
+        0xBFA98062: "h_DcacheRangeMaintenance",
+        0xCEADEB47: "h_DelayThread",
+        0x68DA9E36: "h_DelayThreadCB",
+        0x05572A5F: "h_ExitGame",
+        0x278C0DF5: "h_WaitThreadEnd",
+        0x46EBB729: "h_UmdCheckMedium",
+        0x6B4A146C: "h_UmdDriveStat",
+    }
+    ROUTE_A_BATCH_12 = {
+        0x55C20A00: ("h_CreateEventFlag", "tests/threads/events/create/create.expected"),
+        0xEF9E4C70: ("h_DeleteEventFlag", "tests/threads/events/delete/delete.expected"),
+        0xF0B7DA1C: ("h_DeleteMsgPipe", "tests/threads/msgpipe/delete.expected"),
+        0x9D9A5BA1: ("h_GetBlockHeadAddr", "tests/sysmem/partition.expected"),
+        0xB6D61D02: ("h_FreePartitionMemory", "tests/sysmem/partition.expected"),
+    }
+
+    def test_route_a_batch_eleven_cites_published_hardware_cells(self) -> None:
+        """#341 batch 11: each handler cites published PSP cells and a production-NID selftest."""
+        for nid, handler in self.ROUTE_A_BATCH_11.items():
+            with self.subTest(nid=f"0x{nid:08x}", handler=handler):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any(e.startswith("docs/HARDWARE_ORACLE.md (PSP-") for e in evidence))
+                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
+                self._assert_cited_cells_are_manifest_cells(evidence)
+                self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_route_a_batch_twelve_cites_psp_recorded_autotests(self) -> None:
+        """#341 batch 12: PSPAutotests 2ed7c9c5 expectations plus a production-NID selftest."""
+        for nid, (handler, expected_file) in self.ROUTE_A_BATCH_12.items():
+            with self.subTest(nid=f"0x{nid:08x}", handler=handler):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["status"], "partial")
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any(f"PSPAutotests {expected_file} at 2ed7c9c5" in e for e in evidence))
+                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
+                self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_route_a_batches_eleven_and_twelve_leave_uncovered_contracts_unreviewed(self) -> None:
+        # The oracle cells use CreateThread/StartThread only as setup, the WritebackInvalidate
+        # range variant is not measured, and AllocPartitionMemory diverges from
+        # sysmem/partition.expected (NULL name, partition, type and size validation, High
+        # placement). None of them may ride along with the batches above.
+        for nid, handler in ((0x446D8DE6, "h_CreateThread"), (0xF475845D, "h_StartThread"),
+                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange"),
+                             (0x237DBD4F, "h_AllocPartitionMemory")):
+            with self.subTest(handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+                self.assertNotIn(handler, meta.HANDLER_METADATA)
+
+    def _assert_cited_cells_are_manifest_cells(self, evidence: list[str]) -> None:
+        """Every `(PSP-ID: cell, cell, prefixN..prefixM)` citation names cells of that oracle record."""
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        cells_by_id = {
+            row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
+            for row in document["tests"]
+        }
+        for citation in evidence:
+            if "(PSP-" not in citation:
+                continue
+            match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
+            self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
+            oracle_id, cells_text = match.groups()
+            self.assertIn(oracle_id, cells_by_id, citation)
+            cited: set[str] = set()
+            for part in cells_text.split(", "):
+                ranged = re.fullmatch(r"([a-z-]+?)(\d+)\.\.\1(\d+)", part)
+                if ranged:
+                    prefix, first, last = ranged.groups()
+                    cited.update(f"{prefix}{n}" for n in range(int(first), int(last) + 1))
+                else:
+                    cited.add(part)
+            self.assertLessEqual(cited, cells_by_id[oracle_id], citation)
+
     def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
         """Check batch 9's `(PSP-IO-001|PSP-UMDIO-001: io-... cells)` citations.
 
