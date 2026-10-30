@@ -568,4 +568,9 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 4. The in-game overlay's pages have their own gates: `mingw32-make nk-ui-overlay-screens-selftest` (flow, focus,
    fit at those three sizes, and `fixtures/nk_ui/overlay.golden`; rewrite it with
    `build/test_overlay_screens --write-goldens`) and `mingw32-make nk-ui-overlay-host-selftest` (the runtime host on
-   SDL3_ttf, the bundled fonts and real key events).
+   SDL3_ttf, the bundled fonts and real key events). `mingw32-make nk-ui-overlay-screens-capture
+   NK_UI_CAPTURE_DIR=<dir>` saves every overlay page, the developer pages included, at those three sizes, drawn as
+   the overlay host draws them, for review by eye.
+   - The Controls page lays its rows out in two tables side by side on a window under 720 px tall, so all ten
+     show at once. One scrolling list would hide rows that a controller reaches only by focusing them, and the
+     rows are read, not chosen.

@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ec76de976746b040fff543cfdbffc50542eb9ecb90174f6a308ab423fefdc4b2"
+      "sha256": "918d4fe41a69a38290147a3fdcf02cbdf0991bdf49d98ca50cc94cad1f5ba010"
     },
     {
       "path": "NOTICE.md",
@@ -1828,7 +1828,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6981e2331e5151b4305e92468bb58988ef86a8afcf22e9223af94f1a368137de"
+      "sha256": "688aeecc68b0680744420d26c14a4899ca46c6fcc7ba313aa3cdee3dcaac216a"
     },
     {
       "path": "docs/PORTING.md",
@@ -11292,7 +11292,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "121e35e8547047da50bc43c117162c8005c8ec5fd3c798df0ffc2d0741e2ece3"
+      "sha256": "557a72e1068fc7ea1a7e6db30e61135cb11d026ad76afc220619ecbbcbea0cff"
     },
     {
       "path": "tests/native/test_package_builder.c",

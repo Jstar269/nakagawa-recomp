@@ -17,6 +17,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(NK_UI_SCREEN_CAPTURE)
+#include <SDL3/SDL.h>
+#include "backend/nk_ui_sdlr.h"
+#include "nk_ui_input.h"
+#endif
+
 #define DUMP_CAP 1048576u
 #define CASE_DUMP_CAP 131072u
 #define GOLDEN_PATH "fixtures/nk_ui/overlay.golden"
@@ -925,10 +931,136 @@ static void compare_golden(const char *path, const char *actual, size_t actual_s
     ++failures;
 }
 
+#if defined(NK_UI_SCREEN_CAPTURE) && defined(NK_UI_WITH_SDL) && \
+    defined(NK_UI_WITH_SDL_TTF)
+/* Every overlay page at the design's three capture sizes, drawn by the
+   SDL_Renderer backend with the bundled fonts and the Kenney glyphs, over a
+   dark frame standing in for the game, saved as
+   <directory>/overlay-<page>-<w>x<h>.bmp for review by eye. */
+static int capture_overlay(const char *directory) {
+    static const char *const names[NK_OVERLAY_SCREEN_COUNT] = {
+        "menu", "settings", "controls", "quit", "pad-lost", "vram", "profile"
+    };
+    static const struct { int w; int h; float scale; } sizes[] = {
+        {960, 600, 1.0f}, {1280, 800, 1.0f}, {1920, 1200, 1.5f}
+    };
+    static NkUiPromptImages prompt_images;
+    NkUiTtf *ttf = NULL;
+    NkUiTextBackend text;
+    bool ok = false;
+    const char separator =
+#if defined(_WIN32) || defined(_WIN64)
+        '\\';
+#else
+        '/';
+#endif
+    if (SDL_Init(SDL_INIT_VIDEO) == false) {
+        fprintf(stderr, "SKIP: SDL video is unavailable for overlay captures: %s\n",
+                SDL_GetError());
+        return 77;
+    }
+    ttf = nk_ui_ttf_create(NULL, 0u);
+    if (ttf == NULL) {
+        fprintf(stderr, "SKIP: SDL3_ttf is unavailable for overlay captures: %s\n",
+                nk_ui_ttf_last_error());
+        SDL_Quit();
+        return 77;
+    }
+    for (int i = 0; i < NK_UI_FONT_COUNT; ++i) {
+        if (!nk_ui_ttf_add_font(ttf, i, nk_ui_font_path(i))) goto done;
+    }
+    for (int i = 0; i < NK_UI_FONT_COUNT; ++i) {
+        if (i == NK_UI_FONT_CJK) continue;
+        if (i != NK_UI_FONT_BODY && !nk_ui_ttf_set_fallback(ttf, i, NK_UI_FONT_BODY)) goto done;
+        if (!nk_ui_ttf_set_fallback(ttf, i, NK_UI_FONT_CJK)) goto done;
+    }
+    text = nk_ui_ttf_backend(ttf);
+    if (nk_ui_prompt_images_load(&prompt_images) == 0u) goto done;
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        SDL_Surface *surface = SDL_CreateSurface(sizes[s].w, sizes[s].h, SDL_PIXELFORMAT_RGBA32);
+        SDL_Renderer *renderer = surface != NULL ? SDL_CreateSoftwareRenderer(surface) : NULL;
+        NkUiSdlr *backend = renderer != NULL ? nk_ui_sdlr_create(renderer, &text) : NULL;
+        NkUiConfig config;
+        NkUi *ui = NULL;
+        NkUiViewport viewport = {sizes[s].w, sizes[s].h, sizes[s].scale, 0, 100, 0.0f, 0.0f};
+        NkUiPrefs prefs;
+        NkOverlayModel model = base_model((float)sizes[s].w / sizes[s].scale,
+                                          (float)sizes[s].h / sizes[s].scale);
+        bool size_ok = backend != NULL;
+        memset(&config, 0, sizeof(config));
+        config.host = NK_UI_HOST_OVERLAY;
+        config.text = &text;
+        if (size_ok) ui = nk_ui_create(&config);
+        size_ok = size_ok && ui != NULL;
+        if (size_ok) {
+            /* As the overlay host draws it: motion cut, keyboard prompts. */
+            memset(&prefs, 0, sizeof(prefs));
+            prefs.prompt_style = NK_UI_PROMPT_KEYCAPS;
+            prefs.reduce_motion = true;
+            nk_ui_set_prefs(ui, &prefs);
+            nk_ui_set_viewport(ui, &viewport);
+            nk_ui_set_prompt_images(ui, &prompt_images);
+            nk_ui_sdlr_set_scale(backend, nk_ui_scale_for_viewport(&viewport).density);
+        }
+        model.developer = true;
+        for (int screen = 0; size_ok && screen < NK_OVERLAY_SCREEN_COUNT; ++screen) {
+            NkOverlayState state;
+            const NkUiDrawList *list = NULL;
+            char path[4096];
+            int written = snprintf(path, sizeof(path), "%s%coverlay-%s-%dx%d.bmp", directory,
+                                   separator, names[screen], sizes[s].w, sizes[s].h);
+            nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+            state.screen = (NkOverlayScreen)screen;
+            /* Twice: the focus graph places what the first frame laid out. */
+            for (int frame = 0; frame < 2; ++frame) {
+                nk_ui_begin(ui, 37.0);
+                (void)nk_overlay_frame(ui, &state, &model);
+                list = nk_ui_end(ui);
+            }
+            size_ok = written > 0 && (size_t)written < sizeof(path) && list != NULL &&
+                      SDL_SetRenderDrawColor(renderer, 24u, 32u, 44u, 255u) &&
+                      SDL_RenderClear(renderer) && nk_ui_sdlr_render(backend, list);
+            if (size_ok) {
+                SDL_RenderPresent(renderer);
+                size_ok = SDL_SaveBMP(surface, path);
+            }
+        }
+        nk_ui_sdlr_destroy(backend);
+        nk_ui_destroy(ui);
+        if (renderer != NULL) SDL_DestroyRenderer(renderer);
+        if (surface != NULL) SDL_DestroySurface(surface);
+        if (!size_ok) goto done;
+    }
+    ok = true;
+done:
+    if (!ok && SDL_GetError()[0] != '\0') {
+        fprintf(stderr, "FAIL: overlay capture failed: %s\n", SDL_GetError());
+    }
+    nk_ui_prompt_images_free(&prompt_images);
+    nk_ui_ttf_destroy(ttf);
+    SDL_Quit();
+    if (!ok) return 1;
+    printf("overlay captures saved in %s\n", directory);
+    return 0;
+}
+#else
+static int capture_overlay(const char *directory) {
+    (void)directory;
+    puts("SKIP: overlay captures need SDL3 and SDL3_ttf headers");
+    return 77;
+}
+#endif
+
 int main(int argc, char **argv) {
     static char golden[DUMP_CAP];
     size_t golden_size = 0u;
     bool write = argc > 1 && strcmp(argv[1], "--write-goldens") == 0;
+    const char *capture_dir = NULL;
+    for (int i = 1; i < argc; ++i) {
+        if (strncmp(argv[i], "--capture-dir=", 14u) == 0) {
+            capture_dir = argv[i] + 14u;
+        }
+    }
     test_menu();
     test_settings();
     test_controls();
@@ -945,6 +1077,10 @@ int main(int argc, char **argv) {
         CHECK(write_golden(GOLDEN_PATH, golden, golden_size), "write the overlay golden");
     } else {
         compare_golden(GOLDEN_PATH, golden, golden_size);
+    }
+    if (capture_dir != NULL && failures == 0) {
+        int capture_result = capture_overlay(capture_dir);
+        if (capture_result != 0 && capture_result != 77) ++failures;
     }
     if (failures != 0) {
         fprintf(stderr, "overlay screens: %d failure(s)\n", failures);

@@ -1113,6 +1113,7 @@ PUBLIC_TARGETS := \
 	nk-ui-player-screens-selftest \
 	nk-ui-player-screens-capture \
 	nk-ui-overlay-screens-selftest \
+	nk-ui-overlay-screens-capture \
 	nk-ui-overlay-host-selftest \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
@@ -1254,6 +1255,7 @@ HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, T
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-overlay-host-selftest := build and run the in-game overlay host on SDL3_ttf, real key events and the SDL_Renderer backend (#1159)
 HELP_DESCRIPTION_nk-ui-overlay-screens-selftest := build and run the in-game overlay page snapshots and flow checks (#1159)
+HELP_DESCRIPTION_nk-ui-overlay-screens-capture := save offscreen captures of every in-game overlay page at three sizes (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
@@ -3417,6 +3419,32 @@ nk-ui-overlay-screens-selftest:
 		tests/native/test_overlay_screens.c $(PLAYER_PLATFORM_LIBS) -lm \
 		-o $(BUILD_ROOT)/test_overlay_screens$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_overlay_screens$(EXE_EXT)
+
+# nk-ui-overlay-screens-capture - every overlay page, as the launcher's captures do for its
+# screens: drawn by the SDL_Renderer backend with the bundled fonts and saved as BMPs for review.
+.PHONY: nk-ui-overlay-screens-capture
+ifeq ($(SDL3_TTF_AVAILABLE),yes)
+ifeq ($(strip $(NK_UI_CAPTURE_DIR)),)
+nk-ui-overlay-screens-capture:
+	@echo "ERROR: set NK_UI_CAPTURE_DIR to a directory for overlay captures"; exit 2
+else
+nk-ui-overlay-screens-capture: export SDL_VIDEODRIVER := dummy
+nk-ui-overlay-screens-capture: export SDL_RENDER_DRIVER := software
+nk-ui-overlay-screens-capture:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF -DNK_UI_SCREEN_CAPTURE \
+		-Isrc/ui -Isrc/rt/overlay -Isrc/core -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
+		$(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_CORE_SRCS) \
+		tests/native/test_overlay_screens.c $(SDL3_TTF_LIBS) $(PLAYER_PLATFORM_LIBS) -lm \
+		-o $(BUILD_ROOT)/test_overlay_screens_capture$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_overlay_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"
+endif
+else
+nk-ui-overlay-screens-capture:
+	@echo "SKIP: offscreen overlay captures require the SDL3_ttf development package"
+endif
 
 # nk-ui-overlay-host-selftest - the overlay's runtime host (#1159, C9c) on its production path:
 # SDL3_ttf and the bundled UI fonts, real SDL key events, the pages drawn by the SDL_Renderer
