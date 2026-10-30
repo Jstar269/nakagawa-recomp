@@ -907,6 +907,50 @@ separate hosted-validation decision. Consult the current
 instead of treating a dated image version or tool inventory as an evergreen
 repository guarantee.
 
+## Self-hosted Linux runners
+
+GitHub's free plan runs about 20 jobs at once for this repository, and one CI run
+needs most of them, so a second run waits for runners. To keep landings moving, the
+maintainer runs a small pool of self-hosted Linux runners, labelled `nk-wsl`, on their
+own PC. Contributors need nothing from it: every run they can start uses GitHub's
+hosted images, exactly as before.
+
+**What runs there.** The classifier's `linux_runner` output (`tools/ci_paths.py`)
+names the runner for the jobs that read it, today the native and translation gates.
+It names the pool only for a trusted run, whose code is already the maintainer's:
+
+- a push to `main` of this repository;
+- a merge-queue group (`merge_group`) of `main`;
+- a pull request whose head branch is in this repository (not a fork), starts with
+  `batch/` (the integration desk's batches of already-reviewed pull requests), and was
+  opened by the repository owner.
+
+Every other run, a fork's pull request above all, gets `ubuntu-24.04`. Two repository
+variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
+must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
+old. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
+healthy and turns the switch `off` when it stops or the pool fails, so a sleeping PC or
+a dead pool sends trusted runs back to hosted runners within minutes instead of leaving
+them queued. Only `runs-on` changes: every step, check name, `CI required` and the
+Trusted CI verdict are the same on either runner.
+
+**Guards beyond the routing.** A pull request's workflow file comes from its own head,
+so a fork could name the pool's labels itself. Three things stop that: the repository
+requires approval before a workflow runs for any outside contributor's pull request;
+the runner's job-started hook refuses every job that is not one of the trusted runs
+above, before any step runs; and each runner is an ephemeral container that takes one
+job and is discarded, has no access to the PC's files, Docker or local network, and
+holds no secrets (its one-job registration comes from the GitHub API when it starts).
+`tools/test_ci_paths.py` (`SelfHostedRunnerRoutingTests`) fails if a fork or ordinary
+pull request could route to the pool, and `tools/test_public_ci_wiring.py`
+(`SelfHostedRunnerWiringTests`) fails if any workflow names the pool's labels directly
+or a job other than the listed ones reads `linux_runner`.
+
+The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
+packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match). Its
+build files and supervisor are kept in the maintainer's workspace, not in this
+repository, because nobody else can run them.
+
 ## Windows Python and PATH contract
 
 Repository tools in hosted jobs must not depend on which Python happens to be
