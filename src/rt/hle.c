@@ -5613,7 +5613,6 @@ enum {
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
-static unsigned s_utility_av_loaded;
 
 static const char *module_state_name(LoadedModuleState state) {
     switch (state) {
@@ -5634,57 +5633,87 @@ static uint32_t reject_module_transition(const char *operation, uint32_t uid,
     return error;
 }
 
-static int utility_av_index(uint32_t module) {
-    return module >= PSP_AV_MODULE_AVCODEC && module <= PSP_AV_MODULE_MP4
-               ? (int)(module - PSP_AV_MODULE_AVCODEC) : -1;
+/* The firmware utility modules sceUtilityLoadModule knows, with the modules each one needs
+ * loaded first.  IDs, names and dependencies follow PPSSPP Core/HLE/sceUtility.cpp moduleLoadInfo
+ * (3f40ddc8); an ID outside the table is BAD_ID, and a dependency that is not loaded yet is
+ * LIBRARY_NOT_FOUND (Kamen Rider Climax Heroes OOO relies on that error, per the same source).
+ * Loading records module state only: the host HLE serves every library these modules provide,
+ * and loading one never touches a network (the net libraries themselves stay fail-closed).  The
+ * user-partition memory the real modules occupy is not reserved (unmeasured per module). */
+typedef struct {
+    uint16_t id;
+    const char *name;
+    uint16_t deps[5];
+} UtilityModuleInfo;
+static const UtilityModuleInfo s_utility_modules[] = {
+    {0x100, "net_common", {0}},
+    {0x101, "net_adhoc", {0}},
+    {0x102, "net_inet", {0}},
+    {0x103, "net_parse_uri", {0}},
+    {0x104, "net_parse_http", {0}},
+    {0x105, "net_http", {0x102, 0x103, 0x104, 0}},
+    {0x106, "net_ssl", {0x102, 0}},
+    {0x107, "unk_0x107", {0}},
+    {0x108, "usb_pspcm", {0x100, 0x102, 0x103, 0x104, 0x105}},
+    {0x200, "usb_mic", {0}},
+    {0x201, "usb_cam", {0}},
+    {0x202, "usb_gps", {0}},
+    {0x203, "usb_unk_0x203", {0}},
+    {0x2ff, "unk_0x2ff", {0}},
+    {PSP_AV_MODULE_AVCODEC, "av_avcodec", {0}},
+    {PSP_AV_MODULE_SASCORE, "av_sascore", {0}},
+    {PSP_AV_MODULE_ATRAC3PLUS, "av_atrac3plus", {PSP_AV_MODULE_AVCODEC, 0}},
+    {PSP_AV_MODULE_MPEGBASE, "av_mpegbase", {PSP_AV_MODULE_AVCODEC, 0}},
+    {PSP_AV_MODULE_MP3, "av_mp3", {0}},
+    {PSP_AV_MODULE_VAUDIO, "av_vaudio", {0}},
+    {PSP_AV_MODULE_AAC, "av_aac", {0}},
+    {PSP_AV_MODULE_G729, "av_g729", {0}},
+    {PSP_AV_MODULE_MP4, "av_mp4", {PSP_AV_MODULE_AVCODEC, 0}},
+    {0x3fe, "me_stuff", {0}},
+    {0x3ff, "me_core", {0}},
+    {0x400, "np_common", {0}},
+    {0x401, "np_service", {0}},
+    {0x402, "np_matching2", {0}},
+    {0x403, "np_unk_0x403", {0}},
+    {0x500, "np_drm", {0}},
+    {0x600, "irda", {0}},
+    {0x601, "unk_0x601", {0}},
+};
+#define UTILITY_MODULE_COUNT (sizeof(s_utility_modules) / sizeof(s_utility_modules[0]))
+static uint8_t s_utility_module_loaded[UTILITY_MODULE_COUNT];
+
+static int utility_module_index(uint32_t module) {
+    for (size_t i = 0; i < UTILITY_MODULE_COUNT; i++)
+        if (s_utility_modules[i].id == module) return (int)i;
+    return -1;
 }
 
-static const char *utility_av_name(int index) {
-    static const char *const names[] = {
-        "av_avcodec", "av_sascore", "av_atrac3plus", "av_mpegbase",
-        "av_mp3", "av_vaudio", "av_aac", "av_g729", "av_mp4",
-    };
-    return index >= 0 && index < (int)(sizeof(names) / sizeof(names[0]))
-               ? names[index] : "av_unknown";
-}
-
-static int utility_av_requires_codec(int index) {
-    /* PPSSPP models ATRAC3+ and MPEGBASE as depending on AVCODEC.  Keep this
-     * small dependency rule because the title loads AVCODEC before either path. */
-    return index == (PSP_AV_MODULE_ATRAC3PLUS - PSP_AV_MODULE_AVCODEC) ||
-           index == (PSP_AV_MODULE_MPEGBASE - PSP_AV_MODULE_AVCODEC) ||
-           index == (PSP_AV_MODULE_MP4 - PSP_AV_MODULE_AVCODEC);
-}
-
-static uint32_t utility_av_load(uint32_t module, int av_api) {
-    int index = utility_av_index(module);
+static uint32_t utility_module_load(const char *api, uint32_t module, int av_api) {
+    int index = utility_module_index(module);
     if (index < 0)
         return av_api ? SCE_ERROR_AV_MODULE_BAD_ID : SCE_ERROR_MODULE_BAD_ID;
-    unsigned bit = 1u << (unsigned)index;
-    if (s_utility_av_loaded & bit)
+    if (s_utility_module_loaded[index])
         return av_api ? SCE_ERROR_AV_MODULE_ALREADY_LOADED : SCE_ERROR_MODULE_ALREADY_LOADED;
-    if (utility_av_requires_codec(index) &&
-        !(s_utility_av_loaded & (1u << (PSP_AV_MODULE_AVCODEC - PSP_AV_MODULE_AVCODEC))))
-        return SCE_ERROR_AV_LIBRARY_NOT_FOUND;
-    s_utility_av_loaded |= bit;
-    fprintf(stderr, "%s: recognized %s (AV module state loaded)\n",
-            av_api ? "sceUtilityLoadAvModule" : "sceUtilityLoadModule",
-            utility_av_name(index));
+    const UtilityModuleInfo *info = &s_utility_modules[index];
+    for (size_t d = 0; d < sizeof(info->deps) / sizeof(info->deps[0]) && info->deps[d]; d++) {
+        int dep = utility_module_index(info->deps[d]);
+        if (dep < 0 || !s_utility_module_loaded[dep]) return SCE_ERROR_AV_LIBRARY_NOT_FOUND;
+    }
+    s_utility_module_loaded[index] = 1u;
+    fprintf(stderr, "%s: recognized %s (utility module state loaded)\n", api, info->name);
     fflush(stderr);
     return 0;
 }
 
-static uint32_t utility_av_unload(uint32_t module, int av_api) {
-    int index = utility_av_index(module);
+static uint32_t utility_module_unload(const char *api, uint32_t module, int av_api) {
+    int index = utility_module_index(module);
     if (index < 0)
         return av_api ? SCE_ERROR_AV_MODULE_BAD_ID : SCE_ERROR_MODULE_BAD_ID;
-    unsigned bit = 1u << (unsigned)index;
-    if (!(s_utility_av_loaded & bit))
+    if (!s_utility_module_loaded[index])
         return av_api ? SCE_ERROR_AV_MODULE_NOT_LOADED : SCE_ERROR_MODULE_NOT_LOADED;
-    s_utility_av_loaded &= ~bit;
-    fprintf(stderr, "%s: recognized %s (AV module state unloaded)\n",
-            av_api ? "sceUtilityUnloadAvModule" : "sceUtilityUnloadModule",
-            utility_av_name(index));
+    s_utility_module_loaded[index] = 0u;
+    fprintf(stderr, "%s: recognized %s (utility module state unloaded)\n", api,
+            s_utility_modules[index].name);
     fflush(stderr);
     return 0;
 }
@@ -5700,20 +5729,34 @@ static uint32_t h_UtilityLoadModule(CpuState *s) {
     /* A bare low byte is not a valid reason to publish one of the private
      * title PRX tables. Those exports are registered by the concrete kernel
      * module-load path instead. */
-    return utility_av_load(module, 0);
+    return utility_module_load("sceUtilityLoadModule", module, 0);
 }
 static uint32_t h_UtilityUnloadModule(CpuState *s) {
-    return utility_av_unload(s->r[4], 0);
+    return utility_module_unload("sceUtilityUnloadModule", s->r[4], 0);
 }
 static uint32_t h_UtilityLoadAvModule(CpuState *s) {
     uint32_t module = s->r[4];
     if (module > 7u) return SCE_ERROR_AV_MODULE_BAD_ID;
-    return utility_av_load(PSP_AV_MODULE_AVCODEC + module, 1);
+    return utility_module_load("sceUtilityLoadAvModule", PSP_AV_MODULE_AVCODEC + module, 1);
 }
 static uint32_t h_UtilityUnloadAvModule(CpuState *s) {
     uint32_t module = s->r[4];
     if (module > 7u) return SCE_ERROR_AV_MODULE_BAD_ID;
-    return utility_av_unload(PSP_AV_MODULE_AVCODEC + module, 1);
+    return utility_module_unload("sceUtilityUnloadAvModule", PSP_AV_MODULE_AVCODEC + module, 1);
+}
+/* sceUtilityLoadNetModule(n) is the older form of loading a net module: PSPSDK's
+ * psputility_netmodules.h numbers them 1 (COMMON) to 7 (SSL) in the order of the 0x100..0x106
+ * utility IDs, and the state is shared with sceUtilityLoadModule.  The status codes for a bad
+ * number or a repeated call are the generic module ones here; unmeasured on a PSP. */
+static uint32_t h_UtilityLoadNetModule(CpuState *s) {
+    uint32_t module = s->r[4];
+    if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
+    return utility_module_load("sceUtilityLoadNetModule", 0x100u + module - 1u, 0);
+}
+static uint32_t h_UtilityUnloadNetModule(CpuState *s) {
+    uint32_t module = s->r[4];
+    if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
+    return utility_module_unload("sceUtilityUnloadNetModule", 0x100u + module - 1u, 0);
 }
 
 static uint32_t h_ok(CpuState *s) { (void)s; return 0; }
@@ -27642,8 +27685,8 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xf7d8d092, "sceUtilityUnloadAvModule", h_UtilityUnloadAvModule);
     sr_hle_register(0x2a2b3de0, "sceUtilityLoadModule", h_UtilityLoadModule);
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
-    sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
-    sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
+    sr_hle_register(0x1579a159, "sceUtilityLoadNetModule", h_UtilityLoadNetModule);
+    sr_hle_register(0x64d50c56, "sceUtilityUnloadNetModule", h_UtilityUnloadNetModule);
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
@@ -28546,7 +28589,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_cb_uid = 0u;
     s_exit_request_pending = 0;
     s_exit_request_deadline_us = 0u;
-    s_utility_av_loaded = 0u;
+    memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;

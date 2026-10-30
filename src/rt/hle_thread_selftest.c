@@ -4510,11 +4510,11 @@ static void test_utility_av_module_state(void) {
     CpuState cpu;
     sr_hle_init();
 
-    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x2feu) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV load rejects an invalid module ID below the AV range");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x309u) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV load rejects an invalid module ID above the AV range");
-    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x2ffu) == SCE_ERROR_MODULE_BAD_ID,
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x2feu) == SCE_ERROR_MODULE_BAD_ID,
            "utility AV unload rejects an invalid module ID");
     expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x302u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
            "ATRAC3+ load requires AVCODEC to be loaded first");
@@ -4560,15 +4560,88 @@ static void test_utility_av_module_state(void) {
            "AV-specific unload clears the shared AVCODEC state");
 }
 
+/* The non-AV firmware utility modules: net, USB, NP and IrDA IDs load and unload through the
+ * same state, and a module whose dependencies are not loaded yet reports LIBRARY_NOT_FOUND.
+ * Several titles load NET_COMMON or NP_DRM at boot and retry forever on BAD_ID. */
+static void test_utility_module_table(void) {
+    static const uint32_t plain[] = {0x100u, 0x101u, 0x102u, 0x103u, 0x104u, 0x107u, 0x200u,
+                                     0x201u, 0x202u, 0x203u, 0x2ffu, 0x3feu, 0x3ffu, 0x400u,
+                                     0x401u, 0x402u, 0x403u, 0x500u, 0x600u, 0x601u};
+    CpuState cpu;
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(plain) / sizeof(plain[0]); i++) {
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, plain[i]) == 0,
+               "a firmware utility module without dependencies loads");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, plain[i]) ==
+                   SCE_ERROR_MODULE_ALREADY_LOADED,
+               "a second load of the same utility module reports already loaded");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, plain[i]) == 0,
+               "a loaded utility module unloads");
+        expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, plain[i]) ==
+                   SCE_ERROR_MODULE_NOT_LOADED,
+               "a second unload of the same utility module reports not loaded");
+    }
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x0ffu) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x109u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x404u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x602u) == SCE_ERROR_MODULE_BAD_ID,
+           "IDs between the known utility modules are BAD_ID");
+
+    /* net_http needs inet, parse_uri and parse_http; net_ssl needs inet. */
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x106u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net_http and net_ssl refuse to load before their dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x102u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x106u) == 0,
+           "net_ssl loads once net_inet is loaded");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x103u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net_http still needs parse_http");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x104u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x105u) == 0,
+           "net_http loads with all three dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x108u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x100u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x108u) == 0,
+           "usb_pspcm needs net_common as well as the http stack");
+    {
+        static const uint32_t loaded[] = {0x108u, 0x105u, 0x106u, 0x104u, 0x103u, 0x102u, 0x100u};
+        int all = 1;
+        for (size_t i = 0; i < sizeof(loaded) / sizeof(loaded[0]); i++)
+            all &= utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, loaded[i]) == 0;
+        expect(all, "the net stack unloads in reverse order");
+    }
+
+    /* sceUtilityLoadNetModule numbers the net modules 1..7 and shares their state. */
+#define NID_SCE_UTILITY_LOAD_NET_MODULE 0x1579a159u
+#define NID_SCE_UTILITY_UNLOAD_NET_MODULE 0x64d50c56u
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 0u) == SCE_ERROR_MODULE_BAD_ID &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 8u) == SCE_ERROR_MODULE_BAD_ID,
+           "net-module numbers outside 1..7 are BAD_ID");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 1u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_MODULE, 0x100u) == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "net module 1 is NET_COMMON, shared with sceUtilityLoadModule");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 6u) == SCE_ERROR_AV_LIBRARY_NOT_FOUND,
+           "net module 6 is net_http and keeps its dependencies");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_LOAD_NET_MODULE, 2u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_MODULE, 0x101u) == 0,
+           "net module 2 is NET_ADHOC");
+    expect(utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_NET_MODULE, 1u) == 0 &&
+               utility_module_call(&cpu, NID_SCE_UTILITY_UNLOAD_NET_MODULE, 1u) == SCE_ERROR_MODULE_NOT_LOADED,
+           "sceUtilityUnloadNetModule unloads once, then reports not loaded");
+#undef NID_SCE_UTILITY_LOAD_NET_MODULE
+#undef NID_SCE_UTILITY_UNLOAD_NET_MODULE
+}
+
 /* Issue #281: a registered unsupported import must return its utility error
  * visibly, with one diagnostic per function even when the guest retries it. */
 static void test_controlled_unsupported_registration(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    uint32_t first = sr_syscall(&cpu, 0x1579a159u);  /* sceUtilityLoadNetModule */
-    uint32_t second = sr_syscall(&cpu, 0x1579a159u);
-    expect(first == 0x80110001u && second == first,
-           "sceUtilityLoadNetModule refuses with SCE_ERROR_UTILITY_INVALID_STATUS on each call");
+    uint32_t first = sr_syscall(&cpu, 0xd5ebbbcdu);  /* __sceSasSetSteepWave */
+    uint32_t second = sr_syscall(&cpu, 0xd5ebbbcdu);
+    expect(first == second && first != 0u,
+           "a controlled refusal returns the same visible error on each call");
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0xb3b5d042u) == 0u,
@@ -33813,16 +33886,16 @@ static void test_flight_recorder_trace(void) {
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL,
                          4u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
-           "controlled unsupported producer returns its named utility error");
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+           "controlled unsupported producer returns its named error");
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 4u && snapshot.trigger_count == 0u &&
                snapshot.refusal_count == 2u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "a named refusal is recorded and counted without ending the recorder");
     expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE &&
-               flight_event.has_return != 0u && flight_event.return_value == 0x80110001u,
+               flight_event.has_return != 0u && flight_event.return_value == 0x80010086u,
            "controlled unsupported HLE return value is retained before its refusal event");
     expect(sr_flight_event_at(1, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_UNSUPPORTED,
@@ -33857,17 +33930,17 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
     expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "a repeated refusal returns the same error");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 0u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "named refusals do not end the record");
     expect(snapshot.refusal_count == 3u && snapshot.refusal_distinct == 2u &&
-               snapshot.refusal_first_nid == 0x1579a159u && snapshot.refusal_first_sequence == 2u,
+               snapshot.refusal_first_nid == 0x39af39a6u && snapshot.refusal_first_sequence == 2u,
            "refusals are counted, and the first refusal is kept in its own field");
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900100u, 0x0000000cu, 0u);
     sr_flight_snapshot(&snapshot);
@@ -33883,9 +33956,9 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "bundle terminal names the later fatal");
     expect(strstr(bundle, "\"refusals\": {\"count\": 3") != NULL,
            "bundle counts every refusal");
-    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x1579a159u);
+    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
@@ -33896,7 +33969,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refusal before a clean exit returns its named error");
     sr_flight_exit(7u);
     sr_flight_snapshot(&snapshot);
@@ -33916,7 +33989,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refusal before any terminal returns its named error");
     bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
     expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"running\"") != NULL &&
@@ -37375,6 +37448,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
+    test_utility_module_table();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
