@@ -17,7 +17,9 @@ Where this page and the code disagree, the code is current and this page is upda
 
 ## Principles
 
-- **One dark theme.** Ground `#0B0F14`; every surface steps up in colour, not with shadows.
+- **One dark theme, one accent.** Ground `#0B0F14`; every surface steps up in colour, not with shadows. The
+  accent is the brand blue the project website uses (`#6B9FF0`); the status colours keep clear of it (`info` is
+  violet).
 - **Controller first.** Every action is reachable with a D-pad and two buttons, focus is always visible, and the
   prompt bar names the buttons that work on this screen. Nothing needs a pointer or hover.
 - **Status is a word and a shape, then a colour:** `●` Ready, `▲` needs setup, `◆` experimental, `?` untested,
@@ -51,21 +53,21 @@ Where this page and the code disagree, the code is current and this page is upda
 | `paper` | `#F5F7FA` | primary text |
 | `muted` | `#9AA4B2` | secondary text (7.6:1 on the ground) |
 | `dim` | `#6B7684` | disabled text and footnotes only (4.2:1, not for body text) |
-| `accent_dark` | `#D7F24A` | focus ring, primary button, active tab rule, toggles, sliders, progress |
-| `ink` | `#10151C` | text on an accent fill (14.6:1) |
-| `accent_hover` | `#DDF465` | primary button under the pointer (ink on it 15.0:1) |
-| `accent_pressed` | `#B4D134` | pressed primary button |
+| `accent_dark` | `#6B9FF0` | the brand blue, the website's dark accent: focus ring, primary button, active tab rule, toggles, sliders, progress; as a ring 7.2:1 on the ground, 6.7:1 on `surface_raised`, 6.1:1 on `surface_high`, 3.7:1 on the scrim over a white frame, 4.4:1 over the brightest wave |
+| `ink` | `#10151C` | text on an accent fill (6.8:1 on `accent_dark`) |
+| `accent_hover` | `#8FB8F2` | primary button under the pointer, the website's mark blue (ink on it 9.0:1) |
+| `accent_pressed` | `#4F86DC` | pressed primary button (ink on it 5.0:1) |
 | `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary or row / danger button |
 | `ready` | `#2DD4BF` | Ready; never the accent |
 | `warning` | `#DBB024` | needs setup |
-| `info` | `#6CB6FF` | experimental, untested, informational notes |
+| `info` | `#C29AF4` | experimental, untested, informational notes: violet, 50 degrees of hue from the blue accent (8.4:1 on the ground, 7.2:1 on `surface_high`) |
 | `error` | `#FF7B72` | unsupported, failed, remove |
 | `scrim` | ground at 78% | behind dialogs and the in-game overlay |
 | `art_scrim` | ground at 72% | under a badge on title art |
 | `art_label` | `#C9D6E3` | captions over title art |
 | `placeholder` | `#3A4552` | art placeholder outline, inactive glyph dots |
-| `capture` | `#1F2613` | a row waiting for a button press (C6 controls) |
-| `accent_light` | `#6E9600` | accent on a light surface (reserved; the UI has none) |
+| `capture` | `#223046` | a row waiting for a button press (C6 controls): the accent at 18% over `surface_raised`, paper on it 12.4:1 |
+| `accent_light` | `#2F6FD0` | accent on a light surface, the website's light accent (4.9:1 on white; reserved, the UI has none) |
 
 ### Spacing, radii, borders
 
@@ -521,7 +523,8 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 
 - Text contrast is at least 4.5:1 for everything except `dim`, which is reserved for disabled controls and
   footnotes; over the brightest wave point muted and error text stay at 4.6:1.
-- Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background.
+- Focus ring 7.2:1 on the ground, at least 6.1:1 on any surface, 4.4:1 over the brightest wave point and 3.7:1 on
+  the scrim over a white game frame; high-contrast focus for any background.
 - Targets are at least 44 px high; text size (90 to 150%) scales the whole layout through the density.
 - Reduce motion holds the waves and makes transitions cuts.
 - Launcher sounds are off by default and never replace a visual cue.
