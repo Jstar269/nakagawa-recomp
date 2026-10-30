@@ -1801,6 +1801,69 @@ _register_campaign_probe(
     {case: (7 if case.endswith("-draw") else 16) for case in GE_SAMPLE_CASES},
 )
 
+# dma-timing (118, probe_dmac_timing.c): the #303 DMAC transfer-time and busy-channel cells.
+# Every cell is emitted on every run, so the stream is fixed-shape: t-<pair>-<api>-<size>
+# for the four main-RAM/VRAM pairs, both APIs and nine sizes (13 words), a-<src offset>-
+# <dst offset>-<size> for eleven alignments at two sizes (13 words), then b1 (11), the five
+# b2 cells (12), the two b3 cells (17), the six b4 cells (15), then c1-try-<size> and
+# c2-memcpy-<size> for thirteen sizes (13), the five b5 cells (16), c3-try-<size> for eleven
+# sizes between 0x100 and 0x200 (13), t2-<pair>-m-<size> for six more sizes (13), sixteen
+# c4-<size>-<src offset>-<dst offset> byte-level Try cells (16) and six more alignment pairs
+# (13).
+DMA_TIMING_PAIRS = ("rr", "rv", "vr", "vv")
+DMA_TIMING_APIS = ("m", "t")
+DMA_TIMING_SIZES = (0x10, 0x40, 0x100, 0x400, 0x1000, 0x4000, 0x10000, 0x40000, 0x100000)
+DMA_TIMING_ALIGN = ((0, 0), (1, 0), (0, 1), (1, 1), (2, 2), (4, 4), (8, 8), (16, 16),
+                    (4, 0), (0, 4), (32, 0))
+DMA_TIMING_ALIGN_SIZES = (0x1000, 0x10000)
+DMA_TIMING_B2_CELLS = ("b2-try-null", "b2-try-zero", "b2-memcpy-null", "b2-memcpy-zero",
+                       "b2-try-valid")
+DMA_TIMING_B3_CELLS = ("b3-second-higher", "b3-second-lower")
+DMA_TIMING_B4_CELLS = tuple(f"b4-{pair}-{size:06x}" for pair in ("vv", "rr")
+                            for size in (0x10000, 0x40000, 0x100000))
+DMA_TIMING_T_CASES = tuple(f"t-{pair}-{api}-{size:06x}" for pair in DMA_TIMING_PAIRS
+                           for api in DMA_TIMING_APIS for size in DMA_TIMING_SIZES)
+DMA_TIMING_A_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN
+                           for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_C_SIZES = (0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000,
+                      0x4000, 0x8000, 0x10000)
+DMA_TIMING_C1_CASES = tuple(f"c1-try-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_C2_CASES = tuple(f"c2-memcpy-{size:06x}" for size in DMA_TIMING_C_SIZES)
+DMA_TIMING_B5_CELLS = ("b5-vv-010000", "b5-vv-040000", "b5-vv-100000", "b5-rr-040000",
+                       "b5-rr-0c0000")
+DMA_TIMING_C3_SIZES = (0x101, 0x104, 0x108, 0x110, 0x120, 0x140, 0x180, 0x1C0, 0x1F0, 0x1FC,
+                       0x1FF)
+DMA_TIMING_C3_CASES = tuple(f"c3-try-{size:06x}" for size in DMA_TIMING_C3_SIZES)
+DMA_TIMING_T2_SIZES = (0x200, 0x800, 0x2000, 0x8000, 0x20000, 0x80000)
+DMA_TIMING_T2_CASES = tuple(f"t2-{pair}-m-{size:06x}" for pair in DMA_TIMING_PAIRS
+                            for size in DMA_TIMING_T2_SIZES)
+DMA_TIMING_C4 = ((0x109, 0, 0), (0x10C, 0, 0), (0x10F, 0, 0), (0x1F1, 0, 0), (0x1F4, 0, 0),
+                 (0x1F8, 0, 0), (0x1FC, 0, 0), (0x1FF, 0, 0), (0x201, 0, 0), (0x20C, 0, 0),
+                 (0x10004, 0, 0), (0x200, 1, 0), (0x200, 0, 1), (0x200, 4, 4), (0x1FC, 4, 4),
+                 (0x108, 0, 1))
+DMA_TIMING_C4_CASES = tuple(f"c4-{size:06x}-{src:02x}-{dst:02x}" for size, src, dst in DMA_TIMING_C4)
+DMA_TIMING_ALIGN2 = ((2, 0), (0, 2), (3, 0), (8, 0), (0, 8), (12, 0))
+DMA_TIMING_A2_CASES = tuple(f"a-{src:02x}-{dst:02x}-{size:06x}" for src, dst in DMA_TIMING_ALIGN2
+                            for size in DMA_TIMING_ALIGN_SIZES)
+DMA_TIMING_CASES = (DMA_TIMING_T_CASES + DMA_TIMING_A_CASES + ("b1-try-dest",)
+                    + DMA_TIMING_B2_CELLS + DMA_TIMING_B3_CELLS + DMA_TIMING_B4_CELLS
+                    + DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_B5_CELLS
+                    + DMA_TIMING_C3_CASES + DMA_TIMING_T2_CASES + DMA_TIMING_C4_CASES
+                    + DMA_TIMING_A2_CASES)
+_register_campaign_probe(
+    "dma-timing", "PSP-DMAC-002", DMA_TIMING_CASES,
+    {
+        **{case: 13 for case in DMA_TIMING_T_CASES + DMA_TIMING_A_CASES},
+        "b1-try-dest": 11,
+        **{case: 12 for case in DMA_TIMING_B2_CELLS},
+        **{case: 17 for case in DMA_TIMING_B3_CELLS},
+        **{case: 15 for case in DMA_TIMING_B4_CELLS},
+        **{case: 13 for case in DMA_TIMING_C1_CASES + DMA_TIMING_C2_CASES + DMA_TIMING_A2_CASES
+           + DMA_TIMING_C3_CASES + DMA_TIMING_T2_CASES},
+        **{case: 16 for case in DMA_TIMING_B5_CELLS + DMA_TIMING_C4_CASES},
+    },
+)
+
 # insn-trace (119, probe_insn_trace.c): the #312 real-PSP instruction trace. Per fixture of
 # fixtures/psp_oracle/insn_trace_fixtures.h, an `<id>-init` record (34 words), one
 # `<id>-sNNNN` record per executed instruction (34 words: pc, op, r1..r25, r29..r31, hi,
