@@ -300,6 +300,37 @@ def _iso_files(iso_root: Path) -> list[Path]:
     )
 
 
+def _default_comparison_identity() -> dict:
+    return {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+            "decrypted_titles": False, "title_manifests": False}
+
+
+def _optional_input_fingerprint(path: Path | None) -> str | None:
+    """A private fingerprint of one optional input (--decrypted-titles or --title-manifests).
+
+    SHA-256 over each file's path relative to the input, its size and its modification time, in
+    path order; None when the input is not given. It is kept only in the private checkpoint, so a
+    run with the same private inputs resumes; the public summary still cannot verify them.
+    """
+    if path is None:
+        return None
+    root = path.resolve(strict=False)
+    if root.is_file():
+        files, base = [root], root.parent
+    elif root.is_dir():
+        files = sorted((item for item in root.rglob("*") if item.is_file()),
+                       key=lambda item: item.relative_to(root).as_posix())
+        base = root
+    else:
+        files, base = [], root
+    digest = hashlib.sha256(b"nakagawa-sweep-optional-input-v1\0")
+    for item in files:
+        stat = item.stat()
+        digest.update(f"{item.relative_to(base).as_posix()}\0{stat.st_size}\0"
+                      f"{stat.st_mtime_ns}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _read_existing_rows(
     path: Path,
     source_commit: str,
@@ -307,6 +338,7 @@ def _read_existing_rows(
     source_keys: set[str],
     time_budget_seconds: int | None = None,
     comparison_identity: dict | None = None,
+    optional_input_fingerprints: dict | None = None,
 ) -> dict[str, dict]:
     if not path.is_file():
         return {}
@@ -345,14 +377,18 @@ def _read_existing_rows(
         existing_keys.add(key)
         if key in source_keys:
             retained[key] = row
-    if time_budget_seconds is not None and (
-        payload.get("time_budget_seconds") != time_budget_seconds
-        or payload.get("comparison_identity") != comparison_identity
-        or comparison_identity.get("decrypted_titles")
-        or comparison_identity.get("title_manifests")
-    ):
-        print("Existing checkpoint has different or missing comparison settings; starting fresh.")
-        return {}
+    if time_budget_seconds is not None:
+        if comparison_identity is None:
+            comparison_identity = _default_comparison_identity()
+        optional_inputs = comparison_identity["decrypted_titles"] or comparison_identity["title_manifests"]
+        if (
+            payload.get("time_budget_seconds") != time_budget_seconds
+            or payload.get("comparison_identity") != comparison_identity
+            or (optional_inputs
+                and payload.get("optional_input_fingerprints") != optional_input_fingerprints)
+        ):
+            print("Existing checkpoint has different or missing comparison settings; starting fresh.")
+            return {}
     return retained
 
 
@@ -1475,8 +1511,7 @@ def _public_aggregate(
     comparison_identity: dict | None = None,
 ) -> dict:
     if comparison_identity is None:
-        comparison_identity = {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
-                               "decrypted_titles": False, "title_manifests": False}
+        comparison_identity = _default_comparison_identity()
     _validate_sweep_rows(rows)
     if not isinstance(total_isos, int) or isinstance(total_isos, bool) or total_isos < len(rows):
         raise ValueError("public aggregate total ISO count is smaller than the number of recorded rows")
@@ -1644,10 +1679,10 @@ def _write_outputs(
     resumed_this_invocation: int,
     previous_aggregate: dict | None = None,
     comparison_identity: dict | None = None,
+    optional_input_fingerprints: dict | None = None,
 ) -> None:
     if comparison_identity is None:
-        comparison_identity = {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
-                               "decrypted_titles": False, "title_manifests": False}
+        comparison_identity = _default_comparison_identity()
     _validate_sweep_rows(rows)
     private_payload = {
         "schema_version": 2,
@@ -1655,6 +1690,8 @@ def _write_outputs(
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
         "comparison_identity": comparison_identity,
+        # Private only (never in the public summary): lets a run with optional inputs resume.
+        "optional_input_fingerprints": optional_input_fingerprints,
         "updated_at_utc": _utc_now(),
         "coverage": {
             "iso_count": total_isos,
@@ -1723,9 +1760,11 @@ def run_sweep(
     comparison_identity = {"launch_timeout_seconds": launch_timeout_seconds,
                            "decrypted_titles": decrypted_titles is not None,
                            "title_manifests": title_manifests is not None}
+    optional_input_fingerprints = {"decrypted_titles": _optional_input_fingerprint(decrypted_titles),
+                                   "title_manifests": _optional_input_fingerprint(title_manifests)}
     rows_by_key = _read_existing_rows(
         private_path, source_commit, source_fingerprint, source_keys,
-        time_budget_seconds, comparison_identity
+        time_budget_seconds, comparison_identity, optional_input_fingerprints
     )
     path_by_key = {_source_key(path, iso_root): path for path in paths}
     for key, row in list(rows_by_key.items()):
@@ -1744,6 +1783,7 @@ def run_sweep(
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=0,
         resumed_this_invocation=previous_rows, previous_aggregate=previous_aggregate,
         comparison_identity=comparison_identity,
+        optional_input_fingerprints=optional_input_fingerprints,
     )
     for index, iso_path in enumerate(paths, start=1):
         key = _source_key(iso_path, iso_root)
@@ -1889,6 +1929,7 @@ def run_sweep(
             list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
             resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
             comparison_identity=comparison_identity,
+            optional_input_fingerprints=optional_input_fingerprints,
         )
         print(f"[{index}/{len(paths)}] {row['furthest_stage']} ({run_status})")
 
@@ -1907,6 +1948,7 @@ def run_sweep(
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
         resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
         comparison_identity=comparison_identity,
+        optional_input_fingerprints=optional_input_fingerprints,
     )
     return result
 

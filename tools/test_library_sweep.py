@@ -664,6 +664,108 @@ class LibrarySweepTests(unittest.TestCase):
         )
         return private_dir
 
+    def _write_checkpoint(self, identity: dict, fingerprints: dict | None = None,
+                          *, budget: int = 900) -> tuple[Path, set[str]]:
+        private_path = self.root / "checkpoint" / "library-sweep.json"
+        row = dict(_sweep_row("launch"), source_key="checkpoint/launch.iso")
+        library_sweep._write_outputs(
+            private_path, self.root / "checkpoint-public.json", SOURCE_COMMIT, SOURCE_FINGERPRINT,
+            budget, [row], total_isos=1, ran_this_invocation=1, resumed_this_invocation=0,
+            comparison_identity=identity, optional_input_fingerprints=fingerprints,
+        )
+        return private_path, {row["source_key"]}
+
+    def test_checkpoint_resumes_only_with_the_same_comparison_settings(self) -> None:
+        identity = library_sweep._default_comparison_identity()
+        path, keys = self._write_checkpoint(identity)
+
+        def read(budget=900, wanted=identity):
+            return library_sweep._read_existing_rows(
+                path, SOURCE_COMMIT, SOURCE_FINGERPRINT, keys, budget, wanted)
+
+        self.assertEqual(len(read()), 1)
+        # No identity given falls back to the default one instead of failing.
+        self.assertEqual(len(read(wanted=None)), 1)
+        self.assertEqual(read(budget=901), {})
+        self.assertEqual(read(wanted=dict(identity, launch_timeout_seconds=60)), {})
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("comparison_identity")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(read(), {})
+        self.assertEqual(read(wanted=None), {})
+
+    def test_checkpoint_with_optional_inputs_resumes_while_their_fingerprint_matches(self) -> None:
+        titles = self.root / "decrypted-titles" / "TEST00001"
+        titles.mkdir(parents=True)
+        (titles / "EBOOT.elf").write_bytes(b"synthetic executable")
+        fingerprint = library_sweep._optional_input_fingerprint(titles.parent)
+        self.assertEqual(fingerprint, library_sweep._optional_input_fingerprint(titles.parent))
+        self.assertIsNone(library_sweep._optional_input_fingerprint(None))
+        identity = dict(library_sweep._default_comparison_identity(), decrypted_titles=True)
+        fingerprints = {"decrypted_titles": fingerprint, "title_manifests": None}
+        path, keys = self._write_checkpoint(identity, fingerprints)
+        self.assertNotIn(fingerprint, (self.root / "checkpoint-public.json").read_text(encoding="utf-8"))
+
+        def read():
+            return library_sweep._read_existing_rows(
+                path, SOURCE_COMMIT, SOURCE_FINGERPRINT, keys, 900, identity,
+                {"decrypted_titles": library_sweep._optional_input_fingerprint(titles.parent),
+                 "title_manifests": None})
+
+        self.assertEqual(len(read()), 1)
+        (titles / "EBOOT.elf").write_bytes(b"another synthetic executable")
+        self.assertEqual(read(), {})
+
+    def test_merge_private_reports_refuses_shards_whose_identity_is_unverifiable(self) -> None:
+        def shard(name: str, identity: dict) -> Path:
+            private_dir = self.root / name
+            library_sweep._write_outputs(
+                private_dir / "library-sweep.json", self.root / f"{name}-public.json",
+                SOURCE_COMMIT, SOURCE_FINGERPRINT, 900,
+                [dict(_sweep_row("analyze"), source_key=f"{name}/analyze.iso")],
+                total_isos=1, ran_this_invocation=1, resumed_this_invocation=0,
+                comparison_identity=identity,
+            )
+            return private_dir
+
+        default = library_sweep._default_comparison_identity()
+        legacy = shard("legacy", default)
+        report = legacy / "library-sweep.json"
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        payload.pop("comparison_identity")
+        report.write_text(json.dumps(payload), encoding="utf-8")
+        cases = (
+            ([legacy, shard("current", default)], "missing or invalid comparison identity"),
+            ([shard("decrypted", dict(default, decrypted_titles=True)), shard("plain", default)],
+             "optional input identity cannot be verified"),
+            ([shard("timeout-20", default), shard("timeout-60", dict(default, launch_timeout_seconds=60))],
+             "do not share source and budget identity"),
+        )
+        for index, (shards, message) in enumerate(cases):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                library_sweep.merge_private_reports(
+                    shards, self.root / f"merged-{index}", self.root / f"merged-{index}.json")
+
+    def test_public_aggregate_rejects_a_malformed_comparison_identity(self) -> None:
+        aggregate = library_sweep._public_aggregate(
+            [_sweep_row("launch")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1
+        )
+        library_sweep._validate_public_aggregate(aggregate)
+        default = aggregate["comparison_identity"]
+        cases = (
+            dict(default, extra=True),
+            {key: value for key, value in default.items() if key != "title_manifests"},
+            dict(default, launch_timeout_seconds=True),
+            dict(default, launch_timeout_seconds=0),
+            dict(default, launch_timeout_seconds=library_sweep.MAX_LAUNCH_TIMEOUT_SECONDS + 1),
+            dict(default, decrypted_titles="yes"),
+            [],
+        )
+        for identity in cases:
+            with self.subTest(identity=identity), self.assertRaisesRegex(
+                    ValueError, "comparison identity is invalid"):
+                library_sweep._validate_public_aggregate(dict(aggregate, comparison_identity=identity))
+
     def test_merge_private_reports_accepts_shard_private_directories(self) -> None:
         shard_a = self._write_shard("shard-a")
         shard_b = self._write_shard("shard-b")
