@@ -49,7 +49,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # Deliberately disjoint from fixtures/production_smoke (0x08804000) so a stale
 # artifact from one fixture can never satisfy the other's assertions.
 BASE = 0x08900000
-DATA_SEGMENT_OFFSET = 0x1000
+# The text segment may fill everything below the data segment (build_text_segment checks).
+DATA_SEGMENT_OFFSET = 0x2000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
@@ -62,7 +63,7 @@ WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
 TEXT_FILE_OFFSET = 0x100
-DATA_FILE_OFFSET = 0x1200
+DATA_FILE_OFFSET = TEXT_FILE_OFFSET + DATA_SEGMENT_OFFSET + 0x100
 DATA_FILE_SIZE = 0x40
 DATA_MEMORY_SIZE = 0x40 + SCRATCH_SIZE
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
@@ -353,24 +354,7 @@ def _cell_branch_likely() -> list[int]:
             _ccond_cc(1, 0, 0x02, 3),               # c.eq.s cc=3 (PSP FCC0)
         ]
 
-    cases = (
-        ("beql", lambda off: _i(0x14, T0, T1, off),
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)],
-         [_i(0x09, ZERO, T0, 2), _i(0x09, ZERO, T1, 2)]),
-        ("bnel", lambda off: _i(0x15, T0, T1, off),
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 1)],
-         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)]),
-        # bnezl is the standard `bnel rs, $zero` encoding.
-        ("bnezl", lambda off: _i(0x15, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
-        ("blezl", lambda off: _i(0x16, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 1)], [_i(0x09, ZERO, T0, 0)]),
-        ("bgtzl", lambda off: _i(0x17, T0, ZERO, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
-        ("bltzl", lambda off: _regimm(T0, 2, off),
-         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, -1)]),
-        ("bgezl", lambda off: _regimm(T0, 3, off),
-         [_i(0x09, ZERO, T0, -1)], [_i(0x09, ZERO, T0, 0)]),
+    cases = INTEGER_LIKELY_CASES + (
         ("bc1tl", lambda off: _bc1_likely(1, 7, off),
          compare_setup(False), compare_setup(True)),
         ("bc1fl", lambda off: _bc1_likely(0, 7, off),
@@ -395,6 +379,64 @@ def _cell_branch_likely() -> list[int]:
             words.append(_fp(0x10, 1, 0, 2, 0x00))   # taken slot: add.s f2,f0,f1
         else:
             words.append(_i(0x2B, A0, S1, index * 4))  # taken slot: store marker
+        words.extend((
+            _i(0x09, V0, V0, 0x100),             # skipped by a taken branch
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+    words.extend((JR_RA, NOP))
+    return words
+
+
+#: The integer branch-likely forms of _cell_branch_likely, as (name, encoder, false setup,
+#: true setup). _cell_branch_likely_int runs them without the COP1 cases, so a code
+#: generator that keeps COP1 code in another tier (the LLVM IR backend, #330) still
+#: compares every integer likely form against the interpreter.
+INTEGER_LIKELY_CASES = (
+    ("beql", lambda off: _i(0x14, T0, T1, off),
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)],
+     [_i(0x09, ZERO, T0, 2), _i(0x09, ZERO, T1, 2)]),
+    ("bnel", lambda off: _i(0x15, T0, T1, off),
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 1)],
+     [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)]),
+    # bnezl is the standard `bnel rs, $zero` encoding.
+    ("bnezl", lambda off: _i(0x15, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+    ("blezl", lambda off: _i(0x16, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 1)], [_i(0x09, ZERO, T0, 0)]),
+    ("bgtzl", lambda off: _i(0x17, T0, ZERO, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+    ("bltzl", lambda off: _regimm(T0, 2, off),
+     [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, -1)]),
+    ("bgezl", lambda off: _regimm(T0, 3, off),
+     [_i(0x09, ZERO, T0, -1)], [_i(0x09, ZERO, T0, 0)]),
+)
+
+
+def _cell_branch_likely_int() -> list[int]:
+    """The integer branch-likely forms, each once not taken and once taken.
+
+    The layout follows _cell_branch_likely: a not-taken branch annuls an `ori` into
+    its own register and falls through to the `$v0` marker; a taken branch runs its
+    slot, a store of a per-form marker, and skips that marker to the `$v1` target
+    marker. Expected: $v0 = 7, $v1 = 14, every annulled register 0, and scratch word
+    i = 0xC100 + i.
+    """
+    not_taken_outputs = (T2, T3, T4, T5, T6, T7, T8)
+    words = [_i(0x09, ZERO, V0, 0), _i(0x09, ZERO, V1, 0)]
+    for index, (_name, branch, false_setup, true_setup) in enumerate(INTEGER_LIKELY_CASES):
+        out = not_taken_outputs[index]
+        words.extend(false_setup)
+        words.extend((
+            _i(0x09, ZERO, out, 0),
+            branch(2),
+            _i(0x0D, ZERO, out, 0xD000 + index),  # annulled when not taken
+            _i(0x09, V0, V0, 1),                 # not-taken path marker
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+        words.extend(true_setup)
+        words.append(_i(0x0D, ZERO, S1, 0xC100 + index))
+        words.append(branch(2))
+        words.append(_i(0x2B, A0, S1, index * 4))  # taken slot: store marker
         words.extend((
             _i(0x09, V0, V0, 0x100),             # skipped by a taken branch
             _i(0x09, V1, V1, 1),                 # branch target marker
@@ -510,6 +552,109 @@ def _cell_jtarget() -> list[int]:
         JR_RA,
         NOP,
     ]
+
+
+# Entry crossings. Five adjacent entries whose conditional branches, taken and not
+# taken, cross into one another. A split body (codegen --region-split-threshold)
+# turns every such edge into a TAIL transfer to the other entry's own body; an unsplit
+# body copies the other entry's code. Both must match the interpreter. A branch whose
+# target is another cell is encoded with offset 0 here and patched by
+# build_text_segment (XING_BRANCHES).
+
+
+def _cell_xing_taken() -> list[int]:
+    """A not-taken and a taken `beq`/`bne` into another entry, slots always run.
+
+    Expected after xing_dst returns: $v0 = 0x1103, $v1 = 0xFFFFFFFF.
+    """
+    return [
+        _i(0x09, ZERO, V0, 0),              # 0x00 addiu v0, zero, 0
+        _i(0x09, ZERO, T1, 0),              # 0x04 addiu t1, zero, 0 (xing_dst will not loop)
+        _i(0x05, ZERO, ZERO, 0),            # 0x08 bne   zero, zero, xing_dst (never taken)
+        _i(0x09, V0, V0, 1),                # 0x0c addiu v0, v0, 1   (slot)
+        _i(0x04, V0, V0, 0),                # 0x10 beq   v0, v0, xing_dst (taken)
+        _i(0x09, V0, V0, 2),                # 0x14 addiu v0, v0, 2   (slot)
+        _i(0x09, V0, V0, 0x400),            # 0x18 addiu v0, v0, 1024 (unreachable)
+        JR_RA,                              # 0x1c
+        NOP,                                # 0x20
+    ]
+
+
+def _cell_xing_likely() -> list[int]:
+    """A not-taken `beql` (slot annulled) and a taken `bnel` into another entry.
+
+    Expected after xing_dst returns: $v0 = 0x1110, $v1 = 0xFFFFFFFF.
+    """
+    return [
+        _i(0x09, ZERO, V0, 0),              # 0x00 addiu v0, zero, 0
+        _i(0x09, ZERO, T1, 0),              # 0x04 addiu t1, zero, 0 (xing_dst will not loop)
+        _i(0x09, ZERO, T0, 3),              # 0x08 addiu t0, zero, 3
+        _i(0x14, V0, T0, 0),                # 0x0c beql  v0, t0, xing_dst (not taken)
+        _i(0x09, V0, V0, 0x800),            # 0x10 addiu v0, v0, 2048 (annulled)
+        _i(0x15, V0, T0, 0),                # 0x14 bnel  v0, t0, xing_dst (taken)
+        _i(0x09, V0, V0, 0x10),             # 0x18 addiu v0, v0, 16  (slot)
+        _i(0x09, V0, V0, 0x400),            # 0x1c addiu v0, v0, 1024 (unreachable)
+        JR_RA,                              # 0x20
+        NOP,                                # 0x24
+    ]
+
+
+def _cell_xing_fall_a() -> list[int]:
+    """Falls into the next entry past a not-taken `beq` whose slot runs.
+
+    No exit of its own: the crossing into xing_fall_b is what it tests. Expected after
+    the chain returns: $v0 = 0x1364, $v1 = 0xFFFFFFFF (xing_dst loops back twice).
+    """
+    return [
+        _i(0x09, ZERO, V0, 0),              # 0x00 addiu v0, zero, 0
+        _i(0x09, ZERO, T1, 2),              # 0x04 addiu t1, zero, 2 (xing_dst loop count)
+        _i(0x09, ZERO, T0, 7),              # 0x08 addiu t0, zero, 7
+        _i(0x04, T0, ZERO, -4),             # 0x0c beq   t0, zero, xing_fall_a (not taken)
+        _i(0x09, V0, V0, 4),                # 0x10 addiu v0, v0, 4   (slot) -> xing_fall_b
+    ]
+
+
+def _cell_xing_fall_b() -> list[int]:
+    """Falls into the next entry past a not-taken `beql` whose slot is annulled.
+
+    Also the target of xing_dst's backward crossing, so a guest loop runs through
+    entry crossings.
+    """
+    return [
+        _i(0x09, V0, V0, 0x20),             # 0x00 addiu v0, v0, 32
+        _i(0x14, V0, ZERO, -2),             # 0x04 beql  v0, zero, xing_fall_b (not taken)
+        _i(0x09, V0, V0, 0x800),            # 0x08 addiu v0, v0, 2048 (annulled) -> xing_dst
+    ]
+
+
+def _cell_xing_dst() -> list[int]:
+    """The crossing target; branches back into xing_fall_b while $t1 stays >= 0.
+
+    The harness seeds $t1 negative, so run on its own it does not loop.
+    """
+    return [
+        _i(0x09, T1, T1, -1),               # 0x00 addiu t1, t1, -1
+        _r(T1, ZERO, AT, 0, 0x2A),          # 0x04 slt   at, t1, zero
+        _i(0x04, AT, ZERO, 0),              # 0x08 beq   at, zero, xing_fall_b (backward)
+        _i(0x09, V0, V0, 0x100),            # 0x0c addiu v0, v0, 256 (slot)
+        _r(T1, ZERO, V1, 0, 0x21),          # 0x10 addu  v1, t1, zero
+        JR_RA,                              # 0x14
+        _i(0x09, V0, V0, 0x1000),           # 0x18 addiu v0, v0, 4096 (return slot)
+    ]
+
+
+#: (cell, byte offset of the branch in it, target cell) for the cross-cell branches
+#: above, whose 16-bit offsets build_text_segment fills in from the layout.
+XING_BRANCHES = (
+    ("xing_taken", 0x08, "xing_dst"),
+    ("xing_taken", 0x10, "xing_dst"),
+    ("xing_likely", 0x0C, "xing_dst"),
+    ("xing_likely", 0x14, "xing_dst"),
+    ("xing_dst", 0x08, "xing_fall_b"),
+)
+
+#: Cells that end by falling into the next cell, an entry: the crossing is the test.
+FALL_INTO_CELLS = {"xing_fall_a": "xing_fall_b", "xing_fall_b": "xing_dst"}
 
 
 def _leaf(marker: int, delta: int) -> list[int]:
@@ -1063,10 +1208,17 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("unaligned", "lwl/lwr/swl/swr byte merges", _cell_unaligned_merge),
     ("branch", "conditional branch + delay slot", _cell_branch),
     ("branch_likely", "taken and nullified branch-likely slots", _cell_branch_likely),
+    ("branch_likely_int", "integer branch-likely slots without COP1 code",
+     _cell_branch_likely_int),
     ("bitops", "Allegrex bit fields and unsigned-to-float idiom", _cell_bitops),
     ("jump", "direct jump + delay slot", _cell_jump),
     ("jthunk", "direct-j this-adjusting tail thunk", _cell_jthunk),
     ("jtarget", "known entry reached by the direct-j thunk", _cell_jtarget),
+    ("xing_taken", "conditional branches into another entry", _cell_xing_taken),
+    ("xing_likely", "branch-likely into another entry, annulled and taken", _cell_xing_likely),
+    ("xing_fall_a", "not-taken fall-through into another entry", _cell_xing_fall_a),
+    ("xing_fall_b", "annulled fall-through into another entry", _cell_xing_fall_b),
+    ("xing_dst", "entry-crossing target looping back across entries", _cell_xing_dst),
     ("link_leaf", "leaf A: the correct call destination", _cell_link_leaf),
     ("link_leaf_b", "leaf B: a late-resolved call destination", _cell_link_leaf_b),
     ("link", "jal link semantics", _cell_link),
@@ -1210,6 +1362,9 @@ def entry_words(layout: dict[str, tuple[int, list[int]]]) -> list[int]:
 def build_text_segment() -> bytes:
     layout = cell_layout()
     end = max(offset + len(words) * 4 for offset, words in layout.values())
+    if ((end + 15) & ~15) > DATA_SEGMENT_OFFSET:
+        raise ValueError(f"cells need 0x{end:x} bytes of text; the data segment starts at "
+                         f"0x{DATA_SEGMENT_OFFSET:x} (raise DATA_SEGMENT_OFFSET)")
     text = bytearray((end + 15) & ~15)
     head = entry_words(layout)
     text[0 : len(head) * 4] = struct.pack(f"<{len(head)}I", *head)
@@ -1251,6 +1406,11 @@ def build_text_segment() -> bytes:
     struct.pack_into(
         "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
     )
+    for cell, at, target in XING_BRANCHES:
+        source = layout[cell][0] + at
+        word = struct.unpack_from("<I", text, source)[0]
+        offset = (layout[target][0] - (source + 4)) // 4
+        struct.pack_into("<I", text, source, (word & 0xFFFF0000) | (offset & 0xFFFF))
     rewrite_resume = BASE + layout["rarewrite"][0] + 16
     struct.pack_into(
         "<I", text, layout["rarewrite"][0],

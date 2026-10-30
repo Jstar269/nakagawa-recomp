@@ -63,6 +63,7 @@ int sr_hle_test_psmf_video_eos_gate(int producer_eof, uint32_t player_queue_coun
                                     uint32_t producer_queue_depth,
                                     uint32_t producer_buffered);
 uint32_t sr_hle_test_psmf_video_submit_limit(int producer_eof);
+void sr_hle_test_set_psmfplayer_lib_version(uint32_t version);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -2667,12 +2668,48 @@ static int av_info_is(uint32_t last, uint32_t video, uint32_t audio, uint32_t pc
            MEM_R32(AV_INFO + 16) == ver;
 }
 
+/* A player is named by the handle Create stores in its ScePsmfPlayer word, not by the word's
+ * address: a copy of the word passed from another structure names the same player, a word
+ * holding anything else names none, and Delete ends the player for every copy. */
+#define AV_PLAYER_COPY 0x08607000u
+static void test_player_handle_word(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "psmf-handle stream builds"); return; }
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0 &&
+              MEM_R32(AV_PLAYER) != 0u,
+          "psmf-handle: Create stores a handle in the player word");
+    MEM_W32(AV_PLAYER_COPY, MEM_R32(AV_PLAYER));
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER_COPY, AV_PATH, 0, 0, 0) == 0,
+          "psmf-handle: a copy of the player word sets the PSMF");
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == 2u,
+          "psmf-handle: the original word sees the state the copy set (STANDBY)");
+    memset(SR_HOST(AV_INFO), 0xcc, 20u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER_COPY, AV_INFO, 0, 0, 0) == 0 &&
+              MEM_R32(AV_INFO + 4u) == 1u,
+          "psmf-handle: the copy reads the player's PSMF info");
+    MEM_W32(AV_PLAYER_COPY + 4u, MEM_R32(AV_PLAYER) + 4u);
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER_COPY + 4u, 0, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-handle: a word holding another value names no player");
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0 && MEM_R32(AV_PLAYER) == 0u,
+          "psmf-handle: Delete clears the player word");
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER_COPY, 0, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-handle: a copy of a deleted player's word names no player");
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
 /* The info is the opened PSMF's header as the player parsed it: the last picture's time
  * (the header duration less one picture), the video and audio stream counts, no PCM streams,
  * and the player version (0 when every video stream carries an EP map, 1 otherwise).  The
  * refusals are ILLEGAL_ADDR for an unusable player or info address and INVALID_STATUS for an
  * unknown player or one whose PSMF is not set; a refused call writes nothing.  The width and
- * height words are never written (two-argument contract). */
+ * height words are written only when the loaded libpsmfplayer build is 0x03090510, and then only
+ * where the pointer is usable; any other build keeps the two-argument contract (#279). */
 static void test_player_get_psmf_info(void) {
     uint32_t size = 0;
     uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
@@ -2712,6 +2749,25 @@ static void test_player_get_psmf_info(void) {
           "psmf-info: last picture time, one video and one audio stream, no PCM, version 0");
     CHECK(guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
           "psmf-info: the width and height words are left untouched");
+
+    /* Build 0x03090510 writes the video size; any other build does not. */
+    sr_hle_test_set_psmfplayer_lib_version(0x03090510u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0 &&
+              MEM_R32(AV_INFO + 20u) == FIX_W_MBS * 16u && MEM_R32(AV_INFO + 24u) == FIX_H_MBS * 16u,
+          "psmf-info: libpsmfplayer 0x03090510 writes the video width and height");
+    memset(SR_HOST(AV_INFO + 20u), 0xcc, 8u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0x0bfffffeu, 0) == 0 &&
+              guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: 0x03090510 skips a null or unusable width or height pointer");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, 0, 0) == 0 &&
+              MEM_R32(AV_INFO + 20u) == FIX_W_MBS * 16u && guest_bytes_are(AV_INFO + 24u, 4u, 0xcc),
+          "psmf-info: 0x03090510 writes the width alone when only that pointer is usable");
+    memset(SR_HOST(AV_INFO + 20u), 0xcc, 8u);
+    sr_hle_test_set_psmfplayer_lib_version(0x03090500u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0 &&
+              guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: another libpsmfplayer build leaves the width and height words untouched");
+    sr_hle_test_set_psmfplayer_lib_version(0u);
     CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
           "psmf-info: the player starts");
     memset(SR_HOST(AV_INFO), 0xcc, 20u);
@@ -3636,6 +3692,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
     test_player_get_psmf_info();
+    test_player_handle_word();
     test_psmf_player_display_in_vram_mirrors();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();

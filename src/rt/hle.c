@@ -5235,6 +5235,38 @@ static int prx_image_bounds(uint32_t base, uint32_t *start_out, uint32_t *end_ou
     return 0;
 }
 
+/* The build of the scePsmfPlayer library the title loaded, as that module records it: the
+ * module_sdk_version variable (system library NID 0x11B97506) of a module whose module info
+ * names the player library.  scePsmfPlayerGetPsmfInfo's width/height outputs exist only in
+ * build 0x03090510 (#279).  Names and rule follow PPSSPP Core/HLE/sceKernelModule.cpp
+ * (3f40ddc8), which takes the version from the ~PSP header when there is one; a plain ELF
+ * module such as LocoRoco 2's has only the export.  0 until such a module is placed. */
+#define PRX_NID_MODULE_SDK_VERSION 0x11B97506u
+static uint32_t s_psmfplayer_lib_version;
+
+static void note_psmfplayer_lib_version(const SrPrxImage *img) {
+    static const char *const names[] = {
+        "scePsmfP_library", "scePsmfPlayer", "libpsmfplayer", "psmf_jk", "jkPsmfP_library",
+    };
+    int player = 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strncmp(img->modname, names[i], sizeof(img->modname)) == 0) player = 1;
+    if (!player) return;
+    s_psmfplayer_lib_version = 0u;
+    for (uint32_t i = 0; i < img->nexp; i++) {
+        const SrPrxExport *e = &img->exps[i];
+        if (e->is_func || e->lib[0] != '\0' || e->nid != PRX_NID_MODULE_SDK_VERSION) continue;
+        if (sr_guest_span_readable(e->addr, 4u)) s_psmfplayer_lib_version = MEM_R32(e->addr);
+        break;
+    }
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_psmfplayer_lib_version(void) { return s_psmfplayer_lib_version; }
+#endif
+#ifdef SR_MPEG_MEDIA_SELFTEST
+void sr_hle_test_set_psmfplayer_lib_version(uint32_t version) { s_psmfplayer_lib_version = version; }
+#endif
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
     for (unsigned i = 0; i < s_prx_image_count; i++) {
         if (s_prx_images[i].base != base) continue;
@@ -5285,6 +5317,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
         s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0, NULL};
         s_last_prx_base = base;
+        note_psmfplayer_lib_version(&img);
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
@@ -5626,6 +5659,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         return guest_module_boundary("guest-module-bind-refused", file, detail);
     }
     s_prx_images[s_prx_image_count++] = (PrxImage){image, image + span, alloc_uid, 0, code};
+    note_psmfplayer_lib_version(&img);
 
     /* Exports: the named libraries' functions become link targets for importers once the
      * module has started (started_module_export); the system library supplies the stop
@@ -5766,7 +5800,6 @@ enum {
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
-static unsigned s_utility_av_loaded;
 static unsigned s_utility_usb_loaded;
 
 static const char *module_state_name(LoadedModuleState state) {
@@ -5788,57 +5821,87 @@ static uint32_t reject_module_transition(const char *operation, uint32_t uid,
     return error;
 }
 
-static int utility_av_index(uint32_t module) {
-    return module >= PSP_AV_MODULE_AVCODEC && module <= PSP_AV_MODULE_MP4
-               ? (int)(module - PSP_AV_MODULE_AVCODEC) : -1;
+/* The firmware utility modules sceUtilityLoadModule knows, with the modules each one needs
+ * loaded first.  IDs, names and dependencies follow PPSSPP Core/HLE/sceUtility.cpp moduleLoadInfo
+ * (3f40ddc8); an ID outside the table is BAD_ID, and a dependency that is not loaded yet is
+ * LIBRARY_NOT_FOUND (Kamen Rider Climax Heroes OOO relies on that error, per the same source).
+ * Loading records module state only: the host HLE serves every library these modules provide,
+ * and loading one never touches a network (the net libraries themselves stay fail-closed).  The
+ * user-partition memory the real modules occupy is not reserved (unmeasured per module). */
+typedef struct {
+    uint16_t id;
+    const char *name;
+    uint16_t deps[5];
+} UtilityModuleInfo;
+static const UtilityModuleInfo s_utility_modules[] = {
+    {0x100, "net_common", {0}},
+    {0x101, "net_adhoc", {0}},
+    {0x102, "net_inet", {0}},
+    {0x103, "net_parse_uri", {0}},
+    {0x104, "net_parse_http", {0}},
+    {0x105, "net_http", {0x102, 0x103, 0x104, 0}},
+    {0x106, "net_ssl", {0x102, 0}},
+    {0x107, "unk_0x107", {0}},
+    {0x108, "usb_pspcm", {0x100, 0x102, 0x103, 0x104, 0x105}},
+    {0x200, "usb_mic", {0}},
+    {0x201, "usb_cam", {0}},
+    {0x202, "usb_gps", {0}},
+    {0x203, "usb_unk_0x203", {0}},
+    {0x2ff, "unk_0x2ff", {0}},
+    {PSP_AV_MODULE_AVCODEC, "av_avcodec", {0}},
+    {PSP_AV_MODULE_SASCORE, "av_sascore", {0}},
+    {PSP_AV_MODULE_ATRAC3PLUS, "av_atrac3plus", {PSP_AV_MODULE_AVCODEC, 0}},
+    {PSP_AV_MODULE_MPEGBASE, "av_mpegbase", {PSP_AV_MODULE_AVCODEC, 0}},
+    {PSP_AV_MODULE_MP3, "av_mp3", {0}},
+    {PSP_AV_MODULE_VAUDIO, "av_vaudio", {0}},
+    {PSP_AV_MODULE_AAC, "av_aac", {0}},
+    {PSP_AV_MODULE_G729, "av_g729", {0}},
+    {PSP_AV_MODULE_MP4, "av_mp4", {PSP_AV_MODULE_AVCODEC, 0}},
+    {0x3fe, "me_stuff", {0}},
+    {0x3ff, "me_core", {0}},
+    {0x400, "np_common", {0}},
+    {0x401, "np_service", {0}},
+    {0x402, "np_matching2", {0}},
+    {0x403, "np_unk_0x403", {0}},
+    {0x500, "np_drm", {0}},
+    {0x600, "irda", {0}},
+    {0x601, "unk_0x601", {0}},
+};
+#define UTILITY_MODULE_COUNT (sizeof(s_utility_modules) / sizeof(s_utility_modules[0]))
+static uint8_t s_utility_module_loaded[UTILITY_MODULE_COUNT];
+
+static int utility_module_index(uint32_t module) {
+    for (size_t i = 0; i < UTILITY_MODULE_COUNT; i++)
+        if (s_utility_modules[i].id == module) return (int)i;
+    return -1;
 }
 
-static const char *utility_av_name(int index) {
-    static const char *const names[] = {
-        "av_avcodec", "av_sascore", "av_atrac3plus", "av_mpegbase",
-        "av_mp3", "av_vaudio", "av_aac", "av_g729", "av_mp4",
-    };
-    return index >= 0 && index < (int)(sizeof(names) / sizeof(names[0]))
-               ? names[index] : "av_unknown";
-}
-
-static int utility_av_requires_codec(int index) {
-    /* PPSSPP models ATRAC3+ and MPEGBASE as depending on AVCODEC.  Keep this
-     * small dependency rule because the title loads AVCODEC before either path. */
-    return index == (PSP_AV_MODULE_ATRAC3PLUS - PSP_AV_MODULE_AVCODEC) ||
-           index == (PSP_AV_MODULE_MPEGBASE - PSP_AV_MODULE_AVCODEC) ||
-           index == (PSP_AV_MODULE_MP4 - PSP_AV_MODULE_AVCODEC);
-}
-
-static uint32_t utility_av_load(uint32_t module, int av_api) {
-    int index = utility_av_index(module);
+static uint32_t utility_module_load(const char *api, uint32_t module, int av_api) {
+    int index = utility_module_index(module);
     if (index < 0)
         return av_api ? SCE_ERROR_AV_MODULE_BAD_ID : SCE_ERROR_MODULE_BAD_ID;
-    unsigned bit = 1u << (unsigned)index;
-    if (s_utility_av_loaded & bit)
+    if (s_utility_module_loaded[index])
         return av_api ? SCE_ERROR_AV_MODULE_ALREADY_LOADED : SCE_ERROR_MODULE_ALREADY_LOADED;
-    if (utility_av_requires_codec(index) &&
-        !(s_utility_av_loaded & (1u << (PSP_AV_MODULE_AVCODEC - PSP_AV_MODULE_AVCODEC))))
-        return SCE_ERROR_AV_LIBRARY_NOT_FOUND;
-    s_utility_av_loaded |= bit;
-    fprintf(stderr, "%s: recognized %s (AV module state loaded)\n",
-            av_api ? "sceUtilityLoadAvModule" : "sceUtilityLoadModule",
-            utility_av_name(index));
+    const UtilityModuleInfo *info = &s_utility_modules[index];
+    for (size_t d = 0; d < sizeof(info->deps) / sizeof(info->deps[0]) && info->deps[d]; d++) {
+        int dep = utility_module_index(info->deps[d]);
+        if (dep < 0 || !s_utility_module_loaded[dep]) return SCE_ERROR_AV_LIBRARY_NOT_FOUND;
+    }
+    s_utility_module_loaded[index] = 1u;
+    fprintf(stderr, "%s: recognized %s (utility module state loaded)\n", api, info->name);
     fflush(stderr);
     return 0;
 }
 
-static uint32_t utility_av_unload(uint32_t module, int av_api) {
-    int index = utility_av_index(module);
+static uint32_t utility_module_unload(const char *api, uint32_t module, int av_api) {
+    int index = utility_module_index(module);
     if (index < 0)
         return av_api ? SCE_ERROR_AV_MODULE_BAD_ID : SCE_ERROR_MODULE_BAD_ID;
-    unsigned bit = 1u << (unsigned)index;
-    if (!(s_utility_av_loaded & bit))
+    if (!s_utility_module_loaded[index])
         return av_api ? SCE_ERROR_AV_MODULE_NOT_LOADED : SCE_ERROR_MODULE_NOT_LOADED;
-    s_utility_av_loaded &= ~bit;
-    fprintf(stderr, "%s: recognized %s (AV module state unloaded)\n",
-            av_api ? "sceUtilityUnloadAvModule" : "sceUtilityUnloadModule",
-            utility_av_name(index));
+    s_utility_module_loaded[index] = 0u;
+    fprintf(stderr, "%s: recognized %s (utility module state unloaded)\n", api,
+            s_utility_modules[index].name);
     fflush(stderr);
     return 0;
 }
@@ -5854,25 +5917,41 @@ static uint32_t h_UtilityLoadModule(CpuState *s) {
     /* A bare low byte is not a valid reason to publish one of the private
      * title PRX tables. Those exports are registered by the concrete kernel
      * module-load path instead. */
-    return utility_av_load(module, 0);
+    return utility_module_load("sceUtilityLoadModule", module, 0);
 }
 static uint32_t h_UtilityUnloadModule(CpuState *s) {
-    return utility_av_unload(s->r[4], 0);
+    return utility_module_unload("sceUtilityUnloadModule", s->r[4], 0);
 }
 static uint32_t h_UtilityLoadAvModule(CpuState *s) {
     uint32_t module = s->r[4];
     if (module > 7u) return SCE_ERROR_AV_MODULE_BAD_ID;
-    return utility_av_load(PSP_AV_MODULE_AVCODEC + module, 1);
+    return utility_module_load("sceUtilityLoadAvModule", PSP_AV_MODULE_AVCODEC + module, 1);
 }
 static uint32_t h_UtilityUnloadAvModule(CpuState *s) {
     uint32_t module = s->r[4];
     if (module > 7u) return SCE_ERROR_AV_MODULE_BAD_ID;
-    return utility_av_unload(PSP_AV_MODULE_AVCODEC + module, 1);
+    return utility_module_unload("sceUtilityUnloadAvModule", PSP_AV_MODULE_AVCODEC + module, 1);
+}
+/* sceUtilityLoadNetModule(n) is the older form of loading a net module: PSPSDK's
+ * psputility_netmodules.h numbers them 1 (COMMON) to 7 (SSL) in the order of the 0x100..0x106
+ * utility IDs, and the state is shared with sceUtilityLoadModule.  The status codes for a bad
+ * number or a repeated call are the generic module ones here; unmeasured on a PSP. */
+static uint32_t h_UtilityLoadNetModule(CpuState *s) {
+    uint32_t module = s->r[4];
+    if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
+    return utility_module_load("sceUtilityLoadNetModule", 0x100u + module - 1u, 0);
+}
+static uint32_t h_UtilityUnloadNetModule(CpuState *s) {
+    uint32_t module = s->r[4];
+    if (module < 1u || module > 7u) return SCE_ERROR_MODULE_BAD_ID;
+    return utility_module_unload("sceUtilityUnloadNetModule", 0x100u + module - 1u, 0);
 }
 
-/* USB module bookkeeping follows the current utility-module state model. The
- * USB functions themselves are not provided. The error mapping is inferred from
- * the generic utility-module API, and is not measured for this legacy API. */
+/* sceUtilityLoadUsbModule(n) numbers its modules 1 to 5 (PSPSDK psputility_usbmodules.h:
+ * PSPCM, ACC, MIC, CAM, GPS), an order that does not follow the 0x108 and 0x2xx IDs of the
+ * utility-module table above, and which table ID each loads is unmeasured, so their state is
+ * kept here rather than guessed into the table. The USB functions themselves are not provided.
+ * The error mapping is inferred from the generic utility-module API, not measured. */
 static uint32_t utility_usb_module(uint32_t id, int load) {
     if (id < 1u || id > 5u) return SCE_ERROR_MODULE_BAD_ID;
     unsigned bit = 1u << (id - 1u);
@@ -6165,9 +6244,18 @@ static SrPsmfPlayer *psmf_slot(uint32_t guest, int create) {
     if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; freeSlot->h264=-1; return freeSlot; }
     return NULL;
 }
+/* A ScePsmfPlayer is one guest word: Create stores the player's handle in it and Delete clears
+ * it, and every other call names the player by that word's value, not by where the word is.  A
+ * title may copy the word into its own thread structures and pass the copy, which on a PSP names
+ * the same player.  The handle stored is the address Create was given, as PPSSPP
+ * Core/HLE/scePsmf.cpp (3f40ddc8) does; what the PSP library stores there is unmeasured, and no
+ * title is known to read it as anything but a handle. */
 static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
     s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
-    return psmf_slot(guest, create);
+    if (create) return psmf_slot(guest, create);
+    if (!guest || !sr_guest_span_readable(guest, 4u)) return NULL;
+    uint32_t handle = MEM_R32(guest);
+    return handle ? psmf_slot(handle, 0) : NULL;
 }
 static void psmf_flush(SrPsmfPlayer *p) {
     if (!p) return;
@@ -6684,7 +6772,7 @@ void sr_hle_test_psmf_log_tick(uint32_t guest) {
 }
 
 void sr_hle_test_psmf_log_release(uint32_t guest) {
-    SrPsmfPlayer *p = psmf_find(guest, 0);
+    SrPsmfPlayer *p = psmf_slot(guest, 0);
     if (!p) return;
     psmf_flush(p);
     if (p->producer) sr_psmf_producer_close(p->producer);
@@ -7156,7 +7244,7 @@ static uint32_t h_PsmfCreate(CpuState *s) {
     /* Parameters are checked before a slot is claimed, so a refused create keeps nothing;
      * creating over a live control block gives the old player's decoder and producer back
      * and starts a fresh player (issue #279). */
-    SrPsmfPlayer *p=psmf_find(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
+    s_psmf_calls++; SrPsmfPlayer *p=psmf_slot(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
     psmf_player_release(p); p=psmf_slot(A0,1); if(!p)return PSMF_ERR_PARAM;
     p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
@@ -7207,8 +7295,9 @@ static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return 
  * video/psmfplayer/getpsmfinfo.expected records 567567 for its 570570-tick test.pmf.  The stream
  * table classification (psmf_parse_header) has no LPCM class, so numPcmStreams is 0, which is also
  * what that hardware run reports for both of its files.  The width/height outputs exist only in the
- * 0x03090510 libpsmfplayer build; the runtime does not record which build a title loaded, so they
- * are never written and the call keeps the two-argument contract. */
+ * 0x03090510 libpsmfplayer build (note_psmfplayer_lib_version): that build writes the video
+ * stream's size (stream 0 until Start selects one) to each usable pointer, and every other build
+ * keeps the two-argument contract.  LocoRoco 2 sizes its movie from them (#279). */
 static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 4u) || !A1 || !sr_guest_span_writable(A1, 20u))
         return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -7219,6 +7308,10 @@ static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
     MEM_W32(A1 + 8u, p->audioStreams);
     MEM_W32(A1 + 12u, 0u);
     MEM_W32(A1 + 16u, p->playerVersion);
+    if (s_psmfplayer_lib_version == 0x03090510u) {
+        if (A2 && sr_guest_span_writable(A2, 4u)) MEM_W32(A2, p->videoWidth);
+        if (A3 && sr_guest_span_writable(A3, 4u)) MEM_W32(A3, p->videoHeight);
+    }
     return 0;
 }
 static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;psmf_log_summary(p);}}return 0;}
@@ -15338,6 +15431,7 @@ void sr_hle_test_module_reset(void) {
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
     s_prx_image_count = 0;
     memset(s_prx_images, 0, sizeof(s_prx_images));
+    s_psmfplayer_lib_version = 0u;
     atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
 }
 
@@ -28384,8 +28478,8 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0x0d5bc6d2, "sceUtilityLoadUsbModule", h_UtilityLoadUsbModule);
     sr_hle_register(0xf64910f0, "sceUtilityUnloadUsbModule", h_UtilityUnloadUsbModule);
-    sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
-    sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
+    sr_hle_register(0x1579a159, "sceUtilityLoadNetModule", h_UtilityLoadNetModule);
+    sr_hle_register(0x64d50c56, "sceUtilityUnloadNetModule", h_UtilityUnloadNetModule);
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
@@ -28844,6 +28938,80 @@ static void hle_register_iofilemgr_handlers(void) {
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
 }
 
+/* What a stalled thread's object wait is on, for the watchdog's thread dump: the kernel
+ * object's class, name and the state that decides whether the wait can end. 0 when no object
+ * has the uid (a thread left waiting on a deleted object, or a wait the HLE does not own). */
+static int hle_describe_wait_object(uint32_t thread_uid, uint32_t obj, char *out, size_t cap) {
+    Sync *y = NULL;
+    for (int i = 0; i < (int)(sizeof(s_sync) / sizeof(s_sync[0])); i++)
+        if (s_sync[i].used && s_sync[i].uid == obj) { y = &s_sync[i]; break; }
+    if (y && y->kind == SYNC_KIND_SEMA) {
+        snprintf(out, cap, "semaphore 0x%x '%s' count=%d max=%d", obj, y->name, y->count, y->maxc);
+        return 1;
+    }
+    if (y && y->kind == SYNC_KIND_EVENT_FLAG) {
+        for (int i = 0; i < EVF_WAITER_MAX; i++) {
+            const EvfWaiter *w = &s_evf_waiters[i];
+            if (w->active && w->evf == obj && w->thread == thread_uid) {
+                snprintf(out, cap, "event flag 0x%x '%s' pattern=0x%08x wants=0x%08x mode=%s%s", obj,
+                         y->name, y->pattern, w->bits, (w->mode & 1u) ? "OR" : "AND",
+                         (w->mode & 0x30u) ? "+clear" : "");
+                return 1;
+            }
+        }
+        snprintf(out, cap, "event flag 0x%x '%s' pattern=0x%08x", obj, y->name, y->pattern);
+        return 1;
+    }
+    if (y && y->kind == SYNC_KIND_LWMUTEX) {
+        uint32_t wa = y->workarea;
+        if (wa && sr_guest_span_readable(wa, 8u))
+            snprintf(out, cap, "lwmutex 0x%x '%s' lockLevel=%d owner=0x%x", obj, y->name,
+                     (int32_t)MEM_R32(wa), MEM_R32(wa + 4u));
+        else
+            snprintf(out, cap, "lwmutex 0x%x '%s'", obj, y->name);
+        return 1;
+    }
+    const Mutex *m = mutex_find(obj);
+    if (m) {
+        snprintf(out, cap, "mutex 0x%x '%s' count=%d owner=0x%x waiters=%d", obj, m->name,
+                 m->current_count, m->lock_thread, m->num_wait_threads);
+        return 1;
+    }
+    const Mbx *x = mbx_find(obj);
+    if (x) {
+        snprintf(out, cap, "message box 0x%x '%s' messages=%d", obj, x->name, x->nmsgs);
+        return 1;
+    }
+    const MsgPipe *pipe = msg_pipe_find(obj);
+    if (pipe) {
+        snprintf(out, cap, "message pipe 0x%x '%s' bytes=%u/%u", obj, pipe->name, pipe->count,
+                 pipe->capacity);
+        return 1;
+    }
+    const FplPool *fpl = fpl_lookup(obj);
+    if (fpl) {
+        snprintf(out, cap, "fixed pool 0x%x '%s' free=%d/%d", obj, fpl->name, fpl->nfree,
+                 fpl->nblocks);
+        return 1;
+    }
+    if (vpl_lookup(obj)) {
+        snprintf(out, cap, "variable pool 0x%x", obj);
+        return 1;
+    }
+    return 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+int sr_hle_test_describe_wait_object(uint32_t thread_uid, uint32_t obj, char *out, size_t cap) {
+    return hle_describe_wait_object(thread_uid, obj, out, cap);
+}
+#endif
+
+static const char *hle_watchdog_nid_name(uint32_t nid) {
+    const HleEntry *e = hle_find(nid);
+    return e ? e->name : sr_nid_name(nid);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -28852,6 +29020,7 @@ void sr_hle_init(void) {
         return;
     }
     sched_set_thread_exit_hook(hle_module_thread_exit);
+    sched_set_watchdog_describers(hle_describe_wait_object, hle_watchdog_nid_name);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
@@ -29172,6 +29341,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        sched_note_import_return(nid, ret);
         sr_rt_phase = rt_phase_saved;
         sr_import_active = import_active_saved;
         sr_import_nid = import_nid_saved;
@@ -29244,6 +29414,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (e->unsupported_error) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
+    sched_note_import_return(nid, ret);
     sr_rt_phase = rt_phase_saved;
     sr_import_active = import_active_saved;
     sr_import_nid = import_nid_saved;
@@ -29294,6 +29465,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_last_prx_base = s_last_prx_entry = s_last_prx_stop = 0u;
     s_prx_stage_base = s_prx_stage_len = 0u;
     s_prx_staging = 0;
+    s_psmfplayer_lib_version = 0u;
     atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
     loadexec_reset_user_partition();
 
@@ -29316,7 +29488,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_cb_uid = 0u;
     s_exit_request_pending = 0;
     s_exit_request_deadline_us = 0u;
-    s_utility_av_loaded = 0u;
+    memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
     s_utility_usb_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;

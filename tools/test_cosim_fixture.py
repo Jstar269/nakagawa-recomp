@@ -321,7 +321,7 @@ class FixtureLayoutTests(unittest.TestCase):
     def test_every_cell_ends_in_a_register_transfer_with_a_delay_slot(self):
         """Leaving through a transfer IS the cosim synchronization point.
 
-        Most cells end in `jr $ra`. Three do not, for reasons that are part of
+        Most cells end in `jr $ra`. A few do not, for reasons that are part of
         what they test, so each is named here rather than blanket-exempted:
 
           jrtail    ends in `jr $rs` and relinquishes control through its
@@ -330,6 +330,9 @@ class FixtureLayoutTests(unittest.TestCase):
           xtailmid  ends in a `j` tail, which is the whole point -- it must NOT
                     return, so that the cross-tier tail control isolates guest
                     memory commitment from frame re-entry.
+          xing_fall_a, xing_fall_b
+                    end by falling into the next cell, another entry: the
+                    entry crossing is what they test (FALL_INTO_CELLS).
 
         Anything else without a defined exit has no synchronization point in
         either lane.
@@ -338,6 +341,12 @@ class FixtureLayoutTests(unittest.TestCase):
         jump_tail = {"xtailmid", "jthunk"}
         for name, (_offset, words) in self.layout.items():
             if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
+                continue
+            if name in cosim.FALL_INTO_CELLS:
+                # Ends by falling into the next entry: that crossing is the test.
+                following = cosim.FALL_INTO_CELLS[name]
+                self.assertEqual(self.layout[following][0], _offset + 4 * len(words),
+                                 f"cell {name} must sit directly before {following}")
                 continue
             self.assertGreaterEqual(len(words), 2, f"cell {name} is too short to have an exit")
             terminator = words[-2]
@@ -519,6 +528,17 @@ class FixtureSemanticTests(unittest.TestCase):
             self.assertIn(slot >> 26, (0x0D, 0x2B, 0x11),
                           "the delay slot must have an observable register, memory, or FPU effect")
         self.assertEqual(counts, {name: 2 for name in counts})
+
+    def test_integer_branch_likely_cell_has_no_cop1_code(self):
+        # The COP1-free copy of the integer cases: a backend that keeps COP1 code in
+        # another tier (the LLVM IR backend, #330) still lowers this whole cell.
+        _offset, words = self.layout["branch_likely_int"]
+        self.assertFalse([w for w in words if (w >> 26) in (0x11, 0x31, 0x39)])
+        likely = [w for w in words if (w >> 26) in (0x14, 0x15, 0x16, 0x17)
+                  or ((w >> 26) == 0x01 and ((w >> 16) & 31) in (2, 3))]
+        self.assertEqual(len(likely), 2 * len(cosim.INTEGER_LIKELY_CASES))
+        for word in likely:
+            self.assertEqual(word & 0xFFFF, 2)
 
     def test_bitops_cell_covers_field_edges_aliases_and_unsigned_conversion(self):
         _offset, words = self.layout["bitops"]

@@ -208,6 +208,10 @@ These tools run on the development host before the native compiler.
 - **Chunking:** generated functions are split into `<game>_recomp_0.c` through
   `<game>_recomp_N.c`. The count is computed from the discovered functions and
   `FUNCS_PER_CHUNK`; it is not fixed to eight HST chunks.
+- **LLVM IR backend (opt-in, #330):** with `--backend=llvm` (`CODEGEN_BACKEND=llvm`),
+  `codegen_llvm.py` lowers each function it supports to LLVM IR in `<game>_recomp_<n>.ll`
+  beside its C chunk, from the same ownership and transfer rules, and keeps the C body,
+  with the reason recorded, for the rest. [`LLVM_BACKEND.md`](LLVM_BACKEND.md) is the design.
 
 ### Verification tools
 
@@ -551,6 +555,22 @@ runs at the live SP.
 
 The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
 live transfer with a named `TAIL_TRANSFER_FAULT`.
+
+**Entry splitting.** A body owns the code it reaches from its entry. Straight-line fall-through and
+`j` into another entry already leave through TAIL transfers, but a conditional branch, taken or not
+taken, used to carry the body into the other entry's code and translate a copy of it. In a large
+branch-connected region every entry then holds a copy of the whole region (one title: 6,539
+entries in a region of 1.33 million instructions). A body whose walk exceeds
+`REGION_SPLIT_THRESHOLD` instructions (`tools/codegen.py`, `--region-split-threshold=N|off`)
+instead stops at every other entry. A conditional branch into one records a TAIL transfer to that
+entry's own body after the delay slot (annulled on the not-taken path of a branch-likely), and a
+not-taken successor that is one is a continuation, exactly as straight-line fall-through is. A
+branch back to the body's own start stays a loop edge. Every reader of a body's ownership (the
+emitter, the stale-code records, the LLVM backend's lowering plan) gets the same split answer, and
+the LLVM backend lowers a crossing as the same TAIL transfer. Bodies within the threshold are
+byte-identical to the unsplit output. `mingw32-make cosim-selftest-split` runs the cosimulation
+with every body split (`xing_*` cells), and the split-generator mutants show it catches a crossing
+that drops or misplaces its delay slot, ignores its condition or loses its fall-through.
 
 Some paths still nest:
 
