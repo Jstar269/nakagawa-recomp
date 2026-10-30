@@ -25,6 +25,11 @@ profile-zero acceptance at `scaffold` until the full evidence for each case is r
 building a package locally or starting a validated package. It also doesn't promote the separate `synthetic.json` /
 `synthetic-title2.json` #309 acceptance matrix.
 
+The two animated GIFs in the README, `docs/images/showcase-ge-scene.gif` and `docs/images/showcase-breakout.gif`,
+are the player's own framebuffer snapshots of the demos. `python tools/make_showcase_animation.py` assembles the
+`frame_v*.ppm` captures under `build/demos/packages/TEST00007/` and `TEST00008/` into them; the same captures always
+give the same bytes.
+
 ## Build and package
 
 `mingw32-make showcase` needs the PSPDEV toolchain installed in WSL at `/usr/local/pspdev`; it doesn't download or

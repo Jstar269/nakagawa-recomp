@@ -34,7 +34,7 @@
 /* Guest AOT CALLs are native C calls (TAIL transfers are drained, not nested), so the
  * scheduler reserves this host stack size for each guest thread. Keep the size in the coroutine contract so runtime
  * stack guards and scheduler tests use the same production value. */
-#define SR_GUEST_FIBER_STACK_SIZE ((size_t)64u << 20)
+#define SR_GUEST_CORO_STACK_SIZE ((size_t)64u << 20)
 
 /* POSIX stacks get this much PROT_NONE address space below their usable range (rounded up to
  * the page size), so a frame that overruns the stack faults instead of writing into the next

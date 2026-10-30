@@ -8,7 +8,9 @@ Two distinct kinds of assertion live here and must not be conflated.
 
 **Hardware-measured (tier H).**  ``fixtures/vfpu_addressing/hardware_vfpu_addr_001.json``
 records what a PSP-3001 actually did: all 128 scalar encodings, and 14 selected
-wide encodings.  Tests against those cases are evidence about silicon.
+wide encodings.  Tests against those cases are evidence about silicon.  The raw
+captures stay private; ``tools/psp_oracle/verify_vfpu_addr.py`` re-derives each
+destination permutation from them and compares it with the decode.
 
 **Derived (tier S).**  The remaining 498 wide encodings were *not* observed.
 Tests over the full 512-entry domain check that the two independent

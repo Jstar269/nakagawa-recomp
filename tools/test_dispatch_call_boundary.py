@@ -603,8 +603,8 @@ int main(int argc, char **argv) {
     sr_sched_on = 1;
     atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
     if (pair) {
-        SrCoro *a = sr_coro_create(pair_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
-        SrCoro *b = sr_coro_create(pair_body, &g_pair_ran[1], SR_GUEST_FIBER_STACK_SIZE);
+        SrCoro *a = sr_coro_create(pair_body, NULL, SR_GUEST_CORO_STACK_SIZE);
+        SrCoro *b = sr_coro_create(pair_body, &g_pair_ran[1], SR_GUEST_CORO_STACK_SIZE);
         if (!a || !b) return 24;
         const int reverse = strcmp(argv[2], "pair-reverse") == 0;
         g_pair_n[reverse ? 1 : 0] = 1000ul;   /* the first fiber to run: shallow */
@@ -617,12 +617,12 @@ int main(int argc, char **argv) {
                n, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[29]);
         return 0;
     }
-    SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
+    SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_CORO_STACK_SIZE);
     if (!fiber) return 21;
     /* "neighbour": a second guest-size stack created after the probe's, as the scheduler
      * creates one per guest thread. POSIX mmap is top-down, so it usually lands directly
      * below the probe's stack, where an overrun of the probe's stack would write. */
-    if (neighbour && !sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE)) return 23;
+    if (neighbour && !sr_coro_create(probe_body, NULL, SR_GUEST_CORO_STACK_SIZE)) return 23;
     sr_coro_switch(fiber);
     sr_sched_on = 0;
     sr_dispatch_host_stack_remaining = NULL;
