@@ -136,7 +136,7 @@ Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200
 device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
-the window. A larger window keeps its density and gains room. Clay clips at most ten containers per layout: shorten
+the window. A larger window keeps its density and gains room. Clay clips at most 100 containers per layout: shorten
 long text with `nk_ui_text_clamp` instead of clipping it.
 
 Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
