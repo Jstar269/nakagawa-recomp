@@ -1755,7 +1755,7 @@ class TestSanitizedBringup(unittest.TestCase):
     def _run_case(
         self, failure=None, *, launch_code=0, launch_output="", timeout=False,
         flight_events=None, flight_dropped=0, instruction_trace=False,
-        unsupported_opcodes=None, analyzer_error=None,
+        unsupported_opcodes=None, analyzer_error=None, launch_bytes=None,
     ):
         case_root = self.root / (failure or "success")
         report_path = case_root / "bringup.json"
@@ -1815,6 +1815,8 @@ class TestSanitizedBringup(unittest.TestCase):
             stage_observer("build_package", "PASS", 2)
             return 0
 
+        real_popen = subprocess.Popen
+
         def fake_popen(command, **kwargs):
             launch_commands.append(list(command))
             launch_envs.append(dict(kwargs.get("env", {})))
@@ -1827,6 +1829,13 @@ class TestSanitizedBringup(unittest.TestCase):
                     "recorder": {"dropped": flight_dropped},
                     "events": events,
                 }), encoding="utf-8")
+            if launch_bytes is not None:
+                # A real child, so the launch's own pipe settings decode what it prints.
+                return real_popen(
+                    [sys.executable, "-c",
+                     f"import sys; sys.stdout.buffer.write({launch_bytes!r})"],
+                    **kwargs,
+                )
             output = launch_output
             if not output and launch_code == 0:
                 output = (
@@ -2227,6 +2236,21 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn(b"bytes elided", bounded)
         short = nk_cli._bounded_launch_output("small\n", 300)
         self.assertEqual(short, b"small\n")
+
+    def test_a_launch_that_prints_bytes_that_are_not_utf8_still_reports(self):
+        """A game can print bytes that are not UTF-8; the launch keeps its report, with them replaced."""
+        status, report = self._run_case(launch_bytes=(
+            b"BOOT_EVENT phase=window_ready backend=offscreen\n"
+            b"guest text \xff\x82\n"
+            b"BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            b"HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        ))
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["presentation"]["frame_submissions"], 1)
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn("guest text \ufffd\ufffd".encode(), log.read_bytes())
+        nk_cli.validate_bringup_report(report)
 
     def test_bringup_keeps_the_launch_log_in_the_work_dir(self):
         self._run_case(launch_output="LAUNCH-LOG-MARKER\n")
