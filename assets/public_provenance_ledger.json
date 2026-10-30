@@ -1441,7 +1441,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d39826d57aba58966040a26cafde7afbc49fe7e3f0cdc9ca31466d686a288741"
+      "sha256": "49bf0fbbe3e58548df2d15948b63f38c2cbea7b7f7c35f396c31903cdf533eaa"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -13172,7 +13172,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2aa9a96d3728f66c2a8642fe7758d0c54fc196ba16935e38b8706541e47ae931"
+      "sha256": "f1923749b95a47536a462a4889e76dee25540b7593d3276b03d2b8680cd51549"
     },
     {
       "path": "tools/lint_docs.py",
@@ -15363,7 +15363,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a0b388479152cb7f17b4e8bc4adea6e0c739945b0a52677c72c9e9cc2dac353"
+      "sha256": "0721e69e9b6c1f879a54f89ebe7f678a9edeeb50e489a6db06e52fba874c25b4"
     },
     {
       "path": "tools/test_lint_docs.py",

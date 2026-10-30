@@ -572,7 +572,7 @@ class LibrarySweepTests(unittest.TestCase):
         sidecar.write_text(json.dumps(too_many_members), encoding="utf-8")
         self.assertIsNone(library_sweep._read_private_analyzer_diagnostic(sidecar))
 
-    def test_legacy_schema_baseline_is_compared_without_exporting_old_family_names(self) -> None:
+    def test_legacy_schema_baseline_starts_fresh_without_exporting_old_family_names(self) -> None:
         previous = library_sweep._public_aggregate(
             [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1
         )
@@ -581,6 +581,7 @@ class LibrarySweepTests(unittest.TestCase):
         ]
         # Schema 1 predates current family-source filtering and the new stage fields.
         previous["schema_version"] = 1
+        previous.pop("comparison_identity")
         previous.pop("timed_out_during_stage_histogram", None)
         previous.pop("stopped_at_stage_histogram", None)
         previous.pop("timed_out_with_unknown_stage", None)
@@ -596,7 +597,8 @@ class LibrarySweepTests(unittest.TestCase):
             previous_aggregate=loaded,
         )
 
-        self.assertEqual(current["comparison"]["status"], "MATCHED")
+        self.assertEqual(current["comparison"]["status"], "NEW_BASELINE")
+        self.assertEqual(current["comparison"]["reason"], "comparison_identity_missing")
         self.assertEqual(current["comparison"]["baseline_compatibility"], "LEGACY_V1_SUPPORTED")
         self.assertEqual(current["comparison"]["previous_schema_version"], 1)
         self.assertNotIn("sceGe_user", json.dumps(current))
@@ -991,6 +993,26 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual(current["ratchet"]["furthest_stage_high_water"]["launch"], 2)
         self.assertEqual(current["ratchet"]["furthest_stage_high_water"]["analyze"], 1)
         self.assertEqual(current["furthest_stage_histogram"]["launch"], 0)
+
+    def test_comparison_identity_timeout_and_legacy_baseline(self) -> None:
+        previous = library_sweep._public_aggregate(
+            [_sweep_row("launch")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1
+        )
+        identity = dict(previous["comparison_identity"], launch_timeout_seconds=60)
+        changed = library_sweep._public_aggregate(
+            [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1,
+            previous_aggregate=previous, comparison_identity=identity,
+        )
+        self.assertEqual(changed["comparison"]["status"], "NEW_BASELINE")
+        self.assertEqual(changed["comparison"]["reason"], "comparison_identity_changed")
+        self.assertEqual(changed["ratchet"]["furthest_stage_high_water"]["launch"], 0)
+        previous.pop("comparison_identity")
+        legacy = library_sweep._public_aggregate(
+            [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1,
+            previous_aggregate=previous,
+        )
+        self.assertEqual(legacy["comparison"]["status"], "NEW_BASELINE")
+        self.assertEqual(legacy["comparison"]["reason"], "comparison_identity_missing")
 
     def test_mismatched_or_unsanitized_baseline_fails_closed(self) -> None:
         previous = library_sweep._public_aggregate(

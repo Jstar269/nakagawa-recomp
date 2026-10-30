@@ -135,8 +135,11 @@ rejected before any game runs. `--time-budget` still limits each game's whole ro
 codegen, compile, package and launch), so the launch limit passed to bring-up is
 `min(--launch-timeout, --time-budget)`, and the default gives the earlier fixed `min(20, --time-budget)`. To let
 games run for 60 s or 110 s, raise `--launch-timeout` and give `--time-budget` enough room for the build stages too.
-The summary records `time_budget_seconds` but not the launch limit, so only compare summaries made with the same
-`--launch-timeout`.
+The summary records the launch timeout and whether optional decrypted inputs and title manifests are enabled.
+A changed or missing comparison identity starts a new baseline. When either optional input is enabled, its
+private contents cannot be verified by the public summary, so comparisons start a new baseline, checkpoints
+start fresh, and shard merging refuses. Keep the disc input set unchanged when comparing runs: only its count
+is recorded in the public summary.
 
 Runs split across several shards are combined with `--merge-private-reports PATH [PATH ...]`. Each argument can be the
 shard's `library-sweep.json` file or its private folder (the `--private-dir` the shard ran with), and you can mix the

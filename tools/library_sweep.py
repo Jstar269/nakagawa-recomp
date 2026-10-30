@@ -104,7 +104,7 @@ _PUBLIC_AGGREGATE_REQUIRED_KEYS = _PUBLIC_AGGREGATE_V1_REQUIRED_KEYS | frozenset
     "timed_out_with_unknown_stage",
     "stage_duration_ms",
 })
-_PUBLIC_AGGREGATE_OPTIONAL_KEYS = _PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS
+_PUBLIC_AGGREGATE_OPTIONAL_KEYS = _PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS | {"comparison_identity"}
 _PUBLIC_COVERAGE_REQUIRED_KEYS = frozenset({
     "iso_count",
     "completed_routes",
@@ -130,6 +130,9 @@ _PUBLIC_COMPARISON_REASONS = frozenset({
     "source_identity_changed",
     "time_budget_changed",
     "input_count_changed",
+    "comparison_identity_missing",
+    "comparison_identity_changed",
+    "optional_inputs_unverified",
     "same_source_and_input_count",
 })
 _SWEEP_RUN_STATUSES = frozenset({"COMPLETED", "TIMED_OUT", "NO_REPORT"})
@@ -302,6 +305,8 @@ def _read_existing_rows(
     source_commit: str,
     source_fingerprint: str,
     source_keys: set[str],
+    time_budget_seconds: int | None = None,
+    comparison_identity: dict | None = None,
 ) -> dict[str, dict]:
     if not path.is_file():
         return {}
@@ -340,6 +345,14 @@ def _read_existing_rows(
         existing_keys.add(key)
         if key in source_keys:
             retained[key] = row
+    if time_budget_seconds is not None and (
+        payload.get("time_budget_seconds") != time_budget_seconds
+        or payload.get("comparison_identity") != comparison_identity
+        or comparison_identity.get("decrypted_titles")
+        or comparison_identity.get("title_manifests")
+    ):
+        print("Existing checkpoint has different or missing comparison settings; starting fresh.")
+        return {}
     return retained
 
 
@@ -1033,6 +1046,17 @@ def _validate_public_aggregate(payload: object) -> dict:
     if not isinstance(time_budget, int) or isinstance(time_budget, bool) or time_budget < 1:
         raise ValueError("public aggregate time_budget_seconds is invalid")
 
+    identity = payload.get("comparison_identity")
+    if "comparison_identity" in payload and (
+        not isinstance(identity, dict)
+        or set(identity) != {"launch_timeout_seconds", "decrypted_titles", "title_manifests"}
+        or type(identity["launch_timeout_seconds"]) is not int
+        or not 1 <= identity["launch_timeout_seconds"] <= MAX_LAUNCH_TIMEOUT_SECONDS
+        or type(identity["decrypted_titles"]) is not bool
+        or type(identity["title_manifests"]) is not bool
+    ):
+        raise ValueError("public aggregate comparison identity is invalid")
+
     coverage = payload["coverage"]
     if not isinstance(coverage, dict):
         raise ValueError("public aggregate coverage must be an object")
@@ -1237,6 +1261,9 @@ def _validate_public_aggregate(payload: object) -> dict:
                     "source_identity_changed",
                     "time_budget_changed",
                     "input_count_changed",
+                    "comparison_identity_missing",
+                    "comparison_identity_changed",
+                    "optional_inputs_unverified",
                 }
                 or stage_delta_map is not None
                 or completed_routes_delta is not None
@@ -1445,7 +1472,11 @@ def _public_aggregate(
     total_isos: int,
     *,
     previous_aggregate: dict | None = None,
+    comparison_identity: dict | None = None,
 ) -> dict:
+    if comparison_identity is None:
+        comparison_identity = {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+                               "decrypted_titles": False, "title_manifests": False}
     _validate_sweep_rows(rows)
     if not isinstance(total_isos, int) or isinstance(total_isos, bool) or total_isos < len(rows):
         raise ValueError("public aggregate total ISO count is smaller than the number of recorded rows")
@@ -1501,6 +1532,7 @@ def _public_aggregate(
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
+        "comparison_identity": comparison_identity,
         "coverage": {
             "iso_count": total_isos,
             "recorded_routes": len(rows),
@@ -1548,7 +1580,9 @@ def _public_aggregate(
         )
         same_budget = previous_aggregate["time_budget_seconds"] == time_budget_seconds
         same_input_count = previous_coverage["iso_count"] == current_coverage["iso_count"]
-        if same_source and same_budget and same_input_count:
+        same_identity = previous_aggregate.get("comparison_identity") == comparison_identity
+        optional_inputs = comparison_identity["decrypted_titles"] or comparison_identity["title_manifests"]
+        if same_source and same_budget and same_input_count and same_identity and not optional_inputs:
             comparison_status = "MATCHED"
             comparison_reason = "same_source_and_input_count"
             previous_high_water = (
@@ -1566,7 +1600,13 @@ def _public_aggregate(
             )
         else:
             comparison_status = "NEW_BASELINE"
-            if not same_source:
+            if "comparison_identity" not in previous_aggregate:
+                comparison_reason = "comparison_identity_missing"
+            elif not same_identity:
+                comparison_reason = "comparison_identity_changed"
+            elif optional_inputs:
+                comparison_reason = "optional_inputs_unverified"
+            elif not same_source:
                 comparison_reason = "source_identity_changed"
             elif not same_budget:
                 comparison_reason = "time_budget_changed"
@@ -1603,13 +1643,18 @@ def _write_outputs(
     ran_this_invocation: int,
     resumed_this_invocation: int,
     previous_aggregate: dict | None = None,
+    comparison_identity: dict | None = None,
 ) -> None:
+    if comparison_identity is None:
+        comparison_identity = {"launch_timeout_seconds": DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+                               "decrypted_titles": False, "title_manifests": False}
     _validate_sweep_rows(rows)
     private_payload = {
         "schema_version": 2,
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
+        "comparison_identity": comparison_identity,
         "updated_at_utc": _utc_now(),
         "coverage": {
             "iso_count": total_isos,
@@ -1625,6 +1670,7 @@ def _write_outputs(
         time_budget_seconds,
         total_isos,
         previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     private_document = _json_document_bytes(private_payload)
     if len(private_document) > _SWEEP_RESUME_JSON_MAX_BYTES:
@@ -1674,8 +1720,12 @@ def run_sweep(
     private_path = private_dir / "library-sweep.json"
     previous_aggregate = _read_previous_public_aggregate(previous_public_output)
     source_keys = {_source_key(path, iso_root) for path in paths}
+    comparison_identity = {"launch_timeout_seconds": launch_timeout_seconds,
+                           "decrypted_titles": decrypted_titles is not None,
+                           "title_manifests": title_manifests is not None}
     rows_by_key = _read_existing_rows(
-        private_path, source_commit, source_fingerprint, source_keys
+        private_path, source_commit, source_fingerprint, source_keys,
+        time_budget_seconds, comparison_identity
     )
     path_by_key = {_source_key(path, iso_root): path for path in paths}
     for key, row in list(rows_by_key.items()):
@@ -1693,6 +1743,7 @@ def run_sweep(
         private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=0,
         resumed_this_invocation=previous_rows, previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     for index, iso_path in enumerate(paths, start=1):
         key = _source_key(iso_path, iso_root)
@@ -1837,6 +1888,7 @@ def run_sweep(
             private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
             list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
             resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
+            comparison_identity=comparison_identity,
         )
         print(f"[{index}/{len(paths)}] {row['furthest_stage']} ({run_status})")
 
@@ -1854,6 +1906,7 @@ def run_sweep(
         private_path, public_output, source_commit, source_fingerprint, time_budget_seconds,
         list(rows_by_key.values()), total_isos=len(paths), ran_this_invocation=run_count,
         resumed_this_invocation=resumed_count, previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     return result
 
@@ -1963,6 +2016,11 @@ def merge_private_reports(
     source_commit = first["source_commit"]
     source_fingerprint = first["source_fingerprint"]
     time_budget = first["time_budget_seconds"]
+    comparison_identity = first.get("comparison_identity")
+    if not isinstance(comparison_identity, dict):
+        raise ValueError("private shard report has missing or invalid comparison identity; rerun the shard")
+    if comparison_identity.get("decrypted_titles") or comparison_identity.get("title_manifests"):
+        raise ValueError("private shard optional input identity cannot be verified")
     rows_by_key: dict[str, dict] = {}
     total_isos = 0
     ran_count = 0
@@ -1972,6 +2030,7 @@ def merge_private_reports(
             report["source_commit"] != source_commit
             or report["source_fingerprint"] != source_fingerprint
             or report["time_budget_seconds"] != time_budget
+            or report.get("comparison_identity") != comparison_identity
         ):
             raise ValueError("private shard reports do not share source and budget identity")
         total_isos += report["coverage"]["iso_count"]
@@ -1999,6 +2058,7 @@ def merge_private_reports(
         ran_this_invocation=ran_count,
         resumed_this_invocation=resumed_count,
         previous_aggregate=previous_aggregate,
+        comparison_identity=comparison_identity,
     )
     return {
         "private_report": str(private_path),
