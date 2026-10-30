@@ -126,7 +126,8 @@ static size_t nk_ui_sdl_key(NkUiSdlInput *state, const SDL_KeyboardEvent *key, d
     case SDLK_RIGHT: button = NK_UI_BTN_RIGHT; break;
     case SDLK_RETURN:
     case SDLK_KP_ENTER: button = NK_UI_BTN_CONFIRM; break;
-    case SDLK_ESCAPE: button = NK_UI_BTN_BACK; break;
+    case SDLK_ESCAPE:
+    case SDLK_BACKSPACE: button = NK_UI_BTN_BACK; break;
     case SDLK_SPACE: button = NK_UI_BTN_OPTIONS; break;
     case SDLK_D: button = NK_UI_BTN_DETAILS; break;
     case SDLK_Q: button = NK_UI_BTN_TAB_PREV; break;
@@ -134,6 +135,8 @@ static size_t nk_ui_sdl_key(NkUiSdlInput *state, const SDL_KeyboardEvent *key, d
     case SDLK_F1: button = NK_UI_BTN_MENU; break;
     case SDLK_PAGEUP: button = NK_UI_BTN_PAGE_PREV; break;
     case SDLK_PAGEDOWN: button = NK_UI_BTN_PAGE_NEXT; break;
+    case SDLK_HOME: button = NK_UI_BTN_FIRST; break;
+    case SDLK_END: button = NK_UI_BTN_LAST; break;
     case SDLK_TAB:
         if (!down) {
             /* Release both so a Shift taken off before Tab cannot leave one stuck down. */
@@ -258,6 +261,12 @@ size_t nk_ui_sdl_input_translate(NkUiSdlInput *state, const union SDL_Event *eve
                                    state->input.pointer_down, out, cap);
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
+        /* The mouse's back button is Back, as Esc is. */
+        if (event->button.button == SDL_BUTTON_X1) {
+            return nk_ui_input_button(&state->input, NK_UI_BTN_BACK, event->button.down,
+                                      NK_UI_DEVICE_KEYBOARD_MOUSE, NK_UI_PAD_KEYBOARD, now_s,
+                                      out, cap);
+        }
         if (event->button.button != SDL_BUTTON_LEFT) {
             return 0u;
         }

@@ -59,6 +59,8 @@ typedef enum {
     NK_UI_BTN_CYCLE_PREV,
     NK_UI_BTN_PAGE_PREV,   /* Page Up, the pad's left trigger */
     NK_UI_BTN_PAGE_NEXT,   /* Page Down, the pad's right trigger */
+    NK_UI_BTN_FIRST,       /* Home */
+    NK_UI_BTN_LAST,        /* End */
     NK_UI_BTN_COUNT
 } NkUiInputButton;
 

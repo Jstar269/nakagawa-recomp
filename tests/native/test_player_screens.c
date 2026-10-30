@@ -4,6 +4,7 @@
 #include "player_ui_nk.h"
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
+#include "nk_ui_waves.h"
 #include "nk_ui_widgets.h"
 
 #include <stdio.h>
@@ -68,13 +69,13 @@ static const PlayerUiTitle k_titles[] = {
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, ""},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
-     "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
+     "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
-     "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
@@ -171,12 +172,14 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
+               FLOW_SETTINGS_ACCESSIBILITY,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
                /* Whole pages for the window-fit sweep only. */
-               FLOW_PAGE_LIBRARY, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT, FLOW_PAGE_REMOVE,
+               FLOW_PAGE_LIBRARY, FLOW_PAGE_LIBRARY_FIND, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT,
+               FLOW_PAGE_REMOVE,
                FLOW_PAGE_STOP,
                FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
@@ -299,6 +302,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
+        : which == FLOW_SETTINGS_ACCESSIBILITY ? PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY
         : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
           which == FLOW_SETTINGS_UPDATE_NO_KEY || which == FLOW_SETTINGS_UPDATE_REFUSED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
@@ -313,6 +317,14 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.online_mode = true;
     settings.developer_mode = true;
     settings.share_system_libraries = true;
+    /* Accessibility: a size picked, high contrast following Windows (off), and
+       Reduce motion turned on. */
+    settings.interface_size = "125%";
+    settings.high_contrast_choice = "Automatic";
+    settings.reduce_motion_choice = "On";
+    settings.reduce_motion = true;
+    settings.system_name = "Windows";
+    settings.system_scale_pct = 150;
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
     }
@@ -613,16 +625,26 @@ static PlayerUiPrereqItem g_full_prereqs[35];
    a title page, About, and the remove dialog. */
 static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
-    if (which == FLOW_PAGE_LIBRARY) {
+    if (which == FLOW_PAGE_LIBRARY || which == FLOW_PAGE_LIBRARY_FIND) {
         PlayerUiLibraryModel library;
         memset(&library, 0, sizeof(library));
-        library.page_size = player_ui_library_page_size(g_flow_width, g_flow_height,
-                                                        &library.columns);
+        library.page_size = which == FLOW_PAGE_LIBRARY_FIND
+            ? player_ui_library_page_size_finding(g_flow_width, g_flow_height, &library.columns)
+            : player_ui_library_page_size(g_flow_width, g_flow_height, &library.columns);
         library.logical_width = g_flow_width;
         library.logical_height = g_flow_height;
         library.titles = k_titles;
         library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
         library.page_label = "Page 1 of 2";
+        /* The fullest heading: the update notice, the longest sort and the pager. */
+        library.update_notice = "Version 0.0.2 is out";
+        library.sort_label = "Recently played";
+        if (which == FLOW_PAGE_LIBRARY_FIND) {
+            /* The find box open on a long query, with every game a match. */
+            library.find_open = true;
+            library.find_query = "Synthetic Showcase Scene and more";
+            library.game_total = library.title_count;
+        }
         return player_ui_screen_library(ui, &library);
     }
     if (which == FLOW_PAGE_TITLE) {
@@ -1093,6 +1115,135 @@ static void test_library_centres_in_a_wide_window(void) {
     nk_ui_destroy(ui);
 }
 
+/* The library's SORT button names the sort and asks for the next one; there
+   is none without games or without a sort. */
+static void test_library_sort_button(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    const char *dump;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the sort button");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1280.0f, 800.0f, &model.columns);
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "SORT:") == NULL, "no sort, no SORT button");
+    model.sort_label = "Recently played";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"SORT: RECENTLY PLAYED\"") != NULL,
+          "the SORT button names the sort");
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_SORT);
+    {
+        NkUiEvent activate;
+        memset(&activate, 0, sizeof(activate));
+        activate.type = NK_UI_EV_ACTIVATE;
+        activate.down = true;
+        nk_ui_push_event(ui, &activate);
+    }
+    (void)library_frame_dump(ui, &model, &action);
+    CHECK(action.kind == PLAYER_UI_ACTION_CYCLE_SORT, "SORT asks for the next sort");
+    model.titles = NULL;
+    model.title_count = 0u;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "SORT:") == NULL, "an empty library has no SORT button");
+    nk_ui_destroy(ui);
+}
+
+/* An action from activating `id` on a library frame of `model`. */
+static PlayerUiAction library_activate(NkUi *ui, const PlayerUiLibraryModel *model, NkUiId id) {
+    PlayerUiAction action;
+    NkUiEvent activate;
+    (void)library_frame_dump(ui, model, NULL);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    (void)library_frame_dump(ui, model, &action);
+    return action;
+}
+
+/* The library's find box: FIND opens it; the box shows what is typed (or
+   what to type), "3 of 7 titles", DONE and the on-screen keyboard, whose keys
+   type, delete and finish; no match says so; the prompts offer Clear. */
+static void test_library_find_box(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    static const size_t matches[] = {0u, 2u, 4u};
+    const char *dump;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the find box");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1280.0f, 800.0f, &model.columns);
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"FIND\"") != NULL && strstr(dump, "Type a name") == NULL,
+          "the library offers FIND, with the box closed");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_OPEN, "FIND opens the box");
+
+    model.find_open = true;
+    model.find_query = "";
+    model.game_total = model.title_count;
+    model.grid = matches;
+    model.grid_count = 3u;
+    model.page_size = player_ui_library_page_size_finding(1280.0f, 800.0f, &model.columns);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "Type a name or disc ID") != NULL &&
+              strstr(dump, "\"3 of 7 titles\"") != NULL && strstr(dump, "\"DONE\"") != NULL &&
+              strstr(dump, "\"Q\"") != NULL && strstr(dump, "\"DELETE\"") != NULL &&
+              strstr(dump, "\"CLEAR\"") != NULL && strstr(dump, "\"FIND\"") == NULL &&
+              strstr(dump, "Add a disc image") == NULL,
+          "the open box shows what to type, the count, DONE, the keyboard and Clear, and no "
+          "add card");
+    model.find_query = "syn";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"syn|\"") != NULL, "the box shows what is typed");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 10u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == 'Q',
+          "an on-screen key types its character");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 39u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == ' ',
+          "the last key on the keyboard is Space");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 40u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY &&
+              action.title_index == PLAYER_UI_FIND_DELETE,
+          "DELETE deletes");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_DONE);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == PLAYER_UI_FIND_DONE,
+          "DONE finishes");
+    model.grid_count = 0u;
+    model.find_query = "zzz";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "No games match \\\"zzz\\\".") != NULL &&
+              strstr(dump, "\"0 of 7 titles\"") != NULL &&
+              strstr(dump, "Add your first game") == NULL,
+          "no match says so, and is not the empty library");
+    nk_ui_destroy(ui);
+}
+
 static void push_nav(NkUi *ui, NkUiNavDir dir) {
     NkUiEvent move;
     memset(&move, 0, sizeof(move));
@@ -1128,12 +1279,31 @@ static void test_library_demos(void) {
                   0u &&
               player_ui_library_demo_count(NULL, 3u) == 0u,
           "the Library counts the demos that come with Nakagawa");
-    CHECK(player_ui_library_grid_position(k_demo_titles, demo_count, 1u) == 0u &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 3u) == 1u &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 0u) == demo_count &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 2u) == demo_count &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 9u) == demo_count,
-          "a game's grid position skips the demos, and a demo has none");
+    {
+        PlayerUiLibraryModel grid;
+        static const size_t sorted[] = {3u, 1u};
+        memset(&grid, 0, sizeof(grid));
+        grid.titles = k_demo_titles;
+        grid.title_count = demo_count;
+        CHECK(player_ui_library_grid_count(&grid) == 2u &&
+                  player_ui_library_grid_position(&grid, 1u) == 0u &&
+                  player_ui_library_grid_position(&grid, 3u) == 1u &&
+                  player_ui_library_grid_position(&grid, 0u) == demo_count &&
+                  player_ui_library_grid_position(&grid, 2u) == demo_count &&
+                  player_ui_library_grid_position(&grid, 9u) == demo_count &&
+                  player_ui_library_grid_title(&grid, 1u) == 3u &&
+                  player_ui_library_grid_title(&grid, 2u) == demo_count,
+              "without an order, a game's grid position skips the demos, and a demo has none");
+        grid.grid = sorted;
+        grid.grid_count = 2u;
+        CHECK(player_ui_library_grid_count(&grid) == 2u &&
+                  player_ui_library_grid_title(&grid, 0u) == 3u &&
+                  player_ui_library_grid_title(&grid, 1u) == 1u &&
+                  player_ui_library_grid_position(&grid, 3u) == 0u &&
+                  player_ui_library_grid_position(&grid, 1u) == 1u &&
+                  player_ui_library_grid_position(&grid, 0u) == demo_count,
+              "the grid follows the model's sort order");
+    }
     CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 0u, &columns) == 8u &&
               columns == 4u,
           "without demos a 1280x800 window keeps two rows of four cards");
@@ -2134,6 +2304,125 @@ static void test_input_guides(void) {
 
 /* #1302: Settings in the next UI. Every control returns the op main.c runs with
    the existing handlers, and each page fits the minimum window. */
+/* The waves a launcher frame at now_s queues under these display settings, and
+   whether the frame asks to be woken for the next wave step. */
+static bool display_waves_at(const PlayerUiDisplay *display, double now_s,
+                             NkUiWavesCommand *out, bool *out_wakes) {
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(1280, 720, 1.0f);
+    const NkUiDrawList *draw;
+    bool found = false;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return false;
+    player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
+    nk_ui_set_viewport(ui, &viewport);
+    nk_ui_begin(ui, now_s);
+    (void)nk_ui_waves_element(ui, 1u, (NkUiRect){0.0f, 0.0f, 1280.0f, 720.0f}, 0u);
+    draw = nk_ui_end(ui);
+    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+        if (draw->cmd[i].kind == NK_UI_DRAW_CUSTOM &&
+            draw->cmd[i].custom_kind == NK_UI_CUSTOM_WAVES && draw->cmd[i].custom != NULL) {
+            memcpy(out, draw->cmd[i].custom, sizeof(*out));
+            found = true;
+        }
+    }
+    *out_wakes = nk_ui_next_wake(ui, NULL);
+    nk_ui_destroy(ui);
+    return found;
+}
+
+/* Settings > Reduce motion reaches the design system: the waves hold one frame
+   and the launcher is not woken for them. Before player_ui_apply_display the
+   launcher handed over only the prompt style, and the waves kept moving. */
+static void test_display_settings_reach_the_design_system(void) {
+    PlayerUiDisplay display;
+    NkUiWavesCommand early;
+    NkUiWavesCommand late;
+    bool wakes_early = true;
+    bool wakes_late = true;
+    memset(&display, 0, sizeof(display));
+    display.reduce_motion = true;
+    CHECK(display_waves_at(&display, 1.0, &early, &wakes_early) &&
+              display_waves_at(&display, 9.5, &late, &wakes_late),
+          "reduce motion: the launcher frame queues the waves");
+    CHECK(memcmp(early.phase, late.phase, sizeof(early.phase)) == 0 &&
+              memcmp(early.width_phase, late.width_phase, sizeof(early.width_phase)) == 0,
+          "reduce motion: the waves hold the same frame as time passes");
+    CHECK(!wakes_early && !wakes_late, "reduce motion: no wake is scheduled for the waves");
+    display.reduce_motion = false;
+    CHECK(display_waves_at(&display, 1.0, &early, &wakes_early) &&
+              display_waves_at(&display, 9.5, &late, &wakes_late),
+          "motion on: the launcher frame queues the waves");
+    CHECK(memcmp(early.phase, late.phase, sizeof(early.phase)) != 0,
+          "motion on: the waves move as time passes");
+    CHECK(wakes_early && wakes_late, "motion on: the next wave step is scheduled");
+}
+
+/* Whether a launcher frame with one focused button draws the high-contrast
+   ring's black keyline, under these display settings. */
+static bool display_draws_black_keyline(const PlayerUiDisplay *display) {
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(1280, 720, 1.0f);
+    const NkUiDrawList *draw = NULL;
+    bool black = false;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return false;
+    player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
+    nk_ui_set_viewport(ui, &viewport);
+    nk_ui_focus(ui, 7u);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)nk_ui_button(ui, 7u, "Play", NK_UI_BUTTON_PRIMARY);
+        draw = nk_ui_end(ui);
+    }
+    for (uint32_t i = 0u; draw != NULL && i < draw->nv; ++i) {
+        if (draw->v[i].rgba_pm == 0x000000FFu) black = true;
+    }
+    nk_ui_destroy(ui);
+    return black;
+}
+
+/* Settings > Accessibility's high-contrast focus and interface size reach the
+   design system as well: the ring gains its black keyline, and the viewport
+   takes the size as its UI scale (Automatic follows the display). */
+static void test_accessibility_settings_reach_the_design_system(void) {
+    PlayerUiDisplay display;
+    NkUiViewport viewport = launcher_viewport(1920, 1080, 1.0f);
+    NkUiConfig config;
+    NkUi *ui;
+    memset(&display, 0, sizeof(display));
+    CHECK(!display_draws_black_keyline(&display), "the standard ring has no black keyline");
+    display.high_contrast_focus = true;
+    CHECK(display_draws_black_keyline(&display),
+          "high-contrast focus draws the ring between black keylines");
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a launcher context for the interface size");
+    if (ui == NULL) return;
+    display.interface_size_pct = 150;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.ui_scale_pct == 150 && viewport.text_size_pct == 100 &&
+              nk_ui_scale_for_viewport(&viewport).density == 1.5f,
+          "a 150% interface size draws a 1920 x 1080 window's layout at 1.5");
+    display.interface_size_pct = 0;
+    viewport.display_scale = 1.25f;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.ui_scale_pct == 0 && nk_ui_scale_for_viewport(&viewport).density == 1.25f,
+          "an Automatic interface size follows the display's scale");
+    nk_ui_destroy(ui);
+}
+
 static void test_settings_pages(void) {
     static char dump[CASE_DUMP_CAP];
     static const struct { FlowCase which; NkUiId id; PlayerUiSettingsOp op; const char *what; }
@@ -2154,8 +2443,16 @@ static void test_settings_pages(void) {
          "plus raises the volume"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_UI_SOUNDS, PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS,
          "the menu sounds button toggles them"},
-        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
-         PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION, "the reduce motion button toggles it"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACCESSIBILITY,
+         PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY, "Accessibility opens its page"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE,
+         PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, "the interface size button steps the size"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST,
+         PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST, "the high contrast button steps its choice"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
+         PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION, "the reduce motion button steps its choice"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Back leaves Accessibility"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
          PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN, "the launcher fullscreen button toggles it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_CONTROLLER, PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
@@ -2218,7 +2515,8 @@ static void test_settings_pages(void) {
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                                      FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
                                      FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
-                                     FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED};
+                                     FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
+                                     FLOW_SETTINGS_ACCESSIBILITY};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2233,6 +2531,15 @@ static void test_settings_pages(void) {
               strstr(dump, "\"2X (960X544)\"") != NULL && strstr(dump, "\"80%\"") != NULL &&
               strstr(dump, "saved as you make them") != NULL,
           "Settings shows each value on the button that changes it");
+    CHECK(flow_case_fits(FLOW_SETTINGS_ACCESSIBILITY, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"INTERFACE SIZE: 125%\"") != NULL &&
+              strstr(dump, "\"HIGH CONTRAST: AUTOMATIC\"") != NULL &&
+              strstr(dump, "\"REDUCE MOTION: ON\"") != NULL &&
+              strstr(dump, "Windows: 150%.\"") != NULL &&
+              strstr(dump, "Windows: off.\"") != NULL &&
+              strstr(dump, "Animations in Windows: on.\"") != NULL &&
+              strstr(dump, "\xE2\x80\xA6\"") == NULL,
+          "Accessibility shows each choice and, uncut, what Automatic follows now");
     CHECK(dump_flow_case(FLOW_SETTINGS_NOTICES, dump, sizeof(dump)) &&
               strstr(dump, "synthetic-compiler 14.2") != NULL &&
               strstr(dump, "GPL-3.0-or-later; see LICENSE") != NULL,
@@ -3096,6 +3403,21 @@ static int capture_screens(const char *directory) {
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     if (!capture_one(&rig, "library-controller-high-contrast", &library, NULL)) goto done;
     {
+        /* The find box with a controller: "SYN" typed, two matches, focus on a key. */
+        static const size_t matches[] = {0u, 1u};
+        PlayerUiLibraryModel find = library;
+        find.find_open = true;
+        find.find_query = "SYN";
+        find.game_total = library.title_count;
+        find.grid = matches;
+        find.grid_count = 2u;
+        find.sort_label = "Recently played";
+        find.page_size = player_ui_library_page_size_finding(1280.0f, 800.0f, &find.columns);
+        capture_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH, false);
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 12u);
+        if (!capture_one(&rig, "library-find", &find, NULL)) goto done;
+    }
+    {
         static const struct { NkUiPromptStyle style; const char *name; } sets[] = {
             {NK_UI_PROMPT_LETTERS_A_SOUTH, "library-prompts-letters-a-south"},
             {NK_UI_PROMPT_LETTERS_A_EAST, "library-prompts-letters-a-east"},
@@ -3226,6 +3548,8 @@ static int capture_screens(const char *directory) {
             {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
             {FLOW_SETTINGS_UPDATE_NO_KEY, "settings-update-no-key", PLAYER_UI_ID_UPDATE_PAGE},
             {FLOW_SETTINGS_UPDATE_REFUSED, "settings-update-refused", PLAYER_UI_ID_UPDATE_CHECK},
+            {FLOW_SETTINGS_ACCESSIBILITY, "settings-accessibility",
+             PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},
@@ -4310,6 +4634,8 @@ int main(int argc, char **argv) {
     test_disc_cards();
     test_input_guides();
     test_settings_pages();
+    test_display_settings_reach_the_design_system();
+    test_accessibility_settings_reach_the_design_system();
     test_controller_and_developer_log_pages();
     test_controller_keyboard_page();
     test_controller_binding_glyphs();
@@ -4330,6 +4656,8 @@ int main(int argc, char **argv) {
     test_build_bar_shows_compiled_parts();
     test_library_demos();
     test_library_centres_in_a_wide_window();
+    test_library_sort_button();
+    test_library_find_box();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),
