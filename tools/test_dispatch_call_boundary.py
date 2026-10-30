@@ -493,10 +493,11 @@ _DEPTH_PROBE_HARNESS = r"""
 #include <stdio.h>
 extern void sr_register_all(void);
 
-/* How many guest instructions the interpreter floor ran, a probe field printed at exit:
- * a call into a body codegen translated runs none. */
+/* How many guest instructions the interpreter floor ran, printed at exit on its own line
+ * (a named stop exits without a DEPTH_PROBE line): a call into a body codegen translated
+ * runs none. */
 static void probe_report_interp(void) {
-    printf("DEPTH_PROBE interp=%llu\n", (unsigned long long)sr_exec_interp_instructions);
+    printf("INTERP_PROBE interp=%llu\n", (unsigned long long)sr_exec_interp_instructions);
 }
 
 /* Every generated body begins with SR_YIELD; with a timeslice of one it calls
@@ -760,7 +761,7 @@ def _run_depth_probe(exe: Path, iterations: int) -> tuple[int, str, dict[str, in
     )
     fields: dict[str, int] = {}
     for line in run.stdout.splitlines():
-        if line.startswith("DEPTH_PROBE "):
+        if line.startswith(("DEPTH_PROBE ", "INTERP_PROBE ")):
             for item in line.split()[1:]:
                 key, _, value = item.partition("=")
                 fields[key] = int(value, 0)
