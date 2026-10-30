@@ -74,6 +74,7 @@ jobs:
       save_compiler_cache: ${{ steps.paths.outputs.save_compiler_cache }}
       allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
       draft: ${{ steps.paths.outputs.draft }}
+      linux_runner: ${{ steps.paths.outputs.linux_runner }}
     steps:
       - name: Check out repository history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +87,11 @@ jobs:
         shell: bash
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          # The self-hosted pool's off switch and its supervisor's heartbeat. The
+          # classifier routes a trusted run there only while both say it is up; every
+          # other run gets the hosted image (tools/ci_paths.py linux_runner, docs/CI.md).
+          NK_SELF_HOSTED_LINUX: ${{ vars.NK_SELF_HOSTED_LINUX }}
+          NK_SELF_HOSTED_HEARTBEAT: ${{ vars.NK_SELF_HOSTED_HEARTBEAT }}
         run: python tools/ci_paths.py --github-output "$GITHUB_OUTPUT"
 
   hygiene:
@@ -495,7 +501,12 @@ jobs:
     name: Native and translation gates
     # Ubuntu 26.04 no longer publishes the gcc-mipsel-linux-gnu package that
     # this translation gate installs; keep the cross-compiler job on 24.04.
-    runs-on: ubuntu-24.04
+    # The classifier picks the runner: ubuntu-24.04, or for a trusted run (a push to
+    # main, a merge group, a desk batch pull request) while the pool is up, the
+    # self-hosted nk-wsl pool, whose image is Ubuntu 24.04 too (docs/CI.md,
+    # "Self-hosted Linux runners"). The fallback keeps the expression parseable when
+    # classify produced no outputs; the job's own condition skips it then.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}
     # id-token: write exists only for the Codecov OIDC upload below; contents
     # stays read, as everywhere else in this workflow.
     permissions:

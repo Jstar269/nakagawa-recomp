@@ -190,7 +190,7 @@ class PublicCiWiringTests(unittest.TestCase):
         libavcodec that the build could pick up instead.
         """
         native_tools = _ci_job_blocks()["native_tools"]
-        self.assertIn("    runs-on: ubuntu-24.04", "\n".join(native_tools))
+        self.assertIn(f"    runs-on: {SELF_HOSTED_RUNS_ON}", "\n".join(native_tools))
         step_name = "Build and run the vendored FFmpeg H.264 media selftest"
         dependencies = _ci_step(native_tools, "Install native test dependencies")
         ffmpeg_test = _ci_step(native_tools, step_name)
@@ -1693,6 +1693,89 @@ def _on_block(text: str) -> list[str]:
         if stripped and not stripped.startswith("#"):
             body.append(line.rstrip())
     return body
+
+
+#: The one ``runs-on`` form that may reach the self-hosted pool: the classifier's
+#: ``linux_runner`` output (tools/ci_paths.py, docs/CI.md "Self-hosted Linux runners").
+SELF_HOSTED_RUNS_ON = """${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}"""
+#: The jobs that read it. Each one is a Linux job whose steps the pool's Ubuntu 24.04
+#: image was built to match.
+SELF_HOSTED_JOBS = frozenset({"native_tools"})
+_HOSTED_RUNS_ON = re.compile(r"^(ubuntu|windows|macos)-[0-9][0-9.]*$")
+
+
+def _uncommented(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+class SelfHostedRunnerWiringTests(unittest.TestCase):
+    """Only the classifier's trusted-run decision can send a job to the self-hosted pool.
+
+    A pull request's workflow comes from its own head, so a fork could still name the
+    pool's labels itself: the fork approval setting and the runner's job-started hook
+    stop that (docs/CI.md). What this repository's own workflows decide is pinned here.
+    """
+
+    def test_no_workflow_names_the_pool_directly(self) -> None:
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+            code = _uncommented(path.read_text(encoding="utf-8"))
+            for label in ("self-hosted", "nk-wsl"):
+                with self.subTest(workflow=path.name, label=label):
+                    self.assertNotIn(label, code)
+
+    def test_every_runs_on_is_hosted_or_the_classifier_output(self) -> None:
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("runs-on:"):
+                    continue
+                value = stripped[len("runs-on:"):].strip()
+                with self.subTest(workflow=path.name, runs_on=value):
+                    if value == SELF_HOSTED_RUNS_ON:
+                        self.assertEqual(path.name, "ci.yml")
+                    else:
+                        self.assertRegex(value, _HOSTED_RUNS_ON)
+
+    def test_only_the_listed_jobs_read_the_classifier_runner(self) -> None:
+        blocks = _ci_job_blocks()
+        users = {job for job, block in blocks.items() if f"    runs-on: {SELF_HOSTED_RUNS_ON}" in block}
+        self.assertEqual(users, set(SELF_HOSTED_JOBS))
+        ci = _workflow_text("ci.yml")
+        self.assertEqual(ci.count("needs.classify.outputs.linux_runner"), len(SELF_HOSTED_JOBS))
+        for job in SELF_HOSTED_JOBS:
+            block = "\n".join(blocks[job])
+            with self.subTest(job=job):
+                # The job runs only after a successful classification, so the hosted
+                # fallback in the expression never decides a real run.
+                self.assertRegex(block, r"(?m)^    needs: \[classify[,\]]")
+                self.assertIn("needs.classify.result == 'success'", block)
+
+    def test_classify_exports_the_runner_and_reads_the_pool_switch(self) -> None:
+        classify_job = _ci_job_blocks()["classify"]
+        block = "\n".join(classify_job)
+        self.assertIn("      linux_runner: ${{ steps.paths.outputs.linux_runner }}", block)
+        step = _ci_step(classify_job, "Classify changed paths")
+        self.assertIsNotNone(step)
+        assert step is not None
+        step_text = "\n".join(step)
+        self.assertIn("          NK_SELF_HOSTED_LINUX: ${{ vars.NK_SELF_HOSTED_LINUX }}", step_text)
+        self.assertIn("          NK_SELF_HOSTED_HEARTBEAT: ${{ vars.NK_SELF_HOSTED_HEARTBEAT }}", step_text)
+        self.assertIn('run: python tools/ci_paths.py --github-output "$GITHUB_OUTPUT"', step_text)
+        # The classifier, which decides, always runs on a hosted image.
+        self.assertIn("    runs-on: ubuntu-26.04", block)
+
+    def test_ci_has_no_trigger_that_runs_a_pull_request_with_base_privileges(self) -> None:
+        on_block = "\n".join(_on_block(_workflow_text("ci.yml")))
+        self.assertNotIn("pull_request_target", on_block)
+        self.assertNotIn("workflow_run", on_block)
+
+    def test_docs_describe_the_pool_and_its_guards(self) -> None:
+        section = _markdown_section((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"),
+                                    "## Self-hosted Linux runners")
+        for fact in ("`NK_SELF_HOSTED_LINUX`", "`NK_SELF_HOSTED_HEARTBEAT`", "`batch/`", "job-started hook",
+                     "fork", "`linux_runner`"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, section)
 
 
 class MergeQueueTriggerWiringTests(unittest.TestCase):
