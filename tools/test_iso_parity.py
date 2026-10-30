@@ -2252,6 +2252,46 @@ int main(int argc, char **argv) {{
         self.assertEqual(executable_check["status"], "OK")
         self.assertIn("BOOT.BIN selected for analysis", executable_check["message"])
 
+    def test_zero_filled_eboot_selects_plain_boot_in_both_inspectors(self) -> None:
+        """Prototype and development discs carry a zero-filled EBOOT.BIN beside a plain BOOT.BIN;
+        BOOT.BIN is the executable, as for an encrypted EBOOT.BIN."""
+        iso_file = self.temp_dir / "zero-eboot-boot-fallback.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root-zero-eboot"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(iso_file, bytes(2048), build_plain_mips_elf())
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=runtime_root
+        )
+        self.assertEqual(report["executables"]["EBOOT.BIN"]["classification"],
+                         "EMPTY_OR_ZERO_FILLED")
+        self.assertEqual(report["selected_executable"], "BOOT.BIN")
+        self.assertTrue(report["boot_fallback"])
+        self.assertEqual(iso_inspect.select_boot_executable_source(iso_file), "BOOT.BIN")
+        executable_check = next(
+            check for check in report["checks"] if check["code"] == "EXECUTABLE"
+        )
+        self.assertEqual(executable_check["status"], "OK")
+        self.assertIn("EBOOT.BIN is zero-filled", executable_check["message"])
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["EBOOT_KIND"], "4")
+        self.assertEqual(native["BOOT_KIND"], "1")
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "2")
+        self.assertEqual(native["BOOT_FALLBACK"], "1")
+
+    def test_zero_filled_eboot_without_boot_stays_unsupported(self) -> None:
+        iso_file = self.temp_dir / "zero-eboot-alone.iso"
+        runtime_root = self.temp_dir / "empty-runtime-root-zero-alone"
+        runtime_root.mkdir()
+        create_test_iso_with_executables(iso_file, bytes(2048))
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=runtime_root
+        )
+        self.assertIsNone(report["selected_executable"])
+        self.assertFalse(report["boot_fallback"])
+        native = self._run_native_inspect(iso_file)
+        self.assertEqual(native["SELECTED_EXECUTABLE"], "0")
+        self.assertEqual(native["BOOT_FALLBACK"], "0")
+
     def test_cli_preflight_guides_encrypted_eboot_to_title_scoped_user_input(self) -> None:
         iso_file = self.temp_dir / "cli-encrypted-user-input.iso"
         user_root = self.temp_dir / "user-data"
