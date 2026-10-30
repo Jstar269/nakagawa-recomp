@@ -3747,17 +3747,41 @@ static void test_fd_namespace(void) {
     cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
 
-    /* pspautotests tests/io/file at f573fe8: negative seek returns -1, and a
-     * read after seeking to 200 beyond EOF returns zero. */
+    /* pspautotests tests/io/file at f573fe8c9122a8ff5db4f030d74557bed644b4e0 (#1380):
+     * SEEK_SET -10 returns -1; SEEK_SET 200 returns 200 and a read there returns 0;
+     * SEEK_CUR -10 from there returns 190 and a read returns 0; SEEK_END 0 returns the
+     * file size again. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd; cpu.r[5] = 0xfffffff6u; cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek32(&cpu) == 0xffffffffu,
-           "negative seek returns -1");
-    cpu.r[5] = 200u; cpu.r[6] = 0u;
+           "a seek before the start returns -1");
+    cpu.r[4] = fd; cpu.r[5] = 200u; cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek32(&cpu) == 200u,
-           "seek beyond EOF succeeds");
-    cpu.r[5] = payload_addr; cpu.r[6] = 1u;
-    expect(sr_hle_test_io_read(&cpu) == 0u, "read beyond EOF returns zero");
+           "a seek past the end of the file succeeds");
+    cpu.r[4] = fd; cpu.r[5] = payload_addr; cpu.r[6] = 128u;
+    expect(sr_hle_test_io_read(&cpu) == 0u, "a read past the end of the file returns 0");
+    cpu.r[4] = fd; cpu.r[5] = 0xfffffff6u; cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 190u,
+           "SEEK_CUR moves from a position past the end of the file");
+    cpu.r[4] = fd; cpu.r[5] = payload_addr; cpu.r[6] = 128u;
+    expect(sr_hle_test_io_read(&cpu) == 0u, "a read there still returns 0");
+    cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 2u;
+    expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
+           "the reads past the end did not change the file size");
+
+    /* A write that would carry the 32-bit position past its range stops at the named
+     * boundary and writes nothing. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0xfffffff0u; cpu.r[7] = 0u; cpu.r[8] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0xfffffff0u && cpu.r[3] == 0u,
+           "a 64-bit seek reaches the top of the 32-bit position range");
+    fd_set_write(&cpu, fd, payload_addr, 32u);
+    expect(sr_hle_test_io_write(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "a write past the 32-bit position range is the named not-supported boundary");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 2u;
+    expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
+           "the refused write did not change the file size");
 
     /* Negative and unrepresentable destinations leave the position unchanged. */
     {

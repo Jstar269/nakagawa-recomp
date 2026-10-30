@@ -639,7 +639,7 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
             "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer",
+        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records a read past the end of a file returning 0 (#1380); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer",
     },
     "h_IoRemove": {
         "status": "complete",
@@ -654,7 +654,7 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "PSP-IO-001 measures a 64-byte write that returns 64 on a created host0 file and a 32-byte write through an append-mode descriptor that returns 32; read-only descriptors, short writes, zero-length writes, unreadable source buffers, raw devices and standard-stream writes remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures a 64-byte write that returns 64 on a created host0 file and a 32-byte write through an append-mode descriptor that returns 32; read-only descriptors, short writes, zero-length writes, unreadable source buffers, raw devices and standard-stream writes remain unmeasured (#341); a write that would carry the 32-bit position past its range fails closed with IO_WRITE_OUT_OF_RANGE (#1380)",
     },
     # Async IoFileMgr requests retain per-fd results and callbacks. Their
     # deterministic import-boundary service interval is synthetic timing, not
