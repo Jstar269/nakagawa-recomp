@@ -396,9 +396,9 @@ bool nk_ui_clay_begin(void *opaque_clay) {
     return true;
 }
 
-bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *layout,
-                             const NkUiStyle *style, void *custom_data) {
-    NkUiClay *clay = (NkUiClay *)opaque_clay;
+static bool nk_ui_clay_open(NkUiClay *clay, NkUiId id, const NkUiLayout *layout,
+                            const NkUiStyle *style, void *custom_data,
+                            const NkUiFloating *floating) {
     Clay_ElementDeclaration declaration;
     if (clay == NULL || !clay->frame_open || layout == NULL) {
         return false;
@@ -427,6 +427,22 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
     }
     if (custom_data != NULL) {
         declaration.custom.customData = custom_data;
+    }
+    if (floating != NULL) {
+        declaration.floating.attachTo = CLAY_ATTACH_TO_PARENT;
+        declaration.floating.expand = (Clay_Dimensions){floating->expand, floating->expand};
+        declaration.floating.zIndex = floating->z;
+        if (floating->centered) {
+            declaration.floating.attachPoints.element = CLAY_ATTACH_POINT_CENTER_CENTER;
+            declaration.floating.attachPoints.parent = CLAY_ATTACH_POINT_CENTER_CENTER;
+        }
+        declaration.floating.pointerCaptureMode = floating->passthrough
+            ? CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH : CLAY_POINTER_CAPTURE_MODE_CAPTURE;
+        declaration.floating.clipTo = floating->clip_to_parent ? CLAY_CLIP_TO_ATTACHED_PARENT
+                                                              : CLAY_CLIP_TO_NONE;
+        if (floating->draw_id != 0u) {
+            declaration.userData = (void *)(uintptr_t)floating->draw_id;
+        }
     }
     if (style != NULL) {
         declaration.backgroundColor = (Clay_Color){
@@ -487,9 +503,20 @@ bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *lay
     return true;
 }
 
+bool nk_ui_clay_open_element(void *opaque_clay, NkUiId id, const NkUiLayout *layout,
+                             const NkUiStyle *style, void *custom_data) {
+    return nk_ui_clay_open((NkUiClay *)opaque_clay, id, layout, style, custom_data, NULL);
+}
+
 bool nk_ui_clay_open_container(void *opaque_clay, NkUiId id,
                                const NkUiLayout *layout, const NkUiStyle *style) {
-    return nk_ui_clay_open_element(opaque_clay, id, layout, style, NULL);
+    return nk_ui_clay_open((NkUiClay *)opaque_clay, id, layout, style, NULL, NULL);
+}
+
+bool nk_ui_clay_open_floating(void *opaque_clay, NkUiId id, const NkUiLayout *layout,
+                              const NkUiStyle *style, const NkUiFloating *floating) {
+    return floating != NULL &&
+           nk_ui_clay_open((NkUiClay *)opaque_clay, id, layout, style, NULL, floating);
 }
 
 void nk_ui_clay_close_container(void *opaque_clay) {

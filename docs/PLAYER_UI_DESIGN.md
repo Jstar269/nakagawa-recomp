@@ -108,7 +108,9 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 ### Focus
 
 - The ring is drawn by the core outside the focused element, so nothing moves when focus moves: 3 px
-  `accent_dark`, 3 px gap, radius = the element's radius + 6.
+  `accent_dark`, 3 px gap, radius = the element's radius + 6. It is a Clay floating element on the control, drawn
+  over everything else and clipped like the control, so a control half scrolled out of a list shows half a ring
+  (`test_focus_ring_floats` in `tests/native/test_nk_ui_core.c`).
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
@@ -447,6 +449,9 @@ step says the privacy promise once. The left rail below is the target layout for
   a boundary), whose line budget grows by one per 16 px of window height past 540 so its fix is never cut off;
   `surface_raised`,
   `line_strong` edge, radius 16, 26/28/22 px padding, 14 px gap.
+- The card (`nk_ui_dialog_begin`, also every flow card and the in-game overlay's) is a Clay floating element,
+  centred on the area it opens in: it moves nothing on the page, draws over it, and takes the pointer, so nothing
+  under it is hovered or clicked (`test_modal_card_floats`).
 - Order: a status eyebrow in its colour with marker ("▲ CONTROLLER DISCONNECTED · GAME PAUSED"), a `TITLE` that says
   what happened in plain words, a `BODY` `muted` paragraph that says what to do, an optional detail box (ground
   fill, `line`, radius 10, `DATA` lines for paths or codes), then the button row: the recommended action first as

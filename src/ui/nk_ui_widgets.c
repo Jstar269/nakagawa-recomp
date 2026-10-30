@@ -819,7 +819,7 @@ bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width) {
     NkUiLayout layout = nk_ui_column(nk_ui_fixed(width), nk_ui_fit(), 14.0f);
     NkUiStyle style = nk_ui_fill(theme->surface_raised, theme->line_strong, NK_UI_RADIUS_DIALOG);
     nk_ui_pad(&layout, 26.0f, 28.0f, 22.0f, 28.0f);
-    return nk_ui_begin_container(ui, id, &layout, &style);
+    return nk_ui_begin_modal(ui, id, &layout, &style);
 }
 
 float nk_ui_progress_sweep_offset(float travel, double phase_s) {

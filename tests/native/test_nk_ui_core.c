@@ -812,6 +812,9 @@ static int drawn_text_top(NkUi *ui, NkUiId id) {
     return y0;
 }
 
+/* The draw list of the last scroll-list frame. */
+static const NkUiDrawList *g_scroll_list;
+
 /* Ten 44 px rows (ids 40 to 49) in a 100 px scroll container (id 30) at the
    window's top left. Returns the row activated this frame, or 0. */
 static NkUiId draw_scroll_list(NkUi *ui, bool *wheel_left) {
@@ -840,7 +843,7 @@ static NkUiId draw_scroll_list(NkUi *ui, bool *wheel_left) {
         }
         nk_ui_end_container(ui);
     }
-    (void)nk_ui_end(ui);
+    g_scroll_list = nk_ui_end(ui);
     return activated;
 }
 
@@ -937,6 +940,113 @@ static int test_scroll_container(void) {
     (void)draw_scroll_list(ui, NULL);
     CHECK(drawn_text_top(ui, 45u) == top - 200 && scroll_offset(ui) == 200.0f,
           "a container starts where nk_ui_scroll_to asked");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* A 60 px band (id 1) holding one wide page button (60); with `modal`, a
+   200 px dialog card (70) with its own button (71) floats centred over it. */
+static NkUiId draw_modal_page(NkUi *ui, bool modal) {
+    NkUiLayout band;
+    NkUiId activated = 0u;
+    memset(&band, 0, sizeof(band));
+    band.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    band.height = (NkUiSizing){NK_UI_SIZE_FIXED, 60.0f, 0.0f, 0.0f};
+    band.direction = NK_UI_LAYOUT_COLUMN;
+    nk_ui_begin(ui, 37.0);
+    if (nk_ui_begin_container(ui, 1u, &band, NULL)) {
+        if (nk_ui_button(ui, 60u, "Page", NK_UI_BUTTON_GROW)) activated = 60u;
+        if (modal && nk_ui_dialog_begin(ui, 70u, 200.0f)) {
+            if (nk_ui_button(ui, 71u, "Card", 0u)) activated = 71u;
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+/* A dialog card is a Clay floating element: it moves none of the page around
+   it, draws over it, and takes the pointer, so the page under it is neither
+   hovered nor clicked. */
+static int test_modal_card_floats(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    int page_top;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create modal context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_modal_page(ui, false);
+    page_top = drawn_text_top(ui, 60u);
+    for (frame = 0; frame < 3; ++frame) (void)draw_modal_page(ui, true);
+    CHECK(drawn_text_top(ui, 60u) == page_top, "the card moves nothing on the page");
+    /* The card is 200 px wide, centred on the 640 px band, so its edge runs
+       from 220 to 248 px before its button; the page button runs under it. */
+    push_pointer(ui, 230.0f, 20.0f, false);
+    (void)draw_modal_page(ui, true);
+    CHECK(!nk_ui_hovered(ui, 60u) && !nk_ui_hovered(ui, 71u),
+          "the pointer on the card's edge hovers nothing under it");
+    push_pointer(ui, 230.0f, 20.0f, true);
+    (void)draw_modal_page(ui, true);
+    push_pointer(ui, 230.0f, 20.0f, false);
+    for (frame = 0; frame < 2 && activated == 0u; ++frame) activated = draw_modal_page(ui, true);
+    CHECK(activated == 0u, "nor clicks it");
+    push_pointer(ui, 600.0f, 20.0f, false);
+    (void)draw_modal_page(ui, true);
+    CHECK(nk_ui_hovered(ui, 60u), "the page beside the card is still the pointer's");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
+/* The focus ring is a floating element on its control: drawn after every
+   other command, and clipped by the scroll container the control is in. */
+static int test_focus_ring_floats(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUiConfig config;
+    const NkUiDrawList *list;
+    NkUi *ui;
+    uint32_t first_ring = UINT32_MAX;
+    uint32_t last_other = 0u;
+    uint32_t i;
+    bool reaches_above = false;
+    bool clipped = true;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create ring context");
+    set_test_window(ui);
+    for (frame = 0; frame < 3; ++frame) (void)draw_scroll_list(ui, NULL);
+    nk_ui_focus(ui, 41u);
+    (void)draw_scroll_list(ui, NULL);
+    /* Row 41 runs from 44 to 88 px down the list; 60 px down, it starts 16 px
+       above the list's top and its ring 22 px above. */
+    nk_ui_scroll_to(ui, 30u, 60.0f);
+    (void)draw_scroll_list(ui, NULL);
+    CHECK(nk_ui_focused(ui) == 41u, "row 41 keeps focus");
+    list = g_scroll_list;
+    CHECK(list != NULL, "the frame was drawn");
+    for (i = 0u; i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->kind == NK_UI_DRAW_BORDER && cmd->element_id == 41u &&
+            cmd->rgba_pm == theme->focus) {
+            if (first_ring == UINT32_MAX) first_ring = i;
+            if (cmd->bounds[1] < 0) reaches_above = true;
+            if (cmd->clip[3] > cmd->clip[1] && cmd->clip[1] < 0) clipped = false;
+        } else if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END) {
+            last_other = i;
+        }
+    }
+    CHECK(first_ring != UINT32_MAX && first_ring > last_other, "the ring is drawn over everything");
+    CHECK(reaches_above && clipped, "the ring is clipped where the list clips its row");
     nk_ui_destroy(ui);
     return 1;
 }
@@ -1216,6 +1326,54 @@ static int test_display_text_rules(void) {
     return 1;
 }
 
+static bool clip_is(const NkUiDrawList *list, uint32_t index, int x0, int y0, int x1, int y1) {
+    const int *clip = list->cmd[index].clip;
+    return clip[0] == x0 && clip[1] == y0 && clip[2] == x1 && clip[3] == y1;
+}
+
+/* Each command carries where it may draw: its bounds inside every scissor open
+   around it, nested, so a backend clips by the command alone (the Vulkan
+   backend's contract) and agrees with the SDL_Renderer backend's stack. */
+static int test_draw_clips_nest(void) {
+    NkUiDrawBuffer buffer;
+    const NkUiDrawList *list;
+    memset(&buffer, 0, sizeof(buffer));
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 300.0f, 300.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 1u), "add an unclipped rect");
+    CHECK(nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){0, 0, 100, 100}, 2u) &&
+              nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){50, 50, 200, 200}, 3u),
+          "open two nested scissors");
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 4u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){150.0f, 150.0f, 20.0f, 20.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 5u) &&
+              nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){50, 50, 200, 200}, 3u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 6u) &&
+              nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){0, 0, 100, 100}, 2u) &&
+              nk_ui_draw_add_rect(&buffer, (NkUiRect){80.0f, 80.0f, 70.0f, 70.0f}, 1.0f, 0.0f,
+                                  0xFFFFFFFFu, 7u),
+          "draw inside, across and after the scissors");
+    list = &buffer.list;
+    CHECK(list->ncmd == 9u, "nine commands");
+    CHECK(clip_is(list, 0u, 0, 0, 300, 300), "a command outside every scissor keeps its bounds");
+    CHECK(clip_is(list, 1u, 0, 0, 100, 100) && clip_is(list, 2u, 50, 50, 100, 100),
+          "a nested scissor is narrowed by the one around it");
+    CHECK(clip_is(list, 3u, 80, 80, 100, 100), "a rect is clipped by both");
+    CHECK(list->cmd[4].clip[2] <= list->cmd[4].clip[0], "a rect they hide is empty");
+    CHECK(clip_is(list, 5u, 50, 50, 100, 100) && clip_is(list, 6u, 80, 80, 100, 100),
+          "closing the inner scissor leaves the outer one");
+    CHECK(clip_is(list, 8u, 80, 80, 150, 150), "closing both leaves the bounds");
+    CHECK(!nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){0, 0, 1, 1}, 9u),
+          "a scissor end with none open is refused");
+    nk_ui_draw_buffer_reset(&buffer);
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 10.0f, 10.0f}, 1.0f, 0.0f,
+                              0xFFFFFFFFu, 1u) && clip_is(&buffer.list, 0u, 0, 0, 10, 10),
+          "a reset buffer has no scissor open");
+    nk_ui_draw_buffer_destroy(&buffer);
+    return 1;
+}
+
 /* Every Clay error type has a name, and only the ones that leave a whole
    layout keep their frame. A type Clay adds later is fatal until it is named. */
 static int test_layout_error_kinds(void) {
@@ -1346,7 +1504,8 @@ int main(int argc, char **argv) {
         !test_image_decode() || !test_image_command() || !test_app_icon() ||
         !test_display_text_rules() || !test_layout_error_kinds() ||
         !test_layout_errors_reported() || !test_pointer_hover_and_press() ||
-        !test_pointer_respects_clip() || !test_scroll_container()) {
+        !test_pointer_respects_clip() || !test_scroll_container() ||
+        !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {

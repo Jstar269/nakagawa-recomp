@@ -44,6 +44,9 @@ typedef struct {
    drag, so its release is no click. */
 #define NK_UI_WHEEL_NOTCH_PX 48.0f
 #define NK_UI_DRAG_SLOP 8.0f
+/* Floating layers: a modal card over the page, the focus ring over both. */
+#define NK_UI_Z_MODAL 1
+#define NK_UI_Z_RING 2
 #define NK_UI_FRAME_TEXT_BYTES 16384u
 
 struct NkUi {
@@ -107,8 +110,6 @@ struct NkUi {
     char frame_text[NK_UI_FRAME_TEXT_BYTES];
     size_t frame_text_used;
     size_t (*display_text)(const char *in, char *out, size_t out_size);
-    NkUiId ring_id;
-    float ring_radius;
     const NkUiPromptImages *prompt_images;
 };
 
@@ -119,6 +120,8 @@ void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
 void nk_ui_clay_destroy(void *clay);
 bool nk_ui_clay_set_dimensions(void *clay, float width, float height, float density);
 bool nk_ui_clay_begin(void *clay);
+bool nk_ui_clay_open_floating(void *clay, NkUiId id, const NkUiLayout *layout,
+                              const NkUiStyle *style, const NkUiFloating *floating);
 bool nk_ui_clay_open_container(void *clay, NkUiId id,
                                const NkUiLayout *layout, const NkUiStyle *style);
 bool nk_ui_clay_open_element(void *clay, NkUiId id, const NkUiLayout *layout,
@@ -546,8 +549,6 @@ void nk_ui_begin(NkUi *ui, double now_s) {
     memset(&ui->waves, 0, sizeof(ui->waves));
     ui->custom_count = 0u;
     ui->frame_text_used = 0u;
-    ui->ring_id = 0u;
-    ui->ring_radius = 0.0f;
     ui->frame_open = nk_ui_clay_begin(ui->clay);
     if (!ui->frame_open) {
         ui->frame_ok = false;
@@ -573,10 +574,11 @@ static void nk_ui_register_scroller(NkUi *ui, NkUiId id) {
     (void)nk_ui_focus_register_scroller(ui->focus_graph, &scroller);
 }
 
-bool nk_ui_begin_container(NkUi *ui, NkUiId id,
-                           const NkUiLayout *layout, const NkUiStyle *style) {
+static bool nk_ui_open(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style,
+                       const NkUiFloating *floating) {
     if (ui == NULL || !ui->frame_open || layout == NULL || ui->container_depth >= 64u ||
-        !nk_ui_clay_open_container(ui->clay, id, layout, style)) {
+        !(floating != NULL ? nk_ui_clay_open_floating(ui->clay, id, layout, style, floating)
+                           : nk_ui_clay_open_container(ui->clay, id, layout, style))) {
         return false;
     }
     ui->scroller_stack[ui->container_depth] = ui->open_scroller;
@@ -600,6 +602,19 @@ bool nk_ui_begin_container(NkUi *ui, NkUiId id,
     }
     ++ui->container_depth;
     return true;
+}
+
+bool nk_ui_begin_container(NkUi *ui, NkUiId id,
+                           const NkUiLayout *layout, const NkUiStyle *style) {
+    return nk_ui_open(ui, id, layout, style, NULL);
+}
+
+bool nk_ui_begin_modal(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style) {
+    NkUiFloating modal;
+    memset(&modal, 0, sizeof(modal));
+    modal.z = NK_UI_Z_MODAL;
+    modal.centered = true;
+    return nk_ui_open(ui, id, layout, style, &modal);
 }
 
 void nk_ui_end_container(NkUi *ui) {
@@ -849,12 +864,54 @@ void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height) {
     }
 }
 
+/* One band of the ring: a floating border around the open container, `expand`
+   outside it, over everything else, clipped as the container is, and taking
+   no pointer. Its draw commands carry the control's id. */
+static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, float width,
+                            float radius, uint32_t rgba) {
+    NkUiLayout layout;
+    NkUiStyle style;
+    NkUiFloating ring;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+    memset(&style, 0, sizeof(style));
+    style.border_rgba = rgba;
+    style.border_width = width;
+    style.corner_radius = radius;
+    memset(&ring, 0, sizeof(ring));
+    ring.expand = expand;
+    ring.z = NK_UI_Z_RING;
+    ring.passthrough = true;
+    ring.clip_to_parent = true;
+    ring.draw_id = id;
+    if (nk_ui_open(ui, nk_ui_child_id(id, part), &layout, &style, &ring)) {
+        nk_ui_end_container(ui);
+    }
+}
+
+/* The focus ring sits outside the element: 3 px accent, 3 px gap, radius =
+   element radius + 6. High contrast: a 4 px white ring between 2 px black
+   keylines, so it reads on any colour. Each band is a Clay floating element
+   on the focused control, the container open now. */
 void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius) {
-    if (ui == NULL || id == 0u) {
+    float radius;
+    if (ui == NULL || !ui->frame_open || id == 0u || id != ui->focused ||
+        ui->container_depth == 0u) {
         return;
     }
-    ui->ring_id = id;
-    ui->ring_radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    if (ui->prefs.high_contrast_focus) {
+        float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
+        nk_ui_ring_band(ui, id, 0xF0u, outer, outer, radius + outer, 0x000000FFu);
+        nk_ui_ring_band(ui, id, 0xF1u, outer - NK_UI_FOCUS_HC_KEYLINE,
+                        NK_UI_FOCUS_HC_RING_WIDTH, radius + outer - NK_UI_FOCUS_HC_KEYLINE,
+                        0xFFFFFFFFu);
+    } else {
+        float grow = NK_UI_FOCUS_RING_GAP + NK_UI_FOCUS_RING_WIDTH;
+        nk_ui_ring_band(ui, id, 0xF0u, grow, NK_UI_FOCUS_RING_WIDTH, radius + grow,
+                        ui->theme.focus);
+    }
 }
 
 const NkUiTheme *nk_ui_theme(const NkUi *ui) {
@@ -1118,43 +1175,6 @@ static bool nk_ui_paint_custom(void *user, void *data, NkUiRect rect, float dens
     return true;
 }
 
-/* The focus ring sits outside the element: 3 px accent, 3 px gap, radius =
-   element radius + 6. High contrast: a 4 px white ring between 2 px black
-   keylines, so it reads on any colour. */
-static bool nk_ui_draw_focus_ring(NkUi *ui) {
-    NkUiRect rect;
-    float gap = NK_UI_FOCUS_RING_GAP;
-    float width = NK_UI_FOCUS_RING_WIDTH;
-    if (ui->ring_id == 0u || ui->ring_id != ui->focused ||
-        !nk_ui_clay_element_rect(ui->clay, ui->ring_id, &rect) ||
-        rect.w <= 0.0f || rect.h <= 0.0f) {
-        return true;
-    }
-    if (ui->prefs.high_contrast_focus) {
-        float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
-        float r0 = ui->ring_radius + outer;
-        float r1 = ui->ring_radius + outer - NK_UI_FOCUS_HC_KEYLINE;
-        const float black[4] = {r0, r0, r0, r0};
-        const float white[4] = {r1, r1, r1, r1};
-        NkUiRect a = {rect.x - outer, rect.y - outer, rect.w + outer * 2.0f, rect.h + outer * 2.0f};
-        float inset = NK_UI_FOCUS_HC_KEYLINE;
-        NkUiRect b = {a.x + inset, a.y + inset, a.w - inset * 2.0f, a.h - inset * 2.0f};
-        return nk_ui_draw_add_border_corners(&ui->draw, a, ui->scale.density, outer,
-                                             black, 0x000000FFu, ui->ring_id) &&
-               nk_ui_draw_add_border_corners(&ui->draw, b, ui->scale.density,
-                                             NK_UI_FOCUS_HC_RING_WIDTH, white,
-                                             0xFFFFFFFFu, ui->ring_id);
-    }
-    {
-        float grow = gap + width;
-        float r = ui->ring_radius + grow;
-        const float radii[4] = {r, r, r, r};
-        NkUiRect ring = {rect.x - grow, rect.y - grow, rect.w + grow * 2.0f, rect.h + grow * 2.0f};
-        return nk_ui_draw_add_border_corners(&ui->draw, ring, ui->scale.density, width,
-                                             radii, ui->theme.focus, ui->ring_id);
-    }
-}
-
 bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index) {
     NkUiWavePalette palette;
     NkUiPixelRect bounds;
@@ -1212,9 +1232,6 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
     memcpy(ui->laid_ids, ui->scroll_ids, ui->scroll_count * sizeof(ui->scroll_ids[0]));
     ui->laid_count = ui->scroll_count;
     nk_ui_focus_place(ui->focus_graph, nk_ui_clay_element_rect, nk_ui_layout_scroll, ui->clay);
-    if (!nk_ui_draw_focus_ring(ui)) {
-        ui->frame_ok = false;
-    }
     if (ui->focus_pending) {
         if (ui->focus_request == 0u) {
             ui->focused = 0u;

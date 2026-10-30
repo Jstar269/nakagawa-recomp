@@ -25,6 +25,10 @@ bool nk_ui_button_focused(const NkUi *ui, NkUiId id);
 bool nk_ui_hovered(const NkUi *ui, NkUiId id);
 /* Hovered, with the primary button held since it went down on `id`. */
 bool nk_ui_pressed(const NkUi *ui, NkUiId id);
+/* Opens a modal card: a container that floats centred over the one it is
+   declared in, above the page (a Clay floating element), and keeps the pointer
+   from what is under it. Close it with nk_ui_end_container. */
+bool nk_ui_begin_modal(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style);
 /* True once, on the frame an ACTIVATE press reaches the focused control `id`. */
 bool nk_ui_take_activation(NkUi *ui, NkUiId id);
 /* Label colour of a button with these flags. */

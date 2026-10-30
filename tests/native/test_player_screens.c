@@ -1679,50 +1679,20 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     return draw;
 }
 
-/* The part of each command the window shows: its bounds inside every scissor
-   around it, as the backends clip. A scissor command, or a command its
-   scissors hide entirely, shows nothing (x1 <= x0). */
-static int (*visible_bounds(const NkUiDrawList *draw))[4] {
-    int (*visible)[4] = (int (*)[4])calloc(draw->ncmd > 0u ? draw->ncmd : 1u, sizeof(*visible));
-    int stack[16][4];
-    size_t depth = 0u;
-    if (visible == NULL) return NULL;
-    for (uint32_t i = 0u; i < draw->ncmd; ++i) {
-        const NkUiDrawCmd *cmd = &draw->cmd[i];
-        int b[4] = {cmd->bounds[0], cmd->bounds[1], cmd->bounds[2], cmd->bounds[3]};
-        if (cmd->kind == NK_UI_DRAW_SCISSOR_START) {
-            if (depth > 0u) {
-                if (b[0] < stack[depth - 1u][0]) b[0] = stack[depth - 1u][0];
-                if (b[1] < stack[depth - 1u][1]) b[1] = stack[depth - 1u][1];
-                if (b[2] > stack[depth - 1u][2]) b[2] = stack[depth - 1u][2];
-                if (b[3] > stack[depth - 1u][3]) b[3] = stack[depth - 1u][3];
-            }
-            if (depth < 16u) memcpy(stack[depth++], b, sizeof(b));
-            continue;
-        }
-        if (cmd->kind == NK_UI_DRAW_SCISSOR_END) {
-            if (depth > 0u) --depth;
-            continue;
-        }
-        if (depth > 0u) {
-            if (b[0] < stack[depth - 1u][0]) b[0] = stack[depth - 1u][0];
-            if (b[1] < stack[depth - 1u][1]) b[1] = stack[depth - 1u][1];
-            if (b[2] > stack[depth - 1u][2]) b[2] = stack[depth - 1u][2];
-            if (b[3] > stack[depth - 1u][3]) b[3] = stack[depth - 1u][3];
-        }
-        if (b[2] > b[0] && b[3] > b[1]) memcpy(visible[i], b, sizeof(b));
-    }
-    return visible;
+/* Whether a command shows anything: not a scissor, and its clip (its bounds
+   inside every scissor around it) is not empty. */
+static bool command_shows(const NkUiDrawCmd *cmd) {
+    return cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
+           cmd->clip[2] > cmd->clip[0] && cmd->clip[3] > cmd->clip[1];
 }
 
 static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
     NkUi *ui = NULL;
     const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
-    int (*visible)[4] = draw != NULL ? visible_bounds(draw) : NULL;
-    bool inside = draw != NULL && visible != NULL;
+    bool inside = draw != NULL;
     for (uint32_t i = 0u; inside && i < draw->ncmd; ++i) {
-        const int *shown = visible[i];
-        if (shown[2] <= shown[0]) continue;
+        const int *shown = draw->cmd[i].clip;
+        if (!command_shows(&draw->cmd[i])) continue;
         /* Every box and run is on screen: a page that runs off the bottom
            pushes the prompt bar (or its own buttons) out of the window. What a
            scroll container clips away is not on screen. */
@@ -1733,16 +1703,15 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
         for (uint32_t j = i + 1u; j < draw->ncmd; ++j) {
             const NkUiDrawCmd *other = &draw->cmd[j];
-            const int *over = visible[j];
+            const int *over = other->clip;
             if ((other->kind == NK_UI_DRAW_TEXT || other->kind == NK_UI_DRAW_RECTANGLE) &&
-                over[2] > over[0] && shown[0] < over[2] && over[0] < shown[2] &&
+                command_shows(other) && shown[0] < over[2] && over[0] < shown[2] &&
                 shown[1] < over[3] && over[1] < shown[3]) {
                 inside = false;
             }
         }
     }
     if (dump != NULL && ui != NULL) (void)nk_ui_dump(ui, dump, cap);
-    free(visible);
     nk_ui_destroy(ui);
     return inside;
 }
@@ -1750,19 +1719,17 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
 /* Whether a text run containing `needle` shows in this draw list: drawn, and
    not clipped away by a scroll container. */
 static bool draw_shows(const NkUiDrawList *draw, const char *needle) {
-    int (*visible)[4] = draw != NULL ? visible_bounds(draw) : NULL;
     size_t needle_length = strlen(needle);
     bool shows = false;
-    for (uint32_t i = 0u; visible != NULL && i < draw->ncmd && !shows; ++i) {
+    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd && !shows; ++i) {
         const NkUiTextRun *run = (const NkUiTextRun *)draw->cmd[i].custom;
-        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT || run == NULL || visible[i][2] <= visible[i][0]) {
+        if (draw->cmd[i].kind != NK_UI_DRAW_TEXT || run == NULL || !command_shows(&draw->cmd[i])) {
             continue;
         }
         for (size_t at = 0u; at + needle_length <= run->length && !shows; ++at) {
             shows = memcmp(run->text + at, needle, needle_length) == 0;
         }
     }
-    free(visible);
     return shows;
 }
 

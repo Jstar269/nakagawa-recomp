@@ -11,7 +11,9 @@ bool nk_ui_vk_available(void);
 
 /* Draws one frame's list from nk_ui_end(). Returns true when the list was drawn.
    C3a ships a stub that draws nothing and returns false; C3c supplies the Vulkan
-   implementation behind this declaration. */
+   implementation behind this declaration. It clips every command to its clip
+   rect (vkCmdSetScissor), which already folds in the nested scissors the
+   SDL_Renderer backend applies, so the two backends clip alike. */
 bool nk_ui_vk_render(NkUiVk *vk, const NkUiDrawList *list);
 
 #endif /* NK_UI_BACKEND_VK_H */
