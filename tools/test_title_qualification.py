@@ -68,6 +68,35 @@ def _public_manifest() -> dict:
 
 
 class BuildEvidenceTests(unittest.TestCase):
+    def test_rebuild_records_evidence_and_replaces_stale_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "build"
+            artifact = tq.staged_executable(root, TITLE_ID)
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"stale")
+            player = root / "player"
+            player.write_bytes(b"player")
+            args = tq.build_parser().parse_args([
+                "--build-root", str(root), "build-smoke", "--player", str(player)])
+
+            def compile_fixture(*args, **kwargs):
+                self.assertFalse(artifact.exists())
+                artifact.write_bytes(b"fresh")
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(tq.subprocess, "check_output", return_value="a" * 40), \
+                    mock.patch.object(tq.subprocess, "run", side_effect=compile_fixture), \
+                    mock.patch.object(tq, "compiler_identity", return_value="gcc:" + "b" * 64), \
+                    mock.patch.object(tq, "run_player", return_value=(0, _pass_output(), False, 1)):
+                self.assertEqual(tq.cmd_build_smoke(args), 0)
+            report = json.loads((root / TITLE_ID / "title-qualification" / tq.REPORT_NAME).read_text())
+            self.assertEqual(report["build_evidence"]["source_revision"], "a" * 40)
+            self.assertEqual(report["build_evidence"]["command"], "make -B display-smoke player")
+            self.assertEqual(report["build_evidence"]["compiler_identity"], "gcc:" + "b" * 64)
+            self.assertEqual(report["build_evidence"]["compile_result"], "PASS")
+            self.assertEqual(report["stages"]["compile"]["status"], "PASS")
+            tq.verify_build_evidence(report, root)
+
     def test_missing_and_tampered_evidence_are_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
