@@ -1145,6 +1145,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->master_volume = 80;
     settings->reduce_motion = false;
     settings->ui_sounds = false;
+    settings->library_sort = PLAYER_LIBRARY_SORT_PLAYED;
     settings->launcher_window_maximized = false;
     settings->launcher_window_position_valid = false;
     settings->launcher_window_x = 0;
@@ -1177,6 +1178,10 @@ static bool fps_cap_valid(int cap) {
 
 /* Persisted by name, so the file reads plainly and a renumbering cannot change a choice. */
 static const char *const kPresentScalingNames[] = { "sharp", "integer", "bilinear" };
+
+/* The saved names of the library sorts, in PlayerLibrarySort order. */
+static const char *const kLibrarySortKeys[PLAYER_LIBRARY_SORT_COUNT] = {"played", "name",
+                                                                        "added"};
 
 static bool present_scaling_valid(int scaling) {
     return scaling == NK_PRESENT_SCALING_SHARP || scaling == NK_PRESENT_SCALING_INTEGER ||
@@ -1400,6 +1405,16 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
                  picker_folder);
     }
 
+    {
+        /* A sort this build does not know keeps the default. */
+        const char *sort = nk_json_get_string(nk_json_obj_get(root, "library_sort"));
+        for (int i = 0; sort && i < PLAYER_LIBRARY_SORT_COUNT; ++i) {
+            if (strcmp(sort, kLibrarySortKeys[i]) == 0) {
+                app->settings.library_sort = (PlayerLibrarySort)i;
+            }
+        }
+    }
+
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
     bool sounds_val = false;
     if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
@@ -1552,6 +1567,10 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
             app->settings.experimental_60hz ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
+    fprintf(f, "  \"library_sort\": \"%s\",\n",
+            kLibrarySortKeys[(int)app->settings.library_sort >= 0 &&
+                                     app->settings.library_sort < PLAYER_LIBRARY_SORT_COUNT
+                                 ? app->settings.library_sort : PLAYER_LIBRARY_SORT_PLAYED]);
     fprintf(f, "  \"share_system_libraries\": %s,\n",
             app->settings.share_system_libraries ? "true" : "false");
     fprintf(f, "  \"check_updates_at_start\": %s,\n",
@@ -1981,6 +2000,21 @@ void player_app_toggle_reduce_motion(PlayerApp *app) {
     if (!app) return;
     app->settings.reduce_motion = !app->settings.reduce_motion;
     maybe_persist_settings(app);
+}
+
+void player_app_cycle_library_sort(PlayerApp *app) {
+    if (!app) return;
+    app->settings.library_sort =
+        (PlayerLibrarySort)(((int)app->settings.library_sort + 1) % PLAYER_LIBRARY_SORT_COUNT);
+    maybe_persist_settings(app);
+}
+
+const char *player_library_sort_label(PlayerLibrarySort sort) {
+    switch (sort) {
+        case PLAYER_LIBRARY_SORT_NAME: return "Name A to Z";
+        case PLAYER_LIBRARY_SORT_ADDED: return "Recently added";
+        default: return "Recently played";
+    }
 }
 
 void player_app_toggle_ui_sounds(PlayerApp *app) {

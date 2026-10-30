@@ -177,6 +177,14 @@ typedef enum {
     NK_NETWORK_MODE_OFFLINE = 0
 } NkNetworkMode;
 
+/* The order of the library's grid. Saved as "played", "name" or "added". */
+typedef enum {
+    PLAYER_LIBRARY_SORT_PLAYED = 0,  /* most recently played first; never played last */
+    PLAYER_LIBRARY_SORT_NAME,        /* by name, A to Z */
+    PLAYER_LIBRARY_SORT_ADDED,       /* most recently added first */
+    PLAYER_LIBRARY_SORT_COUNT
+} PlayerLibrarySort;
+
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
@@ -187,6 +195,7 @@ typedef struct {
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
+    PlayerLibrarySort library_sort;
     bool launcher_window_maximized;
     bool launcher_window_position_valid;
     int launcher_window_x;
@@ -984,6 +993,11 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+/* The library's sort: Recently played, Name A to Z, Recently added, and round
+ * again. The change is saved. */
+void player_app_cycle_library_sort(PlayerApp *app);
+/* "Recently played", "Name A to Z" or "Recently added". */
+const char *player_library_sort_label(PlayerLibrarySort sort);
 void player_app_toggle_experimental_60hz(PlayerApp *app);
 void player_app_set_experimental_60hz(PlayerApp *app, bool on);
 /* A session-only opt-in (the --experimental-60hz flag): unlike the setter above it

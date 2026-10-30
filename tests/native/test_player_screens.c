@@ -600,6 +600,9 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         library.titles = k_titles;
         library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
         library.page_label = "Page 1 of 2";
+        /* The fullest heading: the update notice, the longest sort and the pager. */
+        library.update_notice = "Version 0.0.2 is out";
+        library.sort_label = "Recently played";
         return player_ui_screen_library(ui, &library);
     }
     if (which == FLOW_PAGE_TITLE) {
@@ -1030,6 +1033,51 @@ static const char *library_frame_dump(NkUi *ui, const PlayerUiLibraryModel *mode
     return dump;
 }
 
+/* The library's SORT button names the sort and asks for the next one; there
+   is none without games or without a sort. */
+static void test_library_sort_button(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    const char *dump;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the sort button");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1280.0f, 800.0f, &model.columns);
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "SORT:") == NULL, "no sort, no SORT button");
+    model.sort_label = "Recently played";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"SORT: RECENTLY PLAYED\"") != NULL,
+          "the SORT button names the sort");
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_SORT);
+    {
+        NkUiEvent activate;
+        memset(&activate, 0, sizeof(activate));
+        activate.type = NK_UI_EV_ACTIVATE;
+        activate.down = true;
+        nk_ui_push_event(ui, &activate);
+    }
+    (void)library_frame_dump(ui, &model, &action);
+    CHECK(action.kind == PLAYER_UI_ACTION_CYCLE_SORT, "SORT asks for the next sort");
+    model.titles = NULL;
+    model.title_count = 0u;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "SORT:") == NULL, "an empty library has no SORT button");
+    nk_ui_destroy(ui);
+}
+
 static void push_nav(NkUi *ui, NkUiNavDir dir) {
     NkUiEvent move;
     memset(&move, 0, sizeof(move));
@@ -1065,12 +1113,31 @@ static void test_library_demos(void) {
                   0u &&
               player_ui_library_demo_count(NULL, 3u) == 0u,
           "the Library counts the demos that come with Nakagawa");
-    CHECK(player_ui_library_grid_position(k_demo_titles, demo_count, 1u) == 0u &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 3u) == 1u &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 0u) == demo_count &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 2u) == demo_count &&
-              player_ui_library_grid_position(k_demo_titles, demo_count, 9u) == demo_count,
-          "a game's grid position skips the demos, and a demo has none");
+    {
+        PlayerUiLibraryModel grid;
+        static const size_t sorted[] = {3u, 1u};
+        memset(&grid, 0, sizeof(grid));
+        grid.titles = k_demo_titles;
+        grid.title_count = demo_count;
+        CHECK(player_ui_library_grid_count(&grid) == 2u &&
+                  player_ui_library_grid_position(&grid, 1u) == 0u &&
+                  player_ui_library_grid_position(&grid, 3u) == 1u &&
+                  player_ui_library_grid_position(&grid, 0u) == demo_count &&
+                  player_ui_library_grid_position(&grid, 2u) == demo_count &&
+                  player_ui_library_grid_position(&grid, 9u) == demo_count &&
+                  player_ui_library_grid_title(&grid, 1u) == 3u &&
+                  player_ui_library_grid_title(&grid, 2u) == demo_count,
+              "without an order, a game's grid position skips the demos, and a demo has none");
+        grid.grid = sorted;
+        grid.grid_count = 2u;
+        CHECK(player_ui_library_grid_count(&grid) == 2u &&
+                  player_ui_library_grid_title(&grid, 0u) == 3u &&
+                  player_ui_library_grid_title(&grid, 1u) == 1u &&
+                  player_ui_library_grid_position(&grid, 3u) == 0u &&
+                  player_ui_library_grid_position(&grid, 1u) == 1u &&
+                  player_ui_library_grid_position(&grid, 0u) == demo_count,
+              "the grid follows the model's sort order");
+    }
     CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 0u, &columns) == 8u &&
               columns == 4u,
           "without demos a 1280x800 window keeps two rows of four cards");
@@ -3772,6 +3839,7 @@ int main(int argc, char **argv) {
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();
     test_library_demos();
+    test_library_sort_button();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

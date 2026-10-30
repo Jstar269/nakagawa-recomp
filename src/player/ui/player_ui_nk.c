@@ -15,6 +15,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,6 +90,9 @@ struct PlayerUiNk {
     NkUiViewport viewport;
     size_t library_page;
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
+    /* The library grid in its sort order: indices into titles, no demos. */
+    size_t library_grid[PLAYER_UI_TITLE_CAP];
+    size_t library_grid_count;
     char status_text[PLAYER_UI_TITLE_CAP][256];
     char library_page_label[64];
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
@@ -1720,36 +1724,89 @@ static void player_ui_title_art(PlayerUiNk *player, const PlayerApp *app, size_t
 #endif
 }
 
-/* The title at grid position `position` (counting titles that are not demos),
-   or `count` when the position holds no title. */
-static size_t player_ui_library_title_at(const PlayerUiTitle *titles, size_t count,
-                                         size_t position) {
-    for (size_t i = 0u; i < count; ++i) {
-        if (titles[i].is_demo) continue;
-        if (position == 0u) return i;
-        --position;
+/* Sorts the library grid: the user's games (not the demos) in the order the
+   settings ask for. */
+static const PlayerApp *g_sort_app;
+
+/* "YYYY-MM-DD HH:MM" when the game was played, as player_state stamps it, or
+   NULL for "Never" and older records. */
+static const char *player_ui_played_at(const GameRecord *game) {
+    return game->last_played[0] >= '0' && game->last_played[0] <= '9' ? game->last_played : NULL;
+}
+
+/* By name, ignoring ASCII case, then by disc id, so the order is stable. */
+static int player_ui_compare_name(const void *a, const void *b) {
+    const GameRecord *x = &g_sort_app->games[*(const size_t *)a];
+    const GameRecord *y = &g_sort_app->games[*(const size_t *)b];
+    const unsigned char *p = (const unsigned char *)x->title_name;
+    const unsigned char *q = (const unsigned char *)y->title_name;
+    while (*p != '\0' && tolower(*p) == tolower(*q)) {
+        ++p;
+        ++q;
     }
-    return count;
+    if (tolower(*p) != tolower(*q)) return tolower(*p) < tolower(*q) ? -1 : 1;
+    return strcmp(x->disc_id, y->disc_id);
+}
+
+/* The most recently played first (the stamp sorts as text); games never
+   played after them, in the order they were added, as the library was shown
+   before it had a sort. */
+static int player_ui_compare_played(const void *a, const void *b) {
+    size_t i = *(const size_t *)a;
+    size_t j = *(const size_t *)b;
+    const char *x = player_ui_played_at(&g_sort_app->games[i]);
+    const char *y = player_ui_played_at(&g_sort_app->games[j]);
+    if (x != NULL && y != NULL && strcmp(x, y) != 0) return strcmp(y, x);
+    if ((x == NULL) != (y == NULL)) return x == NULL ? 1 : -1;
+    return i < j ? -1 : i > j ? 1 : 0;
+}
+
+/* The library keeps games in the order they were added: the last added first. */
+static int player_ui_compare_added(const void *a, const void *b) {
+    size_t x = *(const size_t *)a;
+    size_t y = *(const size_t *)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+static void player_ui_library_order(PlayerUiNk *player, const PlayerApp *app, size_t count) {
+    size_t n = 0u;
+    for (size_t i = 0u; i < count; ++i) {
+        if (!player->titles[i].is_demo) player->library_grid[n++] = i;
+    }
+    player->library_grid_count = n;
+    g_sort_app = app;
+    qsort(player->library_grid, n, sizeof(player->library_grid[0]),
+          app->settings.library_sort == PLAYER_LIBRARY_SORT_NAME ? player_ui_compare_name
+          : app->settings.library_sort == PLAYER_LIBRARY_SORT_ADDED ? player_ui_compare_added
+          : player_ui_compare_played);
+    g_sort_app = NULL;
+}
+
+/* The library's titles and grid, for the grid helpers. */
+static PlayerUiLibraryModel player_ui_library_view(const PlayerUiNk *player, size_t count) {
+    PlayerUiLibraryModel view;
+    memset(&view, 0, sizeof(view));
+    view.titles = player->titles;
+    view.title_count = count;
+    view.grid = player->library_grid;
+    view.grid_count = player->library_grid_count;
+    return view;
 }
 
 /* The disc art of the games on the library page shown: grid positions
-   [page * page_size, (page + 1) * page_size), counting the titles that are not
-   demos, as the library screen lays them out. */
+   [page * page_size, (page + 1) * page_size), as the library screen lays
+   them out. Every page shows the demos. */
 static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
                                        size_t count, size_t page, size_t page_size) {
     size_t first;
-    size_t position = 0u;
     if (page_size == 0u || page > SIZE_MAX / page_size) return;
     first = page * page_size;
     for (size_t i = 0u; i < count; ++i) {
-        if (player->titles[i].is_demo) {
-            player_ui_note_shown(player, i);  /* every page shows the demos */
-            continue;
-        }
-        if (position >= first && position < first + page_size) {
-            player_ui_title_art(player, app, i, false);
-        }
-        ++position;
+        if (player->titles[i].is_demo) player_ui_note_shown(player, i);
+    }
+    for (size_t position = first;
+         position < player->library_grid_count && position - first < page_size; ++position) {
+        player_ui_title_art(player, app, player->library_grid[position], false);
     }
 }
 
@@ -1767,10 +1824,11 @@ static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
 static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t page_size,
                                         size_t slots, size_t page) {
     NkUiId focused = nk_ui_focused(player->ui);
+    PlayerUiLibraryModel view = player_ui_library_view(player, count);
     size_t index = player_ui_focused_title_index(focused, count);
     size_t slot = SIZE_MAX;
     if (index < count) {
-        size_t position = player_ui_library_grid_position(player->titles, count, index);
+        size_t position = player_ui_library_grid_position(&view, index);
         if (position < count) slot = position % page_size;
     } else if (focused == PLAYER_UI_ID_LIBRARY_ADD) {
         slot = (slots - 1u) % page_size;
@@ -1779,8 +1837,7 @@ static void player_ui_library_turn_page(PlayerUiNk *player, size_t count, size_t
     if (slot != SIZE_MAX) {
         size_t position = page * page_size + slot;
         if (position >= slots) position = slots - 1u;
-        index = position + 1u < slots
-            ? player_ui_library_title_at(player->titles, count, position) : count;
+        index = position + 1u < slots ? player_ui_library_grid_title(&view, position) : count;
         nk_ui_focus(player->ui, index < count ? PLAYER_UI_ID_LIBRARY_ITEM(index)
                                               : PLAYER_UI_ID_LIBRARY_ADD);
     }
@@ -1910,12 +1967,15 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         size_t demo_count;
         size_t games;
         size_t slots;
+        PlayerUiLibraryModel view;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
         player_ui_fill_titles(player, app, count);
+        player_ui_library_order(player, app, count);
+        view = player_ui_library_view(player, count);
         /* The grid holds the user's games and ends with the add card, so it has
            one slot more than games; the demos sit under it, under TEST THIS PC. */
         demo_count = player_ui_library_demo_count(player->titles, count);
-        games = count - demo_count;
+        games = player->library_grid_count;
         page_size = player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
                                                            demo_count, &columns);
         slots = games > 0u ? games + 1u : 0u;
@@ -1923,8 +1983,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             size_t focused_index = player_ui_focused_title_index(
                 nk_ui_focused(player->ui), count);
             if (focused_index < count) {
-                size_t position = player_ui_library_grid_position(player->titles, count,
-                                                                  focused_index);
+                size_t position = player_ui_library_grid_position(&view, focused_index);
                 app->selected_game_index = (int)focused_index;
                 if (position < count) player->library_page = position / page_size;
             }
@@ -1933,8 +1992,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player->library_page = (slots - 1u) / page_size;
         }
         if (player->library_focus_pending) {
-            size_t position = player_ui_library_grid_position(
-                player->titles, count, player->library_focus_index);
+            size_t position = player_ui_library_grid_position(&view, player->library_focus_index);
             player->library_focus_pending = false;
             if (position < count) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
@@ -1975,7 +2033,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             NkUiNavDir dir = NK_UI_DIR_NONE;
             while (nk_ui_take_event(player->ui, NK_UI_EV_EDGE, &dir)) {
                 size_t position = dir == NK_UI_DIR_DOWN ? games - 1u : 0u;
-                size_t index = player_ui_library_title_at(player->titles, count, position);
+                size_t index = player_ui_library_grid_title(&view, position);
                 if (index >= count) continue;
                 player->library_page = position / page_size;
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(index));
@@ -1983,10 +2041,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             }
         }
         player_ui_library_page_art(player, app, count, player->library_page, page_size);
-        PlayerUiLibraryModel model;
-        memset(&model, 0, sizeof(model));
-        model.titles = player->titles;
-        model.title_count = count;
+        PlayerUiLibraryModel model = view;
+        model.sort_label = player_library_sort_label(app->settings.library_sort);
         model.page_index = player->library_page;
         model.page_size = page_size;
         model.columns = columns;
@@ -2023,6 +2079,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             if ((player->library_page + 1u) * page_size < slots) {
                 ++player->library_page;
             }
+            action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SORT) {
+            /* The next frame lays the grid out in the new order, from its
+               first page; focus stays on the button. */
+            player_app_cycle_library_sort(app);
+            player->library_page = 0u;
             action.kind = PLAYER_UI_ACTION_NONE;
         }
     } else if (route == PLAYER_UI_ROUTE_TITLE) {

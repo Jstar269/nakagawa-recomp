@@ -4452,6 +4452,19 @@ int main(int argc, char **argv) {
     player_app_toggle_reduce_motion(settings);
     assert(settings->settings.reduce_motion == false);
 
+    /* The library's sort: Recently played first, then Name A to Z, Recently
+       added, and round again. */
+    assert(settings->settings.library_sort == PLAYER_LIBRARY_SORT_PLAYED);
+    assert(strcmp(player_library_sort_label(PLAYER_LIBRARY_SORT_PLAYED), "Recently played") == 0);
+    player_app_cycle_library_sort(settings);
+    assert(settings->settings.library_sort == PLAYER_LIBRARY_SORT_NAME);
+    assert(strcmp(player_library_sort_label(settings->settings.library_sort), "Name A to Z") == 0);
+    player_app_cycle_library_sort(settings);
+    assert(settings->settings.library_sort == PLAYER_LIBRARY_SORT_ADDED);
+    assert(strcmp(player_library_sort_label(settings->settings.library_sort), "Recently added") == 0);
+    player_app_cycle_library_sort(settings);
+    assert(settings->settings.library_sort == PLAYER_LIBRARY_SORT_PLAYED);
+
     assert(settings->settings.experimental_60hz == false);
     player_app_toggle_experimental_60hz(settings);
     assert(settings->settings.experimental_60hz == true);
@@ -6435,6 +6448,26 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.reduce_motion == true);
         assert(s_app2->settings.share_system_libraries == false);
         assert(s_app2->settings.master_volume == 55);
+        assert(s_app2->settings.library_sort == PLAYER_LIBRARY_SORT_PLAYED);
+        /* The sort is saved by name; a name this build does not know keeps the default. */
+        s_app2->settings.library_sort = PLAYER_LIBRARY_SORT_NAME;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            PlayerApp *sorted = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+            char *saved = read_text_file(test_settings_path);
+            assert(sorted != NULL && saved != NULL);
+            assert(strstr(saved, "\"library_sort\": \"name\",") != NULL);
+            free(saved);
+            assert(player_app_load_settings(sorted, test_settings_path) == NK_OK);
+            assert(sorted->settings.library_sort == PLAYER_LIBRARY_SORT_NAME);
+            write_text_file(test_settings_path,
+                            "{\"schema_version\": 2, \"library_sort\": \"rating\"}");
+            assert(player_app_load_settings(sorted, test_settings_path) == NK_OK);
+            assert(sorted->settings.library_sort == PLAYER_LIBRARY_SORT_PLAYED);
+            free(sorted);
+        }
+        s_app2->settings.library_sort = PLAYER_LIBRARY_SORT_PLAYED;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.launcher_window_maximized == true);
         assert(s_app2->settings.launcher_window_position_valid == true);
         assert(s_app2->settings.launcher_window_x == -1600);

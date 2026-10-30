@@ -114,7 +114,8 @@ typedef enum {
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
                                           op, .title_index the PSP control it rebinds */
     PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
-    PLAYER_UI_ACTION_CHECK_INPUT_AGAIN /* the title page checks its files again (#308) */
+    PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
+    PLAYER_UI_ACTION_CYCLE_SORT         /* the library's next sort */
 } PlayerUiActionKind;
 
 typedef struct {
@@ -197,6 +198,12 @@ typedef struct {
     /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
        opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
     const char *update_notice;
+    /* The grid of the user's games, in order: title indices, none a demo. NULL
+       shows every title that is not a demo, in the order of `titles`. */
+    const size_t *grid;
+    size_t grid_count;
+    /* The sort on the SORT button ("Recently played"), or NULL for no button. */
+    const char *sort_label;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -653,6 +660,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_PAGE_PREVIOUS = 0x1003u,
     PLAYER_UI_ID_LIBRARY_PAGE_NEXT = 0x1004u,
     PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD = 0x1005u,
+    PLAYER_UI_ID_LIBRARY_SORT = 0x1006u,
     PLAYER_UI_ID_BUILD_ACTION = 0x4001u,
     PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
     PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
@@ -779,10 +787,12 @@ size_t player_ui_library_page_size_with_demos(float logical_width, float logical
                                               size_t demo_count, size_t *columns_out);
 /* How many titles are demos (PlayerUiTitle.is_demo). */
 size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
-/* Where title `index` sits in the grid of the user's games (titles that are
-   not demos), from 0; `count` for a demo or an index out of range. */
-size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
-                                       size_t index);
+/* The grid of the user's games, as the model orders it: how many it holds, the
+   title at a position, and the position of a title. A position or index with
+   no match gives model->title_count. */
+size_t player_ui_library_grid_count(const PlayerUiLibraryModel *model);
+size_t player_ui_library_grid_title(const PlayerUiLibraryModel *model, size_t position);
+size_t player_ui_library_grid_position(const PlayerUiLibraryModel *model, size_t index);
 
 PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);

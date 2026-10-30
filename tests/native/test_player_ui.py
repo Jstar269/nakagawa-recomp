@@ -858,6 +858,7 @@ class NativePlayerUiTests(unittest.TestCase):
         timeout: float | None = None,
         library_titles: int = 0,
         dedicated_data_root: bool = False,
+        settings: dict[str, object] | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1046,6 +1047,13 @@ class NativePlayerUiTests(unittest.TestCase):
                     else userprofile / "data" / "nakagawa-recomp",
                     library_titles,
                 )
+            if settings is not None:
+                # A settings.json saved before this run, where the player reads it.
+                config = (localappdata / "Nakagawa" / "config" if os.name == "nt"
+                          else userprofile / "config" / "nakagawa-recomp")
+                config.mkdir(parents=True, exist_ok=True)
+                (config / "settings.json").write_text(
+                    json.dumps({"schema_version": 2, **settings}), encoding="utf-8")
             if stale_package:
                 synthetic_stale_package(runtime_root)
             if incompatible_package:
@@ -1413,6 +1421,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn("39", selected, "End reaches the last game")
         self.assertEqual(selected[-1], "0", "Home comes back to the first game")
         self.assertLess(selected.index("39"), len(selected) - 1)
+
+    def test_next_ui_library_follows_the_saved_sort(self) -> None:
+        """The library's grid follows the saved sort: Recently added puts the last
+        game added first, where the first focus lands."""
+        added = self.run_player("library", ("WAIT_MS=1000",), library_titles=12,
+                                settings={"library_sort": "added"}, timeout=120.0)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in added["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = added["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["selected"], "11", "the last game added is first")
+        played = self.run_player("library", ("WAIT_MS=1000",), library_titles=12,
+                                 timeout=120.0)
+        frames = played["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["selected"], "0",
+                         "with nothing played yet, Recently played keeps the library's order")
 
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.

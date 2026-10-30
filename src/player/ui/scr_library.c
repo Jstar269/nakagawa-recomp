@@ -164,25 +164,41 @@ size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count) {
     return demos;
 }
 
-size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
-                                       size_t index) {
-    size_t position = 0u;
-    if (titles == NULL || index >= count || titles[index].is_demo) return count;
-    for (size_t i = 0u; i < index; ++i) {
-        if (!titles[i].is_demo) ++position;
-    }
-    return position;
+size_t player_ui_library_grid_count(const PlayerUiLibraryModel *model) {
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (model->grid != NULL) return model->grid_count;
+    return model->title_count - player_ui_library_demo_count(model->titles, model->title_count);
 }
 
-/* The title shown at grid position `position` (the position-th title that is
-   not a demo), or `count` when there is none. */
-static size_t library_grid_title(const PlayerUiTitle *titles, size_t count, size_t position) {
-    for (size_t i = 0u; titles != NULL && i < count; ++i) {
-        if (titles[i].is_demo) continue;
+size_t player_ui_library_grid_title(const PlayerUiLibraryModel *model, size_t position) {
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (model->grid != NULL) {
+        return position < model->grid_count && model->grid[position] < model->title_count
+            ? model->grid[position] : model->title_count;
+    }
+    for (size_t i = 0u; i < model->title_count; ++i) {
+        if (model->titles[i].is_demo) continue;
         if (position == 0u) return i;
         --position;
     }
-    return count;
+    return model->title_count;
+}
+
+size_t player_ui_library_grid_position(const PlayerUiLibraryModel *model, size_t index) {
+    size_t position = 0u;
+    if (model == NULL || model->titles == NULL) return 0u;
+    if (index >= model->title_count) return model->title_count;
+    if (model->grid != NULL) {
+        for (; position < model->grid_count; ++position) {
+            if (model->grid[position] == index) return position;
+        }
+        return model->title_count;
+    }
+    if (model->titles[index].is_demo) return model->title_count;
+    for (size_t i = 0u; i < index; ++i) {
+        if (!model->titles[i].is_demo) ++position;
+    }
+    return position;
 }
 
 static const char *safe_text(const char *text, const char *fallback) {
@@ -422,7 +438,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
        apart, under TEST THIS PC. */
     demo_count = model->titles != NULL
         ? player_ui_library_demo_count(model->titles, model->title_count) : 0u;
-    game_count = model->titles != NULL ? model->title_count - demo_count : 0u;
+    game_count = player_ui_library_grid_count(model);
     has_games = game_count > 0u;
 
     (void)nk_ui_waves_element(ui, LIBRARY_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
@@ -481,6 +497,14 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 }
             }
             nk_ui_spacer(ui, LIBRARY_ID_HEAD_SPACER, sizing_grow(), sizing_fixed(1.0f));
+            if (has_games && model->sort_label != NULL) {
+                char sort[64];
+                (void)snprintf(sort, sizeof(sort), "Sort: %s", model->sort_label);
+                if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_SORT, sort,
+                                 NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                    result = action(PLAYER_UI_ACTION_CYCLE_SORT, 0u);
+                }
+            }
             /* The check at start found a newer version: one quiet button, never a
                screen of its own. */
             if (model->update_notice != NULL &&
@@ -548,8 +572,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                         size_t index;
                         if (local >= visible) break;
                         index = start + local < game_count
-                            ? library_grid_title(model->titles, model->title_count,
-                                                 start + local)
+                            ? player_ui_library_grid_title(model, start + local)
                             : model->title_count;
                         if (index < model->title_count) {
                             const PlayerUiTitle *title = &model->titles[index];
