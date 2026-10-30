@@ -70,12 +70,11 @@ We aim to respond promptly and will remove material where appropriate.
   `src/rt/minimp3/PROVENANCE.md`. It is statically linked into the runtime through
   the project wrapper `src/rt/mp3_bridge.c` and decodes for `sceMp3`. CC0 asks for no
   notice; it is listed here so the lineage stays discoverable.
-- **Clay v0.14 layout library** — `Zlib` (the upstream `LICENSE.md` calls it
-  the "zlib/libpng license"). The header (upstream plus one documented LOCAL DELTA),
-  complete license, pinned source manifest, and SHA-256 values are recorded under
-  `third_party/clay/`.
-  Clay is compiled into the native layout selftest and the `nk_ui` core library
-  tests only; it is not linked into the player yet.
+- **Clay layout library** (upstream `main` at `e6cc36941ab2`) — `Zlib` (the upstream
+  `LICENSE.md` calls it the "zlib/libpng license"). The header (upstream plus two
+  documented LOCAL DELTAs), complete license, pinned source manifest, and SHA-256
+  values are recorded under `third_party/clay/`. Clay is linked into the native
+  player, where the launcher and the in-game overlay lay out through `nk_ui`.
 - **Portable Snippets `safe-math`** — `CC0-1.0` (public domain dedication). The
   byte-identical header, upstream `COPYING.md`, pinned source manifest, and
   SHA-256 values are under `third_party/portable-snippets/`. It is compiled into
