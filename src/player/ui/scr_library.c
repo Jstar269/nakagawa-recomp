@@ -83,8 +83,16 @@ static PlayerUiAction action(PlayerUiActionKind kind, size_t title_index) {
     return result;
 }
 
+/* The library's side margin. Past LIBRARY_MAX_WIDTH of content the margins
+   grow, so a wide window centres the heading, the grid and TEST THIS PC in one
+   column, as Settings centres its cards, instead of leaving them at the left
+   edge with the rest of the window empty. */
+#define LIBRARY_MAX_WIDTH 1600.0f
+
 static float library_gutter(float width) {
-    return width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER;
+    float gutter = width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER;
+    float centred = (float)(int)((width - LIBRARY_MAX_WIDTH) * 0.5f);
+    return centred > gutter ? centred : gutter;
 }
 
 static float library_tile_width(float width, size_t columns) {

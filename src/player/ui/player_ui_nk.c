@@ -432,7 +432,7 @@ static uint32_t player_ui_check_rgba(const NkUiTheme *theme, const PlayerPreflig
 
 static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
                                 const PlayerPreflightCheck *check) {
-    row->code = player_preflight_label(check);
+    row->name = player_preflight_label(check);
     row->message = player_preflight_plain_message(check);
     row->status = player_preflight_status_word(check);
     row->rgba = player_ui_check_rgba(theme, check);
@@ -659,7 +659,7 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
                    model.checks[i].status,
                    model.checks[i].rgba == theme->error ? "error"
                        : model.checks[i].rgba == theme->ready ? "ready" : "warning",
-                   model.checks[i].code, model.checks[i].message);
+                   model.checks[i].name, model.checks[i].message);
         }
         fflush(stdout);
     }

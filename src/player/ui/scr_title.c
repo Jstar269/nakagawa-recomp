@@ -1687,7 +1687,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                         }
                         cell.width = sizing_fixed(150.0f);
                         if (nk_ui_begin_container(ui, base + 2u, &cell, NULL)) {
-                            nk_ui_text_role(ui, base + 5u, safe_text(check->code, ""),
+                            nk_ui_text_role(ui, base + 5u, safe_text(check->name, ""),
                                             NK_UI_TYPE_DATA, theme->paper);
                             nk_ui_end_container(ui);
                         }
@@ -1925,7 +1925,7 @@ static void disc_rows(NkUi *ui, const PlayerUiDiscModel *model, float inner, int
             cell.width = sizing_fixed(124.0f);
             cell.padding_top = 0.0f;
             if (nk_ui_begin_container(ui, base + 2u, &cell, NULL)) {
-                nk_ui_text_role(ui, base + 5u, safe_text(check->code, "Check"), NK_UI_TYPE_BODY_S,
+                nk_ui_text_role(ui, base + 5u, safe_text(check->name, "Check"), NK_UI_TYPE_BODY_S,
                                 theme->paper);
                 nk_ui_end_container(ui);
             }

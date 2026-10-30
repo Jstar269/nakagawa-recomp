@@ -516,12 +516,13 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.supported = which == FLOW_WIZ_VERIFY;
             wizard.experimental = which == FLOW_WIZ_EXPERIMENTAL;
             wizard.extraction_complete = which == FLOW_WIZ_VERIFY;
-            wizard.checks[0] = (PlayerUiCheckRow){"OK", "DISC_IDENTITY",
+            /* As player_ui_nk fills them: plain names and status words. */
+            wizard.checks[0] = (PlayerUiCheckRow){"Ready", "Disc",
                                                   "The disc ID matches a catalog entry.",
                                                   0x2DD4BFFFu};
-            wizard.checks[1] = (PlayerUiCheckRow){"OK", "ASSETS_STAGED",
+            wizard.checks[1] = (PlayerUiCheckRow){"Ready", "Game program",
                                                   "96 files staged locally.", 0x2DD4BFFFu};
-            wizard.checks[2] = (PlayerUiCheckRow){"Missing", "RUNTIME_PACKAGE",
+            wizard.checks[2] = (PlayerUiCheckRow){"Not built yet", "Game build",
                                                   "Build the package from the library.",
                                                   0xDBB024FFu};
             wizard.check_count = 3u;
@@ -1028,6 +1029,41 @@ static const char *library_frame_dump(NkUi *ui, const PlayerUiLibraryModel *mode
     if (nk_ui_end(ui) == NULL) return "";
     (void)nk_ui_dump(ui, dump, sizeof(dump));
     return dump;
+}
+
+/* A wide window centres the library in a column of at most 1600 px: at
+   1920 x 1080 the six columns run from x 160 to 1760; at 1280 nothing moves. */
+static void test_library_centres_in_a_wide_window(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = {1920, 1080, 1.0f, 0, 100, 1280.0f, 720.0f};
+    const char *dump;
+    int x0 = 0;
+    int x1 = 0;
+    int last_x0 = 0;
+    int last_x1 = 0;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the wide library");
+    if (ui == NULL) return;
+    nk_ui_set_viewport(ui, &viewport);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1920.0f, 1080.0f, &model.columns);
+    model.logical_width = 1920.0f;
+    model.logical_height = 1080.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(model.columns == 6u, "a 1920 px window still shows six columns");
+    CHECK(dump_row_x_extent(dump, PLAYER_UI_ID_LIBRARY_ITEM(0u), &x0, &x1) &&
+              dump_row_x_extent(dump, PLAYER_UI_ID_LIBRARY_ITEM(5u), &last_x0, &last_x1) &&
+              x0 == 160 && last_x1 == 1760,
+          "the grid is centred in a 1600 px column");
+    nk_ui_destroy(ui);
 }
 
 static void push_nav(NkUi *ui, NkUiNavDir dir) {
@@ -1784,7 +1820,7 @@ static void test_disc_cards(void) {
         for (size_t row = 0u; row < sizeof(k_disc_rows_ready) / sizeof(k_disc_rows_ready[0]);
              ++row) {
             char quoted[192];
-            snprintf(quoted, sizeof(quoted), "\"%s\"", rows[row].code);
+            snprintf(quoted, sizeof(quoted), "\"%s\"", rows[row].name);
             CHECK(strstr(dump, quoted) != NULL, "every check row is named");
             /* A long sentence wraps, so its start is what the dump has whole. */
             snprintf(quoted, sizeof(quoted), "\"%.24s", rows[row].message);
@@ -3485,6 +3521,18 @@ static void test_remove_from_library(void) {
     nk_ui_destroy(ui);
 }
 
+/* Whether the dump has a step chip naming `step` ("5  READY" or a check mark
+   then "READY"), as opposed to a text that is the word alone, such as a check's
+   "READY" status. */
+static bool dump_has_step_chip(const char *dump, const char *step) {
+    char needle[32];
+    (void)snprintf(needle, sizeof(needle), "%s\"", step);
+    for (const char *at = strstr(dump, needle); at != NULL; at = strstr(at + 1, needle)) {
+        if (at > dump && at[-1] != '"') return true;
+    }
+    return false;
+}
+
 /* The walkthrough: the wizard's chips promised Fonts and Ready steps that a
    first run never shows (copying the files ends on the library card). Every
    step a first run shows names only the steps on that route. */
@@ -3494,7 +3542,7 @@ static void test_wizard_steps_match_the_route(void) {
                                      FLOW_WIZ_VERIFY, FLOW_WIZ_COPYING};
     for (size_t i = 0u; i < sizeof(route) / sizeof(route[0]); ++i) {
         CHECK(dump_flow_case(route[i], dump, sizeof(dump)), "lay out a wizard step");
-        CHECK(strstr(dump, "FONTS\"") == NULL && strstr(dump, "READY\"") == NULL,
+        CHECK(!dump_has_step_chip(dump, "FONTS") && !dump_has_step_chip(dump, "READY"),
               "no Fonts or Ready chip promises a step the first run never shows");
         CHECK(strstr(dump, "WELCOME\"") != NULL && strstr(dump, "OPTIONS\"") != NULL &&
                   strstr(dump, "GAME\"") != NULL && strstr(dump, "VERIFY\"") != NULL,
@@ -3772,6 +3820,7 @@ int main(int argc, char **argv) {
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();
     test_library_demos();
+    test_library_centres_in_a_wide_window();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),
