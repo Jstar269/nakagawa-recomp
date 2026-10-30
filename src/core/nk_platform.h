@@ -63,6 +63,13 @@ bool nk_platform_path_missing(const char *path);
  * Returns false when dir cannot be opened. */
 typedef bool (*NkDirFileFn)(const char *name, void *ctx);
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
+/* Call fn(name, is_dir, ctx) for each regular file and each directory directly
+ * inside dir (names in UTF-8, unsorted, hidden names included; "." and ".." are
+ * not entries). A symlink, junction or other reparse point is neither and is
+ * skipped, so a walk built on this never leaves the tree it starts in. Stops
+ * early when fn returns false. Returns false when dir cannot be opened. */
+typedef bool (*NkDirEntryFn)(const char *name, bool is_dir, void *ctx);
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx);
 /* The bytes of every regular file under path (path itself when it is a file),
  * without following a symlink, junction or other reparse point: one counts as
  * nothing. A top-level child of path named skip_child (NULL for none) is left
