@@ -488,13 +488,32 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn((0x00500000, 0x00500100), second)
         self.assertNotIn((0x00400000, 0x00400100), second)
 
-    def test_explicit_span_applies_to_a_rebased_image(self) -> None:
-        rebased = analyze.Elf(str(self.elf), base=REBASED_BASE)
-        ranges = analyze.exec_ranges(rebased, extra_spans=[FOREIGN_SPAN])
+    def test_explicit_span_applies_to_a_fixed_address_image(self) -> None:
+        # The fixture is an ET_EXEC without relocations: a nonzero GAME_BASE leaves it at
+        # its own addresses, which are the guest addresses the span is written in.
+        fixed = analyze.Elf(str(self.elf), base=REBASED_BASE)
+        self.assertIsNone(fixed.reloc)
+        ranges = analyze.exec_ranges(fixed, extra_spans=[FOREIGN_SPAN])
         self.assertIn((PRIMARY_BASE, PRIMARY_BASE + 8), ranges)
         self.assertIn(FOREIGN_SPAN, ranges)
-        _, from_analyze = analyze.analyze(rebased, extra_spans=[FOREIGN_SPAN])
+        _, from_analyze = analyze.analyze(fixed, extra_spans=[FOREIGN_SPAN])
         self.assertEqual(from_analyze, ranges)
+
+    def test_explicit_span_fails_closed_on_a_relocated_image(self) -> None:
+        # A PRX moved to GAME_BASE: a span could have been written against either the
+        # file or the relocated addresses, so the analyzer refuses it.
+        prx = self.root / "relocatable.prx"
+        write_elf(prx, load_addr=0)
+        blob = bytearray(prx.read_bytes())
+        struct.pack_into("<H", blob, 16, 0xFFA0)  # e_type ET_SCE_PRX
+        prx.write_bytes(blob)
+        relocated = analyze.Elf(str(prx), base=REBASED_BASE)
+        self.assertIsNotNone(relocated.reloc)
+        with self.assertRaisesRegex(RuntimeError, "relocated to GAME_BASE"):
+            analyze.exec_ranges(relocated, extra_spans=[FOREIGN_SPAN])
+        with self.assertRaisesRegex(RuntimeError, "relocated to GAME_BASE"):
+            analyze.analyze(relocated, extra_spans=[FOREIGN_SPAN])
+        self.assertNotEqual(analyze.exec_ranges(relocated), [(0, 0)])
 
     # --- span parsing -----------------------------------------------------
 
