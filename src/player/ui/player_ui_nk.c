@@ -421,7 +421,7 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
 }
 
 bool player_ui_nk_in_motion(const PlayerUiNk *player) {
-    return player != NULL && nk_ui_scroll_in_motion(player->ui);
+    return player != NULL && nk_ui_in_motion(player->ui);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {

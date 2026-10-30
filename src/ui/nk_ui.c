@@ -97,6 +97,8 @@ struct NkUi {
     NkUiId scroller_stack[64];
     float wheel_notches;
     bool scroll_moving;
+    bool transitioning;     /* a transition ran in the last frame's layout */
+    uint32_t ring_generation; /* the focus ring's element; a new one cuts to a new page */
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -137,6 +139,9 @@ void nk_ui_clay_set_pointer(void *clay, float x, float y, bool down);
 void nk_ui_clay_scroll_to(void *clay, NkUiId id, float offset);
 bool nk_ui_clay_scroll_state(void *clay, NkUiId id, NkUiScrollState *out);
 bool nk_ui_clay_wheel_scrolls(void *clay);
+bool nk_ui_clay_transitioning(void *clay);
+/* Container `id`, open in this frame, was not in the last frame's layout. */
+bool nk_ui_clay_appeared(void *clay, NkUiId id);
 void nk_ui_clay_set_debug(void *clay, bool enabled);
 float nk_ui_clay_update_scroll(void *clay, const NkUiId *ids, size_t count, float wheel_px,
                                float delta_s);
@@ -585,6 +590,13 @@ static void nk_ui_register_scroller(NkUi *ui, NkUiId id) {
 
 static bool nk_ui_open(NkUi *ui, NkUiId id, const NkUiLayout *layout, const NkUiStyle *style,
                        const NkUiFloating *floating) {
+    NkUiStyle cut;
+    /* Reduce motion: every change is a cut. */
+    if (ui != NULL && ui->prefs.reduce_motion && style != NULL && style->transition != 0u) {
+        cut = *style;
+        cut.transition = 0u;
+        style = &cut;
+    }
     if (ui == NULL || !ui->frame_open || layout == NULL || ui->container_depth >= 64u ||
         !(floating != NULL ? nk_ui_clay_open_floating(ui->clay, id, layout, style, floating)
                            : nk_ui_clay_open_container(ui->clay, id, layout, style))) {
@@ -875,7 +887,9 @@ void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height) {
 
 /* One band of the ring: a floating border around the open container, `expand`
    outside it, over everything else, clipped as the container is, and taking
-   no pointer. Its draw commands carry the control's id. */
+   no pointer. Its draw commands carry the control's id. The band is the same
+   Clay element on every control, so when focus moves Clay sees it change
+   parent and eases it from the old control to the new one. */
 static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, float width,
                             float radius, uint32_t rgba) {
     NkUiLayout layout;
@@ -888,13 +902,16 @@ static void nk_ui_ring_band(NkUi *ui, NkUiId id, uint32_t part, float expand, fl
     style.border_rgba = rgba;
     style.border_width = width;
     style.corner_radius = radius;
+    style.transition = NK_UI_TRANSITION_BOX;
+    style.transition_s = (float)NK_UI_MOTION_FAST;
     memset(&ring, 0, sizeof(ring));
     ring.expand = expand;
     ring.z = NK_UI_Z_RING;
     ring.passthrough = true;
     ring.clip_to_parent = true;
     ring.draw_id = id;
-    if (nk_ui_open(ui, nk_ui_child_id(id, part), &layout, &style, &ring)) {
+    if (nk_ui_open(ui, nk_ui_child_id((NkUiId)ui->ring_generation, part), &layout, &style,
+                   &ring)) {
         nk_ui_end_container(ui);
     }
 }
@@ -910,6 +927,12 @@ void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius) {
         return;
     }
     radius = isfinite(corner_radius) && corner_radius > 0.0f ? corner_radius : 0.0f;
+    /* A control that was not on screen in the last frame (a new page) gets a
+       new ring, which Clay shows at once: it does not fly in from where the
+       last page left it. */
+    if (nk_ui_clay_appeared(ui->clay, id)) {
+        ++ui->ring_generation;
+    }
     if (ui->prefs.high_contrast_focus) {
         float outer = NK_UI_FOCUS_HC_KEYLINE * 2.0f + NK_UI_FOCUS_HC_RING_WIDTH;
         nk_ui_ring_band(ui, id, 0xF0u, outer, outer, radius + outer, 0x000000FFu);
@@ -1234,10 +1257,21 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             ui->frame_ok = false;
         }
     }
-    if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density, (float)ui->frame_delta_s,
-                        nk_ui_paint_custom, ui)) {
-        ui->frame_ok = false;
+    /* Clay adds the frame's time to a transition from the frame it starts on.
+       The time since the last frame was idle when nothing was moving then, so
+       a transition starting now gets one frame of it, not the whole wait for
+       input, and begins its course where it should. */
+    {
+        double transition_delta = ui->frame_delta_s;
+        if (!ui->transitioning && transition_delta > NK_UI_MOTION_FRAME) {
+            transition_delta = NK_UI_MOTION_FRAME;
+        }
+        if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density, (float)transition_delta,
+                            nk_ui_paint_custom, ui)) {
+            ui->frame_ok = false;
+        }
     }
+    ui->transitioning = nk_ui_clay_transitioning(ui->clay);
     memcpy(ui->laid_ids, ui->scroll_ids, ui->scroll_count * sizeof(ui->scroll_ids[0]));
     ui->laid_count = ui->scroll_count;
     nk_ui_focus_place(ui->focus_graph, nk_ui_clay_element_rect, nk_ui_layout_scroll, ui->clay);
@@ -1356,6 +1390,10 @@ bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out) {
 
 bool nk_ui_scroll_in_motion(const NkUi *ui) {
     return ui != NULL && ui->scroll_moving;
+}
+
+bool nk_ui_in_motion(const NkUi *ui) {
+    return ui != NULL && (ui->scroll_moving || ui->transitioning);
 }
 
 bool nk_ui_hovered(const NkUi *ui, NkUiId id) {

@@ -112,6 +112,7 @@ struct NkUiTheme {
 #define NK_UI_MOTION_MUSIC_FADE_IN 1.00
 #define NK_UI_MOTION_MUSIC_FADE_OUT 0.45
 #define NK_UI_MOTION_WAVE_FRAME (1.0 / 30.0) /* waves redraw at most at 30 Hz */
+#define NK_UI_MOTION_FRAME (1.0 / 60.0)      /* one frame at the display rate a motion draws at */
 
 /* ---- Fonts ----------------------------------------------------------------- */
 /* Font slots the host registers (assets/fonts/ui, all SIL OFL 1.1). Slots 4-7

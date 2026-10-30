@@ -946,9 +946,9 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
 bool player_ui_nk_built_with_launcher(void);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
-/* True while a scroll container is still moving (a drag's momentum): the
-   host's loop draws the next frame within one 60 Hz frame instead of waiting
-   for input. */
+/* True while something on screen is still moving (a drag's momentum, a focus
+   ring or tab rule easing to its place, a fill easing in): the host's loop
+   draws the next frame within one 60 Hz frame instead of waiting for input. */
 bool player_ui_nk_in_motion(const PlayerUiNk *player);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
    shipped player has no other launcher. */

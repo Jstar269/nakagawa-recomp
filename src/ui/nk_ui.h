@@ -97,12 +97,24 @@ enum {
     NK_UI_CORNER_SQUARE_BL = 1u << 3
 };
 
+/* What a container eases instead of cutting when it changes between frames
+   (NkUiStyle.transition). */
+enum {
+    NK_UI_TRANSITION_COLOR = 1u << 0, /* its fill and border colours */
+    NK_UI_TRANSITION_BOX = 1u << 1    /* its position and size */
+};
+
 typedef struct {
     uint32_t fill_rgba;
     uint32_t border_rgba;
     float border_width;
     float corner_radius;
     uint32_t square_corners; /* NK_UI_CORNER_SQUARE_* bits */
+    /* NK_UI_TRANSITION_* bits, eased over transition_s seconds (an
+       NK_UI_MOTION_* token) with Clay's ease-out. Reduce motion cuts them all,
+       and so does 0. */
+    uint32_t transition;
+    float transition_s;
 } NkUiStyle;
 
 /* One run of text. rgba 0 inherits the container's text colour (paper, or ink on
@@ -404,6 +416,10 @@ bool nk_ui_next_wake(const NkUi *ui, double *at_s);
 void nk_ui_scroll_to(NkUi *ui, NkUiId id, float offset);
 bool nk_ui_scroll_state(const NkUi *ui, NkUiId id, NkUiScrollState *out);
 bool nk_ui_scroll_in_motion(const NkUi *ui);
+/* Something on screen is still moving: a scroll container, or a transition
+   (NkUiStyle.transition) that has not reached its end. A host draws the next
+   frame soon, at its display rate, instead of waiting for input. */
+bool nk_ui_in_motion(const NkUi *ui);
 /* Clay's layout inspector (Clay_SetDebugModeEnabled), for developer mode: a
    panel down the window's right side that lists the layout and outlines the
    element under the pointer. Clay narrows the layout by the panel's width, so

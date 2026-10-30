@@ -58,7 +58,16 @@ static NkUi *overlay_ui(int width, int height, float display_scale) {
     config.host = NK_UI_HOST_OVERLAY;
     config.text = &g_text;
     ui = nk_ui_create(&config);
-    if (ui != NULL) nk_ui_set_viewport(ui, &viewport);
+    if (ui != NULL) {
+        /* The goldens are stills at a clock that never moves, where a
+           transition would stay at its first frame: they cut motion, as
+           Reduce motion does. test_nk_ui_core covers the motion itself. */
+        NkUiPrefs prefs;
+        memset(&prefs, 0, sizeof(prefs));
+        prefs.reduce_motion = true;
+        nk_ui_set_prefs(ui, &prefs);
+        nk_ui_set_viewport(ui, &viewport);
+    }
     return ui;
 }
 
