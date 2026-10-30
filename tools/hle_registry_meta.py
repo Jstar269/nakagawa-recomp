@@ -374,6 +374,40 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
     },
+    # Firmware utility modules: IDs, names and load dependencies follow PPSSPP
+    # Core/HLE/sceUtility.cpp moduleLoadInfo (3f40ddc8). Loading records module state only.
+    "h_UtilityLoadModule": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_utility_av_module_state",
+            "src/rt/hle_thread_selftest.c:test_utility_module_table",
+        ],
+        "limitation": "records utility module state only; the user-partition memory a real module occupies is not reserved; IDs and dependencies follow PPSSPP, not measured on this project's PSP",
+    },
+    "h_UtilityUnloadModule": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_utility_av_module_state",
+            "src/rt/hle_thread_selftest.c:test_utility_module_table",
+        ],
+        "limitation": "records utility module state only; does not check whether a loaded module still depends on the one unloaded (PPSSPP does not either); not measured on this project's PSP",
+    },
+    "h_UtilityLoadNetModule": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_utility_av_module_state",
+            "src/rt/hle_thread_selftest.c:test_utility_module_table",
+        ],
+        "limitation": "maps net-module numbers 1..7 onto utility IDs 0x100..0x106 and their shared state; the status codes for a bad number or a repeated call are the generic module ones, unmeasured on a PSP; makes no connection, and the net libraries stay refused",
+    },
+    "h_UtilityUnloadNetModule": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_utility_av_module_state",
+            "src/rt/hle_thread_selftest.c:test_utility_module_table",
+        ],
+        "limitation": "maps net-module numbers 1..7 onto utility IDs 0x100..0x106; the status codes for a bad number or a module that is not loaded are the generic module ones, unmeasured on a PSP",
+    },
     # scePsmfPlayerGetPsmfInfo reports the opened PSMF's header as SetPsmfCB parsed it.
     # Checks, their order and the one-picture duration offset follow PPSSPP
     # Core/HLE/scePsmf.cpp (3f40ddc8); the 567567 lastFrameTs, version 1 and zero PCM
@@ -382,8 +416,9 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "src/rt/psmf_media_selftest.c:test_player_get_psmf_info",
+            "src/rt/hle_thread_selftest.c:test_runtime_placed_modules",
         ],
-        "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs of the 0x03090510 libpsmfplayer build are never written because the loaded build is not recorded; lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
+        "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
     },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
