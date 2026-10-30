@@ -42,6 +42,12 @@ Point Gradle at the SDK with `ANDROID_HOME`, or with an `android/local.propertie
 
 ## Build
 
+The Gradle project is `android/settings.gradle.kts` and `android/build.gradle.kts`, with the app module in
+`android/app/build.gradle.kts`. Its native build, `android/app/CMakeLists.txt`, builds the launcher from the
+repository's top-level CMake project and links each bundled title with `nk_add_title_runtime()`. A debug build
+merges `android/app/src/debug/AndroidManifest.xml`, which lets `adb shell am start` open `TitleActivity` for
+device tests; a release build keeps that activity private.
+
 1. Build the showcase packages on the PC, outside the repository:
 
    ```bash

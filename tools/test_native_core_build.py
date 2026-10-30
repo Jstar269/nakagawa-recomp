@@ -47,6 +47,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest --strip-cache-disabled",
+    "build/mygame/coro_selftest",
     "build/mygame/ge_raster_ref_selftest",
     "build/test_pgf_public",
     "build/test_core_catalog",

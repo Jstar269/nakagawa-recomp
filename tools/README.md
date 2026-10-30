@@ -430,6 +430,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_android_build.py` | Static checks of the Android build (`android/`, #360) against the desktop build, with no SDK: the NDK runtime inventory matches the Makefile's runtime link. |
 | `test_app_icon.py` | The committed app icon is a fresh drawing of the brand SVG, the C drawer draws the same pixels, and the Windows builds link it. |
 | `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
