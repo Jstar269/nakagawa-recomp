@@ -2885,7 +2885,7 @@ static void test_io_async_and_path_imports(void) {
     expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
            "sceIoLseekAsync returns its resulting position through the async result");
 
-    /* A past-the-end destination is refused through the async result too (#1380). */
+    /* A past-the-end destination is returned through the async result too (#1380). */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd;
     cpu.r[6] = 4u;  /* one past the three-byte file */
@@ -2899,15 +2899,16 @@ static void test_io_async_and_path_imports(void) {
     cpu.r[4] = fd;
     cpu.r[5] = RESULT_ADDR;
     expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
-               MEM_R32(RESULT_ADDR) == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
-               MEM_R32(RESULT_ADDR + 4u) == 0xffffffffu,
-           "sceIoLseekAsync refuses a past-the-end destination instead of clamping it");
+               MEM_R32(RESULT_ADDR) == 4u && MEM_R32(RESULT_ADDR + 4u) == 0u,
+           "sceIoLseekAsync permits a past-the-end destination");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd;
     cpu.r[5] = 0u;
     cpu.r[6] = 1u;
-    expect(sr_hle_test_io_lseek32(&cpu) == 2u,
-           "the refused asynchronous seek leaves the position unchanged");
+    expect(sr_hle_test_io_lseek32(&cpu) == 4u,
+           "the asynchronous seek updates the position");
+    cpu.r[5] = 2u; cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 2u, "restore position for ioctl");
 
     MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
@@ -3489,20 +3490,29 @@ static void test_fd_namespace(void) {
     cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
 
-    /* Seek destinations are no longer clamped (#1380). PSP-IO-001 measured destinations
-     * inside the file only; one before the start or past the end has no measured result,
-     * so it is refused with the named boundary and the position stays where it was. */
+    /* pspautotests tests/io/file at f573fe8: negative seek returns -1, and a
+     * read after seeking to 200 beyond EOF returns zero. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 0xfffffff6u; cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 0xffffffffu,
+           "negative seek returns -1");
+    cpu.r[5] = 200u; cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 200u,
+           "seek beyond EOF succeeds");
+    cpu.r[5] = payload_addr; cpu.r[6] = 1u;
+    expect(sr_hle_test_io_read(&cpu) == 0u, "read beyond EOF returns zero");
+
+    /* Negative and unrepresentable destinations leave the position unchanged. */
     {
         const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
         static const struct { uint32_t offset, whence; } bad32[] = {
-            {0xffffffffu, 0u}, {0xfffffffau, 1u}, {1u, 2u}, {(uint32_t)(sizeof(payload) - 1u), 1u},
+            {0xffffffffu, 0u}, {0xfffffffau, 1u},
         };
         static const struct { uint32_t low, high, whence; } bad64[] = {
             {0u, 1u, 0u},                    /* 2^32 from the start */
             {0xfffffff0u, 0xffffffffu, 1u},  /* -16 from 5 */
             {0xffffffffu, 0x7fffffffu, 1u},  /* INT64_MAX from 5: no overflow */
             {0u, 0x80000000u, 2u},           /* INT64_MIN from the end */
-            {1u, 0u, 2u},                    /* one past the end */
         };
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = fd;
@@ -3531,8 +3541,9 @@ static void test_fd_namespace(void) {
                 rc = sr_hle_test_io_lseek(&cpu);
                 expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
             }
-            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED,
-                   "a seek before the start or past the end is refused, not clamped");
+            int negative = i < sizeof(bad32) / sizeof(bad32[0]) || i == 3u || i == 5u;
+            expect(rc == (negative ? 0xffffffffu : IO_ERROR_FUNCTION_NOT_SUPPORTED),
+                   "a negative or unsupported large seek is refused, not clamped");
             memset(&cpu, 0, sizeof(cpu));
             cpu.r[4] = fd;
             cpu.r[5] = 0u;

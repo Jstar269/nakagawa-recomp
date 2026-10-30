@@ -17234,6 +17234,13 @@ static uint32_t h_IoOpen(CpuState *s) {
     if (rc != 0u) return rc;
     return h_io_open_path(path, A1, -1);
 }
+static int io_host_seek(FILE *host, uint32_t offset) {
+#ifdef _WIN32
+    return _fseeki64(host, (int64_t)offset, SEEK_SET);
+#else
+    return fseeko(host, (off_t)offset, SEEK_SET);
+#endif
+}
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
@@ -17256,7 +17263,8 @@ static uint32_t h_IoWrite(CpuState *s) {
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
-    fseek(f->host, (long)f->off, SEEK_SET);
+    if (count > UINT32_MAX - f->off || io_host_seek(f->host, f->off) != 0)
+        return 0x80010005u;
     uint8_t tmp[4096]; uint32_t done = 0;
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
@@ -17331,11 +17339,12 @@ static uint32_t h_IoRead(CpuState *s) {
         if (perf_started) sr_perf_storage_read(SR_PERF_STORAGE_VFS, done, perf_started, done == count);
         return done;
     }
-    if (f->off + count > f->size) count = f->size - f->off;
+    if (f->off >= f->size) return 0u;
+    if (count > f->size - f->off) count = f->size - f->off;
     /* Read in chunks straight into guest memory, from the host file or the ISO. */
     uint8_t tmp[4096];
     uint32_t done = 0;
-    if (f->host) fseek(f->host, (long)f->off, SEEK_SET);
+    if (f->host && io_host_seek(f->host, f->off) != 0) return 0x80010005u;
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
         if (f->host) { size_t got = fread(tmp, 1, n, f->host); if (got < n) n = (uint32_t)got; }
@@ -17358,17 +17367,15 @@ static uint32_t h_IoRead(CpuState *s) {
     }
     return done;
 }
-/* Destination of a seek on a file descriptor (#1380). PSP-IO-001 measured SEEK_SET 32,
- * SEEK_CUR -16 and SEEK_END 0 inside a 64-byte host0 file. A destination before the start
- * or past the end has no measured result, so it is refused with the named not-supported
- * code and the position is left unchanged instead of being clamped and reported as success.
- * WHENCE is already validated (< 3). */
+/* pspautotests tests/io/file at f573fe8c9122a8ff5db4f030d74557bed644b4e0
+ * records -1 before zero and permits a seek past EOF. Offsets above the
+ * descriptor's current 32-bit range remain a named unsupported boundary. */
 static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
     static atomic_uint reported;
     int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
-    unsigned side = offset < -base ? 1u :
-                    offset > (int64_t)f->size - base ? 2u : 0u;
+    if (offset < -base) return 0xffffffffu;
+    unsigned side = offset > (int64_t)UINT32_MAX - base ? 2u : 0u;
     if (side == 0u) {
         *position = (uint32_t)(base + offset);
         return 0u;
@@ -17497,7 +17504,8 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         if (!in || inlen < 4) return 0x80010016;
         uint32_t count = MEM_R32(in);
         if (!out || count > outlen) return 0x80010016;
-        if (f->off + count > f->size) count = f->size - f->off;
+        if (f->off >= f->size) return 0u;
+        if (count > f->size - f->off) count = f->size - f->off;
         uint64_t perf_started = sr_perf_now_ns();
         if (f->archive_vfs) {
             if (!out || !sr_guest_span_writable(out, count)) return 0x80010016u;
@@ -17526,7 +17534,7 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         }
         uint8_t tmp[4096];
         uint32_t done = 0;
-        if (f->host) fseek(f->host, (long)f->off, SEEK_SET);
+        if (f->host && io_host_seek(f->host, f->off) != 0) return 0x80010005u;
         while (done < count) {
             uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
             if (f->host) { size_t got = fread(tmp, 1, n, f->host); if (got < n) n = (uint32_t)got; }
