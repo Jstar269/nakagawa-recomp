@@ -627,10 +627,12 @@ int main(int argc, char **argv) {
     sr_sched_on = 0;
     sr_dispatch_host_stack_remaining = NULL;
     if (!g_probe_ran) return 22;
-    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x\n",
+    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x "
+           "unwinds=%lu\n",
            n, g_probe_top > g_probe_min ? g_probe_top - g_probe_min : (size_t)0,
            g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[3],
-           (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29]);
+           (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29],
+           (unsigned long)sr_aot_return_unwind_count());
     return 0;
 }
 """
@@ -1599,6 +1601,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 100, f"the inline data word ran\n{output}")
         self.assertEqual(fields.get("a0"), 0x1020, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # The jump needs no runtime unwind of a guest return past its caller (#1034).
+        self.assertEqual(fields.get("unwinds"), 0, output)
 
     def test_read_the_pc_is_unchanged(self):
         generated, (rc, output, fields) = self._run_one(_read_the_pc())
@@ -1608,6 +1612,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 110, output)
         self.assertEqual(fields.get("a0"), 0x101C, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self.assertEqual(fields.get("unwinds"), 0, output)
 
     def test_linked_branch_mutants_fail_for_their_semantic(self):
         # L1: codegen keeps the target a label (the bug): the leaf's return ends the
@@ -1631,8 +1636,10 @@ class GeneratedCallDepthTests(unittest.TestCase):
             lambda r: r[0][0] != 0
             and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1],
         )
-        # L3: a frame-releasing continuation is called: its return restores the SP it
-        # released and the caller then runs the inline data word at the link.
+        # L3: a frame-releasing continuation is called. Its return goes past the caller
+        # to the caller's own caller, so the call is not exact: the runtime has to unwind
+        # that return (#1034) where the jump needs none. (Before that unwind existed, the
+        # caller ran the inline data word at the link, or the return check stopped it.)
         self._assert_mutant_fails(
             "L3-continuation-is-called", _linked_branch_into_own_tail(), (0,),
             {"entry_frame_balance.py": (
@@ -1640,17 +1647,21 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 "return True",
             )},
             lambda r: (
-                (r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000)
+                (r[0][0] == 0 and r[0][2].get("unwinds", 0) > 0)
+                or (r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000)
                 or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
             ),
         )
-        # L4: `bal .+8` is called: the PC read runs once as a call and again at the link,
-        # the second time with the restored return address (v0 = 120, a0 = 0x1008).
+        # L4: `bal .+8` is called: the "callee" is the caller's own continuation, so its
+        # return goes past the caller and the runtime has to unwind it (#1034). (Before
+        # that unwind existed, the PC read ran once as a call and again at the link, the
+        # second time with the restored return address: v0 = 120, a0 = 0x1008.)
         self._assert_mutant_fails(
             "L4-read-the-pc-is-called", _read_the_pc(), (0,),
             {"analyze.py": ("if target == (source + 8) & 0xFFFFFFFF:", "if False:")},
             lambda r: (
-                (r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008)
+                (r[0][0] == 0 and r[0][2].get("unwinds", 0) > 0)
+                or (r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008)
                 or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
             ),
         )
