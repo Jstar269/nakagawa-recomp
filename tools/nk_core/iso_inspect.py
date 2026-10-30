@@ -1293,7 +1293,10 @@ def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str 
     # The analyzer takes relocatable (1), executable (2), shared (3) and PSP PRX (0xFFA0).
     if e_type not in (1, 2, 3, 0xFFA0) or machine != 8 or version != 1 or ehsize != 52:
         return "header-fields"
-    if phentsize != 32 or not 1 <= phnum <= 128 or phoff < ehsize:
+    # No count cap beyond e_phnum's 16 bits: the table must fit in the image, and the
+    # runtime's loader (src/rt/driver.c) takes any count. Retail executables carry
+    # hundreds of PT_NULL entries beside one PT_LOAD.
+    if phentsize != 32 or phnum == 0 or phoff < ehsize:
         return "program-table-fields"
     if phoff + phentsize * phnum > image_size:
         return "program-table-bounds"

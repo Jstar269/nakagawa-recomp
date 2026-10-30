@@ -63,7 +63,6 @@
 #define NK_ISO_MAX_DIR_BYTES (512u * 1024u)
 #define NK_ISO_MAX_SFO_BYTES (64u * 1024u)
 #define NK_ISO_MAX_EXECUTABLE_BYTES (512u * 1024u * 1024u)
-#define NK_ISO_MAX_ELF_PROGRAM_HEADERS 128u
 
 /* SFO Header Magic: \x00PSF */
 static const uint8_t SFO_MAGIC[8] = { 0x00, 'P', 'S', 'F', 0x01, 0x01, 0x00, 0x00 };
@@ -1290,6 +1289,14 @@ typedef struct {
     uint64_t end;
 } NkElfLoadSpan;
 
+static int nk_elf_load_span_compare(const void *left, const void *right) {
+    const NkElfLoadSpan *a = (const NkElfLoadSpan *)left;
+    const NkElfLoadSpan *b = (const NkElfLoadSpan *)right;
+    if (a->start != b->start) return a->start < b->start ? -1 : 1;
+    if (a->end != b->end) return a->end < b->end ? -1 : 1;
+    return 0;
+}
+
 const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
                                            uint64_t image_size, bool module) {
     uint8_t header[52];
@@ -1317,8 +1324,10 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         machine != 8 || version != 1 || ehsize != sizeof(header)) {
         return "header-fields";
     }
-    if (phentsize != 32 || phnum == 0 || phnum > NK_ISO_MAX_ELF_PROGRAM_HEADERS ||
-        phoff < ehsize) {
+    /* No count cap beyond e_phnum's 16 bits: the table must fit in the image, and
+       the runtime's loader (src/rt/driver.c) takes any count. Retail executables
+       carry hundreds of PT_NULL entries beside one PT_LOAD. */
+    if (phentsize != 32 || phnum == 0 || phoff < ehsize) {
         return "program-table-fields";
     }
     uint64_t phend = 0;
@@ -1337,16 +1346,20 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         return "section-table-bounds";
     }
 
-    uint8_t program_headers[NK_ISO_MAX_ELF_PROGRAM_HEADERS * 32u];
-    if (!read(context, phoff, program_headers, (uint32_t)phentsize * phnum)) {
-        return "image-read-failed";
-    }
-
+    /* At most 65535 entries: 2 MiB of table and 1 MiB of spans. */
+    uint8_t *program_headers = (uint8_t *)malloc((size_t)phentsize * phnum);
+    NkElfLoadSpan *spans = (NkElfLoadSpan *)malloc(sizeof(NkElfLoadSpan) * phnum);
+    const char *violation = NULL;
     bool have_load = false;
     bool entry_executable = false;
     bool code_segment = false;
-    NkElfLoadSpan spans[NK_ISO_MAX_ELF_PROGRAM_HEADERS];
     uint32_t span_count = 0;
+    if (!program_headers || !spans ||
+        !read(context, phoff, program_headers, (uint32_t)phentsize * phnum)) {
+        violation = "image-read-failed";
+        goto done;
+    }
+
     for (uint16_t i = 0; i < phnum; i++) {
         const uint8_t *ph = program_headers + (size_t)i * 32u;
         uint32_t p_type = read_le32(ph + 0);
@@ -1357,13 +1370,23 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         uint32_t p_flags = read_le32(ph + 24);
         uint32_t p_align = read_le32(ph + 28);
 
-        if ((uint64_t)p_offset + p_filesz > image_size) return "segment-file-range";
+        if ((uint64_t)p_offset + p_filesz > image_size) {
+            violation = "segment-file-range";
+            goto done;
+        }
         if (p_type != 1) continue;
-        if (p_memsz < p_filesz) return "segment-memory-below-file";
+        if (p_memsz < p_filesz) {
+            violation = "segment-memory-below-file";
+            goto done;
+        }
         uint64_t memory_end = (uint64_t)p_vaddr + p_memsz;
-        if (memory_end > (uint64_t)UINT32_MAX + 1u) return "segment-memory-range";
+        if (memory_end > (uint64_t)UINT32_MAX + 1u) {
+            violation = "segment-memory-range";
+            goto done;
+        }
         if (p_align > 1 && (p_align & (p_align - 1u)) != 0) {
-            return "segment-alignment";
+            violation = "segment-alignment";
+            goto done;
         }
         spans[span_count].start = p_vaddr;
         spans[span_count].end = memory_end;
@@ -1375,27 +1398,30 @@ const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
         }
         if (executable && p_filesz > 0) code_segment = true;
     }
-    if (!have_load) return "no-load-segment";
+    if (!have_load) {
+        violation = "no-load-segment";
+        goto done;
+    }
 
     /* Loadable segments must not overlap: sorted by (start, end), any overlap
-       shows between neighbours. Insertion sort keeps the bounded array simple. */
-    for (uint32_t i = 1; i < span_count; i++) {
-        NkElfLoadSpan current = spans[i];
-        uint32_t j = i;
-        while (j > 0 && (spans[j - 1].start > current.start ||
-                         (spans[j - 1].start == current.start &&
-                          spans[j - 1].end > current.end))) {
-            spans[j] = spans[j - 1];
-            j--;
-        }
-        spans[j] = current;
-    }
+       shows between neighbours. */
+    qsort(spans, span_count, sizeof(NkElfLoadSpan), nk_elf_load_span_compare);
     for (uint32_t i = 0; i + 1 < span_count; i++) {
-        if (spans[i].end > spans[i + 1].start) return "segment-overlap";
+        if (spans[i].end > spans[i + 1].start) {
+            violation = "segment-overlap";
+            goto done;
+        }
     }
 
-    if (module && type == 0xFFA0u) return code_segment ? NULL : "no-code-segment";
-    return entry_executable ? NULL : "entry-not-executable";
+    if (module && type == 0xFFA0u) {
+        violation = code_segment ? NULL : "no-code-segment";
+    } else {
+        violation = entry_executable ? NULL : "entry-not-executable";
+    }
+done:
+    free(spans);
+    free(program_headers);
+    return violation;
 }
 
 typedef struct {
