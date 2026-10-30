@@ -38,7 +38,6 @@ typedef struct {
     int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;
-    bool experimental_60hz; /* exports SR_EXPERIMENTAL_60HZ=1; only an enhancement-package build reads it */
     bool developer_mode;    /* exports SR_DEVELOPER_MODE=1: the runtime's developer HUD and pages (#314) */
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
@@ -122,6 +121,10 @@ typedef struct {
     char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     uint32_t base_address;
     uint32_t entry_point;
+    /* The enhancement package of the enhanced build this session launches, from
+       NkGameEntry.enhancement_package_id; empty for the authentic package. Only
+       an enhanced session exports SR_EXPERIMENTAL_60HZ=1. */
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
     bool package_launch;
     bool experimental_package;
     bool showcase_package;
@@ -157,7 +160,14 @@ bool nk_launch_runtime_available(const char *root, const char *title_id);
  * generated image are both available under `root`. */
 bool nk_launch_runtime_package_available(const char *root, const char *title_id);
 
-/* Validate the v1 package discovered for a concrete player library entry.
+/* The folder name under <root>/packages of the package `game` selects: its
+ * disc ID, or <disc ID>-enhanced-<id> when game->enhancement_package_id names
+ * an enhanced build. False when that id is not a valid enhancement package id
+ * (nk_title_manifest_enhancement_id_valid), so no path is ever formed from it. */
+bool nk_launch_package_dir_name(const NkGameEntry *game, char *out, size_t out_size);
+
+/* Validate the v1 package discovered for a concrete player library entry: the
+ * authentic package, or the enhanced build game->enhancement_package_id names.
  * The root is the per-user data root (or an explicit test/user override). */
 NkRuntimePackageStatus nk_launch_validate_runtime_package(
     const char *user_data_root,
@@ -203,7 +213,10 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
  * from that entry's identity-derived candidates (no sibling-title or
  * retail-title fallback exists), and a missing runtime or image is an honest
  * fail-closed error. Staged source metadata is validated when present, and
- * the source ISO/data/save roots are resolved before returning NK_OK. */
+ * the source ISO/data/save roots are resolved before returning NK_OK. An entry
+ * whose enhancement_package_id names an enhanced build launches only that
+ * build: when it is missing or invalid the preparation fails, and neither the
+ * authentic package nor a developer layout is used in its place. */
 
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,

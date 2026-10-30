@@ -22,6 +22,9 @@ extern "C" {
 #define NK_MAX_GAMES 4096
 #define NK_MAX_EXECUTABLE_PATH (255u + 1u) /* Python boot-name limit plus NUL */
 #define NK_MAX_SELECTED_EXECUTABLE_PATH 16
+/* An enhancement package id (at most 64 characters, see
+   nk_title_manifest_enhancement_id_valid) plus NUL. */
+#define NK_MAX_ENHANCEMENT_PACKAGE_ID (64u + 1u)
 
 typedef enum {
     NK_OK = 0,
@@ -92,6 +95,12 @@ typedef struct {
     /* A catalog-discovered showcase package owns its compiled inputs and does
        not bind package validity to the companion synthetic ISO identity. */
     bool is_showcase_package;
+    /* The package this entry validates and launches: empty for the authentic
+       package, packages/<disc_id>; an enhancement package id for the enhanced
+       build, packages/<disc_id>-enhanced-<id> (docs/ENHANCEMENT_CONTRACT.md
+       section 9). The player sets it from its per-title setting; the library
+       file never stores it. */
+    char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
 } NkGameEntry;
 
 #ifdef __cplusplus
