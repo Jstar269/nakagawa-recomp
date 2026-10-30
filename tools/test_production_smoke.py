@@ -1566,7 +1566,7 @@ class TestPresenterContract(unittest.TestCase):
         # One keyboard decision gates both the skipped fast path and the sync that replaces it,
         # so sync_sdl_input() cannot open or close the keyboard between the two.
         self.assertIn("int osk_open = sr_osk_overlay_active();", sdl)
-        self.assertIn("int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);", sdl)
+        self.assertIn("int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);", sdl)
         self.assertLess(sdl.index("if (osk_open) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
         self.assertLess(sdl.index("gegpu_sync_guest_fb(&d)"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
         # Only FAILED declines the frame; the failure is reported to the armed capture and the
@@ -1619,7 +1619,7 @@ class TestPresenterContract(unittest.TestCase):
         # Only the two intended returns carry the code: the unprepared target and the failed present.
         self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
         self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
-        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }", present)
         # The GE selftest drives the present-failure path through the existing fault seam.
         self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
         self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)
@@ -3090,7 +3090,7 @@ class TestSanitizedBringup(unittest.TestCase):
         expected = {
             "inspect": "INVALID_ISO",
             "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
-            "analyze": "ANALYZER_FAILURE_UNCLASSIFIED",
+            "analyze": "ANALYZER_INTERNAL_ERROR",
             "codegen": "CODEGEN_FAILED",
             "compile": "COMPILE_FAILED",
             "build_package": "BUILD_PACKAGE_FAILED",
@@ -3109,8 +3109,8 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["stages"][stage]["status"], "FAIL")
                 if stage == "analyze":
                     summary = nk_cli._bringup_human_summary(report)
-                    self.assertIn("ANALYZER_FAILURE_UNCLASSIFIED", summary)
-                    self.assertIn("not supported yet", summary)
+                    self.assertIn("ANALYZER_INTERNAL_ERROR", summary)
+                    self.assertIn("defect in Nakagawa", summary)
                     self.assertNotRegex(summary, r"#[0-9]+")
                 nk_cli.validate_bringup_report(report)
 
@@ -3140,7 +3140,7 @@ class TestSanitizedBringup(unittest.TestCase):
 
     def test_analyze_stage_route_boundaries_are_named(self):
         # The package route's analyze-stage boundaries carry their own analyzer class;
-        # none of them reaches the report as ANALYZER_FAILURE_UNCLASSIFIED.
+        # none of them reaches the report as ANALYZER_INTERNAL_ERROR.
         cases = {
             "PACKAGE_INVALID_ELF": "ANALYZER_ELF_INVALID",
             "PACKAGE_INVALID_IMPORT_TABLE": "ANALYZER_IMPORT_TABLE_INVALID",

@@ -389,8 +389,7 @@ class NativeHostBackendTests(unittest.TestCase):
         helper_start = hle.index("static void hle_exit_close_audio_dump(void) {")
         helper = hle[helper_start:hle.index("\n}\n", helper_start)]
         guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
-        self.assertIn(guard + "    extern void sr_audio_dump_finish(void);\n"
-                              "    sr_audio_dump_finish();\n#endif", helper,
+        self.assertIn(guard + "    sr_audio_dump_finish();\n#endif", helper,
                       "the helper must call the dump close directly under the public-backend guard")
         backend = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
         self.assertIn("\nvoid sr_audio_dump_finish(void) {\n", backend)
@@ -502,7 +501,7 @@ class NativeHostBackendTests(unittest.TestCase):
         # overlay's frame (poll, present) and leave (poll), and its Quit to library (#1159).
         sites = {"if (!alive) { gui_window_closed_exit(); }": 1,
                  "if (msg.message == WM_QUIT) { gui_window_closed_exit(); }": 1,
-                 "if (res == 0) { gui_window_closed_exit(); }": 1,
+                 "if (res == GEGPU_PRESENT_WINDOW_CLOSED) { gui_window_closed_exit(); }": 1,
                  "if (present_result == 0) { gui_window_closed_exit(); }": 1,
                  "if (!sdl3vk_poll()) { gui_window_closed_exit(); }": 2,
                  "if (presented == 0) { gui_window_closed_exit(); }": 1,

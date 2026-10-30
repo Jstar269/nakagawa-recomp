@@ -548,6 +548,16 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertIn(FBCAP_C, definitions[0])
         self.assertIn(CAPTURE_C, definitions[0])
 
+    def test_sdl3vk_srcs_carries_the_coroutine_thread_stack_call(self) -> None:
+        """The event pump goes through sr_coro_call_on_thread_stack (Android JNI, #360)."""
+        backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
+        self.assertIn("sr_coro_call_on_thread_stack(", backend)
+        definitions = [
+            text for _, text in self.lines if re.match(r"\s*SDL3VK_SRCS\s*:?=", text)
+        ]
+        self.assertEqual(len(definitions), 1, self.lines)
+        self.assertIn("src/rt/sr_coro.c", definitions[0])
+
     def test_every_user_of_the_backend_also_supplies_the_capture_policy(self) -> None:
         backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
         referenced = sorted(set(re.findall(r"\bsr_fbcap_\w+\s*\(", backend)))

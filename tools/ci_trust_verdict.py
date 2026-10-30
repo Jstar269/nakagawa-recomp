@@ -636,8 +636,35 @@ class GitHub:
         return self._request("POST", path, body)[0]
 
 
+def unfinished_producers(workflow_runs: list[dict], head_sha: str) -> list[str]:
+    """The intended contexts whose producer has no run at this head yet, or whose newest live run is unfinished.
+
+    While any is listed the verdict cannot be success, so ``collect`` stops after reading the workflow runs and
+    the head is reported pending. The full read costs a dozen or more API calls. It ran on every CI, OSV-Scanner
+    and Dependency Review completion of every pull request, and that exhausted the repository's GITHUB_TOKEN
+    budget: Trusted CodeQL's upload failed on the rate limit (2026-10-30). A run that finishes re-runs the
+    verdict, and the last one to finish gets the full judgement. Only a pending status is ever posted early,
+    and pending never satisfies the ruleset.
+    """
+    waiting = []
+    for producer in PRODUCERS:
+        runs = [run for run in workflow_runs
+                if run.get("path") == producer.workflow and run.get("event") in producer.events
+                and run.get("head_sha") == head_sha]
+        live = [run for run in runs if run.get("conclusion") != "cancelled"]
+        if not runs:
+            waiting.append(producer.context)
+        elif live and max(live, key=lambda run: (run.get("created_at") or "", run["id"]))["status"] != "completed":
+            waiting.append(producer.context)
+    return waiting
+
+
 def collect(gh: GitHub, repo: Path, default_branch: str, head_sha: str, number: int | None) -> dict | None:
-    """Read everything the rules need. ``None`` when no pull request into the default branch has this head."""
+    """Read everything the rules need. ``None`` when no pull request into the default branch has this head.
+
+    While a producer is unfinished (``unfinished_producers``) only the workflow runs are read, and the result
+    holds ``waiting_producers`` in place of the rest.
+    """
     open_prs = gh.paginate("pulls?state=open")
     if number is None:
         matches = [pr for pr in open_prs if pr["head"]["sha"] == head_sha
@@ -645,15 +672,21 @@ def collect(gh: GitHub, repo: Path, default_branch: str, head_sha: str, number: 
         if not matches:
             return None
         number = min(int(pr["number"]) for pr in matches)
+    workflow_runs = gh.paginate(f"actions/runs?head_sha={head_sha}", "workflow_runs")
+    waiting = unfinished_producers(workflow_runs, head_sha)
+    if waiting:
+        return {"head_sha": head_sha, "waiting_producers": waiting}
     pr = gh.get(f"pulls/{number}")
     assert isinstance(pr, dict)
+    labelled = any(label.get("name") == APPROVAL_LABEL for label in pr.get("labels") or [])
     raw: dict = {
         "head_sha": head_sha,
         "default_branch": default_branch,
         "pull_request": pr,
         "open_pull_requests": open_prs,
-        "label_events": gh.paginate(f"issues/{number}/events"),
-        "workflow_runs": gh.paginate(f"actions/runs?head_sha={head_sha}", "workflow_runs"),
+        # The events only matter when the label is on the pull request: without it nothing is approved.
+        "label_events": gh.paginate(f"issues/{number}/events") if labelled else [],
+        "workflow_runs": workflow_runs,
         "check_runs": gh.paginate(f"commits/{head_sha}/check-runs?filter=all", "check_runs"),
         "statuses": gh.paginate(f"commits/{head_sha}/statuses"),
     }
@@ -746,6 +779,11 @@ def main(argv: list[str] | None = None) -> int:
         raw = collect(gh, args.repo_dir, args.default_branch, head, args.pull_request)
         if raw is None:
             print(f"no open pull request into {args.default_branch} has head {head}; no verdict")
+            return 0
+        if raw.get("waiting_producers"):
+            description = Verdict("pending", pending=raw["waiting_producers"]).description()
+            print(f"{description}; the full judgement runs when the last of them finishes")
+            post("pending", description)
             return 0
         if args.snapshot_out:
             args.snapshot_out.write_text(json.dumps(raw, indent=1, sort_keys=True), encoding="utf-8")

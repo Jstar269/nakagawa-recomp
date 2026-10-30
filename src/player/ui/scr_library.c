@@ -44,6 +44,8 @@
 #define LIBRARY_ID_FIND_KEYS 0x10000093u
 #define LIBRARY_ID_FIND_ROW_BASE 0x100000A0u
 #define LIBRARY_ID_NO_MATCH 0x100000B0u
+#define LIBRARY_ID_REBUILD 0x10000008u
+#define LIBRARY_ID_REBUILD_TEXT 0x10000009u
 
 /* One row of the TEST THIS PC section: the section's name and one line about it
    in the first column, then a compact card per demo, each one grid column wide. */
@@ -61,6 +63,9 @@
     (NK_UI_SPACE_4 + NK_UI_CONTROL_HEIGHT + NK_UI_SPACE_2 +                               \
      (float)LIBRARY_FIND_KEY_ROWS * NK_UI_CONTROL_HEIGHT +                               \
      (float)(LIBRARY_FIND_KEY_ROWS - 1u) * NK_UI_SPACE_1)
+/* The library notice under the heading (two NK_UI_TYPE_BODY lines) and its gap. */
+#define LIBRARY_ID_NOTICE 0x10000026u
+#define LIBRARY_NOTICE_ROW_HEIGHT (44.0f + NK_UI_SPACE_4)
 
 static NkUiSizing sizing_grow(void) {
     NkUiSizing sizing = {NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
@@ -644,6 +649,32 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 result.kind = PLAYER_UI_ACTION_SETTINGS;
                 result.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_OPEN_UPDATES;
             }
+            /* Games an older Nakagawa built: one line with Rebuild all and
+               Hide, or the queue's count while it runs. Never the default
+               focus: that stays on the first card. */
+            if (model->rebuild_notice != NULL && model->rebuild_notice[0] != '\0') {
+                NkUiLayout notice = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                                NK_UI_SPACE_3);
+                notice.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, LIBRARY_ID_REBUILD, &notice, NULL)) {
+                    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                    text.wrap = false;
+                    nk_ui_text(ui, LIBRARY_ID_REBUILD_TEXT, model->rebuild_notice, &text);
+                    if (model->rebuild_notice_offers_all) {
+                        if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_REBUILD_ALL, "Rebuild all",
+                                         NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                            result.kind = PLAYER_UI_ACTION_REBUILD;
+                            result.primary = (PlayerUiPrimaryAction)PLAYER_UI_REBUILD_ALL;
+                        }
+                        if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_REBUILD_HIDE, "Hide",
+                                         NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                            result.kind = PLAYER_UI_ACTION_REBUILD;
+                            result.primary = (PlayerUiPrimaryAction)PLAYER_UI_REBUILD_HIDE_BANNER;
+                        }
+                    }
+                    nk_ui_end_container(ui);
+                }
+            }
             if (page_count > 1u) {
                 NkUiLayout pager = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
                                                NK_UI_SPACE_3);
@@ -671,6 +702,14 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
             nk_ui_end_container(ui);
         }
 
+        /* A library.json a newer Nakagawa saved is kept as it is, not shown as an
+           empty library without a word: the notice says why no games are listed. */
+        bool has_notice = model->library_notice != NULL && model->library_notice[0] != '\0';
+        if (has_notice) {
+            nk_ui_text_role(ui, LIBRARY_ID_NOTICE, model->library_notice, NK_UI_TYPE_BODY,
+                            theme->warning);
+        }
+
         if (model->find_open) {
             PlayerUiAction key = library_find_box(ui, model);
             if (key.kind != PLAYER_UI_ACTION_NONE) result = key;
@@ -688,6 +727,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
             float room = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
                          NK_UI_BODY_PAD_TOP - NK_UI_BODY_PAD_BOTTOM -
                          LIBRARY_HEADING_ROW_HEIGHT - NK_UI_SPACE_4 -
+                         (has_notice ? LIBRARY_NOTICE_ROW_HEIGHT : 0.0f) -
                          library_demos_height(demo_count, columns);
             PlayerUiAction empty = library_empty(ui, room >= LIBRARY_EMPTY_CARD_HEIGHT);
             if (empty.kind != PLAYER_UI_ACTION_NONE) result = empty;

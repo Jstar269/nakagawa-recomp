@@ -360,6 +360,14 @@ jobs:
           --imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx
           --check-profile-zero-imports
 
+      - name: Build Nakagawa Font Copy
+        # The PSP app that copies the console's own fonts for the player's font import
+        # (src/psp_companion, docs/SETUP.md "System fonts") is built from source with the same
+        # locked PSPDEV. Its Makefile runs the user-mode import gate, which pins the app's file
+        # calls, so a build that could remove, rename or control a file fails here. Nothing is
+        # uploaded: the EBOOT is not published by CI.
+        run: make --no-print-directory -C src/psp_companion BUILD_DIR="$RUNNER_TEMP/fontcopy"
+
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
@@ -855,6 +863,16 @@ jobs:
       # configurations (#306); it ran on no hosted job before.
       - name: Run Linux title-configured HLE selftests
         run: make CC=gcc -j4 hle-title-selftest
+
+      # The AOT linked-call return boundaries with the real recomp.c and scheduler
+      # (#1034): per-thread isolation, the callback and interrupt floors, and a guest
+      # return past its caller. Its own build directory, because it rebuilds
+      # hle_thread_selftest with SR_HLE_AOT_BOUNDARY_TEST; it ran on no hosted job before.
+      - name: Run Linux AOT return-boundary selftest
+        run: |
+          build_dir="$RUNNER_TEMP/aot-return-boundary"
+          mkdir -p "$build_dir"
+          make --no-print-directory CC=gcc BUILD_DIR="$build_dir" aot-return-boundary-thread-selftest
 
       - name: Run Linux scheduler selftest matrix
         run: make CC=gcc -j4 sched-selftest

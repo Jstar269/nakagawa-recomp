@@ -6,7 +6,7 @@
  * rules documented for this project; no key material here.
  *
  * Structural validation runs BEFORE any key lookup so a malformed
- * container reports CONTAINER_MALFORMED rather than a key diagnostic,
+ * container reports MALFORMED_INPUT rather than a key diagnostic,
  * and a well-formed one reports exactly the key entry it needs.
  *
  * Firmware is never decrypted (owner rule, 2026-10-27): a firmware updater

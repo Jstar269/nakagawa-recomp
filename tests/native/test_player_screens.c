@@ -60,38 +60,38 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, ""},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, ""},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, ""},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, ""}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -101,22 +101,22 @@ static const PlayerUiTitle k_demo_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, ""}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -125,12 +125,12 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, ""}
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -164,12 +164,13 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
-               FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING,
-               FLOW_DISC_SUPPORTED,
+               FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_ERROR_CRASH,
+               FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+               FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -299,7 +300,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
-        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED
+        : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
+          which == FLOW_SETTINGS_UPDATE_NO_KEY || which == FLOW_SETTINGS_UPDATE_REFUSED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
@@ -316,7 +318,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
     }
     settings.current_version = "0.0.2-dev";
-    if (which == FLOW_SETTINGS_UPDATES) {
+    if (which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_NO_KEY ||
+        which == FLOW_SETTINGS_UPDATE_REFUSED) {
         /* A newer pre-release with its Windows ZIP, as the check found it. */
         settings.update_step = PLAYER_UI_UPDATE_AVAILABLE;
         settings.update_version = "0.0.3";
@@ -329,6 +332,21 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.update_can_download = true;
         settings.update_zip_name = "nakagawa-recomp-0.0.3-windows-x64.zip";
         settings.update_zip_bytes = 284758051ull;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_NO_KEY) {
+        /* A build without an update-signing key: the release page only. */
+        settings.update_can_download = false;
+        settings.update_unverifiable = true;
+    }
+    if (which == FLOW_SETTINGS_UPDATE_REFUSED) {
+        /* The download stopped at the signature; nothing was fetched after it. */
+        settings.update_step = PLAYER_UI_UPDATE_FAILED;
+        settings.update_failed_step = PLAYER_UI_UPDATE_DOWNLOADING;
+        settings.update_error_title = "Signature Didn't Match";
+        settings.update_error_message =
+            "The release's signature doesn't match its checksum file, so Nakagawa did not "
+            "download the update. Nothing was installed. Try again later, or download it from "
+            "the release page.";
     }
     if (which == FLOW_SETTINGS_UPDATE_FAILED) {
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
@@ -344,6 +362,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         }
         settings.font_message = "Imported 3 fonts from C:/synthetic/psp-fonts.";
         settings.font_message_kind = PLAYER_UI_NOTE_DONE;
+        settings.font_summary = "3 of the 18 PSP fonts are your PSP's originals; the rest show a "
+                                "stand-in that looks different.";
     }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
@@ -534,6 +554,8 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
                 wizard.font_lines[wizard.font_line_count++] = k_font_lines[i];
             }
+            wizard.font_summary = "None of the 18 PSP fonts is your PSP's original yet, so games "
+                                  "show a stand-in that looks different.";
             break;
         case FLOW_WIZ_READY:
         case FLOW_WIZ_STAGED:
@@ -687,17 +709,22 @@ static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
-    if (which == FLOW_ERROR_STOP) {
-        /* #1282: a game that stopped early, with Restart game and Copy details. */
+    if (which == FLOW_ERROR_STOP || which == FLOW_ERROR_CRASH) {
+        /* #1282: a game that stopped early, with Restart game and Copy details,
+           and Report this game: a known cause leads with its issue (the stop),
+           an unknown one with the report (the crash). */
         PlayerUiErrorModel error;
         memset(&error, 0, sizeof(error));
-        error.badge = "Game stopped";
-        error.title = "Game Stopped Early";
+        error.badge = which == FLOW_ERROR_STOP ? "Game stopped" : "Game closed";
+        error.title = which == FLOW_ERROR_STOP ? "Game Stopped Early"
+                                               : "Game Closed Unexpectedly";
         error.message = "The game needed ad hoc wireless play that this version can't run yet.";
         error.details = "Stopped at a synthetic boundary (not supported yet).";
         error.recovery_label = "Return to Library";
         error.retry_label = "Restart game";
         error.copy_available = true;
+        error.report_available = true;
+        error.known_issue = which == FLOW_ERROR_STOP ? 308u : 0u;
         error.logical_width = g_flow_width;
         error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
@@ -1279,6 +1306,19 @@ static void test_library_demos(void) {
           "TEST THIS PC says what the demos are for");
     CHECK(strstr(dump, "SHOWCASE DEMO") == NULL && strstr(dump, "showcase demo") == NULL,
           "the count line no longer counts showcase demos as titles");
+    CHECK(strstr(dump, "newer Nakagawa") == NULL,
+          "a library this player reads shows no library notice");
+    /* A library.json a newer Nakagawa saved is kept, and the Library says why it
+       lists no games instead of looking like a first start. */
+    model.library_notice = "Your library was saved by a newer Nakagawa (format 2; this one "
+                           "reads 1). It is kept as it is: update Nakagawa to see your games.";
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "saved by a newer Nakagawa") != NULL &&
+              strstr(dump, "\"TEST THIS PC\"") != NULL,
+          "the Library names a library a newer Nakagawa saved, above the demos");
+    model.library_notice = NULL;
+    (void)library_frame_dump(ui, &model, NULL);
     push_nav(ui, NK_UI_DIR_DOWN);
     (void)library_frame_dump(ui, &model, NULL);
     CHECK(focused_on_demo(ui, model.titles, model.title_count),
@@ -1618,7 +1658,7 @@ static void test_router(void) {
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
           !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
           !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_STOP + 1)),
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REBUILD + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -1728,6 +1768,8 @@ static void test_wizard_actions(void) {
          "Accept and continue confirms the fonts step"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
          "Change resolution cycles the scale"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_PSP_FONTS, PLAYER_UI_WIZARD_PSP_FONTS,
+         "Get fonts from my PSP imports a connected PSP's copied fonts"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_IMPORT_FONTS, PLAYER_UI_WIZARD_IMPORT_FONTS,
          "Import fonts folder opens the folder picker"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_REMOVE_FONTS, PLAYER_UI_WIZARD_REMOVE_FONTS,
@@ -1817,6 +1859,39 @@ static void test_plain_cards(void) {
           "the stopped game's card never offers to continue");
     CHECK(strstr(dump, "Nothing is sent anywhere") != NULL,
           "the card says the report stays on this computer");
+    /* Report this game: a known cause says so and links its issue, and the
+       report steps back to a small button; an unknown one leads with it. */
+    CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
+              strstr(dump, "\"SEE ISSUE #308\"") != NULL &&
+              strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
+              strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
+          "a known stop names its issue next to Report this game and the existing reports");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_ISSUE, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE,
+          "See issue asks for the known issue's page");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_REPORT,
+          "Report this game asks for the report link");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORTS, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_SEE_REPORTS,
+          "See existing reports asks for the disc's reports");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_ISSUE, FLOW_ERROR_CRASH).kind ==
+              PLAYER_UI_ACTION_NONE &&
+              activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR_CRASH).kind ==
+              PLAYER_UI_ACTION_ERROR_REPORT,
+          "a crash with no known cause offers the report and no issue");
+    CHECK(dump_flow_case(FLOW_ERROR_CRASH, dump, sizeof(dump)) &&
+              strstr(dump, "known issue") == NULL &&
+              strstr(dump, "\"REPORT THIS GAME\"") != NULL,
+          "a crash card does not call itself a known issue");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_REPORT, FLOW_ERROR).kind ==
+              PLAYER_UI_ACTION_NONE &&
+              activate_flow_button(PLAYER_UI_ID_ERROR_REPORTS, FLOW_ERROR).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "a card that is not about a game stopping offers no report");
+    CHECK(dump_flow_case(FLOW_ERROR, dump, sizeof(dump)) &&
+              strstr(dump, "REPORT THIS GAME") == NULL,
+          "a build error card draws no Report this game");
     CHECK(dump_flow_case(FLOW_WIZ_BLOCKED, dump, sizeof(dump)) &&
               strstr(dump, "ADD TO LIBRARY") == NULL &&
               strstr(dump, "EBOOT.BIN is encrypted") != NULL &&
@@ -1830,6 +1905,13 @@ static void test_plain_cards(void) {
               strstr(dump, "Synthetic reason") != NULL &&
               strstr(dump, "listed in the native title catalog") == NULL,
           "a failed copy shows its reason in place of the catalog note");
+    /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
+    CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
+              strstr(dump, "None of the 18 PSP fonts is your PSP's original yet") != NULL &&
+              strstr(dump, "connect it by USB") != NULL &&
+              strstr(dump, "\"GET FONTS FROM MY PSP\"") != NULL &&
+              strstr(dump, "\"CHOOSE FONT FILES\"") != NULL,
+          "the fonts step explains how to get the PSP's original fonts");
 }
 
 static bool disc_op_is(PlayerUiAction action, PlayerUiDiscOp op) {
@@ -2143,6 +2225,12 @@ static void test_settings_pages(void) {
          "Back leaves Updates"},
         {FLOW_SETTINGS_UPDATE_FAILED, PLAYER_UI_ID_UPDATE_CHECK, PLAYER_UI_SETTINGS_CHECK_UPDATES,
          "Check again asks GitHub again, only when pressed"},
+        {FLOW_SETTINGS_UPDATE_NO_KEY, PLAYER_UI_ID_UPDATE_PAGE,
+         PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "without a signing key, Open release page is what Updates offers"},
+        {FLOW_SETTINGS_UPDATE_REFUSED, PLAYER_UI_ID_UPDATE_PAGE,
+         PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
+         "a refused download still offers its release page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ONLINE, PLAYER_UI_SETTINGS_OPEN_ONLINE,
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
@@ -2180,7 +2268,8 @@ static void test_settings_pages(void) {
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                                      FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
-                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED};
+                                     FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
+                                     FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2228,6 +2317,18 @@ static void test_settings_pages(void) {
               strstr(dump, "Couldn't Reach GitHub") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "offline, Updates says it couldn't reach GitHub and offers only Check again");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") == NULL,
+          "a failed check has no release page to offer");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_NO_KEY, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "can't check update signatures") != NULL &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
+          "a build without a signing key says so and offers only the release page");
+    CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_REFUSED, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Signature Didn't Match") != NULL &&
+              strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL &&
+              strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"INSTALL\"") == NULL,
+          "a download refused at its signature offers the release page and Check again");
 }
 
 /* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
@@ -2240,6 +2341,10 @@ static void test_psp_fonts_page(void) {
                                                        FLOW_SETTINGS).primary ==
               PLAYER_UI_SETTINGS_OPEN_FONTS,
           "Settings opens PSP fonts");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_PSP_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_PSP_FONTS,
+          "Get fonts from my PSP imports a connected PSP's fonts");
     CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_IMPORT_FONTS,
                                                    FLOW_SETTINGS_FONTS).primary ==
               PLAYER_UI_SETTINGS_IMPORT_FONTS,
@@ -2686,6 +2791,9 @@ static void test_screen_actions(void) {
     action = activate_title_button(PLAYER_UI_ID_TITLE_BACK, &detail);
     CHECK(action.kind == PLAYER_UI_ACTION_BACK,
           "the back button returns to the Library");
+    action = activate_title_button(PLAYER_UI_ID_TITLE_REPORT, &detail);
+    CHECK(action.kind == PLAYER_UI_ACTION_REPORT_PROBLEM && action.title_index == 0u,
+          "Report a problem asks for that title's report link");
     library.page_size = 8u;
     library.columns = 4u;
     library.logical_width = 1280.0f;
@@ -3161,6 +3269,8 @@ static int capture_screens(const char *directory) {
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
             {FLOW_SETTINGS_UPDATES, "settings-updates", PLAYER_UI_ID_UPDATE_DOWNLOAD},
             {FLOW_SETTINGS_UPDATE_FAILED, "settings-update-offline", PLAYER_UI_ID_UPDATE_CHECK},
+            {FLOW_SETTINGS_UPDATE_NO_KEY, "settings-update-no-key", PLAYER_UI_ID_UPDATE_PAGE},
+            {FLOW_SETTINGS_UPDATE_REFUSED, "settings-update-refused", PLAYER_UI_ID_UPDATE_CHECK},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},
@@ -3772,7 +3882,8 @@ static void test_outcome_lines_take_their_colour(void) {
     (void)snprintf(expect, sizeof(expect), "%08X \"Imported 3 fonts", (unsigned)theme->ready);
     CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
           "a font import that worked reads in the ready colour");
-    (void)snprintf(expect, sizeof(expect), "%08X \"Importing reads", (unsigned)theme->muted);
+    (void)snprintf(expect, sizeof(expect), "%08X \"To get your PSP's own fonts",
+                   (unsigned)theme->muted);
     CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
           "the Fonts step's hint, before any import, is muted");
     (void)snprintf(expect, sizeof(expect), "%08X \"Choose a disc image below",
@@ -3862,6 +3973,217 @@ static void test_stop_game_asks_first(void) {
               nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
           "Back (Esc or B) closes the question and the game keeps running");
     nk_ui_router_destroy(router);
+}
+
+static PlayerUiAction activate_rebuild_button(NkUiId id, const PlayerUiRebuildModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_rebuild(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+static bool rebuild_op_is(PlayerUiAction action, PlayerUiRebuildOp op) {
+    return action.kind == PLAYER_UI_ACTION_REBUILD && (PlayerUiRebuildOp)action.primary == op;
+}
+
+/* Games an older Nakagawa built (owner, 2026-10-29). The prompt names the
+   count and offers Rebuild all first, then Later; the launch reminder offers
+   Rebuild now first, then Play anyway; Back (the router's pop) is the second
+   choice. The library line offers Rebuild all and Hide, or only the count
+   while the queue runs, and the title page puts Rebuild beside PLAY. */
+static void test_rebuild_prompt_reminder_and_banner(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiRebuildModel prompt;
+    PlayerUiRebuildModel reminder;
+    PlayerUiAction action;
+    char expect[96];
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    memset(&prompt, 0, sizeof(prompt));
+    prompt.text = "3 games were built by an older Nakagawa. Rebuild them to get this "
+                  "version's fixes and new features.";
+    prompt.logical_width = 1280.0f;
+    prompt.logical_height = 800.0f;
+    reminder = prompt;
+    reminder.title = "Synthetic Outdated Fixture";
+    reminder.text = "This game was built by an older Nakagawa. Rebuild it for the latest fixes.";
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the rebuild prompt UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_rebuild(ui, &prompt);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "3 games were built by an older Nakagawa. Rebuild them") != NULL,
+          "the prompt names the count");
+    (void)snprintf(expect, sizeof(expect), "\"REBUILD ALL\"");
+    CHECK(strstr(dump, expect) != NULL && strstr(dump, "\"LATER\"") != NULL,
+          "the prompt offers Rebuild all and Later");
+    nk_ui_destroy(ui);
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_PRIMARY, &prompt),
+                        PLAYER_UI_REBUILD_ALL), "Rebuild all rebuilds them");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &prompt),
+                        PLAYER_UI_REBUILD_LATER), "Later leaves them");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_PRIMARY, &reminder),
+                        PLAYER_UI_REBUILD_NOW), "Rebuild now rebuilds the game");
+    CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &reminder),
+                        PLAYER_UI_REBUILD_PLAY_ANYWAY), "Play anyway plays it");
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the launch reminder UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, PLAYER_UI_ID_REBUILD_PRIMARY);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_rebuild(ui, &reminder);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "\"Synthetic Outdated Fixture\"") != NULL &&
+              strstr(dump, "Rebuild it for the latest fixes.") != NULL,
+          "the reminder names the game and says why");
+    (void)snprintf(expect, sizeof(expect), "\"REBUILD NOW\"");
+    CHECK(strstr(dump, expect) != NULL && strstr(dump, "\"PLAY ANYWAY\"") != NULL,
+          "the reminder offers Rebuild now and Play anyway");
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_REBUILD_PRIMARY, "Rebuild now is the main action");
+    nk_ui_destroy(ui);
+    {
+        NkUiRouter *router = nk_ui_router_create();
+        NkUiEvent back;
+        CHECK(router != NULL, "router allocates");
+        if (router == NULL) return;
+        memset(&back, 0, sizeof(back));
+        back.type = NK_UI_EV_BACK;
+        CHECK(nk_ui_router_push(router, PLAYER_UI_ROUTE_TITLE) &&
+                  nk_ui_router_push(router, PLAYER_UI_ROUTE_REBUILD) &&
+                  nk_ui_router_handle_event(router, &back) &&
+                  nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
+              "Back closes the reminder over the title page");
+        nk_ui_router_destroy(router);
+    }
+
+    /* The library line. */
+    {
+        PlayerUiTitle titles[1];
+        PlayerUiLibraryModel library;
+        memset(titles, 0, sizeof(titles));
+        titles[0].title = "Synthetic Outdated Fixture";
+        titles[0].disc_id = "TEST00006";
+        titles[0].library_status = "Older build";
+        memset(&library, 0, sizeof(library));
+        library.titles = titles;
+        library.title_count = 1u;
+        library.columns = 4u;
+        library.page_size = 8u;
+        library.logical_width = 1280.0f;
+        library.logical_height = 800.0f;
+        library.rebuild_notice = "1 game was built by an older Nakagawa.";
+        library.rebuild_notice_offers_all = true;
+        action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_ALL, &library);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_ALL), "the library's Rebuild all");
+        action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_HIDE, &library);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_HIDE_BANNER), "the library's Hide");
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create the library line UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &library);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        (void)snprintf(expect, sizeof(expect), "%08X \"1 game was built by an older Nakagawa.\"",
+                       (unsigned)theme->warning);
+        CHECK(strstr(dump, expect) != NULL, "the library says so, in the warning colour");
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(0u),
+              "the first card keeps the default focus");
+        library.rebuild_notice = "Rebuilding 2 of 5";
+        library.rebuild_notice_offers_all = false;
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &library);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "\"Rebuilding 2 of 5\"") != NULL &&
+                  strstr(dump, "\"REBUILD ALL\"") == NULL,
+              "while the queue runs the library shows its count, not Rebuild all");
+        nk_ui_destroy(ui);
+    }
+
+    /* The title page: PLAY stays the main action, Rebuild beside it. */
+    {
+        PlayerUiTitle title;
+        PlayerUiTitleModel detail;
+        memset(&title, 0, sizeof(title));
+        title.title = "Synthetic Outdated Fixture";
+        title.disc_id = "TEST00006";
+        title.library_status = "Older build";
+        title.library_status_detail = "Built by an older Nakagawa. Rebuild for the latest fixes.";
+        title.primary_action_label = "PLAY";
+        title.primary_action = PLAYER_UI_PRIMARY_PLAY;
+        title.primary_action_enabled = true;
+        title.package_state = PLAYER_UI_PACKAGE_READY;
+        title.rebuild_offered = true;
+        memset(&detail, 0, sizeof(detail));
+        detail.title = &title;
+        detail.title_index = 3u;
+        detail.logical_width = 1280.0f;
+        detail.logical_height = 800.0f;
+        action = activate_title_button(PLAYER_UI_ID_TITLE_REBUILD, &detail);
+        CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_TITLE) && action.title_index == 3u,
+              "the title page's Rebuild rebuilds that game");
+        action = activate_title_button(PLAYER_UI_ID_TITLE_PRIMARY, &detail);
+        CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
+                  action.primary == PLAYER_UI_PRIMARY_PLAY,
+              "an older build still plays");
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create the older-build title UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &detail);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "Built by an older Nakagawa. Rebuild for the latest fixes.") != NULL,
+              "the package card gives the label");
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY, "PLAY keeps the default focus");
+        title.rebuild_offered = false;
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &detail);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "\"REBUILD\"") == NULL, "a current package offers no Rebuild");
+        nk_ui_destroy(ui);
+    }
 }
 
 /* The walkthrough: three of the Controls page's binding buttons ended in
@@ -4027,6 +4349,7 @@ int main(int argc, char **argv) {
     test_wizard_steps_match_the_route();
     test_outcome_lines_take_their_colour();
     test_stop_game_asks_first();
+    test_rebuild_prompt_reminder_and_banner();
     test_binding_labels_fit();
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();
