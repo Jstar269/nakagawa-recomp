@@ -27,6 +27,7 @@ schema-valid report naming the failed stage, and exits 1.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import nk_cli  # noqa: E402
+from nk_core.package_cache import compiler_identity  # noqa: E402
 import title_manifest  # noqa: E402
 
 MANIFEST_SCHEMA = ROOT / "assets" / "title_manifest.schema.json"
@@ -566,6 +568,35 @@ def run_player(player: Path, sandbox: Path, runtime_root: Path, launch_index: in
     return returncode, output or "", timed_out, duration_ms
 
 
+def build_evidence(build_root: Path, title_id: str, compiler: str, revision: str) -> dict:
+    artifact = staged_executable(build_root, title_id)
+    if not artifact.is_file():
+        raise QualificationError("BUILD_ARTIFACT_MISSING: fresh build produced no executable")
+    return {"source_revision": revision, "command": "make -B display-smoke player",
+            "title_id": title_id, "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "compiler_identity": compiler, "compile_result": "PASS"}
+
+
+def verify_build_evidence(report: dict, build_root: Path) -> None:
+    evidence = report.get("build_evidence")
+    if not isinstance(evidence, dict):
+        raise QualificationError("BUILD_EVIDENCE_MISSING")
+    title_id = evidence.get("title_id")
+    if title_id not in PUBLIC_LAUNCH_SURFACES or evidence.get("command") != "make -B display-smoke player":
+        raise QualificationError("BUILD_EVIDENCE_INVALID")
+    if (not re.fullmatch(r"[0-9a-f]{40,64}", str(evidence.get("source_revision", "")))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("artifact_sha256", "")))
+            or not re.fullmatch(r"[^:]+:[0-9a-f]{64}", str(evidence.get("compiler_identity", "")))
+            or evidence.get("compile_result") != "PASS"
+            or report.get("stages", {}).get("compile", {}).get("status") != "PASS"):
+        raise QualificationError("BUILD_EVIDENCE_INVALID")
+    artifact = staged_executable(build_root, title_id)
+    if not artifact.is_file():
+        raise QualificationError("BUILD_ARTIFACT_MISSING")
+    if hashlib.sha256(artifact.read_bytes()).hexdigest() != evidence["artifact_sha256"]:
+        raise QualificationError("BUILD_ARTIFACT_MISMATCH")
+
+
 def run_smoke(
     manifest_path: Path,
     *,
@@ -573,6 +604,8 @@ def run_smoke(
     input_profile: Path,
     player: Path,
     timeout_seconds: int = SMOKE_TIMEOUT_SECONDS,
+    evidence: dict | None = None,
+    compile_duration_ms: int = 0,
 ) -> tuple[int, Path | None, dict | None]:
     """Run the public smoke for one manifest. Returns (exit status, report path, report)."""
     inspect_started = time.perf_counter()
@@ -611,6 +644,10 @@ def run_smoke(
         timed_out=timed_out, duration_ms=duration_ms,
         inspect_duration_ms=inspect_duration_ms,
     )
+    if evidence is not None:
+        report["build_evidence"] = evidence
+        report["stages"]["compile"] = {"status": "PASS", "duration_ms": compile_duration_ms}
+        verify_build_evidence(report, build_root)
     write_report(report, report_path)
     return (0 if report["failure_class"] == "NONE" else 1), report_path, report
 
@@ -668,7 +705,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
         results.append((f"input profile {path.name}", problems))
     for path in args.report or []:
         try:
-            nk_cli.validate_bringup_report(load_public_json(path))
+            report = load_public_json(path)
+            nk_cli.validate_bringup_report(report)
+            verify_build_evidence(report, build_root)
             problems = []
         except (QualificationError, ValueError) as exc:
             problems = [str(exc)]
@@ -687,6 +726,31 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"OK   {label}")
     print(f"TITLE_QUALIFICATION_VALIDATE checked={len(results)} failed={failed} skipped={len(skipped)}")
     return 0 if failed == 0 else 2
+
+
+def cmd_build_smoke(args: argparse.Namespace) -> int:
+    try:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        compiler = compiler_identity(args.compiler, repository_root=ROOT)
+        if compiler.endswith(":unavailable"):
+            raise QualificationError("BUILD_COMPILER_UNAVAILABLE")
+        artifact = args.build_root / "display-smoke-v1" / "display-smoke-v1"
+        artifact.unlink(missing_ok=True)
+        artifact.with_name(artifact.name + ".exe").unlink(missing_ok=True)
+        started = time.perf_counter()
+        result = subprocess.run([args.make, "-B", "display-smoke", "player", f"CC={args.compiler}"], cwd=ROOT)
+        duration = int((time.perf_counter() - started) * 1000)
+        if result.returncode:
+            raise QualificationError(f"BUILD_FAILED: exit {result.returncode}")
+        evidence = build_evidence(args.build_root, "display-smoke-v1", compiler, revision)
+        status, _, _ = run_smoke(args.manifest, build_root=args.build_root,
+                                 input_profile=args.input_profile, player=args.player,
+                                 timeout_seconds=args.timeout, evidence=evidence,
+                                 compile_duration_ms=duration)
+        return status
+    except (QualificationError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"TITLE_QUALIFICATION status=REFUSED reason={exc}")
+        return 2
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
@@ -746,6 +810,14 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--timeout", type=int, default=SMOKE_TIMEOUT_SECONDS,
                        help="seconds before the launch is reported as LAUNCH_TIMEOUT")
     smoke.set_defaults(func=cmd_smoke)
+    build = sub.add_parser("build-smoke", help="rebuild and qualify the public display fixture")
+    build.add_argument("--make", default="make")
+    build.add_argument("--compiler", default="gcc")
+    build.add_argument("--manifest", type=Path, default=TITLE_DIR / "display-smoke.json")
+    build.add_argument("--input-profile", type=Path, default=DEFAULT_INPUT_PROFILE)
+    build.add_argument("--player", type=Path, default=ROOT / "build" / PLAYER_NAME)
+    build.add_argument("--timeout", type=int, default=SMOKE_TIMEOUT_SECONDS)
+    build.set_defaults(func=cmd_build_smoke)
     return parser
 
 
