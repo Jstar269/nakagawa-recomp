@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f65a55f453cfb4d61dcdc166e2c5c4971176c5e908eaacd2d8acd3f0c652101c"
+      "sha256": "9fae86fc34f0126a30cbff374f044aec3e02172355c6f2909a15c9fbf6186792"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2c944aee95e0a4f944c807bf9a2769fcb21ff2f801cc7380fbc3c8437e7d3d8"
+      "sha256": "4b95f1df093cc390b15dde763d0e18d8cfe1f2c3dde9b18f2ebaf8acedd65d12"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -13065,7 +13065,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d5324160cd16982b5205ab54a21d3f62e181496e4f7f3e006aa72eecb1b5e2c"
+      "sha256": "101216cdc6b7e803e4a355ee33d6f2b13956073ca774dc286a24e8cfc5b102f9"
     },
     {
       "path": "tools/ci_required.py",
@@ -14947,7 +14947,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1f7b751e1346636803a75d3bd4261a51dbea01a2957fee6ae5d372b3e2def14a"
+      "sha256": "1c3e3e18c7c83643bc0837834b6f6c93cccaabee971e566a27bf5cb462b9aa5c"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -16749,7 +16749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a737fca081c5f479f9c7d6917a427418dfab435cbd28d7f539c113ee247315f"
+      "sha256": "aa97c9a2e68f17df347326591529604515d1773af35b40c11906c070bdb15c99"
     },
     {
       "path": "tools/test_public_export.py",
