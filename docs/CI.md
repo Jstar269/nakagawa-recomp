@@ -951,19 +951,44 @@ a dead pool sends trusted runs back to hosted runners within minutes instead of 
 them queued. Only `runs-on` changes: every step, check name, `CI required` and the
 Trusted CI verdict are the same on either runner.
 
-**Guards beyond the routing.** A pull request's workflow file comes from its own head,
-so a fork could name the pool's labels itself. Three things stop that: the repository
-requires approval before a workflow runs for any outside contributor's pull request;
-the runner's job-started hook refuses every job that is not one of the trusted runs
-above (for `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch
-or a merge group), before any step runs; and each runner is an ephemeral container that takes one
-job and is discarded, has no access to the PC's files, Docker or local network, and
-holds no secrets (its one-job registration comes from the GitHub API when it starts).
+**The routing is not the security boundary.** On a `pull_request` event, `ci.yml` and
+`tools/ci_paths.py` both come from the candidate's own tree, so a fork could edit either
+one, or name the pool's labels directly, to send its jobs to the pool. The routing only
+keeps this repository's own runs where they belong. What stops a fork is:
+
+- **The runner's job-started hook, which is the boundary.** It is baked into the pool's
+  image (outside any checkout) and runs before a job's first step. It decides only from
+  values the runner provides: `GITHUB_REPOSITORY`, `GITHUB_EVENT_NAME`, `GITHUB_REF`,
+  `GITHUB_WORKFLOW_REF` and the event payload at `GITHUB_EVENT_PATH`, never from a file
+  in the repository. It refuses every job that is not one of the trusted runs above (for
+  `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch or a merge
+  group), so a fork's job that asks for the pool fails before it runs anything.
+- **The fork approval policy.** The repository requires approval before any workflow runs
+  for an outside contributor's pull request (`all_external_contributors`).
+- **Isolation.** Each runner is an ephemeral container that takes one job and is
+  discarded, has no access to the PC's files, Docker or local network, and holds no
+  secrets (its one-job registration comes from the GitHub API when it starts).
+
 `tools/test_ci_paths.py` (`SelfHostedRunnerRoutingTests`, `CodeqlRunnerRoutingTests`)
 fails if a fork or ordinary pull request could route to the pool, and
 `tools/test_public_ci_wiring.py` (`SelfHostedRunnerWiringTests`) fails if any workflow
 names the pool's labels directly or a job other than the listed ones reads
 `linux_runner` or CodeQL's `analyze_runner`.
+
+**Stuck jobs.** A run routed to the pool whose jobs then cannot start (the pool broke
+after `classify` decided) would wait for a self-hosted runner for up to 24 hours, because
+`timeout-minutes` does not count queue time. While the pool is unhealthy, its supervisor
+turns the switch off, cancels every run that has had a job queued for the pool for more
+than five minutes, and re-runs it once cancelled; the re-run classifies again and goes to
+hosted runners. If the whole PC is off, queued jobs wait and start when the pool returns.
+By hand: set `NK_SELF_HOSTED_LINUX` to `off`, then `gh run cancel <run>` and, once it has
+stopped, `gh run rerun <run>`.
+
+**The supervisor's GitHub access.** It needs to create one-job runner registrations,
+delete stale ones, set the two variables, and cancel and re-run runs: repository
+Administration, Variables and Actions, write. That credential stays on the PC, outside the
+WSL distro and every runner container; a fine-grained token scoped to this repository
+with only those permissions is the intended form.
 
 The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
 packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
