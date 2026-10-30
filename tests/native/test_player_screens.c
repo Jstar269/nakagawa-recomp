@@ -4,6 +4,7 @@
 #include "player_ui_nk.h"
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
+#include "nk_ui_waves.h"
 #include "nk_ui_widgets.h"
 
 #include <stdio.h>
@@ -1944,6 +1945,65 @@ static void test_input_guides(void) {
 
 /* #1302: Settings in the next UI. Every control returns the op main.c runs with
    the existing handlers, and each page fits the minimum window. */
+/* The waves a launcher frame at now_s queues under these display settings, and
+   whether the frame asks to be woken for the next wave step. */
+static bool display_waves_at(const PlayerUiDisplay *display, double now_s,
+                             NkUiWavesCommand *out, bool *out_wakes) {
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(1280, 720, 1.0f);
+    const NkUiDrawList *draw;
+    bool found = false;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return false;
+    player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
+    nk_ui_set_viewport(ui, &viewport);
+    nk_ui_begin(ui, now_s);
+    (void)nk_ui_waves_element(ui, 1u, (NkUiRect){0.0f, 0.0f, 1280.0f, 720.0f}, 0u);
+    draw = nk_ui_end(ui);
+    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+        if (draw->cmd[i].kind == NK_UI_DRAW_CUSTOM &&
+            draw->cmd[i].custom_kind == NK_UI_CUSTOM_WAVES && draw->cmd[i].custom != NULL) {
+            memcpy(out, draw->cmd[i].custom, sizeof(*out));
+            found = true;
+        }
+    }
+    *out_wakes = nk_ui_next_wake(ui, NULL);
+    nk_ui_destroy(ui);
+    return found;
+}
+
+/* Settings > Reduce motion reaches the design system: the waves hold one frame
+   and the launcher is not woken for them. Before player_ui_apply_display the
+   launcher handed over only the prompt style, and the waves kept moving. */
+static void test_display_settings_reach_the_design_system(void) {
+    PlayerUiDisplay display;
+    NkUiWavesCommand early;
+    NkUiWavesCommand late;
+    bool wakes_early = true;
+    bool wakes_late = true;
+    memset(&display, 0, sizeof(display));
+    display.reduce_motion = true;
+    CHECK(display_waves_at(&display, 1.0, &early, &wakes_early) &&
+              display_waves_at(&display, 9.5, &late, &wakes_late),
+          "reduce motion: the launcher frame queues the waves");
+    CHECK(memcmp(early.phase, late.phase, sizeof(early.phase)) == 0 &&
+              memcmp(early.width_phase, late.width_phase, sizeof(early.width_phase)) == 0,
+          "reduce motion: the waves hold the same frame as time passes");
+    CHECK(!wakes_early && !wakes_late, "reduce motion: no wake is scheduled for the waves");
+    display.reduce_motion = false;
+    CHECK(display_waves_at(&display, 1.0, &early, &wakes_early) &&
+              display_waves_at(&display, 9.5, &late, &wakes_late),
+          "motion on: the launcher frame queues the waves");
+    CHECK(memcmp(early.phase, late.phase, sizeof(early.phase)) != 0,
+          "motion on: the waves move as time passes");
+    CHECK(wakes_early && wakes_late, "motion on: the next wave step is scheduled");
+}
+
 static void test_settings_pages(void) {
     static char dump[CASE_DUMP_CAP];
     static const struct { FlowCase which; NkUiId id; PlayerUiSettingsOp op; const char *what; }
@@ -3755,6 +3815,7 @@ int main(int argc, char **argv) {
     test_disc_cards();
     test_input_guides();
     test_settings_pages();
+    test_display_settings_reach_the_design_system();
     test_controller_and_developer_log_pages();
     test_controller_keyboard_page();
     test_controller_binding_glyphs();

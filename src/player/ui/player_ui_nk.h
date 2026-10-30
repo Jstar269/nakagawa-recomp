@@ -840,6 +840,20 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
    shown, or PLAYER_UI_ROUTE_SETTINGS on the Settings page. */
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active);
 
+/* The launcher's display settings, as every frame hands them to the design
+   system. */
+typedef struct {
+    bool reduce_motion;   /* hold the waves on one frame, and every pulse and sweep */
+} PlayerUiDisplay;
+
+/* Gives the design system the launcher's display settings and the prompt
+   style: its preferences, and the text size and UI scale in the viewport, which
+   the caller then sets with nk_ui_set_viewport. Every launcher frame goes
+   through here, so no setting is left out on the way (Reduce motion was, and
+   the waves kept moving). */
+void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
+                             NkUiPromptStyle prompt_style);
+
 /* The build date for an epoch (Unix seconds, UTC) as MM-DD-YYYY. Returns false
    for a negative epoch or a short buffer. */
 bool player_ui_build_date(long long epoch, char *out, size_t cap);

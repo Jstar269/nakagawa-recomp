@@ -1821,21 +1821,20 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player->viewport.pixel_w = pixel_w;
     player->viewport.pixel_h = pixel_h;
     player->viewport.display_scale = display_scale;
-    player->viewport.ui_scale_pct = 0;
-    player->viewport.text_size_pct = 100;
+    {
+        /* Prompts follow the last input device ("Match input"). */
+        PlayerUiDisplay display;
+        memset(&display, 0, sizeof(display));
+        display.reduce_motion = app->settings.reduce_motion;
+        player_ui_apply_display(player->ui, &player->viewport, &display,
+                                nk_ui_input_prompt_style(&player->input.input));
+    }
     /* The launcher's screens are laid out for at least its design size
        (1280 x 720); a smaller window, down to the 960 x 540 minimum, draws the
        same layout smaller instead of pushing buttons off the window. */
     player->viewport.min_logical_w = (float)PLAYER_UI_DESIGN_WIDTH;
     player->viewport.min_logical_h = (float)PLAYER_UI_DESIGN_HEIGHT;
     scale = nk_ui_scale_for_viewport(&player->viewport);
-    {
-        /* Prompts follow the last input device ("Match input"). */
-        NkUiPrefs prefs;
-        memset(&prefs, 0, sizeof(prefs));
-        prefs.prompt_style = nk_ui_input_prompt_style(&player->input.input);
-        nk_ui_set_prefs(player->ui, &prefs);
-    }
     point_to_pixel = window_w > 0 ? (float)pixel_w / (float)window_w
                                   : display_scale;
     nk_ui_sdl_input_set_event_scale(&player->input,
