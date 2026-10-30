@@ -2444,6 +2444,72 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         self.assertEqual(entry["title_name"], "Title 3", "the card names the game")
         self.assertEqual(entry["disc_version"], "1.01")
 
+    LIBRARY_LOCK_HARNESS_C = r"""#include <stdio.h>
+#include <string.h>
+#include "nk_library.h"
+
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    NkFileLock lock;
+    if (strcmp(argv[1], "try") == 0) {
+        puts(nk_library_lock_acquire(&lock, argv[2], 0) == NK_OK ? "ACQUIRED" : "BUSY");
+        nk_platform_file_lock_release(&lock);
+        return 0;
+    }
+    if (nk_library_lock_acquire(&lock, argv[2], 0) != NK_OK) return 3;
+    puts("HELD");
+    fflush(stdout);
+    while (getchar() != EOF) {
+    }
+    nk_platform_file_lock_release(&lock);
+    return 0;
+}
+"""
+
+    def test_player_library_lock_is_the_bringup_lock(self) -> None:
+        """The player's library writer (src/core/nk_library.c) and the bring-up take
+        the same lock, each waiting for the other (#1768)."""
+        gcc = shutil.which("gcc")
+        if not gcc:
+            self.skipTest("gcc not available")
+        harness_c = self.temp_dir / "library_lock_harness.c"
+        harness_c.write_text(self.LIBRARY_LOCK_HARNESS_C, encoding="utf-8", newline="\n")
+        exe = self.temp_dir / ("library_lock_harness.exe" if sys.platform == "win32"
+                               else "library_lock_harness")
+        core = REPO_ROOT / "src" / "core"
+        platform_src = core / ("nk_platform_win32.c" if sys.platform == "win32" else "nk_platform_posix.c")
+        build = subprocess.run(
+            [gcc, "-std=c99", "-Wall", "-Wextra", "-I", str(core), str(harness_c),
+             str(core / "nk_library.c"), str(core / "nk_json.c"), str(platform_src),
+             *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
+             "-o", str(exe)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(build.returncode, 0, build.stderr)
+        library = self.temp_dir / "library.json"
+
+        def try_native() -> str:
+            return subprocess.run([str(exe), "try", str(library)], capture_output=True,
+                                  text=True, check=True, timeout=30).stdout.strip()
+
+        with nk_cli._library_lock(self.temp_dir):
+            self.assertEqual(try_native(), "BUSY")
+        self.assertEqual(try_native(), "ACQUIRED")
+
+        holder = subprocess.Popen([str(exe), "hold", str(library)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "HELD")
+            with self.assertRaises(nk_cli.PackageBuildError):
+                with nk_cli._library_lock(self.temp_dir, timeout_seconds=0.2):
+                    pass
+        finally:
+            holder.stdin.close()
+            self.assertEqual(holder.wait(timeout=30), 0)
+            holder.stdout.close()
+        with nk_cli._library_lock(self.temp_dir, timeout_seconds=5):
+            pass
+
     def test_bringup_builds_into_a_shared_data_folder(self) -> None:
         """bringup --user-data-root builds into that folder, not <work-dir>/user-data."""
         shared = self.temp_dir / "collection-data"
