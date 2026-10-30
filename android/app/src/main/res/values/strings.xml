@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 the Nakagawa Recomp authors -->
+<resources>
+    <string name="app_name">Nakagawa</string>
+</resources>

@@ -8,7 +8,7 @@ but a successful object compile is not the same as a linked, running port.
 | Area | Current state | Porting consequence |
 | --- | --- | --- |
 | Recompiler and guest memory | Mostly ISO C; guest arena is a 192 MiB host allocation | Compile on 64-bit targets, then validate address arithmetic, alignment, and memory budgets per device. |
-| Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on POSIX | Suitable for an initial glibc Linux port. Android and consoles need a supported platform backend behind `sr_coro`. |
+| Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on glibc/musl POSIX; on Android (bionic has no `swapcontext`) a stack-switch routine for x86-64 System V and AArch64, also selectable elsewhere with `SR_CORO_BACKEND_ASM` (`make coro-selftest-asm`) | Consoles need a supported platform backend behind `sr_coro`. |
 | Window, input, and presentation | SDL3/Vulkan path exists, but public `gui_*` functions are inside Windows-only `gui.c`; GDI is the fallback | Move the SDL path into platform-neutral code and keep GDI in a Windows backend. |
 | Audio | SDL3 audio stream | Portable in principle; validate device lifecycle, latency, and suspend/resume on each platform. |
 | Video decode | The common project-authored PSMF producer owns stream demux and AU boundaries; Windows uses Media Foundation; elsewhere the pinned, vendored FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, generic C, statically linked, no system FFmpeg) is the default `sr_h264` backend, and `H264_FFMPEG=0` keeps the fail-closed null backend | Android needs a build of the same subset for its ABI; validate decode speed on target devices (the C-only DSP paths are slower than SIMD). |
@@ -75,10 +75,16 @@ Android and similar hosts are a planned target (maintainer decision, 2026-10-23)
 C toolchain for the user's own game, because the project never publishes recompiled game code; a
 user may build on their PC and move the result to their own device (`AGENTS.md`, section 5).
 
-1. Drive the native target with the Android NDK's CMake toolchain and Gradle packaging.
-2. Add an Android-compatible coroutine backend instead of assuming `ucontext` availability.
+Building and running it: [`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md).
+
+1. Drive the native target with the Android NDK's CMake toolchain and Gradle packaging. Done for
+   the launcher and the showcase demos (`android/`), arm64-v8a and x86_64.
+2. Add an Android-compatible coroutine backend instead of assuming `ucontext` availability. Done
+   (`src/rt/sr_coro.c`). The scoped guest FP window has an AArch64 FPCR backend
+   (`src/rt/fp_convert.h`); FS=1 flushing is done in software so it gives the x86 FTZ bits.
 3. Implement app lifecycle, scoped-storage/content access, touch/controller input, audio focus,
-   and suspend/resume behavior.
+   and suspend/resume behavior. A title runs in its own Android process (`:title`), the Android
+   form of the desktop's one child process per title.
 4. Select and validate a platform-appropriate video decoder.
 5. Measure the guest arena and graphics memory footprint on representative 64-bit ARM devices.
 

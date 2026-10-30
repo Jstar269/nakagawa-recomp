@@ -15,7 +15,10 @@
 extern "C" {
 #endif
 
+#ifndef NK_PLAYER_APP_TYPEDEF   /* also defined by player_state.h */
+#define NK_PLAYER_APP_TYPEDEF
 typedef struct PlayerApp PlayerApp;
+#endif
 typedef struct PlayerUiNk PlayerUiNk;
 typedef struct NkUiRouter NkUiRouter;
 struct NkUiImage;

@@ -498,7 +498,15 @@ if(BUILD_PLAYER)
         ${NK_UI_PLAYER_HOST_SOURCES}
     )
 
-    add_executable(nakagawa_player ${PLAYER_SOURCES})
+    if(ANDROID)
+        # Android starts the launcher from Java (SDLActivity), which loads libmain.so and calls
+        # its main(); see android/ and docs/ANDROID_DEVELOPMENT.md.
+        add_library(nakagawa_player SHARED ${PLAYER_SOURCES})
+        set_target_properties(nakagawa_player PROPERTIES OUTPUT_NAME main)
+        target_link_libraries(nakagawa_player PRIVATE log android)
+    else()
+        add_executable(nakagawa_player ${PLAYER_SOURCES})
+    endif()
     target_include_directories(nakagawa_player PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/player
         ${CMAKE_CURRENT_SOURCE_DIR}/src/player/ui
@@ -605,3 +613,247 @@ else()
 endif()
 set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# -----------------------------------------------------------------------------
+# Title runtime: one game's generated C linked with the runtime
+# -----------------------------------------------------------------------------
+# The Makefile links a title's runtime as an executable (driven by tools/title_codegen_plan.py).
+# nk_add_title_runtime() builds the same translation units from a package's generated sources
+# with CMake; the Android build (android/) uses it to make libnk_title_<id>.so. The inventory
+# mirrors the Makefile's RT_SRCS (public backends, POSIX platform), RT_GE_O, ATRAC3P_SRCS plus
+# the bridge, and H264_SUB_SRCS; tools/test_android_build.py checks that they agree.
+set(NK_RUNTIME_SOURCES
+    src/rt/recomp.c
+    src/rt/flight_recorder.c
+    src/rt/cpu_lle.c
+    src/rt/domain_mode.c
+    src/rt/nested_frames.c
+    src/rt/stale_code.c
+    src/rt/guest_interp.c
+    src/rt/title_config.c
+    src/rt/vfpu_tables.c
+    src/rt/archive_vfs.c
+    src/rt/debug.c
+    src/rt/watchpoints_file.c
+    src/rt/guest_printf.c
+    src/rt/perf.c
+    src/rt/fbcap_policy.c
+    src/rt/fbcap.c
+    src/rt/ge_capture.c
+    src/rt/vfpu_interp.c
+    src/rt/hle.c
+    src/rt/audio_resample.c
+    src/rt/flash0_font.c
+    src/rt/mp3_bridge.c
+    src/core/nk_xb.c
+    src/rt/hle_power.c
+    src/rt/prx_loader.c
+    src/rt/sched.c
+    src/rt/sr_coro.c
+    src/rt/iso_public.c
+    src/rt/pgd_unavailable.c
+    src/rt/mpeg.c
+    src/rt/psmf_producer.c
+    src/rt/pgf_public.c
+    src/rt/gui.c
+    src/rt/audio_unavailable.c
+    src/rt/h264_mf.c
+    src/rt/h264_null.c
+    src/rt/h264_ffmpeg.c
+    src/rt/savedata.c
+    src/rt/osk_win.c
+    src/rt/osk_text_entry.c
+    src/rt/osk_overlay.c
+    src/rt/osk_overlay_paint.c
+    src/rt/driver.c
+    src/rt/gpu_sdl3vk/sdl3vk.c
+    src/rt/gpu_sdl3vk/ge_gpu.c
+    src/core/nk_input_profile.c
+    src/core/nk_font.c
+    src/core/nk_json.c
+    src/core/nk_platform_posix.c
+)
+set(NK_RUNTIME_GE_SOURCE src/rt/ge.c)
+set(NK_RUNTIME_ATRAC3P_SOURCES
+    src/rt/atrac3p/atrac3p_api.c
+    src/rt/atrac3p/libavcodec/atrac.c
+    src/rt/atrac3p/libavcodec/atrac3.c
+    src/rt/atrac3p/libavcodec/atrac3plus.c
+    src/rt/atrac3p/libavcodec/atrac3plusdec.c
+    src/rt/atrac3p/libavcodec/atrac3plusdsp.c
+    src/rt/atrac3p/libavcodec/bitstream.c
+    src/rt/atrac3p/libavcodec/fft_float.c
+    src/rt/atrac3p/libavcodec/fft_init_table.c
+    src/rt/atrac3p/libavcodec/mdct_float.c
+    src/rt/atrac3p/libavcodec/sinewin.c
+    src/rt/atrac3p/libavutil/float_dsp.c
+    src/rt/atrac3p/libavutil/intmath.c
+    src/rt/atrac3p/libavutil/log2_tab.c
+    src/rt/atrac3p/libavutil/mem.c
+    src/rt/atrac3p/libavutil/reverse.c
+)
+set(NK_RUNTIME_ATRAC3P_BRIDGE_SOURCE src/rt/atrac3p_bridge.c)
+set(NK_RUNTIME_H264_SUB_SOURCES
+    src/rt/h264_ffmpeg_sub/nk_h264_api.c
+    src/rt/h264_ffmpeg_sub/libavcodec/allcodecs.c
+    src/rt/h264_ffmpeg_sub/libavcodec/atsc_a53.c
+    src/rt/h264_ffmpeg_sub/libavcodec/avcodec.c
+    src/rt/h264_ffmpeg_sub/libavcodec/avpacket.c
+    src/rt/h264_ffmpeg_sub/libavcodec/bitstream.c
+    src/rt/h264_ffmpeg_sub/libavcodec/bitstream_filters.c
+    src/rt/h264_ffmpeg_sub/libavcodec/bsf.c
+    src/rt/h264_ffmpeg_sub/libavcodec/cabac.c
+    src/rt/h264_ffmpeg_sub/libavcodec/codec_desc.c
+    src/rt/h264_ffmpeg_sub/libavcodec/codec_par.c
+    src/rt/h264_ffmpeg_sub/libavcodec/decode.c
+    src/rt/h264_ffmpeg_sub/libavcodec/encode.c
+    src/rt/h264_ffmpeg_sub/libavcodec/error_resilience.c
+    src/rt/h264_ffmpeg_sub/libavcodec/golomb.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h2645_parse.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_cabac.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_cavlc.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_direct.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_loopfilter.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_mb.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_parse.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_picture.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_ps.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_refs.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_sei.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264_slice.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264chroma.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264data.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264dec.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264dsp.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264idct.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264pred.c
+    src/rt/h264_ffmpeg_sub/libavcodec/h264qpel.c
+    src/rt/h264_ffmpeg_sub/libavcodec/mathtables.c
+    src/rt/h264_ffmpeg_sub/libavcodec/me_cmp.c
+    src/rt/h264_ffmpeg_sub/libavcodec/null_bsf.c
+    src/rt/h264_ffmpeg_sub/libavcodec/options.c
+    src/rt/h264_ffmpeg_sub/libavcodec/profiles.c
+    src/rt/h264_ffmpeg_sub/libavcodec/simple_idct.c
+    src/rt/h264_ffmpeg_sub/libavcodec/startcode.c
+    src/rt/h264_ffmpeg_sub/libavcodec/utils.c
+    src/rt/h264_ffmpeg_sub/libavcodec/videodsp.c
+    src/rt/h264_ffmpeg_sub/libavutil/avstring.c
+    src/rt/h264_ffmpeg_sub/libavutil/bprint.c
+    src/rt/h264_ffmpeg_sub/libavutil/buffer.c
+    src/rt/h264_ffmpeg_sub/libavutil/channel_layout.c
+    src/rt/h264_ffmpeg_sub/libavutil/dict.c
+    src/rt/h264_ffmpeg_sub/libavutil/display.c
+    src/rt/h264_ffmpeg_sub/libavutil/error.c
+    src/rt/h264_ffmpeg_sub/libavutil/eval.c
+    src/rt/h264_ffmpeg_sub/libavutil/fifo.c
+    src/rt/h264_ffmpeg_sub/libavutil/file_open.c
+    src/rt/h264_ffmpeg_sub/libavutil/frame.c
+    src/rt/h264_ffmpeg_sub/libavutil/hwcontext.c
+    src/rt/h264_ffmpeg_sub/libavutil/imgutils.c
+    src/rt/h264_ffmpeg_sub/libavutil/log.c
+    src/rt/h264_ffmpeg_sub/libavutil/log2_tab.c
+    src/rt/h264_ffmpeg_sub/libavutil/mathematics.c
+    src/rt/h264_ffmpeg_sub/libavutil/mem.c
+    src/rt/h264_ffmpeg_sub/libavutil/opt.c
+    src/rt/h264_ffmpeg_sub/libavutil/parseutils.c
+    src/rt/h264_ffmpeg_sub/libavutil/pixdesc.c
+    src/rt/h264_ffmpeg_sub/libavutil/random_seed.c
+    src/rt/h264_ffmpeg_sub/libavutil/rational.c
+    src/rt/h264_ffmpeg_sub/libavutil/reverse.c
+    src/rt/h264_ffmpeg_sub/libavutil/samplefmt.c
+    src/rt/h264_ffmpeg_sub/libavutil/sha.c
+    src/rt/h264_ffmpeg_sub/libavutil/stereo3d.c
+    src/rt/h264_ffmpeg_sub/libavutil/time.c
+    src/rt/h264_ffmpeg_sub/libavutil/timecode.c
+    src/rt/h264_ffmpeg_sub/libavutil/utils.c
+    src/rt/h264_ffmpeg_sub/libavutil/video_enc_params.c
+)
+
+# nk_add_title_runtime(<target> <package-dir> <title-id>)
+# <package-dir> holds a package's generated sources: <title-id>_recomp.c, <title-id>_recomp_<n>.c,
+# <title-id>_recomp_funcs.h, any nk_lib_*.c, and sr_title_config.h. It is a build input outside
+# the repository (generated C is never committed). Needs the SDL3::SDL3 target, and
+# SDL3_ttf::SDL3_ttf for its headers (the library itself is loaded at run time).
+function(nk_add_title_runtime target package_dir title_id)
+    # Called from another project (android/app): the repository root and its source lists are
+    # this file's directory and that directory's variables, not the caller's.
+    set(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+    foreach(list_name NK_RUNTIME_SOURCES NK_RUNTIME_GE_SOURCE NK_RUNTIME_ATRAC3P_SOURCES
+            NK_RUNTIME_ATRAC3P_BRIDGE_SOURCE NK_RUNTIME_H264_SUB_SOURCES NK_UI_CORE_SOURCES
+            NK_UI_EDGE_SOURCES NK_UI_OVERLAY_C9C_SOURCES)
+        get_directory_property(${list_name} DIRECTORY "${root}" DEFINITION ${list_name})
+    endforeach()
+    file(GLOB generated CONFIGURE_DEPENDS
+        "${package_dir}/${title_id}_recomp.c"
+        "${package_dir}/${title_id}_recomp_*.c"
+        "${package_dir}/nk_lib_*.c")
+    if(NOT generated OR NOT EXISTS "${package_dir}/sr_title_config.h")
+        message(FATAL_ERROR "nk_add_title_runtime: ${package_dir} has no generated sources for "
+            "${title_id} (expected ${title_id}_recomp*.c and sr_title_config.h)")
+    endif()
+    list(TRANSFORM NK_RUNTIME_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE rt_sources)
+    list(TRANSFORM NK_UI_CORE_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE ui_sources)
+    list(TRANSFORM NK_UI_EDGE_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE ui_edge)
+    list(TRANSFORM NK_UI_OVERLAY_C9C_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE overlay)
+    list(TRANSFORM NK_RUNTIME_ATRAC3P_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE atrac)
+    list(TRANSFORM NK_RUNTIME_H264_SUB_SOURCES PREPEND "${root}/" OUTPUT_VARIABLE h264sub)
+    set(rt_defs SR_SDL3VK SR_FLIGHT_RECORDER_LINKED PERF_AOT_INSTRUCTIONS=0 SR_PUBLIC_SAFE
+        SR_H264_FFMPEG)
+
+    # The runtime proper: the Makefile's CFLAGS, with RT_NK_UI_FLAGS and HLE_INCLUDES, which add
+    # only include paths and the NK_UI_WITH_* switches the UI files read. The top-level -Werror
+    # is the host tests' policy; the Makefile builds the runtime without it.
+    add_library(${target}_rt OBJECT ${rt_sources} ${ui_sources} ${ui_edge}
+        "${root}/src/ui/backend/nk_ui_sdlr.c" ${overlay} "${root}/src/rt/overlay/overlay_host.c")
+    target_include_directories(${target}_rt PRIVATE
+        "${root}/src/rt" "${root}/src/core" "${root}/src/ui" "${root}/src/rt/overlay"
+        "${root}/third_party/clay" "${root}/src/rt/atrac3p" "${root}/src/rt/atrac3p/libavcodec"
+        "${root}/src/rt/atrac3p/libavutil" "${package_dir}")
+    target_compile_options(${target}_rt PRIVATE -O2 -fno-strict-aliasing -Wno-error)
+    target_compile_definitions(${target}_rt PRIVATE ${rt_defs} NK_UI_WITH_SDL NK_UI_WITH_SDL3
+        NK_UI_WITH_SDL_TTF)
+    target_link_libraries(${target}_rt PRIVATE SDL3::SDL3)
+    if(TARGET SDL3_ttf::SDL3_ttf)
+        target_include_directories(${target}_rt PRIVATE
+            $<TARGET_PROPERTY:SDL3_ttf::SDL3_ttf,INTERFACE_INCLUDE_DIRECTORIES>)
+    endif()
+
+    # RT_GE_O: GE_CFLAGS.
+    add_library(${target}_ge OBJECT "${root}/${NK_RUNTIME_GE_SOURCE}")
+    target_include_directories(${target}_ge PRIVATE "${root}/src/rt")
+    target_compile_options(${target}_ge PRIVATE -O2 -fno-math-errno -Wno-error)
+    target_compile_definitions(${target}_ge PRIVATE SR_SDL3VK)
+
+    # The ATRAC3+ import and its bridge: CFLAGS plus the import's include paths.
+    add_library(${target}_atrac OBJECT ${atrac} "${root}/${NK_RUNTIME_ATRAC3P_BRIDGE_SOURCE}")
+    target_include_directories(${target}_atrac PRIVATE "${root}/src/rt" "${root}/src/core"
+        "${root}/src/rt/atrac3p" "${root}/src/rt/atrac3p/libavcodec"
+        "${root}/src/rt/atrac3p/libavutil")
+    target_compile_options(${target}_atrac PRIVATE -O2 -fno-strict-aliasing -Wno-error)
+    target_compile_definitions(${target}_atrac PRIVATE ${rt_defs})
+    target_link_libraries(${target}_atrac PRIVATE SDL3::SDL3)
+
+    # The FFmpeg H.264 subset: the Makefile's h264sub_% rule (upstream code, warnings off).
+    add_library(${target}_h264 OBJECT ${h264sub})
+    target_include_directories(${target}_h264 PRIVATE "${root}/src/rt/h264_ffmpeg_sub"
+        "${root}/src/rt")
+    target_compile_options(${target}_h264 PRIVATE -O2 -fno-strict-aliasing -w -std=c11
+        -include "${root}/src/rt/h264_ffmpeg_sub/nk_h264_symbols.h")
+    target_compile_definitions(${target}_h264 PRIVATE ${rt_defs} HAVE_AV_CONFIG_H _ISOC99_SOURCE
+        _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE _POSIX_C_SOURCE=200112 _XOPEN_SOURCE=600)
+
+    # Generated C: RECOMP_FLAGS (-O0 -w), with the package directory on the include path.
+    add_library(${target}_gen OBJECT ${generated})
+    target_include_directories(${target}_gen PRIVATE "${package_dir}" "${root}/src/rt")
+    target_compile_options(${target}_gen PRIVATE -O0 -w)
+    target_compile_definitions(${target}_gen PRIVATE SR_SDL3VK SR_FLIGHT_RECORDER_LINKED)
+
+    add_library(${target} SHARED
+        $<TARGET_OBJECTS:${target}_rt> $<TARGET_OBJECTS:${target}_ge>
+        $<TARGET_OBJECTS:${target}_atrac> $<TARGET_OBJECTS:${target}_h264>
+        $<TARGET_OBJECTS:${target}_gen>)
+    target_link_libraries(${target} PRIVATE SDL3::SDL3 vulkan m)
+    if(ANDROID)
+        target_link_libraries(${target} PRIVATE log android)
+    endif()
+endfunction()

@@ -84,7 +84,8 @@ ALLOWLIST: Mapping[str, tuple[int, str]] = {
         5, "the Windows-only ZIP install (tar.exe); nk_update_install_supported() "
            "tells callers"),
     "src/ui/nk_ui_ttf.c": (
-        2, "the SDL3_ttf default name: the UI library links no platform layer"),
+        3, "the SDL3_ttf default name on Win32, macOS and Android (APK libraries carry "
+           "no version): the UI library links no platform layer"),
 }
 
 

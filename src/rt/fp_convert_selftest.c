@@ -137,6 +137,25 @@ static const ScalarOpVector kScalarOpVectors[] = {
     {"mul FS=1 RN normal",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000000u, 0x419317b5u},
     {"mul RM+FS combined",  SR_FP_OP_MUL, 0x3e97d668u, 0x42780000u, 0x01000001u, 0x419317b4u},
     {"mul subnormal input exact", SR_FP_OP_MUL, 0x00000001u, 0x40000000u, 0u, 0x00000002u},
+    /* FS=1 tininess is decided after rounding (the x86 FTZ result, which the AArch64 software
+     * flush reproduces): an exact result just below 2^-126 that gradual underflow rounds up to
+     * 2^-126 is still tiny and flushes, while an exact 2^-126 is not tiny. */
+    {"mul FS=1 band RN",    SR_FP_OP_MUL, 0x3f7fffffu, 0x00800000u, 0x01000000u, 0x00000000u},
+    {"mul FS=0 band RN",    SR_FP_OP_MUL, 0x3f7fffffu, 0x00800000u, 0u,          0x00800000u},
+    {"mul FS=1 band RP",    SR_FP_OP_MUL, 0x3f7fffffu, 0x00800000u, 0x01000002u, 0x00000000u},
+    {"mul FS=1 band RM",    SR_FP_OP_MUL, 0xbf7fffffu, 0x00800000u, 0x01000003u, 0x80000000u},
+    {"mul FS=1 band RZ",    SR_FP_OP_MUL, 0x3f7fffffu, 0x00800000u, 0x01000001u, 0x00000000u},
+    {"mul FS=1 band RP b",  SR_FP_OP_MUL, 0x0047c5bdu, 0x3fe446f0u, 0x01000002u, 0x00000000u},
+    {"mul FS=1 band RM b",  SR_FP_OP_MUL, 0x82e8a427u, 0x3d0cda21u, 0x01000003u, 0x80000000u},
+    {"mul FS=1 exact min",  SR_FP_OP_MUL, 0x3f800000u, 0x00800000u, 0x01000000u, 0x00800000u},
+    {"div FS=1 band RP",    SR_FP_OP_DIV, 0x00800000u, 0x3f800001u, 0x01000002u, 0x00000000u},
+    {"div FS=0 band RP",    SR_FP_OP_DIV, 0x00800000u, 0x3f800001u, 2u,          0x00800000u},
+    {"div FS=1 tiny RN",    SR_FP_OP_DIV, 0x00800000u, 0x3f800001u, 0x01000000u, 0x00000000u},
+    {"div FS=1 band RM",    SR_FP_OP_DIV, 0x886a6cafu, 0x476a6cb0u, 0x01000003u, 0x80000000u},
+    {"div FS=1 band RP b",  SR_FP_OP_DIV, 0x84685443u, 0xc3685444u, 0x01000002u, 0x00000000u},
+    {"add FS=1 tiny sum",   SR_FP_OP_ADD, 0x00800000u, 0x80000001u, 0x01000000u, 0x00000000u},
+    {"add FS=0 tiny sum",   SR_FP_OP_ADD, 0x00800000u, 0x80000001u, 0u,          0x007fffffu},
+    {"sub FS=1 tiny diff",  SR_FP_OP_SUB, 0x00000003u, 0x00000001u, 0x01000002u, 0x00000000u},
 };
 
 /* CVT.S.W honors guest RM near the binary32 precision boundary. */
@@ -156,6 +175,17 @@ static const CvtSwVector kCvtSwVectors[] = {
     {"cvt.s.w exact 7",     0x00000007u, 2u,          0x40e00000u},
     {"cvt.s.w exact -1",    0xffffffffu, 1u,          0xbf800000u},
 };
+
+#if defined(__SSE2__) || defined(_M_X64) || defined(__i386__)
+#define HOST_X86 1
+static void host_env_set(uint32_t word) { _mm_setcsr(word); }
+#elif defined(__aarch64__)
+#define HOST_AARCH64 1
+static void host_env_set(uint32_t word) {
+    const uint64_t fpcr = word;
+    __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr) : "memory");
+}
+#endif
 
 static uint32_t apply_scalar_op(unsigned op, float a, float b, uint32_t fcr31) {
     float r;
@@ -281,8 +311,12 @@ int main(void) {
      * environment bit-for-bit -- including that DAZ bit itself. */
     {
         const uint32_t csr_base = sr_fpu_env_save();
+#if defined(HOST_X86)
         const uint32_t csr_hostile = csr_base | (1u << 6);   /* MXCSR.DAZ */
-        _mm_setcsr(csr_hostile);
+#else
+        const uint32_t csr_hostile = csr_base | (1u << 24);  /* FPCR.FZ: flushes inputs too */
+#endif
+        host_env_set(csr_hostile);
         const uint32_t got = apply_scalar_op(SR_FP_OP_MUL,
                                              float_from_bits(0x00000001u),  /* min subnormal */
                                              float_from_bits(0x40000000u),  /* exactly 2.0   */
@@ -296,7 +330,7 @@ int main(void) {
                     csr_hostile, csr_after);
             g_failures++;
         }
-        _mm_setcsr(csr_base);   /* leave the process environment as found */
+        host_env_set(csr_base);   /* leave the process environment as found */
     }
 
     /* Full hostile-host matrix: every ambient control field that could bias a
@@ -308,6 +342,7 @@ int main(void) {
     {
         struct HostileBase { const char *name; uint32_t set; uint32_t clear; };
         static const struct HostileBase bases[] = {
+#if defined(HOST_X86)
             /* Labels name the HOST x86 MXCSR RC field encoding (00=RN,
              * 01=-inf, 10=+inf, 11=zero), which differs from the MIPS FCSR
              * RM order the guest uses; the helper translates explicitly. */
@@ -319,6 +354,17 @@ int main(void) {
             {"sticky DE|UE|PE",  0x32u,          0u},
             {"fully unmasked",   0u,             0x1f80u},
             {"combined hostile", (3u << 13) | (1u << 15) | (1u << 6) | 0x32u, 0x1f80u},
+#else
+            /* FPCR.RMode encoding (00=RN, 01=+inf, 10=-inf, 11=zero), FZ (flushes inputs and
+             * outputs), DN (default NaN). Trap enables are left alone: a CPU without trap
+             * support reads them back as zero, so they cannot be set reliably. */
+            {"RMode=arm +inf",   1u << 22,       0u},
+            {"RMode=arm -inf",   2u << 22,       0u},
+            {"RMode=arm zero",   3u << 22,       0u},
+            {"FZ",               1u << 24,       0u},
+            {"DN",               1u << 25,       0u},
+            {"combined hostile", (3u << 22) | (1u << 24) | (1u << 25), 0u},
+#endif
         };
         struct GuestCase { const char *name; unsigned op; uint32_t a, b, fcr31, want; };
         static const struct GuestCase cases[] = {
@@ -329,8 +375,8 @@ int main(void) {
         const uint32_t csr_base = sr_fpu_env_save();
         char label[128];
         for (size_t bi = 0; bi < sizeof(bases) / sizeof(bases[0]); bi++) {
-            const uint32_t hostile = (csr_base | bases[bi].set) & ~bases[bi].clear;
-            _mm_setcsr(hostile);
+            host_env_set((csr_base | bases[bi].set) & ~bases[bi].clear);
+            const uint32_t hostile = sr_fpu_env_save();   /* as the CPU accepted it */
             for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ci++) {
                 snprintf(label, sizeof(label), "%s under %s", cases[ci].name, bases[bi].name);
                 check_word(label, "hostile-matrix",
@@ -353,8 +399,80 @@ int main(void) {
                 g_failures++;
             }
         }
-        _mm_setcsr(csr_base);   /* leave the process environment as found */
+        host_env_set(csr_base);   /* leave the process environment as found */
     }
+
+#if defined(HOST_X86)
+    /* The software FS flush (the AArch64 backend's) against this host's hardware FTZ: the same
+     * operations under every guest RM, aimed at results near 2^-126 and at the after-rounding band
+     * just below it, must give identical bits. A fixed generator keeps the cases reproducible. */
+    {
+        uint64_t state = 0x9e3779b97f4a7c15ull;
+        unsigned band = 0, mismatches = 0;
+        const unsigned cases = 400000u;
+        for (unsigned i = 0; i < cases; i++) {
+            uint32_t w[6];
+            for (unsigned k = 0; k < 6u; k++) {
+                state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+                w[k] = (uint32_t)(state >> 11);
+            }
+            const unsigned op = w[0] & 3u, rm = (w[0] >> 2) & 3u;
+            const uint32_t sign = (w[0] & 16u) << 27;
+            const int be = (int)(w[1] % 60u) - 30;
+            uint32_t bb = ((w[0] & 32u) << 26) | ((uint32_t)(127 + be) << 23) | (w[2] & 0x7fffffu);
+            uint32_t ab;
+            if (op >= SR_FP_OP_MUL) {
+                if (w[3] & 1u) {   /* aim at the band just below 2^-126 */
+                    const double t = 0x1p-126 - 0x1p-151 * (double)(1u + w[4] % 4u);
+                    const double bd = (double)float_from_bits(bb);
+                    const float af = (float)(op == SR_FP_OP_MUL ? t / bd : t * bd);
+                    ab = ((sr_float_bits(af) + w[5] % 3u - 1u) & 0x7fffffffu) | sign;
+                } else {
+                    const int ae = (op == SR_FP_OP_MUL ? -126 - be : -126 + be) + (int)(w[4] % 5u) - 2;
+                    ab = ae <= -127 ? sign | (w[5] & 0x7fffffu)
+                                    : sign | ((uint32_t)(127 + ae) << 23) | (w[5] & 0x7fffffu);
+                }
+            } else {
+                ab = sign | (w[3] % 0x01800000u);
+                bb = (ab ^ 0x80000000u) + w[4] % 64u - 32u;
+            }
+            const float a = float_from_bits(ab), b = float_from_bits(bb);
+            const uint32_t hw = apply_scalar_op(op, a, b, rm | SR_FCR31_FS);
+            volatile float va = a, vb = b, vr;
+            const uint32_t saved = sr_fpu_env_save();
+            sr_fpu_env_apply_guest(rm);
+            sr_fpu_scalar_barrier();
+            switch (op) {
+                case SR_FP_OP_ADD: vr = va + vb; vr = sr_fpu_soft_ftz_sum(vr); break;
+                case SR_FP_OP_SUB: vr = va - vb; vr = sr_fpu_soft_ftz_sum(vr); break;
+                case SR_FP_OP_MUL: vr = va * vb; vr = sr_fpu_soft_ftz_mul(va, vb, vr); break;
+                default:           vr = va / vb; vr = sr_fpu_soft_ftz_div(va, vb, vr); break;
+            }
+            sr_fpu_scalar_barrier();
+            sr_fpu_env_restore(saved);
+            const uint32_t soft = sr_float_bits(vr);
+            if ((apply_scalar_op(op, a, b, rm) & 0x7fffffffu) == 0x00800000u &&
+                (hw & 0x7fffffffu) == 0u) {
+                band++;
+            }
+            if (soft != hw && !((hw & 0x7f800000u) == 0x7f800000u && (hw & 0x007fffffu) != 0u)) {
+                if (mismatches++ < 8u) {
+                    fprintf(stderr, "FAIL: soft FS flush op=%u rm=%u a=0x%08x b=0x%08x "
+                                    "hardware=0x%08x soft=0x%08x\n", op, rm, ab, bb, hw, soft);
+                }
+            }
+        }
+        g_checks++;
+        if (mismatches != 0u || band == 0u) {
+            fprintf(stderr, "FAIL: soft FS flush differential: %u mismatches, %u band cases in %u\n",
+                    mismatches, band, cases);
+            g_failures++;
+        } else {
+            printf("fp_convert_selftest: soft FS flush matches hardware FTZ in %u cases "
+                   "(%u after-rounding band cases)\n", cases, band);
+        }
+    }
+#endif
 
     /* Compile-time folding guard: operands supplied as direct expressions are
      * fully visible to the optimizer, so a helper whose arithmetic could be

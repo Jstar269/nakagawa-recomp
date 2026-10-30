@@ -203,3 +203,18 @@ keys.json
 keys.txt
 keys.dat
 *.keys
+
+# Android (android/): Gradle and CMake outputs, the local SDK pointer, IDE state and the
+# generated Gradle wrapper scripts stay out of the repository; gradle-wrapper.properties is the pin.
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+/android/.idea/
+/android/*.iml
+/android/app/*.iml
+/android/gradlew
+/android/gradlew.bat
+/android/gradle/wrapper/gradle-wrapper.jar
+/android/.kotlin/

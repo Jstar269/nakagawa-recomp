@@ -4046,6 +4046,8 @@ int main(int argc, char *argv[]) {
     /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
     (void)nk_platform_init_utf8_main(&argc, &argv);
 
+    /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
+    (void)nk_platform_host_startup("nakagawa");
     if (!player_apply_user_data_root(argc, argv)) return 2;
     /* Compressed disc images: CHD is read through the vendored libchdr. */
     nk_disc_chd_register();

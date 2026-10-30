@@ -441,7 +441,13 @@ typedef struct {
     void *userdata;
 } PlayerPsnConvertCallbacks;
 
-typedef struct PlayerApp {
+/* Also forward-declared by ui/player_ui_nk.h; C99 allows one typedef of a name. */
+#ifndef NK_PLAYER_APP_TYPEDEF
+#define NK_PLAYER_APP_TYPEDEF
+typedef struct PlayerApp PlayerApp;
+#endif
+
+struct PlayerApp {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
     PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];
@@ -599,7 +605,7 @@ typedef struct PlayerApp {
     bool psn_conversion_active;
     bool psn_conversion_requested;
     PlayerView psn_conversion_return_view;
-} PlayerApp;
+};
 
 /* State management API */
 void player_app_init(PlayerApp *app);
