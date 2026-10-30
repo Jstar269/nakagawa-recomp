@@ -29,6 +29,7 @@ Live GitHub object existence/state is intentionally handled by ``audit_public_is
 from __future__ import annotations
 
 import argparse
+import ast
 import pathlib
 import re
 import subprocess
@@ -819,10 +820,72 @@ def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
     return errors
 
 
+TOOLS_README_ROW_PAT = re.compile(r"^\| `([A-Za-z0-9_]+\.py)` \| (.*) \|\s*$")
+TOOL_SUMMARY_MIN_CHARS = 12
+
+
+def tool_module_summary(path: pathlib.Path) -> str:
+    """Return a tool module's index summary: its docstring's first paragraph, on one line.
+
+    A new tool carries its own index entry this way, so adding one never edits the shared
+    table in tools/README.md (#1673). Empty when the module has no usable docstring.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+        return ""
+    docstring = ast.get_docstring(tree) or ""
+    summary = " ".join(docstring.strip().split("\n\n", 1)[0].split())
+    return summary if len(summary) >= TOOL_SUMMARY_MIN_CHARS else ""
+
+
+def tools_index_rows(repo_root: pathlib.Path = ROOT) -> list[tuple[str, str]]:
+    """Return (module, summary) for every tracked top-level tools module, sorted by name.
+
+    The summary is the module docstring's first paragraph, or the module's row in the
+    tools/README.md table when the docstring gives none.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "--", "tools"],
+        cwd=repo_root, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    modules = sorted(
+        pathlib.PurePosixPath(path).name
+        for path in (line.strip().replace("\\", "/") for line in listed)
+        if path.count("/") == 1 and path.endswith(".py")
+    )
+    readme = repo_root / "tools" / "README.md"
+    readme_rows: dict[str, str] = {}
+    if readme.is_file():
+        for line in readme.read_text(encoding="utf-8").splitlines():
+            match = TOOLS_README_ROW_PAT.match(line)
+            if match:
+                readme_rows.setdefault(match.group(1), match.group(2).strip())
+    return [
+        (name, tool_module_summary(repo_root / "tools" / name) or readme_rows.get(name, ""))
+        for name in modules
+    ]
+
+
+def render_tools_index(rows: list[tuple[str, str]]) -> str:
+    """Render the full tools index as a Markdown table."""
+    lines = ["| Module | Summary |", "| --- | --- |"]
+    lines.extend(f"| `{name}` | {summary.replace('|', chr(92) + '|')} |" for name, summary in rows)
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Documentation freshness and staleness linter")
     parser.add_argument("--repo-root", type=pathlib.Path, default=ROOT, help="Repository root path")
+    parser.add_argument(
+        "--tools-index", action="store_true",
+        help="print the full tools/ module index (docstring summaries) as Markdown and exit",
+    )
     args = parser.parse_args()
+
+    if args.tools_index:
+        sys.stdout.write(render_tools_index(tools_index_rows(args.repo_root)))
+        return 0
 
     errors = run_all_doc_lints(args.repo_root)
     if errors:
