@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import time
 from typing import Iterable, Mapping, Sequence
 
 
@@ -613,6 +614,178 @@ FULL_MATRIX_EVENTS = frozenset({"workflow_dispatch", "merge_group", "schedule"})
 # Events whose run on main may write the persisted Windows compiler cache (#735).
 COMPILER_CACHE_WRITE_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
+#: Where the Linux jobs that read ``linux_runner`` run. The self-hosted pool (``nk-wsl``)
+#: is a set of ephemeral, one-job runner containers on the maintainer's PC (docs/CI.md,
+#: "Self-hosted Linux runners"). It takes only trusted runs: a push to ``main``, a merge
+#: group, and the integration desk's batch pull requests. Every other run, a fork's above
+#: all, stays on GitHub's hosted image, because a pull request's code would run on the
+#: maintainer's machine. The runner refuses any other job itself as well (its job-started
+#: hook), so this routing is not the only guard.
+HOSTED_LINUX_RUNNER = "ubuntu-24.04"
+HOSTED_LINUX_RUNNER_2604 = "ubuntu-26.04"
+SELF_HOSTED_LINUX_RUNNER = ("self-hosted", "linux", "x64", "nk-wsl")
+SELF_HOSTED_REPOSITORY = "Jstar269/nakagawa-recomp"
+#: The desk's batch branches (one commit per folded pull request, built from main).
+SELF_HOSTED_BATCH_PREFIX = "batch/"
+#: The pool's supervisor refreshes NK_SELF_HOSTED_HEARTBEAT every two minutes while the
+#: pool is healthy. An older heartbeat means the supervisor, the PC or the pool is gone,
+#: and trusted runs go back to hosted runners instead of waiting for a runner that will
+#: not come. A heartbeat from the future beyond clock skew is not trusted either.
+SELF_HOSTED_HEARTBEAT_MAX_AGE = 600
+SELF_HOSTED_HEARTBEAT_MAX_SKEW = 120
+
+
+def trusted_for_self_hosted(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+) -> bool:
+    """Whether this run may use the self-hosted pool: its code is already the maintainer's.
+
+    True only for this repository's push to ``main``, its merge groups (built from
+    pull requests a maintainer enqueued), and a pull request from a ``batch/`` branch of
+    this repository itself, opened by the repository owner. A fork's pull request is
+    never trusted, whatever its branch is called; nor is any other event.
+    """
+
+    if repository != SELF_HOSTED_REPOSITORY:
+        return False
+    if event_name == "push":
+        return ref == "refs/heads/main"
+    if event_name == "merge_group":
+        return ref.startswith("refs/heads/gh-readonly-queue/main/")
+    if event_name != "pull_request":
+        return False
+    pull_request = event.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return False
+    head = pull_request.get("head")
+    base = pull_request.get("base")
+    user = pull_request.get("user")
+    if not isinstance(head, dict) or not isinstance(base, dict) or not isinstance(user, dict):
+        return False
+    head_repo = head.get("repo")
+    base_repo = base.get("repo")
+    if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
+        return False
+    head_ref = head.get("ref")
+    owner = repository.split("/", 1)[0]
+    return (
+        head_repo.get("full_name") == repository
+        and base_repo.get("full_name") == repository
+        and head_repo.get("fork") is False
+        and isinstance(head_ref, str)
+        and head_ref.startswith(SELF_HOSTED_BATCH_PREFIX)
+        and user.get("login") == owner
+    )
+
+
+def self_hosted_pool_available(switch: str, heartbeat: str, now: float) -> bool:
+    """Whether the pool's off switch is on and its supervisor reported in recently."""
+
+    if switch.strip().lower() != "on":
+        return False
+    try:
+        beat = int(heartbeat.strip())
+    except ValueError:
+        return False
+    age = now - beat
+    return -SELF_HOSTED_HEARTBEAT_MAX_SKEW <= age <= SELF_HOSTED_HEARTBEAT_MAX_AGE
+
+
+#: Trusted CodeQL's hosted image for the analyses (.github/workflows/codeql.yml).
+HOSTED_CODEQL_RUNNER = "ubuntu-26.04"
+
+
+def codeql_trusted_target(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+) -> bool:
+    """Whether a Trusted CodeQL run analyses a target that is already trusted.
+
+    Trusted CodeQL always runs the default branch's definition and reads the candidate tree
+    as data (``build-mode: none``), so no pull request's code or workflow runs in it. It
+    still takes the pool only for the targets CI would send there: a push to ``main``, and
+    a "CodeQL wake" run (``workflow_run``) of a merge group of ``main`` or of a desk batch
+    pull request (this repository's ``batch/`` branch, pushed by the owner). Every other
+    pull request's analysis stays hosted, so ordinary traffic cannot fill the pool.
+    """
+
+    if repository != SELF_HOSTED_REPOSITORY:
+        return False
+    if event_name == "push":
+        return ref == "refs/heads/main"
+    if event_name != "workflow_run":
+        return False
+    run = event.get("workflow_run")
+    if not isinstance(run, dict):
+        return False
+    head_repo = run.get("head_repository")
+    actor = run.get("actor")
+    head_branch = run.get("head_branch")
+    if not isinstance(head_repo, dict) or head_repo.get("full_name") != repository or not isinstance(head_branch, str):
+        return False
+    kind = run.get("event")
+    if kind == "merge_group":
+        return head_branch.startswith("gh-readonly-queue/main/")
+    if kind == "pull_request":
+        owner = repository.split("/", 1)[0]
+        return (
+            head_branch.startswith(SELF_HOSTED_BATCH_PREFIX)
+            and isinstance(actor, dict)
+            and actor.get("login") == owner
+        )
+    return False
+
+
+def codeql_runner(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+    switch: str,
+    heartbeat: str,
+    now: float,
+) -> str:
+    """The ``runs-on`` value, as JSON, for Trusted CodeQL's analyses."""
+
+    if codeql_trusted_target(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
+        switch, heartbeat, now
+    ):
+        return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
+    return json.dumps(HOSTED_CODEQL_RUNNER)
+
+
+def linux_runner(
+    event_name: str,
+    event: Mapping[str, object],
+    *,
+    repository: str,
+    ref: str,
+    switch: str,
+    heartbeat: str,
+    now: float,
+    hosted: str = HOSTED_LINUX_RUNNER,
+) -> str:
+    """The ``runs-on`` value, as JSON, for the jobs that read a ``linux_runner*`` output.
+
+    ``hosted`` is the job's own hosted image: ``linux_runner`` falls back to
+    ``ubuntu-24.04``, ``linux_runner_2604`` to ``ubuntu-26.04``. The pool's image is
+    Ubuntu 24.04 for both.
+    """
+
+    if trusted_for_self_hosted(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
+        switch, heartbeat, now
+    ):
+        return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
+    return json.dumps(hosted)
+
 
 def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, str] | None:
     """Return the ``(left, right)`` revisions this event's change spans, or None.
@@ -860,9 +1033,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", "pull_request"))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH"))
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
+    parser.add_argument(
+        "--codeql-runner",
+        action="store_true",
+        help="write only Trusted CodeQL's analysis runner (runner=...) and classify nothing",
+    )
     args = parser.parse_args(argv)
 
     event = _read_event(args.event_path)
+    pool = {
+        "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+        "ref": os.environ.get("GITHUB_REF", ""),
+        "switch": os.environ.get("NK_SELF_HOSTED_LINUX", ""),
+        "heartbeat": os.environ.get("NK_SELF_HOSTED_HEARTBEAT", ""),
+        "now": time.time(),
+    }
+    if args.codeql_runner:
+        runner = codeql_runner(args.event_name, event, **pool)
+        _write_outputs({"runner": runner}, args.github_output)
+        print(f"event={args.event_name}")
+        print(f"runner={runner}")
+        return 0
     if args.files is not None:
         paths = args.files
     else:
@@ -878,6 +1069,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         draft=_event_draft(args.event_name, event),
         makefile_change=makefile_change,
     )
+    outputs["linux_runner"] = linux_runner(args.event_name, event, **pool)
+    outputs["linux_runner_2604"] = linux_runner(args.event_name, event, **pool, hosted=HOSTED_LINUX_RUNNER_2604)
     _write_outputs(outputs, args.github_output)
     print(f"event={args.event_name}")
     print(f"changed_files={len(paths)}")

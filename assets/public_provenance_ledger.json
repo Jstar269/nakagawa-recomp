@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1fec5ce6c84317a9b0ab61d92937cfd136fbced1c006ab41a733f5ab504cd85"
+      "sha256": "9fae86fc34f0126a30cbff374f044aec3e02172355c6f2909a15c9fbf6186792"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -252,7 +252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf821858566382a80a31f42e8fa8d7b87a3740c9cb7cbf9dc2dc77b10373e492"
+      "sha256": "e331da2a5d53190d722c85f2414ba9885dee17ae966b89ce1cecda88856bc7a7"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bd846a4a44d3a01f910e1212ea272e4073ca60372132407a96b76611eb28a99e"
+      "sha256": "15e42ee9d69b93b5e0ffc5a77d977a56b88a6136a76289101b98dd11708cc5b0"
     },
     {
       "path": "docs/CODE_TOUR.md",
@@ -13065,7 +13065,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f0803a83892121555d539600b0f7a5f75d53fa003c4732867108fb9b6e0c7a2"
+      "sha256": "101216cdc6b7e803e4a355ee33d6f2b13956073ca774dc286a24e8cfc5b102f9"
     },
     {
       "path": "tools/ci_required.py",
@@ -14947,7 +14947,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "345b58d38e55d7c317094cff806aa54065046e230a14802214ae737d1e2a2d31"
+      "sha256": "1c3e3e18c7c83643bc0837834b6f6c93cccaabee971e566a27bf5cb462b9aa5c"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -16749,7 +16749,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4f0fb4e5e20e1356e5981716b6f5b1939aad568407d3ea1f288e7a5ec75f242"
+      "sha256": "56bbfec01568060ae7257de9bae4d9b884cfde3b847a95a92d9a60392fe5c0e2"
     },
     {
       "path": "tools/test_public_export.py",

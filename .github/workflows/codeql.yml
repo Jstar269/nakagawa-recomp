@@ -49,6 +49,7 @@ jobs:
       base_sha: ${{ steps.target.outputs.base_sha }}
       head_sha: ${{ steps.target.outputs.head_sha }}
       tree_sha: ${{ steps.materialize.outputs.tree_sha }}
+      analyze_runner: ${{ steps.runner.outputs.runner }}
     steps:
       - name: Check out trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +62,18 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.15.1"
+
+      # The analyses run on the maintainer's self-hosted pool only for a target that is
+      # already trusted (a push to main, a merge group, a desk batch) and only while the
+      # pool's switch is on and its heartbeat fresh; otherwise on ubuntu-26.04. The
+      # classifier is the default branch's copy, like this definition (docs/CI.md,
+      # "Self-hosted Linux runners").
+      - name: Choose the analysis runner
+        id: runner
+        env:
+          NK_SELF_HOSTED_LINUX: ${{ vars.NK_SELF_HOSTED_LINUX }}
+          NK_SELF_HOSTED_HEARTBEAT: ${{ vars.NK_SELF_HOSTED_HEARTBEAT }}
+        run: python tools/ci_paths.py --codeql-runner --github-output "$GITHUB_OUTPUT"
 
       - name: Resolve exact PR or default-branch target
         id: target
@@ -296,7 +309,9 @@ jobs:
     name: Analyze (${{ matrix.language }})
     needs: prepare
     if: ${{ needs.prepare.result == 'success' }}
-    runs-on: ubuntu-26.04
+    # The fallback keeps the expression parseable; the condition above means prepare
+    # succeeded, so its runner output always decides.
+    runs-on: ${{ fromJSON(needs.prepare.outputs.analyze_runner || '"ubuntu-26.04"') }}
     timeout-minutes: 45
     permissions:
       actions: read

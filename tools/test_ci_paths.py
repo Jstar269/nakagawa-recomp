@@ -1215,5 +1215,209 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         self.assertIn("categories.size !== expected.length", codeql_yml)
 
 
+REPO = ci_paths_module.SELF_HOSTED_REPOSITORY
+OWNER = REPO.split("/", 1)[0]
+HOSTED = json.dumps("ubuntu-24.04")
+SELF_HOSTED = json.dumps(["self-hosted", "linux", "x64", "nk-wsl"], separators=(",", ":"))
+NOW = 1_800_000_000
+
+
+def _pull_request(head_ref: str = "batch/desk-20261030T185810Z", *, head_repo: str = REPO,
+                  fork: object = False, author: str = OWNER, base_repo: str = REPO) -> dict[str, object]:
+    return {"pull_request": {
+        "head": {"ref": head_ref, "repo": {"full_name": head_repo, "fork": fork}},
+        "base": {"ref": "main", "repo": {"full_name": base_repo}},
+        "user": {"login": author},
+    }}
+
+
+def _wake(kind: str, head_branch: str, *, head_repo: str = REPO, actor: str = OWNER) -> dict[str, object]:
+    """A "CodeQL wake" workflow_run payload, as Trusted CodeQL receives it."""
+    return {"workflow_run": {
+        "event": kind, "head_branch": head_branch,
+        "head_repository": {"full_name": head_repo}, "actor": {"login": actor},
+    }}
+
+
+class CodeqlRunnerRoutingTests(unittest.TestCase):
+    """Trusted CodeQL analyses on the pool only for already-trusted targets."""
+
+    HOSTED = json.dumps("ubuntu-26.04")
+
+    def route(self, event_name: str, event: dict[str, object] | None = None, *, ref: str = "refs/heads/main",
+              repository: str = REPO, switch: str = "on", heartbeat: str = str(NOW - 30)) -> str:
+        return ci_paths_module.codeql_runner(
+            event_name, event or {}, repository=repository, ref=ref, switch=switch, heartbeat=heartbeat, now=NOW)
+
+    def test_trusted_targets_use_the_pool(self) -> None:
+        self.assertEqual(self.route("push"), SELF_HOSTED)
+        self.assertEqual(self.route("workflow_run", _wake("pull_request", "batch/desk-20261030T193657Z")),
+                         SELF_HOSTED)
+        self.assertEqual(self.route("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
+                         SELF_HOSTED)
+
+    def test_ordinary_and_fork_pull_requests_stay_hosted(self) -> None:
+        cases = {
+            "ordinary branch": _wake("pull_request", "fix/thing"),
+            "fork named like a batch": _wake("pull_request", "batch/desk-1", head_repo="evil/nakagawa-recomp",
+                                             actor="evil"),
+            "fork pushed as the owner's name": _wake("pull_request", "batch/desk-1",
+                                                     head_repo="evil/nakagawa-recomp"),
+            "batch branch pushed by someone else": _wake("pull_request", "batch/desk-1", actor="contributor"),
+            "merge group of another branch": _wake("merge_group", "gh-readonly-queue/dev/pr-1"),
+            "wake of a push": _wake("push", "main"),
+            "no payload": {},
+            "malformed payload": {"workflow_run": {"event": "pull_request", "head_branch": "batch/x"}},
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("workflow_run", event), self.HOSTED)
+
+    def test_other_events_switch_and_heartbeat_keep_analyses_hosted(self) -> None:
+        for event_name in ("workflow_dispatch", "schedule", "pull_request", "pull_request_target", "merge_group"):
+            with self.subTest(event=event_name):
+                self.assertEqual(self.route(event_name, _wake("pull_request", "batch/desk-1")), self.HOSTED)
+        self.assertEqual(self.route("push", ref="refs/heads/feature"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="someone/nakagawa-recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", switch="off"), self.HOSTED)
+        self.assertEqual(self.route("push", heartbeat=str(NOW - 601)), self.HOSTED)
+        self.assertEqual(self.route("push", heartbeat=""), self.HOSTED)
+
+
+class SelfHostedRunnerRoutingTests(unittest.TestCase):
+    """Only trusted runs may reach the maintainer's self-hosted pool (docs/CI.md)."""
+
+    def route(self, event_name: str, event: dict[str, object] | None = None, *, ref: str = "refs/pull/1/merge",
+              repository: str = REPO, switch: str = "on", heartbeat: str = str(NOW - 30)) -> str:
+        return ci_paths_module.linux_runner(
+            event_name, event or {}, repository=repository, ref=ref, switch=switch, heartbeat=heartbeat, now=NOW)
+
+    def test_trusted_runs_use_the_pool_while_it_is_up(self) -> None:
+        self.assertEqual(self.route("push", ref="refs/heads/main"), SELF_HOSTED)
+        self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/main/pr-7-" + "a" * 40),
+                         SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request()), SELF_HOSTED)
+
+    def test_a_fork_pull_request_never_routes_to_the_pool(self) -> None:
+        cases = {
+            "fork named like a batch": _pull_request(head_repo="someone/nakagawa-recomp", fork=True, author="someone"),
+            "fork claiming the owner": _pull_request(head_repo="someone/nakagawa-recomp", fork=True),
+            "fork flag only": _pull_request(fork=True),
+            "fork flag missing": _pull_request(fork=None),
+            "fork flag a string": _pull_request(fork="false"),
+            "same-name repository of another owner": _pull_request(head_repo="Jstar269x/nakagawa-recomp"),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("pull_request", event), HOSTED)
+
+    def test_an_ordinary_pull_request_never_routes_to_the_pool(self) -> None:
+        for head_ref in ("fix/thing-20261030", "main", "batchfix/x", "Batch/desk-1", "desk/batch/x", ""):
+            with self.subTest(head_ref=head_ref):
+                self.assertEqual(self.route("pull_request", _pull_request(head_ref)), HOSTED)
+        with self.subTest("batch branch opened by someone else"):
+            self.assertEqual(self.route("pull_request", _pull_request(author="contributor")), HOSTED)
+        with self.subTest("base in another repository"):
+            self.assertEqual(self.route("pull_request", _pull_request(base_repo="other/nakagawa-recomp")), HOSTED)
+        for event in ({}, {"pull_request": None}, {"pull_request": {"head": {"ref": "batch/x"}}}):
+            with self.subTest(event=event):
+                self.assertEqual(self.route("pull_request", event), HOSTED)
+
+    def test_other_events_refs_and_repositories_stay_hosted(self) -> None:
+        for event_name in ("pull_request_target", "workflow_dispatch", "schedule", "workflow_run",
+                           "issue_comment", "pull_request_review", "release"):
+            with self.subTest(event=event_name):
+                self.assertEqual(self.route(event_name, _pull_request(), ref="refs/heads/main"), HOSTED)
+        for ref in ("refs/heads/batch/desk-1", "refs/heads/feature", "refs/tags/v1", "refs/heads/main2"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.route("push", ref=ref), HOSTED)
+        with self.subTest("merge group of another branch"):
+            self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/dev/pr-1"), HOSTED)
+        # A fork runs this workflow in its own repository, where the pool does not exist.
+        for repository in ("someone/nakagawa-recomp", "", "jstar269/nakagawa-recomp"):
+            with self.subTest(repository=repository):
+                self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
+                self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
+
+    def test_the_off_switch_and_a_stale_heartbeat_send_trusted_runs_to_hosted(self) -> None:
+        for switch in ("off", "", "true", "1", "native", "ON "):
+            with self.subTest(switch=switch):
+                expected = SELF_HOSTED if switch.strip().lower() == "on" else HOSTED
+                self.assertEqual(self.route("push", ref="refs/heads/main", switch=switch), expected)
+        max_age = ci_paths_module.SELF_HOSTED_HEARTBEAT_MAX_AGE
+        skew = ci_paths_module.SELF_HOSTED_HEARTBEAT_MAX_SKEW
+        for heartbeat, expected in ((str(NOW - max_age), SELF_HOSTED), (str(NOW - max_age - 1), HOSTED),
+                                    (str(NOW + skew), SELF_HOSTED), (str(NOW + skew + 1), HOSTED),
+                                    ("", HOSTED), ("soon", HOSTED), ("1.8e9", HOSTED)):
+            with self.subTest(heartbeat=heartbeat):
+                self.assertEqual(self.route("push", ref="refs/heads/main", heartbeat=heartbeat), expected)
+
+    def test_the_2604_output_shares_the_decision_and_falls_back_to_its_own_image(self) -> None:
+        hosted_2604 = json.dumps("ubuntu-26.04")
+        for event_name, event, ref, expected in (
+            ("pull_request", _pull_request(), "refs/pull/1/merge", SELF_HOSTED),
+            ("push", {}, "refs/heads/main", SELF_HOSTED),
+            ("pull_request", _pull_request("fix/x"), "refs/pull/1/merge", hosted_2604),
+            ("pull_request", _pull_request(head_repo="evil/nakagawa-recomp", fork=True, author="evil"),
+             "refs/pull/1/merge", hosted_2604),
+            ("push", {}, "refs/heads/feature", hosted_2604),
+        ):
+            with self.subTest(event=event_name, ref=ref):
+                self.assertEqual(
+                    ci_paths_module.linux_runner(event_name, event, repository=REPO, ref=ref, switch="on",
+                                                 heartbeat=str(NOW), now=NOW, hosted="ubuntu-26.04"),
+                    expected,
+                )
+
+    def test_main_writes_the_runner_from_the_environment(self) -> None:
+        def run_main(event_name: str, event: dict[str, object], env: dict[str, str]) -> str:
+            with tempfile.TemporaryDirectory() as scratch:
+                event_path = Path(scratch) / "event.json"
+                event_path.write_text(json.dumps(event), encoding="utf-8")
+                output_path = Path(scratch) / "github_output"
+                base = {"GITHUB_REPOSITORY": REPO, "NK_SELF_HOSTED_LINUX": "on",
+                        "NK_SELF_HOSTED_HEARTBEAT": str(NOW - 5)}
+                with patch.dict(os.environ, {**base, **env}), patch.object(ci_paths_module.time, "time",
+                                                                           return_value=NOW), \
+                        patch("sys.stdout"):
+                    ci_paths_module.main(["--files", "src/rt/hle.c", "--event-name", event_name,
+                                          "--event-path", str(event_path), "--github-output", str(output_path)])
+                values = dict(line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+            # Both outputs come from the same decision; only the hosted fallback differs.
+            pooled = values["linux_runner"] == SELF_HOSTED
+            self.assertEqual(values["linux_runner_2604"], SELF_HOSTED if pooled else json.dumps("ubuntu-26.04"))
+            return values["linux_runner"]
+
+        self.assertEqual(run_main("pull_request", _pull_request(), {"GITHUB_REF": "refs/pull/9/merge"}), SELF_HOSTED)
+        self.assertEqual(run_main("pull_request", _pull_request("fix/x"), {"GITHUB_REF": "refs/pull/9/merge"}), HOSTED)
+        self.assertEqual(
+            run_main("pull_request", _pull_request(head_repo="evil/nakagawa-recomp", fork=True, author="evil"),
+                     {"GITHUB_REF": "refs/pull/9/merge"}),
+            HOSTED,
+        )
+        self.assertEqual(run_main("push", {}, {"GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "off"}),
+                         HOSTED)
+        self.assertEqual(run_main("push", {}, {"GITHUB_REF": "refs/heads/main"}), SELF_HOSTED)
+        # The CodeQL flag writes only the analysis runner.
+        with tempfile.TemporaryDirectory() as scratch:
+            event_path = Path(scratch) / "event.json"
+            event_path.write_text(json.dumps(_wake("pull_request", "batch/desk-1")), encoding="utf-8")
+            output_path = Path(scratch) / "github_output"
+            env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "on",
+                   "NK_SELF_HOSTED_HEARTBEAT": str(NOW - 5)}
+            with patch.dict(os.environ, env), patch.object(ci_paths_module.time, "time", return_value=NOW), \
+                    patch.object(ci_paths_module.subprocess, "run") as run, patch("sys.stdout"):
+                ci_paths_module.main(["--codeql-runner", "--event-name", "workflow_run",
+                                      "--event-path", str(event_path), "--github-output", str(output_path)])
+            run.assert_not_called()
+            self.assertEqual(output_path.read_text(encoding="utf-8"), f"runner={SELF_HOSTED}\n")
+        # Unset variables (no pool configured) read as empty, which routes nothing.
+        self.assertEqual(
+            run_main("push", {}, {"GITHUB_REF": "refs/heads/main", "NK_SELF_HOSTED_LINUX": "",
+                                  "NK_SELF_HOSTED_HEARTBEAT": ""}),
+            HOSTED,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -910,6 +910,93 @@ separate hosted-validation decision. Consult the current
 instead of treating a dated image version or tool inventory as an evergreen
 repository guarantee.
 
+## Self-hosted Linux runners
+
+GitHub's free plan runs about 20 jobs at once for this repository, and one CI run
+needs most of them, so a second run waits for runners. To keep landings moving, the
+maintainer runs a small pool of self-hosted Linux runners, labelled `nk-wsl`, on their
+own PC. Contributors need nothing from it: every run they can start uses GitHub's
+hosted images, exactly as before.
+
+**What runs there.** The classifier's `linux_runner` and `linux_runner_2604` outputs
+(`tools/ci_paths.py`) name the runner for every Linux job of CI except `classify`, which
+decides and so stays hosted: the native and translation gates and the Python shards
+(hosted fallback `ubuntu-24.04`), and hygiene, Markdown, the export audit, the
+profile-zero fixture, main smoke and `CI required` (hosted fallback `ubuntu-26.04`; the
+pool's image is Ubuntu 24.04 for all of them). The Windows gates stay on GitHub's
+Windows runners. The outputs name the pool only for a trusted run, whose code is
+already the maintainer's:
+
+- a push to `main` of this repository;
+- a merge-queue group (`merge_group`) of `main`;
+- a pull request whose head branch is in this repository (not a fork), starts with
+  `batch/` (the integration desk's batches of already-reviewed pull requests), and was
+  opened by the repository owner.
+
+Trusted CodeQL (`.github/workflows/codeql.yml`) sends its three analyses there for the
+same targets: its `prepare` job, which stays hosted, runs the default branch's
+classifier (`python tools/ci_paths.py --codeql-runner`) and the `analyze` jobs run on
+the runner it names. That workflow always runs the default branch's definition and
+reads the candidate tree as data (`build-mode: none`), and it takes the pool only when
+it was woken by a desk batch or a merge group, or for a push to `main`. Every other
+pull request's analysis stays on `ubuntu-26.04`, so ordinary traffic cannot fill the
+pool ahead of a landing.
+
+Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
+or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
+variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
+must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
+old. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
+healthy and turns the switch `off` when it stops or the pool fails, so a sleeping PC or
+a dead pool sends trusted runs back to hosted runners within minutes instead of leaving
+them queued. Only `runs-on` changes: every step, check name, `CI required` and the
+Trusted CI verdict are the same on either runner.
+
+**The routing is not the security boundary.** On a `pull_request` event, `ci.yml` and
+`tools/ci_paths.py` both come from the candidate's own tree, so a fork could edit either
+one, or name the pool's labels directly, to send its jobs to the pool. The routing only
+keeps this repository's own runs where they belong. What stops a fork is:
+
+- **The runner's job-started hook, which is the boundary.** It is baked into the pool's
+  image (outside any checkout) and runs before a job's first step. It decides only from
+  values the runner provides: `GITHUB_REPOSITORY`, `GITHUB_EVENT_NAME`, `GITHUB_REF`,
+  `GITHUB_WORKFLOW_REF` and the event payload at `GITHUB_EVENT_PATH`, never from a file
+  in the repository. It refuses every job that is not one of the trusted runs above (for
+  `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch or a merge
+  group), so a fork's job that asks for the pool fails before it runs anything.
+- **The fork approval policy.** The repository requires approval before any workflow runs
+  for an outside contributor's pull request (`all_external_contributors`).
+- **Isolation.** Each runner is an ephemeral container that takes one job and is
+  discarded, has no access to the PC's files, Docker or local network, and holds no
+  secrets (its one-job registration comes from the GitHub API when it starts).
+
+`tools/test_ci_paths.py` (`SelfHostedRunnerRoutingTests`, `CodeqlRunnerRoutingTests`)
+fails if a fork or ordinary pull request could route to the pool, and
+`tools/test_public_ci_wiring.py` (`SelfHostedRunnerWiringTests`) fails if any workflow
+names the pool's labels directly or a job other than the listed ones reads
+`linux_runner` or CodeQL's `analyze_runner`.
+
+**Stuck jobs.** A run routed to the pool whose jobs then cannot start (the pool broke
+after `classify` decided) would wait for a self-hosted runner for up to 24 hours, because
+`timeout-minutes` does not count queue time. While the pool is unhealthy, its supervisor
+turns the switch off, cancels every run that has had a job queued for the pool for more
+than five minutes, and re-runs it once cancelled; the re-run classifies again and goes to
+hosted runners. If the whole PC is off, queued jobs wait and start when the pool returns.
+By hand: set `NK_SELF_HOSTED_LINUX` to `off`, then `gh run cancel <run>` and, once it has
+stopped, `gh run rerun <run>`.
+
+**The supervisor's GitHub access.** It needs to create one-job runner registrations,
+delete stale ones, set the two variables, and cancel and re-run runs: repository
+Administration, Variables and Actions, write. That credential stays on the PC, outside the
+WSL distro and every runner container; a fine-grained token scoped to this repository
+with only those permissions is the intended form.
+
+The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
+packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
+the CodeQL bundle the pinned CodeQL action uses). Its
+build files and supervisor are kept in the maintainer's workspace, not in this
+repository, because nobody else can run them.
+
 ## Windows Python and PATH contract
 
 Repository tools in hosted jobs must not depend on which Python happens to be

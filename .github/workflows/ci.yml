@@ -74,6 +74,8 @@ jobs:
       save_compiler_cache: ${{ steps.paths.outputs.save_compiler_cache }}
       allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
       draft: ${{ steps.paths.outputs.draft }}
+      linux_runner: ${{ steps.paths.outputs.linux_runner }}
+      linux_runner_2604: ${{ steps.paths.outputs.linux_runner_2604 }}
     steps:
       - name: Check out repository history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,11 +88,18 @@ jobs:
         shell: bash
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          # The self-hosted pool's off switch and its supervisor's heartbeat. The
+          # classifier routes a trusted run there only while both say it is up; every
+          # other run gets the hosted image (tools/ci_paths.py linux_runner, docs/CI.md).
+          NK_SELF_HOSTED_LINUX: ${{ vars.NK_SELF_HOSTED_LINUX }}
+          NK_SELF_HOSTED_HEARTBEAT: ${{ vars.NK_SELF_HOSTED_HEARTBEAT }}
         run: python tools/ci_paths.py --github-output "$GITHUB_OUTPUT"
 
   hygiene:
     name: Hygiene and security
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -199,7 +208,9 @@ jobs:
 
   markdown:
     name: Markdown validation
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
     timeout-minutes: 10
@@ -224,7 +235,9 @@ jobs:
   # integrity must never be path-dependent (tools/test_ci_paths.py).
   public_export:
     name: Public export candidate audit
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -274,7 +287,9 @@ jobs:
 
   profile_zero_fixture:
     name: Profile-zero fixture build
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     # The profile-zero guest (fixtures/profile_zero/main.c) is built here from source with
     # the PSPDEV distribution pinned by assets/upstream/pspdev.lock.json and checked
     # byte-for-byte against the committed fixtures/profile_zero/prebuilt/SHA256SUMS, so the
@@ -371,7 +386,9 @@ jobs:
 
   python_tools:
     name: Python tooling gates
-    runs-on: ubuntu-24.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-24.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}
     env:
       NK_TEST_TIER: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'pr' }}
     # id-token: write lets the coverage upload authenticate to Codecov with the
@@ -495,7 +512,12 @@ jobs:
     name: Native and translation gates
     # Ubuntu 26.04 no longer publishes the gcc-mipsel-linux-gnu package that
     # this translation gate installs; keep the cross-compiler job on 24.04.
-    runs-on: ubuntu-24.04
+    # The classifier picks the runner: ubuntu-24.04, or for a trusted run (a push to
+    # main, a merge group, a desk batch pull request) while the pool is up, the
+    # self-hosted nk-wsl pool, whose image is Ubuntu 24.04 too (docs/CI.md,
+    # "Self-hosted Linux runners"). The fallback keeps the expression parseable when
+    # classify produced no outputs; the job's own condition skips it then.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}
     # id-token: write exists only for the Codecov OIDC upload below; contents
     # stays read, as everywhere else in this workflow.
     permissions:
@@ -1808,7 +1830,9 @@ jobs:
 
   main_smoke:
     name: Main integration smoke
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
@@ -1837,7 +1861,9 @@ jobs:
 
   ci_required:
     name: CI required
-    runs-on: ubuntu-26.04
+    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
+    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
+    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5
