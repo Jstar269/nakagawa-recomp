@@ -756,7 +756,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_REBUILD_HIDE = 0x4531u,      /* the older-build banner's Hide */
     PLAYER_UI_ID_REBUILD_PRIMARY = 0x4532u,           /* Rebuild all / Rebuild now */
     PLAYER_UI_ID_REBUILD_SECOND = 0x4533u,            /* Later / Play anyway */
-    PLAYER_UI_ID_TITLE_REBUILD = 0x2007u,             /* the title page's Rebuild */
+    PLAYER_UI_ID_TITLE_REBUILD = 0x2008u,             /* the title page's Rebuild */
     PLAYER_UI_ID_SETTINGS_FACTORY_RESET = 0x4529u,    /* Settings: opens the check */
     PLAYER_UI_ID_SETTINGS_CONFIRM_RESET = 0x452Au,    /* the check's Reset button */
     PLAYER_UI_ID_SETTINGS_PSP_FONTS = 0x452Bu,        /* Settings > PSP fonts: from a PSP */

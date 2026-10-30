@@ -722,6 +722,20 @@ def compute_effective_timeout(
     return effective + TIMEOUT_BUFFER_SECONDS
 
 
+class PlayerUiIdSourceTests(unittest.TestCase):
+    """Two controls with one PLAYER_UI_ID value share a layout element, and the second
+    one's screen lays out empty (the title page's Report a problem and Rebuild once did)."""
+
+    def test_every_player_ui_id_value_is_unique(self) -> None:
+        header = (ROOT / "src" / "player" / "ui" / "player_ui_nk.h").read_text(encoding="utf-8")
+        seen: dict[int, str] = {}
+        for name, value in re.findall(r"\b(PLAYER_UI_ID_\w+)\s*=\s*(0x[0-9A-Fa-f]+)u", header):
+            number = int(value, 16)
+            self.assertNotIn(number, seen, f"{name} reuses {value} from {seen.get(number)}")
+            seen[number] = name
+        self.assertGreater(len(seen), 50)
+
+
 class LegacyRendererSourceTests(unittest.TestCase):
     """The shipped player never reaches the old renderer (owner, v0.0.1)."""
 

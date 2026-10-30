@@ -2996,8 +2996,10 @@ static void write_tree_file(const char *root, const char *relative, const char *
  * or every package would look outdated. The expected digests come from
  * package_cache.source_tree_digest and hashlib.sha256 over this same tree:
  * suffixes compared without case, hidden files counted, other files left out
- * of the source folders, every file of assets/vfpu counted, paths in code
- * point order ("Z.c" before "a.c"). */
+ * of the source folders, every file of assets/vfpu counted, only the listed
+ * third_party folders, the Makefile and mk/<name>.mk rules (src/player is not
+ * in a package and does not count), paths in code point order ("Z.c" before
+ * "a.c"). */
 static void test_build_identity_matches_the_python_digest(void) {
     char root[NATIVE_TEST_PATH_MAX + 64];
     snprintf(root, sizeof(root), "%s%cbuild-identity-tree", native_test_get_root(),
@@ -3011,6 +3013,11 @@ static void test_build_identity_matches_the_python_digest(void) {
         {"src/core/Z.c", "int z;\n"},
         {"src/core/a.c", "int ca;\n"},
         {"src/player/ui/d.hpp", "int d;\n"},
+        {"src/ui/e.h", "int e;\n"},
+        {"third_party/stb/s.h", "int s;\n"},
+        {"third_party/other/o.h", "int o;\n"},
+        {"mk/x.mk", "X := 1\n"},
+        {"mk/readme.txt", "not a rule\n"},
         {"assets/vfpu/lut.dat", "lut\n"},
         {"assets/vfpu/sub/more.bin", "more\n"},
         {"tools/analyze.py", "analyzer\n"},
@@ -3023,7 +3030,7 @@ static void test_build_identity_matches_the_python_digest(void) {
     NkPackageBuildIdentity identity;
     assert(nk_title_manifest_source_build_identity(root, &identity));
     assert(strcmp(identity.runtime_source_digest,
-                  "322eba451bfa59cef47de3b3dea3d405cee40a1a4527fe4161c139639e4f3073") == 0);
+                  "61aa969c1ec9460b856e36b5f4703a2f809bbd6d385d640f1ec930ade70da478") == 0);
     assert(strcmp(identity.analyzer_sha256,
                   "23e136a01229cfb27a5d25b96ee0a6320b3cfa394e2ffeb369cc4c5c7c444cef") == 0);
     assert(strcmp(identity.codegen_sha256,
