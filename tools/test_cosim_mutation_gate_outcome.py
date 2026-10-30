@@ -314,8 +314,8 @@ class ProcessTreeReapingTests(unittest.TestCase):
 class _FakeGates:
     """Stands in for run_gate: records each gate and refuses two at once in one tree.
 
-    The unmutated interpreter and scheduler pass and every mutant is killed,
-    except that a baseline in `fail_lane_baseline` (a lane root) fails.
+    The unmutated interpreter, split generator and scheduler pass and every mutant
+    is killed, except that a baseline in `fail_lane_baseline` (a lane root) fails.
     """
 
     def __init__(self, fail_lane_baseline: Path | None = None):
@@ -329,7 +329,7 @@ class _FakeGates:
                  skip_ra_return_cases=False, accepted_boundary=None,
                  harness_source=None, build_root=None):
         tree = "default" if build_root is None else Path(build_root).as_posix()
-        baseline = Path(source) in (mutate.INTERPRETER, mutate.SCHEDULER)
+        baseline = Path(source) == mutate.BASELINES.get(target)
         with self.lock:
             if tree in self.busy:
                 self.overlaps.append(tree)
@@ -363,28 +363,31 @@ class ParallelLaneTests(unittest.TestCase):
 
     def test_lanes_deal_every_mutant_exactly_once_in_order(self):
         scheduler = [i for i, m in enumerate(mutate.MUTANTS) if m.target == "scheduler"]
-        cosim = [i for i, m in enumerate(mutate.MUTANTS) if m.target != "scheduler"]
-        self.assertTrue(scheduler and cosim)
+        split = [i for i, m in enumerate(mutate.MUTANTS) if m.target == "split-generator"]
+        cosim = [i for i, m in enumerate(mutate.MUTANTS)
+                 if m.target not in ("scheduler", "split-generator")]
+        self.assertTrue(scheduler and split and cosim)
         for jobs in (1, 2, 4, len(mutate.MUTANTS) + 5):
             with self.subTest(jobs=jobs):
                 lanes = mutate.plan_lanes(mutate.MUTANTS, jobs)
-                self.assertEqual(lanes[-1], ("scheduler", scheduler))
-                cosim_lanes = [indices for _, indices in lanes[:-1]]
-                self.assertEqual({target for target, _ in lanes[:-1]}, {"interpreter"})
+                self.assertEqual(lanes[-2:], [("split-generator", split), ("scheduler", scheduler)])
+                cosim_lanes = [indices for _, indices in lanes[:-2]]
+                self.assertEqual({target for target, _ in lanes[:-2]}, {"interpreter"})
                 self.assertLessEqual(len(cosim_lanes), jobs)
                 self.assertTrue(all(cosim_lanes), "an empty lane builds a tree for nothing")
                 for indices in cosim_lanes:
                     self.assertEqual(indices, sorted(indices), "a lane runs in campaign order")
                 self.assertEqual(sorted(i for indices in cosim_lanes for i in indices), cosim)
         self.assertEqual(mutate.plan_lanes(mutate.MUTANTS, 1),
-                         [("interpreter", cosim), ("scheduler", scheduler)])
+                         [("interpreter", cosim), ("split-generator", split),
+                          ("scheduler", scheduler)])
 
     def test_a_lane_gate_puts_every_tree_beneath_its_root(self):
         # BUILD_DIR holds each make's profile stamps, and COSIM_DIR may arrive
         # overridden through MAKEFLAGS, so both are named, not only BUILD_ROOT.
         root = Path("build/cosim/lanes/2-interpreter")
         with mock.patch.dict(os.environ, {"MAKE": "make"}):
-            for target in ("interpreter", "generator", "scheduler"):
+            for target in ("interpreter", "generator", "split-generator", "scheduler"):
                 with self.subTest(target=target):
                     lane = mutate.make_command(Path("m.c"), target, build_root=root)
                     plain = mutate.make_command(Path("m.c"), target)
@@ -406,7 +409,8 @@ class ParallelLaneTests(unittest.TestCase):
         self.assertEqual(gates.overlaps, [], "two gates ran in one build tree at once")
         lanes = self.build_dir / "lanes"
         expected = {(lanes / name).as_posix()
-                    for name in ("0-interpreter", "1-interpreter", "2-interpreter", "3-scheduler")}
+                    for name in ("0-interpreter", "1-interpreter", "2-interpreter",
+                                 "3-split-generator", "4-scheduler")}
         self.assertEqual({tree for tree, _, _ in gates.calls}, expected,
                          "a gate ran outside the lane roots")
         # Each lane's own tree passes the unmutated gate before it judges a mutant.
@@ -415,15 +419,16 @@ class ParallelLaneTests(unittest.TestCase):
             self.assertEqual(kinds[0], "baseline", tree)
             self.assertNotIn("baseline", kinds[1:], tree)
             self.assertGreater(len(kinds), 1, tree)
-        scheduler_tree = (lanes / "3-scheduler").as_posix()
-        self.assertEqual({target for where, target, _ in gates.calls if where == scheduler_tree},
-                         {"scheduler"})
+        for name, target in (("3-split-generator", "split-generator"), ("4-scheduler", "scheduler")):
+            tree = (lanes / name).as_posix()
+            self.assertEqual({t for where, t, _ in gates.calls if where == tree}, {target})
         killed = [line.split()[2] for line in output.splitlines()
                   if line.startswith("COSIM_MUTATION KILLED")]
         self.assertEqual(killed, [m.name for m in mutate.MUTANTS])
         self.assertIn(f"{len(mutate.MUTANTS)}/{len(mutate.MUTANTS)} killed", output)
         self.assertLess(output.index("COSIM_MUTATION baseline=OK"),
                         output.index("COSIM_MUTATION KILLED"))
+        self.assertIn("COSIM_MUTATION split baseline=OK", output)
         self.assertIn("COSIM_MUTATION AOT boundary baseline=OK", output)
 
     def test_a_lane_whose_tree_fails_its_baseline_stops_the_campaign(self):
@@ -439,11 +444,20 @@ class ParallelLaneTests(unittest.TestCase):
         self.assertNotIn("COSIM_MUTATION baseline=OK", output)
 
     def test_a_failed_scheduler_baseline_is_named_as_the_boundary_baseline(self):
-        broken = self.build_dir / "lanes" / "2-scheduler"
+        broken = self.build_dir / "lanes" / "3-scheduler"
         gates = _FakeGates(fail_lane_baseline=broken)
         code, output = self.run_campaign(gates, jobs=2)
         self.assertEqual(code, 1, output)
         self.assertIn("COSIM_MUTATION FAIL: AOT boundary baseline verdict=no-run", output)
+        self.assertEqual([kind for where, _, kind in gates.calls if where == broken.as_posix()],
+                         ["baseline"])
+
+    def test_a_failed_split_baseline_is_named_as_the_split_baseline(self):
+        broken = self.build_dir / "lanes" / "2-split-generator"
+        gates = _FakeGates(fail_lane_baseline=broken)
+        code, output = self.run_campaign(gates, jobs=2)
+        self.assertEqual(code, 1, output)
+        self.assertIn("COSIM_MUTATION FAIL: split baseline verdict=no-run", output)
         self.assertEqual([kind for where, _, kind in gates.calls if where == broken.as_posix()],
                          ["baseline"])
 
