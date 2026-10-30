@@ -90,9 +90,18 @@ struct PlayerUiNk {
     NkUiViewport viewport;
     size_t library_page;
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
-    /* The library grid in its sort order: indices into titles, no demos. */
+    /* The library grid in its sort order: indices into titles, no demos; while
+       the find box is open, only the games that match. */
     size_t library_grid[PLAYER_UI_TITLE_CAP];
     size_t library_grid_count;
+    size_t library_game_total;
+    /* The library's find box: open, what is typed, and whether SDL's text
+       input is on for it. */
+    bool find_open;
+    char find_query[64];
+    bool find_text_input;
+    /* The control the box focuses, on the first frame that lays it out. */
+    NkUiId find_focus;
     char status_text[PLAYER_UI_TITLE_CAP][256];
     char library_page_label[64];
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
@@ -1354,12 +1363,117 @@ size_t player_ui_nk_shown_titles(const PlayerUiNk *player, int *out, size_t cap)
     return count;
 }
 
+/* The library's find box. From a hardware keyboard, which types straight into
+   it, focus goes to DONE, so Enter moves on to the matches; otherwise to the
+   on-screen keyboard's Q, ready for a controller or the mouse. */
+static void player_ui_find_open(PlayerUiNk *player, bool from_keyboard) {
+    player->find_open = true;
+    player->find_query[0] = '\0';
+    player->library_page = 0u;
+    player->find_focus = from_keyboard ? PLAYER_UI_ID_LIBRARY_FIND_DONE
+                                       : PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 10u;
+}
+
+/* Clears and closes the box; focus goes back to FIND. */
+static void player_ui_find_close(PlayerUiNk *player) {
+    player->find_open = false;
+    player->find_query[0] = '\0';
+    player->library_page = 0u;
+    player->find_focus = PLAYER_UI_ID_LIBRARY_FIND;
+}
+
+/* Adds one character as UTF-8, when it fits whole; control characters are
+   not typed. */
+static void player_ui_find_type(PlayerUiNk *player, uint32_t codepoint) {
+    char bytes[4];
+    size_t n;
+    size_t length = strlen(player->find_query);
+    if (codepoint < 0x20u || codepoint == 0x7Fu || codepoint > 0x10FFFFu) return;
+    if (codepoint < 0x80u) {
+        bytes[0] = (char)codepoint;
+        n = 1u;
+    } else if (codepoint < 0x800u) {
+        bytes[0] = (char)(0xC0u | (codepoint >> 6));
+        bytes[1] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 2u;
+    } else if (codepoint < 0x10000u) {
+        bytes[0] = (char)(0xE0u | (codepoint >> 12));
+        bytes[1] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+        bytes[2] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 3u;
+    } else {
+        bytes[0] = (char)(0xF0u | (codepoint >> 18));
+        bytes[1] = (char)(0x80u | ((codepoint >> 12) & 0x3Fu));
+        bytes[2] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+        bytes[3] = (char)(0x80u | (codepoint & 0x3Fu));
+        n = 4u;
+    }
+    if (length + n >= sizeof(player->find_query)) return;
+    memcpy(player->find_query + length, bytes, n);
+    player->find_query[length + n] = '\0';
+    player->library_page = 0u;
+}
+
+/* Removes the last character, all of its UTF-8 bytes. */
+static void player_ui_find_delete(PlayerUiNk *player) {
+    size_t length = strlen(player->find_query);
+    while (length > 0u && ((unsigned char)player->find_query[length - 1u] & 0xC0u) == 0x80u) {
+        --length;
+    }
+    if (length > 0u) --length;
+    player->find_query[length] = '\0';
+    player->library_page = 0u;
+}
+
+bool player_ui_nk_find_open(const PlayerUiNk *player) {
+    return player != NULL && player->ready && player->find_open &&
+           nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY;
+}
+
 bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     NkUiEvent translated[8];
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
     now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    if (player_ui_nk_find_open(player)) {
+        /* The box takes what is typed: SDL's text input brings the characters,
+           Backspace deletes one, and a printable key is not also a shortcut
+           (D, Q, E). Esc or the pad's B clears and closes it, below. */
+        if (event->type == SDL_EVENT_TEXT_INPUT && event->text.text != NULL) {
+            const char *cursor = event->text.text;
+            const unsigned char *bytes = (const unsigned char *)cursor;
+            for (size_t i = 0u; bytes[i] != 0u;) {
+                uint32_t codepoint = bytes[i];
+                size_t extra = codepoint >= 0xF0u ? 3u : codepoint >= 0xE0u ? 2u
+                    : codepoint >= 0xC0u ? 1u : 0u;
+                if (extra > 0u) codepoint &= 0x3Fu >> extra;
+                for (size_t k = 1u; k <= extra && bytes[i + k] != 0u; ++k) {
+                    codepoint = (codepoint << 6) | (bytes[i + k] & 0x3Fu);
+                }
+                player_ui_find_type(player, codepoint);
+                i += 1u + extra;
+                while (bytes[i] != 0u && (bytes[i] & 0xC0u) == 0x80u) ++i;
+            }
+            return true;
+        }
+        if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
+            bool control = (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0;
+            if (event->key.key == SDLK_BACKSPACE) {
+                if (event->type == SDL_EVENT_KEY_DOWN) player_ui_find_delete(player);
+                return true;
+            }
+            if (!control && event->key.key >= 0x20u && event->key.key < 0x7Fu) return true;
+        }
+    } else if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat &&
+               nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
+               player->library_game_total > 0u &&
+               (event->key.key == SDLK_SLASH ||
+                (event->key.key == SDLK_F && (event->key.mod & SDL_KMOD_CTRL) != 0))) {
+        /* "/" or Ctrl+F opens the box from a hardware keyboard. */
+        player_ui_find_open(player, true);
+        return true;
+    }
     count = nk_ui_sdl_input_translate(&player->input, event, now_s,
                                      translated,
                                      sizeof(translated) / sizeof(translated[0]));
@@ -1370,7 +1484,9 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
                    !translated[i].repeat && player->pending_sound < 0) {
             player->pending_sound = PLAYER_UI_SOUND_CONFIRM;
         }
-        if (translated[i].type == NK_UI_EV_BACK) {
+        if (translated[i].type == NK_UI_EV_BACK && player_ui_nk_find_open(player)) {
+            if (translated[i].down) player_ui_find_close(player);
+        } else if (translated[i].type == NK_UI_EV_BACK) {
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_handle_event(player->router, &translated[i]);
         } else {
@@ -1768,12 +1884,36 @@ static int player_ui_compare_added(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
+/* Whether `text` holds `query`, ignoring ASCII case. */
+static bool player_ui_contains(const char *text, const char *query) {
+    size_t length = strlen(query);
+    for (const char *start = text; *start != '\0'; ++start) {
+        size_t i = 0u;
+        while (i < length && start[i] != '\0' &&
+               tolower((unsigned char)start[i]) == tolower((unsigned char)query[i])) {
+            ++i;
+        }
+        if (i == length) return true;
+    }
+    return length == 0u;
+}
+
 static void player_ui_library_order(PlayerUiNk *player, const PlayerApp *app, size_t count) {
     size_t n = 0u;
+    size_t total = 0u;
     for (size_t i = 0u; i < count; ++i) {
-        if (!player->titles[i].is_demo) player->library_grid[n++] = i;
+        if (player->titles[i].is_demo) continue;
+        ++total;
+        /* The find box keeps the games whose name or disc ID holds what is typed. */
+        if (player->find_open &&
+            !player_ui_contains(app->games[i].title_name, player->find_query) &&
+            !player_ui_contains(app->games[i].disc_id, player->find_query)) {
+            continue;
+        }
+        player->library_grid[n++] = i;
     }
     player->library_grid_count = n;
+    player->library_game_total = total;
     g_sort_app = app;
     qsort(player->library_grid, n, sizeof(player->library_grid[0]),
           app->settings.library_sort == PLAYER_LIBRARY_SORT_NAME ? player_ui_compare_name
@@ -1873,6 +2013,16 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         return false;
     }
     (void)SDL_GetWindowSize(window, &window_w, &window_h);
+    if (player_ui_nk_find_open(player) != player->find_text_input) {
+        /* SDL's text input is on while the find box is open, so typing (and an
+           input method's text) reaches it; off otherwise. */
+        player->find_text_input = player_ui_nk_find_open(player);
+        if (player->find_text_input) {
+            (void)SDL_StartTextInput(window);
+        } else {
+            (void)SDL_StopTextInput(window);
+        }
+    }
     display_scale = SDL_GetWindowDisplayScale(window);
     if (!(display_scale > 0.0f)) display_scale = 1.0f;
     player->viewport.pixel_w = pixel_w;
@@ -1970,15 +2120,29 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         PlayerUiLibraryModel view;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
         player_ui_fill_titles(player, app, count);
+        if (!player->find_open && nk_ui_take_event(player->ui, NK_UI_EV_OPTIONS, NULL) &&
+            player_ui_library_demo_count(player->titles, count) < count) {
+            /* The library's Options action (the pad's west button, Space) is Find. */
+            player_ui_find_open(player, false);
+        }
+        if (player->find_focus != 0u) {
+            /* This frame lays the box out (or FIND, once it closed). */
+            nk_ui_focus(player->ui, player->find_focus);
+            player->find_focus = 0u;
+        }
         player_ui_library_order(player, app, count);
         view = player_ui_library_view(player, count);
         /* The grid holds the user's games and ends with the add card, so it has
            one slot more than games; the demos sit under it, under TEST THIS PC. */
         demo_count = player_ui_library_demo_count(player->titles, count);
         games = player->library_grid_count;
-        page_size = player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
-                                                           demo_count, &columns);
-        slots = games > 0u ? games + 1u : 0u;
+        /* While finding, the box takes TEST THIS PC's room, and the grid is the
+           matches alone, without the add card. */
+        page_size = player->find_open
+            ? player_ui_library_page_size_finding(scale.logical_w, scale.logical_h, &columns)
+            : player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
+                                                     demo_count, &columns);
+        slots = player->find_open ? games : games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(
                 nk_ui_focused(player->ui), count);
@@ -2043,6 +2207,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         player_ui_library_page_art(player, app, count, player->library_page, page_size);
         PlayerUiLibraryModel model = view;
         model.sort_label = player_library_sort_label(app->settings.library_sort);
+        model.find_open = player->find_open;
+        model.find_query = player->find_query;
+        model.game_total = player->library_game_total;
         model.page_index = player->library_page;
         model.page_size = page_size;
         model.columns = columns;
@@ -2078,6 +2245,21 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_NEXT) {
             if ((player->library_page + 1u) * page_size < slots) {
                 ++player->library_page;
+            }
+            action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_FIND_OPEN) {
+            player_ui_find_open(player, false);
+            action.kind = PLAYER_UI_ACTION_NONE;
+        } else if (action.kind == PLAYER_UI_ACTION_FIND_KEY) {
+            if (action.title_index == PLAYER_UI_FIND_DONE) {
+                /* Done: on to the first match, the box stays open with it. */
+                nk_ui_focus(player->ui, games > 0u
+                                            ? PLAYER_UI_ID_LIBRARY_ITEM(player->library_grid[0])
+                                            : PLAYER_UI_ID_LIBRARY_FIND_DONE);
+            } else if (action.title_index == PLAYER_UI_FIND_DELETE) {
+                player_ui_find_delete(player);
+            } else {
+                player_ui_find_type(player, (uint32_t)action.title_index);
             }
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SORT) {

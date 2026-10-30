@@ -115,8 +115,15 @@ typedef enum {
                                           op, .title_index the PSP control it rebinds */
     PLAYER_UI_ACTION_DEVELOPER_LOG,    /* a developer log control; .primary carries the op */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
-    PLAYER_UI_ACTION_CYCLE_SORT         /* the library's next sort */
+    PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
+    PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
+    PLAYER_UI_ACTION_FIND_KEY           /* an on-screen key: title_index is a codepoint, or
+                                           PLAYER_UI_FIND_DELETE or PLAYER_UI_FIND_DONE */
 } PlayerUiActionKind;
+
+/* The find box's keys that are not characters. */
+#define PLAYER_UI_FIND_DELETE 8u
+#define PLAYER_UI_FIND_DONE 10u
 
 typedef struct {
     PlayerUiActionKind kind;
@@ -204,6 +211,13 @@ typedef struct {
     size_t grid_count;
     /* The sort on the SORT button ("Recently played"), or NULL for no button. */
     const char *sort_label;
+    /* The find box is open: the grid holds the games that match find_query (the
+       host filters `grid`), the add card and the demos are left out, and the
+       box and its on-screen keyboard sit above the grid. game_total is the
+       number of games, for "3 of 40 titles". */
+    bool find_open;
+    const char *find_query;
+    size_t game_total;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -661,6 +675,9 @@ enum {
     PLAYER_UI_ID_LIBRARY_PAGE_NEXT = 0x1004u,
     PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD = 0x1005u,
     PLAYER_UI_ID_LIBRARY_SORT = 0x1006u,
+    PLAYER_UI_ID_LIBRARY_FIND = 0x1007u,          /* FIND in the heading */
+    PLAYER_UI_ID_LIBRARY_FIND_DONE = 0x1008u,
+    PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE = 0x1080u, /* + the key's place on the keyboard */
     PLAYER_UI_ID_BUILD_ACTION = 0x4001u,
     PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
     PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
@@ -779,6 +796,10 @@ NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router);
 /* Library grid for a logical window size: the number of columns that fit at the
    minimum tile width, and the number of grid slots (titles plus the add card)
    one page shows. */
+/* The page size while the find box and its keyboard take the room of TEST THIS
+   PC. */
+size_t player_ui_library_page_size_finding(float logical_width, float logical_height,
+                                           size_t *columns_out);
 size_t player_ui_library_page_size(float logical_width, float logical_height,
                                    size_t *columns_out);
 /* The same with `demo_count` demos under TEST THIS PC, whose rows take their
@@ -868,6 +889,9 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
    shipped player has no other launcher. */
 bool player_ui_nk_draws_view(int view);
+/* True while the library's find box is open on the library: what the keyboard
+   types goes into it, so the host's letter shortcuts and Backspace-as-Back wait. */
+bool player_ui_nk_find_open(const PlayerUiNk *player);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);

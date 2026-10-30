@@ -175,7 +175,8 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
                /* Whole pages for the window-fit sweep only. */
-               FLOW_PAGE_LIBRARY, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT, FLOW_PAGE_REMOVE,
+               FLOW_PAGE_LIBRARY, FLOW_PAGE_LIBRARY_FIND, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT,
+               FLOW_PAGE_REMOVE,
                FLOW_PAGE_STOP,
                FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
@@ -590,11 +591,12 @@ static PlayerUiPrereqItem g_full_prereqs[35];
    a title page, About, and the remove dialog. */
 static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
-    if (which == FLOW_PAGE_LIBRARY) {
+    if (which == FLOW_PAGE_LIBRARY || which == FLOW_PAGE_LIBRARY_FIND) {
         PlayerUiLibraryModel library;
         memset(&library, 0, sizeof(library));
-        library.page_size = player_ui_library_page_size(g_flow_width, g_flow_height,
-                                                        &library.columns);
+        library.page_size = which == FLOW_PAGE_LIBRARY_FIND
+            ? player_ui_library_page_size_finding(g_flow_width, g_flow_height, &library.columns)
+            : player_ui_library_page_size(g_flow_width, g_flow_height, &library.columns);
         library.logical_width = g_flow_width;
         library.logical_height = g_flow_height;
         library.titles = k_titles;
@@ -603,6 +605,12 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         /* The fullest heading: the update notice, the longest sort and the pager. */
         library.update_notice = "Version 0.0.2 is out";
         library.sort_label = "Recently played";
+        if (which == FLOW_PAGE_LIBRARY_FIND) {
+            /* The find box open on a long query, with every game a match. */
+            library.find_open = true;
+            library.find_query = "Synthetic Showcase Scene and more";
+            library.game_total = library.title_count;
+        }
         return player_ui_screen_library(ui, &library);
     }
     if (which == FLOW_PAGE_TITLE) {
@@ -1075,6 +1083,90 @@ static void test_library_sort_button(void) {
     model.title_count = 0u;
     dump = library_frame_dump(ui, &model, NULL);
     CHECK(strstr(dump, "SORT:") == NULL, "an empty library has no SORT button");
+    nk_ui_destroy(ui);
+}
+
+/* An action from activating `id` on a library frame of `model`. */
+static PlayerUiAction library_activate(NkUi *ui, const PlayerUiLibraryModel *model, NkUiId id) {
+    PlayerUiAction action;
+    NkUiEvent activate;
+    (void)library_frame_dump(ui, model, NULL);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    (void)library_frame_dump(ui, model, &action);
+    return action;
+}
+
+/* The library's find box: FIND opens it; the box shows what is typed (or
+   what to type), "3 of 7 titles", DONE and the on-screen keyboard, whose keys
+   type, delete and finish; no match says so; the prompts offer Clear. */
+static void test_library_find_box(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    static const size_t matches[] = {0u, 2u, 4u};
+    const char *dump;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the find box");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.titles = k_titles;
+    model.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+    model.page_size = player_ui_library_page_size(1280.0f, 800.0f, &model.columns);
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"FIND\"") != NULL && strstr(dump, "Type a name") == NULL,
+          "the library offers FIND, with the box closed");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_OPEN, "FIND opens the box");
+
+    model.find_open = true;
+    model.find_query = "";
+    model.game_total = model.title_count;
+    model.grid = matches;
+    model.grid_count = 3u;
+    model.page_size = player_ui_library_page_size_finding(1280.0f, 800.0f, &model.columns);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "Type a name or disc ID") != NULL &&
+              strstr(dump, "\"3 of 7 titles\"") != NULL && strstr(dump, "\"DONE\"") != NULL &&
+              strstr(dump, "\"Q\"") != NULL && strstr(dump, "\"DELETE\"") != NULL &&
+              strstr(dump, "\"CLEAR\"") != NULL && strstr(dump, "\"FIND\"") == NULL &&
+              strstr(dump, "Add a disc image") == NULL,
+          "the open box shows what to type, the count, DONE, the keyboard and Clear, and no "
+          "add card");
+    model.find_query = "syn";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "\"syn|\"") != NULL, "the box shows what is typed");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 10u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == 'Q',
+          "an on-screen key types its character");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 39u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == ' ',
+          "the last key on the keyboard is Space");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 40u);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY &&
+              action.title_index == PLAYER_UI_FIND_DELETE,
+          "DELETE deletes");
+    action = library_activate(ui, &model, PLAYER_UI_ID_LIBRARY_FIND_DONE);
+    CHECK(action.kind == PLAYER_UI_ACTION_FIND_KEY && action.title_index == PLAYER_UI_FIND_DONE,
+          "DONE finishes");
+    model.grid_count = 0u;
+    model.find_query = "zzz";
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(strstr(dump, "No games match \\\"zzz\\\".") != NULL &&
+              strstr(dump, "\"0 of 7 titles\"") != NULL &&
+              strstr(dump, "Add your first game") == NULL,
+          "no match says so, and is not the empty library");
     nk_ui_destroy(ui);
 }
 
@@ -2926,6 +3018,21 @@ static int capture_screens(const char *directory) {
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     if (!capture_one(&rig, "library-controller-high-contrast", &library, NULL)) goto done;
     {
+        /* The find box with a controller: "SYN" typed, two matches, focus on a key. */
+        static const size_t matches[] = {0u, 1u};
+        PlayerUiLibraryModel find = library;
+        find.find_open = true;
+        find.find_query = "SYN";
+        find.game_total = library.title_count;
+        find.grid = matches;
+        find.grid_count = 2u;
+        find.sort_label = "Recently played";
+        find.page_size = player_ui_library_page_size_finding(1280.0f, 800.0f, &find.columns);
+        capture_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH, false);
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_FIND_KEY_BASE + 12u);
+        if (!capture_one(&rig, "library-find", &find, NULL)) goto done;
+    }
+    {
         static const struct { NkUiPromptStyle style; const char *name; } sets[] = {
             {NK_UI_PROMPT_LETTERS_A_SOUTH, "library-prompts-letters-a-south"},
             {NK_UI_PROMPT_LETTERS_A_EAST, "library-prompts-letters-a-east"},
@@ -3840,6 +3947,7 @@ int main(int argc, char **argv) {
     test_build_bar_shows_compiled_parts();
     test_library_demos();
     test_library_sort_button();
+    test_library_find_box();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

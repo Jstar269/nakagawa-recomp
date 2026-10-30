@@ -1439,6 +1439,50 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["selected"], "0",
                          "with nothing played yet, Recently played keeps the library's order")
 
+    # The library's find box (player_ui_nk.h).
+    FIND = str(0x1007)
+    FIND_DONE = str(0x1008)
+    FIND_KEY_Q = str(0x1080 + 10)
+
+    def test_next_ui_find_from_the_keyboard(self) -> None:
+        """'/' opens the find box on DONE; typing filters the library (D is typed,
+        not Details); Enter moves to the first match and opens it."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=1000", "KEY_SLASH", "WAIT_MS=100", "TEXT=title 1", "KEY_D", "TEXT=1",
+             "KEY_BACKSPACE", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN",
+             "WAIT_MS=200"),
+            library_titles=12, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertIn(self.FIND_DONE, [frame["next_focus"] for frame in frames],
+                      "'/' opens the box on DONE")
+        # "title 1" + "1" then Backspace is "title 1": titles 1, 10 and 11 match, 1 first.
+        self.assertEqual(frames[-1]["next_route"], "2", "Enter, Enter opens a match")
+        self.assertEqual(frames[-1]["selected"], "1", "the first match is Synthetic title 1")
+
+    def test_next_ui_find_with_a_controller_and_esc_clears_it(self) -> None:
+        """The pad's west button opens the box on the on-screen keyboard's Q, and the
+        east button (B) clears and closes it; Esc does too, without asking to quit."""
+        pad = self.run_player(
+            "library", ("WAIT_MS=1000", "PAD_WEST", "WAIT_MS=100", "PAD_EAST", "WAIT_MS=100"),
+            library_titles=4, timeout=120.0,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in pad["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        trail = self.focus_trail(pad)
+        self.assertIn(self.FIND_KEY_Q, trail, "the pad opens the box on Q")
+        self.assertEqual(trail[-1], self.FIND, "B closes it and focus returns to FIND")
+        keyboard = self.run_player(
+            "library", ("WAIT_MS=1000", "KEY_SLASH", "TEXT=zzz", "KEY_ESCAPE", "WAIT_MS=100"),
+            library_titles=4, timeout=120.0,
+        )
+        self.assertNotIn("QUIT_DIALOG", keyboard["stdout"], "Esc closes the box, not the player")
+        self.assertEqual(self.focus_trail(keyboard)[-1], self.FIND)
+
     def test_next_ui_is_the_only_launcher(self) -> None:
         """The owner's rule for v0.0.1: the new launcher or nothing.
 

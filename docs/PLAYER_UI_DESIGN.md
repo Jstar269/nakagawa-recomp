@@ -220,9 +220,21 @@ played (the default: the last played first, then the games never played in the o
 and Recently added (the last added first). The sort is saved as `library_sort`, and the grid starts again from its
 first page.
 
+FIND, beside it, opens the find box; so do the screen's Options action (the pad's west button, Space) and, from a
+hardware keyboard, "/" or Ctrl+F. The box takes TEST THIS PC's room: a field showing what is typed ("Type a name or
+disc ID" until then), a primary DONE, and an on-screen keyboard of 44 px keys in four rows 4 px apart (digits, three
+QWERTY rows with `-`, `.`, `'`, SPACE and DELETE), so a row of cards still fits at 1280 x 720. The grid shows the
+games whose name or disc ID holds what is typed, ignoring case, without the add card or the demos; the count reads
+"3 of 40 titles", and no match says "No games match". A hardware keyboard types straight in (SDL's text input is on
+while the box is open, so an input method works too), Backspace deletes, and letters that are launcher shortcuts
+(O, S, D, Q, E) are typed instead. Opened from the keyboard, focus is on DONE, so Enter moves to the first match; from
+a controller or the mouse, on Q. Esc or B clears and closes the box and focus returns to FIND. The prompt bar reads
+MOVE, SELECT and CLEAR while it is open.
+
 Decided 2026-10-30 (#1742): the sorts are those three, with room for a compatibility tier later (#1731). Find is one
 model for every input: a Find action (a button, and a controller button) opens a find box that filters the library
-as you type, with an on-screen keyboard for controllers, and Esc or B clears and closes it. A library holds up to 4096 games; only the page shown reads
+as you type, with an on-screen keyboard for controllers, and Esc or B clears and closes it. Typing a letter to open it
+would collide with the letter shortcuts, so "/" and Ctrl+F open it from a hardware keyboard (asked; recommended). A library holds up to 4096 games; only the page shown reads
 its disc icons and checks its packages, so a page of a large library costs what a small library does. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.

@@ -580,11 +580,12 @@ static bool s_pad_select_held;
 
 /* Backspace and the mouse's back button (X1) are Back: each is taken as Esc,
    so every view goes back the same way. A key the Controls page is waiting
-   for keeps its own name, so Backspace can still be mapped. */
-static const SDL_Event *player_back_as_escape(const PlayerApp *app, const SDL_Event *event,
-                                              SDL_Event *escape) {
+   for keeps its own name, so Backspace can still be mapped, and so does
+   Backspace in the library's find box, where it deletes. */
+static const SDL_Event *player_back_as_escape(const PlayerApp *app, const PlayerUiNk *next_ui,
+                                              const SDL_Event *event, SDL_Event *escape) {
     bool backspace = (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) &&
-                     event->key.key == SDLK_BACKSPACE &&
+                     event->key.key == SDLK_BACKSPACE && !player_ui_nk_find_open(next_ui) &&
                      !(app->active_view == VIEW_CONTROLLER_SETTINGS &&
                        app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
                        input_settings_is_capturing(&app->input_settings));
@@ -611,7 +612,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
     SDL_Event escape;
     bool use_next_ui = player_ui_nk_view_active(next_ui, app);
     if (!app || !input || !running || !event) return false;
-    event = player_back_as_escape(app, event, &escape);
+    event = player_back_as_escape(app, next_ui, event, &escape);
 
     switch (event->type) {
     case SDL_EVENT_QUIT:
@@ -694,6 +695,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
+        } else if (use_next_ui && player_ui_nk_find_open(next_ui)) {
+            /* The library's find box takes the keyboard: letters are typed, and
+               Esc clears the box instead of asking to quit. */
+            return player_ui_nk_handle_event(next_ui, event);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_O &&
                    !app->wizard.is_extracting) {
             /* The library's shortcuts work the same in the next UI: O adds a
@@ -784,6 +789,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_KEY_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
+    case SDL_EVENT_TEXT_INPUT:
+        /* Typed text, while the library's find box has SDL's text input on. */
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         return false;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -2262,6 +2271,14 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->button.y = s_ui_test_mouse_y;
         return 1;
     }
+    if (strncmp(token, "TEXT=", 5) == 0) {
+        /* Typed text, as SDL reports it while text input is on. */
+        static char text[64];
+        (void)snprintf(text, sizeof(text), "%s", token + 5);
+        event->type = SDL_EVENT_TEXT_INPUT;
+        event->text.text = text;
+        return 1;
+    }
     if (strncmp(token, "KEY_", 4) == 0) {
         /* As SDL reports a key: its key code and, on a US layout, its position. */
         static const struct { const char *name; SDL_Keycode key; SDL_Scancode scancode; } keys[] = {
@@ -2275,6 +2292,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "S", SDLK_S, SDL_SCANCODE_S }, { "O", SDLK_O, SDL_SCANCODE_O },
             { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
             { "BACKSPACE", SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE },
+            { "D", SDLK_D, SDL_SCANCODE_D }, { "SLASH", SDLK_SLASH, SDL_SCANCODE_SLASH },
             { "F12", SDLK_F12, SDL_SCANCODE_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -2291,6 +2309,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
     if (strncmp(token, "PAD_", 4) == 0) {
         static const struct { const char *name; SDL_GamepadButton button; } buttons[] = {
             { "SOUTH", SDL_GAMEPAD_BUTTON_SOUTH },
+            { "WEST", SDL_GAMEPAD_BUTTON_WEST },
             { "NORTH", SDL_GAMEPAD_BUTTON_NORTH },
             { "EAST", SDL_GAMEPAD_BUTTON_EAST },
             { "DPAD_LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT },
