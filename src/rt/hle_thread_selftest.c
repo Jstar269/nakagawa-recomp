@@ -1016,6 +1016,47 @@ void dispatch_tail_step(CpuState *cpu, uint32_t target) {
     dispatch(cpu, target);
 }
 
+#ifndef SR_HLE_AOT_BOUNDARY_TEST
+/* This harness intentionally does not link recomp.c. guest_interp.c still needs the
+ * unaligned-access helpers because it is compiled as the production interpreter floor.
+ * Keep those helpers byte-for-byte equivalent to recomp.c; the HLE suite does not execute
+ * VFPU instructions, so its absent VFPU decoder fails closed instead of duplicating it. */
+uint32_t sr_lwl(uint32_t rtv, uint32_t addr) {
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mem = sr_r32(addr & ~3u);
+    return (rtv & (0x00ffffffu >> shift)) | (mem << (24u - shift));
+}
+
+uint32_t sr_lwr(uint32_t rtv, uint32_t addr) {
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mem = sr_r32(addr & ~3u);
+    return (rtv & (0xffffff00u << (24u - shift))) | (mem >> shift);
+}
+
+void sr_swl_pc(uint32_t addr, uint32_t rtv, uint32_t pc) {
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mem = sr_r32(addr & ~3u);
+    sr_w32_pc(addr & ~3u,
+              (rtv >> (24u - shift)) | (mem & (0xffffff00u << shift)), pc);
+}
+
+void sr_swr_pc(uint32_t addr, uint32_t rtv, uint32_t pc) {
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mem = sr_r32(addr & ~3u);
+    sr_w32_pc(addr & ~3u,
+              (rtv << shift) | (mem & (0x00ffffffu >> (24u - shift))), pc);
+}
+
+void sr_swl(uint32_t addr, uint32_t rtv) { sr_swl_pc(addr, rtv, 0u); }
+void sr_swr(uint32_t addr, uint32_t rtv) { sr_swr_pc(addr, rtv, 0u); }
+
+int sr_vfpu_interp(CpuState *s, uint32_t op) {
+    (void)s;
+    (void)op;
+    return SR_VFPU_OTHER;
+}
+#endif
+
 static int s_checks;
 static int s_failures;
 static void expect(int condition, const char *description) {
@@ -5738,6 +5779,7 @@ static void test_sysreg_write_model(void) {
  * The test pins the codes, so a later measured handler has to replace them deliberately.
  * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
 #define NID_REFUSE_NET_INIT                0x39af39a6u
+#define NID_REFUSE_NET_TERM                0x281928a9u
 #define NID_REFUSE_POWER_469989AD          0x469989adu
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
@@ -5750,10 +5792,14 @@ static uint32_t refuse_call(uint32_t nid) {
 }
 
 static void test_named_refusals(void) {
+    enum { NID_NET_ETHER_NTOSTR = 0x89360950u, MAC_ADDR = 0x00241000u, TEXT_ADDR = 0x00241040u };
+    static const uint8_t mac[6] = {0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xabu};
     reset_fixture();
     sr_hle_init();
     expect(refuse_call(NID_REFUSE_NET_INIT) == REFUSE_NET_CODE,
            "sceNetInit refuses with the offline network code 0x80010086");
+    expect(refuse_call(NID_REFUSE_NET_TERM) == REFUSE_NET_CODE,
+           "sceNetTerm has a named offline refusal instead of the unknown-NID stop");
     expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
            "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
@@ -5764,6 +5810,14 @@ static void test_named_refusals(void) {
            "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
     expect(refuse_call(0x5963991bu) == REFUSE_NET_CODE,
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
+    memcpy(SR_HOST(MAC_ADDR), mac, sizeof mac);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = MAC_ADDR;
+    cpu.r[5] = TEXT_ADDR;
+    expect(sr_syscall(&cpu, NID_NET_ETHER_NTOSTR) == TEXT_ADDR &&
+               strcmp((const char *)SR_HOST(TEXT_ADDR), "01:23:45:67:89:ab") == 0,
+           "sceNetEtherNtostr formats a bounded MAC string without a network stack");
 }
 
 /* sceKernelReferSystemStatus(SceKernelSystemStatus *status): PSP-3000, firmware 6.61 (PR #1003 head
@@ -7645,11 +7699,13 @@ static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
 static void test_io_devctl_memory_stick(void) {
     const uint32_t device_addr = 0x09020000u;
     const uint32_t second_device_addr = 0x09020020u;
+    const uint32_t mscmhc_device_addr = 0x09020040u;
     const uint32_t indata_addr = 0x09020100u;
     const uint32_t info_addr = 0x09020200u;
     const uint32_t outdata_addr = 0x09020300u;
     static const char ms0[] = "ms0:";
     static const char fatms0[] = "fatms0:";
+    static const char mscmhc0[] = "mscmhc0:";
     static const char unknown_device[] = "devctl-test0:";
     const char *old_root_value = getenv("SR_MEMSTICK");
     char *old_root = old_root_value ? (char *)malloc(strlen(old_root_value) + 1u) : NULL;
@@ -7666,6 +7722,7 @@ static void test_io_devctl_memory_stick(void) {
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
+    fd_guest_copy(mscmhc_device_addr, mscmhc0, sizeof(mscmhc0));
     sr_hle_init();
     sr_hle_test_register_iofilemgr();
 
@@ -7704,6 +7761,14 @@ static void test_io_devctl_memory_stick(void) {
     expect(io_devctl_call(&cpu, second_device_addr, 0x02425823u,
                           0u, 0u, outdata_addr, 2u) == 0x80010016u,
            "sceIoDevctl fatms0: medium check refuses an output shorter than one word");
+    expect(io_devctl_call(&cpu, mscmhc_device_addr, 0x02025806u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 1u,
+           "sceIoDevctl mscmhc0: inserted query reports the inserted Memory Stick");
+    expect(io_devctl_call(&cpu, mscmhc_device_addr, 0x02025801u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 4u,
+           "sceIoDevctl mscmhc0: ready query reports the inserted device state");
 
     MEM_W32(indata_addr, 0x1234u);
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415821u,
@@ -7714,6 +7779,12 @@ static void test_io_devctl_memory_stick(void) {
                           indata_addr, 4u, 0u, 0u) == 0x80010016u &&
                sr_hle_test_io_devctl_callback_count() == 0u,
            "sceIoDevctl callback unregistration refuses a UID that is not registered");
+    expect(io_devctl_call(&cpu, mscmhc_device_addr, 0x02015804u,
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u,
+           "sceIoDevctl mscmhc0: callback registration reaches the callback table");
+    expect(io_devctl_call(&cpu, mscmhc_device_addr, 0x02015805u,
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u,
+           "sceIoDevctl mscmhc0: callback unregistration reaches the callback table");
 
     MEM_W32(indata_addr, 0xdeadbeefu);
     expect(io_devctl_call(&cpu, device_addr, 0x02425818u,
@@ -9414,6 +9485,7 @@ static void test_umd_unregister_callback(void) {
         NID_CREATE_CALLBACK = 0xe81caf8fu,
         NID_CHECK_CALLBACK = 0x349d6d6cu,
         NID_UMD_ACTIVATE = 0xc6183d47u,
+        NID_UMD_DEACTIVATE = 0xe83742bau,
         NID_UMD_REGISTER_CALLBACK = 0xaee7404du,
         NID_UMD_UNREGISTER_CALLBACK = 0xbd2bde07u,
         UNKNOWN_CALLBACK = 0xdeadbeefu,
@@ -9463,8 +9535,28 @@ static void test_umd_unregister_callback(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u &&
                sr_syscall(&cpu, NID_CHECK_CALLBACK) == 1u &&
-               s_oracle_callback_calls == 1,
-           "a re-registered UMD callback receives the next state change");
+               s_oracle_callback_calls == 1 &&
+               s_oracle_callback_arg2 == 0x22u,
+           "pre-SDK-version UMD callbacks receive PRESENT|READY (0x22)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x03070000u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SET_COMPILED_SDK_VERSION_370) == 0u,
+           "UMD callback test selects a newer compiled SDK version");
+    s_oracle_callback_calls = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u &&
+               sr_syscall(&cpu, NID_CHECK_CALLBACK) == 1u &&
+               s_oracle_callback_calls == 1 &&
+               s_oracle_callback_arg2 == 0x32u,
+           "newer-SDK UMD callbacks receive PRESENT|INITED|READY (0x32)");
+    s_oracle_callback_calls = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u &&
+               sr_syscall(&cpu, NID_CHECK_CALLBACK) == 1u &&
+               s_oracle_callback_calls == 1 &&
+               s_oracle_callback_arg2 == 0x22u,
+           "UMD deactivate callbacks receive PRESENT|READY (0x22)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = cbid;

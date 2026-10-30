@@ -1226,11 +1226,11 @@ void sched_dump_threads(void) {
             snprintf(deadline, sizeof deadline, "DUE");
         fprintf(stderr,
                 "  uid=0x%x entry=0x%08x pc=0x%08x %-10s pri=%d wait_obj=0x%x wake=%llu"
-                " why=%s in=%s cb=%d wakeups=%d join=0x%x\n",
+                " why=%s in=%s cb=%d wakeups=%d join=0x%x susp=%d deleted=%d\n",
                 t->uid, t->entry, t->saved.pc, st[t->state < 5 ? t->state : 0], t->priority,
                 t->wait_obj, (unsigned long long)t->wake,
                 why, deadline, t->is_cb_wait, t->wakeups,
-                t->join_waiting ? t->join_target : 0u);
+                t->join_waiting ? t->join_target : 0u, t->suspended, t->deleted);
         sched_dump_thread_detail(t);
     }
 }

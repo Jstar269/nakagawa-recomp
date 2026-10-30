@@ -13556,7 +13556,13 @@ static uint32_t s_umd_cb_uid = 0;
  * sceUmdReplacePermit each return 0; after sceUmdDeactivate the state is 0x12 (READY cleared).
  * The waits below read this state, so a wait for READY after a deactivate blocks until
  * sceUmdActivate signals the drive ready again. */
-enum { UMD_STAT_PRESENT = 0x02u, UMD_STAT_ACTIVE = 0x32u, UMD_STAT_DEACTIVATED = 0x12u };
+enum {
+    UMD_STAT_PRESENT = 0x02u,
+    UMD_STAT_INITED = 0x10u,
+    UMD_STAT_READY = 0x20u,
+    UMD_STAT_ACTIVE = UMD_STAT_PRESENT | UMD_STAT_INITED | UMD_STAT_READY,
+    UMD_STAT_DEACTIVATED = UMD_STAT_PRESENT | UMD_STAT_INITED
+};
 static uint32_t s_umd_drive_stat = UMD_STAT_ACTIVE;
 #ifdef SR_HLE_THREAD_SELFTEST
 void sr_hle_test_umd_reset(void) { s_umd_drive_stat = UMD_STAT_ACTIVE; }
@@ -13608,8 +13614,14 @@ static void sr_umd_signal_ready(void) {
     extern void sched_wake(uint32_t);
     s_umd_drive_stat = UMD_STAT_ACTIVE;
     sched_wake(0x554D44u);
-    if (s_umd_cb_uid)
-        (void)sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat);
+    if (s_umd_cb_uid) {
+        /* PPSSPP's compiled-SDK gate is observable here: titles that report
+         * SDK version 0 receive PRESENT|READY, while newer titles also receive
+         * INITED. Coded Arms' module loader waits specifically for 0x22. */
+        uint32_t callback_stat = UMD_STAT_PRESENT | UMD_STAT_READY;
+        if (g_sdk_version != 0u) callback_stat |= UMD_STAT_INITED;
+        (void)sr_callback_notify(s_umd_cb_uid, callback_stat);
+    }
 }
 
 /* Shared body for sceUmdWaitDriveStat / ...WithTimer. A request whose bits all
@@ -13676,6 +13688,9 @@ static uint32_t h_UmdActivate(CpuState *s) {
 static uint32_t h_UmdDeactivate(CpuState *s) {
     (void)s;
     s_umd_drive_stat = UMD_STAT_DEACTIVATED;
+    if (s_umd_cb_uid)
+        (void)sr_callback_notify(s_umd_cb_uid,
+                                 UMD_STAT_PRESENT | UMD_STAT_READY);
     return 0;
 }
 
@@ -19123,6 +19138,8 @@ static uint32_t h_IoDevctl(CpuState *s) {
         IO_DEVCTL_CHECK_MEDIUM = 0x02425823u,
         IO_DEVCTL_REGISTER_CALLBACK = 0x02415821u,
         IO_DEVCTL_UNREGISTER_CALLBACK = 0x02415822u,
+        IO_DEVCTL_MSCM_REGISTER_CALLBACK = 0x02015804u,
+        IO_DEVCTL_MSCM_UNREGISTER_CALLBACK = 0x02015805u,
         IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
         IO_DEVCTL_ERROR_INVALID_ARGUMENT = 0x80010016u,
         IO_DEVCTL_ERROR_IO = 0x80010005u
@@ -19134,7 +19151,10 @@ static uint32_t h_IoDevctl(CpuState *s) {
     if (io_raw_device_path(device) != IO_RAW_DEVICE_NONE)
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DEVCTL,
                                           "sceIoDevctl", device, UINT32_MAX);
-    int is_memstick = strcmp(device, "ms0:") == 0 || strcmp(device, "fatms0:") == 0;
+    int is_memstick = strcmp(device, "ms0:") == 0 ||
+                      strcmp(device, "fatms0:") == 0 ||
+                      strcmp(device, "mscmhc0:") == 0 ||
+                      strcmp(device, "memstick:") == 0;
     if (!is_memstick) {
         hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
         return IO_DEVCTL_ERROR_UNSUPPORTED;
@@ -19168,12 +19188,15 @@ static uint32_t h_IoDevctl(CpuState *s) {
             return 0;
         }
         case IO_DEVCTL_REGISTER_CALLBACK:
-        case IO_DEVCTL_UNREGISTER_CALLBACK: {
+        case IO_DEVCTL_UNREGISTER_CALLBACK:
+        case IO_DEVCTL_MSCM_REGISTER_CALLBACK:
+        case IO_DEVCTL_MSCM_UNREGISTER_CALLBACK: {
             if (A3 < 4u || A3 > INT32_MAX) return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
             if (!A2 || !sr_guest_span_readable(A2, 4u))
                 return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
             uint32_t callback_uid = MEM_R32(A2);
-            if (A1 == IO_DEVCTL_UNREGISTER_CALLBACK)
+            if (A1 == IO_DEVCTL_UNREGISTER_CALLBACK ||
+                A1 == IO_DEVCTL_MSCM_UNREGISTER_CALLBACK)
                 return memstick_callback_remove_first(callback_uid)
                            ? 0u : IO_DEVCTL_ERROR_INVALID_ARGUMENT;
             if (sr_callback_find_in_table(callback_uid) < 0 ||
@@ -29100,6 +29123,23 @@ static uint32_t h_ReferSystemStatus(CpuState *s) {
     return 0;
 }
 
+/* sceNetEtherNtostr(const unsigned char *mac, char *name): format the six-byte
+ * hardware address locally. This does not require a host network stack. */
+static uint32_t h_NetEtherNtostr(CpuState *s) {
+    (void)s;
+    uint32_t mac = A0, out = A1;
+    if (!mac || !out || !sr_guest_span_readable(mac, 6u) ||
+        !sr_guest_span_writable(out, 18u))
+        return 0u;
+    char text[18];
+    snprintf(text, sizeof text, "%02x:%02x:%02x:%02x:%02x:%02x",
+             MEM_R8(mac), MEM_R8(mac + 1u), MEM_R8(mac + 2u),
+             MEM_R8(mac + 3u), MEM_R8(mac + 4u), MEM_R8(mac + 5u));
+    for (uint32_t i = 0; i < sizeof text; i++)
+        MEM_W8(out + i, (uint8_t)text[i]);
+    return out;
+}
+
 static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
     sr_hle_register(0xc8cd158cu, "sceKernelUSec2SysClockWide", h_USec2SysClockWide);
@@ -29131,9 +29171,13 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
     sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
     sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    sr_hle_register(0x89360950u, "sceNetEtherNtostr", h_NetEtherNtostr);
     /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
      * has no network stack, so the call refuses with that code rather than reporting success. */
     sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
+    /* A title that sees sceNetInit fail may still execute its cleanup path. Keep that
+     * cleanup as a named offline refusal instead of the unknown-NID stop. */
+    sr_hle_register_unsupported(0x281928a9u, "sceNetTerm", 0x80010086u);
     /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
     sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
     /* The SSL library has no handler in this runtime, which has no network stack. sceSslEnd follows

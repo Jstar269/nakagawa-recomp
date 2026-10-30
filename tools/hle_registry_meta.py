@@ -564,13 +564,21 @@ HANDLER_METADATA = {
         "status": "compatibility",
         "limitation": "returns no error while the virtual ISO disc is present, activated or not; the deactivated drive's error stat and other drive-error states are unmodeled (#341)",
     },
+    "h_UmdActivate": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_umd_unregister_callback",
+            "PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version",
+        ],
+        "limitation": "the callback notification and pre-SDK-version PRESENT|READY state are host-selftested; the activation result and argument checks are not hardware measured",
+    },
     "h_UmdDeactivate": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
             "hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)",
         ],
-        "limitation": "moves the modeled drive to the measured deactivated state 0x12; its own return value (0) and argument checks are not hardware measured",
+        "limitation": "moves the modeled drive to the measured deactivated state 0x12 and notifies PRESENT|READY through the host-selftested callback path; its own return value (0) and argument checks are not hardware measured",
     },
     "h_UmdUnRegisterUMDCallBack": {
         "status": "partial",
@@ -598,7 +606,14 @@ HANDLER_METADATA = {
     # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)",
+        "limitation": "Memory Stick insert/eject callbacks, including the mscmhc0: 0x02015804/0x02015805 forms, are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)",
+    },
+    "h_NetEtherNtostr": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_named_refusals",
+        ],
+        "limitation": "formats a readable six-byte MAC address into the bounded 18-byte PSPSDK text form without a network stack; invalid pointer precedence and the complete text domain are not hardware measured",
     },
     "h_IoDopen": {
         "status": "partial",
