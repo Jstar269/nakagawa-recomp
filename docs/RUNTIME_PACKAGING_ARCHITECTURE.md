@@ -111,11 +111,11 @@ Roadmap items decided with the table:
   expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
   `NakagawaRecomp` (macOS); unify them before a release ships on a second host, with a migration from
   the old Windows folder.
-* **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). SignPath Foundation's
-  free open-source programme declined the project for now because it is not yet widely used; reapply
-  once releases have users. Until a build is signed, each release publishes the ZIP's SHA-256 and
-  GitHub build attestations for every binary, and the release notes explain the SmartScreen prompt.
-  Paid certificates stay a maintainer decision.
+* **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). Until a build is signed, each
+  release publishes the ZIP's SHA-256 and GitHub build attestations for every binary, and the release notes
+  explain the SmartScreen prompt. The signing procedure is prepared
+  ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)) and waits for the
+  maintainer's certificate, which stays a maintainer decision.
 
 ## 5. Local AOT package contract (v2)
 
