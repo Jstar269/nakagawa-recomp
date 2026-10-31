@@ -11,7 +11,8 @@ the platform ladder and pin the generated contract the runtime binds:
 
 * every guest address of the module's own image is ``(<base symbol> + link)``;
 * a module carried once is named by its bytes (``l<fnv>_...``, ``sr_l<fnv>_base``) and
-  written to its own ``nk_lib_<fnv>.c``, the same file whatever game carries it (#1306);
+  written to its own ``nk_lib_<fnv>.c``, the same file whatever game carries it (#1306),
+  or to ``nk_lib_<fnv>_<n>.c`` units when it is over the library's own budget (#1730);
 * an instruction whose immediate the loader relocates reads that immediate from
   the loaded image (``MEM_R16``), never from the link-time word;
 * the module's functions are reached only through its ``SrModuleCode``
@@ -27,7 +28,9 @@ import contextlib
 import importlib.util
 import io
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -218,6 +221,154 @@ class RuntimeModuleTranslation(unittest.TestCase):
             self.assertIn('#include "recomp.h"', text)
         # The module bodies stay out of the game's own chunks.
         self.assertNotRegex(self.chunks, r"(?m)^void [lm][0-9a-f]+_[0-9a-f]{8}\(")
+
+    def library_build(self, name, funcs_per_chunk, max_funcs, main=None, game="g"):
+        """A build of both overlays with the library budget lowered to ``max_funcs`` bodies."""
+        out = Path(self.tmp.name) / name / f"{game}_recomp.c"
+        out.parent.mkdir(exist_ok=True)
+        saved = codegen.LIBRARY_UNIT_MAX_FUNCS
+        codegen.LIBRARY_UNIT_MAX_FUNCS = max_funcs
+        try:
+            status, _out, err = run_codegen([
+                str(main or self.main), str(out), "--base=0x08940000",
+                f"--funcs-per-chunk={funcs_per_chunk}",
+                *[f"--extra-elf={path}@runtime" for _spec, path in self.overlays],
+            ])
+        finally:
+            codegen.LIBRARY_UNIT_MAX_FUNCS = saved
+        self.assertEqual(status, 0, err)
+        return out.parent, {path.name: path.read_text(encoding="ascii")
+                            for path in sorted(out.parent.glob("nk_lib_*.c"))}
+
+    def test_a_module_over_the_library_budget_is_cut_into_units(self):
+        # #1730: a library unit is bounded like the game's chunks, by the library's own
+        # budget, so another game (another executable and name, other chunk settings)
+        # writes the same files.
+        other_main = Path(self.tmp.name) / "other_main.prx"
+        other_main.write_bytes(ladder.build_prx(ladder.PLANS["ladder-reloc"])[0])
+        _dir, cut = self.library_build("cut4", funcs_per_chunk=4, max_funcs=4)
+        _dir, cut_other = self.library_build("cut7", funcs_per_chunk=7, max_funcs=4,
+                                             main=other_main, game="other")
+        self.assertEqual(cut, cut_other)
+        body = re.compile(r"(?ms)^void ([lm][0-9a-f]+_[0-9a-f]{8})\(CpuState \*s\) \{.*?^\}$")
+        for index in range(len(self.overlays)):
+            stem = f"nk_lib_{self.hashes[index]:016x}"
+            whole = self.libraries[f"{stem}.c"]
+            names = sorted(name for name in cut if name.startswith(stem))
+            bodies = [m.group(1) for m in body.finditer(whole)]
+            self.assertEqual(names, [f"{stem}_{n}.c" for n in range((len(bodies) + 3) // 4)])
+            self.assertGreater(len(names), 1)
+            pieces = [m.group(0) for name in names for m in body.finditer(cut[name])]
+            self.assertEqual(pieces, [m.group(0) for m in body.finditer(whole)],
+                             "the units hold every body once, in order")
+            head = whole[:whole.index("\n\n", whole.index("extern uint32_t"))]
+            for name in names:
+                self.assertTrue(cut[name].startswith(head), f"{name} carries every declaration")
+                self.assertLessEqual(len(body.findall(cut[name])), 4)
+
+    @unittest.skipUnless(shutil.which("gcc"), "gcc not installed")
+    def test_library_units_compile_alone_and_define_each_body_once(self):
+        unit_dir, cut = self.library_build("compile", funcs_per_chunk=4, max_funcs=4)
+        defined = []
+        for name in cut:
+            obj = unit_dir / (name[:-2] + ".o")
+            proc = subprocess.run(
+                ["gcc", "-O0", "-w", "-Werror=implicit-function-declaration",
+                 f"-I{ROOT / 'src' / 'rt'}", "-DSR_SDL3VK", "-c", str(unit_dir / name),
+                 "-o", str(obj)], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            symbols = subprocess.run(["nm", "--defined-only", str(obj)], capture_output=True,
+                                     text=True, check=True).stdout
+            defined += re.findall(r"(?m)^\S+ T _?(l[0-9a-f]{16}_[0-9a-f]{8})$", symbols)
+        expected = re.findall(r"(?m)^void (l[0-9a-f]{16}_[0-9a-f]{8})\(CpuState \*s\) \{",
+                              "\n".join(self.libraries.values()))
+        self.assertEqual(sorted(defined), sorted(expected))
+
+    def test_library_units_replace_each_other_without_stale_files(self):
+        unit_dir, single = self.library_build("swap", funcs_per_chunk=4, max_funcs=2000)
+        self.assertEqual(sorted(single), sorted(self.libraries))
+        _dir, cut = self.library_build("swap", funcs_per_chunk=4, max_funcs=4)
+        self.assertEqual(sorted(p.name for p in unit_dir.glob("nk_lib_*.c")), sorted(cut))
+        self.assertTrue(set(cut).isdisjoint(single))
+        _dir, again = self.library_build("swap", funcs_per_chunk=4, max_funcs=2000)
+        self.assertEqual(again, single)
+        self.assertEqual(sorted(p.name for p in unit_dir.glob("nk_lib_*.c")), sorted(single))
+
+    def test_an_oversized_body_compiles_alone_at_the_fallback_level(self):
+        # #1730: a body over BODY_FALLBACK_BYTES gets a unit of its own, game chunk or library
+        # unit, and <game>_recomp_opt.mk gives that unit BODY_FALLBACK_OPT. The threshold is
+        # lowered so the ladder's small bodies cross it.
+        out = Path(self.tmp.name) / "fallback" / "g_recomp.c"
+        out.parent.mkdir()
+        saved = codegen.BODY_FALLBACK_BYTES
+        codegen.BODY_FALLBACK_BYTES = 1200
+        try:
+            status, stdout, err = run_codegen([
+                str(self.main), str(out), "--base=0x08940000", "--funcs-per-chunk=50",
+                "--target-chunk-bytes=4000000",
+                *[f"--extra-elf={path}@runtime" for _spec, path in self.overlays],
+            ])
+        finally:
+            codegen.BODY_FALLBACK_BYTES = saved
+        self.assertEqual(status, 0, err)
+        body = re.compile(r"(?ms)^void (\w+)\(CpuState \*s\) \{.*?^\}$")
+        units = {path.stem: path.read_text(encoding="ascii")
+                 for path in sorted(out.parent.glob("*.c"))
+                 if re.fullmatch(r"g_recomp_\d+|nk_lib_[0-9a-f]{16}(_\d+)?", path.stem)}
+        opt = (out.parent / "g_recomp_opt.mk").read_text(encoding="ascii")
+        rows = re.findall(r"(?m)^# unit (\S+) body (\S+) bytes (\d+)$", opt)
+        levels = dict(re.findall(r"(?m)^RECOMP_UNIT_OPT_(\S+) := (\S+)$", opt))
+        self.assertTrue(rows, "some ladder body is over the lowered threshold")
+        self.assertTrue(any(stem.startswith("nk_lib_") for stem, _b, _n in rows))
+        self.assertTrue(any(stem.startswith("g_recomp_") for stem, _b, _n in rows))
+        for stem, symbol, size in rows:
+            self.assertEqual(levels[stem], codegen.BODY_FALLBACK_OPT)
+            found = body.findall(units[stem])
+            self.assertEqual([m for m in found], [symbol], f"{stem} holds only its body")
+            self.assertGreater(int(size), 1200)
+            self.assertIn(f"CODEGEN_OPT_FALLBACK unit={stem} body={symbol}", stdout)
+        listed = {stem for stem, _b, _n in rows}
+        for stem, text in units.items():
+            if stem not in listed:
+                for m in body.finditer(text):
+                    self.assertLessEqual(len(m.group(0)), 1200 + 64,
+                                         f"{m.group(1)} in {stem} should have its own unit")
+        self.assertEqual(set(levels), listed)
+
+    def test_no_oversized_body_writes_an_empty_level_file(self):
+        opt = (self.out.parent / "g_recomp_opt.mk").read_text(encoding="ascii")
+        self.assertNotIn("RECOMP_UNIT_OPT_", opt)
+        self.assertTrue(opt.startswith("# Generated by tools/codegen.py."))
+
+    def test_a_fallback_row_names_the_body_its_unit_defines(self):
+        saved = codegen.BODY_FALLBACK_BYTES
+        codegen.BODY_FALLBACK_BYTES = 10
+        try:
+            body = "void f_00001000(CpuState *s) {\n" + "x" * 20 + "\n}\n"
+            self.assertEqual(
+                codegen.fallback_unit_row("g_recomp_1", [body], {"f_00001000": "Renamed"}),
+                ("g_recomp_1", "Renamed", len(body)))
+            self.assertIsNone(codegen.fallback_unit_row("g_recomp_2", [body, body]))
+            self.assertIsNone(codegen.fallback_unit_row("g_recomp_3", ["x" * 10]))  # at the budget
+            # An oversized unit always holds one body; one without is a generator bug.
+            with self.assertRaises(AssertionError):
+                codegen.fallback_unit_row("g_recomp_4", ["/* no body */" + "x" * 20])
+        finally:
+            codegen.BODY_FALLBACK_BYTES = saved
+
+    def test_partition_isolates_an_oversized_body_whatever_the_budget(self):
+        saved = codegen.BODY_FALLBACK_BYTES
+        codegen.BODY_FALLBACK_BYTES = 10
+        try:
+            texts = ["a" * 5, "b" * 11, "c" * 5, "d" * 5]
+            self.assertEqual(codegen.partition_units(texts, 0, 10),
+                             [["a" * 5], ["b" * 11], ["c" * 5, "d" * 5]])
+            self.assertEqual(codegen.partition_units(texts, 1000, 10),
+                             [["a" * 5], ["b" * 11], ["c" * 5, "d" * 5]])
+            self.assertEqual(codegen.partition_units(texts, 8, 10),
+                             [["a" * 5], ["b" * 11], ["c" * 5], ["d" * 5]])
+        finally:
+            codegen.BODY_FALLBACK_BYTES = saved
 
     def test_a_module_carried_twice_keeps_indexed_names_in_the_game_chunks(self):
         root = Path(self.tmp.name) / "twice"
