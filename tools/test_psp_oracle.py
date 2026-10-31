@@ -5877,7 +5877,10 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         dialogs = re.findall(r'hle_sd_dialog\("([a-z0-9-]+)", (HLE_SD_MODE_\w+), "([^"]*)"', run)
         self.assertEqual({save for _cell, _mode, save in dialogs}, {"SLOTA", "SLOTB", "*"})
         made = {save for _cell, mode, save in dialogs if mode == "HLE_SD_MODE_MAKEDATA"}
-        deleted = [save for _cell, mode, save in dialogs[-2:] if mode == "HLE_SD_MODE_DELETEDATA"]
+        # The unknown mode runs last, after both deletes: on a PSP-3000 it holds the utility
+        # slot at INIT (2026-10-31), so nothing after it could run.
+        self.assertEqual(dialogs[-1][1], "HLE_SD_MODE_UNKNOWN")
+        deleted = [save for _cell, mode, save in dialogs[-3:-1] if mode == "HLE_SD_MODE_DELETEDATA"]
         self.assertEqual(made, {"SLOTA", "SLOTB"})
         self.assertEqual(sorted(deleted), sorted(made))
         self.assertEqual(set(re.findall(r'HLE_SD_SAVE_ROOT "([^"]+)"', run)),

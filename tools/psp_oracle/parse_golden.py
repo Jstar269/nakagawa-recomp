@@ -1715,13 +1715,13 @@ _register_campaign_probe(
 # the outcome, two ShutdownStart returns, the last GetStatus return and the Update count);
 # LIST adds resultCount and four words per row for four rows; each sceIoGetstat cell carries
 # st_mode and three encoded times. Every word is an observation.
-_HLE_SAVEDATA_DIALOG_CASES = (
-    "mode-23", "makedata-slotb", "makedata-slota", "writedata-slotb",
-)
+_HLE_SAVEDATA_DIALOG_CASES = ("makedata-slotb", "makedata-slota", "writedata-slotb")
 _HLE_SAVEDATA_STAT_CASES = (
     "getstat-slota-dir", "getstat-slota-sfo", "getstat-slotb-dir", "getstat-slotb-sfo",
 )
-_HLE_SAVEDATA_CLEANUP_CASES = ("shutdown-during-init", "deletedata-slota", "deletedata-slotb")
+# The unknown mode runs last: it holds the utility slot at INIT (PSP-3000, 2026-10-31).
+_HLE_SAVEDATA_CLEANUP_CASES = ("shutdown-during-init", "deletedata-slota", "deletedata-slotb",
+                               "mode-23")
 _register_campaign_probe(
     "hle-savedata", "PSP-HLE-SAVEDATA-001",
     (*_HLE_SAVEDATA_DIALOG_CASES, "list", *_HLE_SAVEDATA_STAT_CASES,
