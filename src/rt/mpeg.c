@@ -162,11 +162,8 @@ typedef struct {
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset,auMode) */
     struct { int used, type, num, needsReset, auMode; uint32_t sid; } streams[8];
-    /* ATRAC3+ access units: the header's channel count per audio stream, an audio-only demux of
-     * the fed ring bytes, its frames waiting in a FIFO, the frame GetAtracAu holds for the next
-     * AtracDecode, and the decoder. */
-    uint8_t audioChannelsByStream[16];
-    uint32_t audioStreamsInHeader;
+    /* ATRAC3+ access units: an audio-only demux of the fed ring bytes, its frames waiting in a
+     * FIFO, the frame GetAtracAu holds for the next AtracDecode, and the decoder. */
     int audioStreamNum;          /* the registered ATRAC stream (its PS1 sub-stream id) */
     SrPsmfProducer *audioDemux;
     int audioDemuxFailed, audioDemuxEos;
@@ -338,10 +335,13 @@ static uint32_t mpeg_audio_decode_frame(Mpeg *ctx, const uint8_t *frame, uint32_
     if (frame_size != bytes)
         return mpeg_contract_error("sceMpegAtracDecode", "the frame header disagrees with the access unit",
                                    SCE_MPEG_ERROR_INVALID_VALUE);
-    int channels = ctx->audioStreamNum >= 0 && (uint32_t)ctx->audioStreamNum < 16u
-                       ? ctx->audioChannelsByStream[ctx->audioStreamNum] : 0;
+    /* Bytes 2-3 are the low half of the ATRAC3+ codec word (sample-rate code, channel id, frame
+     * size; PSMF movies carry 0x285C, 44.1 kHz stereo), so the decoder is set up from the frame
+     * itself.  A guest PSMF player never hands sceMpeg the PSMF header, so the stream table is
+     * not available here. */
+    int channels = (frame[2] >> 2) & 7;
     if (channels < 1 || channels > 2)
-        return mpeg_contract_error("sceMpegAtracDecode", "the PSMF header gives no mono or stereo channel count",
+        return mpeg_contract_error("sceMpegAtracDecode", "the frame header names no mono or stereo layout",
                                    SCE_MPEG_ERROR_INVALID_VALUE);
     int data = (int)(frame_size - 8u);
     if (!ctx->atrac || ctx->atracAlign != data || ctx->atracChannels != channels) {
@@ -467,27 +467,6 @@ static void analyze(uint32_t buffer, Mpeg *ctx) {
               u32_mul_checked(macroblocksHigh, 16u, &ctx->streamHeight) &&
               ctx->streamWidth <= MPEG_MAX_DIMENSION && ctx->streamHeight <= MPEG_MAX_DIMENSION))
             ctx->streamWidth = ctx->streamHeight = 0;
-    }
-    /* The stream table at 0x80: a 16-bit count, then 16-byte entries; an audio entry carries
-     * its ATRAC3+ channel count at byte 14 (what scePsmfGetAudioInfo reports). */
-    memset(ctx->audioChannelsByStream, 0, sizeof(ctx->audioChannelsByStream));
-    ctx->audioStreamsInHeader = 0;
-    if (sr_guest_span_readable(buffer, 0x82u)) {
-        uint32_t streams = ((uint32_t)MEM_R8(buffer + 0x80u) << 8) | MEM_R8(buffer + 0x81u);
-        uint32_t tableBytes;
-        if (streams <= 128u && u32_mul_checked(streams, 16u, &tableBytes) &&
-            sr_guest_span_readable(buffer, 0x82u + tableBytes)) {
-            for (uint32_t i = 0; i < streams; i++) {
-                uint32_t e = buffer + 0x82u + i * 16u;
-                uint32_t id = MEM_R8(e);
-                if ((id & 0xe0u) == 0xe0u) continue;
-                if ((id & 0xf0u) == 0xb0u || (id & 0xf0u) == 0xf0u || id == 0xbdu) {
-                    if (ctx->audioStreamsInHeader < 16u)
-                        ctx->audioChannelsByStream[ctx->audioStreamsInHeader] = MEM_R8(e + 14u);
-                    ctx->audioStreamsInHeader++;
-                }
-            }
-        }
     }
     ctx->fedPackets = 0;
     /* Whole-movie packet count from the PSMF stream size; the movie ends when the game has fed

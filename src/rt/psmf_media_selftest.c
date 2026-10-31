@@ -2506,7 +2506,7 @@ static uint8_t *build_psmf_av(uint32_t *size_out, int layout) {
 
     uint8_t frame[64];
     uint8_t packed_frames[64u * AV_AUDIO_PER_PES];
-    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
+    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x28, 0x00, 0x00);
     frame[8] = 0x60u;      /* terminator-first ATRAC unit: a frame the project's own
                             * ATRAC3+ bridge really decodes (2048 samples, stereo) */
     for (int i = 0; i < AV_AUDIO_PER_PES; i++)
@@ -3764,7 +3764,7 @@ static void test_mpeg_atrac_au_decode(void) {
     if (!image) { CHECK(0, "mpeg-atrac: the A/V container builds"); return; }
     const uint32_t packets = (size - 2048u + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
     uint8_t frame[64];
-    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
+    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x28, 0x00, 0x00);
     frame[8] = 0x60u;                                 /* the fixture's decodable frame */
     Atrac3pBridge *ref = NULL;
     int16_t ref_pcm[2 * 2048];
@@ -3841,6 +3841,36 @@ static void test_mpeg_atrac_au_decode(void) {
               mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == 0u,
           "mpeg-atrac: after a flush the refed stream decodes again");
     CHECK(mpeg_delete(AT_DESC) == 0u, "mpeg-atrac: the context is deleted");
+
+    /* A guest PSMF player parses the header with scePsmf and hands sceMpeg only the ring (title
+     * X's libpsmfplayer, 2026-10-31): the decoder is set up from the frame's own header (0x28:
+     * 44.1 kHz stereo), and a frame that names no mono or stereo layout is refused untouched. */
+    atrac3p_bridge_destroy(ref);
+    ref = NULL;
+    MEM_W32(AT_DESC, 0u);
+    CHECK(atrac3p_bridge_create(2, (int)frame_bytes - 8, &ref) == 0 && ref &&
+              mpeg_ringbuffer_construct(AT_RING, packets, AT_RING_DATA, packets * MPEG_RING_BYTES_PER_PKT,
+                                        0u, 0u) == 0u &&
+              mpeg_create(AT_DESC, AT_DATA, 0x10000u, AT_RING, 512u, 0u, 0u) == 0u,
+          "mpeg-atrac: a context that never sees the PSMF header");
+    sid = mpeg_regist_stream(AT_DESC, MPEG_ATRAC_STREAM, 0u);
+    memset(SR_HOST(AT_OUT), 0xa5, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    int samples = 0;
+    CHECK(ref && mpeg_ringbuffer_put(NULL, AT_RING, packets, packets) == packets &&
+              mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u &&
+              mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == 0u &&
+              atrac3p_bridge_decode(ref, frame + 8, (int)frame_bytes - 8, ref_pcm, &samples) == 0 &&
+              samples == 2048 && memcmp(SR_HOST(AT_OUT), ref_pcm, sizeof(ref_pcm)) == 0,
+          "mpeg-atrac: without the PSMF header a frame decodes from its own header");
+    ctx = mpeg_find(AT_DESC);
+    CHECK(ctx && mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u && ctx->audioHeld,
+          "mpeg-atrac: the next frame is held");
+    if (ctx && ctx->audioHeld) ctx->audioHeld[2] = 0x20u;   /* 44.1 kHz, channel id 0 */
+    memset(SR_HOST(AT_OUT), 0xa5, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    CHECK(mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 0u) == SCE_MPEG_ERROR_INVALID_VALUE &&
+              MEM_R32(AT_OUT) == 0xa5a5a5a5u && MEM_R32(AT_OUT + MPEG_ATRAC_ES_OUTPUT_SIZE - 4u) == 0xa5a5a5a5u,
+          "mpeg-atrac: a frame naming no mono or stereo layout is refused and writes nothing");
+    CHECK(mpeg_delete(AT_DESC) == 0u, "mpeg-atrac: the header-less context is deleted");
     atrac3p_bridge_destroy(ref);
     free(image);
 }
