@@ -149,6 +149,9 @@ typedef struct {
     /* The mapping changed since it was last written: input_settings_save_if_dirty
      * writes it, so every change persists without a Save step (#1299). */
     bool dirty;
+    /* The last write failed, so the file on disk is behind the mapping:
+     * input_settings_flush writes it again (leaving the page, closing). */
+    bool unsaved;
 
     /* Guided calibration state (#357) */
     GuidedCalibrationState calib;
@@ -469,6 +472,14 @@ bool input_settings_stick_is_right(const InputSettingsState *state);
  * and is not retried until the next change. NK_OK when nothing needed writing.
  */
 NkResult input_settings_save_if_dirty(InputSettingsState *state);
+
+/**
+ * @brief Write everything not yet on disk now: a change still waiting, or one whose
+ * write failed. A capture or calibration still running is cancelled first: only a
+ * finished binding is kept. Called when the Controls page closes and when the player
+ * does, so no binding is lost to a quit that comes in the same moment.
+ */
+NkResult input_settings_flush(InputSettingsState *state);
 
 /**
  * @brief Adjust inner deadzone within validated bounds [0, 32766].

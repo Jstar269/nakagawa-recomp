@@ -795,10 +795,19 @@ NkResult input_settings_save(InputSettingsState *state, const char *custom_path)
     if (res != NK_OK) {
         state->has_save_diagnostic = true;
     }
-    /* Written, or refused with its reason shown: either way the next change
-       writes again, and a refusal is not retried every frame. */
+    /* Written, or refused with its reason shown: a refusal is not retried every
+       frame, but the next change, leaving the page or closing writes again. */
     state->dirty = false;
+    state->unsaved = res != NK_OK;
     return res;
+}
+
+NkResult input_settings_flush(InputSettingsState *state) {
+    if (!state) return NK_ERROR_GENERIC;
+    if (state->capturing) input_settings_cancel_capture(state);
+    if (input_settings_is_calibrating(state)) input_settings_cancel_calibration(state);
+    if (!state->dirty && !state->unsaved) return NK_OK;
+    return input_settings_save(state, NULL);
 }
 
 NkResult input_settings_save_if_dirty(InputSettingsState *state) {

@@ -998,14 +998,15 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
     model.scope = player->pad_scope;
     model.noted = input->note[0] != '\0' ? input->note_control : -1;
     model.stick_right = input_settings_stick_is_right(input);
-    if (input->note[0] != '\0') {
-        model.status = input->note;
-        model.status_error = input->note_error;
-    } else if (input->has_save_diagnostic) {
+    /* A write that failed comes first: the mapping on screen is not the one on disk. */
+    if (input->has_save_diagnostic) {
         snprintf(player->pad_status, sizeof(player->pad_status), "Not saved: %s",
                  input->save_diagnostic);
         model.status = player->pad_status;
         model.status_error = true;
+    } else if (input->note[0] != '\0') {
+        model.status = input->note;
+        model.status_error = input->note_error;
     } else if (!model.keyboard && input_settings_has_conflicts(input)) {
         model.status = input_settings_get_conflict_summary(input);
         model.status_error = true;

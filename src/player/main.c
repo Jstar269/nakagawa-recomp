@@ -1637,8 +1637,8 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
-            if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
-            if (input_settings_is_calibrating(input)) input_settings_cancel_calibration(input);
+            /* Leaving the page writes what is not on disk yet, a failed write included. */
+            (void)input_settings_flush(input);
             player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
                                                                      : VIEW_LIBRARY);
             break;
@@ -5675,6 +5675,9 @@ int main(int argc, char *argv[]) {
         }
 #endif
     }
+
+    /* A binding made in the same moment as the quit is written before closing. */
+    (void)input_settings_flush(&app.input_settings);
 
     /* Closing: a package check still hashing stops at its next read, so the
        window does not hang until every startup check is done. */

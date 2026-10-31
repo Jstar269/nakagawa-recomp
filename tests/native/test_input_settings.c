@@ -1157,7 +1157,23 @@ static void test_stick_keys_and_saving(void) {
     input_settings_set_stick(&state, true);
     assert(input_settings_save_if_dirty(&state) != NK_OK);
     assert(!state.dirty && state.has_save_diagnostic && state.save_diagnostic[0] != '\0');
-    assert(input_settings_save_if_dirty(&state) == NK_OK);
+    assert(state.unsaved);
+    assert(input_settings_save_if_dirty(&state) == NK_OK);   /* not retried every frame */
+    /* A swap after a failed write still fails, and says so; the flush that leaving the
+     * page or closing does writes it once the folder can be written. */
+    input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
+    assert(input_settings_assign_key(&state, INPUT_CONTROL_BTN_START, nk_host_key_from_name("x")));
+    assert(state.note[0] != '\0' && input_settings_save_if_dirty(&state) != NK_OK);
+    assert(state.has_save_diagnostic && state.unsaved);
+    remove(file_path);
+    snprintf(state.profile_path, sizeof(state.profile_path), "%s", file_path);
+    assert(input_settings_start_capture(&state, INPUT_CONTROL_STICK_UP));
+    assert(input_settings_flush(&state) == NK_OK);
+    assert(!state.unsaved && !state.has_save_diagnostic && !input_settings_is_capturing(&state));
+    assert(input_settings_load(&loaded, file_path) == NK_OK);
+    assert(loaded.profile.psp_keys[NK_PSP_BTN_START].primary == nk_host_key_from_name("x"));
+    assert(input_settings_stick_is_right(&loaded));
+    assert(input_settings_flush(&state) == NK_OK);           /* nothing left to write */
 
     remove(file_path);
     printf("[INPUT_SETTINGS_TEST] Subtest 12b PASSED!\n");
