@@ -624,6 +624,37 @@ class RelocatedImmediateEmission(unittest.TestCase):
         with self.assertRaisesRegex(codegen.Unsupported, "unrelocated absolute jump"):
             space.check_jump(0x40, 0x0C000010)
 
+    def test_an_unrelocated_jump_decodes_its_target_when_it_runs(self):
+        # A module linked against its executable calls into it by link address, and the loader
+        # leaves that jal as linked: the build cannot know the target, so the transfer decodes
+        # it from the word in guest memory. A relocated jal stays a direct call into the module.
+        self.space({0x08: prx_reloc_model.RelocationSite(0x08, "jump26", 0x20)})
+
+        class WordImage:
+            words = {
+                0x00: 0x0C0000C0, 0x04: 0x24020001,  # jal 0x300 (no relocation); slot
+                0x08: 0x0C000008, 0x0C: 0x00000000,  # jal 0x20 (relocated)
+                0x10: 0x08000100, 0x14: 0x24030002,  # j 0x400 (no relocation); slot
+                0x20: 0x03E00008, 0x24: 0x00000000,  # the module's own leaf
+            }
+
+            def read_at_vaddr(self, address, size):
+                word = self.words.get(address)
+                return None if size != 4 or word is None else struct.pack("<I", word)
+
+        text = "\n".join(codegen.emit_function(WordImage(), 0x00, [(0x00, 0x28)], {0x00, 0x20}))
+        decoded = ("((((sr_m7_base + 0x{0:08x}u) + 4u) & 0xF0000000u) | "
+                   "((MEM_R32((sr_m7_base + 0x{0:08x}u)) & 0x03FFFFFFu) << 2))")
+        self.assertIn(f"uint32_t _t = {decoded.format(0x00)};", text)
+        self.assertIn("dispatch_call(s, _t, (sr_m7_base + 0x00000008u));", text)
+        self.assertIn("m7_00000020(s);", text)
+        self.assertIn(f"uint32_t _t = {decoded.format(0x10)};", text)
+        self.assertIn("sr_tail_record(s, _t, NULL, _sp_entry, 1u); return;", text)
+        self.assertIn("s->r[2] = (0u + 0x00000001u);", text, "the jal's slot runs")
+        self.assertIn("s->r[3] = (0u + 0x00000002u);", text, "the j's slot runs")
+        for link_target in (0x300, 0x400):
+            self.assertNotIn(f"0x{link_target:08x}u", text)
+
     def test_a_fixed_address_image_keeps_its_absolute_jumps(self):
         space = self.space({}, relocatable=False)
         space.check_jump(0x40, 0x0C000010)                       # no refusal

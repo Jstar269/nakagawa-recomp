@@ -278,11 +278,23 @@ class AddressSpace:
             return w
         raise Unsupported(f"{site.kind} relocation on an executed word at 0x{addr:08x}")
 
+    def unrelocated_jump(self, addr):
+        """True for a relocatable runtime module's j/jal that carries no relocation.
+
+        The loader leaves such a word as linked, and it names an address outside the module:
+        a module linked against its executable calls into it by the executable's link-space
+        address, so the real target is whatever the word holds when it runs, which the build
+        cannot know. The transfer decodes its target from the word in guest memory when it
+        executes, as the CPU does (emit_decoded_jump_target); a word nothing patched reaches
+        its link-space address and stops there by name.
+        """
+        return (self.runtime_module and self.relocations is not None
+                and self.relocations.relocatable and self._site(addr) is None)
+
     def check_jump(self, addr, w):
-        """A runtime module's j/jal must carry its relocation: an absolute jump
-        out of a relocatable image names an address the build cannot know."""
-        if (self.runtime_module and self.relocations is not None
-                and self.relocations.relocatable and self._site(addr) is None):
+        """The LLVM lowering (tools/lowering_plan.py) has no decoded-jump form, so an
+        unrelocated j/jal still fails closed for its owning function there."""
+        if self.unrelocated_jump(addr):
             raise Unsupported(f"unrelocated absolute jump in a relocatable module at 0x{addr:08x}")
 
 
@@ -925,6 +937,14 @@ BODY_CALL_DRAIN = "SR_TAIL_DRAIN(s);"
 def emit_body_call(symbol):
     """A direct CALL of a native body completes the callee's tail chain before going on."""
     return f"{symbol}(s); {BODY_CALL_DRAIN}"
+
+
+def emit_decoded_jump_target(addr):
+    """C expression for the target of the j/jal at ``addr``, decoded from the word in guest
+    memory when the transfer runs: the delay slot's 256 MiB segment and the word's 26-bit
+    index (AddressSpace.unrelocated_jump)."""
+    return (f"((({G(addr)} + 4u) & 0xF0000000u) | "
+            f"((MEM_R32({G(addr)}) & 0x03FFFFFFu) << 2))")
 
 
 def emit_checked_body_call(symbol, call_pc):
@@ -2554,6 +2574,8 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
                 insns.add(pc + 4)
                 seen.add(pc + 4)
                 terminator_slots.add(pc + 4)
+                if ADDRESS_SPACE.unrelocated_jump(pc):  # its target is outside this module
+                    break
                 if t == pc:  # a self-loop is an in-function edge, never a native call to this function
                     labels.add(t)
                 elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
@@ -3367,8 +3389,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             consumed.add(ds)
         ds_is_syscall = dsw is not None and (dsw >> 26) == 0 and (dsw & 0x3F) == 0x0C
 
+        if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):  # jal the loader leaves as linked
+            resume = G((addr + 8) & 0xFFFFFFFF)
+            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); s->r[31] = {resume}; sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                        resumable=resumable, indent="      "))
+            out.append(f"      dispatch_call(s, _t, {resume}); }}")
+            if addr in continuations:
+                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            elif addr in dup_slot_skips:
+                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            continue
         if op == 3:  # jal
-            ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
@@ -3465,8 +3498,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                                             indent="      "))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
+        if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
+            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                        resumable=resumable, indent="      "))
+            out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
+            continue
         if op == 2:  # j
-            ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
