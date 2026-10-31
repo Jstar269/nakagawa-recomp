@@ -494,6 +494,7 @@ static int64_t au_read_pts(uint32_t auAddr) {
 /* Presentation-boundary measurement (hle.c, SR_MPEGAV): a decoded picture now sits in guest
  * memory at [first, first + bytes) with this 90 kHz presentation time. */
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid);
+int sr_psmf_av_active(void);   /* SR_MPEGAV: the picture hashes below are kept only for it */
 
 static uint32_t h264_demux_error(Mpeg *ctx, uint32_t auAddr) {
     if (ctx && !ctx->h264DemuxErrorReported) {
@@ -1387,7 +1388,7 @@ static uint32_t ycbcr_store_picture(uint32_t mpegAddr, uint32_t buf, const Ycbcr
     ycbcr_planes_out(l, w, h);
     MEM_W32(buf, h / 16u);
     MEM_W32(buf + 4u, w / 16u);
-    *bytes = ycbcr_planes_hash(w, h);
+    *bytes = sr_psmf_av_active() ? ycbcr_planes_hash(w, h) : 0u;
     return 0;
 }
 
@@ -1655,7 +1656,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
             fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%d,%d %dx%d\n",
                     n, buf, dest, frameWidth, (int)x, (int)y, (int)w, (int)h);
     }
-    const int64_t pts = ycbcr_picture_pts(mpegAddr, ycbcr_planes_hash(l.width, l.height));
+    const int64_t pts = sr_psmf_av_active() ? ycbcr_picture_pts(mpegAddr, ycbcr_planes_hash(l.width, l.height)) : -1;
     sr_psmf_av_note_video_delivery(span.first, span.total_bytes, pts, pts >= 0);
     return 0;
 }

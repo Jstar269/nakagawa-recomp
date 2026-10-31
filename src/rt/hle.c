@@ -6759,6 +6759,7 @@ static void psmf_av_final(const char *reason) {
  * sceMpegAvcDecode/Csc pictures and sceMpegAtracDecode blocks.  A guest PSMF player copies each
  * sceMpegAtracDecode block into its own output buffer before the game plays it, so a block is
  * also followed by its bytes. */
+int sr_psmf_av_active(void) { return psmf_av_on(); }
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
     (void)psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
 }
