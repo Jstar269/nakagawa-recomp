@@ -22,6 +22,7 @@ real repository content is used or copied.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import contextlib
 import hashlib
 import io
@@ -33,6 +34,7 @@ import sys
 import tempfile
 import unicodedata
 import unittest
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -147,7 +149,7 @@ class Repository:
         result = run_git(
             args, cwd=self.root, capture_output=True, text=True, check=True,
         )
-        return result.stdout.strip()
+        return cast(str, result.stdout.strip())
 
     def write(self, path: str, raw: bytes | str) -> None:
         target = self.root / path
@@ -163,7 +165,7 @@ class Repository:
 
     #: Called just before staging so the export always describes the tree that
     #: is about to be committed, whatever order the case wrote its files in.
-    before_commit = None
+    before_commit: Callable[[], None] | None = None
 
     def commit(self, message: str) -> str:
         if self.before_commit is not None:
@@ -372,21 +374,21 @@ class GateCase(unittest.TestCase):
             ["show", f"{rev}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
             capture_output=True, check=True,
         ).stdout
-        return json.loads(raw.decode("utf-8"))["entries"]
+        return cast(list[dict[str, Any]], json.loads(raw.decode("utf-8"))["entries"])
 
     # -- invocation ----------------------------------------------------------
 
     def run_verify(self, candidate: str, *, base: str | None = None,
                    trusted_ledger: Path | None = None,
                    require_exact_blob_approvals: bool = False) -> dict:
-        return verifier.verify(
+        return cast(dict[str, Any], verifier.verify(
             repo=self.repo.root,
             candidate_rev=candidate,
             base_rev=base or self.base,
             trusted_ledger=trusted_ledger or self.trusted_ledger,
             workdir=self.outside / "work",
             require_exact_blob_approvals=require_exact_blob_approvals,
-        )
+        ))
 
     def codes(self, verdict: dict, *, fatal_only: bool = True) -> set[str]:
         return {
@@ -1677,10 +1679,10 @@ class PathCanonicalizationTests(GateCase):
         tree = run_git(
             ["write-tree"], cwd=self.repo.root, capture_output=True, check=True,
         ).stdout.decode("ascii").strip()
-        return run_git(
+        return cast(str, run_git(
             ["commit-tree", tree, "-p", self.base, "-m", "odd path"],
             cwd=self.repo.root, capture_output=True, check=True,
-        ).stdout.decode("ascii").strip()
+        ).stdout.decode("ascii").strip())
 
     def _assert_refused(self, raw_path: bytes) -> None:
         head = self._stage_path(raw_path)
@@ -2345,7 +2347,7 @@ class EphemeralGenerationTests(unittest.TestCase):
     def workflow_bytes(self) -> bytes:
         return (
             b"on:\n  pull_request_target:\njobs:\n  attest:\n    name: "
-            + verifier.TRUSTED_CONTEXT.encode("utf-8") + b"\n"
+            + cast(str, verifier.TRUSTED_CONTEXT).encode("utf-8") + b"\n"
         )
 
     def write_trusted(self, document: dict) -> None:
@@ -2460,7 +2462,7 @@ class EphemeralGenerationTests(unittest.TestCase):
                       policy_delta_authority: Path | None = None,
                       require_exact_blob_approvals: bool = False,
                       authority_baseline: bool = False) -> dict:
-        return verifier.verify_ephemeral(
+        return cast(dict[str, Any], verifier.verify_ephemeral(
             repo=self.repo.root,
             candidate_rev=candidate,
             base_rev=base or self.base,
@@ -2471,7 +2473,7 @@ class EphemeralGenerationTests(unittest.TestCase):
             trusted_candidate_policy=trusted_candidate_policy,
             policy_delta_authority=policy_delta_authority,
             require_exact_blob_approvals=require_exact_blob_approvals,
-        )
+        ))
 
 
 def _canonical(document: dict) -> bytes:
@@ -2486,12 +2488,12 @@ class AuthorityBaselineTests(EphemeralGenerationTests):
         self.back_legacy_path()
 
     def emit(self, base: str | None = None) -> bytes:
-        return verifier.generate_authority_baseline(
+        return cast(bytes, verifier.generate_authority_baseline(
             repo=self.repo.root,
             base_rev=base or self.base,
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "baseline-scratch",
-        )
+        ))
 
     def validate(self, raw: bytes, base: str | None = None) -> dict[str, dict]:
         commit = verifier._rev_commit(self.repo.root, base or self.base)
@@ -2504,7 +2506,7 @@ class AuthorityBaselineTests(EphemeralGenerationTests):
         _document, entries = verifier._validate_public_baseline(
             raw, base_commit=commit, base_tree=tree, base_blobs=blobs, trusted_policy=policy,
         )
-        return entries
+        return cast(dict[str, dict[str, Any]], entries)
 
     def test_envelope_is_bound_to_the_exact_base_and_validates(self) -> None:
         raw = self.emit()
@@ -2821,7 +2823,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         generated = json.loads(
             (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
         )
-        return provenance_ledger.claims_ledger(generated)
+        return cast(dict[str, Any], provenance_ledger.claims_ledger(generated))
 
     def _fatal_codes(self, verdict: dict) -> set[str]:
         return {finding["code"] for finding in verdict["findings"] if finding["fatal"]}
@@ -3403,8 +3405,10 @@ class PolicyDeltaV3Tests(EphemeralGenerationTests):
         self.repo.before_commit = self._write_control_export
 
     def _profile(self, rev: str) -> dict:
-        return json.loads(run_git(["show", f"{rev}:{verifier.POLICY_PATH}"], cwd=self.repo.root,
-                                  check=True, capture_output=True, text=True).stdout)
+        return cast(dict[str, Any], json.loads(run_git(
+            ["show", f"{rev}:{verifier.POLICY_PATH}"], cwd=self.repo.root,
+            check=True, capture_output=True, text=True,
+        ).stdout))
 
     def _change(self, branch: str, start: str, files: dict[str, bytes], *, include=(), mutate=None) -> str:
         """Commit ``files`` on a new branch from ``start``, with ``include`` added to the canonical profile."""

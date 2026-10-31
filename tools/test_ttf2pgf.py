@@ -43,6 +43,7 @@ import tempfile
 import unittest
 from fractions import Fraction
 from pathlib import Path
+from typing import ClassVar, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -50,6 +51,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import ttf2pgf  # noqa: E402
 from nk_core.fonts import validate_pgf_data  # noqa: E402
+from pgf_writer import Glyph  # noqa: E402
 from ttf2pgf import DEFAULT_FONT_NAME, TtfConvertError, convert, load_pin, manifest_bytes  # noqa: E402
 
 RT = ROOT / "src" / "rt"
@@ -96,7 +98,7 @@ def _cli(*args: object) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _glyph_map(glyphs: tuple) -> dict[int, object]:
+def _glyph_map(glyphs: tuple[Glyph, ...]) -> dict[int, Glyph]:
     return {glyph.code: glyph for glyph in glyphs}
 
 
@@ -115,7 +117,7 @@ def _clusters(samples: list[int], row: int, width: int) -> list[int]:
     return runs
 
 
-class CliRefusalMixin:
+class CliRefusalMixin(unittest.TestCase):
     """One assertion per named refusal: exit 2, stable reason, no output file."""
 
     def assert_cli_refused(self, reason: str, output: Path, *args: object) -> None:
@@ -298,7 +300,7 @@ class SourcePinTests(unittest.TestCase):
             self.assertEqual(caught.exception.reason, "pin-invalid")
 
 
-class RefusalTests(CliRefusalMixin, unittest.TestCase):
+class RefusalTests(CliRefusalMixin):
     """Layer 3: every malformed, unsupported, or policy-violating input is named."""
 
     def setUp(self) -> None:
@@ -730,7 +732,7 @@ class IntegerRasterEquivalenceTests(unittest.TestCase):
         for case in range(400):
             # Large outlines push edge denominators past 2**16 and take the Fraction sort.
             span = 1 << (8 if case % 4 else 18)
-            edges = []
+            edges: list[tuple[int, int, int, int]] = []
             for _ in range(rng.randint(1, 6)):
                 points = [(rng.randint(-span, span), rng.randint(-span, span)) for _ in range(rng.randint(3, 6))]
                 edges.extend((x0, y0, x1, y1) for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1], strict=True))
@@ -961,6 +963,9 @@ class ProjectCodePointCoverageTests(unittest.TestCase):
 class ReaderRoundTripTests(unittest.TestCase):
     """Layer 1: the generated font opens through the production reader path."""
 
+    tmp: ClassVar[str]
+    exe: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         assert CC is not None
@@ -998,7 +1003,7 @@ class ReaderRoundTripTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return result.stdout.splitlines()
+        return cast(list[str], result.stdout.splitlines())
 
     def _convert(self, codes: tuple[int, int] = DEFAULT_CODES, ppem: int = PPEM_SHAPE):
         data = FONT.read_bytes()
@@ -1202,7 +1207,7 @@ def _joined(*parts: str) -> str:
     return "".join(parts)
 
 
-class EmboldenTests(CliRefusalMixin, unittest.TestCase):
+class EmboldenTests(CliRefusalMixin):
     """Specification section 3 rule 10: optional synthetic emboldening on the sub-sample grid."""
 
     CODES = (0x48, 0x6F)  # 'H'..'o': stems, bowls, and a crossbar
@@ -1379,7 +1384,7 @@ class VendorFontNameScanTests(unittest.TestCase):
         listing = subprocess.run(
             ["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=True,
         ).stdout
-        offenders = []
+        offenders: list[str] = []
         for entry in sorted(filter(None, listing.split("\0"))):
             if entry.lower().endswith(".md"):
                 continue

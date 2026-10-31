@@ -21,9 +21,17 @@ from pathlib import Path
 import re
 import sys
 import unittest
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _matched(match: re.Match[str] | None) -> re.Match[str]:
+    """Return a regex match at call sites that already rely on it being present."""
+    return cast(re.Match[str], match)
+
+
 sys.path.insert(0, str(ROOT / "tools"))
 
 import hle_manifest
@@ -304,6 +312,8 @@ class RegistrationOwnerFileTests(unittest.TestCase):
     have none.
     """
 
+    manifest: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = build_manifest()
@@ -371,6 +381,9 @@ class RegistrationSubsystemTests(unittest.TestCase):
     decides nothing, and on a subsystem outside SUBSYSTEMS.
     """
 
+    manifest: ClassVar[dict[str, Any]]
+    raw_regs: ClassVar[list[dict[str, Any]]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = build_manifest()
@@ -393,8 +406,9 @@ class RegistrationSubsystemTests(unittest.TestCase):
         ]
         self.assertEqual(len(literals), 1, "SUBSYSTEM_BY_PREFIX must be one dict literal")
         self.assertIsInstance(literals[0], ast.Dict)
-        keys = [k.value for k in literals[0].keys if isinstance(k, ast.Constant)]
-        self.assertEqual(len(keys), len(literals[0].keys), "every SUBSYSTEM_BY_PREFIX key must be a string literal")
+        dictionary = cast(ast.Dict, literals[0])
+        keys = [cast(str, k.value) for k in dictionary.keys if isinstance(k, ast.Constant)]
+        self.assertEqual(len(keys), len(dictionary.keys), "every SUBSYSTEM_BY_PREFIX key must be a string literal")
         repeated = sorted({k for k in keys if keys.count(k) > 1})
         self.assertEqual(repeated, [], f"SUBSYSTEM_BY_PREFIX keys written more than once: {repeated}")
 
@@ -438,6 +452,9 @@ class RegistrationSubsystemTests(unittest.TestCase):
 
 
 class LiveManifestTests(unittest.TestCase):
+    manifest: ClassVar[dict[str, Any]]
+    regs: ClassVar[dict[int, dict[str, Any]]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = build_manifest()
@@ -1040,7 +1057,7 @@ class LiveManifestTests(unittest.TestCase):
                 continue
             match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
             self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
-            oracle_id, cells_text = match.groups()
+            oracle_id, cells_text = _matched(match).groups()
             self.assertIn(oracle_id, cells_by_id, citation)
             cited: set[str] = set()
             for part in cells_text.split(", "):
@@ -1071,7 +1088,7 @@ citations (PSP-B1-01, no-colon forms) need their own check.
                 continue  # a selftest citation, not a hardware cell
             match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
             self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
-            oracle_id, cells_text = match.groups()
+            oracle_id, cells_text = _matched(match).groups()
             self.assertIn(oracle_id, cells_by_id, citation)
             cited: set[str] = set()
             for prefix, first, last in re.findall(r"(io-[a-z]+-)(\d{4})\.\.(\d{4})", cells_text):
@@ -1131,7 +1148,7 @@ citations (PSP-B1-01, no-colon forms) need their own check.
                         "status": "controlled_unsupported",
                     },
                 )
-                reg = self.regs.get(int(nid, 16))
+                reg = cast(dict[str, Any], self.regs.get(int(nid, 16)))
                 self.assertIsNotNone(reg, "public ad hoc NID has no production registration")
                 self.assertEqual(
                     (reg["origin"], reg["handler"], reg["owner_file"]),
@@ -1762,6 +1779,9 @@ class EvidenceTierTests(unittest.TestCase):
 class LiveEvidenceChainTests(unittest.TestCase):
     """The chain over the real tree, checked for shape rather than for a count."""
 
+    chain: ClassVar[dict[str, Any]]
+    by_nid: ClassVar[dict[str, dict[str, Any]]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.chain = hle_manifest.build_evidence_chain()
@@ -1819,6 +1839,9 @@ class LiveEvidenceChainTests(unittest.TestCase):
 
 class ProfileZeroImportGateTests(unittest.TestCase):
     """#341 acceptance item 2: profile-zero imports may not silently stay unreviewed."""
+
+    manifest: ClassVar[dict[str, Any]]
+    live_unreviewed: ClassVar[list[int]]
 
     SYNTH_MANIFEST = {
         "registrations": [
@@ -2044,6 +2067,8 @@ class TriageTests(unittest.TestCase):
 
 
 class LiveTriageTests(unittest.TestCase):
+    chain: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.chain = hle_manifest.build_evidence_chain(top=5)
@@ -2077,6 +2102,10 @@ class LiveTriageTests(unittest.TestCase):
 
 
 class CensusTests(unittest.TestCase):
+    manifest: ClassVar[dict[str, Any]]
+    census: ClassVar[dict[str, Any]]
+    raw_regs: ClassVar[list[dict[str, Any]]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = build_manifest()
@@ -2197,7 +2226,7 @@ class CensusTests(unittest.TestCase):
                     raise AssertionError(f"{path} refers to undefined constant {node.id!r}")
                 return resolve(assignments[node.id])
             if isinstance(node, (ast.Tuple, ast.List)):
-                return tuple(resolve(element) for element in node.elts)
+                return cast(tuple[int, ...], tuple(resolve(element) for element in node.elts))
             raise AssertionError(f"{path} has unsupported import constant {name!r}")
 
         if name not in assignments:
@@ -2208,11 +2237,13 @@ class CensusTests(unittest.TestCase):
         # Covers the production-smoke and display-smoke guests only. The
         # profile-zero guest's imports (audio, controller, I/O, threads) still
         # route to unreviewed handlers; that gate is open work under #341.
-        production_nid = self._fixture_constant(
-            ROOT / "fixtures" / "production_smoke" / "generate.py", "NID"
+        production_nid = cast(
+            int,
+            self._fixture_constant(ROOT / "fixtures" / "production_smoke" / "generate.py", "NID"),
         )
-        display_nids = self._fixture_constant(
-            ROOT / "fixtures" / "display_smoke" / "generate.py", "NIDS"
+        display_nids = cast(
+            tuple[int, ...],
+            self._fixture_constant(ROOT / "fixtures" / "display_smoke" / "generate.py", "NIDS"),
         )
         route_nids = {production_nid, *display_nids}
         registrations = {

@@ -454,6 +454,20 @@ jobs:
           # The checkout itself is not installed: the tests import from tools/, and
           # building it would fetch an unhashed setuptools (Scorecard PinnedDependencies).
 
+      - name: Enforce tools mypy baseline
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/mypy-requirements.txt" <<'LOCK'
+          mypy==2.1.0 --hash=sha256:a663814603a5c563fb87a4f96fb473eeb30d1f5a4885afcf44f9db000a366289
+          ast-serialize==0.13.1 --hash=sha256:121e1d08d58b75c15491cc3003609cbad71ac2b0016043c36d30a6b2032b6605
+          librt==0.16.0 --hash=sha256:e56aaf8c167548dc8e5d6f3bd0f48dcdd299a23c73be3f744aab79d99e9c7f5d
+          mypy-extensions==1.1.0 --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505
+          pathspec==1.1.1 --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+          typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+          LOCK
+          python -m pip install --disable-pip-version-check --require-hashes -r "$RUNNER_TEMP/mypy-requirements.txt"
+          python tools/mypy_baseline.py
+
       - name: >-
           Run Python unit tests (shard ${{ matrix.shard }} of
           ${{ needs.classify.outputs.python_num_shards }}, ${{ needs.classify.outputs.python_scope }})

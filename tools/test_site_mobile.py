@@ -48,6 +48,7 @@ import re
 import threading
 import unittest
 from pathlib import Path
+from typing import Any, ClassVar, cast
 from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -451,6 +452,14 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 class SiteBrowserTests(unittest.TestCase):
     """Renders the page headless and checks it at phone and desktop widths in every theme."""
 
+    _playwright: ClassVar[Any]
+    browser: ClassVar[Any]
+    server: ClassVar[http.server.ThreadingHTTPServer]
+    thread: ClassVar[threading.Thread]
+    origin: ClassVar[str]
+    url: ClassVar[str]
+    shots: ClassVar[Path | None]
+
     @classmethod
     def setUpClass(cls) -> None:
         try:
@@ -540,20 +549,23 @@ class SiteBrowserTests(unittest.TestCase):
         return page, foreign, errors
 
     def _check(self, page, theme: str, phone: bool) -> dict[str, list[str]]:
-        return page.evaluate(
-            CHECK_PAGE_JS,
-            {
-                "theme": theme,
-                "phone": phone,
-                "bar": BAR,
-                "exceptions": list(EXCEPTIONS),
-                "lightMin": LIGHT_MIN_LUMINANCE,
-                "darkMax": DARK_MAX_LUMINANCE,
-                "blockLightMin": BLOCK_LIGHT_MIN_LUMINANCE,
-                "blockDarkMax": BLOCK_DARK_MAX_LUMINANCE,
-                "blockArea": BLOCK_MIN_AREA_PX,
-                "minTarget": MIN_TARGET_PX,
-            },
+        return cast(
+            dict[str, list[str]],
+            page.evaluate(
+                CHECK_PAGE_JS,
+                {
+                    "theme": theme,
+                    "phone": phone,
+                    "bar": BAR,
+                    "exceptions": list(EXCEPTIONS),
+                    "lightMin": LIGHT_MIN_LUMINANCE,
+                    "darkMax": DARK_MAX_LUMINANCE,
+                    "blockLightMin": BLOCK_LIGHT_MIN_LUMINANCE,
+                    "blockDarkMax": BLOCK_DARK_MAX_LUMINANCE,
+                    "blockArea": BLOCK_MIN_AREA_PX,
+                    "minTarget": MIN_TARGET_PX,
+                },
+            ),
         )
 
     def _assert_clean(self, findings: dict[str, list[str]], where: str) -> None:
@@ -561,7 +573,7 @@ class SiteBrowserTests(unittest.TestCase):
         self.assertEqual(problems, [], f"{where}:\n  " + "\n  ".join(problems))
 
     def _theme_of(self, page) -> str:
-        lums = page.evaluate(REGION_THEMES_JS)
+        lums = cast(list[float], page.evaluate(REGION_THEMES_JS))
         if all(value >= LIGHT_MIN_LUMINANCE for value in lums):
             return "light"
         if all(value <= DARK_MAX_LUMINANCE for value in lums):
@@ -575,7 +587,7 @@ class SiteBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('.theme button[aria-pressed="true"]').count(), 1)
 
     def _pressed(self, page) -> str:
-        return page.locator('.theme button[aria-pressed="true"]').inner_text()
+        return cast(str, page.locator('.theme button[aria-pressed="true"]').inner_text())
 
     def _shot(self, page, name: str, *, full_page: bool = True) -> None:
         if self.shots:

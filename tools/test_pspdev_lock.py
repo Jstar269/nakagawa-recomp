@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from typing import Any, ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -20,6 +21,8 @@ EVIDENCE_PATH = ROOT / "assets" / "upstream" / "pspdev.evidence.json"
 
 
 class LockValidationTests(unittest.TestCase):
+    lock: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))

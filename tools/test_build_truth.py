@@ -19,6 +19,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from typing import ClassVar, cast
 from unittest import mock
 
 
@@ -71,7 +72,7 @@ def _make_safe_temp_dir(prefix: str) -> Path:
         return created
     short = title_codegen_plan._windows_short_path(created)
     if short is not None and not any(char.isspace() for char in short.as_posix()):
-        return short
+        return cast(Path, short)
     shutil.rmtree(created, ignore_errors=True)
     raise unittest.SkipTest(
         f"the temporary directory {created} contains whitespace GNU Make cannot name and "
@@ -92,6 +93,11 @@ def _make_safe_fixture_dir(name: str) -> Path:
     represent, and a temporary directory is also the right place for a fixture.
     """
     return _make_safe_temp_dir(f"nakagawa-lifecycle-{name}-") / "build"
+
+
+def _matched(match: re.Match[str] | None) -> re.Match[str]:
+    """Return a regex match at call sites that already rely on it being present."""
+    return cast(re.Match[str], match)
 
 
 #: Make goals that delete files. A test may run one only against scratch roots.
@@ -251,7 +257,7 @@ class BuildTruthTests(unittest.TestCase):
         env = dict(os.environ)
         env[PROFILE_TOOL_ENV] = str(PROFILE_TOOL)
         proc = subprocess.run(
-            [self.make, "--no-print-directory", f"CC={self.cc}", f"PROFILE_FLAGS={flags}"],
+            [cast(str, self.make), "--no-print-directory", f"CC={self.cc}", f"PROFILE_FLAGS={flags}"],
             cwd=self.root,
             env=env,
             check=False,
@@ -260,7 +266,7 @@ class BuildTruthTests(unittest.TestCase):
         )
         if proc.returncode:
             self.fail(f"make failed ({proc.returncode}):\n{proc.stdout}{proc.stderr}")
-        return proc.stdout + proc.stderr
+        return cast(str, proc.stdout + proc.stderr)
 
     def assert_compiled(self, output: str, *sources: str) -> None:
         compiled = {
@@ -1093,7 +1099,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
             *extra_args,
         ]
         proc = subprocess.run(
-            cmd,
+            cast(list[str], cmd),
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1160,7 +1166,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
         hst_dir = self.build_dir / "hst_default"
         subprocess.run(
             [
-                self.make,
+                cast(str, self.make),
                 "--no-print-directory",
                 f"BUILD_DIR={hst_dir.as_posix()}",
                 f"BUILD_ROOT={self.build_dir.as_posix()}",
@@ -1183,7 +1189,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
 
         generic_dir = self.build_dir / "generic_default"
         subprocess.run(
-            [self.make, "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}",
+            [cast(str, self.make), "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}",
              f"BUILD_ROOT={self.build_dir.as_posix()}", "GAME_NAME=mygame", "compiler-info"],
             cwd=ROOT,
             capture_output=True,
@@ -1198,7 +1204,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
         override_dir = self.build_dir / "hst_override"
         subprocess.run(
             [
-                self.make,
+                cast(str, self.make),
                 "--no-print-directory",
                 f"BUILD_DIR={override_dir.as_posix()}",
                 f"BUILD_ROOT={self.build_dir.as_posix()}",
@@ -1264,7 +1270,7 @@ class CodegenProfileTransportTests(unittest.TestCase):
     def _profile_hash(self, modules: list[str], **extra: str) -> str:
         assignments = [f"{key}={value}" for key, value in extra.items()]
         completed = subprocess.run(
-            [self.make, "--no-print-directory", "GAME_NAME=probe",
+            [cast(str, self.make), "--no-print-directory", "GAME_NAME=probe",
              f"BUILD_ROOT={Path(self.temp.name).as_posix()}",
             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
              f"GAME_EXTRA_ELFS={' '.join(modules)}", *assignments,
@@ -1302,7 +1308,7 @@ class CodegenProfileTransportTests(unittest.TestCase):
             '--entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)")'
         )
         completed = subprocess.run(
-            [self.make, "--no-print-directory", "GAME_NAME=probe",
+            [cast(str, self.make), "--no-print-directory", "GAME_NAME=probe",
              f"BUILD_ROOT={Path(self.temp.name).as_posix()}",
             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
              "GAME_EXTRA_ELFS=fixtures/a.prx@runtime fixtures/b.prx@0x08900000",
@@ -1369,7 +1375,8 @@ class GuestInputTransportTests(unittest.TestCase):
 
     # -- helpers ---------------------------------------------------------
 
-    def _write_minimal_elf(self, path: Path) -> None:
+    @staticmethod
+    def _write_minimal_elf(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload_off = 52 + 32
         filesz = 8
@@ -1392,7 +1399,7 @@ class GuestInputTransportTests(unittest.TestCase):
     def _make(self, game_name: str, elf: str, *, makefile: Path | None = None,
               target: str | None = None, extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
         tgt = target or f"{self._build_dir(game_name).as_posix()}/{game_name}_image.bin"
-        cmd = [self.make, "--no-print-directory"]
+        cmd = [cast(str, self.make), "--no-print-directory"]
         if makefile is not None:
             cmd += ["-f", str(makefile)]
         cmd += [tgt, f"BUILD_ROOT={self.build_root.as_posix()}", f"GAME_NAME={game_name}",
@@ -1596,7 +1603,7 @@ class GuestInputTransportTests(unittest.TestCase):
         game = "test_gi_public"
         build = self._build_dir(game)
         build.mkdir(parents=True, exist_ok=True)
-        base = [self.make, "--no-print-directory", f"GAME_NAME={game}",
+        base = [cast(str, self.make), "--no-print-directory", f"GAME_NAME={game}",
                 f"BUILD_ROOT={self.build_root.as_posix()}", f"BUILD_DIR={build.as_posix()}"]
 
         # Settle the profile stamps first. CI creates them in earlier steps, so by the
@@ -1641,7 +1648,7 @@ class GuestInputTransportTests(unittest.TestCase):
         probe = ('--eval=probe-guest-env: ; @"$(PYTHON)" -c '
                  "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",
+            [cast(str, self.make), "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",
              probe, "probe-guest-env"],
             cwd=ROOT, capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=False)
@@ -1696,9 +1703,9 @@ class GuestInputSourcePrecedenceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-src-")
         self.root = Path(self.temp.name)
         self.elf = self.root / "real.elf"
-        GuestInputTransportTests._write_minimal_elf(self, self.elf)
+        GuestInputTransportTests._write_minimal_elf(self.elf)
         self.decoy = self.root / "decoy.elf"
-        GuestInputTransportTests._write_minimal_elf(self, self.decoy)
+        GuestInputTransportTests._write_minimal_elf(self.decoy)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -1751,7 +1758,7 @@ class GuestInputSourcePrecedenceTests(unittest.TestCase):
     def test_pathname_containing_equals_is_not_a_verification_spec(self) -> None:
         """A legal `name=value.elf` pathname must not be parsed as `pc=word`."""
         weird = self.root / "eq=uals.elf"
-        GuestInputTransportTests._write_minimal_elf(self, weird)
+        GuestInputTransportTests._write_minimal_elf(weird)
         out = self.root / "eq_image.bin"
         proc = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "prxload.py"), str(weird),
@@ -1890,6 +1897,9 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
     every suite run emptied that build/ tree.
     """
 
+    make: ClassVar[str | None]
+    makefile_text: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -1918,7 +1928,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         phony_match = re.search(r"^\.PHONY:\s*(.+)$", self.makefile_text, re.MULTILINE)
         self.assertIsNotNone(phony_match, "No .PHONY declaration found in Makefile")
         self.assertEqual(
-            set(phony_match.group(1).split()),
+            set(_matched(phony_match).group(1).split()),
             {"$(PUBLIC_TARGETS)", "$(INTERNAL_TARGETS)"},
             "The .PHONY declaration must consume the single-source target catalogs",
         )
@@ -1927,7 +1937,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
             self.makefile_text,
         )
         self.assertIsNotNone(catalog_match, "No PUBLIC_TARGETS catalog found in Makefile")
-        public_targets = set(catalog_match.group("targets").replace("\\", "").split())
+        public_targets = set(_matched(catalog_match).group("targets").replace("\\", "").split())
         for target in sorted(DESTRUCTIVE_MAKE_GOALS):
             self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
 
@@ -1944,7 +1954,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
             re.MULTILINE,
         )
         self.assertIsNotNone(match, "Filesystem negative ladder target is missing")
-        self.assertIn("platform-ladder-fs", match.group("prerequisites").split())
+        self.assertIn("platform-ladder-fs", _matched(match).group("prerequisites").split())
 
     def test_every_destructive_goal_deletes_only_beneath_the_named_roots(self) -> None:
         """Each lifecycle recipe must take every path it deletes from BUILD_ROOT, LOG_DIR or BUILD_DIR.
@@ -2039,7 +2049,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         happens at parse time and needs none of those writes.
         """
         return _run_scratch_make(
-            self.make, "-n", goal, "NK_INFO_ONLY=1", f"BUILD_DIR={build_dir}",
+            cast(str, self.make), "-n", goal, "NK_INFO_ONLY=1", f"BUILD_DIR={build_dir}",
             build_root=self.build_root, log_dir=self.log_dir,
         )
 
@@ -2289,6 +2299,8 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
 class MachinePortabilityTests(unittest.TestCase):
     """Regression and structural tests for machine and toolchain portability."""
 
+    make: ClassVar[str | None]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -2356,7 +2368,7 @@ class MachinePortabilityTests(unittest.TestCase):
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(cflags_match, "CFLAGS must be defined")
-        cflags = cflags_match.group(1)
+        cflags = _matched(cflags_match).group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", cflags)
         sdl3_cflags_pos = cflags.index("$(SDL3_INC_FLAGS)")
         # CFLAGS carries the Vulkan include flags through VULKAN_INC_FLAGS, whose
@@ -2370,7 +2382,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
         ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(ldflags_match, "LDFLAGS must be defined")
-        ldflags = ldflags_match.group(1)
+        ldflags = _matched(ldflags_match).group(1)
         self.assertIn("$(SDL3_LDFLAGS)", ldflags)
         sdl3_ld_pos = ldflags.index("$(SDL3_LDFLAGS)")
         vulkan_ld_pos = ldflags.index('-L"$(VULKAN_SDK)')
@@ -2378,7 +2390,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
         player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(player_inc_match, "PLAYER_INCLUDES must be defined")
-        player_inc = player_inc_match.group(1)
+        player_inc = _matched(player_inc_match).group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", player_inc)
         sdl3_pinc_pos = player_inc.index("$(SDL3_INC_FLAGS)")
         vulkan_pinc_pos = player_inc.index("$(PLAYER_VULKAN_INC)")
@@ -3272,9 +3284,9 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
-def _argv_extensions(scope: ast.AST, name: str) -> list[ast.AST]:
+def _argv_extensions(scope: ast.AST, name: str) -> list[ast.expr]:
     """Elements added to the argv list ``name`` by `name += [...]`, `.append(x)` or `.extend(xs)`."""
-    added: list[ast.AST] = []
+    added: list[ast.expr] = []
     for node in ast.walk(scope):
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
                 and node.target.id == name:
@@ -3334,9 +3346,9 @@ def _checkout_scopes(tree: ast.Module) -> list[tuple[ast.AST, set[str]]]:
         if fn in nested:
             continue  # scanned with its enclosing function, whose bindings it closes over
         anchored = set(anchored_module)
-        cls = owner.get(fn)
-        if cls is not None:
-            anchored |= class_attrs[cls]
+        owner_class = owner.get(fn)
+        if owner_class is not None:
+            anchored |= class_attrs[owner_class]
         scopes.append((fn, _propagate(_assignments(fn), anchored)))
     scopes.extend((node, anchored_module) for node in module_level)
     return scopes
@@ -3370,7 +3382,7 @@ def _scan_for_checkout_damage(source: str, label: str) -> list[str]:
     findings: list[tuple[int, str]] = []
 
     def report(node: ast.AST, message: str) -> None:
-        findings.append((node.lineno, message))
+        findings.append((cast(ast.expr, node).lineno, message))
 
     def check_make_run(node: ast.List, scope: ast.AST, is_anchored) -> None:
         elements = list(node.elts)
@@ -3398,7 +3410,10 @@ def _scan_for_checkout_damage(source: str, label: str) -> list[str]:
                 report(node, f"passes {argument.partition('=')[0]}= a checkout build/ path "
                              f"({argument}); the run writes its output into the real build/ tree")
 
-        destructive = sorted({e.value for e in elements if _literal_text(e) in DESTRUCTIVE_MAKE_GOALS})
+        destructive = sorted({
+            literal for e in elements
+            if (literal := _literal_text(e)) is not None and literal in DESTRUCTIVE_MAKE_GOALS
+        })
         if destructive:
             for variable in _SCRATCH_ROOT_VARIABLES:
                 overrides = [e for e in elements if _literal_prefix(e).startswith(variable + "=")]
@@ -3414,7 +3429,9 @@ def _scan_for_checkout_damage(source: str, label: str) -> list[str]:
         goal_like = [e for e in elements[1:] if _is_goal_like(e)]
         if not goal_like or all(_literal_text(e) == "help" for e in goal_like):
             return
-        goals = [e.value for e in goal_like if _literal_text(e)] or ["the default goal"]
+        goals = [
+            literal for e in goal_like if (literal := _literal_text(e))
+        ] or ["the default goal"]
         relocations = [e for e in elements if _literal_prefix(e).startswith("BUILD_ROOT=")]
         if not relocations:
             report(node, f"runs Make for {goals} without a scratch BUILD_ROOT=; parsing writes the "

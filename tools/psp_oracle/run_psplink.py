@@ -11,6 +11,7 @@ process exit means that a probe passed.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -27,13 +28,13 @@ import sys
 import threading
 import time
 import traceback
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeGuard, cast
 
 _PACKAGE_PARENT = str(Path(__file__).resolve().parents[1])
 if _PACKAGE_PARENT not in sys.path:
     sys.path.insert(0, _PACKAGE_PARENT)
 
-try:
+if TYPE_CHECKING:
     from .protocol import (
         ParsedOutput,
         ProtocolError,
@@ -48,23 +49,6 @@ try:
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
     )
-except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from psp_oracle.protocol import (
-        ParsedOutput,
-        ProtocolError,
-        compare_texts,
-        decode_psp_model_code,
-        dump_json,
-        ge_corpus_report,
-        model_identity_fields,
-        parse_output,
-        parse_progress,
-        provenance_issues,
-        validate_dmac_size_matrix,
-        validate_dmac_size_matrix_size,
-    )
-
-try:
     from .parse_golden import (
         CAMPAIGN_PROBE_CASES,
         DMAC_INVALID_CASES,
@@ -87,29 +71,84 @@ try:
         parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
-except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from psp_oracle.parse_golden import (
-        CAMPAIGN_PROBE_CASES,
-        DMAC_INVALID_CASES,
-        parse_cache_alias_output,
-        parse_campaign_probe_output,
-        parse_audio_query_output,
-        parse_delay_zero_output,
-        parse_dmac_cells_output,
-        parse_dmac_invalid_tail_output,
-        parse_fpu_vector_output,
-        parse_ge_nan_output,
-        parse_hle_intr_cells_output,
-        parse_io_matrix_output,
-        parse_mbx_delete_wait_output,
-        parse_font_files_output,
-        parse_registry_font_output,
-        parse_registry_readonly_output,
-        parse_umd_io_output,
-        parse_umd_raw_read_output,
-        parse_vram_mirror_output,
-        validate_hle_edram_restore,
-    )
+else:
+    try:
+        from .protocol import (
+            ParsedOutput,
+            ProtocolError,
+            compare_texts,
+            decode_psp_model_code,
+            dump_json,
+            ge_corpus_report,
+            model_identity_fields,
+            parse_output,
+            parse_progress,
+            provenance_issues,
+            validate_dmac_size_matrix,
+            validate_dmac_size_matrix_size,
+        )
+    except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
+        from psp_oracle.protocol import (
+            ParsedOutput,
+            ProtocolError,
+            compare_texts,
+            decode_psp_model_code,
+            dump_json,
+            ge_corpus_report,
+            model_identity_fields,
+            parse_output,
+            parse_progress,
+            provenance_issues,
+            validate_dmac_size_matrix,
+            validate_dmac_size_matrix_size,
+        )
+
+    try:
+        from .parse_golden import (
+            CAMPAIGN_PROBE_CASES,
+            DMAC_INVALID_CASES,
+            parse_cache_alias_output,
+            parse_campaign_probe_output,
+            parse_audio_query_output,
+            parse_delay_zero_output,
+            parse_dmac_cells_output,
+            parse_dmac_invalid_tail_output,
+            parse_fpu_vector_output,
+            parse_ge_nan_output,
+            parse_hle_intr_cells_output,
+            parse_io_matrix_output,
+            parse_mbx_delete_wait_output,
+            parse_font_files_output,
+            parse_registry_font_output,
+            parse_registry_readonly_output,
+            parse_umd_io_output,
+            parse_umd_raw_read_output,
+            parse_vram_mirror_output,
+            validate_hle_edram_restore,
+        )
+    except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
+        from psp_oracle.parse_golden import (
+            CAMPAIGN_PROBE_CASES,
+            DMAC_INVALID_CASES,
+            parse_cache_alias_output,
+            parse_campaign_probe_output,
+            parse_audio_query_output,
+            parse_delay_zero_output,
+            parse_dmac_cells_output,
+            parse_dmac_invalid_tail_output,
+            parse_fpu_vector_output,
+            parse_ge_nan_output,
+            parse_hle_intr_cells_output,
+            parse_io_matrix_output,
+            parse_mbx_delete_wait_output,
+            parse_font_files_output,
+            parse_registry_font_output,
+            parse_registry_readonly_output,
+            parse_umd_io_output,
+            parse_umd_raw_read_output,
+            parse_vram_mirror_output,
+            validate_hle_edram_restore,
+        )
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1112,7 +1151,7 @@ def _model_profile_raw_value(parsed) -> str | None:
         raise ProtocolError("model-profile stream is missing its raw model result")
     if int(raw_value, 0) != int(result_value, 0):
         raise ProtocolError("model-profile result does not match its raw out0 value")
-    return raw_value
+    return cast(str, raw_value)
 
 
 def _validate_model_code_expectation(raw_value: str | None, expected: int | None) -> None:
@@ -1712,9 +1751,9 @@ class PsplinkCampaignRunner:
         if not isinstance(memory, dict):
             return None, "meminfo parser returned an invalid snapshot"
         return PsplinkSnapshot(
-            threads=parsed["thlist"],
+            threads=cast(frozenset[tuple[str, str]], parsed["thlist"]),
             memory_free_bytes=tuple(sorted(memory.items())),
-            modules=parsed["modlist"],
+            modules=cast(frozenset[tuple[str, str]], parsed["modlist"]),
         ), None
 
     def _take_baseline(self) -> tuple[PsplinkSnapshot | None, str | None]:
@@ -1828,7 +1867,7 @@ class PsplinkCampaignRunner:
                 else "TEARDOWN_RECOVERY_NOT_ELIGIBLE"
             )
             return False
-        issues = report.get("issues", [])
+        issues = cast(Iterable[object], report.get("issues", []))
         detail = "; ".join(str(issue) for issue in issues)
         recovered = self._recover(module_uid, f"probe teardown check failed: {detail}")
         report["recovery_status"] = "RECOVERED" if recovered else "FAILED"
@@ -2218,7 +2257,7 @@ class PsplinkCampaignRunner:
                 source_commit=self.source_commit,
             )
             identity = _device_identity(host0_text, metadata_args)
-            blockers.extend(identity["DEVICE_IDENTITY_BLOCKERS"])
+            blockers.extend(cast(list[str], identity["DEVICE_IDENTITY_BLOCKERS"]))
             try:
                 host0_parsed = _parse_campaign_records(
                     _normalise_unbound_identity_fields(host0_record_text), case.case_id
@@ -2291,7 +2330,9 @@ class PsplinkCampaignRunner:
             "SOURCE_COMMIT_BINDING": identity["SOURCE_COMMIT_BINDING"],
             "BINARY_SHA256_BINDING": identity["BINARY_SHA256_BINDING"],
             "DEVICE_IDENTITY_STATUS": identity["DEVICE_IDENTITY_STATUS"],
-            "DEVICE_IDENTITY_BLOCKERS": list(identity["DEVICE_IDENTITY_BLOCKERS"]),
+            "DEVICE_IDENTITY_BLOCKERS": list(
+                cast(list[str], identity["DEVICE_IDENTITY_BLOCKERS"])
+            ),
             "SOURCE_TREE_STATUS": "CLEAN_COMMITTED" if not self.source_tree_problem else "UNQUALIFIED",
             "SOURCE_TREE_PROBLEM": self.source_tree_problem,
             "BINARY_SHA256": binary_sha,
@@ -2650,7 +2691,7 @@ class PsplinkCampaignRunner:
             self.intervention_case_id = case.case_id
             self.resume_case_index = case_index + 1
             run_finished_ns = time.time_ns()
-            teardown_report = {
+            teardown_report: dict[str, Any] = {
                 "status": "BLOCKED",
                 "stage": "PROBE",
                 "issues": [host0_capture_problem or "complete case stream was not observed"],
@@ -2716,29 +2757,32 @@ class PsplinkCampaignRunner:
             captured_host0_mtime_ns=captured_host0_mtime_ns,
             host0_capture_problem=host0_capture_problem,
         )
-        teardown_report = evaluate_teardown_snapshots(
-            before,
-            after_probe,
-            after_unload,
-            module_uid or "0x00000000",
-            module_threads,
-            unload_confirmed=(
-                True if unload_status == "PASS"
-                else False if unload_status == "FAIL"
-                else None
+        teardown_report = cast(
+            dict[str, Any],
+            evaluate_teardown_snapshots(
+                before,
+                after_probe,
+                after_unload,
+                module_uid or "0x00000000",
+                module_threads,
+                unload_confirmed=(
+                    True if unload_status == "PASS"
+                    else False if unload_status == "FAIL"
+                    else None
+                ),
+                sentinel_status=parse_probe_completion_sentinel(
+                    captured_host0_text or ""
+                ),
+                shell_qualified=shell_qualified,
+                host0_roundtrip=host0_roundtrip_ok,
+                case_succeeded=probe_succeeded,
+                host0_capture_complete=(
+                    captured_host0_text is not None
+                    and host0_capture_problem is None
+                ),
+                module_threads_available=module_thread_problem is None,
+                exprint_command_status=exprint[3],
             ),
-            sentinel_status=parse_probe_completion_sentinel(
-                captured_host0_text or ""
-            ),
-            shell_qualified=shell_qualified,
-            host0_roundtrip=host0_roundtrip_ok,
-            case_succeeded=probe_succeeded,
-            host0_capture_complete=(
-                captured_host0_text is not None
-                and host0_capture_problem is None
-            ),
-            module_threads_available=module_thread_problem is None,
-            exprint_command_status=exprint[3],
         )
         teardown_report["modstun_reply"] = self.last_modstun_reply
         teardown_report["settle_status"] = settle_status
@@ -2838,7 +2882,7 @@ class PsplinkCampaignRunner:
             return
 
         # Tear down before naming the stop: a terminal reason blocks PSPLink requests.
-        teardown: dict[str, object] = {
+        teardown: dict[str, Any] = {
             "status": "BLOCKED",
             "stage": "HOST_ERROR",
             "issues": [f"host-side error while processing the case: {detail}"],
@@ -3177,7 +3221,9 @@ def _checkpoint_waiting(
 ) -> dict[str, object]:
     """Return ``state`` stopped until a newer qualified device boot is recorded."""
 
-    interrupted = [str(item) for item in state.get("interrupted_cases", [])]
+    interrupted = [
+        str(item) for item in cast(Iterable[object], state.get("interrupted_cases", []))
+    ]
     if failed_case_id is not None and failed_case_id not in interrupted:
         interrupted.append(failed_case_id)
     return {
@@ -3247,7 +3293,9 @@ def _checkpoint_case_finished(
         )
         if power_cycle_required:
             return _checkpoint_waiting(updated, intervention_case_id, resume)
-        interrupted = [str(item) for item in updated.get("interrupted_cases", [])]
+        interrupted = [
+            str(item) for item in cast(Iterable[object], updated.get("interrupted_cases", []))
+        ]
         if intervention_case_id not in interrupted:
             interrupted.append(intervention_case_id)
         return {
@@ -3260,7 +3308,9 @@ def _checkpoint_case_finished(
             "active_case_id": None,
             "phase": None,
         }
-    completed = [str(item) for item in updated.get("completed_cases", [])]
+    completed = [
+        str(item) for item in cast(Iterable[object], updated.get("completed_cases", []))
+    ]
     completed.append(case_id)
     return {
         **updated,
@@ -3348,11 +3398,16 @@ def _checkpoint_resume(
         return 0, carried
 
     carried = {
-        "completed_cases": list(checkpoint.get("completed_cases", [])),
-        "interrupted_cases": list(checkpoint.get("interrupted_cases", [])),
+        "completed_cases": list(
+            cast(Iterable[object], checkpoint.get("completed_cases", []))
+        ),
+        "interrupted_cases": list(
+            cast(Iterable[object], checkpoint.get("interrupted_cases", []))
+        ),
         "host0_qualified": checkpoint.get("host0_qualified") is True,
     }
     state = checkpoint.get("state")
+    start_index: object
     if state == "COMPLETE":
         return {"status": "COMPLETE", "case_count": case_count}
     if state == "RUNNING":
@@ -3407,7 +3462,7 @@ def _checkpoint_resume(
     return start_index, carried
 
 
-def _valid_boot_number(value: object) -> bool:
+def _valid_boot_number(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
@@ -3436,7 +3491,7 @@ def run_campaign_plan(
     dry_run: bool,
     pspsh_argv: list[str],
     usbhostfs_argv: list[str],
-    transport_factory: Callable[..., object] | None = None,
+    transport_factory: Callable[..., PsplinkProcessTransport] | None = None,
 ) -> tuple[int, dict[str, object]]:
     """Validate or execute the resumable, one-launch-per-boot campaign queue."""
 
@@ -3511,18 +3566,18 @@ def run_campaign_plan(
         "failed_case_id": None,
     }
     _write_campaign_json(checkpoint_path, state)
-    transport = (transport_factory or PsplinkProcessTransport)(
+    transport = cast(PsplinkProcessTransport, (transport_factory or PsplinkProcessTransport)(
         pspsh_argv=pspsh_argv,
         usbhostfs_argv=usbhostfs_argv,
         host0_root=paths["host0_root"],
         session_id=str(plan["session_id"]),
-    )
+    ))
     runner = PsplinkCampaignRunner(
         transport,
         console_model=str(plan["console_model"]),
         source_commit=str(plan["source_commit"]),
-        model_code=plan.get("model_code"),
-        expected_firmware=plan.get("expected_firmware"),
+        model_code=cast(int | None, plan.get("model_code")),
+        expected_firmware=cast(str | None, plan.get("expected_firmware")),
     )
     runner.host0_qualified = start_index > 0 and carried["host0_qualified"] is True
     remaining = cases[start_index:]
@@ -3534,7 +3589,7 @@ def run_campaign_plan(
             index,
             case.case_id,
             phase,
-            device_boot_number=int(current_device_state["boot_number"]),
+            device_boot_number=int(cast(str | int, current_device_state["boot_number"])),
         ))
         _write_campaign_json(checkpoint_path, state)
 
@@ -3573,7 +3628,7 @@ def run_campaign_plan(
         report = runner._report()
     final_state = _checkpoint_after_run(
         state,
-        terminal_reason=report.get("terminal_reason"),
+        terminal_reason=cast(str | None, report.get("terminal_reason")),
         intervention_case_id=runner.intervention_case_id,
         resume_case_index=runner.resume_case_index,
         case_count=len(cases),
@@ -3761,7 +3816,9 @@ def _validate_host0_capture(text: str, args: argparse.Namespace) -> dict[str, ob
     parsed = validate_dmac_size_matrix(_canonicalize_psp(text, args))
     metadata = parsed.metadata_dict()
     identity = _device_identity(text, args)
-    blockers = list(provenance_issues(metadata)) + list(identity["DEVICE_IDENTITY_BLOCKERS"])
+    blockers = list(provenance_issues(metadata)) + list(
+        cast(list[str], identity["DEVICE_IDENTITY_BLOCKERS"])
+    )
     return {
         "classification": "PASS" if all(result.status == "PASS" for result in parsed.results) else "FAIL",
         "test_record_count": len(parsed.results),
@@ -3820,7 +3877,7 @@ _IDENTITY_NOT_BOUND = "NOT_BOUND"
 _IDENTITY_PARTIAL = "PARTIAL"
 
 
-def _is_measured_identity(value: str | None, value_re: re.Pattern[str]) -> bool:
+def _is_measured_identity(value: str | None, value_re: re.Pattern[str]) -> TypeGuard[str]:
     return bool(
         value
         and value_re.fullmatch(value)
@@ -4134,6 +4191,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    report: dict[str, Any]
     if args.ge_corpus_gate:
         if any((
             args.prx, args.remote_command, args.command, args.psp_output, args.nakagawa_output,
@@ -4315,7 +4373,8 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         if report["terminal_reason"]:
             return 2
-        return 0 if all(item["ACCEPTANCE_ELIGIBLE"] for item in report["envelopes"]) else 2
+        envelopes = cast(Iterable[dict[str, Any]], report["envelopes"])
+        return 0 if all(item["ACCEPTANCE_ELIGIBLE"] for item in envelopes) else 2
 
     supplied = [
         flag
@@ -4399,7 +4458,7 @@ def main(argv: list[str] | None = None) -> int:
     timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     capture = args.results_directory / f"psplink-{timestamp}.stdout.txt"
     capture.write_text(stdout, encoding="utf-8")
-    report: dict[str, object] = {
+    report = {
         "schema": 1,
         "mode": "capture",
         "process_status": process_status,
@@ -4424,11 +4483,14 @@ def main(argv: list[str] | None = None) -> int:
         capture_ok = False
     if args.host0_output:
         try:
-            host0_text = _wait_for_host0_output(
-                args.host0_output,
-                args.timeout,
-                not_before_ns=capture_started_ns,
-                ready=lambda text: _host0_capture_complete(text, args),
+            host0_text = cast(
+                str,
+                _wait_for_host0_output(
+                    args.host0_output,
+                    args.timeout,
+                    not_before_ns=capture_started_ns,
+                    ready=lambda text: _host0_capture_complete(text, args),
+                ),
             )
             host0_capture = args.results_directory / f"psplink-{timestamp}.host0.txt"
             host0_capture.write_text(host0_text, encoding="utf-8")
@@ -4442,7 +4504,8 @@ def main(argv: list[str] | None = None) -> int:
                     "acceptance_blockers": [str(exc)],
                 }
                 capture_ok = False
-            if report["host0_validation"]["classification"] != "PASS":
+            host0_validation = cast(dict[str, Any], report["host0_validation"])
+            if host0_validation["classification"] != "PASS":
                 capture_ok = False
         except (TimeoutError, OSError) as exc:
             report["host0_validation"] = {

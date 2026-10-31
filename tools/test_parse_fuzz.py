@@ -30,6 +30,7 @@ import tempfile
 from pathlib import Path
 import sys
 import unittest
+from typing import Any, ClassVar, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -56,7 +57,7 @@ def valid_seed_prx() -> bytes:
     stream a seed that passes the PRX loader, analyzer, and import parser.
     """
     blob, _ = build_synthetic_import_prx(b"sceDisplay", SEED_BASE)
-    return blob
+    return cast(bytes, blob)
 
 
 def _run_stage(stage: str, action, data: bytes):
@@ -152,6 +153,8 @@ def describe(data: bytes) -> str:
 
 
 class TestParseFuzz(unittest.TestCase):
+    path: ClassVar[Path]
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="parsefuzz_")
@@ -337,6 +340,10 @@ class TestParseFuzz(unittest.TestCase):
 
 
 class TestParserSafetyInventory(unittest.TestCase):
+    inventory: ClassVar[dict[str, Any]]
+    source_cache: ClassVar[dict[str, list[str]]]
+    _extent_cache: ClassVar[dict[str, dict[int, str]]]
+
     """Keep the maintained #319 inventory machine-readable and source-backed."""
 
     # An inventory anchor is evidence only if a test can still resolve it, so the
@@ -399,7 +406,7 @@ class TestParserSafetyInventory(unittest.TestCase):
         cls.inventory = json.loads(
             (ROOT / "docs" / "PARSER_SAFETY_INVENTORY.json").read_text(encoding="utf-8")
         )
-        cls.source_cache: dict[str, list[str]] = {}
+        cls.source_cache = {}
 
     @classmethod
     def source_lines(cls, rel: str) -> list[str]:
@@ -519,7 +526,7 @@ class TestParserSafetyInventory(unittest.TestCase):
     @classmethod
     def enclosing_function(cls, rel: str) -> dict[int, str]:
         """Map each line of *rel* to the name of the function that contains it."""
-        cache = getattr(cls, "_extent_cache", None)
+        cache = cast(dict[str, dict[int, str]] | None, getattr(cls, "_extent_cache", None))
         if cache is None:
             cache = cls._extent_cache = {}
         if rel in cache:
@@ -572,10 +579,10 @@ class TestParserSafetyInventory(unittest.TestCase):
             for match in cls.ANCHOR.finditer(text):
                 yield text_field, match.group(0)
 
-    def row(self, surface_id: str) -> dict:
+    def row(self, surface_id: str) -> dict[str, Any]:
         for surface in self.inventory["surfaces"]:
             if surface["id"] == surface_id:
-                return surface
+                return cast(dict[str, Any], surface)
         self.fail(f"no inventory row for {surface_id}")
 
     def check_anchor(self, ref: str, where: str) -> None:
@@ -633,9 +640,9 @@ class TestParserSafetyInventory(unittest.TestCase):
     def test_c_function_header_is_linear_and_keeps_definition_shapes(self) -> None:
         header = self.c_function_header
         self.assertEqual(header("static int foo(void) {"), ("foo", 15))
-        self.assertEqual(header("static const struct nk_x *bar(int a)")[0], "bar")
-        self.assertEqual(header("unsigned int baz (int a)")[0], "baz")
-        self.assertEqual(header("extern bool nk_iso_reader_open(NkIso *iso,")[0],
+        self.assertEqual(cast(tuple[str, int], header("static const struct nk_x *bar(int a)"))[0], "bar")
+        self.assertEqual(cast(tuple[str, int], header("unsigned int baz (int a)"))[0], "baz")
+        self.assertEqual(cast(tuple[str, int], header("extern bool nk_iso_reader_open(NkIso *iso,"))[0],
                          "nk_iso_reader_open")
         self.assertIsNone(header("    call_inside_body(x);"))
         self.assertIsNone(header("x = compute(1);"))
