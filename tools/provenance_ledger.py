@@ -87,6 +87,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 
 try:
@@ -405,6 +406,314 @@ def _read_policy_delta_authority(
         )
     normalized = {key: sorted(set(allowed[key])) for key in sorted(path_keys)}
     normalized["rule_changes"] = sorted(rule_changes)
+    return dict(sorted(normalized.items()))
+
+
+# ---------------------------------------------------------------------------
+# Policy-delta authority V3: the path change, not the base bytes (#1673)
+# ---------------------------------------------------------------------------
+#
+# A V1/V2 authority binds the exact base and candidate profile digests, so it
+# expires as soon as any other path-adding pull request lands and every open
+# one needs a re-key. A V3 authority records only what this pull request
+# changes in the profile:
+#
+# * each added include path with the SHA-256 of the exact bytes its admission
+#   approved;
+# * the removed include paths and the exclude-list changes;
+# * each changed rule field with the digests of its value before and after,
+#   as V2 binds them.
+#
+# It lives in the private authority at ``docs/provenance/policy-deltas-v3/``
+# under the SHA-256 of its own canonical bytes. The verifier never trusts a
+# name: it derives the document from the base profile, the candidate profile
+# and the candidate's blobs, and requires the supplied bytes to equal that
+# derivation exactly. So the authority is valid on any base on which the pull
+# request's own change is still exactly the approved change, and invalid on any
+# base where it is not: an added path already published there, a removed or
+# excluded path whose precondition moved, a rule whose earlier value changed, a
+# new file whose bytes differ from the approved digest, or any other profile
+# edit. Each is refused with its own code.
+
+POLICY_DELTA_V3_SCHEMA_VERSION = 3
+#: Where the private authority keeps V3 documents, each named ``<sha256 of its bytes>.json``.
+POLICY_DELTA_V3_DIR = "docs/provenance/policy-deltas-v3"
+#: Paths no policy delta may name: the generated controls, the profile itself and the release manifest.
+POLICY_DELTA_FORBIDDEN_PATHS = frozenset({
+    "assets/public_provenance_ledger.json",
+    "PUBLIC_EXPORT.json",
+    "assets/public_source_profile.json",
+    "assets/release_manifest.json",
+})
+_V3_KEYS = frozenset({
+    "kind", "schema_version", "include_added", "include_removed",
+    "exclude_added", "exclude_removed", "rule_changes",
+})
+_V3_PATH_LISTS = ("include_removed", "exclude_added", "exclude_removed")
+
+
+def canonical_profile_bytes(document: dict) -> bytes:
+    """Serialize a profile with sorted, unique path lists, two-space JSON and one final LF.
+
+    This is the one canonical profile form: ``admit_paths.py`` writes it, ``--merge-profile``
+    writes it, and a V3 authority accepts only a candidate profile already in it.
+    """
+    canonical = dict(document)
+    for field in ("include_paths", "exclude_paths"):
+        paths = canonical.get(field)
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise ValueError(f"profile {field} must be a list of strings")
+        canonical[field] = sorted(set(paths))
+    return (json.dumps(canonical, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def policy_delta_v3_bytes(document: dict) -> bytes:
+    """The canonical bytes of a V3 authority: sorted keys, two-space JSON, one final LF."""
+    return (json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def policy_delta_v3_name(raw: bytes) -> str:
+    """The file name a V3 authority is stored under: the SHA-256 of its bytes."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _fold(path: str) -> str:
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def _v3_path(path: object) -> str:
+    exact = _exact_path(path, code="POLICY_DELTA_AUTHORITY_INVALID")
+    if unicodedata.normalize("NFC", exact) != exact or any(ord(character) < 0x20 for character in exact):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"policy delta path is not NFC text: {exact!r}")
+    if exact in POLICY_DELTA_FORBIDDEN_PATHS:
+        raise RefreshError(
+            "POLICY_DELTA_PATH_FORBIDDEN",
+            f"a policy delta cannot name the generated control or profile path {exact}",
+        )
+    return exact
+
+
+def derive_policy_delta_v3(
+    baseline_document: dict,
+    candidate_document: dict,
+    digest_of,
+) -> dict:
+    """The V3 authority document for the profile change from ``baseline_document`` to ``candidate_document``.
+
+    ``digest_of(path)`` returns the SHA-256 an added path is bound to (the verifier hashes the
+    candidate's blob; an admission passes the digest it records), or ``None`` when the
+    candidate does not carry the file. Raises ``RefreshError`` when the change is empty,
+    names a forbidden or malformed path, or adds a path whose file is missing.
+    """
+    delta = _classify_policy_delta(baseline_document, candidate_document)
+    if not any(delta.values()):
+        raise RefreshError("POLICY_DELTA_EMPTY", "the candidate profile equals the base profile")
+    added = []
+    for raw_path in delta["include_added"]:
+        path = _v3_path(raw_path)
+        digest = digest_of(path)
+        if digest is None:
+            raise RefreshError(
+                "POLICY_DELTA_ADDED_PATH_MISSING",
+                f"the candidate profile publishes {path}, which the candidate tree does not carry",
+            )
+        added.append({"path": path, "sha256": digest})
+    document: dict = {
+        "kind": POLICY_DELTA_KIND,
+        "schema_version": POLICY_DELTA_V3_SCHEMA_VERSION,
+        "include_added": added,
+    }
+    for key in _V3_PATH_LISTS:
+        document[key] = [_v3_path(path) for path in delta[key]]
+    document["rule_changes"] = [
+        {
+            "key": key,
+            "baseline_sha256": policy_rule_value_sha256(baseline_document, key),
+            "candidate_sha256": policy_rule_value_sha256(candidate_document, key),
+        }
+        for key in delta["rule_changes"]
+    ]
+    return document
+
+
+def _read_policy_delta_v3_document(raw: bytes) -> dict:
+    """Parse a V3 authority strictly; the shape only, not its truth against any profile."""
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict:
+        result: dict = {}
+        for key, value in pairs:
+            if key in result:
+                raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"duplicate key {key!r} in a V3 authority")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"cannot read the V3 authority: {error}") from error
+    if not isinstance(document, dict) or set(document) != _V3_KEYS:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"a V3 authority carries exactly {sorted(_V3_KEYS)}")
+    if document["kind"] != POLICY_DELTA_KIND or document["schema_version"] != POLICY_DELTA_V3_SCHEMA_VERSION:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "not a V3 policy-delta authority")
+    added = document["include_added"]
+    if not isinstance(added, list) or not all(
+        isinstance(item, dict) and set(item) == {"path", "sha256"} and _is_sha256(item["sha256"])
+        for item in added
+    ):
+        raise RefreshError(
+            "POLICY_DELTA_AUTHORITY_INVALID",
+            "include_added entries carry exactly a path and a lowercase sha256",
+        )
+    lists = {"include_added": [_v3_path(item["path"]) for item in added]}
+    for key in _V3_PATH_LISTS:
+        if not isinstance(document[key], list):
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"{key} must be a list of paths")
+        lists[key] = [_v3_path(path) for path in document[key]]
+    for key, paths in lists.items():
+        if paths != sorted(set(paths)):
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"{key} must be sorted and free of duplicates")
+    # A path may sit in two lists only as a move between the include and exclude lists.
+    if set(lists["include_added"]) & set(lists["include_removed"]) or \
+            set(lists["exclude_added"]) & set(lists["exclude_removed"]) or \
+            set(lists["include_added"]) & set(lists["exclude_added"]) or \
+            set(lists["include_removed"]) & set(lists["exclude_removed"]):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "a path appears in two lists that contradict each other")
+    rules = document["rule_changes"]
+    if not isinstance(rules, list):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "rule_changes must be a list")
+    keys = []
+    for entry in rules:
+        if not isinstance(entry, dict) or set(entry) != {"key", "baseline_sha256", "candidate_sha256"}:
+            raise RefreshError(
+                "POLICY_DELTA_AUTHORITY_INVALID",
+                "each rule change carries exactly key, baseline_sha256 and candidate_sha256",
+            )
+        key = entry["key"]
+        if not isinstance(key, str) or not key or key in ("include_paths", "exclude_paths"):
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"rule change key {key!r} is not a rule field")
+        for side in ("baseline_sha256", "candidate_sha256"):
+            if entry[side] is not None and not _is_sha256(entry[side]):
+                raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"rule change {key!r} {side} is not a sha256")
+        if entry["baseline_sha256"] == entry["candidate_sha256"]:
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"rule change {key!r} binds no change")
+        keys.append(key)
+    if keys != sorted(set(keys)):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "rule_changes must be sorted by key, each key once")
+    if not any(lists.values()) and not keys:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "a V3 authority must record at least one change")
+    return document
+
+
+def is_policy_delta_v3(raw: bytes) -> bool:
+    """True when ``raw`` declares itself a V3 authority (it may still be invalid)."""
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(document, dict) and document.get("schema_version") == POLICY_DELTA_V3_SCHEMA_VERSION
+
+
+def _explain_v3_difference(supplied: dict, derived: dict, *, baseline_document: dict) -> RefreshError:
+    """Name the first way an approved V3 change differs from this candidate's change."""
+    base_includes = set(baseline_document.get("include_paths", []))
+    base_excludes = set(baseline_document.get("exclude_paths", []))
+    approved = {item["path"]: item["sha256"] for item in supplied["include_added"]}
+    actual = {item["path"]: item["sha256"] for item in derived["include_added"]}
+    for path in sorted(set(approved) - set(actual)):
+        if path in base_includes:
+            return RefreshError("POLICY_DELTA_PATH_EXISTS", f"{path} is already published by the base profile")
+        return RefreshError("POLICY_DELTA_UNAUTHORIZED", f"the approved change adds {path}; this profile does not")
+    for path in sorted(set(actual) - set(approved)):
+        return RefreshError("POLICY_DELTA_UNAUTHORIZED", f"this profile adds {path}, which the approved change does not")
+    for path in sorted(approved):
+        if approved[path] != actual[path]:
+            return RefreshError(
+                "POLICY_DELTA_ADDED_BYTES_MISMATCH",
+                f"{path} carries bytes with sha256 {actual[path]}; the admission approved {approved[path]}",
+            )
+    preconditions = {
+        "include_removed": (lambda path: path in base_includes, "is not published by the base profile"),
+        "exclude_added": (lambda path: path not in base_excludes, "is already excluded by the base profile"),
+        "exclude_removed": (lambda path: path in base_excludes, "is not excluded by the base profile"),
+    }
+    for key, (holds, failure) in preconditions.items():
+        for path in sorted(set(supplied[key]) ^ set(derived[key])):
+            if path in supplied[key] and not holds(path):
+                return RefreshError("POLICY_DELTA_BASE_MISMATCH", f"{key} {path} {failure}")
+            return RefreshError("POLICY_DELTA_UNAUTHORIZED", f"{key} differs from the approved change at {path}")
+    approved_rules = {entry["key"]: entry for entry in supplied["rule_changes"]}
+    actual_rules = {entry["key"]: entry for entry in derived["rule_changes"]}
+    for key in sorted(set(approved_rules) | set(actual_rules)):
+        if key not in approved_rules or key not in actual_rules:
+            return RefreshError("POLICY_DELTA_UNAUTHORIZED", f"rule field {key!r} changes differently from the approval")
+        for side in ("baseline_sha256", "candidate_sha256"):
+            if approved_rules[key][side] != actual_rules[key][side]:
+                return RefreshError(
+                    "POLICY_DELTA_RULE_VALUE_MISMATCH",
+                    f"rule field {key!r} has a different {side.split('_')[0]} value; "
+                    f"actual sha256 is {actual_rules[key][side]}",
+                )
+    return RefreshError("POLICY_DELTA_AUTHORITY_NOT_CANONICAL", "the V3 authority is not in canonical form")
+
+
+def verify_policy_delta_v3(
+    raw: bytes,
+    *,
+    baseline_policy_bytes: bytes,
+    candidate_policy_bytes: bytes,
+    base_blobs: dict[str, bytes],
+    candidate_blobs: dict[str, bytes],
+    candidate_policy,
+) -> dict:
+    """Check a V3 authority against this exact candidate and base; return the normalized delta.
+
+    The return value has the V1/V2 shape (path lists, rule-change names), equal to
+    ``_classify_policy_delta`` of the two profiles, so every downstream check is unchanged.
+    """
+    supplied = _read_policy_delta_v3_document(raw)
+    try:
+        baseline_document = json.loads(baseline_policy_bytes.decode("utf-8"))
+        candidate_document = json.loads(candidate_policy_bytes.decode("utf-8"))
+        canonical = canonical_profile_bytes(candidate_document)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, AttributeError) as error:
+        raise RefreshError("CANDIDATE_POLICY_INVALID", f"cannot read the profiles: {error}") from error
+    if canonical != candidate_policy_bytes:
+        raise RefreshError(
+            "CANDIDATE_POLICY_NOT_CANONICAL",
+            "the candidate profile is not in canonical form (sorted path lists, two-space JSON, one final LF)",
+        )
+    derived = derive_policy_delta_v3(
+        baseline_document, candidate_document,
+        lambda path: hashlib.sha256(candidate_blobs[path]).hexdigest() if path in candidate_blobs else None,
+    )
+    if raw != policy_delta_v3_bytes(derived):
+        raise _explain_v3_difference(supplied, derived, baseline_document=baseline_document)
+    # Preconditions the derivation alone does not imply.
+    folded = {}
+    for path in candidate_blobs:
+        folded.setdefault(_fold(path), []).append(path)
+    for item in derived["include_added"]:
+        path = item["path"]
+        if path in base_blobs:
+            raise RefreshError(
+                "POLICY_DELTA_PATH_EXISTS",
+                f"{path} already exists in the base tree; a V3 delta publishes only new files",
+            )
+        if len(folded[_fold(path)]) > 1:
+            raise RefreshError(
+                "POLICY_DELTA_PATH_COLLISION",
+                f"{path} collides with {sorted(folded[_fold(path)])} under case and Unicode folding",
+            )
+    for path in derived["exclude_removed"]:
+        if path in candidate_blobs and candidate_policy.resolve(path).disposition == "unclassified":
+            raise RefreshError(
+                "POLICY_DELTA_UNCLASSIFIED_PATH",
+                f"removing the exclusion of {path} leaves it unclassified; include it or keep it excluded",
+            )
+    normalized = {
+        "include_added": [item["path"] for item in derived["include_added"]],
+        **{key: list(derived[key]) for key in _V3_PATH_LISTS},
+        "rule_changes": [entry["key"] for entry in derived["rule_changes"]],
+    }
     return dict(sorted(normalized.items()))
 
 
@@ -1539,10 +1848,10 @@ def refresh_reviewed(
                 "REFRESH_PATH_NOT_REFRESHABLE",
                 f"refresh-reviewed requires an implementation record or deterministic public path: {path}",
             )
-    if (trusted_candidate_policy is None) != (policy_delta_authority is None):
+    if trusted_candidate_policy is not None and policy_delta_authority is None:
         raise RefreshError(
             "POLICY_DELTA_ARGUMENT_REQUIRED",
-            "--trusted-candidate-policy and --policy-delta-authority must be supplied together",
+            "--trusted-candidate-policy needs --policy-delta-authority",
         )
 
     candidate = _resolve_tree_selector(candidate_tree, default_repo=ROOT, role="candidate")
@@ -1588,7 +1897,51 @@ def refresh_reviewed(
     candidate_policy = policy
     candidate_policy_raw = policy_raw
     policy_delta: dict | None = None
-    if trusted_candidate_policy is not None:
+    v3_raw: bytes | None = None
+    if policy_delta_authority is not None:
+        v3_raw = _external_input(
+            policy_delta_authority, candidate_root=controlled_root, label="policy delta authority",
+        ).read_bytes()
+        if not is_policy_delta_v3(v3_raw):
+            v3_raw = None
+        elif trusted_candidate_policy is not None:
+            raise RefreshError(
+                "POLICY_DELTA_ARGUMENT_REQUIRED",
+                "a V3 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
+            )
+        if v3_raw is None and trusted_candidate_policy is None:
+            raise RefreshError(
+                "POLICY_DELTA_ARGUMENT_REQUIRED",
+                "a V1 or V2 policy delta authority needs --trusted-candidate-policy",
+            )
+    if v3_raw is not None:
+        # The approved change is checked against this exact base and candidate; the
+        # candidate's own profile bytes are then the blessed bytes.
+        blessed_policy_raw = candidate.blobs.get("assets/public_source_profile.json")
+        if blessed_policy_raw is None:
+            raise RefreshError("CANDIDATE_POLICY_MISSING", "candidate tree has no publication policy")
+        if blessed_policy_raw == policy_raw:
+            raise RefreshError(
+                "POLICY_DELTA_EMPTY",
+                "candidate policy equals the baseline policy; supply no policy delta when no delta exists",
+            )
+        with tempfile.TemporaryDirectory(prefix="nakagawa-v3-policy-") as scratch:
+            policy_file = Path(scratch) / "candidate-policy.json"
+            policy_file.write_bytes(blessed_policy_raw)
+            try:
+                candidate_policy = _load_publication_policy(policy_file)
+            except Exception as error:
+                raise RefreshError("CANDIDATE_POLICY_INVALID", "candidate policy is invalid") from error
+        policy_delta = verify_policy_delta_v3(
+            v3_raw,
+            baseline_policy_bytes=policy_raw,
+            candidate_policy_bytes=blessed_policy_raw,
+            base_blobs=trusted.blobs,
+            candidate_blobs=candidate.blobs,
+            candidate_policy=candidate_policy,
+        )
+        candidate_policy_raw = blessed_policy_raw
+    elif trusted_candidate_policy is not None:
         blessed_policy_path = _external_input(
             trusted_candidate_policy, candidate_root=controlled_root, label="trusted candidate policy")
         blessed_policy_raw = blessed_policy_path.read_bytes()
@@ -1707,11 +2060,11 @@ def refresh_reviewed(
         ) if path is not None
     ]
     if policy_delta is not None:
-        blessed_input_path = _external_input(
-            trusted_candidate_policy, candidate_root=controlled_root, label="trusted candidate policy")
-        authority_input_path = _external_input(
-            policy_delta_authority, candidate_root=controlled_root, label="policy delta authority")
-        trusted_inputs.extend([blessed_input_path, authority_input_path])
+        trusted_inputs.append(_external_input(
+            policy_delta_authority, candidate_root=controlled_root, label="policy delta authority"))
+        if trusted_candidate_policy is not None:
+            trusted_inputs.append(_external_input(
+                trusted_candidate_policy, candidate_root=controlled_root, label="trusted candidate policy"))
     if candidate.worktree_root is not None:
         candidate_root = candidate.worktree_root.resolve()
         if not _path_is_within(output, candidate_root, resolve=True) or not _path_is_within(export_output, candidate_root, resolve=True):

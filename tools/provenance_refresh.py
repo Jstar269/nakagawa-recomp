@@ -75,11 +75,8 @@ def generate_controls(
     """Call the same generator used by the hosted ephemeral verifier."""
 
     repo = repo.resolve()
-    if (trusted_candidate_policy is None) != (policy_delta_authority is None):
-        raise verifier.VerifyError(
-            "POLICY_DELTA_ARGUMENT_REQUIRED",
-            "the blessed candidate policy and policy-delta authority must be supplied together",
-        )
+    # A V3 authority comes alone; a V1/V2 authority with its blessed candidate policy. The
+    # generator below enforces which.
     trusted_ledger = verifier._external_input(
         trusted_ledger, repo=repo, label="trusted detailed ledger",
     )
@@ -222,12 +219,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--trusted-candidate-policy", type=Path,
         default=os.environ.get("PROVENANCE_TRUSTED_CANDIDATE_POLICY"),
-        help="external blessed candidate publication policy for a reviewed policy delta",
+        help="external blessed candidate publication policy for a V1/V2 policy delta (not with V3)",
     )
     parser.add_argument(
         "--policy-delta-authority", type=Path,
         default=os.environ.get("PROVENANCE_POLICY_DELTA_AUTHORITY"),
-        help="external authority binding the baseline and blessed policy digests and exact delta",
+        help="external policy-delta authority: V3 alone, or V1/V2 with --trusted-candidate-policy",
     )
     parser.add_argument(
         "--apply-policy", action="store_true",
@@ -244,15 +241,11 @@ def main(argv: list[str] | None = None) -> int:
         trusted_ledger = verifier._external_input(
             args.trusted_ledger, repo=repo, label="trusted detailed ledger",
         )
-        if (args.trusted_candidate_policy is None) != (args.policy_delta_authority is None):
-            raise verifier.VerifyError(
-                "POLICY_DELTA_ARGUMENT_REQUIRED",
-                "the blessed candidate policy and policy-delta authority must be supplied together",
-            )
         if args.trusted_candidate_policy is not None:
             verifier._external_input(
                 args.trusted_candidate_policy, repo=repo, label="trusted candidate policy",
             )
+        if args.policy_delta_authority is not None:
             verifier._external_input(
                 args.policy_delta_authority, repo=repo, label="policy delta authority",
             )

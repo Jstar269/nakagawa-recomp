@@ -2970,6 +2970,97 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         self.assertIn("CANDIDATE_TREE_STALE", result.stderr)
 
 
+class PolicyDeltaV3DocumentTests(unittest.TestCase):
+    """The V3 policy-delta document (#1673): derivation, canonical bytes and the strict parse."""
+
+    BASE = {
+        "name": "v3-synthetic", "exclude_paths": ["docs/private.md"], "include_paths": ["README.md"],
+        "notes": "before",
+    }
+
+    def _derive(self, candidate: dict, files: dict[str, bytes] | None = None) -> dict:
+        files = files or {}
+        return provenance_ledger.derive_policy_delta_v3(
+            self.BASE, candidate,
+            lambda path: hashlib.sha256(files[path]).hexdigest() if path in files else None,
+        )
+
+    def _parse(self, document: dict) -> None:
+        provenance_ledger._read_policy_delta_v3_document(provenance_ledger.policy_delta_v3_bytes(document))
+
+    def _valid(self) -> dict:
+        return self._derive(dict(self.BASE, include_paths=["README.md", "docs/new.md"]), {"docs/new.md": b"# new\n"})
+
+    def test_derivation_binds_each_added_path_and_each_rule_value(self) -> None:
+        candidate = dict(self.BASE, include_paths=["README.md", "docs/new.md"], notes="after",
+                         exclude_paths=[])
+        document = self._derive(candidate, {"docs/new.md": b"# new\n"})
+        self.assertEqual(document["include_added"],
+                         [{"path": "docs/new.md", "sha256": hashlib.sha256(b"# new\n").hexdigest()}])
+        self.assertEqual(document["exclude_removed"], ["docs/private.md"])
+        self.assertEqual(document["rule_changes"], [{
+            "key": "notes",
+            "baseline_sha256": provenance_ledger.policy_rule_value_sha256(self.BASE, "notes"),
+            "candidate_sha256": provenance_ledger.policy_rule_value_sha256(candidate, "notes"),
+        }])
+        raw = provenance_ledger.policy_delta_v3_bytes(document)
+        self.assertTrue(raw.endswith(b"\n") and b"\r" not in raw)
+        self.assertEqual(provenance_ledger.policy_delta_v3_name(raw), hashlib.sha256(raw).hexdigest())
+        self.assertTrue(provenance_ledger.is_policy_delta_v3(raw))
+        self._parse(document)
+
+    def test_derivation_refuses_an_empty_change_a_missing_file_and_a_control_path(self) -> None:
+        cases = {
+            "POLICY_DELTA_EMPTY": (dict(self.BASE), {}),
+            "POLICY_DELTA_ADDED_PATH_MISSING": (dict(self.BASE, include_paths=["README.md", "docs/gone.md"]), {}),
+            "POLICY_DELTA_PATH_FORBIDDEN": (
+                dict(self.BASE, include_paths=["README.md", "PUBLIC_EXPORT.json"]), {"PUBLIC_EXPORT.json": b"{}"}),
+        }
+        for code, (candidate, files) in cases.items():
+            with self.subTest(code=code), self.assertRaises(provenance_ledger.RefreshError) as caught:
+                self._derive(candidate, files)
+            self.assertEqual(caught.exception.code, code)
+
+    def test_the_parse_refuses_every_malformed_shape(self) -> None:
+        valid = self._valid()
+        malformed = {
+            "extra key": dict(valid, approved=True),
+            "missing key": {key: value for key, value in valid.items() if key != "rule_changes"},
+            "wrong schema": dict(valid, schema_version=2),
+            "unsorted list": dict(valid, exclude_added=["docs/z.md", "docs/a.md"]),
+            "duplicate path": dict(valid, exclude_added=["docs/a.md", "docs/a.md"]),
+            "contradicting lists": dict(valid, exclude_added=["docs/new.md"]),
+            "added path without a digest": dict(valid, include_added=[{"path": "docs/new.md"}]),
+            "uppercase digest": dict(valid, include_added=[{"path": "docs/new.md", "sha256": "A" * 64}]),
+            "non-NFC path": dict(valid, include_removed=["docs/cafe\u0301.md"]),
+            "control character": dict(valid, include_removed=["docs/a\u0007.md"]),
+            "rule on a path list": dict(valid, rule_changes=[
+                {"key": "include_paths", "baseline_sha256": None, "candidate_sha256": "a" * 64}]),
+            "rule that changes nothing": dict(valid, rule_changes=[
+                {"key": "notes", "baseline_sha256": "a" * 64, "candidate_sha256": "a" * 64}]),
+            "no change at all": dict(valid, include_added=[]),
+        }
+        for label, document in malformed.items():
+            with self.subTest(label), self.assertRaises(provenance_ledger.RefreshError) as caught:
+                self._parse(document)
+            self.assertEqual(caught.exception.code, "POLICY_DELTA_AUTHORITY_INVALID", label)
+        with self.assertRaises(provenance_ledger.RefreshError) as caught:
+            provenance_ledger._read_policy_delta_v3_document(
+                provenance_ledger.policy_delta_v3_bytes(valid).replace(b'"kind"', b'"kind": "x", "kind"', 1))
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_AUTHORITY_INVALID")
+        with self.assertRaises(provenance_ledger.RefreshError) as caught:
+            self._parse(dict(valid, include_removed=["assets/public_source_profile.json"]))
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_PATH_FORBIDDEN")
+
+    def test_the_canonical_profile_form_is_shared(self) -> None:
+        document = {"include_paths": ["b", "a", "a"], "exclude_paths": ["z"], "name": "x"}
+        raw = provenance_ledger.canonical_profile_bytes(document)
+        self.assertEqual(json.loads(raw)["include_paths"], ["a", "b"])
+        self.assertEqual(list(json.loads(raw)), ["include_paths", "exclude_paths", "name"])
+        with self.assertRaises(ValueError):
+            provenance_ledger.canonical_profile_bytes({"include_paths": "a", "exclude_paths": []})
+
+
 class TransactionalOutputTests(unittest.TestCase):
     """Generated control files are written all-or-nothing (Sections 8/12).
 

@@ -2192,6 +2192,25 @@ class LiveRepositoryTests(unittest.TestCase):
             "the required-check context must be declared only by the trusted gate workflow",
         )
 
+    def test_both_attestation_workflows_look_up_v3_deltas_the_same_way(self) -> None:
+        """The pull-request and merge-group gates fetch the V3 authority by the derived name first (#1673)."""
+        blocks = {}
+        for name in ("provenance-attestation.yml", "provenance-attestation-merge-group.yml"):
+            raw = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            begin, end = "# v3-policy-delta-lookup:begin", "# v3-policy-delta-lookup:end"
+            self.assertEqual((raw.count(begin), raw.count(end)), (1, 1), name)
+            block = raw[raw.index(begin):raw.index(end)]
+            self.assertIn("--policy-delta-key", block)
+            self.assertIn("docs/provenance/policy-deltas-v3/${v3_name}.json", block)
+            # The derived name is checked before it is used, and a V3 hit passes no blessed policy.
+            self.assertLess(block.index("[ \"${#v3_name}\" -eq 64 ]"), block.index("gh api"))
+            v3_hit = block[:block.index("else")]
+            self.assertNotIn("trusted_candidate_policy=", v3_hit)
+            self.assertIn('--policy-delta-authority "${POLICY_DELTA_AUTHORITY}"', raw)
+            self.assertNotIn("policy delta authority outputs must be paired", raw)
+            blocks[name] = block
+        self.assertEqual(len(set(blocks.values())), 1, "the two lookups must not drift apart")
+
     def test_the_trusted_workflow_is_target_triggered(self) -> None:
         raw = (ROOT / TRUSTED_WORKFLOW).read_bytes()
         self.assertIn(b"pull_request_target", raw)
@@ -2387,6 +2406,14 @@ class EphemeralGenerationTests(unittest.TestCase):
             provenance_ledger=ledger_path.read_bytes(),
         )
         self.repo.write(verifier.EXPORT_PATH, _canonical(document))
+
+    def _write_control_export(self) -> None:
+        """Commit the export in its control form, as the real producers do: no tree-wide fields."""
+        self.regenerate_export()
+        export_path = self.repo.root / verifier.EXPORT_PATH
+        if export_path.is_file():
+            full = json.loads(export_path.read_text(encoding="utf-8"))
+            self.repo.write(verifier.EXPORT_PATH, _canonical(public_export.build_control_document(full)))
 
     def baseline(self, commit: str | None = None) -> Path:
         commit = commit or self.base
@@ -2782,14 +2809,6 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
                 if finding["fatal"]
             },
         )
-
-    def _write_control_export(self) -> None:
-        """Commit the export in its control form, as the real producers do: no tree-wide fields."""
-        self.regenerate_export()
-        export_path = self.repo.root / verifier.EXPORT_PATH
-        if export_path.is_file():
-            full = json.loads(export_path.read_text(encoding="utf-8"))
-            self.repo.write(verifier.EXPORT_PATH, _canonical(public_export.build_control_document(full)))
 
     def _claims_ledger_for(self, head: str) -> dict:
         """The claims-only form (#1673) of the ledger generated for ``head``."""
@@ -3350,6 +3369,241 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             "TRUSTED_SCOPE_VIOLATION",
             {finding["code"] for finding in verdict["findings"]},
         )
+
+
+class PolicyDeltaV3Tests(EphemeralGenerationTests):
+    """V3 policy-delta authority (#1673): the approved path change, not the base profile's bytes.
+
+    Each case builds the document the admission writes (derived from the base profile, the
+    candidate profile and the candidate's blobs) and hands it to the verifier directly, the
+    way the attestation workflow does after its lookup.
+    """
+
+    NEW_A = "docs/new-a.md"
+    NEW_B = "docs/new-b.md"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.back_legacy_path()
+        self.repo.before_commit = self._write_control_export
+
+    def _profile(self, rev: str) -> dict:
+        return json.loads(run_git(["show", f"{rev}:{verifier.POLICY_PATH}"], cwd=self.repo.root,
+                                  check=True, capture_output=True, text=True).stdout)
+
+    def _change(self, branch: str, start: str, files: dict[str, bytes], *, include=(), mutate=None) -> str:
+        """Commit ``files`` on a new branch from ``start``, with ``include`` added to the canonical profile."""
+        self.repo.branch(branch, start)
+        policy = self._profile(start)
+        policy["include_paths"] = sorted(set(policy["include_paths"]) | set(include))
+        if mutate is not None:
+            mutate(policy)
+        for path, raw in files.items():
+            self.repo.write(path, raw)
+        self.repo.write(verifier.POLICY_PATH, provenance_ledger.canonical_profile_bytes(policy))
+        return self.repo.commit(f"profile change on {branch}")
+
+    def _v3(self, base: str, head: str, label: str = "v3") -> Path:
+        """Write the V3 authority an admission of ``head``'s change against ``base`` records."""
+        blobs = verifier.read_tree(self.repo.root, verifier._rev_tree(self.repo.root, head))
+        document = provenance_ledger.derive_policy_delta_v3(
+            self._profile(base), self._profile(head),
+            lambda path: _sha(blobs[path]) if path in blobs else None,
+        )
+        raw = provenance_ledger.policy_delta_v3_bytes(document)
+        name = provenance_ledger.policy_delta_v3_name(raw)
+        self.assertEqual(name, verifier.policy_delta_key(repo=self.repo.root, base_rev=base, candidate_rev=head),
+                         "the workflow's lookup name is the stored document's digest")
+        path = self.outside / f"{label}-{name}.json"
+        path.write_bytes(raw)
+        return path
+
+    def _attest(self, head: str, base: str, authority: Path | None, **kwargs) -> dict:
+        return self.run_ephemeral(head, base=base, policy_delta_authority=authority, authority_baseline=True, **kwargs)
+
+    def _land(self, head: str, base: str, authority: Path) -> str:
+        """Adopt the generated controls on ``head``, as the desk's --adopt does, and require a pass."""
+        self.repo.branch(f"landing-{head[:12]}", head)
+        self._attest(head, base, authority)
+        out = self.outside / "generated"
+        hook, self.repo.before_commit = self.repo.before_commit, None
+        self.repo.write(verifier.LEDGER_PATH, (out / verifier.LEDGER_OUTPUT_NAME).read_bytes())
+        self.repo.write(verifier.EXPORT_PATH, (out / verifier.EXPORT_PATH).read_bytes())
+        landed = self.repo.commit("adopt the generated controls")
+        self.repo.before_commit = hook
+        verdict = self._attest(landed, base, authority)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        return landed
+
+    def _refused(self, code: str, head: str, base: str, authority: Path, **kwargs) -> None:
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self._attest(head, base, authority, **kwargs)
+        self.assertEqual(caught.exception.code, code, str(caught.exception))
+
+    def _commit_index_only(self, message: str, files: dict[str, bytes]) -> str:
+        """Commit ``files`` through the index alone: case variants cannot share a Windows checkout."""
+        for path, raw in files.items():
+            blob = run_git(["hash-object", "-w", "--stdin"], cwd=self.repo.root, input=raw,
+                           check=True, capture_output=True).stdout.decode("ascii").strip()
+            run_git(["update-index", "--add", "--cacheinfo", f"100644,{blob},{path}"], cwd=self.repo.root,
+                    check=True, capture_output=True)
+        run_git(["commit", "--quiet", "-m", message], cwd=self.repo.root, check=True, capture_output=True)
+        return self.repo.head()
+
+    # -- must pass ------------------------------------------------------------
+
+    def test_a_v3_authority_admits_a_new_path_on_its_own_base(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        landed = self._land(head, self.base, self._v3(self.base, head))
+        verdict = self._attest(landed, self.base, self._v3(self.base, landed, "landed"))
+        self.assertEqual(verdict["policy_delta"]["include_added"], [self.NEW_A])
+
+    def test_two_admissions_land_in_either_order_without_a_rekey(self) -> None:
+        """Both admitted against the same base; the second still verifies after the first lands."""
+        for first, second in ((self.NEW_A, self.NEW_B), (self.NEW_B, self.NEW_A)):
+            with self.subTest(first=first):
+                tag = first.rsplit("/", 1)[-1]
+                head_1 = self._change(f"first-{tag}", self.base, {first: b"# first\n"}, include=[first])
+                head_2 = self._change(f"second-{tag}", self.base, {second: b"# second\n"}, include=[second])
+                authority_1 = self._v3(self.base, head_1, f"first-{tag}")
+                authority_2 = self._v3(self.base, head_2, f"second-{tag}")
+                main_1 = self._land(head_1, self.base, authority_1)
+
+                # The second pull request after merging the new main: the union profile.
+                rebased = self._change(f"second-{tag}-on-main", main_1, {second: b"# second\n"}, include=[second])
+                landed = self._land(rebased, main_1, authority_2)
+                self.assertEqual(self._attest(landed, main_1, authority_2)["policy_delta"]["include_added"],
+                                 [second])
+
+                # Failing before #1673: a V1 delta bound to the old base profile needs a re-key here.
+                blessed = self.outside / f"blessed-{tag}.json"
+                blessed.write_bytes(provenance_ledger.canonical_profile_bytes(self._profile(head_2)))
+                v1 = self.outside / f"v1-{tag}.json"
+                v1.write_bytes(_canonical({
+                    "schema_version": 1, "kind": "policy-delta-authority",
+                    "baseline_policy_sha256": _sha(provenance_ledger.canonical_profile_bytes(self._profile(self.base))),
+                    "candidate_policy_sha256": _sha(blessed.read_bytes()),
+                    "allowed_delta": {"include_added": [second], "include_removed": [], "exclude_added": [],
+                                      "exclude_removed": [], "rule_changes": []},
+                }))
+                with self.assertRaises(verifier.VerifyError) as caught:
+                    self._attest(landed, main_1, v1, trusted_candidate_policy=blessed)
+                self.assertEqual(caught.exception.code, "CANDIDATE_POLICY_MISMATCH")
+
+    # -- canaries: each must fail closed ----------------------------------------
+
+    def test_new_file_bytes_must_match_the_admitted_digest(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# admitted\n"}, include=[self.NEW_A])
+        authority = self._v3(self.base, head)
+        self.repo.write(self.NEW_A, b"# edited after admission\n")
+        edited = self.repo.commit("edit the new file after its admission")
+        self._refused("POLICY_DELTA_ADDED_BYTES_MISMATCH", edited, self.base, authority)
+
+    def test_an_added_path_the_base_already_publishes_is_refused(self) -> None:
+        head_a = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        authority_a = self._v3(self.base, head_a)
+        main_1 = self._land(head_a, self.base, authority_a)
+        head_c = self._change("pr-c", main_1, {self.NEW_B: b"# c\n"}, include=[self.NEW_B])
+        self._refused("POLICY_DELTA_PATH_EXISTS", head_c, main_1, authority_a)
+
+    def test_an_added_path_that_exists_unpublished_in_the_base_is_refused(self) -> None:
+        draft = "docs/draft.md"
+        base_2 = self._change("draft-base", self.base, {draft: b"# draft\n"},
+                              mutate=lambda policy: policy.update(exclude_paths=sorted({*policy["exclude_paths"], draft})))
+        head = self._change("publish-draft", base_2, {}, include=[draft],
+                            mutate=lambda policy: policy.update(exclude_paths=[p for p in policy["exclude_paths"] if p != draft]))
+        self._refused("POLICY_DELTA_PATH_EXISTS", head, base_2, self._v3(base_2, head))
+
+    def test_a_rule_whose_earlier_value_moved_is_refused(self) -> None:
+        head = self._change("pr-rule", self.base, {}, mutate=lambda policy: policy.update(notes="approved note"))
+        authority = self._v3(self.base, head)
+        base_2 = self._change("other-rule", self.base, {}, mutate=lambda policy: policy.update(notes="landed first"))
+        rebased = self._change("pr-rule-on-main", base_2, {}, mutate=lambda policy: policy.update(notes="approved note"))
+        self._refused("POLICY_DELTA_RULE_VALUE_MISMATCH", rebased, base_2, authority)
+
+    def test_a_profile_edit_outside_the_delta_is_refused(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        authority = self._v3(self.base, head)
+        more = self._change("pr-a-more", head, {self.NEW_B: b"# unapproved\n"}, include=[self.NEW_B])
+        self._refused("POLICY_DELTA_UNAUTHORIZED", more, self.base, authority)
+
+    def test_a_non_canonical_candidate_profile_is_refused(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        authority = self._v3(self.base, head)
+        self.repo.write(verifier.POLICY_PATH, json.dumps(self._profile(head), indent=4) + "\n")
+        reformatted = self.repo.commit("same profile, another layout")
+        self._refused("CANDIDATE_POLICY_NOT_CANONICAL", reformatted, self.base, authority)
+
+    def test_a_v3_authority_comes_alone_and_v1_needs_its_blessed_policy(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        authority = self._v3(self.base, head)
+        blessed = self.outside / "blessed.json"
+        blessed.write_bytes(provenance_ledger.canonical_profile_bytes(self._profile(head)))
+        self._refused("POLICY_DELTA_ARGUMENT_REQUIRED", head, self.base, authority, trusted_candidate_policy=blessed)
+        v1 = self.outside / "v1.json"
+        v1.write_bytes(_canonical({
+            "schema_version": 1, "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(provenance_ledger.canonical_profile_bytes(self._profile(self.base))),
+            "candidate_policy_sha256": _sha(blessed.read_bytes()),
+            "allowed_delta": {"include_added": [self.NEW_A], "include_removed": [], "exclude_added": [],
+                              "exclude_removed": [], "rule_changes": []},
+        }))
+        self._refused("POLICY_DELTA_ARGUMENT_REQUIRED", head, self.base, v1)
+
+    def test_a_case_colliding_new_path_is_refused(self) -> None:
+        self.repo.branch("pr-case", self.base)
+        policy = self._profile(self.base)
+        policy["include_paths"] = sorted({*policy["include_paths"], "docs/NOTES.md"})
+        head = self._commit_index_only("publish a case variant of docs/notes.md", {
+            "docs/NOTES.md": b"# shadow\n",
+            verifier.POLICY_PATH: provenance_ledger.canonical_profile_bytes(policy),
+        })
+        self._refused("POLICY_DELTA_PATH_COLLISION", head, self.base, self._v3(self.base, head))
+
+    def test_a_case_colliding_new_path_is_a_finding_even_unpublished(self) -> None:
+        self.repo.branch("pr-case-unpublished", self.base)
+        head = self._commit_index_only("an unpublished case variant", {"docs/Notes.md": b"# shadow\n"})
+        verdict = self._attest(head, self.base, None)
+        self.assertIn(("PATH_CASE_COLLISION", "docs/Notes.md"),
+                      {(item["code"], item["path"]) for item in verdict["findings"] if item["fatal"]})
+
+    def test_dropping_an_exclusion_cannot_leave_a_new_implementation_path_unclassified(self) -> None:
+        """Failing before #1673 step 2: the scope check skipped any path the base policy excluded."""
+        hidden = "tools/hidden_helper.py"
+        base_2 = self._change("exclude-hidden", self.base, {},
+                              mutate=lambda policy: policy.update(exclude_paths=sorted({*policy["exclude_paths"], hidden})))
+        head = self._change("drop-exclusion", base_2, {hidden: b"print('hidden')\n"},
+                            mutate=lambda policy: policy.update(exclude_paths=[p for p in policy["exclude_paths"] if p != hidden]))
+        self._refused("POLICY_DELTA_UNCLASSIFIED_PATH", head, base_2, self._v3(base_2, head))
+        # The same change under a V1 authority that approves exactly that exclusion removal.
+        blessed = self.outside / "blessed-exclusion.json"
+        blessed.write_bytes(provenance_ledger.canonical_profile_bytes(self._profile(head)))
+        v1 = self.outside / "v1-exclusion.json"
+        v1.write_bytes(_canonical({
+            "schema_version": 1, "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(provenance_ledger.canonical_profile_bytes(self._profile(base_2))),
+            "candidate_policy_sha256": _sha(blessed.read_bytes()),
+            "allowed_delta": {"include_added": [], "include_removed": [], "exclude_added": [],
+                              "exclude_removed": [hidden], "rule_changes": []},
+        }))
+        verdict = self._attest(head, base_2, v1, trusted_candidate_policy=blessed)
+        self.assertIn(("TRUSTED_SCOPE_VIOLATION", hidden),
+                      {(item["code"], item["path"]) for item in verdict["findings"] if item["fatal"]})
+
+    def test_policy_delta_key_needs_no_trusted_input_and_fails_on_no_change(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        expected = self._v3(self.base, head).stem.split("-", 1)[1]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = verifier.main(["--repo", str(self.repo.root), "--base", self.base, "--candidate", head,
+                                "--policy-delta-key"])
+        self.assertEqual((rc, out.getvalue().strip()), (0, expected))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = verifier.main(["--repo", str(self.repo.root), "--base", self.base, "--candidate", self.base,
+                                "--policy-delta-key"])
+        self.assertEqual((rc, out.getvalue()), (2, ""))
+        self.assertIn("POLICY_DELTA_EMPTY", err.getvalue())
 
 
 class IndependentRefreshMergeTests(EphemeralGenerationTests):

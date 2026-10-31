@@ -168,7 +168,9 @@ try:
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, claims_ledger_bytes, is_claims_ledger, validate_ledger,
+        claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
+        is_policy_delta_v3, policy_delta_v3_bytes, policy_delta_v3_name, validate_ledger,
+        verify_policy_delta_v3,
     )
     from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from .public_export import build_control_document as _build_control_document
@@ -179,7 +181,9 @@ except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, claims_ledger_bytes, is_claims_ledger, validate_ledger,
+        claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
+        is_policy_delta_v3, policy_delta_v3_bytes, policy_delta_v3_name, validate_ledger,
+        verify_policy_delta_v3,
     )
     from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from public_export import build_control_document as _build_control_document
@@ -1212,6 +1216,35 @@ def _export_field_findings(declared: dict, generated: dict, *, label: str) -> li
     return findings
 
 
+def _excluded_by_both(path: str, trusted_policy, candidate_policy) -> bool:
+    """True when the trusted and the candidate policy both keep ``path`` out of scope."""
+    return (
+        trusted_policy.resolve(path).disposition == "excluded"
+        and candidate_policy.resolve(path).disposition == "excluded"
+    )
+
+
+def _case_collision_findings(candidate_blobs: dict[str, bytes], base_blobs: dict[str, bytes]) -> list[Finding]:
+    """A new path that equals another candidate path under NFC case folding.
+
+    Two such paths are one file on a case-insensitive file system, so publishing the second
+    would silently replace or shadow the first on a contributor's or user's machine.
+    """
+    folded: dict[str, list[str]] = {}
+    for path in candidate_blobs:
+        folded.setdefault(unicodedata.normalize("NFC", path).casefold(), []).append(path)
+    findings = []
+    for path in sorted(set(candidate_blobs) - set(base_blobs)):
+        group = folded[unicodedata.normalize("NFC", path).casefold()]
+        if len(group) > 1:
+            findings.append(Finding(
+                "PATH_CASE_COLLISION", path,
+                f"collides with {sorted(other for other in group if other != path)} under case and "
+                "Unicode folding; they would be one file on a case-insensitive file system",
+            ))
+    return findings
+
+
 def _ephemeral_verdict_findings(
     *,
     candidate_commit: str,
@@ -1274,14 +1307,18 @@ def _ephemeral_verdict_findings(
     for path in sorted(set(candidate_blobs) - set(base_blobs) - candidate_included):
         if not _admission_requires_implementation(path):
             continue
-        if trusted_policy.resolve(path).disposition == "excluded":
+        # Out of scope only while both policies exclude it: a candidate that drops the
+        # trusted exclusion (even with an approved exclude_removed) must not leave a new
+        # implementation path unclassified and unverified.
+        if _excluded_by_both(path, trusted_policy, candidate_policy):
             continue
         findings.append(Finding(
             "TRUSTED_SCOPE_VIOLATION", path,
             "new implementation-bearing path is neither included by the candidate policy nor excluded "
-            "by the trusted policy, so it would enter the tree unverified",
+            "by both the trusted and the candidate policy, so it would enter the tree unverified",
             maintainer_action=True,
         ))
+    findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
 
     legacy_entries: dict[str, dict] | None = None
     legacy_raw = candidate_blobs.get(LEDGER_PATH)
@@ -1500,19 +1537,35 @@ def generate_ephemeral_controls(
     repo = repo.resolve()
     trusted_ledger = _external_input(trusted_ledger, repo=repo, label="trusted detailed ledger")
     baseline_file = _external_input(trusted_baseline, repo=repo, label="trusted public baseline")
-    if (trusted_candidate_policy is None) != (policy_delta_authority is None):
-        raise VerifyError(
-            "POLICY_DELTA_ARGUMENT_REQUIRED",
-            "--trusted-candidate-policy and --policy-delta-authority must be supplied together",
-        )
     blessed_policy_file: Path | None = None
     policy_delta_authority_file: Path | None = None
+    policy_delta_raw: bytes | None = None
+    if policy_delta_authority is not None:
+        policy_delta_authority_file = _external_input(
+            policy_delta_authority, repo=repo, label="policy delta authority",
+        )
+        policy_delta_raw = policy_delta_authority_file.read_bytes()
     if trusted_candidate_policy is not None:
         blessed_policy_file = _external_input(
             trusted_candidate_policy, repo=repo, label="trusted candidate policy",
         )
-        policy_delta_authority_file = _external_input(
-            policy_delta_authority, repo=repo, label="policy delta authority",
+    # A V3 authority (#1673) derives the candidate profile from the base and the approved
+    # change; V1 and V2 bind a separately blessed copy of it.
+    v3_authority = policy_delta_raw is not None and is_policy_delta_v3(policy_delta_raw)
+    if policy_delta_raw is None and blessed_policy_file is not None:
+        raise VerifyError(
+            "POLICY_DELTA_ARGUMENT_REQUIRED",
+            "--trusted-candidate-policy needs --policy-delta-authority",
+        )
+    if v3_authority and blessed_policy_file is not None:
+        raise VerifyError(
+            "POLICY_DELTA_ARGUMENT_REQUIRED",
+            "a V3 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
+        )
+    if policy_delta_raw is not None and not v3_authority and blessed_policy_file is None:
+        raise VerifyError(
+            "POLICY_DELTA_ARGUMENT_REQUIRED",
+            "a V1 or V2 policy delta authority needs --trusted-candidate-policy",
         )
     workdir = workdir.resolve()
     if _path_is_within(workdir, repo):
@@ -1610,6 +1663,25 @@ def generate_ephemeral_controls(
                 f"computed={policy_delta} allowed={allowed_delta}",
             )
         candidate_policy_matches_trusted = True
+    elif v3_authority:
+        assert policy_delta_raw is not None
+        if candidate_policy_raw == base_policy_bytes:
+            raise VerifyError(
+                "POLICY_DELTA_EMPTY",
+                "candidate publication policy equals the trusted base policy; omit policy-delta inputs when unchanged",
+            )
+        try:
+            policy_delta = verify_policy_delta_v3(
+                policy_delta_raw,
+                baseline_policy_bytes=base_policy_bytes,
+                candidate_policy_bytes=candidate_policy_raw,
+                base_blobs=base_blobs,
+                candidate_blobs=candidate_blobs,
+                candidate_policy=candidate_policy,
+            )
+        except RefreshError as error:
+            raise VerifyError(error.code, str(error)) from error
+        candidate_policy_matches_trusted = True
 
     baseline_bytes = baseline_file.read_bytes()
     baseline, baseline_entries = _validate_public_baseline(
@@ -1692,6 +1764,32 @@ def _declares_hashed_ledger(raw: bytes | None) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
     return isinstance(document, dict) and document.get("schema_version") == 1
+
+
+def policy_delta_key(*, repo: Path, base_rev: str, candidate_rev: str) -> str:
+    """The file name of the V3 authority that would approve this candidate's profile change.
+
+    The attestation workflows fetch ``docs/provenance/policy-deltas-v3/<key>.json`` from the
+    private authority with it. The key only selects: verification derives the document
+    again and requires the fetched bytes to equal it exactly.
+    """
+    repo = repo.resolve()
+    base_blobs = read_tree(repo, _rev_tree(repo, _rev_commit(repo, base_rev)))
+    candidate_blobs = read_tree(repo, _rev_tree(repo, _rev_commit(repo, candidate_rev)))
+    baseline_raw = base_blobs.get(POLICY_PATH)
+    candidate_raw = candidate_blobs.get(POLICY_PATH)
+    if baseline_raw is None or candidate_raw is None:
+        raise VerifyError("POLICY_MISSING", f"the base or the candidate has no {POLICY_PATH}")
+    baseline = strict_json(baseline_raw, code="TRUSTED_POLICY_INVALID", label="trusted policy")
+    candidate = strict_json(candidate_raw, code="CANDIDATE_POLICY_INVALID", label="candidate policy")
+    try:
+        document = derive_policy_delta_v3(
+            baseline, candidate,
+            lambda path: hashlib.sha256(candidate_blobs[path]).hexdigest() if path in candidate_blobs else None,
+        )
+    except RefreshError as error:
+        raise VerifyError(error.code, str(error)) from error
+    return policy_delta_v3_name(policy_delta_v3_bytes(document))
 
 
 def verify_ephemeral(
@@ -2139,17 +2237,19 @@ def verify(
         ))
     # A new implementation-bearing file must enter the universe. It may be
     # legitimately out only if the TRUSTED policy's own exclusion rules cover
-    # it -- the candidate cannot except itself.
+    # it -- the candidate cannot except itself -- and the candidate policy still
+    # excludes it too, so a dropped exclusion cannot leave it unclassified.
     for path in sorted(set(candidate_blobs) - set(base_blobs) - candidate_included):
         if not _admission_requires_implementation(path):
             continue
-        if trusted_policy.resolve(path).disposition == "excluded":
+        if _excluded_by_both(path, trusted_policy, candidate_policy):
             continue
         findings.append(Finding(
             "TRUSTED_SCOPE_VIOLATION", path,
             "new implementation-bearing path is neither included by the candidate policy nor "
-            "excluded by the trusted policy, so it would enter the tree unverified",
+            "excluded by both the trusted and the candidate policy, so it would enter the tree unverified",
         ))
+    findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
 
     # Everything the gate must reason about: never narrower than the trusted
     # universe, widened by whatever the candidate additionally publishes.
@@ -2592,8 +2692,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--policy-delta-authority", type=Path, default=None,
         help=(
-            "ephemeral mode: external authority binding the baseline/candidate policy digests and exact "
-            "allowed semantic delta; must be supplied with --trusted-candidate-policy"
+            "ephemeral mode: external policy-delta authority; a V3 authority alone (it derives the "
+            "candidate profile), a V1/V2 authority with --trusted-candidate-policy"
+        ),
+    )
+    parser.add_argument(
+        "--policy-delta-key", action="store_true",
+        help=(
+            "print the file name (sha256) of the V3 policy-delta authority that would approve the "
+            "profile change from --base to --candidate, and exit; needs no trusted input"
         ),
     )
     parser.add_argument("--workdir", type=Path, default=None,
@@ -2637,6 +2744,17 @@ def main(argv: list[str] | None = None) -> int:
     # for --explain-verdict, which reads an existing verdict rather than
     # producing one. Enforced here so the explanation mode stays a single
     # command with no inputs a contributor does not have.
+    if args.policy_delta_key:
+        # Selection only: reads the two profiles and the candidate's blobs from Git objects.
+        if args.base is None or args.candidate is None:
+            parser.error("--policy-delta-key needs --base and --candidate")
+        try:
+            print(policy_delta_key(repo=args.repo, base_rev=args.base, candidate_rev=args.candidate))
+        except VerifyError as error:
+            print(f"trusted provenance attestation: {error.code}: {error}", file=sys.stderr)
+            return 2
+        return 0
+
     for name, value in (("--base", args.base), ("--trusted-ledger", args.trusted_ledger)):
         if value is None:
             parser.error(f"the following arguments are required: {name}")

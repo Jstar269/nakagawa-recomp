@@ -21,8 +21,15 @@ or misordered step failed with its own code (``CANDIDATE_TREE_STALE``,
         --approval-basis "Owner decision of <date>: ..." --private-repo <authority checkout>
 
 ``--policy-delta`` issues only the policy delta for a profile change that adds
-no path: removed paths, exclude-list changes, and rule changes (a V2 authority
-binds each changed field's exact before and after values).
+no path: removed paths, exclude-list changes, and rule changes (bound to each
+changed field's exact before and after values).
+
+Every policy delta it writes is a V3 authority (#1673): it records only what the
+pull request changes in the profile -- each added path with the SHA-256 of its
+admitted bytes, the removed paths, the exclude-list changes and the rule changes
+-- under ``docs/provenance/policy-deltas-v3/<sha256 of its bytes>.json``. It is
+not bound to the base profile's bytes, so it stays valid when another
+path-adding pull request lands first, and any landing order works.
 
 The command does the mechanical parts and nothing else:
 
@@ -32,25 +39,22 @@ The command does the mechanical parts and nothing else:
    already exists in the private ``IMPLEMENTATION_PROVENANCE.json`` -- this
    command never writes one;
 3. writes the private records under ``docs/provenance/`` in the authority
-   checkout: each admission has its own document and nested policy delta,
-   keyed by candidate and baseline profile SHA-256, then commits only those
-   files locally. ``--batch`` accepts two or more independent PR entries,
-   writes one admission per PR, and pre-issues every possible landing-order
-   delta for batches up to ``--any-order-limit`` (default 6). Larger batches
-   get a chain for the listed order, with no batch-size cap;
+   checkout: each admission has its own document and V3 policy delta, then
+   commits only those files locally. ``--batch`` accepts two or more
+   independent PR entries and writes one admission and one V3 delta per PR,
+   valid in any landing order, with no batch-size cap;
 4. builds a clean candidate commit holding only the base, the new paths and
    their profile entries, runs ``admit-new-reviewed`` on it, and commits the
    generated controls on a local ``admit/<slug>-<date>`` branch;
 5. prints exactly what is left: the private push, the merge and the refresh.
 
-``--rekey`` is for a pull request whose paths were already admitted outside a
-batch but whose base moved because another path-adding pull request landed
+``--rekey`` is for a pull request admitted before V3 deltas existed, whose
+nested V1/V2 delta expired because another path-adding pull request landed
 first. It reuses the admission already recorded for exactly these paths and
-bytes and records no new decision. ``--batch-resume`` reissues a listed-order
-chain for remaining entries from their recorded admissions after earlier
-entries landed. PRs admitted together in an all-order batch may land in any
-order; run ``--merge-profile`` during the merge to write the three-way merge
-of the path lists before staging the profile.
+bytes, records no new decision, and writes the V3 delta, so no later landing
+needs another re-key. ``--batch-resume`` does the same for a list of entries.
+Run ``--merge-profile`` during a merge to write the three-way merge of the path
+lists before staging the profile.
 
 It pushes nothing unless ``--push`` is given, and then only the private
 ``main``. The approval basis is the human decision and is taken verbatim from
@@ -85,7 +89,9 @@ POLICY = "assets/public_source_profile.json"
 EXPORT = "PUBLIC_EXPORT.json"
 TRUSTED_LEDGER = "docs/provenance/IMPLEMENTATION_PROVENANCE.json"
 ADMISSIONS = "docs/provenance/admissions"
+#: Nested and flat V1/V2 deltas from before #1673; the attestation still reads them, nothing writes them.
 POLICY_DELTAS = "docs/provenance/policy-deltas"
+POLICY_DELTAS_V3 = provenance_ledger.POLICY_DELTA_V3_DIR
 
 #: Variables that would point a Git command at a different repository or index.
 #: Identity and configuration are kept: commits are the operator's own.
@@ -122,14 +128,11 @@ def _canonical(document: dict) -> bytes:
 
 
 def _canonical_profile_bytes(document: dict) -> bytes:
-    """Serialize a profile with sorted path lists, two-space JSON and one final LF."""
-    canonical = dict(document)
-    for field in ("include_paths", "exclude_paths"):
-        paths = canonical.get(field)
-        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
-            raise AdmitError("POLICY_PROFILE_INVALID", f"profile {field} must be a list of strings")
-        canonical[field] = sorted(set(paths))
-    return (json.dumps(canonical, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    """Serialize a profile in the one canonical form (``provenance_ledger.canonical_profile_bytes``)."""
+    try:
+        return provenance_ledger.canonical_profile_bytes(document)
+    except ValueError as error:
+        raise AdmitError("POLICY_PROFILE_INVALID", str(error)) from error
 
 
 def _candidate_policy(base_policy: bytes, added_paths: set[str]) -> tuple[bytes, dict]:
@@ -149,11 +152,14 @@ def _candidate_policy(base_policy: bytes, added_paths: set[str]) -> tuple[bytes,
     return raw, candidate
 
 
-def policy_delta_authority(baseline_policy: bytes, candidate_policy: bytes) -> tuple[str, bytes, dict]:
-    """Return ``(candidate sha256, authority bytes, derived delta)`` for the exact delta between two profiles.
+def policy_delta_authority(
+    baseline_policy: bytes, candidate_policy: bytes, digests: dict[str, str] | None = None,
+) -> tuple[str, bytes, dict]:
+    """Return ``(record path, authority bytes, derived delta)`` for the V3 authority of a profile change.
 
-    A path-only delta is a V1 authority. A delta that also changes another profile field is V2: each
-    rule change names its field and the digests of its exact baseline and candidate values.
+    ``digests`` maps each added path to the SHA-256 of its admitted bytes. The record path is
+    ``policy-deltas-v3/<sha256 of the bytes>.json``, the name the attestation derives from the
+    same two profiles and the candidate's blobs.
     """
     try:
         baseline_document = json.loads(baseline_policy.decode("utf-8"))
@@ -161,37 +167,27 @@ def policy_delta_authority(baseline_policy: bytes, candidate_policy: bytes) -> t
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AdmitError("POLICY_PROFILE_INVALID", f"cannot read policy JSON: {error}") from error
     delta = provenance_ledger._classify_policy_delta(baseline_document, candidate_document)
-    allowed: dict = dict(delta)
-    schema_version = provenance_ledger.POLICY_DELTA_SCHEMA_VERSION
-    if delta["rule_changes"]:
-        schema_version = provenance_ledger.POLICY_DELTA_RULE_SCHEMA_VERSION
-        allowed["rule_changes"] = [
-            {
-                "key": key,
-                "baseline_sha256": provenance_ledger.policy_rule_value_sha256(baseline_document, key),
-                "candidate_sha256": provenance_ledger.policy_rule_value_sha256(candidate_document, key),
-            }
-            for key in delta["rule_changes"]
-        ]
-    candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
-    authority = _canonical({
-        "allowed_delta": allowed,
-        "baseline_policy_sha256": hashlib.sha256(baseline_policy).hexdigest(),
-        "candidate_policy_sha256": candidate_sha,
-        "kind": provenance_ledger.POLICY_DELTA_KIND,
-        "schema_version": schema_version,
-    })
-    return candidate_sha, authority, delta
+    try:
+        document = provenance_ledger.derive_policy_delta_v3(
+            baseline_document, candidate_document, (digests or {}).get,
+        )
+    except RefreshError as error:
+        raise AdmitError(error.code, str(error)) from error
+    authority = provenance_ledger.policy_delta_v3_bytes(document)
+    record = f"{POLICY_DELTAS_V3}/{provenance_ledger.policy_delta_v3_name(authority)}.json"
+    return record, authority, delta
 
 
-def _policy_delta_records(baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str]) -> tuple[str, bytes]:
-    """Return the candidate digest and exact authority for one nested policy delta."""
-    candidate_sha, authority, delta = policy_delta_authority(baseline_policy, candidate_policy)
+def _policy_delta_records(
+    baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str], digests: dict[str, str],
+) -> tuple[str, bytes]:
+    """Return the record path and exact bytes of the V3 delta that adds exactly ``added_paths``."""
+    record, authority, delta = policy_delta_authority(baseline_policy, candidate_policy, digests)
     if delta["include_added"] != sorted(added_paths) or any(
         delta[key] for key in ("include_removed", "exclude_added", "exclude_removed", "rule_changes")
     ):
         raise AdmitError("POLICY_DELTA_UNEXPECTED", f"the derived policy delta is not exactly the new paths: {delta}")
-    return candidate_sha, authority
+    return record, authority
 
 
 def _blob(repo: Path, rev: str, path: str) -> tuple[str, str]:
@@ -313,9 +309,9 @@ def build_records(
     statements: list[dict],
     approval_basis: str,
 ) -> tuple[bytes, str, bytes, bytes]:
-    """Return ``(candidate policy, its sha256, delta authority, admission)`` bytes."""
+    """Return ``(candidate policy, V3 record path, V3 authority, admission)``."""
     candidate_policy, _candidate_document = _candidate_policy(base_policy, set(paths))
-    candidate_sha, authority = _policy_delta_records(base_policy, candidate_policy, paths)
+    delta_record, authority = _policy_delta_records(base_policy, candidate_policy, paths, digests)
     admission = _canonical({
         "approval_basis": approval_basis,
         "kind": provenance_ledger.ADMISSION_KIND,
@@ -325,7 +321,7 @@ def build_records(
         ],
         "schema_version": provenance_ledger.ADMISSION_SCHEMA_VERSION,
     })
-    return candidate_policy, candidate_sha, authority, admission
+    return candidate_policy, delta_record, authority, admission
 
 
 def _control_export(candidate: Path, policy_bytes: bytes) -> bytes:
@@ -477,19 +473,20 @@ def _prepare_admission(
             for statement in recorded["reviewed_new_paths"]
         ]
         admit_branch = f"admit/{slug}-{date}-{base[:8]}"
-    candidate_policy, candidate_sha, authority_bytes, admission_bytes = build_records(
+    candidate_policy, delta_record, authority_bytes, admission_bytes = build_records(
         base_policy=base_policy, paths=paths, digests=digests,
         statements=statements, approval_basis=approval_basis,
     )
     if rekey:
         admission_bytes = admission_path.read_bytes()
-    baseline_sha = hashlib.sha256(base_policy).hexdigest()
+    candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
     admission_rel = admission_path.relative_to(authority_root).as_posix()
-    delta_dir = f"{POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
+    # One V3 delta, valid on any base where this change is still exactly the approved one
+    # (#1673). No nested V1/V2 record: one would let an edited new file pass on the old,
+    # byte-free binding when the V3 name stopped matching.
     record_bytes = {
         admission_rel: admission_bytes,
-        f"{delta_dir}/candidate-policy.json": candidate_policy,
-        f"{delta_dir}/policy-delta-authority.json": authority_bytes,
+        delta_record: authority_bytes,
     }
     if _git(pr, "branch", "--list", admit_branch):
         raise AdmitError("ADMIT_BRANCH_EXISTS", f"local branch {admit_branch} already exists")
@@ -543,6 +540,7 @@ def _prepare_admission(
         "admission_commit": admission_commit,
         "admit_branch": admit_branch,
         "candidate_policy_sha256": candidate_sha,
+        "policy_delta_record": delta_record,
         "records": sorted(record_bytes),
         "record_bytes": record_bytes,
         "private_commit": None,
@@ -609,7 +607,7 @@ def admit(
     rekey: bool = False,
     scratch_root: Path | None = None,
 ) -> dict:
-    """Admit ``paths`` and write a nested candidate/baseline policy delta."""
+    """Admit ``paths`` and write their V3 policy delta."""
     authority_root, authority_ledger, records = _authority_inputs(private_repo)
     resolved_date = date or datetime.date.today().isoformat()
     plan = _prepare_admission(
@@ -619,16 +617,13 @@ def admit(
         rekey=rekey, scratch_root=scratch_root,
     )
     commit_kind = "re-key" if rekey else "admit"
-    base_policy = _git(plan["pr_worktree"], "cat-file", "blob", f"{plan['base']}:{POLICY}")
-    baseline_sha = hashlib.sha256(base_policy).hexdigest()
     record_paths, private_commit, pushed = _write_authority_commit(
         authority_root=authority_root,
         records=plan["record_bytes"],
         message=(
             f"provenance: {commit_kind} {plan['slug']} ({resolved_date})\n\n"
-            f"Policy delta for candidate profile {plan['candidate_policy_sha256'][:8]} "
-            f"(baseline {baseline_sha[:8]}); "
-            f"admission binds {len(plan['paths'])} new path(s) to their exact SHA-256."
+            f"V3 policy delta {Path(plan['policy_delta_record']).stem[:8]}; "
+            f"admission and delta bind {len(plan['paths'])} new path(s) to their exact SHA-256."
         ),
         assisted_by=assisted_by, push=push,
     )
@@ -701,11 +696,14 @@ def _batch_entries(document: object, *, resume: bool = False) -> list[dict]:
 def admit_batch(
     *, batch: list[dict], private_repo: Path, base: str | None = None, date: str | None = None,
     assisted_by: str | None = None, push: bool = False, scratch_root: Path | None = None,
-    any_order_limit: int = 6, resume: bool = False,
+    resume: bool = False,
 ) -> dict:
-    """Admit an uncapped batch or re-issue its remaining listed-order chain."""
-    if not isinstance(any_order_limit, int) or any_order_limit < 0:
-        raise AdmitError("ADMIT_ARGUMENT_INVALID", "--any-order-limit must be a non-negative integer")
+    """Admit independent pull requests together, one admission and one V3 delta each.
+
+    Each V3 delta records only its own pull request's paths, so the entries may land in
+    any order with no re-key. ``resume`` re-issues the deltas from the recorded admissions
+    (for entries admitted before V3 deltas existed).
+    """
     entries = _batch_entries(batch, resume=resume)
     authority_root, authority_ledger, ledger_records = _authority_inputs(private_repo)
     resolved_date = date or datetime.date.today().isoformat()
@@ -725,58 +723,20 @@ def admit_batch(
                 assisted_by=assisted_by, rekey=resume, scratch_root=scratch_root,
             ))
 
-        base_policy = _git(first_pr, "cat-file", "blob", f"{shared_base}:{POLICY}")
-        base_path_sets = [set(plan["paths"]) for plan in plans]
         all_record_bytes: dict[str, bytes] = {}
         for plan in plans:
             for path, raw in plan["record_bytes"].items():
-                # The subset loop below writes every delta with the shared canonical serializer.
-                if path.startswith(f"{POLICY_DELTAS}/"):
-                    continue
                 if path in all_record_bytes and all_record_bytes[path] != raw:
                     raise AdmitError("BATCH_RECORD_CONFLICT", f"batch records disagree at {path}")
                 all_record_bytes[path] = raw
-
-        deltas: list[dict] = []
-
-        def issue_delta(selected: list[int], candidate_index: int) -> None:
-            subset_paths = set().union(*(base_path_sets[i] for i in selected)) if selected else set()
-            baseline_policy = base_policy if not selected else _candidate_policy(base_policy, subset_paths)[0]
-            candidate_paths = sorted(base_path_sets[candidate_index])
-            candidate_policy, _ = _candidate_policy(base_policy, subset_paths | base_path_sets[candidate_index])
-            candidate_sha, authority_bytes = _policy_delta_records(baseline_policy, candidate_policy, candidate_paths)
-            baseline_sha = hashlib.sha256(baseline_policy).hexdigest()
-            delta_dir = f"{POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
-            for path, raw in (
-                (f"{delta_dir}/candidate-policy.json", candidate_policy),
-                (f"{delta_dir}/policy-delta-authority.json", authority_bytes),
-            ):
-                if path in all_record_bytes and all_record_bytes[path] != raw:
-                    raise AdmitError("BATCH_RECORD_CONFLICT", f"batch records disagree at {path}")
-                all_record_bytes[path] = raw
-            deltas.append({
-                "entry_slug": plans[candidate_index]["slug"],
-                "subset_slugs": [plans[i]["slug"] for i in selected],
-                "paths": candidate_paths,
-                "baseline_policy_sha256": baseline_sha,
-                "candidate_policy_sha256": candidate_sha,
-                "records": [f"{delta_dir}/candidate-policy.json", f"{delta_dir}/policy-delta-authority.json"],
-            })
-
-        if resume or len(plans) > any_order_limit:
-            for candidate_index in range(len(plans)):
-                issue_delta(list(range(candidate_index)), candidate_index)
-        else:
-            for subset_mask in range(1 << len(plans)):
-                selected = [i for i in range(len(plans)) if subset_mask & (1 << i)]
-                for candidate_index in range(len(plans)):
-                    if candidate_index not in selected:
-                        issue_delta(selected, candidate_index)
-
-        delta_count = len(deltas)
+        deltas = [
+            {"entry_slug": plan["slug"], "paths": plan["paths"], "record": plan["policy_delta_record"]}
+            for plan in plans
+        ]
+        verb = "re-issue V3 deltas for" if resume else "batch admit"
         message = (
-            f"provenance: batch admit {len(plans)} pull requests ({resolved_date})\n\n"
-            f"Pre-issue {delta_count} exact policy deltas for every subset and next landing."
+            f"provenance: {verb} {len(plans)} pull requests ({resolved_date})\n\n"
+            f"One V3 policy delta per pull request, valid in any landing order."
         )
 
         _record_paths, private_commit, pushed = _write_authority_commit(
@@ -803,7 +763,7 @@ def admit_batch(
         "private_commit": private_commit,
         "pushed": pushed,
         "records": sorted(all_record_bytes),
-        "delta_count": delta_count,
+        "delta_count": len(deltas),
         "deltas": deltas,
     }
 
@@ -817,13 +777,14 @@ def issue_policy_delta(
     assisted_by: str | None = None,
     push: bool = False,
 ) -> dict:
-    """Write the policy delta for a pull request whose profile change adds no path.
+    """Write the V3 policy delta for a pull request whose profile change adds no path.
 
-    This covers removed paths, exclude-list changes and rule changes (V2). The
-    baseline is the profile at ``base`` (default: the merge-base of HEAD and
-    origin/main) and the candidate is the committed profile at HEAD, so the
-    records match what hosted attestation reads. A delta that adds a path needs
-    an admission with trusted records instead, so it is refused here.
+    This covers removed paths, exclude-list changes and rule changes. The change is
+    read from the profile at ``base`` (default: the merge-base of HEAD and
+    origin/main) to the committed profile at HEAD. The V3 delta stays valid on a
+    later base as long as each removed or excluded path's precondition and each
+    changed rule field's earlier value still hold there. A delta that adds a path
+    needs an admission with trusted records instead, so it is refused here.
     """
     if not approval_basis or not approval_basis.strip():
         raise AdmitError("APPROVAL_BASIS_REQUIRED", "--policy-delta records the human decision; pass --approval-basis")
@@ -841,25 +802,25 @@ def issue_policy_delta(
     if canonical != candidate_policy:
         raise AdmitError("POLICY_PROFILE_NOT_CANONICAL",
                          f"{POLICY} at HEAD is not in canonical form; rewrite it with sorted path lists first")
-    candidate_sha, authority, delta = policy_delta_authority(baseline_policy, candidate_policy)
+    delta = provenance_ledger._classify_policy_delta(
+        json.loads(baseline_policy.decode("utf-8")), json.loads(candidate_policy.decode("utf-8")))
     if not any(delta.values()):
         raise AdmitError("POLICY_DELTA_EMPTY", f"{POLICY} at HEAD equals the base profile; no delta is needed")
     if delta["include_added"]:
         raise AdmitError("POLICY_DELTA_ADDS_PATHS",
                          "the delta adds public paths; admit them (with their trusted records) instead: "
                          + ", ".join(delta["include_added"]))
+    record, authority, delta = policy_delta_authority(baseline_policy, candidate_policy)
+    candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
     baseline_sha = hashlib.sha256(baseline_policy).hexdigest()
-    delta_dir = f"{POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
     summary = "; ".join(
         f"{key} {', '.join(values)}" for key, values in delta.items() if values)
     record_paths, private_commit, pushed = _write_authority_commit(
         authority_root=authority_root,
-        records={
-            f"{delta_dir}/candidate-policy.json": candidate_policy,
-            f"{delta_dir}/policy-delta-authority.json": authority,
-        },
+        records={record: authority},
         message=(
-            f"provenance: policy delta for candidate profile {candidate_sha[:8]} (baseline {baseline_sha[:8]})\n\n"
+            f"provenance: V3 policy delta {Path(record).stem[:8]} (from profile {baseline_sha[:8]} "
+            f"to {candidate_sha[:8]})\n\n"
             f"{summary}.\n\nApproval basis: {approval_basis.strip()}"
         ),
         assisted_by=assisted_by, push=push,
@@ -989,18 +950,17 @@ def main(argv: list[str] | None = None) -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--batch", type=Path, help="JSON list of two or more independent pull-request admissions")
     modes.add_argument("--batch-resume", type=Path,
-                       help="JSON list of remaining entries; re-issue their chain from recorded admissions")
+                       help="JSON list of entries admitted before V3; re-issue their V3 deltas from recorded "
+                            "admissions")
     modes.add_argument("--merge-profile", type=Path, metavar="WORKTREE",
                        help="write the three-way merge of the profile paths during an active merge")
     modes.add_argument("--policy-delta", type=Path, metavar="WORKTREE",
                        help="issue the policy delta for a profile change that adds no path "
                             "(removed paths, exclude changes, rule changes)")
-    parser.add_argument("--any-order-limit", type=int, default=6,
-                        help="pre-issue every landing order up to this batch size (default: 6)")
     parser.add_argument("--approval-basis", help="the human decision, recorded verbatim (not with --rekey)")
     parser.add_argument(
         "--rekey", action="store_true",
-        help="re-issue the delta and admission commit for a new base from the admission already recorded",
+        help="write the V3 delta and a new admission commit from the admission already recorded",
     )
     parser.add_argument(
         "--private-repo", type=Path, default=os.environ.get("NK_PRIVATE_AUTHORITY"),
@@ -1047,7 +1007,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {record}")
             if not result["pushed"]:
                 print(f'\nLeft to do: git -C "{result["authority_root"]}" push origin main')
-            print("After another profile change lands on main, merge it and issue the delta again for the new base.")
+            print("The V3 delta stays valid when unrelated profile changes land; re-issue it only if one of its "
+                  "removed or excluded paths, or a changed rule field, was changed on main too.")
             return 0
 
         if args.batch is not None or args.batch_resume is not None:
@@ -1061,13 +1022,11 @@ def main(argv: list[str] | None = None) -> int:
             assert batch_path is not None
             result = admit_batch(
                 batch=_read_batch_file(batch_path), private_repo=args.private_repo, base=args.base,
-                date=args.date, assisted_by=args.assisted_by, push=args.push,
-                any_order_limit=args.any_order_limit, resume=resuming,
+                date=args.date, assisted_by=args.assisted_by, push=args.push, resume=resuming,
             )
-            action = "re-issued the remaining chain for" if resuming else "admitted"
-            detail = "remaining listed-order chain" if resuming else "subset/next-landing policy deltas"
+            action = "re-issued V3 deltas for" if resuming else "admitted"
             print(f"admit paths: {action} {len(result['entries'])} pull requests on shared base {result['base']}")
-            print(f"  pre-issued {result['delta_count']} {detail}")
+            print(f"  wrote {result['delta_count']} V3 policy deltas, valid in any landing order")
             print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
                   f"{result['private_commit'][:12]}):")
             for record in result["records"]:
@@ -1110,6 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
     for statement in result["statements"]:
         print(f"  {statement['path']}: {statement['classification']}")
     print(f"  candidate profile sha256 {result['candidate_policy_sha256']}")
+    print(f"  V3 policy delta {result['policy_delta_record']}")
     print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
           f"{result['private_commit'][:12]}):")
     for record in result["records"]:

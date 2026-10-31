@@ -7,7 +7,8 @@
 The synthetic cases build a real public repository and a real stand-in for the
 private authority repository, then run the whole admission, including the
 real ``admit-new-reviewed``.  ``RecompJsonRegressionTest`` replays the
-2026-10-22 ``.recomp.json`` admission and requires byte-identical records; it
+2026-10-22 ``.recomp.json`` admission and requires the same admission record
+and the same tree, apart from the canonical profile and the claims ledger; it
 needs the private authority checkout (``NK_PRIVATE_AUTHORITY``) and the public
 commits of that admission, and is skipped (NOT_RUN) without them.
 """
@@ -31,6 +32,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import admit_paths  # noqa: E402
 from admit_paths import AdmitError  # noqa: E402
+import provenance_attest_verify as verifier  # noqa: E402
 import provenance_ledger  # noqa: E402
 
 #: Commits run by the tool need an identity, and a host's own Git configuration
@@ -80,6 +82,27 @@ def write(root: Path, relative: str, content: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def assert_v3_delta(
+    testcase: unittest.TestCase, fixture: "_Fixture", record: str, *,
+    baseline: bytes, candidate: bytes, files: dict[str, bytes],
+) -> dict:
+    """The stored V3 delta is named after its bytes and approves exactly ``baseline`` -> ``candidate``.
+
+    ``files`` are the candidate's new files; the delta binds each one's SHA-256.
+    """
+    testcase.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V3}/"), record)
+    raw = (fixture.authority / record).read_bytes()
+    testcase.assertEqual(Path(record).stem, hashlib.sha256(raw).hexdigest())
+    with tempfile.TemporaryDirectory() as scratch:
+        policy_file = Path(scratch) / "candidate-policy.json"
+        policy_file.write_bytes(candidate)
+        candidate_policy = admit_paths.load_policy(policy_file)
+    return provenance_ledger.verify_policy_delta_v3(
+        raw, baseline_policy_bytes=baseline, candidate_policy_bytes=candidate,
+        base_blobs={}, candidate_blobs=files, candidate_policy=candidate_policy,
+    )
 
 
 class _Fixture:
@@ -219,15 +242,24 @@ class AdmitPathsTest(unittest.TestCase):
         self.assertEqual(raw, admit_paths._canonical(admission), "records are sorted-key, LF-terminated JSON")
 
         base_policy = git(fixture.pr, "show", f"{fixture.base}:assets/public_source_profile.json") + "\n"
-        delta_dir = Path(result["records"][1]).parent
-        candidate_policy = (fixture.authority / delta_dir / "candidate-policy.json").read_bytes()
-        self.assertEqual(delta_dir.parent.name, hashlib.sha256(candidate_policy).hexdigest())
-        self.assertEqual(delta_dir.name, hashlib.sha256(base_policy.encode()).hexdigest())
-        delta = fixture.record(f"{delta_dir.as_posix()}/policy-delta-authority.json")
-        self.assertEqual(delta["baseline_policy_sha256"], hashlib.sha256(base_policy.encode()).hexdigest())
-        self.assertEqual(delta["candidate_policy_sha256"], delta_dir.parent.name)
-        self.assertEqual(delta["allowed_delta"]["include_added"], ["docs/new-page.md"])
-        self.assertEqual(delta["allowed_delta"]["rule_changes"], [])
+        candidate_policy, _ = admit_paths._candidate_policy(base_policy.encode(), {"docs/new-page.md"})
+        # One V3 delta and no nested V1/V2 record (#1673): it binds the new file's bytes.
+        record = result["records"][1]
+        self.assertEqual(result["policy_delta_record"], record)
+        self.assertEqual(len(result["records"]), 2)
+        self.assertEqual(fixture.record(record), {
+            "exclude_added": [], "exclude_removed": [],
+            "include_added": [{"path": "docs/new-page.md", "sha256": digest}], "include_removed": [],
+            "kind": "policy-delta-authority", "rule_changes": [], "schema_version": 3,
+        })
+        allowed = assert_v3_delta(self, fixture, record, baseline=base_policy.encode(), candidate=candidate_policy,
+                                  files={"docs/new-page.md": b"# New page\n"})
+        self.assertEqual(allowed["include_added"], ["docs/new-page.md"])
+        # The name the attestation derives from the admission commit is the stored file's name.
+        self.assertEqual(
+            verifier.policy_delta_key(repo=fixture.pr, base_rev=fixture.base, candidate_rev=result["admission_commit"]),
+            Path(record).stem,
+        )
 
         # The admission commit is the base plus the path, its profile entry and
         # regenerated controls -- nothing else from the pull request.
@@ -253,7 +285,7 @@ class AdmitPathsTest(unittest.TestCase):
         self.assertIn("Assisted-by: Test Tool (test-model)", git(fixture.pr, "log", "-1", "--format=%B", branch))
         self.assertNotIn("Signed-off-by", git(fixture.pr, "log", "-2", "--format=%B", branch))
 
-        # Only the three records were committed in the authority checkout; the
+        # Only the two records were committed in the authority checkout; the
         # unrelated edit stays uncommitted and nothing was pushed.
         self.assertEqual(sorted(git(fixture.authority, "show", "--name-only", "--format=", "HEAD").splitlines()),
                          sorted(result["records"]))
@@ -370,7 +402,7 @@ class AdmitPathsTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "ADMISSION_RECORD_CONFLICT")
 
     def test_rekey_after_another_admission_lands(self) -> None:
-        """The serialisation case: pull request A lands first, B re-keys without a new decision."""
+        """A lands first. B's V3 delta still holds on the new main; a pre-V3 admission re-keys once."""
         fixture = _Fixture(self)
         fixture.add("docs/b.md", "# B\n")
         first = fixture.admit("docs/b.md")
@@ -390,21 +422,33 @@ class AdmitPathsTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "REKEY_BASIS_REJECTED")
         admission = fixture.authority / first["records"][0]
         recorded = admission.read_bytes()
+        private_before = git(fixture.authority, "rev-parse", "HEAD")
+
+        # B's V3 delta from before A landed already approves B's change on the new main.
+        main_policy = (git(fixture.pr, "show", f"{new_main}:assets/public_source_profile.json") + "\n").encode()
+        union_policy, _ = admit_paths._candidate_policy(main_policy, {"docs/b.md"})
+        assert_v3_delta(self, fixture, first["policy_delta_record"], baseline=main_policy, candidate=union_policy,
+                        files={"docs/b.md": b"# B\n"})
 
         result = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
 
         self.assertEqual(result["base"], new_main)
-        self.assertEqual(result["records"][0], first["records"][0], "the recorded decision is reused")
+        self.assertEqual(result["records"], first["records"], "the same decision and the same V3 delta")
         self.assertEqual(admission.read_bytes(), recorded)
+        self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before, "nothing new to record")
         self.assertEqual(len(list((fixture.authority / admit_paths.ADMISSIONS).iterdir())), 2)
         self.assertNotEqual(result["candidate_policy_sha256"], first["candidate_policy_sha256"])
-        delta = fixture.record(result["records"][2])
-        main_policy = git(fixture.pr, "show", f"{new_main}:assets/public_source_profile.json") + "\n"
-        self.assertEqual(delta["baseline_policy_sha256"], hashlib.sha256(main_policy.encode()).hexdigest())
-        self.assertEqual(delta["allowed_delta"]["include_added"], ["docs/b.md"])
         self.assertEqual(result["admit_branch"], f"admit/new-pages-2026-10-22-{new_main[:8]}")
-        self.assertIn("re-key", git(fixture.authority, "log", "-1", "--format=%s"))
         git(fixture.pr, "merge", "-q", "--no-edit", result["admit_branch"])
+
+        # An admission recorded before V3 deltas existed has no V3 file: the re-key writes it, once.
+        git(fixture.authority, "rm", "-q", first["policy_delta_record"])
+        git(fixture.authority, "commit", "-qm", "an admission from before V3 deltas")
+        git(fixture.pr, "branch", "-q", "-D", result["admit_branch"])
+        rekeyed = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
+        self.assertEqual(rekeyed["policy_delta_record"], first["policy_delta_record"])
+        self.assertTrue((fixture.authority / rekeyed["policy_delta_record"]).is_file())
+        self.assertIn("re-key", git(fixture.authority, "log", "-1", "--format=%s"))
 
         git(fixture.pr, "checkout", "-q", "-b", "docs/c-page-20261022", new_main)
         fixture.add("docs/c.md", "# C\n")
@@ -482,26 +526,15 @@ class BatchAdmitPathsTest(unittest.TestCase):
         return entry
 
     def verify_delta(
-        self, fixture: _Fixture, *, baseline: bytes, candidate: bytes, paths: list[str], record_dir: str,
+        self, fixture: _Fixture, *, baseline: bytes, candidate: bytes, path: str, record: str,
     ) -> None:
-        authority_path = fixture.authority / Path(*record_dir.split("/")) / "policy-delta-authority.json"
-        allowed = admit_paths.provenance_ledger._read_policy_delta_authority(
-            authority_path,
-            candidate_root=fixture.pr,
-            baseline_policy_bytes=baseline,
-            candidate_policy_bytes=candidate,
-        )
-        expected = admit_paths.provenance_ledger._classify_policy_delta(
-            json.loads(baseline.decode("utf-8")), json.loads(candidate.decode("utf-8")),
-        )
-        self.assertEqual(allowed, expected)
-        self.assertEqual(allowed["include_added"], sorted(paths))
-        self.assertEqual(allowed["include_removed"], [])
-        self.assertEqual(allowed["exclude_added"], [])
-        self.assertEqual(allowed["exclude_removed"], [])
-        self.assertEqual(allowed["rule_changes"], [])
+        """The entry's V3 delta approves exactly its own path, on the given base."""
+        allowed = assert_v3_delta(self, fixture, record, baseline=baseline, candidate=candidate,
+                                  files={path: f"# {Path(path).stem}\n".encode()})
+        self.assertEqual(allowed, {"exclude_added": [], "exclude_removed": [], "include_added": [path],
+                                   "include_removed": [], "rule_changes": []})
 
-    def test_two_and_three_entry_batches_cover_every_subset_transition(self) -> None:
+    def test_two_and_three_entry_batches_write_one_v3_delta_each_valid_in_any_order(self) -> None:
         for count in (2, 3):
             with self.subTest(count=count):
                 fixture = _Fixture(self)
@@ -519,43 +552,28 @@ class BatchAdmitPathsTest(unittest.TestCase):
                     batch=entries, private_repo=fixture.authority, base=fixture.base,
                     date=self.DATE, scratch_root=fixture.tmp,
                 )
-                expected_count = count * (2 ** (count - 1))
-                self.assertEqual(result["delta_count"], expected_count)
-                self.assertEqual(len(result["deltas"]), expected_count)
+                self.assertEqual(result["delta_count"], count)
+                self.assertEqual([delta["paths"] for delta in result["deltas"]], [[path] for path in entry_paths])
                 admissions = sorted((fixture.authority / admit_paths.ADMISSIONS).glob("*.json"))
                 self.assertEqual(len(admissions), count)
                 committed_paths = git(fixture.authority, "show", "--format=", "--name-only", "HEAD").splitlines()
                 self.assertEqual(set(committed_paths), set(result["records"]))
+                self.assertEqual(len(result["records"]), 2 * count, "one admission and one V3 delta per entry")
                 self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
 
+                # Each delta holds on every base the others' landings can produce.
                 base_policy = git_bytes(fixture.pr, "show", f"{fixture.base}:{admit_paths.POLICY}")
-                for delta in result["deltas"]:
-                    selected = set(delta["subset_slugs"])
-                    candidate_slug = delta["entry_slug"]
-                    candidate_index = next(i for i in range(count) if entries[i]["slug"] == candidate_slug)
-                    selected_indices = {
-                        i for i, entry in enumerate(entries) if entry["slug"] in selected
-                    }
-                    selected_paths = {entry_paths[i] for i in selected_indices}
-                    baseline = base_policy if not selected_paths else self.profile_union(base_policy, selected_paths)
-                    candidate_paths = selected_paths | {entry_paths[candidate_index]}
-                    candidate = self.profile_union(base_policy, candidate_paths)
-                    baseline_sha = hashlib.sha256(baseline).hexdigest()
-                    candidate_sha = hashlib.sha256(candidate).hexdigest()
-                    self.assertEqual(delta["baseline_policy_sha256"], baseline_sha)
-                    self.assertEqual(delta["candidate_policy_sha256"], candidate_sha)
-                    record_dir = f"{admit_paths.POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
-                    self.assertEqual(delta["records"], [
-                        f"{record_dir}/candidate-policy.json",
-                        f"{record_dir}/policy-delta-authority.json",
-                    ])
-                    self.assertEqual(
-                        (fixture.authority / record_dir / "candidate-policy.json").read_bytes(), candidate,
-                    )
-                    self.verify_delta(
-                        fixture, baseline=baseline, candidate=candidate,
-                        paths=[entry_paths[candidate_index]], record_dir=record_dir,
-                    )
+                for index, delta in enumerate(result["deltas"]):
+                    others = [path for other, path in enumerate(entry_paths) if other != index]
+                    for mask in range(1 << len(others)):
+                        landed = {others[bit] for bit in range(len(others)) if mask & (1 << bit)}
+                        baseline = base_policy if not landed else self.profile_union(base_policy, landed)
+                        with self.subTest(entry=index, landed=sorted(landed)):
+                            self.verify_delta(
+                                fixture, baseline=baseline,
+                                candidate=self.profile_union(base_policy, landed | {entry_paths[index]}),
+                                path=entry_paths[index], record=delta["record"],
+                            )
 
                 for entry_result in result["entries"]:
                     admission = json.loads((fixture.authority / entry_result["records"][0]).read_text())
@@ -584,7 +602,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 prs = [fixture.worktree(slug) for slug in slugs]
                 for index in range(2):
                     fixture.add_pr_path(prs[index], paths[index], f"# {slugs[index]}\n")
-                admit_paths.admit_batch(
+                batch = admit_paths.admit_batch(
                     batch=[self.entry(prs[i], paths[i], slugs[i]) for i in range(2)],
                     private_repo=fixture.authority, base=fixture.base, date=self.DATE,
                     scratch_root=fixture.tmp,
@@ -609,17 +627,11 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 expected_profile = self.profile_union(base_policy, set(paths))
                 actual_profile = git_bytes(landing, "show", f"HEAD:{admit_paths.POLICY}")
                 self.assertEqual(actual_profile, expected_profile)
-                candidate_sha = hashlib.sha256(expected_profile).hexdigest()
-                baseline_sha = hashlib.sha256(first_policy).hexdigest()
-                record_dir = f"{admit_paths.POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
-                self.assertTrue((fixture.authority / record_dir / "candidate-policy.json").is_file())
-                self.assertTrue((fixture.authority / record_dir / "policy-delta-authority.json").is_file())
-                self.assertEqual(
-                    (fixture.authority / record_dir / "candidate-policy.json").read_bytes(), expected_profile,
-                )
+                # The second PR's own V3 delta, issued against the old base, approves the merge.
+                second = next(delta for delta in batch["deltas"] if delta["paths"] == [paths[order[1]]])
                 self.verify_delta(
                     fixture, baseline=first_policy, candidate=expected_profile,
-                    paths=[paths[order[1]]], record_dir=record_dir,
+                    path=paths[order[1]], record=second["record"],
                 )
 
     def test_batch_has_no_entry_count_cap(self) -> None:
@@ -630,7 +642,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
         ]
         self.assertEqual(len(admit_paths._batch_entries(five)), 5)
 
-    def test_seven_entry_chain_and_batch_resume_after_three_land(self) -> None:
+    def test_seven_entry_batch_lands_in_any_order_and_resume_records_nothing_new(self) -> None:
         fixture = _Fixture(self)
         paths = [f"docs/chain-{index}.md" for index in range(7)]
         slugs = [f"chain-{index}" for index in range(7)]
@@ -644,22 +656,8 @@ class BatchAdmitPathsTest(unittest.TestCase):
             scratch_root=fixture.tmp,
         )
         self.assertEqual(first["delta_count"], 7)
-        self.assertEqual([delta["subset_slugs"] for delta in first["deltas"]], [slugs[:i] for i in range(7)])
 
         base_policy = git_bytes(fixture.pr, "show", f"{fixture.base}:{admit_paths.POLICY}")
-        prefix: set[str] = set()
-        for index in range(7):
-            baseline = base_policy if not prefix else self.profile_union(base_policy, prefix)
-            candidate = self.profile_union(base_policy, prefix | {paths[index]})
-            candidate_sha = hashlib.sha256(candidate).hexdigest()
-            baseline_sha = hashlib.sha256(baseline).hexdigest()
-            record_dir = f"{admit_paths.POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
-            self.verify_delta(
-                fixture, baseline=baseline, candidate=candidate,
-                paths=[paths[index]], record_dir=record_dir,
-            )
-            prefix.add(paths[index])
-
         landing = fixture.worktree("landed-chain")
         landed = set(paths[:3])
         for index in range(3):
@@ -671,7 +669,17 @@ class BatchAdmitPathsTest(unittest.TestCase):
         git(landing, "update-ref", "refs/remotes/origin/main", new_base)
         new_base_policy = git_bytes(landing, "show", f"{new_base}:{admit_paths.POLICY}")
 
+        # The four waiting deltas hold on the new base in any order: no re-key.
         remaining_order = list(reversed(range(3, 7)))
+        prefix: set[str] = set()
+        for index in remaining_order:
+            baseline = new_base_policy if not prefix else self.profile_union(new_base_policy, prefix)
+            self.verify_delta(
+                fixture, baseline=baseline, candidate=self.profile_union(new_base_policy, prefix | {paths[index]}),
+                path=paths[index], record=first["deltas"][index]["record"],
+            )
+            prefix.add(paths[index])
+
         resume_entries = []
         for index in remaining_order:
             slug = slugs[index]
@@ -684,6 +692,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
 
         batch_file = fixture.tmp / "remaining.json"
         batch_file.write_text(json.dumps(resume_entries, indent=2) + "\n", encoding="utf-8")
+        private_before = git(fixture.authority, "rev-parse", "HEAD")
         output = io.StringIO()
         with mock.patch.object(admit_paths.tempfile, "tempdir", str(fixture.tmp)), contextlib.redirect_stdout(output):
             code = admit_paths.main([
@@ -691,24 +700,10 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 "--base", new_base, "--date", self.DATE,
             ])
         self.assertEqual(code, 0)
-        self.assertIn("pre-issued 4 remaining listed-order chain", output.getvalue())
+        self.assertIn("re-issued V3 deltas for 4 pull requests", output.getvalue())
         self.assertEqual(len(list((fixture.authority / admit_paths.ADMISSIONS).glob("*.json"))), 7)
-        resume_paths = git(fixture.authority, "show", "--format=", "--name-only", "HEAD").splitlines()
-        self.assertFalse(any(path.startswith(f"{admit_paths.ADMISSIONS}/") for path in resume_paths))
-        self.assertEqual(len([path for path in resume_paths if path.endswith("policy-delta-authority.json")]), 4)
-
-        prefix = set()
-        for index in remaining_order:
-            baseline = new_base_policy if not prefix else self.profile_union(new_base_policy, prefix)
-            candidate = self.profile_union(new_base_policy, prefix | {paths[index]})
-            candidate_sha = hashlib.sha256(candidate).hexdigest()
-            baseline_sha = hashlib.sha256(baseline).hexdigest()
-            record_dir = f"{admit_paths.POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
-            self.verify_delta(
-                fixture, baseline=baseline, candidate=candidate,
-                paths=[paths[index]], record_dir=record_dir,
-            )
-            prefix.add(paths[index])
+        self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before,
+                         "the V3 deltas re-derived on the new base are the ones already recorded")
 
     def test_overlapping_batch_paths_are_rejected_before_mutation(self) -> None:
         fixture = _Fixture(self)
@@ -776,29 +771,37 @@ class BatchAdmitPathsTest(unittest.TestCase):
         self.assertNotIn("docs/guide.md", merged["include_paths"])
         git(ours, "merge", "--abort")
 
-    def test_nested_delta_verifies_and_legacy_flat_delta_remains_readable(self) -> None:
+    def test_v3_delta_verifies_and_legacy_nested_and_flat_deltas_remain_readable(self) -> None:
         fixture = _Fixture(self)
         fixture.add("docs/new-page.md", "# New page\n")
         result = fixture.admit("docs/new-page.md")
-        nested = Path(result["records"][1]).parent
-        candidate_policy = (fixture.authority / nested / "candidate-policy.json").read_bytes()
         baseline_policy = (git(fixture.pr, "show", f"{fixture.base}:{admit_paths.POLICY}") + "\n").encode()
-        nested_authority = fixture.authority / nested / "policy-delta-authority.json"
-        verified = admit_paths.provenance_ledger._read_policy_delta_authority(
-            nested_authority, candidate_root=fixture.pr,
-            baseline_policy_bytes=baseline_policy, candidate_policy_bytes=candidate_policy,
-        )
+        candidate_policy, _ = admit_paths._candidate_policy(baseline_policy, {"docs/new-page.md"})
+        verified = assert_v3_delta(self, fixture, result["policy_delta_record"], baseline=baseline_policy,
+                                   candidate=candidate_policy, files={"docs/new-page.md": b"# New page\n"})
         self.assertEqual(verified["include_added"], ["docs/new-page.md"])
 
-        flat = fixture.authority / admit_paths.POLICY_DELTAS / nested.parent.name
-        flat.mkdir(parents=True, exist_ok=True)
-        (flat / "candidate-policy.json").write_bytes(candidate_policy)
-        (flat / "policy-delta-authority.json").write_bytes(nested_authority.read_bytes())
-        legacy_verified = admit_paths.provenance_ledger._read_policy_delta_authority(
-            flat / "policy-delta-authority.json", candidate_root=fixture.pr,
-            baseline_policy_bytes=baseline_policy, candidate_policy_bytes=candidate_policy,
-        )
-        self.assertEqual(legacy_verified, verified)
+        # Admissions from before #1673 left V1/V2 records in both layouts; the gate still reads them.
+        v1 = admit_paths._canonical({
+            "allowed_delta": {"exclude_added": [], "exclude_removed": [], "include_added": ["docs/new-page.md"],
+                              "include_removed": [], "rule_changes": []},
+            "baseline_policy_sha256": hashlib.sha256(baseline_policy).hexdigest(),
+            "candidate_policy_sha256": hashlib.sha256(candidate_policy).hexdigest(),
+            "kind": provenance_ledger.POLICY_DELTA_KIND,
+            "schema_version": provenance_ledger.POLICY_DELTA_SCHEMA_VERSION,
+        })
+        candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
+        nested = fixture.authority / admit_paths.POLICY_DELTAS / candidate_sha / hashlib.sha256(baseline_policy).hexdigest()
+        flat = fixture.authority / admit_paths.POLICY_DELTAS / candidate_sha
+        for directory in (nested, flat):
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "candidate-policy.json").write_bytes(candidate_policy)
+            (directory / "policy-delta-authority.json").write_bytes(v1)
+            with self.subTest(layout=directory.relative_to(fixture.authority).as_posix()):
+                self.assertEqual(admit_paths.provenance_ledger._read_policy_delta_authority(
+                    directory / "policy-delta-authority.json", candidate_root=fixture.pr,
+                    baseline_policy_bytes=baseline_policy, candidate_policy_bytes=candidate_policy,
+                ), verified)
 
 
 class BatchAdmissionTest(unittest.TestCase):
@@ -819,34 +822,23 @@ class BatchAdmissionTest(unittest.TestCase):
         return entries, prs
 
     def _assert_every_transition(self, fixture: _Fixture, result: dict) -> None:
+        """Every entry's V3 delta approves its own paths on every base the other entries can produce."""
         base_policy = (git(fixture.pr, "show", f"{result['base']}:{admit_paths.POLICY}") + "\n").encode("utf-8")
         path_sets = [set(entry["paths"]) for entry in result["entries"]]
         for mask in range(1 << len(path_sets)):
             selected = [i for i in range(len(path_sets)) if mask & (1 << i)]
             subset_paths = set().union(*(path_sets[i] for i in selected)) if selected else set()
             baseline_policy = base_policy if not selected else admit_paths._candidate_policy(base_policy, subset_paths)[0]
-            baseline_document = json.loads(baseline_policy)
-            baseline_sha = hashlib.sha256(baseline_policy).hexdigest()
             for candidate_index, paths in enumerate(path_sets):
                 if mask & (1 << candidate_index):
                     continue
                 candidate_policy = admit_paths._candidate_policy(base_policy, subset_paths | paths)[0]
-                candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
-                delta_dir = Path(admit_paths.POLICY_DELTAS) / candidate_sha / baseline_sha
-                candidate_path = fixture.authority / delta_dir / "candidate-policy.json"
-                authority_path = fixture.authority / delta_dir / "policy-delta-authority.json"
+                record = result["entries"][candidate_index]["policy_delta_record"]
                 with self.subTest(subset=selected, candidate=candidate_index):
-                    self.assertEqual(candidate_path.read_bytes(), candidate_policy)
-                    authority = admit_paths.provenance_ledger._read_policy_delta_authority(
-                        authority_path, candidate_root=fixture.pr,
-                        baseline_policy_bytes=baseline_policy, candidate_policy_bytes=candidate_policy,
-                    )
-                    candidate_document = json.loads(candidate_policy)
-                    classified = admit_paths.provenance_ledger._classify_policy_delta(
-                        baseline_document, candidate_document,
-                    )
-                    expected = {key: sorted(set(value)) for key, value in classified.items()}
-                    self.assertEqual(authority, expected)
+                    files = {path: (Path(result["entries"][candidate_index]["pr_worktree"]) / path).read_bytes()
+                             for path in paths}
+                    authority = assert_v3_delta(self, fixture, record, baseline=baseline_policy,
+                                                candidate=candidate_policy, files=files)
                     self.assertEqual(authority["include_added"], sorted(paths))
                     self.assertEqual(authority["include_removed"], [])
                     self.assertEqual(authority["exclude_added"], [])
@@ -861,7 +853,7 @@ class BatchAdmissionTest(unittest.TestCase):
         self.assertEqual(git(fixture.authority, "status", "--porcelain", "--", "docs/provenance"), "")
         self.assertFalse(result["pushed"])
 
-    def test_two_pr_batch_preissues_every_transition_in_one_private_commit(self) -> None:
+    def test_two_pr_batch_covers_every_transition_in_one_private_commit(self) -> None:
         fixture = _Fixture(self)
         batch, prs = self._entries(fixture, 2)
         private_before = git(fixture.authority, "rev-parse", "HEAD")
@@ -870,7 +862,7 @@ class BatchAdmissionTest(unittest.TestCase):
             date="2026-10-22", scratch_root=fixture.tmp,
         )
         self.assertEqual(result["base"], fixture.base)
-        self.assertEqual(result["delta_count"], 4)
+        self.assertEqual(result["delta_count"], 2)
         self._assert_every_transition(fixture, result)
         self._assert_one_private_commit(fixture, result, private_before)
         self.assertEqual(len({entry["records"][0] for entry in result["entries"]}), 2)
@@ -879,7 +871,7 @@ class BatchAdmissionTest(unittest.TestCase):
             self.assertEqual(entry["paths"], [path])
             self.assertEqual(git(root, "merge-base", entry["admit_branch"], fixture.base), fixture.base)
 
-    def test_three_pr_batch_preissues_every_transition_in_one_private_commit(self) -> None:
+    def test_three_pr_batch_covers_every_transition_in_one_private_commit(self) -> None:
         fixture = _Fixture(self)
         batch, _prs = self._entries(fixture, 3)
         private_before = git(fixture.authority, "rev-parse", "HEAD")
@@ -887,7 +879,7 @@ class BatchAdmissionTest(unittest.TestCase):
             batch=batch, private_repo=fixture.authority, base=fixture.base,
             date="2026-10-22", scratch_root=fixture.tmp,
         )
-        self.assertEqual(result["delta_count"], 12)
+        self.assertEqual(result["delta_count"], 3)
         self._assert_every_transition(fixture, result)
         self._assert_one_private_commit(fixture, result, private_before)
 
@@ -901,11 +893,10 @@ class BatchAdmissionTest(unittest.TestCase):
             code = admit_paths.main([
                 "--batch", str(batch_file), "--base", fixture.base,
                 "--private-repo", str(fixture.authority), "--date", "2026-10-22",
-                "--any-order-limit", "1",
             ])
         self.assertEqual(code, 0)
         self.assertIn("admitted 2 pull requests on shared base", out.getvalue())
-        self.assertIn("pre-issued 2 subset/next-landing policy deltas", out.getvalue())
+        self.assertIn("wrote 2 V3 policy deltas, valid in any landing order", out.getvalue())
 
     def test_batch_refuses_overlapping_paths_and_has_no_size_cap(self) -> None:
         fixture = _Fixture(self)
@@ -930,7 +921,7 @@ class BatchAdmissionTest(unittest.TestCase):
     def _landing_fixture(self, first: int) -> None:
         fixture = _Fixture(self)
         batch, prs = self._entries(fixture, 2)
-        admit_paths.admit_batch(
+        result = admit_paths.admit_batch(
             batch=batch, private_repo=fixture.authority, base=fixture.base,
             date="2026-10-22", scratch_root=fixture.tmp,
         )
@@ -962,21 +953,14 @@ class BatchAdmissionTest(unittest.TestCase):
         git(waiting_root, "add", admit_paths.POLICY)
         git(waiting_root, "commit", "-qm", "merge the other admitted path")
 
-        candidate_sha = hashlib.sha256(profile).hexdigest()
-        baseline_sha = hashlib.sha256(baseline_policy).hexdigest()
-        delta_dir = Path(admit_paths.POLICY_DELTAS) / candidate_sha / baseline_sha
-        candidate_path = fixture.authority / delta_dir / "candidate-policy.json"
-        authority_path = fixture.authority / delta_dir / "policy-delta-authority.json"
-        self.assertEqual(candidate_path.read_bytes(), profile)
-        verified = admit_paths.provenance_ledger._read_policy_delta_authority(
-            authority_path, candidate_root=waiting_root,
-            baseline_policy_bytes=baseline_policy, candidate_policy_bytes=profile,
-        )
+        record = result["entries"][1 - first]["policy_delta_record"]
+        verified = assert_v3_delta(self, fixture, record, baseline=baseline_policy, candidate=profile,
+                                   files={waiting_path: (waiting_root / waiting_path).read_bytes()})
         self.assertEqual(verified["include_added"], [waiting_path])
         self.assertEqual(verified["include_removed"], [])
         self.assertEqual(verified["rule_changes"], [])
 
-    def test_both_two_pr_landing_orders_merge_to_preissued_profile(self) -> None:
+    def test_both_two_pr_landing_orders_merge_and_verify_without_a_rekey(self) -> None:
         with self.subTest(order="a then b"):
             self._landing_fixture(0)
         with self.subTest(order="b then a"):
@@ -1035,10 +1019,13 @@ class PolicyDeltaIssueTest(unittest.TestCase):
         return admit_paths.issue_policy_delta(pr_worktree=fixture.pr, private_repo=fixture.authority, **kwargs)
 
     def _authority(self, fixture: _Fixture, result: dict) -> tuple[Path, dict]:
-        path = fixture.authority / next(r for r in result["records"] if r.endswith("policy-delta-authority.json"))
+        (record,) = result["records"]
+        self.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V3}/"))
+        path = fixture.authority / record
+        self.assertEqual(path.stem, hashlib.sha256(path.read_bytes()).hexdigest())
         return path, json.loads(path.read_text(encoding="utf-8"))
 
-    def test_rule_change_issues_a_v2_delta_the_gate_reads(self) -> None:
+    def test_rule_change_issues_a_v3_delta_the_gate_reads(self) -> None:
         fixture = _Fixture(self)
 
         def change(policy: dict) -> None:
@@ -1048,22 +1035,19 @@ class PolicyDeltaIssueTest(unittest.TestCase):
         baseline, candidate = self._commit_profile(fixture, change)
         result = self._issue(fixture, push=True)
 
-        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["schema_version"], 3)
         self.assertEqual(result["base"], fixture.base)
         self.assertEqual(fixture.remote_main(), result["private_commit"])
         path, authority = self._authority(fixture, result)
-        self.assertEqual(path.parent.name, hashlib.sha256(baseline).hexdigest())
-        self.assertEqual(path.parent.parent.name, hashlib.sha256(candidate).hexdigest())
-        self.assertEqual((path.parent / "candidate-policy.json").read_bytes(), candidate)
-        self.assertEqual(authority["allowed_delta"]["include_removed"], ["docs/guide.md"])
-        self.assertEqual(authority["allowed_delta"]["rule_changes"], [{
+        self.assertEqual(authority["include_removed"], ["docs/guide.md"])
+        self.assertEqual(authority["rule_changes"], [{
             "key": "build_mode",
             "baseline_sha256": hashlib.sha256(b'"PUBLIC_SAFE=1"').hexdigest(),
             "candidate_sha256": hashlib.sha256(b'"PUBLIC_SAFE=2"').hexdigest(),
         }])
         self.assertIn(self.BASIS, git(fixture.authority, "log", "-1", "--format=%B"))
-        allowed = provenance_ledger._read_policy_delta_authority(
-            path, candidate_root=fixture.pr, baseline_policy_bytes=baseline, candidate_policy_bytes=candidate)
+        allowed = assert_v3_delta(self, fixture, path.relative_to(fixture.authority).as_posix(),
+                                  baseline=baseline, candidate=candidate, files={})
         self.assertEqual(allowed, provenance_ledger._classify_policy_delta(
             json.loads(baseline), json.loads(candidate)))
 
@@ -1079,20 +1063,20 @@ class PolicyDeltaIssueTest(unittest.TestCase):
         result = self._issue(fixture)
 
         _, authority = self._authority(fixture, result)
-        self.assertEqual(authority["schema_version"], 2)
-        self.assertEqual(authority["allowed_delta"]["rule_changes"][0]["candidate_sha256"],
+        self.assertEqual(authority["schema_version"], 3)
+        self.assertEqual(authority["rule_changes"][0]["candidate_sha256"],
                          hashlib.sha256(json.dumps({"docs/private-notes.md": "Private."}).encode()).hexdigest())
         self.assertFalse(result["pushed"])
         self.assertNotEqual(fixture.remote_main(), result["private_commit"], "nothing is pushed without --push")
 
-    def test_path_only_removal_stays_v1(self) -> None:
+    def test_path_only_removal_is_a_v3_delta_with_no_rule_change(self) -> None:
         fixture = _Fixture(self)
         self._commit_profile(fixture, lambda policy: policy["exclude_paths"].remove("docs/private-notes.md"))
         result = self._issue(fixture)
         _, authority = self._authority(fixture, result)
-        self.assertEqual(authority["schema_version"], 1)
-        self.assertEqual(authority["allowed_delta"]["exclude_removed"], ["docs/private-notes.md"])
-        self.assertEqual(authority["allowed_delta"]["rule_changes"], [])
+        self.assertEqual(authority["schema_version"], 3)
+        self.assertEqual(authority["exclude_removed"], ["docs/private-notes.md"])
+        self.assertEqual(authority["rule_changes"], [])
 
     def test_refusals(self) -> None:
         fixture = _Fixture(self)
@@ -1118,7 +1102,7 @@ class PolicyDeltaIssueTest(unittest.TestCase):
                 "--approval-basis", self.BASIS,
             ])
         self.assertEqual(code, 0)
-        self.assertIn("issued a V2 policy delta", out.getvalue())
+        self.assertIn("issued a V3 policy delta", out.getvalue())
         self.assertIn("rule_changes: build_mode", out.getvalue())
 
 
@@ -1135,7 +1119,7 @@ class RecompJsonRegressionTest(unittest.TestCase):
     BASE = "eccf84caa1820bbd0e01e2ccb1f7ac18e5484ae1"
     PR_HEAD = "727ee24aae195a7e33f85cc6c2b05fb6468e5612"
     ADMITTED = "cd82b3b109124bd63a4c6a842b48eae109c348ed"
-    CANDIDATE_TREE = "0558207c855a8a5ec78cf8f9827f8ba9300de132"
+    #: The historical admitted profile, written before the canonical path-list order existed.
     PROFILE_SHA = "427ea6ad58dfc629110c7aa3652dee5a167043f3d5b8b29850962c9e596ee6c7"
     ADMISSION = "docs/provenance/admissions/admission-recomp-fyi-listing-2026-10-22.json"
 
@@ -1150,26 +1134,12 @@ class RecompJsonRegressionTest(unittest.TestCase):
         self.authority = Path(authority)
 
     def test_records_and_controls_are_byte_identical(self) -> None:
-        baseline_policy = git(ROOT, "show", f"{self.BASE}:assets/public_source_profile.json") + "\n"
-        baseline_sha = hashlib.sha256(baseline_policy.encode()).hexdigest()
-        records = [
-            self.ADMISSION,
-            f"docs/provenance/policy-deltas/{self.PROFILE_SHA}/{baseline_sha}/candidate-policy.json",
-            f"docs/provenance/policy-deltas/{self.PROFILE_SHA}/{baseline_sha}/policy-delta-authority.json",
-        ]
-        # The private commit that added the records, and the latest form of each.
+        # The private commit that added the admission, and its latest form. Since #1673 the
+        # policy delta is the V3 record, not the historical nested candidate/baseline pair.
         added = git(self.authority, "log", "--diff-filter=A", "--format=%H", "--", self.ADMISSION).splitlines()[-1]
-        historical_records = [
-            self.ADMISSION,
-            f"docs/provenance/policy-deltas/{self.PROFILE_SHA}/candidate-policy.json",
-            f"docs/provenance/policy-deltas/{self.PROFILE_SHA}/policy-delta-authority.json",
-        ]
-        expected = {path: git(self.authority, "log", "-1", "--format=%H", "--", path)
-                    for path in historical_records}
-        expected = dict(zip(records, expected.values(), strict=True))
-        expected = {path: subprocess.run(["git", "show", f"{commit}:{path}"], cwd=self.authority,
-                                         capture_output=True, check=True).stdout
-                    for path, commit in expected.items()}
+        latest = git(self.authority, "log", "-1", "--format=%H", "--", self.ADMISSION)
+        expected = {self.ADMISSION: subprocess.run(["git", "show", f"{latest}:{self.ADMISSION}"], cwd=self.authority,
+                                                   capture_output=True, check=True).stdout}
         basis = json.loads(expected[self.ADMISSION])["approval_basis"]
 
         fixture_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -1186,14 +1156,34 @@ class RecompJsonRegressionTest(unittest.TestCase):
             base=self.BASE, date="2026-10-22", scratch_root=fixture_root,
         )
 
-        self.assertEqual(result["records"], records)
-        for path in records:
-            with self.subTest(record=path):
-                self.assertEqual((private / path).read_bytes(), expected[path])
+        self.assertEqual(result["records"], [self.ADMISSION, result["policy_delta_record"]])
+        self.assertEqual((private / self.ADMISSION).read_bytes(), expected[self.ADMISSION])
+        self.assertEqual(
+            verifier.policy_delta_key(repo=pr, base_rev=self.BASE, candidate_rev=result["admission_commit"]),
+            Path(result["policy_delta_record"]).stem,
+        )
         self.assertEqual(result["statements"], [{"path": ".recomp.json", "classification": "reviewed_configuration"}])
-        self.assertEqual(result["candidate_tree"], self.CANDIDATE_TREE)
-        self.assertEqual(git(pr, "rev-parse", f"{result['admission_commit']}^{{tree}}"),
-                         git(pr, "rev-parse", f"{self.ADMITTED}^{{tree}}"))
+        # The historical profile (sha256 PROFILE_SHA) predates the canonical path-list order; the
+        # admission now writes its canonical form, so compare the profile in that form.
+        profile = "assets/public_source_profile.json"
+        historical_profile = json.loads(git(pr, "show", f"{self.ADMITTED}:{profile}"))
+        self.assertEqual(git_bytes(pr, "show", f"{result['admission_commit']}:{profile}"),
+                         provenance_ledger.canonical_profile_bytes(historical_profile))
+        # The admission commit equals the historical one except for the profile above and its
+        # ledger, which is now the claims form of the historical (hashed) ledger.
+        ledger = "assets/public_provenance_ledger.json"
+        listing = {
+            commit: dict(line.split("\t", 1)[::-1] for line in git(pr, "ls-tree", "-r", commit).splitlines())
+            for commit in (result["admission_commit"], self.ADMITTED)
+        }
+        ours, theirs = (listing[commit] for commit in (result["admission_commit"], self.ADMITTED))
+        self.assertEqual(set(ours), set(theirs))
+        # PUBLIC_EXPORT.json records the profile digest, so it follows the profile.
+        self.assertEqual(sorted(path for path in ours if ours[path] != theirs[path]),
+                         sorted([ledger, profile, "PUBLIC_EXPORT.json"]))
+        historical = json.loads(git(pr, "show", f"{self.ADMITTED}:{ledger}"))
+        self.assertEqual(git_bytes(pr, "show", f"{result['admission_commit']}:{ledger}"),
+                         provenance_ledger.claims_ledger_bytes(historical))
 
 
 if __name__ == "__main__":
