@@ -696,7 +696,7 @@ Semantic handler census: **533** handlers across **26** API families, covering *
   - Limitation: the 13 words MEASURED on a PSP-3000 (PSP-MPEG-001): word 0 is 0, words 2 and 3 the header's frame width and height, words 4-7 zero, word 8 the last decode's frame status; word 1 is written as the pictures decoded, which the PSP's is not (0 after 240 pictures), and words 9-12 as 0, one of which holds an unidentified pointer on the PSP (#302)
   - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail
 - **`h_MpegAvcDecodeStopYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeStopYCbCr` (0xf2930c9c)
-  - Limitation: takes the address of the buffer pointer, as DecodeYCbCr does (the probe's call with the buffer itself never returned on the PSP); reports status 0 and writes nothing, and whether the PSP delivers a picture the decoder still holds is not measured (#302)
+  - Limitation: takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)
   - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
   - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcDecodeYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeYCbCr` (0xf0eb1125)

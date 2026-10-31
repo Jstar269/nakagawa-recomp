@@ -548,7 +548,7 @@ HANDLER_METADATA = {
             "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
             "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
         ],
-        "limitation": "takes the address of the buffer pointer, as DecodeYCbCr does (the probe's call with the buffer itself never returned on the PSP); reports status 0 and writes nothing, and whether the PSP delivers a picture the decoder still holds is not measured (#302)",
+        "limitation": "takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)",
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",

@@ -2254,6 +2254,24 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == SCE_MPEG_ERROR_INVALID_VALUE &&
               MEM_R32(TD_INIT) == 0u && memcmp(small_before, SR_HOST(TD_SMALL), sizeof(small_before)) == 0,
           "ycbcr-decode: a 64x64 picture is not written into a 64x32 allocation");
+
+    /* The whole stream was fed and the third access unit was taken but not decoded:
+     * DecodeStopYCbCr hands over the picture the decoder still holds, written through the header,
+     * with status 1 (the PSP's status after its last access unit), and then has none left. */
+    int third = sr_h264_frame_ex(ref, 1, &target, &info) > 0 && sr_h264_frame_ex(ref, 1, &target, &info) > 0;
+    MEM_W32(TD_PTR, TD_YCBCR);
+    MEM_W32(TD_INIT, 0xdeadbeefu);
+    CHECK(third && guest_mpeg_import(NID_STOP_YCBCR, TD_DESC, TD_PTR, TD_INIT, 0u, 0u) == 0u &&
+              MEM_R32(TD_INIT) == 1u,
+          "ycbcr-decode: DecodeStopYCbCr hands over the picture the decoder still holds, status 1");
+    exact = 1;
+    for (uint32_t y = 0; y < height; y++)
+        for (uint32_t x = 0; x < width; x++)
+            if (MEM_R8(ref_ycbcr_luma(TD_YCBCR, x, y)) != ry[y * 64u + x]) exact = 0;
+    CHECK(exact, "ycbcr-decode: the held picture sits in the strip layout");
+    MEM_W32(TD_INIT, 0xdeadbeefu);
+    CHECK(guest_mpeg_import(NID_STOP_YCBCR, TD_DESC, TD_PTR, TD_INIT, 0u, 0u) == 0u && MEM_R32(TD_INIT) == 0u,
+          "ycbcr-decode: with no picture left DecodeStopYCbCr reports status 0");
     sr_h264_destroy(ref);
     mpeg_finish();
 }

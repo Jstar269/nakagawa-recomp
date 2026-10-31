@@ -1433,20 +1433,58 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
 }
 
 /* sceMpegAvcDecodeStopYCbCr(mpeg, ycbcr*, status*): like sceMpegAvcDecodeYCbCr it takes the
- * address of the buffer pointer.  The probe's call with the buffer itself never returned on the
- * PSP (PSP-MPEG-001: both runs stop at decode-stop-ycbcr), as a write through the header's word 0
- * would.  Whether it delivers a picture the decoder still holds is not measured: the status is 0
- * and nothing is written. */
+ * address of the buffer pointer, and it hands over the picture the decoder still holds.
+ * MEASURED (PSP-MPEG-001): given the buffer itself the call never returned; given the address
+ * of the buffer pointer after the last access unit it returned 0 with status 1, and the
+ * sceMpegAvcDecodeStop that followed returned status 0.  The PSP decoder runs one access unit
+ * behind (the first sceMpegAvcDecodeYCbCr gives no picture), so it holds one.  Here a picture
+ * the decoder can still give for an access unit the game took is written through the buffer's
+ * header with status 1; otherwise the status is 0 and nothing is written.  As in
+ * sceMpegAvcDecodeYCbCr the decoder is drained only once the whole stream has been fed: a
+ * decoder that holds its last picture until it is drained (Media Foundation) gives none before
+ * that, and what the PSP does after a stop in mid-stream is not measured. */
 uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t statusAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (!statusAddr || (statusAddr & 3u) || !sr_guest_span_writable(statusAddr, 4u) ||
         !bufPtr || (bufPtr & 3u) || !sr_guest_span_readable(bufPtr, 4u))
         return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "invalid buffer or status pointer", (uint32_t)-1);
+    uint32_t buf = MEM_R32(bufPtr);
     YcbcrLayout layout;
-    if (!ycbcr_header_read(MEM_R32(bufPtr), &layout))
+    if (!ycbcr_header_read(buf, &layout))
         return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "unaligned or unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
-    MEM_W32(statusAddr, 0u);
+    int got = 0;
+    SrH264FrameInfo info;
+    memset(&info, 0, sizeof(info));
+#ifdef SR_SDL3VK
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        SrH264FrameTarget target;
+        memset(&target, 0, sizeof(target));
+        target.kind = SR_H264_TARGET_HOST_YUV;
+        target.host_buffer = s_ycbcr_y;
+        target.host_width = (int)YCBCR_SCRATCH_W;
+        target.host_height = (int)YCBCR_MODE1_MAX_H;
+        target.host_stride = (int)YCBCR_SCRATCH_W;
+        target.host_cb = s_ycbcr_cb;
+        target.host_cr = s_ycbcr_cr;
+        target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
+        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+        if (sr_h264_frame_ex(ctx->h264, eos, &target, &info) > 0) {
+            got = 1;
+            ctx->h264Frames++;
+            ctx->ycbcrWant = ctx->h264Frames;
+        }
+    }
+#endif
+    if (got) {
+        uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height);
+        if (stored) {
+            MEM_W32(statusAddr, 0u);
+            return stored;
+        }
+        ycbcr_picture_set(mpegAddr, layout.plane[0], -1);
+    }
+    MEM_W32(statusAddr, got ? 1u : 0u);
     return 0;
 }
 
