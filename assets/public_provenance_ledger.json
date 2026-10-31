@@ -2014,7 +2014,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2ee94db96aee4ea61405eedb330672343b626e57ea658dfcad83120e5bdda851"
+      "sha256": "9e9b58af745163bf037f2fc574ba21246336776ccc0421ec3e5fb3a62f392505"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -2410,7 +2410,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09f9e9a4b5500740a8b491585c5c1a40960722bc364f9d4bb251f55643c58216"
+      "sha256": "4b5f71eef62f34b7fe86555325af59aa5bd82c5c7d3918cb1fc1d42a33edae1f"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -5978,7 +5978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2120422e5f30a0b2c85de70d1f37ce7a8577b77cd69f4e6e7624d4a790b2cfe"
+      "sha256": "5ac3c038833211a423474e4183fc8c7651621316cb85e58cdd8cf0cc577f3317"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a7f66b2b612611efaf5c1aea3afadb599ec51435b11304381301916410b2c184"
+      "sha256": "38ee17892321f1075b01201d74548d12ef9d5550b25e756afb3609c7ad7b9d3d"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10171,7 +10171,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0c3115a75c6d15814585c9167de7a45391572113fc45c031956ae5d3c4836292"
+      "sha256": "e66abe4eef38f5084f33eb43a7ee54f7ce3e500da9c3402af58d8ee7beba1adc"
     },
     {
       "path": "src/rt/recomp.h",
@@ -10210,7 +10210,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d877f50a751db266320f4d74bcb2b6f0e98aea930342e1d4560b9c5204b5f1c0"
+      "sha256": "2f91ccd76a8d6d9a1167aa80e26931d8aa6d42cef0455d6169954bb3296cb064"
     },
     {
       "path": "src/rt/sched_selftest.c",
