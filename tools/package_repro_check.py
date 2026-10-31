@@ -10,7 +10,8 @@ one set of prerequisite pins must give the same ZIP bytes
 is the check. Give it two ZIPs, or two staged folders:
 
 * identical files: prints ``IDENTICAL`` and the SHA-256, exits 0;
-* otherwise: prints every difference with its cause and exits 1. For ZIPs the
+* otherwise: prints the differences with their causes (the first 40 of each kind;
+  ``--limit`` changes that) and exits 1. For ZIPs the
   causes are the entry list, the entry order, the stored bytes (the unpacked
   content differs), the compressed bytes only (the same content, deflated
   differently: a different zlib or CPython wrote it), the entry time, the
@@ -60,12 +61,21 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _entry_digest(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
-    """SHA-256 of the unpacked bytes, read in chunks so a 700 MB entry stays small."""
-    digest = hashlib.sha256()
-    with archive.open(info) as stream:
-        for chunk in iter(lambda: stream.read(_CHUNK), b""):
+def _raw_stream(path: Path, info: zipfile.ZipInfo) -> str:
+    """SHA-256 of an entry's stored (compressed) bytes, read past its local header."""
+    with path.open("rb") as stream:
+        stream.seek(info.header_offset)
+        header = stream.read(30)
+        name_length, extra_length = int.from_bytes(header[26:28], "little"), int.from_bytes(header[28:30], "little")
+        stream.seek(info.header_offset + 30 + name_length + extra_length)
+        digest = hashlib.sha256()
+        remaining = info.compress_size
+        while remaining:
+            chunk = stream.read(min(_CHUNK, remaining))
+            if not chunk:
+                break
             digest.update(chunk)
+            remaining -= len(chunk)
     return digest.hexdigest()
 
 
@@ -99,12 +109,14 @@ def compare_zips(first: Path, second: Path) -> list[dict]:
             if left.file_size != right.file_size or left.CRC != right.CRC:
                 note("content", name, f"unpacked {left.file_size} bytes crc {left.CRC:08x} vs "
                                       f"{right.file_size} bytes crc {right.CRC:08x}")
-            elif left.compress_size != right.compress_size or left.header_offset != right.header_offset:
-                # Same content: only the deflate output (or what precedes it) differs.
-                if left.compress_type != zipfile.ZIP_STORED and _entry_digest(one, left) == _entry_digest(two, right):
-                    note("compressed-bytes", name,
-                         f"same content, stored {left.compress_size} vs {right.compress_size} bytes: "
-                         "a different zlib or CPython wrote the Deflate stream")
+            elif left.compress_size != right.compress_size or (
+                    left.compress_type != zipfile.ZIP_STORED
+                    and _raw_stream(first, left) != _raw_stream(second, right)):
+                # Same content: only the Deflate output differs. (A later entry moving because an
+                # earlier one changed size is not a difference of its own.)
+                note("compressed-bytes", name,
+                     f"same content, stored {left.compress_size} vs {right.compress_size} bytes: "
+                     "a different zlib or CPython wrote the Deflate stream")
     return found
 
 
@@ -157,6 +169,8 @@ def main(argv=None) -> int:
     parser.add_argument("first", type=Path)
     parser.add_argument("second", type=Path)
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    parser.add_argument("--limit", type=int, default=40,
+                        help="differences listed per kind (default 40; 0 lists all); counts are always complete")
     args = parser.parse_args(argv)
     try:
         report = compare(args.first, args.second)
@@ -170,9 +184,20 @@ def main(argv=None) -> int:
         print(f"IDENTICAL {shown}".rstrip())
     else:
         print(f"DIFFERENT: {len(report['differences'])} difference(s)")
+        listed: dict[str, int] = {}
+        counts: dict[str, int] = {}
         for item in report["differences"]:
+            counts[item["kind"]] = counts.get(item["kind"], 0) + 1
+        for item in report["differences"]:
+            kind = item["kind"]
+            listed[kind] = listed.get(kind, 0) + 1
+            if args.limit and listed[kind] > args.limit:
+                continue
             where = f" {item['entry']}:" if item["entry"] else ""
-            print(f"  [{item['kind']}]{where} {item['detail']}")
+            print(f"  [{kind}]{where} {item['detail']}")
+        for kind, count in sorted(counts.items()):
+            if args.limit and count > args.limit:
+                print(f"  [{kind}] ... {count - args.limit} more ({count} in all); --limit 0 lists them")
     return 0 if report["identical"] else 1
 
 

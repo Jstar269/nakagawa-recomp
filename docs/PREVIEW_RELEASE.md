@@ -261,10 +261,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Bin 'runtime-manifest.json') -PathT
     python tools/stage_runtime_dlls.py --target $Bin --write-runtime-manifest-only
     if ($LASTEXITCODE -ne 0) { throw 'Recording the runtime manifest failed.' }
 }
+# The source export is a one-commit Git repository whose commit time and index timestamps change on every
+# run, so source/.git would make two builds differ. Nothing reads it: the installed source/ has no .git.
+Remove-Item -LiteralPath (Join-Path $Source '.git') -Recurse -Force
 # Writes SHA256SUMS.txt, checks bin/ against its runtime manifest, then writes the ZIP with
 # sorted entries dated at the candidate commit's time, fixed permissions and no extra fields,
 # so the same commit and staged inputs give the same ZIP bytes. Hidden files (.github,
-# .editorconfig) are included; a link anywhere in the stage is refused.
+# .editorconfig) are included; a link or a .git entry anywhere in the stage is refused.
 python tools/stage_install.py --portable-zip $Zip --zip-stage $Stage --revision $CandidateSha
 if ($LASTEXITCODE -ne 0) { throw 'Writing the portable ZIP failed.' }
 # The ZIP itself is a container, not an attested subject: publish its SHA-256 next to it so a
@@ -307,6 +310,12 @@ folders next to find the file behind a content difference. The causes that are k
 - **A signature.** A signed package differs by its signatures and timestamps
   ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)); compare the unsigned
   files instead.
+
+One cause was found by this check and is fixed rather than allowed. `tools/build_public_export.py` leaves a
+one-commit repository in `source/.git`, and its commit time and index timestamps change on every export, so two
+otherwise identical packages differed in five files and in `SHA256SUMS.txt`. Nothing reads it (the installed
+`source/` has no `.git`), so the recipe deletes it before archiving and `--portable-zip` refuses a stage that
+still has a `.git` entry.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 

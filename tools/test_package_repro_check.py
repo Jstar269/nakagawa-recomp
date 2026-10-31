@@ -88,6 +88,30 @@ class CompareZipTests(unittest.TestCase):
         self.assertIn("compressed-bytes", kinds)
         self.assertNotIn("content", kinds)
 
+    def test_an_entry_that_only_moved_is_not_a_difference(self):
+        # An earlier entry changes size, so every later entry sits at another offset: only the first differs.
+        shifted = [("a.txt", b"short")] + self.entries
+        base = [("a.txt", b"a much longer first entry")] + self.entries
+        one, two = self.root / "base.zip", self.root / "shifted.zip"
+        _write_zip(one, base)
+        _write_zip(two, shifted)
+        report = package_repro_check.compare(one, two)
+        self.assertEqual([(item["kind"], item["entry"]) for item in report["differences"]],
+                         [("content", "a.txt")])
+
+    def test_listing_is_limited_per_kind_and_counts_stay_complete(self):
+        many = [(f"f{i}.txt", b"x") for i in range(10)]
+        one, two = self.root / "m1.zip", self.root / "m2.zip"
+        _write_zip(one, many)
+        _write_zip(two, many, date=(2026, 10, 2, 0, 0, 0))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(package_repro_check.main([str(one), str(two), "--limit", "3"]), 1)
+        text = out.getvalue()
+        self.assertIn("DIFFERENT: 10 difference(s)", text)
+        self.assertEqual(text.count("[date_time] f"), 3)
+        self.assertIn("7 more (10 in all)", text)
+
     def test_cli_exit_codes_and_json(self):
         one, two = self._pair()
         out = io.StringIO()

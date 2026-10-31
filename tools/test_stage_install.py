@@ -353,6 +353,24 @@ class PortableZipTests(unittest.TestCase):
             self._zip(stage)
         self.assertFalse((self.root / "out.zip").exists())
 
+    def test_git_metadata_in_the_stage_is_refused(self):
+        stage = _make_stage(self.root / "g", reverse=False, mtime=1_700_000_000)
+        (stage / "source" / ".git" / "objects").mkdir(parents=True)
+        (stage / "source" / ".git" / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+        with self.assertRaises(stage_install.InstallError) as caught:
+            self._zip(stage)
+        self.assertIn("PORTABLE_STAGE_GIT_METADATA", str(caught.exception))
+        # Only an entry named exactly `.git`: `.github` and `.gitignore` are source files and stay.
+        (stage / "source" / ".git" / "objects").rmdir()
+        (stage / "source" / ".git" / "HEAD").unlink()
+        (stage / "source" / ".git").rmdir()
+        (stage / "source" / ".github").mkdir()
+        (stage / "source" / ".github" / "x.yml").write_text("a: 1\n", encoding="utf-8")
+        (stage / "source" / ".gitignore").write_text("build/\n", encoding="utf-8")
+        names = zipfile.ZipFile(self._zip(stage, "kept.zip")).namelist()
+        self.assertIn("source/.github/x.yml", names)
+        self.assertIn("source/.gitignore", names)
+
     def test_existing_output_and_output_inside_the_stage_are_refused(self):
         stage = _make_stage(self.root / "a", reverse=False, mtime=1_700_000_000)
         (self.root / "out.zip").write_bytes(b"keep")
