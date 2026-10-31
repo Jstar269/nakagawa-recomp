@@ -4664,6 +4664,13 @@ static void test_umd_io_console_model(void) {
            "with no disc image a UMD sceIoReadAsync fails closed");
     expect(umd_test_async_call(UMD_NID_POLL_ASYNC, raw_fd, 0u, 0u, 0u, 0u) == 0x80010086u,
            "with no disc image a UMD sceIoPollAsync fails closed");
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 0x01F20001u;
+    cpu.r[8] = DATA_ADDR;
+    cpu.r[9] = 8u;
+    MEM_W32(DATA_ADDR + 4u, 0xaabbccddu);
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u && MEM_R32(DATA_ADDR + 4u) == 0xaabbccddu,
+           "with no disc image the UMD disc-type devctl fails closed without writing");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
@@ -4705,6 +4712,43 @@ static void test_umd_io_console_model(void) {
     cpu.r[5] = 0x02025806u;
     expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u,
            "raw UMD sceIoDevctl fails closed");
+    /* With the image open, the drive's disc type (0x01F20001) is PSP_UMD_TYPE_GAME in the
+     * output's second word, the first left as it was, and preparing data in the drive cache
+     * (0x01F100A4) completes at once. Malformed calls keep the boundary. */
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 0x01F20001u;
+    cpu.r[8] = DATA_ADDR;
+    cpu.r[9] = 8u;
+    MEM_W32(DATA_ADDR, 0x11111111u);
+    MEM_W32(DATA_ADDR + 4u, 0x22222222u);
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0u && MEM_R32(DATA_ADDR) == 0x11111111u &&
+               MEM_R32(DATA_ADDR + 4u) == 0x10u,
+           "the UMD disc-type devctl writes PSP_UMD_TYPE_GAME to the output's second word");
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 0x01F20001u;
+    cpu.r[8] = DATA_ADDR;
+    cpu.r[9] = 4u;
+    MEM_W32(DATA_ADDR + 4u, 0x22222222u);
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u && MEM_R32(DATA_ADDR + 4u) == 0x22222222u,
+           "a disc-type devctl with a four-byte output keeps the boundary");
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
+    cpu.r[5] = 0x01F100A4u;
+    cpu.r[6] = DATA_ADDR;
+    cpu.r[7] = 4u;
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0u,
+           "the UMD prepare-cache devctl completes at once");
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
+    cpu.r[5] = 0x01F100A4u;
+    cpu.r[6] = DATA_ADDR;
+    cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u,
+           "a prepare-cache devctl with no argument keeps the boundary");
+    fd_set_path(&cpu, PATH_ADDR, "msstor0p1:/");
+    cpu.r[5] = 0x01F20001u;
+    cpu.r[8] = DATA_ADDR;
+    cpu.r[9] = 8u;
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u,
+           "msstor0p1:/ keeps its raw-device boundary for a UMD devctl");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
@@ -4746,10 +4790,33 @@ static void test_umd_io_console_model(void) {
                sr_hle_test_fd_kind(raw_fd) != FD_KIND_RAW_DEVICE,
            "the queued raw UMD close completes with 0 and releases the descriptor");
 
+    /* sceIoOpenAsync of the UMD block device runs sceIoOpen's device open through the
+     * request queue: the descriptor comes back at once, the open is pending until the queue
+     * completes it with the descriptor as its result, and the descriptor is the same raw UMD
+     * sceIoOpen returns. A write open is refused as sceIoOpen refuses it. */
     fd_set_path(&cpu, PATH_ADDR, "umd0:");
     cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open_async);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "raw UMD sceIoOpenAsync returns the UMD block-device descriptor at once");
+    expect(umd_test_async_call(UMD_NID_POLL_ASYNC, raw_fd, PATH_ADDR + 0x100u, 0u, 0u, 0u) == 1u,
+           "the queued raw UMD open is still pending on its first poll");
+    expect(umd_test_async_call(UMD_NID_WAIT_ASYNC, raw_fd, PATH_ADDR + 0x100u, 0u, 0u, 0u) == 0u &&
+               umd_test_async_result(PATH_ADDR + 0x100u) == (int64_t)raw_fd,
+           "the queued raw UMD open completes with its descriptor as the result");
+    test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the asynchronously opened UMD closes");
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 2u;
+    expect(sr_syscall(&cpu, nid_io_open_async) == 0x80010086u &&
+               sr_hle_test_fd_kind(3u) != FD_KIND_RAW_DEVICE,
+           "a raw UMD sceIoOpenAsync for writing is refused as sceIoOpen refuses it");
+    fd_set_path(&cpu, PATH_ADDR, "msstor0p1:/");
+    cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, nid_io_open_async) == 0x80010086u,
-           "raw UMD sceIoOpenAsync fails closed because its semantics are unmeasured");
+           "msstor0p1:/ sceIoOpenAsync keeps its raw-device boundary");
     fd_set_path(&cpu, PATH_ADDR, "msstor0p1:/");
     cpu.r[5] = 1u;
     raw_fd = sr_syscall(&cpu, nid_io_open);

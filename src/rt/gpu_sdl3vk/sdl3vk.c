@@ -3249,6 +3249,11 @@ int sdl3vk_pause_input_selftest(void) {
 }
 #undef PAUSE_CHECK
 
+/* Set while the lifecycle selftest holds its own SDL video reference: SDL_WasInit cannot tell
+ * that reference from one sdl3vk leaked, so the per-step count then checks the gamepad
+ * subsystem only, and the selftest checks video once after releasing its reference. */
+static int s_lifecycle_test_holds_video = 0;
+
 /* Objects sdl3vk_init can create, and its SDL subsystems, that are still held. */
 static int lifecycle_live_objects(void) {
     static const PresentFrame empty;
@@ -3258,7 +3263,8 @@ static int lifecycle_live_objects(void) {
             (s_fence != VK_NULL_HANDLE) + (s_swap != VK_NULL_HANDLE) + s_sdl_subsystems;
     for (int i = 0; i < PRESENT_FRAMES; i++)
         n += memcmp(&s_frame[i], &empty, sizeof empty) != 0;
-    return n + (SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
+    return n + (SDL_WasInit(s_lifecycle_test_holds_video ? SDL_INIT_GAMEPAD
+                                                         : SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
 }
 
 /* Init unwind, repeated shutdown and re-init (#1377). A failure injected at each fallible step
@@ -3284,6 +3290,14 @@ static int sdl3vk_lifecycle_selftest(void) {
     VkInstanceCreateInfo keep_ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     VkInstance keep = VK_NULL_HANDLE;
     (void)vkCreateInstance(&keep_ci, NULL, &keep);
+    /* The test holds its own SDL video reference across the cycles too. sdl3vk_shutdown
+     * releases only its own (SDL_QuitSubSystem), so the video backend's display connection
+     * stays open instead of being reopened some 70 times: under xvfb on a loaded CI runner
+     * one reconnect was seen to fail ("x11 not available"), which the loop then reported as
+     * an unwind at the wrong step. sdl3vk's own objects are still counted below; a video
+     * reference it leaked in any cycle is caught once the test releases its own. */
+    const int keep_video = SDL_InitSubSystem(SDL_INIT_VIDEO) ? 1 : 0;
+    s_lifecycle_test_holds_video = keep_video;
     sdl3vk_shutdown();
     sdl3vk_shutdown();
     if (lifecycle_live_objects() != 0) {
@@ -3364,6 +3378,15 @@ static int sdl3vk_lifecycle_selftest(void) {
         }
     }
     if (keep) vkDestroyInstance(keep, NULL);
+    if (keep_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        s_lifecycle_test_holds_video = 0;
+        if (SDL_WasInit(SDL_INIT_VIDEO) != 0) {
+            fprintf(stderr, "lifecycle: SDL video still initialised after the cycles "
+                            "(a reference sdl3vk_init took was not released)\n");
+            ok = 0;
+        }
+    }
     if (sdl3vk_validation_error_count() != errors) {
         fprintf(stderr, "lifecycle: %d validation error(s) during the unwinds\n",
                 sdl3vk_validation_error_count() - errors);

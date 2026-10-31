@@ -215,8 +215,8 @@ same thing produce the same digest and are not two different builds.
 
 Ordering inside `dispatch()` is deliberate. The terminator check sits **after** the VFPU
 tag check, because the VFPU dispatch encoding is core vocabulary a title configuration
-must never be able to shadow, and **before** the `pc == 0` corruption guard, because a
-terminal callback is a normal completion rather than a collapsed thread. The alias check
+must never be able to shadow, and **before** the null-code-pointer stop for a target of 0
+(#1375), because a terminal callback is a normal completion even when its sentinel is 0. The alias check
 sits **after** the exact-hook table, so runtime policy hooks keep precedence over a title
 redirect, and before the lookup fixups, so an aliased target reaches the same code a
 direct target would.

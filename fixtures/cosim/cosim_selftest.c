@@ -426,10 +426,9 @@ static void seed_state(CpuState *s, const CosimCase *test) {
     /* FCC0 lives in FCR31 bit 23 and fpcond caches it; seed them coherently so a
      * lane that desynchronizes them is visible rather than pre-broken. */
     s->fpcond = (test->fcr31 >> 23) & 1u;
-    /* The synthetic caller PC. COSIM_ENTRY is guest text, is not zero (which the
-     * dispatch corruption guard claims) and is outside the 0x1000..0x10ff PLT
-     * window (which the PLT miss policy claims), so neither policy can shadow the
-     * behavior under test. */
+    /* The synthetic caller PC. COSIM_ENTRY is guest text and is outside the
+     * 0x1000..0x10ff PLT window (which the PLT miss policy claims), so that policy
+     * cannot shadow the behavior under test. */
     s->pc = COSIM_ENTRY;
     for (unsigned i = 0; i < 32u; i++) s->cop0[i] = 0xc0c00000u | i;
     s->cop0[SR_CP0_STATUS] = 0u;

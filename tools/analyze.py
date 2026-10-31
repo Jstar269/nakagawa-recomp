@@ -333,6 +333,7 @@ class Elf:
         self.base = base
         d = self.data
         self.reloc = None
+        self.relocated_words = None  # _relocated_words
         envelope = validate_elf32_envelope(d, input_label)
         # Section-table defects the PSP loader never sees (tools/elf_bounds.py); the
         # package route reports them as analysis diagnostics.
@@ -431,6 +432,8 @@ class Elf:
             prx = Prx(self.data if memory_input else path, base)
             prx.relocate()
             self.reloc = prx
+            if e_type == ET_SCE_PRX and prx.relocated:
+                self.relocated_words = prx.relocated
             self.entry = (self.entry + base) & 0xFFFFFFFF
             for s in self.sections:
                 s["addr"] += base
@@ -825,7 +828,302 @@ def _import_stub_is_file_executable(addr, file_exec_ranges):
             and in_ranges(addr + 4, file_exec_ranges))
 
 
-def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
+def _relocated_words(elf):
+    """The words the PSP loader rewrites in a relocatable module, by field, or None.
+
+    A relocatable module (ET_SCE_PRX with relocations) can load anywhere, so the loader
+    writes every absolute address it holds: a code pointer in data carries a 32-bit
+    relocation, a j/jal a 26-bit one and an `la` a HI16/LO16 pair. A word with no
+    relocation is not an address at any load address. In such a module it is therefore
+    no evidence of code: a small integer in .data that equals a .text offset of a
+    zero-based module, or a j/jal word that a heuristic seed walked into, is data. None for
+    every other image, whose absolute words are its addresses as they stand. The map is
+    {word address: "word32" | "jump26" | "hi16" | "lo16"} (prxload.Prx.relocated).
+    """
+    return getattr(elf, "relocated_words", None)
+
+
+def _relocated_jumps(elf):
+    """The relocation map that decides j/jal evidence, or None when every jump counts.
+
+    An unrelocated j/jal runs to its face value. A relocatable module placed at a load
+    address (a nonzero base) whose own calls carry no relocation was linked for that
+    address, so their face values are its addresses there. Without a load address (base
+    0) such a face value cannot be told apart from an address in the executable that a
+    module calls by link address, so only the relocated jumps are edges.
+    """
+    relocated = _relocated_words(elf)
+    return None if relocated is None or getattr(elf, "base", None) else relocated
+
+
+def _relocated_as(relocated, address, field):
+    """True when `address` may serve as address evidence: the image is not relocatable, or
+    the loader rewrites that word's `field` (see _relocated_words)."""
+    return relocated is None or relocated.get(address) == field
+
+
+#: The most words one called pointer array may hold (called_pointer_array_entries).
+POINTER_ARRAY_MAX_ENTRIES = 0x10000
+#: How many words of a candidate walker are read: the loop is a short leaf of its caller.
+POINTER_ARRAY_WALKER_MAX_WORDS = 64
+#: How many forwarding wrappers may stand between a call site and the walking loop.
+POINTER_ARRAY_WALKER_MAX_DEPTH = 4
+#: General registers a call may change: at, v0-v1, a0-a3, t0-t9 and ra.
+_CALL_CLOBBERED_GPRS = frozenset((1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 31))
+#: Opcodes that write no general register: branches (beq..bgtz and the likely forms) and
+#: stores (sb..sw, swl/swr, sc, swc1, the VFPU stores and sdc1).
+_NO_GPR_WRITE_OPS = frozenset((
+    0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17,
+    0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x38, 0x39, 0x3A, 0x3D, 0x3E, 0x3F,
+))
+
+
+def _executable_segment_spans(elf):
+    """The file-backed bytes of every executable PT_LOAD: what the PSP loader maps runnable."""
+    return sorted(
+        (segment["vaddr"], segment["vaddr"] + segment["filesz"])
+        for segment in getattr(elf, "segments", ())
+        if segment["type"] == 1 and segment.get("flags", 0) & 1 and segment["filesz"] > 0
+    )
+
+
+def _containing_span(address, spans):
+    return next((span for span in spans if span[0] <= address < span[1]), None)
+
+
+def _is_pointer_array_walker(elf, entry, memo=None, depth=0):
+    """True when the function at `entry` calls every word of the array [a0, a1).
+
+    Start-up code runs C++ static constructors this way: it passes the bounds of a table
+    of function pointers to a short loop that loads each word and calls it
+    (`for (p = start; p < end; p++) (*p)();`). The loop is read from its own instructions,
+    in address order up to the first `jr $ra`: a cursor that starts as a0 and moves by 4
+    is dereferenced, and the word loaded is the target of a `jalr $ra`; the cursor steps
+    by 4; it is compared with the end, a1; and a branch after the call goes back to or
+    before it. The cursor and the end may sit in registers or in the function's stack
+    slots, where an unoptimised build keeps them. A function that passes its own a0 and
+    a1 on unchanged to a walker (`jal`) walks the array too. An instruction the reading
+    does not model makes what it writes unknown, so an unfamiliar shape is not a walker.
+    `memo` caches answers by entry across calls.
+    """
+    if memo is None:
+        memo = {}
+    if entry in memo:
+        return memo[entry]
+    if depth > POINTER_ARRAY_WALKER_MAX_DEPTH:
+        return False
+    memo[entry] = False  # until answered: a call cycle is not a walker
+    cursor, end, element = "cursor", "end", "element"
+    regs = {4: cursor, 5: end}
+    slots = {}
+    called_at = None
+    stepped = compared = looped = forwards = False
+    stop_at = entry + 4 * POINTER_ARRAY_WALKER_MAX_WORDS
+
+    def value(reg):
+        return None if reg == 0 else regs.get(reg)
+
+    def write(reg, val):
+        if reg == 0:
+            return
+        if val is None:
+            regs.pop(reg, None)
+        else:
+            regs[reg] = val
+
+    pc = entry
+    pending = None  # (address after a transfer's delay slot, direct target or None, is a jump)
+    while True:
+        if pending is not None and pc == pending[0]:
+            target, jump = pending[1], pending[2]
+            pending = None
+            if (target is not None and value(4) == cursor and value(5) == end
+                    and _is_pointer_array_walker(elf, target, memo, depth + 1)):
+                forwards = True
+            if jump:
+                break
+            for reg in _CALL_CLOBBERED_GPRS:
+                regs.pop(reg, None)
+        if pc >= stop_at:
+            break
+        raw = elf.read_at_vaddr(pc, 4)
+        if raw is None or len(raw) < 4:
+            return False
+        word = int.from_bytes(raw, "little")
+        op, rs, rt, rd = word >> 26, (word >> 21) & 0x1F, (word >> 16) & 0x1F, (word >> 11) & 0x1F
+        simm = (word & 0xFFFF) - (0x10000 if word & 0x8000 else 0)
+        if op == 0:
+            funct = word & 0x3F
+            if funct == 0x08:  # jr: only `jr $ra` ends the walker, after its delay slot
+                if rs != 31:
+                    return False
+                stop_at = pc + 8
+            elif funct == 0x09:  # jalr rd, rs: the call through the loaded word
+                if rd == 31 and value(rs) == element:
+                    called_at = pc
+                write(rd, None)
+                pending = (pc + 8, None, False)
+            elif funct in (0x21, 0x25) and 0 in (rs, rt):  # addu/or with $zero: a move
+                write(rd, value(rs or rt))
+            elif funct in (0x2A, 0x2B):  # slt/sltu
+                if {value(rs), value(rt)} == {cursor, end}:
+                    compared = True
+                write(rd, None)
+            else:
+                write(rd, None)
+        elif op == 0x09:  # addiu rt, rs, simm
+            if rs == 29 and rt == 29:
+                slots = {}  # a new frame: earlier slot offsets name other words
+            elif value(rs) == cursor and simm == 4:
+                stepped = True
+                write(rt, cursor)
+            else:
+                write(rt, value(rs) if simm == 0 else None)
+        elif op == 0x23:  # lw rt, simm(rs)
+            if rs == 29:
+                write(rt, slots.get(simm))
+            else:
+                write(rt, element if value(rs) == cursor and simm == 0 else None)
+        elif op == 0x2B:  # sw rt, simm(rs)
+            if rs == 29:
+                if value(rt) is None:
+                    slots.pop(simm, None)
+                else:
+                    slots[simm] = value(rt)
+        elif op in (0x02, 0x03):  # j / jal: a call, or a tail jump that ends the function
+            target = (pc & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
+            if op == 0x03:
+                write(31, None)
+            else:
+                stop_at = pc + 8
+            pending = (pc + 8, target, op == 0x02)
+        elif op == 0x01 or op in _NO_GPR_WRITE_OPS:
+            if op in (0x04, 0x05, 0x14, 0x15) and {value(rs), value(rt)} == {cursor, end}:
+                compared = True
+            if op == 0x01 and rt in REGIMM_LINK_RT:
+                write(31, None)
+            target = branch_target(pc, word)
+            if called_at is not None and target is not None and target <= called_at < pc:
+                looped = True
+        elif op == 0x11 and rs in (0x00, 0x02):  # mfc1/cfc1 write rt
+            write(rt, None)
+        elif op != 0x11 and op not in (0x31, 0x35, 0x36):  # other GPR writers: rt or rd
+            write(rt, None)
+            write(rd, None)
+        pc += 4
+    memo[entry] = forwards or (called_at is not None and stepped and compared and looped)
+    return memo[entry]
+
+
+def _constant_arguments_at_calls(elf, covered, relocated):
+    """Yield (target, a0, a1) for each traced direct `jal`/`j` with constant a0 and a1.
+
+    A constant is materialised by `lui` and `addiu`/`ori` in the same straight-line run of
+    traced words, the call's delay slot included. A run ends at a gap, after a control
+    transfer's delay slot, and at any branch or jump target, where another path joins with
+    other values. In a relocatable module each constant's low half must be a LO16 the
+    loader relocates, and the call a jump that names the module (_relocated_jumps), as for
+    every other address evidence.
+    """
+    addresses = sorted(covered)
+    words = {}
+    for address in addresses:
+        raw = elf.read_at_vaddr(address, 4)
+        if raw is not None and len(raw) == 4:
+            words[address] = int.from_bytes(raw, "little")
+    joins = set()
+    for address, word in words.items():
+        op = word >> 26
+        if op == 2:
+            joins.add((address & 0xF0000000) | ((word & 0x3FFFFFF) << 2))
+        elif op != 3:
+            target = branch_target(address, word)
+            if target is not None:
+                joins.add(target)
+    consts = {}  # reg -> (value, address of the instruction that completed it)
+    pending = None  # (transfer address, call target or None)
+    previous = None
+    for address in addresses:
+        word = words.get(address)
+        if word is None or previous is None or address != previous + 4 or address in joins:
+            consts = {}
+            if pending is not None and address != pending[0] + 4:
+                pending = None
+        previous = address
+        if word is None:
+            continue
+        op, rs, rt, rd = word >> 26, (word >> 21) & 0x1F, (word >> 16) & 0x1F, (word >> 11) & 0x1F
+        if op == 0x0F:  # lui
+            consts[rt] = ((word & 0xFFFF) << 16, None)
+        elif op in (0x09, 0x0D) and rs in consts:  # addiu/ori on a constant
+            base = consts[rs][0]
+            low = (word & 0xFFFF) - (0x10000 if op == 0x09 and word & 0x8000 else 0)
+            consts[rt] = (((base + low) if op == 0x09 else (base | low)) & 0xFFFFFFFF, address)
+        elif op == 0 and (word & 0x3F) in (0x21, 0x25) and 0 in (rs, rt) and (rs or rt) in consts:
+            consts[rd] = consts[rs or rt]
+        elif op == 0:
+            consts.pop(rd, None)
+        elif op not in _NO_GPR_WRITE_OPS and op not in (0x01, 0x02, 0x03, 0x11, 0x31, 0x35, 0x36):
+            consts.pop(rt, None)
+            if op in (0x1C, 0x1F):  # SPECIAL2/SPECIAL3 forms that write rd (seb, wsbh, ...)
+                consts.pop(rd, None)
+        consts.pop(0, None)
+        if pending is not None and address == pending[0] + 4:
+            transfer, target = pending
+            pending = None
+            a0, a1 = consts.get(4), consts.get(5)
+            if (target is not None and a0 is not None and a1 is not None
+                    and _relocated_as(_relocated_jumps(elf), transfer, "jump26")
+                    and all(lo is not None and _relocated_as(relocated, lo, "lo16")
+                            for _, lo in (a0, a1) if relocated is not None)):
+                yield target, a0[0], a1[0]
+            consts = {}
+            continue
+        if op in (0x02, 0x03):
+            pending = (address, (address & 0xF0000000) | ((word & 0x3FFFFFF) << 2))
+        elif (op == 0 and (word & 0x3F) in (0x08, 0x09)) or branch_target(address, word) is not None:
+            pending = (address, None)
+
+
+def called_pointer_array_entries(elf, covered, relocated=None):
+    """Function entries in the pointer arrays that traced code passes to a walker.
+
+    For every traced call or jump to a pointer-array walker (_is_pointer_array_walker)
+    with a constant array [a0, a1), each nonzero word of the array is an entry: the
+    walker calls it. An array whose words are not all aligned addresses in executable
+    segment bytes (or, in a relocatable module, 32-bit relocations) is not understood
+    and seeds nothing. The bytes need not be in a named code section: a section table
+    that labels the constructors `.data` does not move them out of the executable
+    segment the PSP runs them from.
+    """
+    executable = _executable_segment_spans(elf)
+    walkers = {}
+    entries = set()
+    for target, start, end in _constant_arguments_at_calls(elf, covered, relocated):
+        if (start >= end or (start | end) & 3
+                or (end - start) // 4 > POINTER_ARRAY_MAX_ENTRIES):
+            continue
+        if not _is_pointer_array_walker(elf, target, walkers):
+            continue
+        blob = elf.read_at_vaddr(start, end - start)
+        if blob is None or len(blob) != end - start:
+            continue
+        table = []
+        for offset in range(0, len(blob), 4):
+            word = int.from_bytes(blob[offset:offset + 4], "little")
+            if word == 0:
+                continue
+            if ((word & 3) or not in_ranges(word, executable)
+                    or not _relocated_as(relocated, start + offset, "word32")):
+                table = None
+                break
+            table.append(word)
+        if table:
+            entries.update(table)
+    return entries
+
+
+def trace_function(elf, start, ranges, covered, calls, hc, walked=None, unrelocated=None):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call target (jal,
     # or a linking branch to a callable, #968) to `calls`. Returns newly found targets so
@@ -844,6 +1142,11 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Without the memo every start re-expands the whole shared tail it reaches: a profiled
     # run of one large executable expanded each word about 190 times. `walked=None` is the
     # uncached walk, kept so tests can pin the memoized walk against it.
+    # In a relocatable module analysed without a load address (_relocated_jumps) a j/jal the
+    # loader does not relocate names an address outside the module (a module linked against
+    # its executable calls into it this way), so its target is no edge into this module's
+    # code; the word is added to `unrelocated` when the caller passes a set.
+    relocated = _relocated_jumps(elf)
     ranges = span_index(ranges)
     stack = [start]
     local = set()
@@ -896,6 +1199,16 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
             word = int.from_bytes(wb, 'little')
             op = word >> 26
             funct = word & 0x3F
+            if op in (2, 3) and not _relocated_as(relocated, pc, "jump26"):
+                # Its target is not this module's code: a call (jal) continues past the delay
+                # slot like any call, a jump (j) ends the path like a tail call.
+                if unrelocated is not None:
+                    unrelocated.add(pc)
+                covered.add(pc + 4)
+                if op == 2:
+                    break
+                pc += 8
+                continue
             if op == 3:  # jal: direct call, returns -> continue past delay slot
                 target = (pc & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
                 if in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf)):
@@ -1493,6 +1806,7 @@ _CFG_DETAIL_NAMES = (
     "linear",
     "known-entry-tail-transfer",
     "computed-tail-transfer",
+    "landed-delay-slot",
 )
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
@@ -1940,6 +2254,15 @@ def canonical_cfg_state(image, ranges=None, entries=None):
         state.edge_details.append(-1 if detail is None else _CFG_DETAIL_IDS[detail])
         edge_counts[source_index] += 1
 
+    # Words a direct jump, call or branch lands on. Landing on a delay slot runs it as an
+    # ordinary instruction, and execution continues at the word after it.
+    landed = set()
+    for address, word in zip(state.addresses, state.words, strict=True):
+        if word >> 26 in (2, 3):
+            landed.add(((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+        elif branch_target(address, word) is not None:
+            landed.add(branch_target(address, word))
+
     for source_index, address in enumerate(state.addresses):
         word = state.words[source_index]
         control = _cfg_control_transfer(word)
@@ -1998,6 +2321,8 @@ def canonical_cfg_state(image, ranges=None, entries=None):
                     )
             elif state.delay_of[source_index] == _CFG_NONE and next_index is not None:
                 add_edge(source_index, address + 4, "fallthrough", "linear")
+            elif next_index is not None and address in landed:
+                add_edge(source_index, address + 4, "fallthrough", "landed-delay-slot")
 
     # A direct jump/branch to a known entry is a tail transfer.  Keep this as a
     # post-pass so all edge kinds use the same entry qualification.
@@ -2712,6 +3037,10 @@ def code_pointer_evidence(elf, ranges):
     """
     evidence = {kind: set() for kind in ("jal", "branch-link", "immediate", "data")}
     file_exec_ranges = _file_backed_exec_ranges(elf)
+    # A relocatable module's addresses are only the words its loader relocates (its jumps:
+    # see _relocated_jumps).
+    relocated = _relocated_words(elf)
+    jumps = _relocated_jumps(elf)
 
     hireg = {}
     clear_next = False
@@ -2722,7 +3051,7 @@ def code_pointer_evidence(elf, ranges):
         op = word >> 26
         if op == 3:  # jal
             target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-            if in_ranges(target, ranges):
+            if in_ranges(target, ranges) and _relocated_as(jumps, addr, "jump26"):
                 evidence["jal"].add(target)
         elif op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT:
             target = branch_target(addr, word)
@@ -2739,7 +3068,8 @@ def code_pointer_evidence(elf, ranges):
                     value = (base + low) & 0xFFFFFFFF
                 else:
                     value = base | (word & 0xFFFF)
-                if in_ranges(value, ranges) and (value & 3) == 0:
+                if (in_ranges(value, ranges) and (value & 3) == 0
+                        and _relocated_as(relocated, addr, "lo16")):
                     evidence["immediate"].add(value)
         if branch_target(addr, word) is not None or op in (2, 3) or (
             op == 0 and (word & 0x3F) in (0x08, 0x09)
@@ -2764,6 +3094,7 @@ def code_pointer_evidence(elf, ranges):
             if (
                 (in_ranges(value, ranges) or in_ranges(value, file_exec_ranges))
                 and (value & 3) == 0
+                and _relocated_as(relocated, section["addr"] + off, "word32")
             ):
                 evidence["data"].add(value)
 
@@ -2780,12 +3111,19 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     # and hc (the high-confidence seeds). The return value is unchanged.
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
+    relocated = _relocated_words(elf)
+    jumps = _relocated_jumps(elf)
+    # Executable segment bytes that a called pointer array proves hold code although the
+    # section table names them data (see called_pointer_array_entries). Filled after the
+    # first discovery round; only control flow from those entries reaches into them.
+    proven_spans = []
 
     def trace_ranges_for_entry(entry):
         if in_ranges(entry, ranges):
             return ranges
         containing = next(
-            (span for span in file_exec_ranges if span[0] <= entry < span[1]), None
+            (span for span in (*file_exec_ranges, *proven_spans) if span[0] <= entry < span[1]),
+            None,
         )
         if containing is None:
             return ranges
@@ -2864,7 +3202,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
         blob = section_bytes(elf, s)
         for o in range(0, len(blob) - 3, 4):
             val = int.from_bytes(blob[o:o + 4], 'little')
-            if in_ranges(val, ranges) and (val & 3) == 0:
+            if (in_ranges(val, ranges) and (val & 3) == 0
+                    and _relocated_as(relocated, s["addr"] + o, "word32")):
                 hc.add(val)
     # Exported functions from .lib.ent. Each export record is a 16-byte head --
     # library name, version, attribute, length in words (at least 4), variable
@@ -2937,7 +3276,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
         blob = section_bytes(elf, s)
         for o in range(0, len(blob) - 3, 4):
             val = int.from_bytes(blob[o:o + 4], 'little')
-            if in_ranges(val, ranges) and (val & 3) == 0:
+            if (in_ranges(val, ranges) and (val & 3) == 0
+                    and _relocated_as(relocated, s["addr"] + o, "word32")):
                 hc.add(val)
 
     # Linker-specific data-section names can also contain function pointers.
@@ -2961,8 +3301,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     # instruction is reached; a linear sweep can mistake data inside .text for a call.
     sys.stderr.write(f"SCANNING RANGES: {ranges}\n")
 
-    def note_address_taken(val):
-        if (val & 3) != 0:
+    def note_address_taken(val, low_half_addr):
+        if (val & 3) != 0 or not _relocated_as(relocated, low_half_addr, "lo16"):
             return
         if in_ranges(val, ranges):
             if _is_address_taken_entry(elf, val):
@@ -3002,7 +3342,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             op = word >> 26
             if op == 2:  # j: tail call or intra-function goto -> weak
                 target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-                if in_ranges(target, ranges):
+                if in_ranges(target, ranges) and _relocated_as(jumps, addr, "jump26"):
                     noisy.add(target)
                     jtails.add(target)
             if (word >> 16) == 0x27BD and (word & 0x8000):  # addiu $sp,$sp,-N prologue
@@ -3042,12 +3382,12 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                 rs = (word >> 21) & 0x1F
                 if rs in hireg and isinstance(hireg[rs], int):
                     val = (hireg[rs] + ((word & 0xFFFF) - (0x10000 if word & 0x8000 else 0))) & 0xFFFFFFFF
-                    note_address_taken(val)
+                    note_address_taken(val, addr)
             elif op == 0x0D:  # ori rt, rs, imm  (la low half)
                 rs = (word >> 21) & 0x1F
                 if rs in hireg and isinstance(hireg[rs], int):
                     val = hireg[rs] | (word & 0xFFFF)
-                    note_address_taken(val)
+                    note_address_taken(val, addr)
             elif op == 0 and (word & 0x3F) == 0x21: # addu rd, rs, rt
                 rs_reg, rt_reg, rd_reg = (word >> 21) & 0x1F, (word >> 16) & 0x1F, (word >> 11) & 0x1F
                 if rs_reg in hireg and isinstance(hireg[rs_reg], int):
@@ -3073,7 +3413,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                                 tb = elf.read_at_vaddr(ptr + j*4, 4)
                                 if not tb or len(tb) < 4: break
                                 val = int.from_bytes(tb, 'little')
-                                if in_text(val): hc.add(val)
+                                if in_text(val) and _relocated_as(relocated, ptr + j*4, "word32"):
+                                    hc.add(val)
                                 else: break
             elif op == 0 and (word & 0x3F) in (0x08, 0x09):  # jr rs / jalr rd, rs
                 rs_reg = (word >> 21) & 0x1F
@@ -3083,7 +3424,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                         tb = elf.read_at_vaddr(table_addr + j*4, 4)
                         if not tb or len(tb) < 4: break
                         val = int.from_bytes(tb, 'little')
-                        if in_text(val): hc.add(val)
+                        if in_text(val) and _relocated_as(relocated, table_addr + j*4, "word32"):
+                            hc.add(val)
                         else: break
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
@@ -3112,22 +3454,49 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
         # The two tests are deliberately asymmetric. `ranges` already carries the title's
         # extra executable spans (exec_ranges), which need not be file-backed, while
         # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
-        # an extra span that is not file-backed is accepted through `ranges` alone.
-        return in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
+        # an extra span that is not file-backed is accepted through `ranges` alone. A
+        # proven span (a called pointer array's targets) is callable the same way; only a
+        # trace that starts inside it can name a target there.
+        return (in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
+                or in_ranges(addr, proven_spans))
+
+    def discover(work):
+        # Trace from `work`, following discovered calls, then seed the pointer arrays the
+        # traced code calls through, until neither finds anything new.
+        while True:
+            while work:
+                s = work.pop()
+                new_calls = []
+                if callable_target(s):
+                    new_calls = trace(s, trace_ranges_for_entry(s))
+                for t in new_calls:
+                    if t not in functions and callable_target(t):
+                        functions.add(t)
+                        work.append(t)
+            # Start-up code calls every word of a function-pointer array (C++ static
+            # constructors). Each word is a function entry even where the section table
+            # names the bytes data: some retail section tables label everything after the
+            # import tables `.data`, constructors included. The traced call sites are the
+            # evidence, so this runs once the traced code is known.
+            seeds = set()
+            for entry in called_pointer_array_entries(elf, covered, relocated):
+                if entry in functions:
+                    continue
+                if not callable_target(entry):
+                    span = _containing_span(entry, _executable_segment_spans(elf))
+                    if span is None:
+                        continue
+                    if span not in proven_spans:
+                        proven_spans.append(span)
+                seeds.add(entry)
+            if not seeds:
+                return
+            hc.update(seeds)
+            functions.update(seeds)
+            work.extend(sorted(seeds))
 
     functions = set(hc)
-    work = list(hc)
-    while work:
-        s = work.pop()
-        new_calls = []
-        if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            new_calls = trace(s, trace_ranges_for_entry(s))
-        for t in new_calls:
-            if t not in functions and (
-                in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
-            ):
-                functions.add(t)
-                work.append(t)
+    discover(list(hc))
 
     # Tail-call promotion: a `j` target that no fallthrough can reach (the word 8
     # bytes before it -- the previous slot's terminator position -- is `jr`, `j`,
@@ -3197,13 +3566,17 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                         pending_gap_calls.extend(trace(t, trace_ranges_for_entry(t)))
                 changed = True
 
-    # A direct call can prove that code exists outside named .text sections. Grant the
-    # interpreter floor only the instructions reached from those roots, never the
-    # surrounding executable PT_LOAD's unowned gaps.
+    # The late passes can reach start-up code that calls a pointer array (a function
+    # entered only through a pointer or the gap fill); seed those arrays too.
+    discover([])
+
+    # A direct call, or a called pointer array, can prove that code exists outside named
+    # .text sections. Grant the interpreter floor only the instructions reached from those
+    # roots, never the surrounding executable PT_LOAD's unowned gaps.
     extra_addresses = sorted({
         address for address in covered
         if not in_ranges(address, ranges)
-        and in_ranges(address, file_exec_ranges)
+        and (in_ranges(address, file_exec_ranges) or in_ranges(address, proven_spans))
         and elf.read_at_vaddr(address, 4) is not None
     })
     owned_spans = list(ranges)

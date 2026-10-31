@@ -5600,8 +5600,14 @@ int main(int argc, char *argv[]) {
             last_package_cache_generation =
                 app.runtime_package_cache_generation;
         }
+        /* The periodic re-check waits for 2 s with no check running. Counted from
+           the previous rescan instead, a check that took 2 s or more (a large
+           package, a loaded host) found the next one already queued when it ended,
+           so the launcher re-checked back to back and never went idle. */
         uint64_t package_scan_now = SDL_GetTicks();
-        if (package_scan_now - last_package_scan_tick >= 2000) {
+        if (package_status_job) {
+            last_package_scan_tick = package_scan_now;
+        } else if (package_scan_now - last_package_scan_tick >= 2000) {
             player_package_status_queue_all(
                 &app, package_status_requested,
                 package_status_force_requested);
