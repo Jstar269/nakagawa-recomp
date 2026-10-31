@@ -4984,8 +4984,12 @@ static void retire_loaded_module(LoadedModule *mod) {
 static uint32_t s_last_prx_entry = 0;
 static uint32_t s_last_prx_stop = 0;
 static uint32_t s_last_prx_base = 0;
+/* The last module register_prx_exports read exports a function host HLE implements: its
+ * identity is the export table, never its path (#1385). */
+static int s_last_prx_host_served = 0;
 
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
+    s_last_prx_host_served = 0;
     FILE *f = fopen(host_path, "rb");
     if (!f) {
         char temp_path[512];
@@ -5085,6 +5089,7 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
                      * nonzero base; only reject the final absolute-address wrap. */
                     if (target <= UINT32_MAX - base &&
                         sr_hle_register_late_import(pairs[i], base + target)) registered++;
+                    if (hle_find(pairs[i])) s_last_prx_host_served = 1;
                     if (target <= UINT32_MAX - base) {
                         if (pairs[i] == 0xd632acdbu) {
                             s_last_prx_entry = base + target;
@@ -5113,6 +5118,10 @@ out:
  * on test-only loader entry points. */
 unsigned sr_hle_test_register_prx_exports(const char *host_path, uint32_t base) {
     return register_prx_exports(host_path, base);
+}
+int sr_hle_test_last_prx_host_served(void) { return s_last_prx_host_served; }
+void sr_hle_test_unregister_late_imports(uint32_t lo, uint32_t hi) {
+    sr_hle_unregister_late_imports_in_range(lo, hi);
 }
 #endif
 
@@ -5743,6 +5752,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     s_last_prx_base = 0;
+    s_last_prx_host_served = 0;
     if (declared && placement == SR_GUEST_MODULE_RUNTIME) {
         uint32_t error = load_guest_placed_module(file, required, option, mod);
         if (error) {
@@ -5764,6 +5774,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
         mod->image_base = s_last_prx_base;
+        mod->host_served = s_last_prx_host_served;
         (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     }
     uint32_t uid = sr_alloc_uid();
@@ -8446,6 +8457,43 @@ int sr_exit_request_quit(void) {
 int sr_exit_request_expired(void) {
     return s_exit_request_pending && sched_vtime_us() >= s_exit_request_deadline_us;
 }
+
+int sr_savedata_pause_busy(void);   /* the savedata dialog is running (defined below) */
+static int s_quit_stop_armed;
+static uint64_t s_quit_stop_deadline_us;
+
+/* The player's stop decision for a quit request, polled at scheduler boundaries (#1377). The
+ * first call notifies the exit callback (sr_exit_request_quit) and opens one window of guest
+ * time, SR_EXIT_REQUEST_WINDOW_US, whether or not a callback is registered. Returns 0 while the
+ * run goes on: the guest's callback window is open, or a savedata dialog it started is still
+ * running inside that window, so a quit does not cut off a save in progress (the pause
+ * overlay's Quit is refused for the same reason). Returns 1 once the run should end; the window
+ * bounds the wait, so a guest that never finishes cannot hold the player open. The stop lands
+ * only between guest slices, never inside the sceUtilitySavedataUpdate call that writes the
+ * save (sr_savedata_execute_sized runs within it), so no write is cut off halfway. */
+int sr_exit_request_stop_due(void) {
+    if (!s_quit_stop_armed) {
+        s_quit_stop_armed = 1;
+        s_quit_stop_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
+    }
+    /* One window from the request: a callback the guest registers later is still notified,
+     * but it cannot open a second window past this one. */
+    if (sched_vtime_us() >= s_quit_stop_deadline_us) return 1;
+    if (sr_exit_request_quit()) return 0;
+    if (sched_vtime_us() < s_quit_stop_deadline_us && sr_savedata_pause_busy()) return 0;
+    return 1;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* A fresh quit for each test: nothing in the runtime resets a quit request, which lasts for
+ * the process (a LoadExec in the window does not give the next program a new one). */
+void sr_hle_test_exit_request_reset(void) {
+    s_exit_request_pending = 0;
+    s_exit_request_deadline_us = 0u;
+    s_quit_stop_armed = 0;
+    s_quit_stop_deadline_us = 0u;
+}
+#endif
 /* sceKernelStopUnloadSelfModuleWithStatus(status, ...): on hardware the kernel stops the
  * module's threads and reclaims its memory -- control NEVER returns to the caller. The
  * runtime loads exactly one game module and its threads are the only execution surface,
@@ -15663,14 +15711,11 @@ static uint32_t h_StartModule(CpuState *s) {
      * unavailable, so it reaches the fail-closed startup boundary below. */
     int refuse_unavailable_libfont = policy == MODULE_START_NONE && is_libfont;
 
-    /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
-     * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
-     * real module_start entries (f_32280000/f_322f8868) are genuine Sony SDK init code that
-     * assumes a real PSP kernel underneath -- running them hangs on an unconditional WaitSema.
-     * This is a second, independent call path into the same PRXs (via sceKernelLoadModule +
-     * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
-     * populate_known_module(path) was already called in h_LoadModule when the module was
-     * recorded, so it is not repeated here. */
+    /* A module whose exports host HLE implements (the PSMF and PSMF-player libraries, for
+     * example) keeps the host bypass: its real module_start is SDK init code that assumes a
+     * real PSP kernel underneath and hangs on an unconditional WaitSema. What the record knows
+     * of a module is its export table (host_served), never a substring of its path, so a
+     * look-alike file name changes nothing (#1385). */
     if (!allow_entry && !refuse_unavailable_libfont) {
         if (policy == MODULE_START_NONE) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
@@ -15679,14 +15724,9 @@ static uint32_t h_StartModule(CpuState *s) {
         } else if (mod->runtime_placed) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves "
                             "this module's exports; module_start not executed\n", uid, path);
-        } else if (path) {
-            if (strstr(path, "psmf.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-            } else if (strstr(path, "libpsmfplayer.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-            } else {
-                fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
-            }
+        } else if (mod->host_served) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves this "
+                            "module's exports; module_start not executed\n", uid, path ? path : "");
         } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         }
@@ -15747,10 +15787,9 @@ static uint32_t h_StartModule(CpuState *s) {
     static int s_logged_untranslated = 0;
     if (!is_libfont && !s_logged_untranslated) {
         s_logged_untranslated = 1;
-        if (strstr(mod->path, "psmf.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-        } else if (strstr(mod->path, "libpsmfplayer.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
+        if (mod->host_served) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves this "
+                            "module's exports; module_start not executed\n", uid, mod->path);
         } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
@@ -15845,6 +15884,11 @@ void sr_hle_test_module_reset(void) {
 uint32_t sr_hle_test_started_export(uint32_t nid) { return started_module_export(nid); }
 unsigned sr_hle_test_image_count(void) { return s_prx_image_count; }
 unsigned sr_hle_test_module_count(void) { return (unsigned)s_nloaded_modules; }
+/* -1 when no live record has the UID; else whether host HLE serves its exports. */
+int sr_hle_test_module_host_served(uint32_t uid) {
+    LoadedModule *mod = find_loaded_module(uid);
+    return mod ? mod->host_served : -1;
+}
 int sr_hle_test_started_image_count(void) {
     return atomic_load_explicit(&s_prx_started_count, memory_order_acquire);
 }

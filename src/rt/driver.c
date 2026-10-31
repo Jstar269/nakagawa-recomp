@@ -50,6 +50,13 @@ static SrPauseHost s_driver_pause_host = {
     .busy_reason = gui_pause_busy_reason,
 };
 
+/* A scheduler run that ends without the guest ending it stops at the scheduler's next
+ * boundary (#1377): the window reports an acceptance launch's last frame or the person's quit
+ * (gui_stop_requested), and an SR_GE_CAPTURE_EXIT capture asks to end once written. */
+static int driver_stop_requested(void) {
+    return ge_capture_exit_due() || gui_stop_requested();
+}
+
 /* An opt-in file side channel for a parent launcher that cannot reliably own a
  * spawned child's stderr on every host backend. The normal runtime only writes
  * stderr; SR_BOOT_EVENT_FILE is used by the native-player launch smoke. */
@@ -664,9 +671,12 @@ have_image:;
         sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=window_presenter_unavailable");
         return SR_HEADLESS_ACCEPTANCE_EXIT_PRESENTER_UNAVAILABLE;
     }
-    /* An acceptance launch ends the scheduler once its requested frames were presented. */
-    if (gui_headless_acceptance_requested())
-        sr_sched_stop_requested = gui_headless_acceptance_complete;
+    /* An acceptance launch ends the scheduler once its requested frames were presented; a
+     * quit or a finished GE capture ends it the same way, at a scheduler boundary. */
+    if (use_sched) {
+        sr_sched_stop_requested = driver_stop_requested;
+        ge_capture_exit_set_deferred(1);
+    }
     if (gui_pause_presenter()) {
         s_driver_pause_host.enter = gui_pause_enter;
         s_driver_pause_host.frame = gui_pause_frame;
@@ -686,6 +696,13 @@ have_image:;
             sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
             sched_run(entry, s.r[4], s.r[5]);
 
+            /* A run stopped from outside the guest ends here, even with a LoadExec queued, and
+             * so does one the person asked to quit before the stop was due (a LoadExec from the
+             * guest's exit callback): no replacement program is booted. */
+            if (driver_stop_requested() || gui_quit_requested()) {
+                sr_hle_loadexec_finish();
+                break;
+            }
             SrLoadExecRequest request;
             memset(&request, 0, sizeof(request));
             if (!sr_hle_loadexec_take(&request)) {
@@ -736,7 +753,11 @@ have_image:;
         if (sr_perf_enabled) sr_perf_aot_end();
         if (sr_perf_enabled) sr_perf_guest_end();
     }
+    /* The SR_PERF summary first, while the GPU GE it samples still exists; then the presenter,
+     * so no Vulkan device outlives main into the driver's process teardown. Returning from
+     * main flushes stdio and runs every atexit handler (#1377). */
     sr_perf_shutdown();
+    gui_shutdown();
     sr_trace_close();
 
     const char *ppm_path = getenv("SR_PPM_DUMP");
