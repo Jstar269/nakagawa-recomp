@@ -2078,8 +2078,9 @@ static void test_mpeg_ycbcr_guest_contract(void) {
               mpeg_get_pcm_au(TD_MPEG_DESC, pcm_sid, TD_MPEG_SIZE + 0x28u, TD_MPEG_SIZE + 0x40u) ==
                   SCE_MPEG_ERROR_NO_DATA,
           "MPEG PCM AU remains an explicit no-data refusal");
-    CHECK(mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, MPEG_AU_MODE_SKIP) != 0u,
-          "MPEG AU skip mode fails closed without a queue contract");
+    CHECK(mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, MPEG_AU_MODE_SKIP) == 0u &&
+              mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, 2u) != 0u,
+          "MPEG AU skip mode is accepted and an unknown mode is refused");
     mpeg_finish();
     CHECK(ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR) == NULL,
           "MPEG teardown frees guest YCbCr state");
@@ -3803,6 +3804,12 @@ static void test_mpeg_atrac_au_decode(void) {
     CHECK(mpeg_ringbuffer_put(NULL, AT_RING, packets, packets) == packets,
           "mpeg-atrac: the whole stream is put into the ring");
     Mpeg *ctx = mpeg_find(AT_DESC);
+    /* Skip mode hands out the clock and holds no frame: the decode that follows has nothing. */
+    CHECK(mpeg_change_get_au_mode(AT_DESC, sid, MPEG_AU_MODE_SKIP) == 0u &&
+              mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u &&
+              mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == SCE_MPEG_ERROR_NO_DATA &&
+              mpeg_change_get_au_mode(AT_DESC, sid, MPEG_AU_MODE_DECODE) == 0u,
+          "mpeg-atrac: in skip mode GetAtracAu consumes no frame");
     int blocks = 0, exact = 1, clock = 1;
     for (int guard = 0; ctx && guard < 4 * AV_AUDIO_BLOCKS; guard++) {
         uint32_t r = mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR);

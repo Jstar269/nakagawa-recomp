@@ -813,6 +813,16 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
     return addedTotal;
 }
 
+static int mpeg_stream_index(const Mpeg *ctx, uint32_t sid);
+/* sceMpegChangeGetAuMode(..., MPEG_AU_MODE_SKIP): the stream's AU getters hand out the clock and
+ * consume no stream data until the mode returns to decode (PPSSPP's streamIgnoreMap, c9e2afb6).
+ * UNMEASURED on this project's PSP; a guest PSMF player switches its streams this way when it
+ * resets its decoders. */
+static int mpeg_stream_skipped(const Mpeg *ctx, uint32_t sid) {
+    int index = mpeg_stream_index(ctx, sid);
+    return index >= 0 && ctx->streams[index].auMode == (int)MPEG_AU_MODE_SKIP;
+}
+
 static Mpeg *au_stream(uint32_t mpegAddr, uint32_t sid, int *needsReset, int *num) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return 0;
@@ -844,6 +854,14 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     }
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
+    if (mpeg_stream_skipped(ctx, sid)) {
+        int64_t clock = ctx->videoPts + ctx->firstTimestamp;
+        au_write_pts(auAddr, 0, clock);
+        au_write_pts(auAddr, 8, clock - videoTimestampStep);
+        MEM_W32(auAddr + 16, (uint32_t)num);
+        if (attrAddr) MEM_W32(attrAddr, 1);
+        return 0;
+    }
     uint32_t release = 1;   /* timestamp model: one packet per access unit */
 #if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
     /* With a decoder, an access unit is one real picture of the demuxed stream: hand it out only
@@ -921,6 +939,14 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
      * Keep the demuxer's firstAudioPts for diagnostics, but do not substitute it for the public
      * sceMpeg AU time base. */
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    if (mpeg_stream_skipped(ctx, sid)) {
+        au_write_pts(auAddr, 0, pts);
+        au_write_pts(auAddr, 8, pts);
+        MEM_W32(auAddr + 16, (uint32_t)num);
+        MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
+        if (attrAddr) MEM_W32(attrAddr, 0);
+        return 0;
+    }
     if (!ctx->audioHeld) {
         mpeg_audio_pump(ctx);
         if (ctx->audioFifoCount) {
@@ -1456,9 +1482,7 @@ uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode)
     int index = mpeg_stream_index(ctx, sid);
     if (index < 0)
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (mode == MPEG_AU_MODE_SKIP)
-        return mpeg_contract_error("sceMpegChangeGetAuMode", "skip-mode queue and timestamp semantics are unmeasured", (uint32_t)-1);
-    ctx->streams[index].auMode = MPEG_AU_MODE_DECODE;
+    ctx->streams[index].auMode = (int)mode;
     return 0;
 }
 
