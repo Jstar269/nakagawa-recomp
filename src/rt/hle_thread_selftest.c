@@ -415,6 +415,8 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
 #define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
 #define NID_SCE_ATRAC_GET_ID 0x780f88d1u
+#define NID_SCE_ATRAC_GET_NEXT_SAMPLE 0x36faabfbu
+#define NID_SCE_ATRAC_GET_NEXT_DECODE_POSITION 0xe23e3a35u
 #define NID_SCE_ATRAC_DECODE_DATA 0x6a8c3cd5u
 #define NID_SCE_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
 #define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
@@ -1804,6 +1806,9 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version);
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname);
 
 /* with_start == 0 writes a library module with no start routine: the system library
  * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
@@ -1820,6 +1825,15 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version) {
+    return write_runtime_module_prx_lib(path, flavour, with_start, export_nid, modname,
+                                        sdk_version, "RtPlacedLib");
+}
+
+/* The named library is called `libname` (at most 15 characters, as the name slot before the
+ * module_sdk_version word holds). */
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     const int sdk_var = !with_start && sdk_version != 0u;
@@ -1831,7 +1845,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
         with_start ? RT_SYSLIB_TABLE + 8u : sdk_var ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u,
         RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
-    if (strlen(modname) >= 27u) return 0;
+    if (strlen(modname) >= 27u || strlen(libname) >= RT_SDK_VERSION_WORD - RT_LIBNAME) return 0;
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
     memset(image, 0, sizeof(image));
@@ -1879,7 +1893,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     seg[RT_LIBENT + 8] = 4;
     fixture_wr16(seg + RT_LIBENT + 10, 2);
     fixture_wr32(seg + RT_LIBENT + 12, RT_SYSLIB_TABLE);
-    /* Named library "RtPlacedLib": one function. */
+    /* Named library `libname`: one function. */
     fixture_wr32(seg + RT_LIBENT + 16, RT_LIBNAME);
     fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
     fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
@@ -1910,7 +1924,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     }
     fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
-    memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
+    memcpy(seg + RT_LIBNAME, libname, strlen(libname) + 1u);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
     for (uint32_t i = 0; i < RT_RELOC_COUNT; i++) {
         fixture_wr32(image + RELOC_OFFSET + 8u * i, sites[i]);
@@ -2060,6 +2074,79 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
+}
+
+/* A library the guest owns (the SDK's scePsmfPlayer) is the title's own code when its module
+ * is staged and translated (#286): the module is not host-served, so under the shipped
+ * default its start links its exports, and the export takes the NID over from the host
+ * handler that test_runtime_placed_hle_shadow shows keeping it under another library name.
+ * The fixture is start-less, like the SDK player module. The operator kill switch
+ * (SR_REAL_MODULE_START=0) still keeps the host handler. */
+#define RT_OWNED_MARK 0x0A11CE11u
+static uint32_t s_rt_owned_base;
+static void rt_owned_query(CpuState *s) { s->r[2] = RT_OWNED_MARK; }
+static const SrModuleFunc s_rt_owned_funcs[] = {
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_owned_query},
+};
+static SrModuleCode s_rt_owned_code = {
+    "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_owned_base,
+    s_rt_owned_funcs, 2u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
+
+static void test_runtime_placed_guest_owned_library(void) {
+    extern void sr_hle_test_partition_reset(void);
+    static const char owned_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+    char owned_path[1024];
+    const char *out;
+    uint32_t base = 0;
+    runtime_module_path(owned_path, sizeof(owned_path), "rt-nostart.prx");
+    expect(write_runtime_module_prx_lib(owned_path, 6u, 0, RT_HLE_SHADOW_NID, "rtowned", 0u,
+                                        "scePsmfPlayer") &&
+               runtime_module_identity(owned_path, &s_rt_owned_code),
+           "guest-owned library: the start-less scePsmfPlayer module fixture is written");
+
+    for (int kill_switch = 0; kill_switch <= 1; kill_switch++) {
+        sr_hle_test_module_reset();
+        sr_hle_test_partition_reset();
+        sr_module_code_reset();
+        sr_module_code_register(&s_rt_owned_code);
+        hle_test_setenv("SR_REAL_MODULE_START", kill_switch ? "0" : NULL);
+        unsigned stops = s_rt_stop_calls;
+        uint32_t uid = rt_load(owned_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_owned_code, &base) &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: before start the import reaches host HLE");
+        rt_capture_begin();
+        uint32_t started = rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u);
+        uint32_t answer = rt_shadow_import();
+        out = rt_capture_end();
+        if (!kill_switch) {
+            expect(started == 0u && strstr(out, "host HLE serves") == NULL &&
+                       sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                       answer == RT_OWNED_MARK,
+                   "guest-owned library: by default the module starts and its export runs "
+                   "instead of the host handler");
+        } else {
+            expect(started == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+                       answer == RT_HLE_SHADOW_HOST,
+                   "guest-owned library: SR_REAL_MODULE_START=0 keeps the host handler");
+        }
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_stop_calls == stops + (kill_switch ? 0u : 1u) &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: unload hands the NID back to host HLE");
+    }
+
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    remove(owned_path);
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
@@ -2600,6 +2687,7 @@ static void test_runtime_placed_modules(void) {
     }
 
     test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
+    test_runtime_placed_guest_owned_library();
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
@@ -26061,17 +26149,22 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 fixture releases its decoder context");
 
     /* First-call length against the 8-byte fact chunk's delay word, measured
-     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
-     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
-     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
-     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+     * on a PSP-3000 (#1096; at3-decode 2026-10-24, at3-delay-sweep 2026-10-31):
+     * delay 0 or 955..1797 gives 1024 - ((delay + 69) mod 1024) samples, a
+     * delay of 1..954 is refused by every decode with 0x80630002 and 0 samples,
+     * and the next-sample query before the call already reports the length.
+     * The position after the call is the samples returned. */
     {
         static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
             {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
             {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
             {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {956u, 0u, 1023u, "AT3 fact delay 956 gives a 1023-sample first call"},
+            {1387u, 0u, 592u, "AT3 fact delay 1387 (a retail track's) gives a 592-sample first call"},
+            {1797u, 0u, 182u, "AT3 fact delay 1797 gives a 182-sample first call"},
             {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
-            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+            {100u, 0x80630002u, 0u, "AT3 fact delay 100 is refused by the first decode with 0x80630002"},
+            {1u, 0x80630002u, 0u, "AT3 fact delay 1 is refused by the first decode with 0x80630002"},
         };
         for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
             uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
@@ -26082,9 +26175,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
                                     rows[r].delay);
             expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
                    "AT3 SetData accepts the fact-delay leg's track");
+            const uint32_t length = 1024u - (rows[r].delay + 69u) % 1024u;
+            MEM_W32(OUT_N, 0xffffffffu);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_GET_NEXT_SAMPLE, rid, OUT_N, 0u, 0u) == 0u &&
+                       MEM_R32(OUT_N) == length,
+                   "AT3 next-sample before the first call is 1024 - ((delay + 69) mod 1024)");
             uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
             expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
                    rows[r].what);
+            if (rows[r].ret) {
+                MEM_W32(OUT_N, 0xffffffffu);
+                expect(td24b_dispatch4(NID_SCE_ATRAC_GET_NEXT_DECODE_POSITION, rid, OUT_N, 0u, 0u) == 0u &&
+                           MEM_R32(OUT_N) == 0u,
+                       "AT3 position stays 0 when the first decode is refused");
+            }
             (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
         }
     }
@@ -26352,11 +26456,21 @@ static void test_at3_set_data_delay_2048_1096(void) {
            "#1096: and decodes it (955-sample first call)");
     (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
 
-    /* Only the measured delay is refused. */
+    /* The measured boundary (PSP-AT3-002, 2026-10-31): 1797 is accepted, 1855 and 2047 are refused. */
     id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
     td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 2047u);
+    expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0x80630008u,
+           "#1096: delay 2047 is refused by SetData with 0x80630008");
+    (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 1855u);
+    expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0x80630008u,
+           "#1096: delay 1855, the lowest refused, is refused by SetData with 0x80630008");
+    (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 1797u);
     expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
-           "#1096: delay 2047 is not measured as refused and stays accepted");
+           "#1096: delay 1797, the highest measured accepted, is accepted");
     if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
 
     /* The *AndGetID call shares the analysis (UNMEASURED beyond SetData) and
