@@ -662,8 +662,8 @@ def _write_display_smoke_iso(path: Path) -> None:
     path.write_bytes(image)
 
 
-def _request_player_window_close(process: subprocess.Popen) -> None:
-    """Close the player after the fixture guest has exited naturally."""
+def _request_player_window_close(process: subprocess.Popen, what: str = "native player") -> None:
+    """Close a process's window the way a person does: WM_CLOSE to its first window."""
     if process.poll() is not None:
         return
     if os.name != "nt":
@@ -687,7 +687,12 @@ def _request_player_window_close(process: subprocess.Popen) -> None:
         window_pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
         if window_pid.value == process.pid:
-            windows.append(hwnd)
+            # The window a person closes is a visible one: a graphics driver can own a hidden
+            # helper window in the same process, which ignores WM_CLOSE.
+            if user32.IsWindowVisible(hwnd):
+                windows.insert(0, hwnd)
+            else:
+                windows.append(hwnd)
         return True
 
     user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
@@ -695,7 +700,7 @@ def _request_player_window_close(process: subprocess.Popen) -> None:
     if not user32.EnumWindows(collect_process_window, 0):
         raise OSError(ctypes.get_last_error(), "EnumWindows failed")
     if not windows:
-        raise RuntimeError("native player window was not found for cleanup")
+        raise RuntimeError(f"{what} window was not found for cleanup")
     user32.PostMessageW.argtypes = [
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
     ]
@@ -929,6 +934,96 @@ def run(
         f"DISPLAY_SMOKE_RUN status=PASS mode={mode} "
         f"frames={frames} framebuffer=0x{FRAMEBUFFER:08x} value=0x{expected:08x}"
     )
+    return 0
+
+
+def run_quit(build_dir: Path) -> int:
+    """Close the runtime's window while the fixture guest is still running (#1377).
+
+    A quit stops the scheduler at its next boundary and the run ends through the driver's
+    teardown: the close is reported (``phase=quit_requested``), the driver's code after the
+    scheduler runs (its ``done (hit_hle=`` line), and the process exits 0. Before #1377 the
+    close called exit() from inside the presenter, so the driver never got there. The fixture
+    registers no exit callback, so the stop is due at once (hle-thread-selftest covers the
+    callback window). Windows only: the close is a WM_CLOSE to the window, which the default
+    SDL3/Vulkan presenter and the GDI fallback both receive; ``SR_VIDEO`` picks between them.
+    """
+    if os.name != "nt":
+        print("DISPLAY_SMOKE_QUIT status=SKIP reason=no_win32_window")
+        return 0
+    build_dir = build_dir.resolve()
+    frames = int(_read_manifest(build_dir / "fixture")["frames"])
+    if frames < 600:
+        raise RuntimeError(
+            f"the quit route needs a guest that outlives the close: build it with "
+            f"DISPLAY_SMOKE_BUILD_FRAMES of 600 or more (this one has {frames})"
+        )
+    executable = (build_dir / f"{ARTIFACT_STEM}.exe").resolve()
+    image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
+    command = [
+        str(executable), "--image", str(image_path), f"0x{BASE:08x}", f"0x{ENTRY:08x}",
+        "none", "none", "--gui",
+    ]
+    with tempfile.TemporaryDirectory(prefix="display-smoke-quit-", dir=build_dir) as temp:
+        sandbox = Path(temp)
+        events_path = sandbox / "boot.events"
+        env = os.environ.copy()
+        env["SR_BOOT_EVENT_FILE"] = str(events_path)
+        # Scripted routes end or pause the run themselves; none may decide this one.
+        for key in ("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES", "SR_EXIT_AT_VBLANK", "SR_PADSCRIPT",
+                    "SR_PAUSE_SCRIPT", "SR_GE_CAPTURE_FRAME"):
+            env.pop(key, None)
+        stdout_path = sandbox / "runtime.stdout.capture"
+        stderr_path = sandbox / "runtime.stderr.capture"
+        events = ""
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, \
+                stderr_path.open("w", encoding="utf-8") as stderr_file:
+            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=stdout_file,
+                                       stderr=stderr_file, text=True)
+            try:
+                deadline = time.monotonic() + 60
+                while process.poll() is None and time.monotonic() < deadline:
+                    if events_path.is_file():
+                        events = events_path.read_text(encoding="utf-8", errors="replace")
+                        if "BOOT_EVENT phase=first_frame" in events:
+                            break
+                    time.sleep(0.02)
+                if process.poll() is not None:
+                    raise RuntimeError(f"the runtime exited {process.returncode} before the close")
+                if "BOOT_EVENT phase=first_frame" not in events:
+                    raise RuntimeError("the runtime presented no first frame within 60 s")
+                closed_at = time.monotonic()
+                _request_player_window_close(process, "runtime")
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError("the runtime did not stop within 30 s of the close") from error
+                stop_seconds = time.monotonic() - closed_at
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+        if events_path.is_file():
+            events = events_path.read_text(encoding="utf-8", errors="replace")
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+    write_if_changed(build_dir / f"{ARTIFACT_STEM}.quit.stdout.log", stdout.encode("utf-8"))
+    write_if_changed(build_dir / f"{ARTIFACT_STEM}.quit.stderr.log", stderr.encode("utf-8"))
+    combined = stdout + stderr
+    if process.returncode != 0:
+        sys.stderr.write(combined)
+        raise RuntimeError(f"the runtime exited {process.returncode} after the close")
+    markers = (
+        "BOOT_EVENT phase=window_ready",
+        "BOOT_EVENT phase=quit_requested",
+        "SR_QUIT: the run stops at the scheduler's next boundary",
+        "done (hit_hle=",
+    )
+    forbidden = ("Guest requested exit", "UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT")
+    if failure := evidence_failure(combined + events, markers, forbidden):
+        sys.stderr.write(combined)
+        raise RuntimeError(f"quit evidence {failure}")
+    print(f"DISPLAY_SMOKE_QUIT status=PASS exit=0 stop_after_close_s={stop_seconds:.2f}")
     return 0
 
 
@@ -1489,6 +1584,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     flight_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
+    quit_parser = subparsers.add_parser("quit")
+    quit_parser.add_argument("--build-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "run" and args.offscreen and not args.gui:
         run_parser.error("--offscreen requires --gui")
@@ -1510,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
             return flight_smoke(args.build_dir)
         if args.command == "run-player":
             return run_player(args.build_dir)
+        if args.command == "quit":
+            return run_quit(args.build_dir)
         raise AssertionError(f"unhandled command {args.command}")
     except (OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
         sys.stderr.write(f"DISPLAY_SMOKE_{args.command.upper()} status=FAIL: {error}\n")

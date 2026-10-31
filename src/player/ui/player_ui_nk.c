@@ -91,6 +91,13 @@ struct PlayerUiNk {
     NkUiRouter *router;
     NkUiViewport viewport;
     size_t library_page;
+    /* The art rest: the card focus rests on and since when, and the game whose
+       picture is behind the library (SIZE_MAX: none) and when it stopped being
+       shown, so it is kept while it fades out. */
+    size_t rest_index;
+    double rest_since_s;
+    size_t backdrop_index;
+    double backdrop_hidden_s;
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
     /* The library grid in its sort order: indices into titles, no demos; while
        the find box is open, only the games that match. */
@@ -130,8 +137,8 @@ struct PlayerUiNk {
     bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
     char update_notice[96];
-    char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
-    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
+    char pad_bindings[PLAYER_UI_CONTROLLER_CONTROLS][128];
+    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
     char pad_scope[96];
     char pad_status[400];
     char pad_deadzone[48];
@@ -328,6 +335,8 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
                             "The next UI could not allocate its renderer state.");
         return NULL;
     }
+    player->rest_index = SIZE_MAX;
+    player->backdrop_index = SIZE_MAX;
     player->router = nk_ui_router_create();
     if (player->router == NULL) {
         player_ui_set_error(error, error_size,
@@ -444,6 +453,13 @@ uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
     }
     /* Rounded up: a frame drawn a millisecond early would find nothing due. */
     wait_s = nk_ui_wait_s(player->ui, now_s, (double)idle_ms / 1000.0);
+    /* A rest still under way wakes the loop when it ends. Once it has ended the
+       picture's read is the art worker's, which the idle wake picks up: a disc with
+       no picture must not keep the loop from sleeping. */
+    if (player->rest_index != SIZE_MAX && player->rest_index != player->backdrop_index) {
+        double rest_s = player->rest_since_s + NK_UI_MOTION_ART_REST - now_s;
+        if (rest_s > 0.0 && rest_s < wait_s) wait_s = rest_s;
+    }
     return (uint32_t)ceil(wait_s * 1000.0);
 }
 
@@ -785,6 +801,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     } else {
         model.interface_size = "Automatic";
     }
+    model.text_size = player_text_size_label(app->settings.text_size_pct);
     model.high_contrast_choice = player_system_choice_label(app->settings.high_contrast_choice);
     model.reduce_motion_choice = player_system_choice_label(app->settings.reduce_motion_choice);
     model.high_contrast = player_app_high_contrast_focus(app);
@@ -949,10 +966,15 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
        even while the keyboard drives the page. */
     model.glyph_style = model.keyboard ? NK_UI_PROMPT_KEYCAPS
                                        : nk_ui_input_pad_prompt_style(&player->input.input);
-    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_CONTROLS; ++i) {
         model.names[i] = input_settings_control_name((int)i);
-        if (model.keyboard) {
-            /* A key used twice is refused when it is pressed, so keys never conflict. */
+        player->pad_bindings[i][0] = '\0';
+        memset(&player->pad_glyphs[i], 0, sizeof(player->pad_glyphs[i]));
+        if (!input_settings_control_bindable(input, (int)i)) {
+            /* The stick's own entry, and on the controller its keys: no row. */
+        } else if (model.keyboard) {
+            /* A key taken from another control swaps with this one's, so keys never
+               conflict. */
             input_settings_format_key_binding(input, (int)i, player->pad_bindings[i],
                                               sizeof(player->pad_bindings[i]));
             input_settings_key_glyph(input, (int)i, &player->pad_glyphs[i]);
@@ -975,17 +997,23 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
         snprintf(player->pad_scope, sizeof(player->pad_scope), "global mapping");
     }
     model.scope = player->pad_scope;
-    if (model.keyboard && input->key_note[0] != '\0') {
-        model.status = input->key_note;
+    model.noted = input->note[0] != '\0' ? input->note_control : -1;
+    model.stick_right = input_settings_stick_is_right(input);
+    /* A write that failed comes first: the mapping on screen is not the one on disk. */
+    if (input->has_save_diagnostic) {
+        snprintf(player->pad_status, sizeof(player->pad_status), "Not saved: %s%s",
+                 input->save_diagnostic,
+                 input->leave_unsaved ? " Back again leaves without saving." : "");
+        model.status = player->pad_status;
         model.status_error = true;
+    } else if (input->note[0] != '\0') {
+        model.status = input->note;
+        model.status_error = input->note_error;
     } else if (!model.keyboard && input_settings_has_conflicts(input)) {
         model.status = input_settings_get_conflict_summary(input);
         model.status_error = true;
     } else if (input->has_load_diagnostic) {
         snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->load_diagnostic);
-        model.status = player->pad_status;
-    } else if (input->has_save_diagnostic) {
-        snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->save_diagnostic);
         model.status = player->pad_status;
     } else if (model.capturing >= 0) {
         snprintf(player->pad_status, sizeof(player->pad_status),
@@ -996,7 +1024,7 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
                  (input_settings_get_capture_remaining_ms(input) + 999) / 1000);
         model.status = player->pad_status;
     } else if (model.keyboard) {
-        model.status = "Choose a button, then press the key to use for it.";
+        model.status = "Choose a control, then press its key. Changes save as you make them.";
     } else if (app->settings.controller_connected) {
         snprintf(player->pad_status, sizeof(player->pad_status),
                  "Connected: %s. Choose a button to change it.",
@@ -1391,6 +1419,14 @@ int player_ui_nk_test_route(const PlayerUiNk *player) {
 
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player) {
     return player != NULL && player->ui != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
+}
+
+int player_ui_nk_test_backdrop(const PlayerUiNk *player, bool *shown) {
+    if (shown != NULL) *shown = false;
+    if (player == NULL || player->backdrop_index == SIZE_MAX) return -1;
+    if (shown != NULL) *shown = player->backdrop_hidden_s >= player->rest_since_s &&
+                                player->rest_index == player->backdrop_index;
+    return (int)player->backdrop_index;
 }
 #endif
 
@@ -2075,6 +2111,49 @@ static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
 }
 
 
+/* The art rest (docs/PLAYER_UI_DESIGN.md, Motion): focus resting on a game's card
+   for NK_UI_MOTION_ART_REST asks for that disc's picture, and once it is read it
+   fades in behind the library. Moving on fades it out, so browsing past cards reads
+   no pictures and changes nothing behind them. Not for the demos, whose art is the
+   project's own drawing, not while finding, and not under Reduce motion. */
+static size_t player_ui_focused_title_index(NkUiId focused, size_t count);
+static void player_ui_library_backdrop(PlayerUiNk *player, const PlayerApp *app, size_t count,
+                                       double now_s, PlayerUiLibraryModel *model) {
+    size_t focused = player_ui_focused_title_index(nk_ui_focused(player->ui), count);
+    bool shown = false;
+    if (player_app_reduce_motion(app) || model->find_open ||
+        (focused < count && player->titles[focused].art_kind != NK_UI_ART_NONE)) {
+        focused = SIZE_MAX;
+    }
+    if (focused >= count) focused = SIZE_MAX;
+    if (focused != player->rest_index) {
+        player->rest_index = focused;
+        player->rest_since_s = now_s;
+    }
+    if (focused != SIZE_MAX && now_s - player->rest_since_s >= NK_UI_MOTION_ART_REST) {
+        player_ui_title_art(player, app, focused, true);
+        if (player->titles[focused].picture != NULL) {
+            player->backdrop_index = focused;
+            shown = true;
+        }
+    }
+    if (player->backdrop_index >= count) {
+        player->backdrop_index = SIZE_MAX;
+        return;
+    }
+    if (shown) {
+        player->backdrop_hidden_s = now_s;
+    } else if (now_s - player->backdrop_hidden_s > NK_UI_MOTION_SLOW + 0.1) {
+        player->backdrop_index = SIZE_MAX;   /* faded out */
+        return;
+    }
+    /* Asked for every frame it is drawn, so the cache keeps it through the fade. */
+    player_ui_title_art(player, app, player->backdrop_index, true);
+    model->backdrop = player->titles[player->backdrop_index].picture;
+    model->backdrop_shown = shown;
+    if (model->backdrop == NULL) player->backdrop_index = SIZE_MAX;
+}
+
 static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
     uint32_t value = focused;
     if (value < PLAYER_UI_ID_LIBRARY_ITEM_BASE) return count;
@@ -2163,6 +2242,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         display.reduce_motion = player_app_reduce_motion(app);
         display.high_contrast_focus = player_app_high_contrast_focus(app);
         display.interface_size_pct = app->settings.interface_size_pct;
+        display.text_size_pct = app->settings.text_size_pct;
         player_ui_apply_display(player->ui, &player->viewport, &display,
                                 nk_ui_input_prompt_style(&player->input.input));
     }
@@ -2298,10 +2378,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         games = player->library_grid_count;
         /* While finding, the box takes TEST THIS PC's room, and the grid is the
            matches alone, without the add card. */
-        page_size = player->find_open
-            ? player_ui_library_page_size_finding(scale.logical_w, scale.logical_h, &columns)
-            : player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
-                                                     demo_count, &columns);
+        page_size = player_ui_library_page_size_at(scale.logical_w, scale.logical_h,
+                                                   nk_ui_text_scale(player->ui),
+                                                   player->find_open, demo_count, &columns);
         slots = player->find_open ? games : games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(
@@ -2399,6 +2478,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                                                  &model.rebuild_notice_offers_all);
             model.rebuild_notice = player->rebuild_notice;
         }
+        player_ui_library_backdrop(player, app, count, now_s, &model);
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
             app->selected_game_index = (int)action.title_index;

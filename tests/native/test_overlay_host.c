@@ -9,6 +9,11 @@
    Exit 77 means SKIP with the reason printed: a build without the SDL3 or SDL3_ttf
    headers, or a host where the SDL3_ttf library cannot be loaded. */
 
+/* setenv/unsetenv are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "overlay_host.h"
 
 #include <stdio.h>
@@ -180,6 +185,52 @@ static void test_pad_lost_and_resize(void) {
     nk_overlay_host_close(g_host);
 }
 
+static void set_reduce_motion(const char *value) {
+#ifdef _WIN32
+    (void)_putenv_s("SR_REDUCE_MOTION", value != NULL ? value : "");
+#else
+    if (value != NULL) {
+        (void)setenv("SR_REDUCE_MOTION", value, 1);
+    } else {
+        (void)unsetenv("SR_REDUCE_MOTION");
+    }
+#endif
+}
+
+/* The pages ease or cut as the player chose (SR_REDUCE_MOTION, which the launcher
+   exports): with motion a focus move eases, and the host keeps drawing until it ends;
+   under Reduce motion the move is a cut and nothing is left to draw. */
+static void test_reduce_motion_follows_the_player(void) {
+    CHECK(nk_overlay_reduce_motion("on", false), "reduce motion: on cuts");
+    CHECK(!nk_overlay_reduce_motion("off", true), "reduce motion: off eases");
+    CHECK(nk_overlay_reduce_motion("system", true) && !nk_overlay_reduce_motion("system", false),
+          "reduce motion: system follows the system's setting");
+    CHECK(!nk_overlay_reduce_motion(NULL, false) && nk_overlay_reduce_motion(NULL, true) &&
+              nk_overlay_reduce_motion("", true) && !nk_overlay_reduce_motion("bogus", false),
+          "reduce motion: a run started by hand, or an unknown value, follows the system");
+
+    set_reduce_motion("off");
+    nk_overlay_host_open(g_host, NK_OVERLAY_OPEN_USER);
+    CHECK(settle(), "reduce motion off: draws");
+    CHECK(settle(), "reduce motion off: settles");
+    CHECK(key(SDLK_DOWN), "reduce motion off: a focus move");
+    CHECK(draw(), "reduce motion off: draws the move");
+    CHECK(nk_overlay_host_due(g_host, (double)SDL_GetTicksNS() / 1e9),
+          "reduce motion off: the focus ring eases, so the host draws again");
+    nk_overlay_host_close(g_host);
+
+    set_reduce_motion("on");
+    nk_overlay_host_open(g_host, NK_OVERLAY_OPEN_USER);
+    CHECK(settle(), "reduce motion on: draws");
+    CHECK(settle(), "reduce motion on: settles");
+    CHECK(key(SDLK_DOWN), "reduce motion on: a focus move");
+    CHECK(draw(), "reduce motion on: draws the move");
+    CHECK(!nk_overlay_host_due(g_host, (double)SDL_GetTicksNS() / 1e9),
+          "reduce motion on: the move is a cut, with nothing left to draw");
+    nk_overlay_host_close(g_host);
+    set_reduce_motion(NULL);
+}
+
 int main(int argc, char **argv) {
     char error[256];
     const char *root = argc > 1 ? argv[1] : ".";
@@ -213,6 +264,7 @@ int main(int argc, char **argv) {
     test_menu_to_settings_and_back();
     test_f1_resumes_and_queue_is_dropped();
     test_pad_lost_and_resize();
+    test_reduce_motion_follows_the_player();
     canvas_free(&g_canvas);
     nk_overlay_host_destroy(g_host);
     SDL_Quit();

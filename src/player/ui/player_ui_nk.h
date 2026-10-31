@@ -274,6 +274,11 @@ typedef struct {
        queue runs (no Rebuild all). NULL draws nothing. */
     const char *rebuild_notice;
     bool rebuild_notice_offers_all;
+    /* The art rest (#1299 launcher work): the picture of the game whose card focus
+       has rested on, drawn behind the library while `backdrop_shown`, and still
+       passed while it fades out after focus moves on. NULL draws nothing. */
+    const struct NkUiImage *backdrop;
+    bool backdrop_shown;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -490,7 +495,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PSP_FONTS,          /* find a connected PSP's fonts and import them */
     PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY,
     PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
-    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST   /* Automatic, On, Off */
+    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST,  /* Automatic, On, Off */
+    PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE       /* Standard, Large, Larger (100, 125, 150%) */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -523,6 +529,7 @@ typedef struct {
     /* Accessibility (VIEW_ACCESSIBILITY_SETTINGS): each setting's word, whether it
        is in effect, and what Automatic follows now */
     const char *interface_size;         /* "Automatic" or "125%" */
+    const char *text_size;              /* "Standard", "Large" or "Larger" */
     const char *high_contrast_choice;   /* "Automatic", "On" or "Off" */
     const char *reduce_motion_choice;
     bool high_contrast;                 /* in effect */
@@ -600,7 +607,7 @@ typedef enum {
     PLAYER_UI_CONTROLLER_TRIGGER_DOWN,
     PLAYER_UI_CONTROLLER_TRIGGER_UP,
     PLAYER_UI_CONTROLLER_CALIBRATE,
-    PLAYER_UI_CONTROLLER_SAVE,
+    PLAYER_UI_CONTROLLER_STICK,              /* the PSP stick follows the other controller stick */
     PLAYER_UI_CONTROLLER_RESET,
     PLAYER_UI_CONTROLLER_BACK,               /* back to Settings */
     PLAYER_UI_CONTROLLER_CLOSE,              /* a top-bar tab or Start: Settings closes */
@@ -613,6 +620,11 @@ typedef enum {
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
+/* Every control the page names, by InputControlIndex: the buttons, the stick (14, which
+   has no row of its own) and the stick's four keys (15-18, keyboard only). */
+#define PLAYER_UI_CONTROLLER_CONTROLS 19u  /* INPUT_CONTROL_TOTAL_COUNT */
+#define PLAYER_UI_CONTROLLER_STICK_KEY 15u /* INPUT_CONTROL_STICK_UP, then down, left, right */
+#define PLAYER_UI_CONTROLLER_STICK_KEYS 4u
 /* The characters a binding's button shows whole at every launcher size: the
    label is mono caps, so this is a width (INPUT_SETTINGS_BINDING_TEXT_MAX). */
 #define PLAYER_UI_CONTROLLER_BINDING_CHARS 20u
@@ -630,19 +642,22 @@ typedef struct {
     PlayerUiControllerPage page;
     bool keyboard;                  /* the mapping shows the keyboard keys, not the controller */
     /* Mapping: each PSP control's name and what it is bound to, in words */
-    const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
-    const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
+    const char *names[PLAYER_UI_CONTROLLER_CONTROLS];
+    const char *bindings[PLAYER_UI_CONTROLLER_CONTROLS];
     /* and as the glyph the device shown prints: keycaps for the keys, the pad's own set
        for the controller */
     NkUiPromptStyle glyph_style;
-    PlayerUiBindingGlyph glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
-    bool conflicted[PLAYER_UI_CONTROLLER_BUTTONS];
+    PlayerUiBindingGlyph glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
+    bool conflicted[PLAYER_UI_CONTROLLER_CONTROLS];
     int capturing;                  /* the control waiting for a press, or -1 */
+    int noted;                      /* the control the status note names (it gave up its
+                                       input to the last binding), or -1 */
+    bool stick_right;               /* the PSP stick follows the controller's right stick */
     const char *scope;              /* "global mapping", "TEST00005 only" */
     bool scope_title;               /* editing one game's own mapping */
     bool offer_scope;               /* a game is selected, so the choice is offered */
-    const char *status;             /* a conflict, a load or save note, or the pad */
-    bool status_error;              /* status is a conflict */
+    const char *status;             /* a binding's note, a load or save problem, or the pad */
+    bool status_error;              /* status is something to fix */
     const char *deadzone;           /* "Dead zone 9%" */
     const char *trigger;            /* "Trigger point 49%" */
     /* The live input, and on a calibration page its numbers */
@@ -786,7 +801,7 @@ enum {
     PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
     PLAYER_UI_ID_WIZARD_OPEN_FOLDER = 0x4309u,
     PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x430Au,
-    PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
+    PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x10000u,       /* + the title's index, up to NK_MAX_GAMES */
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
     PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
@@ -806,9 +821,10 @@ enum {
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
     PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u,
-    PLAYER_UI_ID_DISC_PRIMARY = 0x4601u,
-    PLAYER_UI_ID_DISC_SECOND = 0x4602u,
-    PLAYER_UI_ID_DISC_OPEN_FOLDER = 0x4603u,
+    PLAYER_UI_ID_DISC_PRIMARY = 0x4801u,
+    PLAYER_UI_ID_DISC_SECOND = 0x4802u,
+    PLAYER_UI_ID_DISC_OPEN_FOLDER = 0x4803u,
+    PLAYER_UI_ID_DISC_VERIFY_BASE = 0x4900u,         /* reserved: disc verification's controls */
     PLAYER_UI_ID_SETTINGS_RESOLUTION = 0x4501u,
     PLAYER_UI_ID_SETTINGS_PACING = 0x4502u,
     PLAYER_UI_ID_SETTINGS_VSYNC = 0x4503u,
@@ -858,13 +874,14 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACCESSIBILITY = 0x452Cu,    /* Settings: opens Accessibility */
     PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
     PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
-    PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
+    PLAYER_UI_ID_SETTINGS_TEXT_SIZE = 0x452Fu,
+    PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
     PLAYER_UI_ID_CONTROLLER_TRIGGER_DOWN = 0x4623u,
     PLAYER_UI_ID_CONTROLLER_TRIGGER_UP = 0x4624u,
     PLAYER_UI_ID_CONTROLLER_CALIBRATE = 0x4625u,
-    PLAYER_UI_ID_CONTROLLER_SAVE = 0x4626u,
+    PLAYER_UI_ID_CONTROLLER_STICK = 0x4626u,         /* LEFT STICK / RIGHT STICK */
     PLAYER_UI_ID_CONTROLLER_RESET = 0x4627u,
     PLAYER_UI_ID_CONTROLLER_BACK = 0x4628u,
     PLAYER_UI_ID_CONTROLLER_SCOPE = 0x4629u,
@@ -872,12 +889,18 @@ enum {
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
     PLAYER_UI_ID_CONTROLLER_SHOW_PAD = 0x462Cu,
     PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD = 0x462Du,
-    PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the PSP control, 0-13; not focusable */
+    PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the control, 0-18; not focusable */
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
     PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u,
     PLAYER_UI_ID_DEVELOPER_LOG_INSPECT = 0x4704u
 };
+
+/* The shared id families (nk_ui.h's id scheme): each holds every id made from it. */
+#define PLAYER_UI_ID_CONTROLLER_BUTTON_BASE_SPAN 0x20u  /* PLAYER_UI_CONTROLLER_CONTROLS */
+#define PLAYER_UI_ID_CONTROLLER_GLYPH_BASE_SPAN 0x20u
+#define PLAYER_UI_ID_LIBRARY_ITEM_BASE_SPAN 0x1000u    /* NK_MAX_GAMES */
+#define PLAYER_UI_ID_DISC_VERIFY_BASE_SPAN 0x100u      /* progress, cancel, results */
 
 #define PLAYER_UI_ID_CONTROLLER_BUTTON(control) \
     ((NkUiId)(PLAYER_UI_ID_CONTROLLER_BUTTON_BASE + (uint32_t)(control)))
@@ -911,6 +934,13 @@ size_t player_ui_library_page_size(float logical_width, float logical_height,
    height from the grid's. */
 size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
                                               size_t demo_count, size_t *columns_out);
+/* Any of those at a text scale (nk_ui_text_scale_for_viewport): the functions
+   above are 1, the design text size. A larger text size widens the narrowest
+   card and makes cards, the heading row and TEST THIS PC taller, so a page
+   holds fewer cards. `finding` is the find box's page; it ignores demo_count. */
+size_t player_ui_library_page_size_at(float logical_width, float logical_height,
+                                      float text_scale, bool finding, size_t demo_count,
+                                      size_t *columns_out);
 /* How many titles are demos (PlayerUiTitle.is_demo). */
 size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
 /* The grid of the user's games, as the model orders it: how many it holds, the
@@ -985,15 +1015,15 @@ typedef struct {
     bool reduce_motion;        /* hold the waves on one frame, and every pulse and sweep */
     bool high_contrast_focus;  /* the white ring between black keylines */
     int interface_size_pct;    /* NkUiViewport.ui_scale_pct: 0 follows the display */
+    int text_size_pct;         /* NkUiViewport.text_size_pct: 100, 125 or 150 (0 is 100) */
 } PlayerUiDisplay;
 
 /* Gives the design system the launcher's display settings and the prompt
-   style: its preferences, and the UI scale in the viewport, which the caller
-   then sets with nk_ui_set_viewport. The text size stays 100%: the design
-   system scales the whole layout for it, as it does for the UI scale, so the
-   interface size is the one control for both. Every launcher frame goes
-   through here, so no setting is left out on the way (Reduce motion was, and
-   the waves kept moving). */
+   style: its preferences, and the UI scale and text size in the viewport, which
+   the caller then sets with nk_ui_set_viewport. The interface size scales the
+   whole layout; the text size scales the type alone, and the screens reflow
+   around it. Every launcher frame goes through here, so no setting is left out
+   on the way (Reduce motion was, and the waves kept moving). */
 void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
                              NkUiPromptStyle prompt_style);
 
@@ -1041,6 +1071,9 @@ const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t in
 int player_ui_nk_test_route(const PlayerUiNk *player);
 /* Test only: the control the next UI focuses, or 0. */
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player);
+/* Test only: the game whose picture is behind the library (the art rest), -1 for
+   none; *shown tells it fading in or whole from fading out. */
+int player_ui_nk_test_backdrop(const PlayerUiNk *player, bool *shown);
 /* Test only: print each compatibility record's category tier and tier. */
 void player_ui_nk_test_report_compatibility(void);
 #endif

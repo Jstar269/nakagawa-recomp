@@ -31,6 +31,15 @@ enum {
     NK_PRESENT_SCALING_BILINEAR = 2, /* linear fit, as before issue #1129 */
 };
 
+/* The player's Reduce motion choice, as the runtime's in-game overlay is told it
+   (SR_REDUCE_MOTION). SYSTEM, which prepare_session leaves, follows the system's own
+   setting, as the launcher's Automatic does. */
+enum {
+    NK_REDUCE_MOTION_SYSTEM = 0,  /* SR_REDUCE_MOTION=system */
+    NK_REDUCE_MOTION_ON = 1,      /* SR_REDUCE_MOTION=on: every transition is a cut */
+    NK_REDUCE_MOTION_OFF = 2,     /* SR_REDUCE_MOTION=off */
+};
+
 /* Typed runtime provider configuration */
 typedef struct {
     int resolution_scale;
@@ -39,6 +48,7 @@ typedef struct {
     bool fullscreen;
     bool vsync;
     bool developer_mode;    /* exports SR_DEVELOPER_MODE=1: the runtime's developer HUD and pages (#314) */
+    int reduce_motion;      /* NK_REDUCE_MOTION_*, exported as SR_REDUCE_MOTION for the overlay */
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
     uint32_t headless_accept_presented_frames; /* 0 disables the windowed acceptance checkpoint */

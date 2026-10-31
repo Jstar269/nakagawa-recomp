@@ -68,6 +68,7 @@ struct NkUi {
     NkUiTextBackend text;
     NkUiViewport viewport;
     NkUiScale scale;
+    float text_scale;           /* viewport.text_size_pct / 100: type only, over the density */
     NkUiPrefs prefs;
     NkUiDrawBuffer draw;
     void *clay;
@@ -116,6 +117,17 @@ struct NkUi {
     NkUiArtFade art_fades[NK_UI_ART_FADES];
     size_t art_fade_count;
     bool art_fading;        /* a picture is still fading in this frame */
+    /* The launcher's backdrop (nk_ui_backdrop): its picture, how far it has faded
+       in (0-1, before easing), whether it is shown, and whether this frame drew it. */
+    struct {
+        NkUiId id;
+        const NkUiImage *picture;
+        uint64_t serial;
+        NkUiRect rect;
+        float fade;
+        bool shown;
+        bool asked;
+    } backdrop;
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -138,7 +150,12 @@ void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
                         void (*report_error)(void *user, const NkUiLayoutError *error),
                         void *report_user);
 void nk_ui_clay_destroy(void *clay);
-bool nk_ui_clay_set_dimensions(void *clay, float width, float height, float density);
+bool nk_ui_clay_set_dimensions(void *clay, float width, float height, float density,
+                               float text_scale);
+int nk_ui_clay_device_px(int logical_px, float density, float text_scale);
+float nk_ui_clay_device_spacing(float spacing, float density, float text_scale);
+float nk_ui_clay_layout_spacing(float letter_spacing);
+float nk_ui_clay_line_height(float line_height, int size_px, float text_scale);
 bool nk_ui_clay_begin(void *clay);
 bool nk_ui_clay_open_floating(void *clay, NkUiId id, const NkUiLayout *layout,
                               const NkUiStyle *style, const NkUiFloating *floating);
@@ -323,10 +340,13 @@ static float nk_ui_clamp_density(float scale) {
     return scale;
 }
 
+/* The layout density comes from the UI scale alone. The text size is not part
+   of it: it scales type on top of the density (nk_ui_text_scale_for_viewport),
+   so the boxes, gaps and the window's logical size stay where they are and the
+   layout reflows around larger text. */
 NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport) {
     NkUiScale result = {1.0f, 0.0f, 0.0f};
     float ui_scale = 1.0f;
-    float text_scale = 1.0f;
     float display_scale = 1.0f;
     if (viewport == NULL) {
         return result;
@@ -340,11 +360,7 @@ NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport) {
                viewport->ui_scale_pct == 150 || viewport->ui_scale_pct == 200) {
         ui_scale = (float)viewport->ui_scale_pct / 100.0f;
     }
-    if (viewport->text_size_pct == 90 || viewport->text_size_pct == 100 ||
-        viewport->text_size_pct == 125 || viewport->text_size_pct == 150) {
-        text_scale = (float)viewport->text_size_pct / 100.0f;
-    }
-    result.density = nk_ui_clamp_density(ui_scale * text_scale);
+    result.density = nk_ui_clamp_density(ui_scale);
     if (viewport->pixel_w > 0 && viewport->pixel_h > 0) {
         float fit = result.density;
         if (isfinite(viewport->min_logical_w) && viewport->min_logical_w > 0.0f) {
@@ -366,6 +382,14 @@ NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport) {
         result.logical_h = (float)viewport->pixel_h / result.density;
     }
     return result;
+}
+
+float nk_ui_text_scale_for_viewport(const NkUiViewport *viewport) {
+    if (viewport != NULL && (viewport->text_size_pct == 90 || viewport->text_size_pct == 100 ||
+                             viewport->text_size_pct == 125 || viewport->text_size_pct == 150)) {
+        return (float)viewport->text_size_pct / 100.0f;
+    }
+    return 1.0f;
 }
 
 NkUiPixelRect nk_ui_round_rect(NkUiRect rect, float density) {
@@ -420,6 +444,7 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     ui->viewport.ui_scale_pct = 0;
     ui->viewport.text_size_pct = 100;
     ui->scale = nk_ui_scale_for_viewport(&ui->viewport);
+    ui->text_scale = 1.0f;
     if (config != NULL) {
         arena_bytes = config->arena_bytes;
         report_error = config->report_error;
@@ -449,16 +474,19 @@ void nk_ui_destroy(NkUi *ui) {
 
 void nk_ui_set_viewport(NkUi *ui, const NkUiViewport *viewport) {
     NkUiScale scale;
+    float text_scale;
     if (ui == NULL || viewport == NULL) {
         return;
     }
     ui->viewport = *viewport;
     scale = nk_ui_scale_for_viewport(viewport);
+    text_scale = nk_ui_text_scale_for_viewport(viewport);
     if (scale.density != ui->scale.density || scale.logical_w != ui->scale.logical_w ||
-        scale.logical_h != ui->scale.logical_h) {
+        scale.logical_h != ui->scale.logical_h || text_scale != ui->text_scale) {
         ui->scale = scale;
+        ui->text_scale = text_scale;
         if (!nk_ui_clay_set_dimensions(ui->clay, scale.logical_w, scale.logical_h,
-                                       scale.density)) {
+                                       scale.density, text_scale)) {
             ui->frame_ok = false;
         }
     }
@@ -666,12 +694,18 @@ void nk_ui_end_container(NkUi *ui) {
     ui->open_scroller = ui->scroller_stack[ui->container_depth];
 }
 
+NkUiTypeRole nk_ui_button_role(uint32_t flags) {
+    return (flags & NK_UI_BUTTON_LARGE) != 0u ? NK_UI_TYPE_LABEL_L :
+           (flags & NK_UI_BUTTON_SMALL) != 0u ? NK_UI_TYPE_LABEL_S : NK_UI_TYPE_LABEL;
+}
+
 void nk_ui_button_configuration(const NkUi *ui, uint32_t flags,
                                 NkUiLayout *layout, NkUiStyle *style) {
     float height = NK_UI_CONTROL_HEIGHT;
     float padding = 18.0f;
     bool disabled = (flags & NK_UI_BUTTON_DISABLED) != 0u;
     bool primary = (flags & NK_UI_BUTTON_PRIMARY) != 0u;
+    NkUiTextStyle label;
     if (ui == NULL || layout == NULL || style == NULL) {
         return;
     }
@@ -682,6 +716,9 @@ void nk_ui_button_configuration(const NkUi *ui, uint32_t flags,
         height = NK_UI_CONTROL_HEIGHT_SMALL;
         padding = NK_UI_SPACE_3;
     }
+    /* The label's own size: a larger text size grows the button around it. */
+    label = nk_ui_type(nk_ui_button_role(flags), 0u);
+    height = nk_ui_line_box(ui, height, &label);
     memset(layout, 0, sizeof(*layout));
     layout->width = (flags & NK_UI_BUTTON_GROW) != 0u
         ? (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f}
@@ -795,9 +832,10 @@ const char *nk_ui_frame_text(NkUi *ui, const char *text) {
     return out;
 }
 
+/* A run's width in layout units as Clay lays it out: measured at its text size. */
 static float nk_ui_measure_logical(const NkUi *ui, const NkUiTextStyle *style,
                                    const char *text, size_t length) {
-    int device_px = (int)floorf((float)style->size_px * ui->scale.density + 0.5f);
+    int device_px = nk_ui_clay_device_px(style->size_px, ui->scale.density, ui->text_scale);
     NkUiTextSize size;
     float spacing;
     size_t count = 0u;
@@ -809,10 +847,55 @@ static float nk_ui_measure_logical(const NkUi *ui, const NkUiTextStyle *style,
     for (i = 0; i < length; ++i) {
         if (((unsigned char)text[i] & 0xC0u) != 0x80u) ++count;
     }
-    spacing = floorf(style->letter_spacing * ui->scale.density + 0.5f);
+    spacing = nk_ui_clay_device_spacing(nk_ui_clay_layout_spacing(style->letter_spacing),
+                                        ui->scale.density, ui->text_scale);
     if (!isfinite(size.width) || size.width < 0.0f) size.width = 0.0f;
     return (size.width + (spacing > 0.0f ? spacing * (float)count : 0.0f)) /
            ui->scale.density;
+}
+
+float nk_ui_text_scale(const NkUi *ui) {
+    return ui != NULL ? ui->text_scale : 1.0f;
+}
+
+float nk_ui_layout_width(const NkUi *ui) {
+    return ui != NULL ? ui->scale.logical_w : 0.0f;
+}
+
+float nk_ui_text_width(const NkUi *ui, const char *text, const NkUiTextStyle *style) {
+    char shown[2048];
+    if (ui == NULL || text == NULL || style == NULL || style->size_px <= 0) {
+        return 0.0f;
+    }
+    /* As drawn: after the host's display rules. */
+    if (ui->display_text != NULL) {
+        (void)ui->display_text(text, shown, sizeof(shown));
+        text = shown;
+    }
+    return nk_ui_measure_logical(ui, style, text, strlen(text));
+}
+
+float nk_ui_line_height_at(const NkUiTextStyle *style, float text_scale) {
+    if (style == NULL || style->size_px <= 0) {
+        return 0.0f;
+    }
+    return nk_ui_clay_line_height(style->line_height, style->size_px, text_scale);
+}
+
+float nk_ui_line_height(const NkUi *ui, const NkUiTextStyle *style) {
+    return nk_ui_line_height_at(style, ui != NULL ? ui->text_scale : 1.0f);
+}
+
+/* A quarter of a line above and below the text: room enough that a one-line
+   component never reads as clipped. Every component's design height leaves at
+   least that much at 100 %, so only larger text ever changes a box. */
+float nk_ui_line_box(const NkUi *ui, float height, const NkUiTextStyle *style) {
+    float need;
+    if (ui == NULL || style == NULL || !(ui->text_scale > 1.0f)) {
+        return height;
+    }
+    need = ceilf(nk_ui_line_height(ui, style) * 1.5f);
+    return need > height ? need : height;
 }
 
 const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *style,
@@ -999,6 +1082,28 @@ static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptStyle s
     return image->rgba_pm != NULL && image->width > 0u && image->height > 0u ? image : NULL;
 }
 
+/* How wide a glyph `height` px tall is drawn: its image at its own aspect, or
+   the project-drawn form for its label. */
+static float nk_ui_prompt_glyph_width(const NkUiImage *image, NkUiPromptStyle style,
+                                      NkUiPromptAction action, const char *label, float height) {
+    return image != NULL
+        ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
+        : nk_ui_prompt_label_width(style, action, label, height);
+}
+
+float nk_ui_prompt_glyph_size(const NkUi *ui, NkUiPromptAction action, float height) {
+    NkUiPromptStyle style;
+    if (ui == NULL || !isfinite(height) || height <= 0.0f) {
+        return 0.0f;
+    }
+    style = ui->prefs.prompt_style;
+    if ((unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT) {
+        return 0.0f;
+    }
+    return nk_ui_prompt_glyph_width(nk_ui_prompt_image_for(ui, style, action), style, action,
+                                    NULL, height);
+}
+
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height) {
     return ui != NULL &&
            nk_ui_prompt_glyph_in(ui, id, ui->prefs.prompt_style, action, NULL, height);
@@ -1020,9 +1125,7 @@ bool nk_ui_prompt_glyph_in(NkUi *ui, NkUiId id, NkUiPromptStyle style, NkUiPromp
     } else {
         image = nk_ui_prompt_image_for(ui, style, action);
     }
-    width = image != NULL
-        ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
-        : nk_ui_prompt_label_width(style, action, label, height);
+    width = nk_ui_prompt_glyph_width(image, style, action, label, height);
     slot = nk_ui_custom_slot(ui);
     if (slot == NULL) {
         return false;
@@ -1307,6 +1410,54 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
     return true;
 }
 
+bool nk_ui_backdrop(NkUi *ui, NkUiId id, NkUiRect rect, const NkUiImage *picture, bool shown) {
+    float step;
+    if (ui == NULL || !ui->frame_open || ui->host == NK_UI_HOST_OVERLAY) {
+        return false;
+    }
+    if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.w) || !isfinite(rect.h) ||
+        rect.w <= 0.0f || rect.h <= 0.0f || !nk_ui_image_usable(picture) ||
+        ui->prefs.reduce_motion) {
+        return false;
+    }
+    if (ui->backdrop.picture == NULL || picture->serial != ui->backdrop.serial) {
+        ui->backdrop.fade = 0.0f;   /* a new picture starts from nothing */
+    }
+    ui->backdrop.id = id;
+    ui->backdrop.picture = picture;
+    ui->backdrop.serial = picture->serial;
+    ui->backdrop.rect = rect;
+    ui->backdrop.shown = shown;
+    ui->backdrop.asked = true;
+    /* As a transition does: one starting now is given one display frame of the idle
+       time before it, not the whole wait for input. */
+    step = (float)((!ui->transitioning && ui->frame_delta_s > NK_UI_MOTION_FRAME
+                        ? NK_UI_MOTION_FRAME : ui->frame_delta_s) / NK_UI_MOTION_SLOW);
+    if (!(step > 0.0f)) step = 0.0f;
+    ui->backdrop.fade += shown ? step : -step;
+    if (ui->backdrop.fade < 0.0f) ui->backdrop.fade = 0.0f;
+    if (ui->backdrop.fade > 1.0f) ui->backdrop.fade = 1.0f;
+    /* Still fading: the host draws the next frame soon (nk_ui_in_motion). */
+    if (shown ? ui->backdrop.fade < 1.0f : ui->backdrop.fade > 0.0f) ui->art_fading = true;
+    return ui->backdrop.fade > 0.0f || shown;
+}
+
+/* The backdrop under its scrim, eased with Clay's ease-out as the other fades are. */
+static bool nk_ui_paint_backdrop(NkUi *ui) {
+    float t = 1.0f - ui->backdrop.fade;
+    float eased = 1.0f - t * t * t;
+    float scrim = nk_ui_backdrop_scrim(eased);
+    NkUiImageArt art;
+    memset(&art, 0, sizeof(art));
+    art.cover = ui->backdrop.picture;
+    return nk_ui_paint_image(&ui->draw, &art, eased, ui->backdrop.rect, ui->scale.density,
+                             ui->backdrop.id) &&
+           nk_ui_draw_add_rect(&ui->draw, ui->backdrop.rect, ui->scale.density, 0.0f,
+                               (ui->theme.surface & 0xFFFFFF00u) |
+                                   (uint32_t)(scrim * 255.0f + 0.999f),
+                               ui->backdrop.id);
+}
+
 const NkUiDrawList *nk_ui_end(NkUi *ui) {
     if (ui == NULL || !ui->frame_open) {
         return NULL;
@@ -1327,6 +1478,14 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             ui->frame_ok = false;
         }
     }
+    if (ui->backdrop.asked && ui->backdrop.fade > 0.0f && !nk_ui_paint_backdrop(ui)) {
+        ui->frame_ok = false;
+    }
+    if (!ui->backdrop.asked) {
+        ui->backdrop.picture = NULL;   /* a frame without it ends it */
+        ui->backdrop.fade = 0.0f;
+    }
+    ui->backdrop.asked = false;
     /* Clay adds the frame's time to a transition from the frame it starts on.
        The time since the last frame was idle when nothing was moving then, so
        a transition starting now gets one frame of it, not the whole wait for

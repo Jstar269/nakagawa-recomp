@@ -6,6 +6,10 @@
 //     textured triangle pair and a through-mode sprite show at each pixel, under nearest
 //     and bilinear filtering, for 1:1, +0.5-texel, 2x magnification, 20->12 horizontal
 //     minification and 16-bit vertex cells.
+//   CASE=ge-mip (PSP-GE-MIP-001, #1373): the level of detail and mip level the GE samples, in
+//     constant, automatic and slope TEXLEVEL modes, over a texture whose every level is one
+//     colour. The cell table and list builder are the block shared with
+//     src/rt/hle_thread_selftest.c, as for ge-raster.
 //   CASE=ge-raster (PSP-GE-RASTER-001, #343): the raster semantics corpus. Each cell is one
 //     raw display list over a 16x4 window of generated source and destination patterns:
 //     blend factors and equations, alpha, colour, stencil and depth tests, texture
@@ -59,6 +63,7 @@ PSP_HEAP_SIZE_KB(64);
 
 #define GE_CASE_SAMPLE 109
 #define GE_CASE_RASTER 123
+#define GE_CASE_MIP 126
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -68,6 +73,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-raster"
 #define HLE_TEST_ID "PSP-GE-RASTER-001"
 #define HLE_LOG "host0:/ge_raster_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_MIP
+#define HLE_CAMPAIGN_ID "ge-mip"
+#define HLE_TEST_ID "PSP-GE-MIP-001"
+#define HLE_LOG "host0:/ge_mip_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1150,6 +1159,424 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_RASTER */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == GE_CASE_MIP
+
+/* ==== GE mip cells (PSP-GE-MIP-001, #1373) ====
+ * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
+ * side, CASE=ge-mip) and src/rt/hle_thread_selftest.c (the software GE side);
+ * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
+ * command words (no game data). It draws into the 16x4 window x 16..31, y 8..11 of a 64x32
+ * 8888 colour buffer at VRAM offset GM_FB_OFFSET whose pixels are 0 before the list runs,
+ * sampling a 64x64 8888 texture of eight levels in which every level is one colour,
+ * gm_level_colour(level), with REPLACE/RGBA and clamped coordinates. A pixel's colour then
+ * names the level the GE sampled, or for a filter that blends two levels, the pair and the
+ * weight (red is 32 x level, green alternates 255 and 0), whatever texel the coordinates
+ * reach. The cells vary only the level-of-detail inputs:
+ *   GM_K_SPRITE  a through-mode sprite over the window with texture coordinates (0, 0) to
+ *                (u, v) texels: a footprint of u/16 by v/4 texels per pixel;
+ *   GM_K_QUAD    a transform-mode triangle strip over the window whose clip w is w0 at the
+ *                window's left edge and w1 at its right, with texture coordinates (0, 0) to
+ *                (u, v) texels. The vertex z is the clip w (projection column 2 is
+ *                (0, 0, 0, 1), column 3 is 0) and clip z is 0.
+ * The result is the window's 64 pixels. */
+
+#define GM_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GM_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GM_STRIDE 64u
+#define GM_ROWS 32u
+#define GM_WX 16u                  /* window x 16..31, y 8..11 */
+#define GM_WY 8u
+#define GM_WW 16u
+#define GM_WH 4u
+#define GM_N 64u                   /* pixels in the window */
+#define GM_LEVELS 8u
+#define GM_TEX_BYTES 22528u        /* room for every level, each at a 64-byte boundary */
+#define GM_LIST_WORDS 192u
+#define GM_VTX_WORDS 32u
+
+enum { GM_K_SPRITE, GM_K_QUAD };
+
+/* level_mode: TEXLEVEL bits 0-1 (0 automatic, 1 constant, 2 slope); bias: its signed 4.4
+   level bias; max_level: TEXMODE's highest level; filter: TEXFILTER (minification |
+   magnification << 8); slope: TEXLODSLOPE; u, v: the texel span; w0, w1: GM_K_QUAD's
+   clip w at the left and right edges. */
+struct gm_cell {
+    const char *name;
+    uint8_t kind, level_mode, max_level;
+    int8_t bias;
+    uint16_t filter;
+    float slope, u, v, w0, w1;
+};
+
+#define GM_CELL_COUNT 57u
+static const struct gm_cell gm_cells[GM_CELL_COUNT] = {
+    {"c-b0", GM_K_SPRITE, 1u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b1", GM_K_SPRITE, 1u, 7u, 0x10, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b3", GM_K_SPRITE, 1u, 7u, 0x30, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b7", GM_K_SPRITE, 1u, 7u, 0x70, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b7f", GM_K_SPRITE, 1u, 7u, 0x7f, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-bm1", GM_K_SPRITE, 1u, 7u, -16, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f7", GM_K_SPRITE, 1u, 7u, 0x07, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f8", GM_K_SPRITE, 1u, 7u, 0x08, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f9", GM_K_SPRITE, 1u, 7u, 0x09, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b1f8", GM_K_SPRITE, 1u, 7u, 0x18, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f1", GM_K_SPRITE, 1u, 7u, 0x01, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f4", GM_K_SPRITE, 1u, 7u, 0x04, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f8", GM_K_SPRITE, 1u, 7u, 0x08, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b1fc", GM_K_SPRITE, 1u, 7u, 0x1c, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b6ff", GM_K_SPRITE, 1u, 7u, 0x6f, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b7f8", GM_K_SPRITE, 1u, 7u, 0x78, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-max2-b4", GM_K_SPRITE, 1u, 2u, 0x40, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-max2-b2f8", GM_K_SPRITE, 1u, 2u, 0x28, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-nomip-b3", GM_K_SPRITE, 1u, 7u, 0x30, 0x000u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-f5-b2", GM_K_SPRITE, 1u, 7u, 0x20, 0x005u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-f7-b2f8", GM_K_SPRITE, 1u, 7u, 0x28, 0x007u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"m3-b2", GM_K_SPRITE, 3u, 7u, 0x20, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"m3-b0-4x", GM_K_SPRITE, 3u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-1x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"a-2x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 32.0f, 8.0f, 0.0f, 0.0f},
+    {"a-4x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-8x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 128.0f, 32.0f, 0.0f, 0.0f},
+    {"a-16x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 256.0f, 64.0f, 0.0f, 0.0f},
+    {"a-1x5", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 24.0f, 6.0f, 0.0f, 0.0f},
+    {"a-3x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 48.0f, 12.0f, 0.0f, 0.0f},
+    {"a-half", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 8.0f, 2.0f, 0.0f, 0.0f},
+    {"al-1x5", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 24.0f, 6.0f, 0.0f, 0.0f},
+    {"al-3x", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 48.0f, 12.0f, 0.0f, 0.0f},
+    {"al-6x", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 96.0f, 24.0f, 0.0f, 0.0f},
+    {"a-u4", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 4.0f, 0.0f, 0.0f},
+    {"a-v4", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f},
+    {"a-u4v2", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 8.0f, 0.0f, 0.0f},
+    {"al-u3v2", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 48.0f, 8.0f, 0.0f, 0.0f},
+    {"a-4x-b1", GM_K_SPRITE, 0u, 7u, 0x10, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-4x-bm1", GM_K_SPRITE, 0u, 7u, -16, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"al-2x-b0f8", GM_K_SPRITE, 0u, 7u, 0x08, 0x006u, 0.0f, 32.0f, 8.0f, 0.0f, 0.0f},
+    {"a-quad-w2", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 32.0f, 8.0f, 2.0f, 2.0f},
+    {"a-quad-w1to4", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 32.0f, 8.0f, 1.0f, 4.0f},
+    {"s-s1-w1", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 1.0f, 1.0f},
+    {"s-s1-w2", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 2.0f, 2.0f},
+    {"s-s1-w3", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 3.0f, 3.0f},
+    {"s-s1-w4", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 4.0f, 4.0f},
+    {"s-s1-w8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 8.0f, 8.0f},
+    {"s-s1-wh", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 0.5f, 0.5f},
+    {"s-s2-w1", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 2.0f, 16.0f, 4.0f, 1.0f, 1.0f},
+    {"s-s2-w4", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 2.0f, 16.0f, 4.0f, 4.0f, 4.0f},
+    {"s-sh-w8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 0.5f, 16.0f, 4.0f, 8.0f, 8.0f},
+    {"s-s1-w2-b1", GM_K_QUAD, 2u, 7u, 0x10, 0x006u, 1.0f, 16.0f, 4.0f, 2.0f, 2.0f},
+    {"s-s1-w2-4x", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 64.0f, 16.0f, 2.0f, 2.0f},
+    {"sn-s1-w3", GM_K_QUAD, 2u, 7u, 0x00, 0x004u, 1.0f, 16.0f, 4.0f, 3.0f, 3.0f},
+    {"s-s1-w1to8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 1.0f, 8.0f},
+    {"s-spr-s4", GM_K_SPRITE, 2u, 7u, 0x00, 0x006u, 4.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+};
+
+/* Level `level`'s side in texels, its buffer width (whole 16-byte rows: at least 4 texels)
+   and its byte offset in the texture block. */
+static uint32_t gm_level_side(uint32_t level)
+{
+    const uint32_t side = 64u >> level;
+    return side ? side : 1u;
+}
+
+static uint32_t gm_level_bufw(uint32_t level)
+{
+    const uint32_t side = gm_level_side(level);
+    return side < 4u ? 4u : side;
+}
+
+static uint32_t gm_level_offset(uint32_t level)
+{
+    uint32_t off = 0;
+    for (uint32_t l = 0; l < level; l++) {
+        off += (gm_level_bufw(l) * 4u * gm_level_side(l) + 63u) & ~63u;
+    }
+    return off;
+}
+
+/* Every texel of level `level`: red 32 x level, green 255 on even levels and 0 on odd ones,
+   blue 0x80, alpha 0xff. */
+static uint32_t gm_level_colour(uint32_t level)
+{
+    return 0xff800000u | ((level & 1u) ? 0u : 0x0000ff00u) | (level * 32u);
+}
+
+/* The texture block: every level filled with its colour. Returns the byte count. */
+static uint32_t gm_texture(uint8_t *out)
+{
+    uint32_t end = 0;
+    for (uint32_t l = 0; l < GM_LEVELS; l++) {
+        const uint32_t base = gm_level_offset(l);
+        const uint32_t texels = gm_level_bufw(l) * gm_level_side(l);
+        const uint32_t c = gm_level_colour(l);
+        for (uint32_t i = 0; i < texels; i++) {
+            for (uint32_t b = 0; b < 4u; b++) {
+                out[base + 4u * i + b] = (uint8_t)(c >> (8u * b));
+            }
+        }
+        end = base + 4u * texels;
+    }
+    return end;
+}
+
+static uint32_t gm_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+/* One vertex of type 0x183 (through or not): float u, v; float x, y, z. */
+static uint32_t gm_vtx(uint32_t *out, float u, float v, float x, float y, float z)
+{
+    out[0] = gm_fbits(u);
+    out[1] = gm_fbits(v);
+    out[2] = gm_fbits(x);
+    out[3] = gm_fbits(y);
+    out[4] = gm_fbits(z);
+    return 5u;
+}
+
+/* The cell's vertex words; returns the count. GM_K_QUAD positions are the clip x, y that the
+   viewport maps back to window pixels at clip w = z: x = 32 + 32 X / w, y = 16 + 16 Y / w on
+   the 64x32 buffer. */
+static uint32_t gm_vertices(const struct gm_cell *c, uint32_t *out)
+{
+    const float x0 = (float)GM_WX, y0 = (float)GM_WY;
+    const float x1 = x0 + (float)GM_WW, y1 = y0 + (float)GM_WH;
+    uint32_t n = 0;
+    if (c->kind == GM_K_SPRITE) {
+        n += gm_vtx(out + n, 0.0f, 0.0f, x0, y0, 0.0f);
+        n += gm_vtx(out + n, c->u, c->v, x1, y1, 0.0f);
+        return n;
+    }
+    const float su = c->u / 64.0f, sv = c->v / 64.0f;
+    const float xl = (x0 - 32.0f) / 32.0f, xr = (x1 - 32.0f) / 32.0f;
+    const float yt = (y0 - 16.0f) / 16.0f, yb = (y1 - 16.0f) / 16.0f;
+    n += gm_vtx(out + n, 0.0f, 0.0f, xl * c->w0, yt * c->w0, c->w0);
+    n += gm_vtx(out + n, su, 0.0f, xr * c->w1, yt * c->w1, c->w1);
+    n += gm_vtx(out + n, 0.0f, sv, xl * c->w0, yb * c->w0, c->w0);
+    n += gm_vtx(out + n, su, sv, xr * c->w1, yb * c->w1, c->w1);
+    return n;
+}
+
+/* The cell's display list for vertex words at `vtx` and the texture block at `tex` (physical
+   addresses); returns the word count. Every state the draw reads is set. */
+static uint32_t gm_list(const struct gm_cell *c, uint32_t vtx, uint32_t tex, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    /* Clip x, y as given, clip z 0, clip w the vertex z. */
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const uint32_t full = (GM_STRIDE - 1u) | ((GM_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GM_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GM_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GM_W(0x9c, GM_FB_OFFSET);
+    GM_W(0x9d, GM_STRIDE);
+    GM_W(0xd2, 3u);
+    GM_W(0x9e, GM_ZB_OFFSET);
+    GM_W(0x9f, GM_STRIDE);
+    GM_W(0x15, 0);
+    GM_W(0x16, full);
+    GM_W(0xd4, 0);
+    GM_W(0xd5, full);
+    GM_W(0xd6, 0);
+    GM_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GM_W(off_units[i], 0);
+    }
+    GM_W(0x50, 0);              /* flat shading */
+    GM_W(0xd3, 0);              /* clear mode off */
+    GM_W(0xe7, 1);              /* depth writes off */
+    GM_W(0xe8, 0);
+    GM_W(0xe9, 0);
+    GM_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GM_W(0xd8, 1);              /* colour test ALWAYS */
+    GM_W(0xd9, 0);
+    GM_W(0xda, 0);
+    GM_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GM_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GM_W(0xde, 1);              /* depth test ALWAYS */
+    GM_W(0xdf, 0x32u);
+    GM_W(0xe0, 0);
+    GM_W(0xe1, 0);
+    GM_W(0xe6, 3);              /* logic op COPY */
+    GM_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GM_W(0xe3, 0xf3e2u);
+    GM_W(0xe4, 0x0c1du);
+    GM_W(0xe5, 0xe2f3u);
+    GM_W(0xcf, 0);
+    GM_W(0xcd, 0);
+    GM_W(0xce, 0);
+    GM_W(0x55, 0xffffffu);
+    GM_W(0x58, 0xffu);
+    GM_W(0x1e, 1);              /* texture on */
+    GM_W(0xc0, 0);              /* UV mapping */
+    GM_W(0xc2, (uint32_t)c->max_level << 16);
+    GM_W(0xc3, 3);              /* 8888 */
+    for (uint32_t l = 0; l < GM_LEVELS; l++) {
+        const uint32_t a = tex + gm_level_offset(l);
+        uint32_t log2 = 0;
+        while ((1u << log2) < gm_level_side(l)) {
+            log2++;
+        }
+        GM_W(0xa0 + l, a);
+        GM_W(0xa8 + l, ((a >> 8) & 0x000f0000u) | gm_level_bufw(l));
+        GM_W(0xb8 + l, (log2 << 8) | log2);
+    }
+    GM_W(0xc6, c->filter);
+    GM_W(0xc7, 0x101u);         /* clamp u and v */
+    GM_W(0xc8, ((uint32_t)(uint8_t)c->bias << 16) | c->level_mode);
+    GM_W(0xd0, gm_fbits(c->slope) >> 8);
+    GM_W(0xc9, 0x103u);         /* REPLACE, RGBA */
+    GM_W(0xca, 0);
+    GM_W(0x48, gm_fbits(1.0f) >> 8);
+    GM_W(0x49, gm_fbits(1.0f) >> 8);
+    GM_W(0x4a, 0);
+    GM_W(0x4b, 0);
+    GM_W(0xcb, 0);              /* texture flush */
+    if (c->kind == GM_K_SPRITE) {
+        GM_W(0x4c, 0);
+        GM_W(0x4d, 0);
+        GM_W(0x12, 0x00800183u);  /* through, float uv, float position */
+        GM_W(0x01, vtx);
+        GM_W(0x04, (6u << 16) | 2u);
+    } else {
+        GM_W(0x3a, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GM_W(0x3b, gm_fbits(ident43[i]) >> 8);
+        }
+        GM_W(0x3c, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GM_W(0x3d, gm_fbits(ident43[i]) >> 8);
+        }
+        GM_W(0x3e, 0);
+        for (uint32_t i = 0; i < 16u; i++) {
+            GM_W(0x3f, gm_fbits(proj[i]) >> 8);
+        }
+        GM_W(0x42, gm_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+        GM_W(0x43, gm_fbits(16.0f) >> 8);
+        GM_W(0x44, 0);
+        GM_W(0x45, gm_fbits(2048.0f) >> 8);
+        GM_W(0x46, gm_fbits(2048.0f) >> 8);
+        GM_W(0x47, gm_fbits(32768.0f) >> 8);
+        GM_W(0x4c, (2048u - 32u) << 4);
+        GM_W(0x4d, (2048u - 16u) << 4);
+        GM_W(0x12, 0x00000183u);  /* transform, float uv, float position */
+        GM_W(0x01, vtx);
+        GM_W(0x04, (4u << 16) | 4u);
+    }
+    GM_W(0x0f, 0);
+    GM_W(0x0c, 0);
+#undef GM_W
+    return n;
+}
+
+/* FNV-1a 64 over the window's 64 result words, each little-endian. */
+static uint64_t gm_digest(const uint32_t *px)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GM_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            h ^= (px[i] >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+/* ==== end of the GE mip cells ==== */
+
+#define GM_WAIT_POLLS 5000u         /* 5000 x 100 us: a half-second bound per draw */
+#define GM_WAIT_POLL_US 100u
+
+static uint8_t s_gm_tex[GM_TEX_BYTES] __attribute__((aligned(64)));
+static uint32_t s_gm_list[GM_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gm_vtx[GM_VTX_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gm_win[GM_N];
+
+static uint32_t gm_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The uncached mirror of the 8 KiB colour block at VRAM offset GM_FB_OFFSET. */
+static volatile uint32_t *gm_fb(void)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (volatile uint32_t *)(uintptr_t)((vram | 0x40000000u) + GM_FB_OFFSET);
+}
+
+/* One cell: clear the block, queue the list, wait (bounded), read the window back, then the
+   records: `<cell>-draw` (the GE wait outcome and the window digest) and one `<cell>-rN`
+   record per window row. */
+static void gm_draw(const struct gm_cell *c, uint32_t tex)
+{
+    static char row[64];
+    hle_step(c->name);
+    volatile uint32_t *fb = gm_fb();
+    for (unsigned i = 0; i < GM_STRIDE * GM_ROWS; i++) {
+        fb[i] = 0u;
+    }
+    __asm__ volatile("sync" ::: "memory");
+    (void)gm_vertices(c, s_gm_vtx);
+    const uint32_t words = gm_list(c, gm_phys(s_gm_vtx), tex, s_gm_list);
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_gm_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GM_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GM_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GM_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GM_WAIT_POLL_US);
+        }
+    }
+    for (uint32_t i = 0; i < GM_N; i++) {
+        s_gm_win[i] = fb[(GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW];
+    }
+    const uint64_t digest = gm_digest(s_gm_win);
+    const uint32_t draw[9] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                              elapsed, (uint32_t)idle, (uint32_t)reset_rc, words,
+                              (uint32_t)digest, (uint32_t)(digest >> 32)};
+    snprintf(row, sizeof(row), "%s-draw", c->name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 9);
+    for (uint32_t y = 0; y < GM_WH; y++) {
+        snprintf(row, sizeof(row), "%s-r%u", c->name, (unsigned int)y);
+        hle_record(row, "PASS", y, &s_gm_win[y * GM_WW], GM_WW);
+    }
+}
+
+static int hle_run(void)
+{
+    (void)gm_texture(s_gm_tex);
+    for (uint32_t i = 0; i < GM_CELL_COUNT; i++) {
+        gm_draw(&gm_cells[i], gm_phys(s_gm_tex));
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_MIP */
 
 /* ------------------------------------------------------------------------- */
 

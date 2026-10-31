@@ -12,9 +12,9 @@
   },
   "scope": {
     "description": "Public-safe tracked paths with exact counterparts at the pinned sal063 revision. Private PGF/PGD, key, font, game-input, capture, and oracle paths are excluded. Generated outputs are recorded separately and are not hand-edited.",
-    "public_path_count": 44,
-    "textual_source_count": 41,
-    "generated_output_count": 3,
+    "public_path_count": 46,
+    "textual_source_count": 42,
+    "generated_output_count": 4,
     "history_date_policy": "Use the latest available public-history commit touching each path before this campaign; the sanitized public export is the first public-history boundary.",
     "excluded_private_families": [
       "src/rt/pgf.c",
@@ -534,6 +534,37 @@
       "disposition": "GENERATED_OUTPUT"
     },
     {
+      "path": "src/rt/gpu_sdl3vk/psp_tnl_vert.inc",
+      "source_kind": "generated_output",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/ge.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": null,
+      "date_evidence": {
+        "commit": "3e0dccb011ba5ea12872dc423649bd39dc8344e2",
+        "date": "2026-10-31",
+        "subject": "ge: GPU transform, skinning, fog and lighting behind ge.c's T&L (#318)"
+      },
+      "notice_before_remediation": {
+        "spdx_present": false,
+        "immediate_upstream_attribution_present": false,
+        "explicit_modified_notice_present": false,
+        "modification_pointer_present": false
+      },
+      "generated_from": "src/rt/gpu_sdl3vk/shaders/psp_tnl.vert",
+      "difference": "GENERATED_OUTPUT",
+      "expected_notice": {
+        "attribution_required": false,
+        "modification_required": false,
+        "notice_location": "source or generator provenance, not embedded output"
+      },
+      "disposition": "GENERATED_OUTPUT"
+    },
+    {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.c",
       "source_kind": "textual_source",
       "immediate_upstream": {
@@ -664,6 +695,44 @@
         "pointer": "See NOTICE.md for upstream lineage and modification provenance."
       },
       "disposition": "NOTICE_ONLY_UNCHANGED"
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/shaders/psp_tnl.vert",
+      "source_kind": "textual_source",
+      "immediate_upstream": {
+        "project": "sal063/PSP-recompilation-project",
+        "url": "https://github.com/sal063/PSP-recompilation-project",
+        "path": "src/rt/ge.c",
+        "revision": "da17b0e1db209206a407d097d132201e516e3855",
+        "license": "GPL-2.0-or-later"
+      },
+      "spdx": "GPL-2.0-or-later",
+      "date_evidence": {
+        "commit": "3e0dccb011ba5ea12872dc423649bd39dc8344e2",
+        "date": "2026-10-31",
+        "subject": "ge: GPU transform, skinning, fog and lighting behind ge.c's T&L (#318)"
+      },
+      "notice_before_remediation": {
+        "spdx_present": true,
+        "immediate_upstream_attribution_present": true,
+        "explicit_modified_notice_present": true,
+        "modification_pointer_present": true
+      },
+      "difference": "SUBSTANTIVE_SOURCE_DIFFERENCE",
+      "deeper_upstream": {
+        "project": "hrydgard/ppsspp",
+        "url": "https://github.com/hrydgard/ppsspp",
+        "relationship": "deeper upstream via sal063",
+        "license": "GPL-2.0-or-later"
+      },
+      "expected_notice": {
+        "attribution_required": true,
+        "modification_required": true,
+        "date": "2026-10-31",
+        "modified_notice": "Modified by Nakagawa Recomp contributors, 2026-10-31.",
+        "pointer": "See NOTICE.md for upstream lineage and modification provenance."
+      },
+      "disposition": "MODIFIED_NOTICE_ADDED"
     },
     {
       "path": "src/rt/gui.c",

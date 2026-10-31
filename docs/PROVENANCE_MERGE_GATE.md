@@ -19,7 +19,7 @@ agreed to.
 
 | Existing control | What it proves | Why it is not merge-path authority |
 | --- | --- | --- |
-| `provenance_ledger.py --check` | the checked-in ledger is structurally valid: coverage, resolution, hashes | it says so itself — without the detailed ledger it "cannot authenticate attestation claims" |
+| `provenance_ledger.py --check` | the checked-in ledger is structurally valid: coverage, resolution, claims (hashes too, on a ledger still in the older hashed form) | it says so itself — without the detailed ledger it "cannot authenticate attestation claims" |
 | `publish_audit.py --provenance-self-consistency` | the candidate agrees with the candidate | explicitly non-attesting; a developer tripwire |
 | `publish_audit.py --provenance-ledger <trusted>` | the candidate byte-matches a release-controlled snapshot | that snapshot only exists for a tree the release process already blessed, so it cannot run on an arbitrary pull request |
 | `provenance_ledger.py refresh-reviewed` (#138) | a maintainer can refresh hashes using only external trusted inputs | it is a *generator* run by a maintainer, not a check on the merge path |
@@ -45,9 +45,9 @@ it agree with every other artifact.
 | T7 | Replace the in-tree verifier with a rubber stamp | the verifier that runs comes from the trusted base ref, never from the candidate |
 | T8 | Neuter the gate's workflow, or delete it | `TRUSTED_WORKFLOW_WEAKENED` |
 | T9 | Declare a second job under the required check's context name so a green candidate-controlled result answers for the gate | `CI_CONTEXT_COLLISION` — the context string is reserved |
-| T10 | Change file content without updating the ledger hash | `CONTENT_MISMATCH` |
+| T10 | Change file content without updating the ledger hash | the committed ledger carries claims only (#1673), so there is no hash to forget: the gate regenerates every hash from the candidate's blobs and requires the committed claims to equal that generation's claims form byte for byte (`LEGACY_CONTROL_MISMATCH`); a ledger still in the hashed schema-1 form gets `CONTENT_MISMATCH` |
 | T11 | Publish a file with no ledger entry, or keep an entry for a deleted file | `LEDGER_COVERAGE` |
-| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external blessed policy and exact policy-delta authority authorize that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
+| T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external policy-delta authority (V3, or V1/V2 with its blessed policy) authorizes that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
 | T13 | Edit the ledger without regenerating the export | `EXPORT_FIELD_MISMATCH` |
 | T14 | Replay a green result from an earlier head | the verdict is bound to the candidate commit and tree, and the run fails closed if the fetched head is not the head the event named |
 | T15 | Merge on a stale base | the verifier refuses `MERGE_BASE_STALE` when the head is behind its base and evaluates the ratchet against the base tip, and the `main-minimal` ruleset's `strict_required_status_checks_policy` is `true` (live value read from the ruleset, 2026-10-10), so GitHub also requires the head to be up to date at merge time (see Merge-tree identity). This half is enforced by live ruleset configuration, not by code in this repository, so re-read the ruleset before relying on it |
@@ -60,7 +60,7 @@ it agree with every other artifact.
 | T22 | Commit enough content to exhaust the runner | `TREE_TOO_LARGE` — explicit path-count and byte ceilings |
 | T23 | Ship a candidate action definition under `.github/actions/` for the trusted job to run | the trusted workflow references only SHA-pinned `actions/*`; nothing resolves from the candidate tree |
 | T24 | Replace every byte of an **authority-backed** file, keeping its record and classification, and update the public hash/export coherently | allowed by the normal path-authorized policy; automated content binding, export recomputation, CI, and ordinary security gates still apply |
-| T25 | Write an "approved" digest into the candidate's own public ledger evidence | `CONTENT_MISMATCH` if it does not match the Git object; a candidate digest is never authority, and no `reviewed_blobs` field is consulted in normal mode |
+| T25 | Write an "approved" digest into the candidate's own public ledger evidence | a claims ledger that carries any digest is refused as half-converted (`LEDGER_SCHEMA`); in a hashed ledger, `CONTENT_MISMATCH` if it does not match the Git object; a candidate digest is never authority, and no `reviewed_blobs` field is consulted in normal mode |
 | T26 | Add a new implementation path without an exact trusted record | `TRUSTED_PATH_MISSING` / `CLAIM_UNBACKED` — the one-time path decision remains external |
 | T27 | Use a wildcard record to authorize a new implementation path | `CLAIM_UNBACKED` — wildcard records remain inert for classification |
 | T27b | Supply malformed or ambiguous legacy `reviewed_blobs` metadata | ignored by normal mode; `--require-reviewed-blobs` remains available when strict legacy validation is deliberately requested |
@@ -78,6 +78,12 @@ it agree with every other artifact.
 | T39 | Exhaust the runner with a huge tree, a huge blob or huge path text | `TREE_TOO_LARGE` — ceilings are enforced as the bytes stream in, not after buffering |
 | T40 | Merge a pull request whose head is behind base so conflict-resolution bytes appear after verification | `MERGE_BASE_STALE` — the base must already be an ancestor of the head, which makes the head tree the merge result for all three allowed methods |
 | T41 | Stop tracking a file the profile still publishes, so it leaves the ledger (tracked files intersect `include_paths`) and the inherited universe (candidate tree) at once, with no finding | `INCLUDED_PATH_UNTRACKED` — a declared path must resolve to a tracked file, or be removed from the profile in the same change; a declaration the trusted base already could not resolve is reported, not blamed on the change |
+| T42 | Edit a newly admitted file after its admission, keeping the approved profile change | `POLICY_DELTA_ADDED_BYTES_MISMATCH` — a V3 policy delta binds each added path to the SHA-256 its admission approved (#1673); new admissions write no byte-free V1/V2 record, and a legacy V1/V2 record that adds a path is refused (`POLICY_DELTA_LEGACY_ADDS_PATHS`), so a missed V3 lookup has nothing to fall back to |
+| T43 | Reuse an approved V3 delta on a base where its change no longer holds: the added path is already published or present, a removed or excluded path moved, a rule's earlier value changed | `POLICY_DELTA_PATH_EXISTS`, `POLICY_DELTA_BASE_MISMATCH`, `POLICY_DELTA_RULE_VALUE_MISMATCH` — the verifier derives the document from this base and candidate and requires the approved bytes to equal it |
+| T44 | Ride an approved V3 delta while changing anything else in the profile, or reformat it | `POLICY_DELTA_UNAUTHORIZED`, `CANDIDATE_POLICY_NOT_CANONICAL` |
+| T45 | Add a path that differs from an existing one only in case or Unicode form | `PATH_CASE_COLLISION` for any new path; `POLICY_DELTA_PATH_COLLISION` for an added public path |
+| T46 | Use an approved exclusion removal to bring in a new implementation file and leave it unclassified | `TRUSTED_SCOPE_VIOLATION` — out of scope only while both the trusted and the candidate policy exclude it; a V3 delta also refuses it (`POLICY_DELTA_UNCLASSIFIED_PATH`) |
+| T47 | Steer which trusted V3 document the workflow fetches | the trusted checkout derives the name from Git objects and checks it is 64 hex digits; the name only selects, and the verifier re-derives the document and compares it byte for byte |
 
 ## Trust boundary
 
