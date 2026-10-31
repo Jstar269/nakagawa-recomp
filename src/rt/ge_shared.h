@@ -272,6 +272,8 @@ typedef enum GeProfileCheck {
  * guest memory already contains the CPU's new bytes. An overlapping persistent target must
  * merge exactly that byte span, preserve newer GPU bytes outside it, and prevent an older
  * asynchronous readback from committing over the CPU generation. */
+struct GeTnlPrim;   /* below */
+
 typedef struct GeGpuHooks {
     int  (*tri)(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp);
     int  (*sprite)(const GeVtx *p0, const GeVtx *p1, int persp);
@@ -295,10 +297,83 @@ typedef struct GeGpuHooks {
     int  (*vram_read)(uint32_t addr, uint32_t bytes);
     int  (*vram_write_prepare)(uint32_t addr, uint32_t bytes);
     int  (*vram_pending)(void);
+    /* GPU transform and lighting (#318): a whole transform-mode triangle PRIM that ge.c found
+     * eligible (see GeTnlPrim). Returns 1 when the backend drew it, 0 when it declined (an
+     * unsupported fragment state, as tri does), and ge.c then runs its own T&L for the PRIM. */
+    int  (*tnl_prim)(const struct GeTnlPrim *p);
 } GeGpuHooks;
+
+/* ---- GPU transform and lighting (#318) ----------------------------------------------------
+ *
+ * Opt-in with SR_GPU_TNL=1. ge.c stays the arbiter: it hands a transform-mode triangle PRIM to
+ * the backend only when the result is provably the one its own T&L gives through the same
+ * rasterizer. The state is a subset of transform_model_vtx_clip's (no specular or powered
+ * diffuse light, which needs host powf; texture map mode 0; gouraud shading; not clear mode),
+ * every float input is 0 or a normal number of magnitude 2^-40..2^40, and a clip-space bound of
+ * the PRIM's vertices shows that no vertex is non-finite, out of the screen grid or the depth
+ * range, or near the near plane, so every triangle is drawn whole. The vertex shader
+ * (shaders/psp_tnl.vert) then repeats ge.c's arithmetic in the same order with correctly rounded
+ * operations, and the triangles reach the rasterizer with the bits the CPU path would have
+ * given them. */
+#define GE_TNL_MAX_WEIGHTS 8
+#define GE_TNL_LIGHTS 4
+
+/* One vertex reference: the decoded vertex after morphing and before skinning. */
+typedef struct GeTnlVtx {
+    float x, y, z;                     /* model-space position */
+    float nx, ny, nz;                  /* model-space normal (0 when the format has none) */
+    float u, v;                        /* texture coordinate as read */
+    uint32_t rgba;                     /* vertex colour, r in the low byte (material if absent) */
+    float w[GE_TNL_MAX_WEIGHTS];       /* skinning weights; unused ones are 0 */
+    uint32_t param;                    /* backend-owned: the PRIM's parameter record */
+} GeTnlVtx;
+
+typedef struct GeTnlLight {
+    uint32_t on;                       /* 1 when the light is enabled */
+    uint32_t point;                    /* 1: point or spot (position), 0: directional */
+    float l[3];                        /* normalized direction or position (ge.c light_consts) */
+    float acol[3], dcol[3];            /* ambient and diffuse colour, 0..1 */
+    float att[3];                      /* constant, linear and quadratic attenuation */
+} GeTnlLight;
+
+/* Everything the vertex shader reads, as ge.c's T&L uses it. 32-bit words only (std430). */
+typedef struct GeTnlParams {
+    float world[12], view[12], proj[16];   /* column-major, as GeState */
+    float bone[96];                        /* the eight bone matrices */
+    float vp[6];                           /* x, y, z scale, x, y, z centre (decoded float24) */
+    float off[2];                          /* screen offset x, y in pixels */
+    float tex[6];                          /* u scale, v scale, u offset, v offset, width, height */
+    float fog[3];                          /* end, slope (after the inf/NaN rewrite), constant */
+    uint32_t fog_mode;                     /* 0: factor 1, 1: the constant, 2: clamp((z+end)*slope) */
+    uint32_t weights;                      /* skinning weights per vertex, 0..8 */
+    uint32_t lighting;                     /* 1: lit (light_vertex), 0: the vertex colour */
+    uint32_t mat_update;                   /* MATERIALUPDATE bits */
+    uint32_t lit_alpha;                    /* lit alpha when MATERIALUPDATE bit 0 is clear */
+    uint32_t amb_alpha;                    /* scene ambient alpha */
+    float mat_amb[3], mat_dif[3], emissive[3], amb[3];
+    GeTnlLight light[GE_TNL_LIGHTS];
+} GeTnlParams;
+
+/* A PRIM for tnl_prim: `refs` holds `nrefs` vertex references in PRIM order, `tri` holds
+ * `ntri` index triples into refs, each in the order ge.c submits that triangle (the cull and
+ * strip-parity flips applied), so triangle k's vertices are refs[tri[3k]], refs[tri[3k+1]] and
+ * refs[tri[3k+2]]. `box` bounds the projected vertices (from ge.c's clip-space bound). */
+typedef struct GeTnlPrim {
+    const GeTnlParams *params;
+    const GeTnlVtx *refs;
+    uint32_t nrefs;
+    const uint32_t *tri;
+    uint32_t ntri;
+    float box[4];                      /* x0, y0, x1, y1: framebuffer pixels every vertex is in */
+} GeTnlPrim;
 
 /* Implemented in ge.c. */
 void      ge_set_gpu_hooks(const GeGpuHooks *h);
+/* GPU transform and lighting (#318): on with SR_GPU_TNL=1, or set here (-1 re-reads the
+ * environment). The counts are PRIMs the backend drew and PRIMs ge.c found ineligible or the
+ * backend declined, since the last reset. */
+void      ge_tnl_set_enabled(int on);
+void      ge_tnl_counts(unsigned long long *taken, unsigned long long *cpu, int reset);
 /* Post-write notification for CPU-side writes that may alias GPU-cached framebuffers
  * (movie decode, DMA memcpy). No-op when no GPU backend is registered. */
 void      sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);

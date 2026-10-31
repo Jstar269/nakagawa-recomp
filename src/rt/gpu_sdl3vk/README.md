@@ -97,9 +97,20 @@ Enabled with `SR_GPU_GE=1`. Implementation:
 
 ### Phase 3 — full GE on GPU / cleanup
 
-- Move T&L (world/view/proj, skinning, morphing, lighting, texgen) into the vertex shader;
-  CPU then only decodes vertex formats. Validate against `transform_vtx_clip` with the
-  existing SR_VDUMP machinery.
+- T&L in the vertex shader (#318), opt-in with `SR_GPU_TNL=1`. ge.c decodes the vertices of a
+  transform-mode triangle draw (morphing included) and hands them, with the draw's matrices,
+  fog and light constants, to `hook_tnl_prim`; `shaders/psp_tnl.vert` then skins, transforms,
+  fogs, lights (ambient and diffuse, directional and point) and projects them. ge.c offers a
+  draw only when a clip-space bound shows that no vertex is clipped, dropped or non-finite, and
+  only in states the shader repeats exactly: no specular or powered-diffuse light (host `powf`
+  has no exact shader counterpart), texture map mode 0, gouraud shading, no clear mode, every
+  float input zero or of magnitude 2^-40..2^40. The shader evaluates ge.c's arithmetic in C's
+  order with `precise` (Vulkan rounds add and multiply correctly; the reference has no fused
+  multiply-add) and divides and takes square roots exactly in integer arithmetic, so its
+  vertices reach the rasterizer with the bits the CPU T&L gives them. Everything else, and a
+  draw the fragment state sends to software, keeps ge.c's T&L. The `tnl-parity` cells of
+  `gpu-coherence-selftest` compare the two routes byte for byte. Left: texgen, flat shading,
+  specular light, sprites, lines, points and clipped draws.
 - Render-to-texture chains (the hangar uses fbp swaps), depth readbacks if any game code
   reads zbuf, small-tri rasterization rules (top-left bias already documented in
   raster_tri) via conservative settings.

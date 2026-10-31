@@ -3514,6 +3514,18 @@ typedef struct {
     int r,g,b,a;
 } ModelVtx;
 
+/* SR_NOFOG / SR_NOLIGHT: diagnostic switches that turn fog or lighting off in the T&L. */
+static int ge_env_nofog(void) {
+    static int nofog = -1;
+    if (nofog < 0) nofog = getenv("SR_NOFOG") ? 1 : 0;
+    return nofog;
+}
+static int ge_env_nolight(void) {
+    static int nolight = -1;
+    if (nolight < 0) nolight = getenv("SR_NOLIGHT") ? 1 : 0;
+    return nolight;
+}
+
 /* Decode morph targets first, then apply all active bone weights.  Patch tessellation consumes
  * these model-space values; doing either operation after tessellation changes the surface. */
 static void decode_model_vtx(uint32_t addr, const VFmt *vf, ModelVtx *m) {
@@ -3590,9 +3602,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
 
     /* Fog factor from view-space depth: 1 = no fog, 0 = full fog (PPSSPP convention).
      * Linear in cz, so interpolating the factor across a clipped edge stays exact. */
-    static int nofog = -1;
-    if (nofog < 0) nofog = getenv("SR_NOFOG") ? 1 : 0;
-    if (ge.fog_enable && !nofog) {
+    if (ge.fog_enable && !ge_env_nofog()) {
         /* Inf/NaN fog coefficients are VALID on the PSP: games leave fog enabled but set
          * fog-end to inf/nan to force a constant factor (PPSSPP TransformUnit ComputeState,
          * "required for Outrun to render proper skies"). Plain float math turns these into
@@ -3668,9 +3678,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         transform_started = 0;
     }
 
-    static int nolight = -1;
-    if (nolight < 0) nolight = getenv("SR_NOLIGHT") ? 1 : 0;
-    if (ge.lighting_enable && !nolight) {
+    if (ge.lighting_enable && !ge_env_nolight()) {
         uint64_t lighting_started = profile_phase == GE_PRIM_PROFILE_LIGHTING
             ? SDL_GetTicksNS() : 0;
         float nx=m->nx, ny=m->ny, nz=m->nz;
@@ -4259,6 +4267,288 @@ static void draw_patch(uint32_t op,int spline){
     free(all);
 }
 
+/* ---- GPU transform and lighting (#318, ge_shared.h GeTnlPrim) ----
+ *
+ * draw_prim offers a transform-mode triangle PRIM to the backend's tnl_prim hook when
+ * ge_tnl_try_prim proves that the backend's vertex shader, repeating transform_model_vtx_clip,
+ * project_cvtx and the backend's own vertex capture, reaches the rasterizer with the bits this
+ * file would give it. Everything below either establishes that or declines, and a declined PRIM
+ * takes the CPU path exactly as before. */
+static int s_tnl_on = -1;                   /* SR_GPU_TNL=1, read once */
+static unsigned long long s_tnl_taken, s_tnl_cpu;
+static GeTnlVtx *s_tnl_refs;
+static uint32_t *s_tnl_tri;
+static uint32_t s_tnl_refs_cap, s_tnl_tri_cap;
+
+void ge_tnl_set_enabled(int on) { s_tnl_on = on; }
+
+void ge_tnl_counts(unsigned long long *taken, unsigned long long *cpu, int reset) {
+    if (taken) *taken = s_tnl_taken;
+    if (cpu) *cpu = s_tnl_cpu;
+    if (reset) s_tnl_taken = s_tnl_cpu = 0;
+}
+
+static int tnl_enabled(void) {
+    if (s_tnl_on < 0) {
+        const char *on = getenv("SR_GPU_TNL");
+        s_tnl_on = on && strcmp(on, "1") == 0;
+    }
+    return s_tnl_on;
+}
+
+/* 0, or a normal number of magnitude 2^-40..2^40: the range in which no product or sum the
+ * shader forms from these inputs can overflow or become subnormal (a GPU may flush a subnormal
+ * to zero where the host keeps it). */
+static int tnl_num_ok(float f) {
+    if (f == 0.0f) return 1;
+    float a = fabsf(f);
+    return a >= 0x1p-40f && a <= 0x1p40f;
+}
+
+static int tnl_nums_ok(const float *f, int n) {
+    for (int i = 0; i < n; i++)
+        if (!tnl_num_ok(f[i])) return 0;
+    return 1;
+}
+
+/* State that changes nothing per vertex: the parts of the PRIM's state the shader supports. */
+static int tnl_state_ok(int type, const VFmt *vf) {
+    if (type < 3 || type > 5 || vf->through || ge.clear || !ge.shade_gouraud) return 0;
+    if (s_ge_timing_model || s_rtrace > 0 || s_primitive_profile > 0) return 0;
+    if (ge.tex_enable && (ge.tex_map_mode & 3u) != 0u) return 0;
+    if (!tnl_nums_ok(ge.world, 12) || !tnl_nums_ok(ge.view, 12) || !tnl_nums_ok(ge.proj, 16))
+        return 0;
+    if (vf->w_n && !tnl_nums_ok(ge.bone, 12 * vf->w_n)) return 0;
+    for (int i = 0; i < 6; i++)
+        if (!tnl_num_ok(decode_float24(ge.viewport_raw[i]))) return 0;
+    float tex[4] = { ge.tex_scale_u, ge.tex_scale_v, ge.tex_off_u, ge.tex_off_v };
+    if (!tnl_nums_ok(tex, 4)) return 0;
+    if (ge.fog_enable && !ge_env_nofog()) {
+        /* An infinite or NaN end is a constant factor and an infinite or NaN slope is
+         * rewritten (transform_model_vtx_clip); a finite one has to be in range. */
+        if (isfinite(ge.fog_end) && !tnl_num_ok(ge.fog_end)) return 0;
+        if (isfinite(ge.fog_end) && isfinite(ge.fog_slope) && !tnl_num_ok(ge.fog_slope)) return 0;
+    }
+    if (ge.lighting_enable && !ge_env_nolight()) {
+        for (int i = 0; i < GE_TNL_LIGHTS; i++) {
+            if (!ge.light_on[i]) continue;
+            int comp = (int)(ge.light_type[i] & 3u);
+            if ((comp & 1) || (comp == 2 && ge.spec_coef > 0.0f)) return 0;   /* powf */
+            if (!tnl_nums_ok(ge.light_pos[i], 3) || !tnl_nums_ok(ge.light_att[i], 3)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Corner test of the PRIM's position bound. lo/hi bound the positions the T&L transforms
+ * (skinned when the format has weights). Every tested quantity is affine in the position or a
+ * ratio of affine ones with cw > 0, so its extremes over the box are at corners; the margins
+ * are far wider than float rounding. */
+static int tnl_corners_ok(const double lo[3], const double hi[3], float box[4]) {
+    const double vxs = decode_float24(ge.viewport_raw[0]), vys = decode_float24(ge.viewport_raw[1]);
+    const double vzs = decode_float24(ge.viewport_raw[2]), vxc = decode_float24(ge.viewport_raw[3]);
+    const double vyc = decode_float24(ge.viewport_raw[4]), vzc = decode_float24(ge.viewport_raw[5]);
+    const double offx = (double)(ge.offsetx & 0xFFFF) / 16.0, offy = (double)(ge.offsety & 0xFFFF) / 16.0;
+    double bx0 = HUGE_VAL, by0 = HUGE_VAL, bx1 = -HUGE_VAL, by1 = -HUGE_VAL;
+    for (int k = 0; k < 8; k++) {
+        double p[3] = { (k & 1) ? hi[0] : lo[0], (k & 2) ? hi[1] : lo[1], (k & 4) ? hi[2] : lo[2] };
+        double w[3], e[3], c[4];
+        for (int a = 0; a < 3; a++)
+            w[a] = (double)ge.world[a] * p[0] + (double)ge.world[3 + a] * p[1] +
+                   (double)ge.world[6 + a] * p[2] + (double)ge.world[9 + a];
+        for (int a = 0; a < 3; a++) {
+            if (!(fabs(w[a]) <= 0x1p40)) return 0;
+            e[a] = (double)ge.view[a] * w[0] + (double)ge.view[3 + a] * w[1] +
+                   (double)ge.view[6 + a] * w[2] + (double)ge.view[9 + a];
+        }
+        for (int a = 0; a < 4; a++)
+            c[a] = (double)ge.proj[a] * e[0] + (double)ge.proj[4 + a] * e[1] +
+                   (double)ge.proj[8 + a] * e[2] + (double)ge.proj[12 + a];
+        if (!(c[3] >= 1e-2) || !(c[2] + c[3] >= 1e-3 * c[3]) || !(fabs(c[2] / c[3]) <= 0.999))
+            return 0;
+        double sx = c[0] * vxs / c[3] + vxc, sy = c[1] * vys / c[3] + vyc;
+        if (!(sx >= 8.0 && sx <= 4088.0 && sy >= 8.0 && sy <= 4088.0)) return 0;
+        bx0 = fmin(bx0, sx - offx); bx1 = fmax(bx1, sx - offx);
+        by0 = fmin(by0, sy - offy); by1 = fmax(by1, sy - offy);
+        if (!ge.depth_clip) {
+            double sz = c[2] * vzs / c[3] + vzc;
+            if (!(sz >= 8.0 && sz <= 65528.0)) return 0;
+        }
+    }
+    /* A pixel of margin beyond the corners covers the float rounding of each vertex. */
+    box[0] = (float)(bx0 - 1.0); box[1] = (float)(by0 - 1.0);
+    box[2] = (float)(bx1 + 1.0); box[3] = (float)(by1 + 1.0);
+    return 1;
+}
+
+static int tnl_grow(void **buf, uint32_t *cap, uint32_t need, size_t elem) {
+    if (need <= *cap) return 1;
+    uint32_t n = *cap ? *cap : 1024u;
+    while (n < need) n *= 2u;
+    void *p = realloc(*buf, (size_t)n * elem);
+    if (!p) return 0;
+    *buf = p;
+    *cap = n;
+    return 1;
+}
+
+/* The parameter record: every value ge.c's T&L reads for this PRIM, derived exactly as
+ * transform_model_vtx_clip and light_vertex derive it. */
+static void tnl_params(const VFmt *vf, GeTnlParams *p) {
+    memset(p, 0, sizeof(*p));
+    memcpy(p->world, ge.world, sizeof(p->world));
+    memcpy(p->view, ge.view, sizeof(p->view));
+    memcpy(p->proj, ge.proj, sizeof(p->proj));
+    memcpy(p->bone, ge.bone, sizeof(p->bone));
+    for (int i = 0; i < 6; i++) p->vp[i] = decode_float24(ge.viewport_raw[i]);
+    p->off[0] = (float)(ge.offsetx & 0xFFFF) / 16.0f;
+    p->off[1] = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    p->tex[0] = ge.tex_scale_u; p->tex[1] = ge.tex_scale_v;
+    p->tex[2] = ge.tex_off_u;   p->tex[3] = ge.tex_off_v;
+    p->tex[4] = (float)ge.tex_w; p->tex[5] = (float)ge.tex_h;
+    if (ge.fog_enable && !ge_env_nofog()) {
+        float fend = ge.fog_end, fslope = ge.fog_slope;
+        if (isinf(fend) || isnan(fend)) {
+            int sign = signbit(fend) ? 1 : 0;
+            if (signbit(fslope)) sign = !sign;
+            if (fslope == 0.0f) sign = 1;
+            p->fog_mode = 1;
+            p->fog[2] = sign ? 0.0f : 1.0f;
+        } else {
+            if (isinf(fslope) || isnan(fslope))
+                fslope = signbit(fslope) ? -262144.0f : 262144.0f;
+            p->fog_mode = 2;
+            p->fog[0] = fend;
+            p->fog[1] = fslope;
+        }
+    }
+    p->weights = (uint32_t)vf->w_n;
+    if (ge.lighting_enable && !ge_env_nolight()) {
+        const LightConsts *lc = light_consts();
+        p->lighting = 1;
+        p->mat_update = ge.mat_update;
+        int maa = ge.material_alpha_set ? ge.material_alpha : 255;
+        p->lit_alpha = (uint32_t)clamp8((maa * ge.amb_alpha + 127) / 255);
+        p->amb_alpha = (uint32_t)ge.amb_alpha;
+        for (int ch = 0; ch < 3; ch++) {
+            p->mat_amb[ch] = lc->mat_amb[ch];
+            p->mat_dif[ch] = lc->mat_dif[ch];
+            p->emissive[ch] = lc->emissive[ch];
+            p->amb[ch] = lc->amb[ch];
+        }
+        for (int i = 0; i < GE_TNL_LIGHTS; i++) {
+            const LightConst *l = &lc->light[i];
+            GeTnlLight *o = &p->light[i];
+            o->on = (uint32_t)l->on;
+            o->point = l->type != 0;
+            o->l[0] = l->lx; o->l[1] = l->ly; o->l[2] = l->lz;
+            for (int ch = 0; ch < 3; ch++) {
+                o->acol[ch] = l->acol[ch];
+                o->dcol[ch] = l->dcol[ch];
+                o->att[ch] = ge.light_att[i][ch];
+            }
+        }
+    }
+}
+
+/* Offer the PRIM to the backend. Returns 1 when the backend drew it (or, as raster_tri would
+ * for every triangle, the depth surface could not be prepared), 0 to run the CPU path. */
+static int ge_tnl_try_prim(int type, int count, const VFmt *vf, uint32_t vbase, uint32_t ibase,
+                           int idxfmt) {
+    if (!s_gpu || !s_gpu->tnl_prim || !tnl_enabled() || count < 3) return 0;
+    if (!tnl_state_ok(type, vf)) { s_tnl_cpu++; return 0; }
+    uint32_t ntri = type == 3 ? (uint32_t)(count / 3) : (uint32_t)(count - 2);
+    if (!tnl_grow((void **)&s_tnl_refs, &s_tnl_refs_cap, (uint32_t)count, sizeof(GeTnlVtx)) ||
+        !tnl_grow((void **)&s_tnl_tri, &s_tnl_tri_cap, ntri * 3u, sizeof(uint32_t))) {
+        s_tnl_cpu++;
+        return 0;
+    }
+    /* Decode every reference once (with morphing, without skinning) and bound the positions. */
+    double lo[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL }, hi[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
+    double wlo[GE_TNL_MAX_WEIGHTS], whi[GE_TNL_MAX_WEIGHTS];
+    for (int i = 0; i < GE_TNL_MAX_WEIGHTS; i++) { wlo[i] = HUGE_VAL; whi[i] = -HUGE_VAL; }
+    int lit = ge.lighting_enable && !ge_env_nolight();
+    for (int i = 0; i < count; i++) {
+        uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride);
+        GeTnlVtx *o = &s_tnl_refs[i];
+        memset(o, 0, sizeof(*o));
+        int r, g, b, al;
+        read_pos(a, vf, &o->x, &o->y, &o->z);
+        read_nrm(a, vf, &o->nx, &o->ny, &o->nz);
+        read_tc(a, vf, &o->u, &o->v);
+        read_color(a, vf, &r, &g, &b, &al);
+        o->rgba = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
+                  ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(al & 0xFF) << 24);
+        if (vf->w_n) read_weights(a, vf, o->w);
+        float pos[3] = { o->x, o->y, o->z }, nrm[3] = { o->nx, o->ny, o->nz };
+        if (!tnl_nums_ok(pos, 3) || (lit && !tnl_nums_ok(nrm, 3)) || !tnl_nums_ok(o->w, vf->w_n) ||
+            (ge.tex_enable && (!tnl_num_ok(o->u) || !tnl_num_ok(o->v)))) {
+            s_tnl_cpu++;
+            return 0;
+        }
+        for (int k = 0; k < 3; k++) {
+            if (pos[k] < lo[k]) lo[k] = pos[k];
+            if (pos[k] > hi[k]) hi[k] = pos[k];
+        }
+        for (int k = 0; k < vf->w_n; k++) {
+            if (o->w[k] < wlo[k]) wlo[k] = o->w[k];
+            if (o->w[k] > whi[k]) whi[k] = o->w[k];
+        }
+    }
+    if (vf->w_n) {
+        /* Skinned position = sum over bones of w_i * (B_i p): bound each B_i p over the box,
+         * scale by the weight's range, and add. */
+        double slo[3] = { 0, 0, 0 }, shi[3] = { 0, 0, 0 };
+        for (int b = 0; b < vf->w_n; b++) {
+            const float *m = ge.bone + 12 * b;
+            for (int ax = 0; ax < 3; ax++) {
+                double c = m[9 + ax], e = 0.0;
+                for (int k = 0; k < 3; k++) {
+                    double mid = 0.5 * (lo[k] + hi[k]), half = 0.5 * (hi[k] - lo[k]);
+                    c += (double)m[3 * k + ax] * mid;
+                    e += fabs((double)m[3 * k + ax]) * half;
+                }
+                double blo = c - e, bhi = c + e;
+                double p0 = wlo[b] * blo, p1 = wlo[b] * bhi, p2 = whi[b] * blo, p3 = whi[b] * bhi;
+                slo[ax] += fmin(fmin(p0, p1), fmin(p2, p3));
+                shi[ax] += fmax(fmax(p0, p1), fmax(p2, p3));
+            }
+        }
+        memcpy(lo, slo, sizeof(lo));
+        memcpy(hi, shi, sizeof(hi));
+    }
+    float box[4];
+    if (!tnl_corners_ok(lo, hi, box)) { s_tnl_cpu++; return 0; }
+    /* The triangles, in the order draw_prim submits them. */
+    uint32_t n = 0;
+    for (int i = 2; i < count; i++) {
+        int i0, i1, i2;
+        if      (type == 3) { if (i % 3 != 2) continue; i0 = i - 2; i1 = i - 1; i2 = i; }
+        else if (type == 4) { i0 = i - 2; i1 = i - 1; i2 = i; }
+        else                { i0 = 0;     i1 = i - 1; i2 = i; }
+        if (ge.cull_enable) {
+            int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
+            if (flip) { int t = i0; i0 = i1; i1 = t; }
+        }
+        s_tnl_tri[n++] = (uint32_t)i0;
+        s_tnl_tri[n++] = (uint32_t)i1;
+        s_tnl_tri[n++] = (uint32_t)i2;
+    }
+    /* raster_tri prepares the depth surface before every triangle it hands the backend. */
+    if (ge.ztest_enable && !ge_zbuf_prepare_current()) return 1;
+    GeTnlParams params;
+    tnl_params(vf, &params);
+    GeTnlPrim prim = { &params, s_tnl_refs, (uint32_t)count, s_tnl_tri, n / 3u,
+                       { box[0], box[1], box[2], box[3] } };
+    uint64_t profile_started = ge_cpu_profile_begin();
+    int taken = s_gpu->tnl_prim(&prim);
+    ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
+    if (!taken) { s_tnl_cpu++; return 0; }
+    s_tnl_taken++;
+    s_stat.gpuprim += n / 3u;
+    return 1;
+}
+
 /* When an entire 3D primitive lands behind the near plane (all clip-w <= NEAR_W), dump the raw
  * model-space position, the resulting w's, and the full matrix state -- distinguishes "camera
  * genuinely faces away" from "our matrix state is wrong for this draw". Budgeted per stat window
@@ -4688,6 +4978,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             project_cvtx(&ca,&a); project_cvtx(&cb,&b);
             draw_line_vtx(&a,&b,1);
         }
+    } else if ((type == 3 || type == 4 || type == 5) &&
+               ge_tnl_try_prim(type, count, &vf, vbase, ibase, idxfmt)) {
+        /* Transformed, lit and drawn by the backend's GPU T&L (#318). */
     } else if (type == 3 || type == 4 || type == 5) {
         /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
          * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
